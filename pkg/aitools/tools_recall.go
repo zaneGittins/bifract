@@ -1,10 +1,12 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
 	"errors"
 	"net/url"
 	"strings"
+
+	"bifract/pkg/api"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -16,9 +18,10 @@ const maxRecallRows = 250
 // terminal are the job states that will not change again.
 var terminal = map[string]bool{"succeeded": true, "failed": true, "canceled": true}
 
-func registerRecallTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "search_archive",
+func registerRecallTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "search_archive",
+		Annotations: mutates(),
 		Description: "Search archived logs, for hunts reaching past the fractal's hot retention.\n\n" +
 			"query_logs reads hot storage only; this runs the same BQL against object " +
 			"storage, which takes minutes rather than seconds. Use it only when the range " +
@@ -27,22 +30,24 @@ func registerRecallTools(s *mcp.Server, c *Client) {
 			"recent search was reused.",
 	}, searchArchive)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_archive_search",
+	add(d, &mcp.Tool{
+		Name:        "get_archive_search",
+		Annotations: readOnly(),
 		Description: "Read a Recall job: its status, and its rows once it has finished.\n\n" +
 			"Status is one of pending, running, succeeded, failed or canceled. While it is " +
 			"pending or running there are no rows yet; wait before polling again rather than " +
 			"calling in a tight loop, as each call costs a round trip and the scan itself is " +
 			"what takes the time.",
-	}, getArchiveSearch)
+	}, getArchiveSearch, needsAccess(api.AccessAnalyst))
 
-	register(s, c, &mcp.Tool{
-		Name: "cancel_archive_search",
+	add(d, &mcp.Tool{
+		Name:        "cancel_archive_search",
+		Annotations: mutates(),
 		Description: "Cancel a Recall job that is still pending or running.\n\n" +
 			"Worth doing when a search turns out to be too broad: it stops the scan rather " +
 			"than leaving it consuming read capacity. A job that has already finished cannot " +
 			"be canceled.",
-	}, cancelArchiveSearch)
+	}, cancelArchiveSearch, noConfirm())
 }
 
 type searchArchiveArgs struct {
@@ -54,7 +59,7 @@ type searchArchiveArgs struct {
 	MaxRows int `json:"max_rows,omitempty" jsonschema:"Rows to return, capped at 250. Default 250. Narrow the query rather than raising this."`
 }
 
-func searchArchive(ctx context.Context, c *Client, in searchArchiveArgs) (any, error) {
+func searchArchive(ctx context.Context, c Client, in searchArchiveArgs) (any, error) {
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, errors.New("a query is required")
 	}
@@ -86,7 +91,7 @@ type recallJobArgs struct {
 	JobID string `json:"job_id" jsonschema:"The job id returned by search_archive."`
 }
 
-func getArchiveSearch(ctx context.Context, c *Client, in recallJobArgs) (any, error) {
+func getArchiveSearch(ctx context.Context, c Client, in recallJobArgs) (any, error) {
 	fractal, err := c.FractalID(ctx)
 	if err != nil {
 		return nil, err
@@ -97,9 +102,9 @@ func getArchiveSearch(ctx context.Context, c *Client, in recallJobArgs) (any, er
 	}
 	// A running job carries no rows. Returning it as-is reads as "no matches",
 	// which is a different and wrong answer.
-	status := strings.ToLower(field[string](job, "status"))
+	status := strings.ToLower(Field[string](job, "status"))
 	if status != "" && !terminal[status] {
-		id := field[string](job, "id")
+		id := Field[string](job, "id")
 		if id == "" {
 			id = in.JobID
 		}
@@ -112,7 +117,7 @@ func getArchiveSearch(ctx context.Context, c *Client, in recallJobArgs) (any, er
 	return job, nil
 }
 
-func cancelArchiveSearch(ctx context.Context, c *Client, in recallJobArgs) (any, error) {
+func cancelArchiveSearch(ctx context.Context, c Client, in recallJobArgs) (any, error) {
 	fractal, err := c.FractalID(ctx)
 	if err != nil {
 		return nil, err

@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -28,22 +28,25 @@ var actionFields = map[string]string{
 	"email_actions":   "email_action_ids",
 }
 
-func registerAlertTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "list_alerts",
+func registerAlertTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "list_alerts",
+		Annotations: readOnly(),
 		Description: "List the detection alerts configured in this fractal.\n\n" +
 			"Also a good way to learn the fractal's real query patterns and which fields " +
 			"existing detections rely on.\n\n" +
 			"Returns alerts with their names, BQL queries, type, labels, and status.",
 	}, listAlerts)
 
-	register(s, c, &mcp.Tool{
+	add(d, &mcp.Tool{
 		Name:        "get_alert",
+		Annotations: readOnly(),
 		Description: "Get one alert in full: its query, schedule, actions, and execution history.",
 	}, getAlert)
 
-	register(s, c, &mcp.Tool{
-		Name: "create_alert",
+	add(d, &mcp.Tool{
+		Name:        "create_alert",
+		Annotations: mutates(),
 		Description: "Create a detection alert.\n\n" +
 			"Alerts run on a background interval against newly ingested logs, tracking a " +
 			"cursor so nothing is missed across restarts. Validate the query with " +
@@ -58,8 +61,9 @@ func registerAlertTools(s *mcp.Server, c *Client) {
 		enumFor[alerts.AlertType]("alert_type"),
 		enumFor[alerts.Severity]("severity"))
 
-	register(s, c, &mcp.Tool{
-		Name: "update_alert",
+	add(d, &mcp.Tool{
+		Name:        "update_alert",
+		Annotations: mutates(),
 		Description: "Update an alert. Only the fields you supply change; the rest keep their values.\n\n" +
 			"The API replaces the whole alert, so this reads it first and sends the current " +
 			"values back for everything you did not name.\n\n" +
@@ -68,13 +72,15 @@ func registerAlertTools(s *mcp.Server, c *Client) {
 		enumFor[alerts.AlertType]("alert_type"),
 		enumFor[alerts.Severity]("severity"))
 
-	register(s, c, &mcp.Tool{
+	add(d, &mcp.Tool{
 		Name:        "delete_alert",
+		Annotations: destroys(),
 		Description: "Delete an alert.",
 	}, deleteAlert)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_alert_executions",
+	add(d, &mcp.Tool{
+		Name:        "get_alert_executions",
+		Annotations: readOnly(),
 		Description: "Show when an alert fired and what it matched.\n\n" +
 			"Use this to judge whether a detection is noisy before tuning it.\n\n" +
 			"Returns recent executions with timestamps and match counts.",
@@ -85,7 +91,7 @@ type listAlertsArgs struct {
 	EnabledOnly bool `json:"enabled_only,omitempty" jsonschema:"Return only alerts that are currently active."`
 }
 
-func listAlerts(ctx context.Context, c *Client, in listAlertsArgs) (any, error) {
+func listAlerts(ctx context.Context, c Client, in listAlertsArgs) (any, error) {
 	var query url.Values
 	if in.EnabledOnly {
 		query = url.Values{"enabled": {"true"}}
@@ -97,15 +103,15 @@ type alertIDArgs struct {
 	AlertID string `json:"alert_id" jsonschema:"The alert UUID."`
 }
 
-func getAlert(ctx context.Context, c *Client, in alertIDArgs) (any, error) {
+func getAlert(ctx context.Context, c Client, in alertIDArgs) (any, error) {
 	return c.Get(ctx, "/alerts/"+url.PathEscape(in.AlertID), nil)
 }
 
-func deleteAlert(ctx context.Context, c *Client, in alertIDArgs) (any, error) {
+func deleteAlert(ctx context.Context, c Client, in alertIDArgs) (any, error) {
 	return c.Delete(ctx, "/alerts/"+url.PathEscape(in.AlertID))
 }
 
-func getAlertExecutions(ctx context.Context, c *Client, in alertIDArgs) (any, error) {
+func getAlertExecutions(ctx context.Context, c Client, in alertIDArgs) (any, error) {
 	return c.Get(ctx, "/alerts/"+url.PathEscape(in.AlertID)+"/executions", nil)
 }
 
@@ -127,7 +133,7 @@ type createAlertArgs struct {
 	WindowDuration      int      `json:"window_duration,omitempty" jsonschema:"Correlation window for a compound alert, in seconds. Required for alert_type compound."`
 }
 
-func createAlert(ctx context.Context, c *Client, in createAlertArgs) (any, error) {
+func createAlert(ctx context.Context, c Client, in createAlertArgs) (any, error) {
 	alertType := strings.TrimSpace(in.AlertType)
 	if alertType == "" {
 		alertType = string(alerts.AlertTypeEvent)
@@ -180,14 +186,14 @@ type updateAlertArgs struct {
 	ThrottleField       *string  `json:"throttle_field,omitempty" jsonschema:"New throttle field. Omit to keep the current one."`
 }
 
-func updateAlert(ctx context.Context, c *Client, in updateAlertArgs) (any, error) {
+func updateAlert(ctx context.Context, c Client, in updateAlertArgs) (any, error) {
 	path := "/alerts/" + url.PathEscape(in.AlertID)
 	current, err := c.Get(ctx, path, nil)
 	if err != nil {
 		return nil, err
 	}
 	alert := current
-	if nested := field[map[string]any](current, "alert"); nested != nil {
+	if nested := Field[map[string]any](current, "alert"); nested != nil {
 		alert = nested
 	}
 
@@ -235,7 +241,7 @@ func carryForward(alert any) map[string]any {
 		actions, _ := object[readAs].([]any)
 		ids := make([]string, 0, len(actions))
 		for _, action := range actions {
-			if id := field[string](action, "id"); id != "" {
+			if id := Field[string](action, "id"); id != "" {
 				ids = append(ids, id)
 			}
 		}

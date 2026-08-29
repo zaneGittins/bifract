@@ -2,10 +2,10 @@
 
 The `--install-k8s` wizard includes six resource profiles. Choose the one that matches your expected daily ingest volume.
 
-Bifract on Kubernetes scales by **sharding** ClickHouse. Each shard is a **single replica** — Bifract does not use ClickHouse replication for durability or disaster recovery. Instead, every log is copied to the [Apache Iceberg archive](../administration/backup-restore.md) on object storage, which is the durable copy of record. This keeps the cluster lean: ClickHouse shards for query and ingest throughput, Iceberg for durability.
+Bifract on Kubernetes scales by **sharding** ClickHouse. Each shard is a **single replica**: Bifract does not use ClickHouse replication for durability. Every log is copied to the [Apache Iceberg archive](../administration/backup-restore.md) on object storage instead, which is the durable copy of record. ClickHouse shards for query and ingest throughput, Iceberg for durability.
 
 !!! warning "Durability is not the same as fast recovery"
-    The archive guarantees your log data survives a ClickHouse loss. It does **not** mean a large hot store can be rebuilt quickly. Replaying archived data into ClickHouse is bounded by MergeTree merge throughput, so it costs roughly what ingesting the same data cost in the first place. At Large or X-Large, restoring months of history takes **days to weeks** and may exceed the shard disks you sized for a shorter hot window. Plan recovery as "restore the operational window you need, and query the rest in place with [Recall](../administration/backup-restore.md#restore--reconcile)". See [Disaster Recovery](../administration/backup-restore.md#disaster-recovery).
+    Replaying archived data into ClickHouse costs roughly what ingesting it cost, so at Large or X-Large restoring months of history takes days to weeks and may exceed shard disks sized for a shorter hot window. Size the hot store for the window you need online, and query the rest in place with Recall. See [Recovery time](../administration/backup-restore.md#recovery-time).
 
 ## Resource Profiles
 
@@ -18,13 +18,12 @@ Bifract on Kubernetes scales by **sharding** ClickHouse. Each shard is a **singl
 | Large | ~500 GB-2 TB/day | 3 | 32 vCPU / 64GB | 16 / 28 | 28Gi / 56Gi |
 | X-Large | ~2-10 TB/day | 6 | 32 vCPU / 64GB | 16 / 28 | 28Gi / 56Gi |
 
-All CPU/memory values shown as request / limit. The **Node (per shard)** column is the worker node that hosts a ClickHouse shard pod; the ClickHouse container is sized to take the bulk of it. The recommended baseline for **500 GB/day** is **3 shards at 32 vCPU / 64GB per node**.
+All CPU/memory values are request / limit. **Node (per shard)** is the worker node hosting a ClickHouse shard pod; the ClickHouse container takes the bulk of it. The recommended baseline for **500 GB/day** is **3 shards at 32 vCPU / 64GB per node**.
 
 ### Capacity for everything else
 
-The shard nodes above hold ClickHouse and little else. Everything else needs its own
-capacity: the app tier, the ingest tier and its archiver sidecar, archive maintenance,
-PostgreSQL, Caddy and LiteLLM.
+The shard nodes hold ClickHouse and little else. The app tier, the ingest tier and its
+archiver sidecar, archive maintenance, PostgreSQL, Caddy and LiteLLM need their own capacity.
 
 | Profile | Non-ClickHouse CPU (req/lim) | Non-ClickHouse memory (req/lim) |
 |---|---|---|
@@ -35,18 +34,17 @@ PostgreSQL, Caddy and LiteLLM.
 | Large | 9 / 24 | 18Gi / 44Gi |
 | X-Large | 14 / 40 | 28Gi / 84Gi |
 
-Requests decide whether pods schedule; limits are the burst ceiling. Size a node pool
-for at least the request column with room to spare, since a cluster provisioned only
-for the shard nodes cannot place these pods. Figures are for a single ingest replica;
-add the ingest pod's own figures again for each additional replica.
+Requests decide whether pods schedule; limits are the burst ceiling. Size a node pool for at
+least the request column with room to spare: a cluster provisioned only for the shard nodes
+cannot place these pods. Figures are for a single ingest replica; add the ingest pod's own
+figures again for each additional replica.
 
-Two components dominate and are worth knowing individually. The **ingest pod** carries
-both the ingest container and the archiver sidecar, and is the largest single pod
-outside ClickHouse (Large: 5Gi requested, up to 16Gi; X-Large: 9Gi up to 32Gi). Its
-memory is driven by `ARCHIVE_MAX_PENDING_BYTES`, the buffer the archiver accumulates
-before rolling Parquet, so raising the roll thresholds raises this pod. **Archive
-maintenance** is sized separately from the app tier because compaction decodes Parquet
-row groups into Arrow, and its memory limit also sets compaction's parallelism.
+Two components dominate. The **ingest pod** carries both the ingest container and the archiver
+sidecar, making it the largest single pod outside ClickHouse (Large: 5Gi requested, up to 16Gi;
+X-Large: 9Gi up to 32Gi). Its memory is driven by `ARCHIVE_MAX_PENDING_BYTES`, the buffer the
+archiver accumulates before rolling Parquet, so raising the roll thresholds raises this pod.
+**Archive maintenance** is sized separately because compaction decodes Parquet row groups into
+Arrow, and its memory limit also sets compaction's parallelism.
 
 Full per-component resources are in the generated manifests.
 
@@ -61,15 +59,14 @@ ClickHouse is I/O-bound on both ingest and query, so the shard nodes need fast s
 
 ## Ingress Throughput
 
-Everything reaches Bifract through the `caddy` Service, which on a managed Kubernetes cluster
-provisions a cloud load balancer. **That load balancer is sized by your cloud provider's
-default, not by the Bifract profile you chose**, and at high ingest rates it is a common
-throughput ceiling.
+Everything reaches Bifract through the `caddy` Service, which on a managed cluster provisions a
+cloud load balancer. **That load balancer is sized by your cloud provider's default, not by the
+Bifract profile you chose**, and at high ingest rates it is a common throughput ceiling.
 
-This failure mode is difficult to diagnose because it is invisible from inside the cluster.
-Every component reports healthy, CPU sits idle, ClickHouse shows no insert delays, and the
-median request latency looks fine. Only the tail moves: p50 stays flat while p95 and p99 climb
-into seconds, throughput plateaus below target, and client connection errors accumulate.
+It is hard to diagnose because it is invisible from inside the cluster. Every component reports
+healthy, CPU sits idle, ClickHouse shows no insert delays, and median latency looks fine. Only
+the tail moves: p50 stays flat while p95 and p99 climb into seconds, throughput plateaus below
+target, and client connection errors accumulate.
 
 Measured on a 3-shard Large cluster targeting 500 GB/day, the only change being the load
 balancer size:
@@ -107,9 +104,9 @@ is not set in the generated manifests:
 
 !!! note "Caddy does not scale horizontally"
     Caddy runs a single replica with a ReadWriteOnce volume. Combined with
-    `externalTrafficPolicy: Local`, all ingress traffic lands on one node. This is sufficient
-    at the rates above once the load balancer is sized correctly, but it is a structural
-    ceiling worth knowing before you push well past Large.
+    `externalTrafficPolicy: Local`, all ingress traffic lands on one node. That is sufficient at
+    the rates above once the load balancer is sized correctly, but it is a structural ceiling
+    past Large.
 
 ## Ingest Concurrency
 
@@ -132,6 +129,10 @@ first thing to raise.
 
 ## How Sharding Works
 
-ClickHouse shards distribute data horizontally. Each shard holds a subset of the data, and queries fan out across all shards in parallel. Dev through Small use a single shard. Medium introduces 2 shards to distribute write and query load; Large and X-Large add more shards for higher throughput.
+Each shard holds a subset of the data, and queries fan out across all shards in parallel. Dev
+through Small use a single shard. Medium introduces 2 shards to distribute write and query load;
+Large and X-Large add more for higher throughput.
 
-Durability does not come from ClickHouse. A ClickHouse node loss is recovered by re-provisioning the shard and replaying from the Iceberg archive. Size that expectation by how much data you actually need back in the hot store rather than by total history: replay speed is governed by merge throughput, not by how fast object storage can be read. See [Backup & Restore](../administration/backup-restore.md) for how the archive and recovery work.
+A ClickHouse node loss is recovered by re-provisioning the shard and replaying from the Iceberg
+archive. See [Backup & Archive](../administration/backup-restore.md) for how the archive and
+recovery work.

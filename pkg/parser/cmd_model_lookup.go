@@ -91,7 +91,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 
 	info, ok := ctx.Opts.Models[modelName]
 	if !ok {
-		return fmt.Errorf("model %q not found — create it in the Models UI first", modelName)
+		return fmt.Errorf("model %q not found: create it in the Models UI first", modelName)
 	}
 
 	// In prism context FractalIDs holds every member fractal: a model's table can

@@ -22,7 +22,7 @@
     color: var(--text-secondary);
     font-size: 0.78rem;
     line-height: 1.55;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-left: 2px solid var(--accent-warning, #d4a054);
     border-radius: 4px;
@@ -70,7 +70,7 @@
     font-size: 0.74rem;
     letter-spacing: 0.06em;
     color: var(--text-secondary);
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     padding: 0.5rem 0.6rem;
@@ -98,7 +98,7 @@
     font-family: var(--font-mono, monospace);
     font-size: 0.8rem;
     color: var(--text-primary);
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 0.85rem;

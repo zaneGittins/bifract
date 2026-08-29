@@ -29,11 +29,14 @@ const FieldStats = {
     _controller: null,
 
     init() {
-        const toggle = document.getElementById('fieldsRailToggle');
-        if (toggle) toggle.addEventListener('click', () => this.toggle());
-
-        const closeBtn = document.getElementById('fieldsRailClose');
-        if (closeBtn) closeBtn.addEventListener('click', () => this.close());
+        // The rail shell owns open/close and which pane is showing; this module
+        // only reacts to its own pane becoming visible.
+        if (window.RailPanel) {
+            RailPanel.registerPane('fields', {
+                onShow: () => this._onShow(),
+                onHide: () => this._onHide(),
+            });
+        }
 
         const sortBtn = document.getElementById('fieldsRailSort');
         if (sortBtn) sortBtn.addEventListener('click', () => this.toggleSort());
@@ -42,38 +45,30 @@ const FieldStats = {
         if (filter) filter.addEventListener('input', (e) => this.handleFilter(e.target.value));
     },
 
-    // ---- open/close -------------------------------------------------------
+    // ---- visibility -------------------------------------------------------
 
+    // isOpen means this pane is the visible one, not merely that the rail is
+    // open: stats are only worth fetching while someone can read them.
     toggle() {
-        if (this.isOpen) this.close();
-        else this.open();
+        if (window.RailPanel) RailPanel.toggle('fields');
     },
 
     open() {
-        this.isOpen = true;
-        const rail = document.getElementById('fieldsRail');
-        if (rail) rail.classList.add('open');
-        this._syncToggle();
-
-        // Mutually exclusive with the detail panel on width-constrained viewports.
-        if (window.LogDetail && window.innerWidth < 1200) {
-            const panel = document.getElementById('logDetailPanel');
-            if (panel && panel.classList.contains('open')) LogDetail.close();
-        }
-        this.load();
+        if (window.RailPanel) RailPanel.open('fields');
     },
 
     close() {
-        this.isOpen = false;
-        const rail = document.getElementById('fieldsRail');
-        if (rail) rail.classList.remove('open');
-        this._syncToggle();
-        if (this._controller) { this._controller.abort(); this._controller = null; }
+        if (window.RailPanel) RailPanel.close();
     },
 
-    _syncToggle() {
-        const toggle = document.getElementById('fieldsRailToggle');
-        if (toggle) toggle.classList.toggle('active', this.isOpen);
+    _onShow() {
+        this.isOpen = true;
+        this.load();
+    },
+
+    _onHide() {
+        this.isOpen = false;
+        if (this._controller) { this._controller.abort(); this._controller = null; }
     },
 
     // ---- results lifecycle -----------------------------------------------

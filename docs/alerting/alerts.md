@@ -2,7 +2,7 @@
 
 Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from **Admin &rarr; Settings &rarr; Query &amp; Alerting &rarr; Alert evaluation interval**) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
 
-Re-enabling a previously disabled alert resets its cursor to a few minutes before now rather than resuming from its old, potentially stale value — this avoids a large cold-storage catch-up scan across the disabled window, at the cost of not retroactively evaluating logs that arrived while the alert was disabled.
+Re-enabling a previously disabled alert resets its cursor to a few minutes before now rather than resuming from its old, potentially stale value. This avoids a large cold-storage catch-up scan across the disabled window, at the cost of not retroactively evaluating logs that arrived while the alert was disabled.
 
 ## Alert Configuration
 
@@ -40,7 +40,7 @@ Alert queries that consist only of filter conditions (no `table()`, `groupby()`,
 - The alert's throttle field, if configured
 - Any `{{field}}` placeholders in the alert name template
 
-This significantly reduces ClickHouse disk I/O for alerts that filter on a small number of fields, which is common with Sigma rules imported via [Alert Feeds](alert-feeds.md). A typical Sigma rule referencing 3-5 fields avoids reading dozens of unused columns on every evaluation tick.
+This cuts ClickHouse disk I/O for alerts that filter on a small number of fields, which is common with Sigma rules imported via [Alert Feeds](alert-feeds.md): a rule referencing 3-5 fields avoids reading dozens of unused columns on every evaluation tick.
 
 **What this means for actions:** Webhook payloads, fractal actions, and dictionary actions will only contain the projected fields, not the full log. The `log_id` is always present so the original log can be retrieved. If an action needs additional fields, add an explicit `table()` to the alert query:
 

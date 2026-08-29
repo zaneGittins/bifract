@@ -33,6 +33,7 @@ const LogDetail = {
             prevBtn: panelEl.querySelector('.panel-prev-btn'),
             nextBtn: panelEl.querySelector('.panel-next-btn'),
             searchBtn: panelEl.querySelector('.panel-search-btn'),
+            pinBtn: panelEl.querySelector('.panel-pin-btn'),
             chatBtn: panelEl.querySelector('.send-to-chat-btn'),
             closeBtn: panelEl.querySelector('.close-panel-btn'),
             tableRootSel: opts.tableRoot || null,
@@ -63,6 +64,10 @@ const LogDetail = {
         if (host.nextBtn) host.nextBtn.addEventListener('click', () => this.navigateTo(this.currentIndex + 1));
         if (host.searchBtn) host.searchBtn.addEventListener('click', () => {
             if (window.Comments) window.Comments.searchForCurrentLog();
+        });
+        if (host.pinBtn) host.pinBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (window.NotebookRail) NotebookRail.pinLog(this.currentLogData);
         });
         this.initResizeHandle(host);
     },
@@ -151,18 +156,21 @@ const LogDetail = {
             startX = e.clientX;
             startWidth = panel.offsetWidth;
             handle.classList.add('dragging');
+            // The width transition applies to inline styles too, so without this
+            // the panel eases toward the cursor over 250ms instead of tracking it.
+            panel.classList.add('resizing');
             document.body.style.userSelect = 'none';
 
             const onMove = (e) => {
                 const delta = startX - e.clientX;
                 const w = Math.max(320, Math.min(window.innerWidth * 0.7, startWidth + delta));
                 panel.style.setProperty('--detail-panel-width', w + 'px');
-                // Also set width directly during drag (bypasses transition for responsiveness)
                 panel.style.width = w + 'px';
             };
 
             const onUp = () => {
                 handle.classList.remove('dragging');
+                panel.classList.remove('resizing');
                 document.body.style.userSelect = '';
                 localStorage.setItem(host.storageKey, panel.offsetWidth);
                 panel.style.width = '';
@@ -208,9 +216,33 @@ const LogDetail = {
             srcSpan.textContent = src;
         }
 
+        // "Search for this log" moves you to the search tab and runs log_id="...".
+        // That is worth a button from the alert, recall, and model panels, which
+        // sit far from search. From the search panel it closes itself, throws away
+        // the result set you are reading, and hands back the single row already on
+        // screen, so it is offered everywhere except there.
         if (searchLogBtn) {
-            searchLogBtn.style.display = (logData.log_id && !this.isAggregated) ? '' : 'none';
+            const useful = logData.log_id && !this.isAggregated && host.name !== 'search';
+            searchLogBtn.style.display = useful ? '' : 'none';
         }
+
+        if (host.pinBtn) {
+            const pinnable = !!logData.log_id && !this.isAggregated && window.Auth && Auth.isAuthenticated();
+            host.pinBtn.style.display = pinnable ? '' : 'none';
+        }
+        this.syncPinState();
+    },
+
+    // Mark the pin button when this event is already evidence in the active
+    // notebook. Called again whenever the rail reloads, so pinning from here
+    // updates the button without reopening the panel.
+    syncPinState() {
+        const host = this.activeHost;
+        if (!host || !host.pinBtn) return;
+        const logID = this.currentLogData && this.currentLogData.log_id;
+        const pinned = !!logID && !!window.NotebookRail && NotebookRail.hasPinned(logID);
+        host.pinBtn.classList.toggle('pinned', pinned);
+        host.pinBtn.title = pinned ? 'Already pinned to the active notebook' : 'Pin to the active notebook';
     },
 
     async show(logData, isAggregated = false, hostRef) {
@@ -370,11 +402,11 @@ const LogDetail = {
 
         panel.classList.add('open');
 
-        // On width-constrained viewports the detail panel and the Fields rail
+        // On width-constrained viewports the detail panel and the left rail
         // compete for the center table, so they are mutually exclusive there:
         // opening a log's detail collapses the rail. Wide screens keep both.
-        if (panel.id === 'logDetailPanel' && window.FieldStats && FieldStats.isOpen && window.innerWidth < 1200) {
-            FieldStats.close();
+        if (panel.id === 'logDetailPanel' && window.RailPanel && RailPanel.isOpen && window.innerWidth < RailPanel.narrowViewport) {
+            RailPanel.close();
         }
     },
 

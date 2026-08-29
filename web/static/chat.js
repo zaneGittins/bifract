@@ -3,6 +3,64 @@
  * Provides a conversational interface to query and explore fractal log data.
  */
 
+// What each tool did, past tense, for the trace. A name absent here is shown
+// with its underscores stripped, which reads well enough for the rest.
+const TOOL_LABELS = {
+    query_logs: 'Ran query',
+    validate_bql: 'Checked query',
+    get_fields: 'Read fields',
+    get_field_stats: 'Profiled fields',
+    get_recent_logs: 'Read recent logs',
+    get_bql_reference: 'Read BQL reference',
+    list_alerts: 'Read alerts',
+    get_alert: 'Read alert',
+    get_alert_executions: 'Read alert history',
+    get_attack_coverage: 'Checked ATT&CK coverage',
+    get_attack_gaps: 'Checked ATT&CK gaps',
+    find_processes: 'Found processes',
+    get_provenance_graph: 'Built process tree',
+    list_dictionaries: 'Read watchlists',
+    get_dictionary: 'Read watchlist',
+    search_dictionary: 'Checked watchlist',
+    list_models: 'Read models',
+    get_model: 'Read model',
+    get_model_data: 'Read model data',
+    list_comments: 'Read comments',
+    get_log_comments: 'Read comments on this log',
+    list_comment_tags: 'Read comment tags',
+    list_notebooks: 'Read notebooks',
+    get_notebook: 'Read notebook',
+    list_saved_queries: 'Read saved queries',
+    list_dashboards: 'Read dashboards',
+    get_dashboard: 'Read dashboard',
+    list_instruction_libraries: 'Read libraries',
+    get_instruction_library: 'Read library',
+    read_instruction_page: 'Read library page',
+    search_archive: 'Searched the archive',
+    get_archive_search: 'Read archive results',
+    cancel_archive_search: 'Cancelled archive search',
+    add_comment: 'Added a comment',
+    add_tag: 'Tagged comments',
+    remove_tag: 'Untagged comments',
+    create_alert: 'Created an alert',
+    update_alert: 'Updated an alert',
+    create_notebook: 'Created a notebook',
+    add_notebook_section: 'Added a notebook section',
+};
+
+// What approving a proposed action will actually do, in the user's terms. The
+// arguments are shown verbatim beside it: this is only the headline.
+const CONFIRM_TITLES = {
+    add_comment: 'Add a comment to a log',
+    add_tag: 'Add a tag to comments',
+    remove_tag: 'Remove a tag from comments',
+    create_alert: 'Create a detection alert',
+    update_alert: 'Change a detection alert',
+    create_notebook: 'Create a notebook',
+    add_notebook_section: 'Add a section to a notebook',
+    search_archive: 'Search the archive (slow, and it costs storage reads)',
+};
+
 const Chat = {
     currentConversationId: null,
     conversations: [],
@@ -345,29 +403,52 @@ const Chat = {
     },
 
     async _streamToAssistant(content, displayText) {
+        // The server closes anything still waiting when a new message arrives,
+        // so the cards for those actions stop being answerable here too.
+        document.querySelectorAll('.chat-confirm:not(.is-answered)').forEach(card => {
+            card.classList.add('is-answered', 'is-declined');
+            card.querySelector('.chat-confirm-actions')?.remove();
+            const outcome = document.createElement('div');
+            outcome.className = 'chat-confirm-outcome';
+            outcome.textContent = 'Superseded';
+            card.appendChild(outcome);
+        });
+
         const assistantBubble = this.createAssistantBubble();
         const msgs = document.getElementById('chatMessages');
         if (msgs) {
             msgs.appendChild(this.createSeparator());
             msgs.appendChild(assistantBubble);
         }
-        this.autoScroll = true;
-        this.scrollToBottom();
-
-        this.isStreaming = true;
-        this.updateInputState(true);
-        this.startLoadingAnimation(assistantBubble.querySelector('.chat-msg-content'));
 
         const contentEl = assistantBubble.querySelector('.chat-msg-content');
-        let hasContent = false;
+        this.startLoadingAnimation(contentEl);
+        await this._runStream(
+            `/api/v1/chat/conversations/${this.currentConversationId}/stream`,
+            { content, time_range: this._timeRange() },
+            contentEl,
+            false,
+        );
+    },
+
+    _timeRange() {
+        return document.getElementById('chatTimeRange')?.value || '24h';
+    },
+
+    // Reads one SSE reply into contentEl. The reply to a confirmed action
+    // continues the same bubble, so hasContent says whether anything is in it.
+    async _runStream(url, body, contentEl, hasContent) {
+        this.autoScroll = true;
+        this.scrollToBottom();
+        this.isStreaming = true;
+        this.updateInputState(true);
         let hadError = false;
 
         try {
-            const timeRange = document.getElementById('chatTimeRange')?.value || '24h';
-            const response = await fetch(`/api/v1/chat/conversations/${this.currentConversationId}/stream`, {
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content, time_range: timeRange }),
+                body: JSON.stringify(body),
                 credentials: 'include',
             });
 
@@ -435,6 +516,12 @@ const Chat = {
             case 'tool_result':
                 if (event.tool_name === 'render_chart' || event.tool_name === 'think') break;
                 this.renderToolResult(contentEl, event.tool_name, event.tool_result);
+                break;
+            case 'tool_confirm':
+                if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
+                this.clearBubbleLoading(contentEl);
+                this._finalizeStreamingText(contentEl);
+                this.renderToolConfirm(contentEl, event.tool_name, event.tool_args, event.pending_id);
                 break;
             case 'think':
                 this.setStatus('Thinking');
@@ -669,17 +756,11 @@ const Chat = {
         this.trimTrailingWhitespace(contentEl);
         const trace = this._traceEl(contentEl);
 
-        let label, summary, query = '';
-        if (toolName === 'get_fields') {
-            label = 'Read fields'; summary = 'discovering available fields';
-        } else if (toolName === 'search_alerts') {
-            const search = args?.search || '';
-            label = 'Searched alerts'; summary = search ? 'searching: ' + search : 'listing all alerts';
-        } else if (toolName === 'validate_bql') {
-            query = args?.query || ''; label = 'Checked query'; summary = query;
-        } else {
-            query = args?.query || ''; label = 'Ran query'; summary = query;
-        }
+        const label = TOOL_LABELS[toolName] || toolName.replace(/_/g, ' ');
+        const query = args?.query || '';
+        // A tool with no query of its own is summarized by what it was pointed at.
+        const summary = query || args?.search || args?.name || args?.image || args?.host
+            || args?.value || args?.page_name || args?.process_guid || '';
 
         const step = this._traceStep(label, toolName);
         step.querySelector('.chat-trace-summary').textContent = summary;
@@ -707,6 +788,75 @@ const Chat = {
         trace.appendChild(step);
     },
 
+    // A write the assistant wants to make. Nothing runs until the user answers,
+    // and only the id travels back: the arguments stay on the server, so what is
+    // shown here is what will run.
+    renderToolConfirm(contentEl, toolName, args, pendingId) {
+        this.trimTrailingWhitespace(contentEl);
+
+        const card = document.createElement('div');
+        card.className = 'chat-confirm';
+
+        const head = document.createElement('div');
+        head.className = 'chat-confirm-head';
+        head.textContent = CONFIRM_TITLES[toolName] || ('Run ' + toolName.replace(/_/g, ' '));
+        card.appendChild(head);
+
+        const note = document.createElement('div');
+        note.className = 'chat-confirm-note';
+        note.textContent = 'This changes what other people see. Nothing happens until you approve it.';
+        card.appendChild(note);
+
+        const detail = document.createElement('pre');
+        detail.className = 'chat-confirm-args';
+        detail.textContent = JSON.stringify(args ?? {}, null, 2);
+        card.appendChild(detail);
+
+        const actions = document.createElement('div');
+        actions.className = 'chat-confirm-actions';
+
+        const approve = document.createElement('button');
+        approve.className = 'chat-confirm-btn chat-confirm-approve';
+        approve.textContent = 'Approve';
+
+        const decline = document.createElement('button');
+        decline.className = 'chat-confirm-btn';
+        decline.textContent = 'Decline';
+
+        const answer = (decision) => {
+            if (this.isStreaming) return;
+            card.classList.add('is-answered');
+            approve.disabled = true;
+            decline.disabled = true;
+            actions.remove();
+            const outcome = document.createElement('div');
+            outcome.className = 'chat-confirm-outcome';
+            outcome.textContent = decision === 'approve' ? 'Approved' : 'Declined';
+            card.appendChild(outcome);
+            card.classList.add(decision === 'approve' ? 'is-approved' : 'is-declined');
+            this._resolveToolCall(pendingId, decision, contentEl);
+        };
+        approve.addEventListener('click', () => answer('approve'));
+        decline.addEventListener('click', () => answer('deny'));
+
+        actions.appendChild(decline);
+        actions.appendChild(approve);
+        card.appendChild(actions);
+        contentEl.appendChild(card);
+        this.scrollToBottom();
+    },
+
+    // Answers a proposed action and reads the rest of the reply into the same
+    // bubble, so the turn continues where it paused.
+    async _resolveToolCall(pendingId, decision, contentEl) {
+        await this._runStream(
+            `/api/v1/chat/conversations/${this.currentConversationId}/tool-calls/${encodeURIComponent(pendingId)}/stream`,
+            { decision, time_range: this._timeRange() },
+            contentEl,
+            true,
+        );
+    },
+
     renderToolResult(contentEl, toolName, result) {
         // Attach the result to the most recent trace step.
         const trace = contentEl.querySelector(':scope > .chat-trace');
@@ -715,50 +865,64 @@ const Chat = {
 
         const resultDiv = document.createElement('div');
         resultDiv.className = 'chat-trace-result';
+        resultDiv.innerHTML = this._toolResultHtml(toolName, result);
+        targetCall.appendChild(resultDiv);
+    },
 
+    // Tools answer in the API's own shapes, so this reads the shape rather than
+    // the tool name. Only the two with a presentation worth special-casing get
+    // one; everything else falls through to a table or a short summary.
+    _toolResultHtml(toolName, result) {
         if (result?.error) {
-            resultDiv.innerHTML = `<span class="chat-error">Error: ${Utils.escapeHtml(result.error)}</span>`;
-        } else if (toolName === 'get_fields') {
+            return `<span class="chat-error">Error: ${Utils.escapeHtml(result.error)}</span>`;
+        }
+        if (result?.declined) {
+            return '<span class="chat-tool-empty">Declined</span>';
+        }
+        if (toolName === 'get_fields') {
             const fields = result?.fields || [];
-            if (fields.length === 0) {
-                resultDiv.innerHTML = '<span class="chat-tool-empty">No fields found</span>';
-            } else {
-                const fieldStrs = fields.map(f => {
-                    if (typeof f === 'string') return Utils.escapeHtml(f);
-                    return `${Utils.escapeHtml(f.name)} <span style="opacity:0.5">(${f.count})</span>`;
-                });
-                resultDiv.innerHTML = `<span class="chat-tool-fields">${fieldStrs.join(', ')}</span>`;
-            }
-        } else if (toolName === 'search_alerts') {
-            const alerts = result?.alerts || [];
-            if (alerts.length === 0) {
-                resultDiv.innerHTML = '<span class="chat-tool-empty">No alerts found</span>';
-            } else {
-                const rows = alerts.map(a => ({
-                    name: a.name,
-                    type: a.alert_type,
-                    enabled: a.enabled ? 'yes' : 'no',
-                    query: a.query,
-                    ...(a.feed_name ? { feed: a.feed_name } : {})
-                }));
-                const fieldOrder = ['name', 'type', 'enabled', 'query'];
-                if (alerts.some(a => a.feed_name)) fieldOrder.push('feed');
-                resultDiv.innerHTML = this.renderMiniTable(rows, fieldOrder, alerts.length, false);
-            }
-        } else {
-            const rows = result?.rows || [];
-            const count = result?.count || 0;
-            const truncated = result?.is_truncated || false;
-            const fieldOrder = result?.field_order || [];
-
-            if (rows.length === 0) {
-                resultDiv.innerHTML = '<span class="chat-tool-empty">No results</span>';
-            } else {
-                resultDiv.innerHTML = this.renderMiniTable(rows, fieldOrder, count, truncated);
-            }
+            if (!fields.length) return '<span class="chat-tool-empty">No fields found</span>';
+            const names = fields.map(f => typeof f === 'string'
+                ? Utils.escapeHtml(f)
+                : `${Utils.escapeHtml(f.name)} <span style="opacity:0.5">(${f.count})</span>`);
+            return `<span class="chat-tool-fields">${names.join(', ')}</span>`;
+        }
+        if (result && typeof result === 'object' && 'results' in result) {
+            const rows = result.results || [];
+            if (!rows.length) return '<span class="chat-tool-empty">No results</span>';
+            const order = result.field_order?.length ? result.field_order : this._columnsOf(rows);
+            return this.renderMiniTable(rows, order, rows.length, false);
         }
 
-        targetCall.appendChild(resultDiv);
+        // A page the server truncated says so; keep the note with the rows.
+        const rows = Array.isArray(result) ? result : (Array.isArray(result?.items) ? result.items : null);
+        if (rows) {
+            if (!rows.length) return '<span class="chat-tool-empty">Nothing found</span>';
+            const table = this.renderMiniTable(rows, this._columnsOf(rows), rows.length, !!result?.more);
+            const showing = result?.showing ? `<div class="chat-tool-note">Showing ${Utils.escapeHtml(String(result.showing))}</div>` : '';
+            return table + showing;
+        }
+        if (result && typeof result === 'object') {
+            const pairs = Object.entries(result)
+                .filter(([, v]) => v !== null && v !== undefined && typeof v !== 'object')
+                .slice(0, 8)
+                .map(([k, v]) => `${Utils.escapeHtml(k)}: ${Utils.escapeHtml(String(v))}`);
+            if (pairs.length) return `<span class="chat-tool-fields">${pairs.join(' · ')}</span>`;
+            return '<span class="chat-tool-empty">Done</span>';
+        }
+        return `<span class="chat-tool-fields">${Utils.escapeHtml(String(result ?? ''))}</span>`;
+    },
+
+    // Columns for a table built from rows whose shape nothing declared.
+    _columnsOf(rows) {
+        const seen = [];
+        for (const row of rows.slice(0, 5)) {
+            if (!row || typeof row !== 'object') continue;
+            for (const key of Object.keys(row)) {
+                if (!seen.includes(key)) seen.push(key);
+            }
+        }
+        return seen.slice(0, 6);
     },
 
     renderMiniTable(rows, fieldOrder, totalCount, truncated) {
@@ -901,10 +1065,24 @@ const Chat = {
     _toolStatus(name) {
         switch (name) {
             case 'get_fields': return 'Reading fields';
-            case 'search_alerts': return 'Searching alerts';
+            case 'get_field_stats': return 'Profiling fields';
+            case 'get_bql_reference': return 'Reading BQL reference';
+            case 'get_recent_logs': return 'Reading recent logs';
             case 'validate_bql': return 'Checking query';
-            case 'run_query': return 'Running query';
-            case 'read_instruction_page': return 'Reading library';
+            case 'query_logs': return 'Running query';
+            case 'list_alerts': case 'get_alert': return 'Reading alerts';
+            case 'get_alert_executions': return 'Reading alert history';
+            case 'get_attack_coverage': case 'get_attack_gaps': return 'Checking ATT&CK coverage';
+            case 'find_processes': return 'Finding processes';
+            case 'get_provenance_graph': return 'Building the process tree';
+            case 'list_dictionaries': case 'get_dictionary': case 'search_dictionary': return 'Checking watchlists';
+            case 'list_models': case 'get_model': case 'get_model_data': return 'Reading models';
+            case 'list_comments': case 'get_log_comments': case 'list_comment_tags': return 'Reading comments';
+            case 'list_notebooks': case 'get_notebook': return 'Reading notebooks';
+            case 'list_saved_queries': return 'Reading saved queries';
+            case 'list_dashboards': case 'get_dashboard': return 'Reading dashboards';
+            case 'list_instruction_libraries': case 'get_instruction_library': case 'read_instruction_page': return 'Reading library';
+            case 'search_archive': case 'get_archive_search': return 'Searching the archive';
             case 'render_chart': return 'Building chart';
             case 'present_results': return 'Summarizing';
             case 'think': return 'Thinking';
@@ -956,6 +1134,10 @@ const Chat = {
         if (input) input.disabled = streaming;
         if (sendBtn) sendBtn.style.display = streaming ? 'none' : '';
         if (stopBtn) stopBtn.style.display = streaming ? '' : 'none';
+        // One answer at a time: each resumes the turn on its own stream, and two
+        // at once would interleave into the same bubble.
+        document.querySelectorAll('.chat-confirm:not(.is-answered) .chat-confirm-btn')
+            .forEach(btn => { btn.disabled = streaming; });
     },
 
     scrollToBottom() {

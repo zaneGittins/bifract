@@ -2,7 +2,7 @@
 
 A deep link is a URL that opens Bifract with a specific BQL query already loaded and executed. Any tool that can build a string can build one: an EDR detection rule, a SOAR playbook, a webhook payload, a wiki page, a runbook.
 
-The point is to remove the copy-and-paste step between a detection firing and an analyst looking at the surrounding data. Instead of "search Bifract for the process GUID in this alert", the alert carries a link that lands on exactly that view.
+It removes the copy-and-paste step between a detection firing and an analyst looking at the surrounding data. Instead of "search Bifract for the process GUID in this alert", the alert carries a link that lands on exactly that view.
 
 ## The URL
 
@@ -79,11 +79,6 @@ A fixed incident window:
 Everything above also describes what the Query tab hands out. **Share -> Copy share link** builds a `/go/search` URL for whatever you are looking at, so a pasted link is one a colleague can read and edit rather than an opaque blob.
 
 The address bar tracks the search as you work. Each query you run becomes its own entry in browser history, so Back returns to the previous query and re-runs it, and Forward moves on again. Re-running the same query does not add an entry. Leaving the Query tab drops the query from the URL.
-
-Two details worth knowing when you share what is in your address bar:
-
-- A relative window stays relative. A link on `-24h` means "the last 24 hours" whenever it is opened, not the 24 hours you were looking at.
-- An absolute window stays absolute, so a link to a specific incident keeps pointing at that incident.
 
 ## Limits
 

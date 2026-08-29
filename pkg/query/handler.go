@@ -22,6 +22,7 @@ import (
 	"bifract/pkg/fractals"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
+	"bifract/pkg/pgrcal"
 	"bifract/pkg/prisms"
 	"bifract/pkg/rbac"
 	"bifract/pkg/settings"
@@ -42,7 +43,13 @@ type QueryHandler struct {
 	auditFractalID    string
 	auditOnce         sync.Once
 	geoIPEnabled      bool
+	// pgrRecorder accumulates pgr() score distributions for severity calibration. Optional:
+	// nil in tools and tests, where calibration has no meaning.
+	pgrRecorder *pgrcal.Recorder
 }
+
+// SetPgrRecorder wires severity calibration. Set once at startup, before serving.
+func (h *QueryHandler) SetPgrRecorder(r *pgrcal.Recorder) { h.pgrRecorder = r }
 
 // newSearchID returns the ClickHouse query_id prefix for one search request.
 // Every query the request issues (result windows, histogram chunks) carries an id
@@ -139,6 +146,11 @@ type QueryRequest struct {
 	// before parsing (empty value -> "*"), so the raw @var form is what the
 	// editor and saved artifacts keep.
 	Variables json.RawMessage `json:"variables,omitempty"`
+	// Timezone pins the IANA zone that calendar-aligned buckets snap to,
+	// overriding the caller's own display zone. A document whose results are
+	// cached and shared (a notebook section) has to bucket in one zone for every
+	// reader; an ad-hoc search omits it and gets the viewer's zone.
+	Timezone string `json:"timezone,omitempty"`
 }
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
@@ -848,8 +860,9 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
 		// An ad-hoc query has one viewer and no cache to share, so its time
 		// buckets snap to that person's zone. An API key resolves to empty
-		// here, which is UTC.
-		DisplayTimezone: storage.DisplayTimezone(r.Context()),
+		// here, which is UTC. A request that pins a zone (a notebook section,
+		// whose results are cached and read by everyone) overrides that.
+		DisplayTimezone: requestTimezone(r.Context(), req.Timezone),
 	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source rather than filtering the
@@ -1214,8 +1227,9 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
 		// An ad-hoc query has one viewer and no cache to share, so its time
 		// buckets snap to that person's zone. An API key resolves to empty
-		// here, which is UTC.
-		DisplayTimezone: storage.DisplayTimezone(r.Context()),
+		// here, which is UTC. A request that pins a zone (a notebook section,
+		// whose results are cached and read by everyone) overrides that.
+		DisplayTimezone: requestTimezone(r.Context(), req.Timezone),
 	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{
@@ -2882,4 +2896,16 @@ func (h *QueryHandler) logQueryAudit(query, queryType, fractalID, username strin
 	if err := h.db.InsertLogs(ctx, []storage.LogEntry{entry}); err != nil {
 		log.Printf("[QueryHandler] Failed to write audit log: %v", err)
 	}
+}
+
+// requestTimezone resolves the zone a query's calendar-aligned buckets snap to.
+// An explicit, valid zone on the request wins; anything else falls back to the
+// caller's own display zone. An invalid zone is ignored rather than rejected:
+// the parser already degrades to UTC, and failing a whole search over a stale
+// zone name helps nobody.
+func requestTimezone(ctx context.Context, requested string) string {
+	if tz := strings.TrimSpace(requested); tz != "" && storage.ValidTimezone(tz) {
+		return tz
+	}
+	return storage.DisplayTimezone(ctx)
 }

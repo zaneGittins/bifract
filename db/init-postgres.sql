@@ -640,11 +640,14 @@ CREATE TABLE IF NOT EXISTS notebooks (
     max_results_per_section INTEGER DEFAULT 1000,
     fractal_id UUID NOT NULL REFERENCES fractals(id) ON DELETE CASCADE,
     variables JSONB DEFAULT '[]',
+    timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS variables JSONB DEFAULT '[]';
+-- Zone for calendar-aligned buckets; see migration 063.
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
 
 CREATE TABLE IF NOT EXISTS notebook_sections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -659,10 +662,13 @@ CREATE TABLE IF NOT EXISTS notebook_sections (
     chart_type VARCHAR(50),
     chart_config JSONB,
     tags TEXT[] DEFAULT '{}',
+    event_time TIMESTAMP,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ALTER TABLE notebook_sections ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
+-- When the section's subject happened, in UTC; see migration 064.
+ALTER TABLE notebook_sections ADD COLUMN IF NOT EXISTS event_time TIMESTAMP;
 
 -- Allow ai_summary and comment_context section types (for upgrades where table already exists with old constraint)
 ALTER TABLE notebook_sections DROP CONSTRAINT IF EXISTS notebook_sections_section_type_check;
@@ -690,6 +696,7 @@ CREATE INDEX IF NOT EXISTS idx_notebook_sections_order ON notebook_sections(note
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_type ON notebook_sections(section_type);
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_created_at ON notebook_sections(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_tags ON notebook_sections USING GIN (tags);
+CREATE INDEX IF NOT EXISTS idx_notebook_sections_event_time ON notebook_sections(notebook_id, event_time);
 
 CREATE INDEX IF NOT EXISTS idx_notebook_presence_notebook_id ON notebook_presence(notebook_id);
 CREATE INDEX IF NOT EXISTS idx_notebook_presence_last_seen ON notebook_presence(last_seen_at DESC);
@@ -959,11 +966,26 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS chat_pending_tool_calls (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    arguments JSONB NOT NULL,
+    requested_by VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL,
+    resolved_at TIMESTAMP,
+    decision VARCHAR(20)
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_fractal_id ON chat_conversations(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_created_by ON chat_conversations(created_by);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at ON chat_conversations(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_pending_tool_calls_open
+    ON chat_pending_tool_calls(conversation_id) WHERE resolved_at IS NULL;
 
 DROP TRIGGER IF EXISTS update_chat_conversations_updated_at ON chat_conversations;
 CREATE TRIGGER update_chat_conversations_updated_at BEFORE UPDATE ON chat_conversations
@@ -1166,6 +1188,15 @@ CREATE INDEX IF NOT EXISTS idx_normalizers_name ON normalizers(name);
 DROP TRIGGER IF EXISTS update_normalizers_updated_at ON normalizers;
 CREATE TRIGGER update_normalizers_updated_at BEFORE UPDATE ON normalizers
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Observed pgr() severity distribution, accumulated from real queries.
+-- Severity cutoffs are derived from this rather than hard-coded, so the share of edges an
+-- analyst sees as high stays where the admin set it across scoring-model changes.
+CREATE TABLE IF NOT EXISTS pgr_score_histogram (
+    bucket     SMALLINT PRIMARY KEY,
+    edge_count BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
 
 -- Seed the Bifract Default normalizer
 INSERT INTO normalizers (name, description, transforms, field_mappings, timestamp_fields, is_default, created_by)

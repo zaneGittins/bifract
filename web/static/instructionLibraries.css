@@ -129,17 +129,17 @@
 }
 
 .il-badge-manual {
-    background: rgba(156, 106, 222, 0.15);
+    background: color-mix(in srgb, var(--accent-secondary) 15%, transparent);
     color: var(--accent-secondary);
 }
 
 .il-badge-repo {
-    background: rgba(96, 165, 250, 0.15);
+    background: color-mix(in srgb, var(--info) 15%, transparent);
     color: var(--info);
 }
 
 .il-badge-default {
-    background: rgba(74, 222, 128, 0.15);
+    background: color-mix(in srgb, var(--success) 15%, transparent);
     color: var(--success);
 }
 
@@ -216,7 +216,7 @@
 }
 
 .il-pin-active {
-    background: rgba(156, 106, 222, 0.2);
+    background: color-mix(in srgb, var(--accent-secondary) 20%, transparent);
     color: var(--accent-secondary);
 }
 
@@ -422,7 +422,7 @@
 .cm-editor .hl-number     { color: var(--syntax-number); }
 .cm-editor .hl-boolean    { color: var(--syntax-keyword); font-weight: 500; }
 .cm-editor .hl-bracket    { color: var(--text-secondary); font-weight: 500; }
-.cm-editor .hl-regex      { color: #c084fc; font-weight: 500; }
+.cm-editor .hl-regex      { color: var(--syntax-regex); font-weight: 500; }
 .cm-editor .hl-wildcard   { color: var(--warning); font-weight: 600; }
 .cm-editor .hl-comment    { color: var(--syntax-comment); font-style: italic; }
 
@@ -568,7 +568,7 @@
 }
 
 [data-theme="light"] .il-form-group select {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%237a7268' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%236b6459' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
 }
 
 .il-form-group textarea {
@@ -612,7 +612,7 @@
     height: 15px;
     border: 1.5px solid var(--border-color);
     border-radius: 3px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     cursor: pointer;
     position: relative;
     flex-shrink: 0;
@@ -672,25 +672,6 @@
     border-radius: 3px;
 }
 
-/* Light theme badge adjustments */
-
-[data-theme="light"] .il-badge-manual {
-    background: rgba(37, 99, 181, 0.1);
-}
-
-[data-theme="light"] .il-badge-repo {
-    background: rgba(37, 99, 181, 0.1);
-}
-
-[data-theme="light"] .il-badge-default {
-    background: rgba(22, 163, 74, 0.1);
-}
-
-[data-theme="light"] .il-pin-active {
-    background: rgba(37, 99, 181, 0.12);
-    color: var(--accent-primary);
-}
-
 /* ============================================================
    Three-pane shell (Obsidian-like): tree | editor | context
    ============================================================ */
@@ -702,7 +683,7 @@
     display: grid;
     grid-template-columns: 264px minmax(0, 1fr) 288px;
     min-height: 0;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     overflow: hidden;
@@ -980,6 +961,7 @@
     padding: 0.15rem 0.1rem;
 }
 .il-title-input:focus { outline: none; }
+.il-title-input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: 4px; }
 .il-title-input::placeholder { color: var(--text-muted); }
 .il-title-static { flex: 1; font-size: 1rem; font-weight: 600; color: var(--text-primary); }
 
@@ -997,7 +979,7 @@
     margin: 0;
     border: none;
     border-radius: 0;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
 }
 .il-editor .il-cm-host:focus-within { box-shadow: none; }
 
@@ -1235,7 +1217,7 @@
 .il-view .hl-number     { color: var(--syntax-number); }
 .il-view .hl-boolean    { color: var(--syntax-keyword); font-weight: 500; }
 .il-view .hl-bracket    { color: var(--text-secondary); font-weight: 500; }
-.il-view .hl-regex      { color: #c084fc; font-weight: 500; }
+.il-view .hl-regex      { color: var(--syntax-regex); font-weight: 500; }
 .il-view .hl-wildcard   { color: var(--warning); font-weight: 600; }
 .il-view .hl-comment    { color: var(--syntax-comment); font-style: italic; }
 

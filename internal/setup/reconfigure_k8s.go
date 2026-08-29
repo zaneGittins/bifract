@@ -81,7 +81,7 @@ func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
 		}
 	} else if liveErr != "" {
 		printWarn(fmt.Sprintf("Could not read live cluster secrets: %s", liveErr))
-		printWarn("kubectl edit values will not be preserved — secrets.yaml is the source of truth")
+		printWarn("kubectl edit values will not be preserved; secrets.yaml is the source of truth")
 	}
 
 	// Parse existing settings from manifests

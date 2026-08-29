@@ -1518,6 +1518,7 @@ type Notebook struct {
 	FractalID             string          `json:"fractal_id,omitempty"`
 	PrismID               string          `json:"prism_id,omitempty"`
 	Variables             json.RawMessage `json:"variables"`
+	Timezone              string          `json:"timezone"`
 	CreatedBy             string          `json:"created_by"`
 	AuthorDisplayName     string          `json:"author_display_name"`
 	AuthorGravatarColor   string          `json:"author_gravatar_color"`
@@ -1540,8 +1541,11 @@ type NotebookSection struct {
 	ChartType       *string         `json:"chart_type,omitempty"`
 	ChartConfig     json.RawMessage `json:"chart_config,omitempty"`
 	Tags            []string        `json:"tags,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	// EventTime is when the section's subject happened, as opposed to CreatedAt
+	// which is when it was added. Nil when the section has no single point in time.
+	EventTime *time.Time `json:"event_time,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // NotebookPresence represents a user's presence in a notebook
@@ -1571,10 +1575,10 @@ func (c *PostgresClient) InsertNotebook(ctx context.Context, notebook Notebook) 
 	var newNotebook Notebook
 	var scanFractalID, scanPrismID sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO notebooks (name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, variables, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
-		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'), COALESCE(created_by, ''), created_at, updated_at
-	`, notebook.Name, notebook.Description, notebook.TimeRangeType, notebook.TimeRangeStart, notebook.TimeRangeEnd, notebook.MaxResultsPerSection, fractalIDPtr, prismIDPtr, string(varsJSON), NullableUser(notebook.CreatedBy)).Scan(
+		INSERT INTO notebooks (name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, variables, timezone, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
+		RETURNING id, name, description, time_range_type, time_range_start, time_range_end, max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'), timezone, COALESCE(created_by, ''), created_at, updated_at
+	`, notebook.Name, notebook.Description, notebook.TimeRangeType, notebook.TimeRangeStart, notebook.TimeRangeEnd, notebook.MaxResultsPerSection, fractalIDPtr, prismIDPtr, string(varsJSON), SafeTimezone(notebook.Timezone), NullableUser(notebook.CreatedBy)).Scan(
 		&newNotebook.ID,
 		&newNotebook.Name,
 		&newNotebook.Description,
@@ -1585,6 +1589,7 @@ func (c *PostgresClient) InsertNotebook(ctx context.Context, notebook Notebook) 
 		&scanFractalID,
 		&scanPrismID,
 		&newNotebook.Variables,
+		&newNotebook.Timezone,
 		&newNotebook.CreatedBy,
 		&newNotebook.CreatedAt,
 		&newNotebook.UpdatedAt,
@@ -1611,7 +1616,7 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 	err := c.db.QueryRowContext(ctx, `
 		SELECT n.id, n.name, COALESCE(n.description, ''), n.time_range_type, n.time_range_start, n.time_range_end,
 		       n.max_results_per_section, COALESCE(n.fractal_id::text, ''), COALESCE(n.prism_id::text, ''),
-		       COALESCE(n.variables, '[]'), COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       COALESCE(n.variables, '[]'), COALESCE(n.timezone, 'UTC'), COALESCE(n.created_by, ''), n.created_at, n.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
 		LEFT JOIN users u ON n.created_by = u.username
@@ -1627,6 +1632,7 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 		&notebook.FractalID,
 		&notebook.PrismID,
 		&notebook.Variables,
+		&notebook.Timezone,
 		&notebook.CreatedBy,
 		&notebook.CreatedAt,
 		&notebook.UpdatedAt,
@@ -1645,18 +1651,48 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 	return &notebook, nil
 }
 
-// GetNotebookByNameAndFractal finds a notebook by exact name within a fractal.
-// Returns nil, nil if not found.
-func (c *PostgresClient) GetNotebookByNameAndFractal(ctx context.Context, name, fractalID string) (*Notebook, error) {
+// notebookScopePredicate returns the WHERE fragment and argument selecting a
+// notebook scope. Exactly one of fractal_id/prism_id is set on every row (the
+// notebooks_scope_check constraint), and the columns are UUID, so an empty
+// string can never be bound: a prism caller passing its empty fractal id used to
+// make Postgres reject ” outright rather than match nothing.
+func notebookScopePredicate(alias, fractalID, prismID string) (string, interface{}, error) {
+	col := "fractal_id"
+	val := fractalID
+	if fractalID == "" {
+		col, val = "prism_id", prismID
+	}
+	if val == "" {
+		return "", nil, fmt.Errorf("notebook scope requires a fractal or prism id")
+	}
+	if alias != "" {
+		col = alias + "." + col
+	}
+	return col, val, nil
+}
+
+// notebookLikeEscaper neutralises LIKE wildcards in a user-supplied search term
+// so a name containing % or _ matches literally.
+var notebookLikeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// GetNotebookByNameAndScope finds a notebook by exact name within a fractal or a
+// prism. Returns nil, nil if not found.
+func (c *PostgresClient) GetNotebookByNameAndScope(ctx context.Context, name, fractalID, prismID string) (*Notebook, error) {
+	scopeCol, scopeVal, err := notebookScopePredicate("", fractalID, prismID)
+	if err != nil {
+		return nil, err
+	}
+
 	var notebook Notebook
 	var scanPrismID sql.NullString
-	err := c.db.QueryRowContext(ctx, `
+	var scanFractalID sql.NullString
+	err = c.db.QueryRowContext(ctx, `
 		SELECT id, name, description, time_range_type, time_range_start, time_range_end,
 		       max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'),
-		       COALESCE(created_by, ''), created_at, updated_at
+		       COALESCE(timezone, 'UTC'), COALESCE(created_by, ''), created_at, updated_at
 		FROM notebooks
-		WHERE name = $1 AND fractal_id = $2
-	`, name, fractalID).Scan(
+		WHERE name = $1 AND `+scopeCol+` = $2
+	`, name, scopeVal).Scan(
 		&notebook.ID,
 		&notebook.Name,
 		&notebook.Description,
@@ -1664,9 +1700,10 @@ func (c *PostgresClient) GetNotebookByNameAndFractal(ctx context.Context, name, 
 		&notebook.TimeRangeStart,
 		&notebook.TimeRangeEnd,
 		&notebook.MaxResultsPerSection,
-		&notebook.FractalID,
+		&scanFractalID,
 		&scanPrismID,
 		&notebook.Variables,
+		&notebook.Timezone,
 		&notebook.CreatedBy,
 		&notebook.CreatedAt,
 		&notebook.UpdatedAt,
@@ -1677,35 +1714,45 @@ func (c *PostgresClient) GetNotebookByNameAndFractal(ctx context.Context, name, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get notebook by name: %w", err)
 	}
+	notebook.FractalID = scanFractalID.String
 	notebook.PrismID = scanPrismID.String
-
 	return &notebook, nil
 }
 
-// GetNotebooksByFractal retrieves notebooks for a specific fractal with pagination
-func (c *PostgresClient) GetNotebooksByFractal(ctx context.Context, fractalID string, limit, offset int) ([]Notebook, int, error) {
-	// Get total count
-	var total int
-	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM notebooks WHERE fractal_id = $1
-	`, fractalID).Scan(&total)
+// GetNotebooksByScope retrieves notebooks for a fractal or a prism with
+// pagination. search, when non-empty, filters on name and description.
+func (c *PostgresClient) GetNotebooksByScope(ctx context.Context, fractalID, prismID, search string, limit, offset int) ([]Notebook, int, error) {
+	scopeCol, scopeVal, err := notebookScopePredicate("n", fractalID, prismID)
 	if err != nil {
+		return nil, 0, err
+	}
+
+	where := scopeCol + " = $1"
+	args := []interface{}{scopeVal}
+	if search = strings.TrimSpace(search); search != "" {
+		where += ` AND (n.name ILIKE $2 ESCAPE '\' OR COALESCE(n.description, '') ILIKE $2 ESCAPE '\')`
+		args = append(args, "%"+notebookLikeEscaper.Replace(search)+"%")
+	}
+
+	var total int
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM notebooks n WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count notebooks: %w", err)
 	}
 
-	// Get notebooks with pagination
+	// The scope column is selected through COALESCE so one scan target serves
+	// both shapes; the caller only ever reads back the scope it asked for.
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT n.id, n.name, n.description, n.time_range_type, n.time_range_start, n.time_range_end,
-		       n.max_results_per_section, n.fractal_id, COALESCE(n.variables, '[]'),
-		       COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       n.max_results_per_section, COALESCE(n.fractal_id::text, ''), COALESCE(n.prism_id::text, ''),
+		       COALESCE(n.variables, '[]'), COALESCE(n.timezone, 'UTC'), COALESCE(n.created_by, ''), n.created_at, n.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
 		LEFT JOIN users u ON n.created_by = u.username
-		WHERE n.fractal_id = $1
+		WHERE `+where+`
 		ORDER BY n.updated_at DESC
-		LIMIT $2 OFFSET $3
-	`, fractalID, limit, offset)
-
+		LIMIT `+fmt.Sprintf("$%d OFFSET $%d", len(args)+1, len(args)+2),
+		append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query notebooks: %w", err)
 	}
@@ -1714,7 +1761,7 @@ func (c *PostgresClient) GetNotebooksByFractal(ctx context.Context, fractalID st
 	var notebooks []Notebook
 	for rows.Next() {
 		var notebook Notebook
-		err := rows.Scan(
+		if err := rows.Scan(
 			&notebook.ID,
 			&notebook.Name,
 			&notebook.Description,
@@ -1723,77 +1770,29 @@ func (c *PostgresClient) GetNotebooksByFractal(ctx context.Context, fractalID st
 			&notebook.TimeRangeEnd,
 			&notebook.MaxResultsPerSection,
 			&notebook.FractalID,
-			&notebook.Variables,
-			&notebook.CreatedBy,
-			&notebook.CreatedAt,
-			&notebook.UpdatedAt,
-			&notebook.AuthorDisplayName,
-			&notebook.AuthorGravatarColor,
-			&notebook.AuthorGravatarInitial,
-		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan notebook: %w", err)
-		}
-		notebooks = append(notebooks, notebook)
-	}
-
-	return notebooks, total, nil
-}
-
-// GetNotebooksByPrism retrieves notebooks scoped to a prism with pagination.
-func (c *PostgresClient) GetNotebooksByPrism(ctx context.Context, prismID string, limit, offset int) ([]Notebook, int, error) {
-	var total int
-	err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notebooks WHERE prism_id = $1`, prismID).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count notebooks: %w", err)
-	}
-
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT n.id, n.name, n.description, n.time_range_type, n.time_range_start, n.time_range_end,
-		       n.max_results_per_section, n.prism_id, COALESCE(n.variables, '[]'),
-		       COALESCE(n.created_by, ''), n.created_at, n.updated_at,
-		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
-		FROM notebooks n
-		LEFT JOIN users u ON n.created_by = u.username
-		WHERE n.prism_id = $1
-		ORDER BY n.updated_at DESC
-		LIMIT $2 OFFSET $3
-	`, prismID, limit, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to query notebooks: %w", err)
-	}
-	defer rows.Close()
-
-	var notebooks []Notebook
-	for rows.Next() {
-		var notebook Notebook
-		err := rows.Scan(
-			&notebook.ID,
-			&notebook.Name,
-			&notebook.Description,
-			&notebook.TimeRangeType,
-			&notebook.TimeRangeStart,
-			&notebook.TimeRangeEnd,
-			&notebook.MaxResultsPerSection,
 			&notebook.PrismID,
 			&notebook.Variables,
+			&notebook.Timezone,
 			&notebook.CreatedBy,
 			&notebook.CreatedAt,
 			&notebook.UpdatedAt,
 			&notebook.AuthorDisplayName,
 			&notebook.AuthorGravatarColor,
 			&notebook.AuthorGravatarInitial,
-		)
-		if err != nil {
+		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan notebook: %w", err)
 		}
 		notebooks = append(notebooks, notebook)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate notebooks: %w", err)
+	}
+
 	return notebooks, total, nil
 }
 
 // UpdateNotebook updates a notebook's metadata
-func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, description, timeRangeType *string, timeRangeStart, timeRangeEnd *time.Time, maxResults *int) error {
+func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, description, timeRangeType, timezone *string, timeRangeStart, timeRangeEnd *time.Time, maxResults *int) error {
 	// Build dynamic query based on provided fields
 	setParts := []string{}
 	args := []interface{}{}
@@ -1827,6 +1826,11 @@ func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, de
 	if maxResults != nil {
 		setParts = append(setParts, fmt.Sprintf("max_results_per_section = $%d", argIndex))
 		args = append(args, *maxResults)
+		argIndex++
+	}
+	if timezone != nil {
+		setParts = append(setParts, fmt.Sprintf("timezone = $%d", argIndex))
+		args = append(args, SafeTimezone(*timezone))
 		argIndex++
 	}
 
@@ -1899,11 +1903,11 @@ func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section Note
 		tags = []string{}
 	}
 	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO notebook_sections (notebook_id, section_type, title, content, rendered_content, order_index, chart_type, chart_config, tags)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO notebook_sections (notebook_id, section_type, title, content, rendered_content, order_index, chart_type, chart_config, tags, event_time)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, notebook_id, section_type, title, content, rendered_content, order_index,
-		          last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), created_at, updated_at
-	`, section.NotebookID, section.SectionType, section.Title, section.Content, section.RenderedContent, section.OrderIndex, section.ChartType, section.ChartConfig, pq.Array(tags)).Scan(
+		          last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), event_time, created_at, updated_at
+	`, section.NotebookID, section.SectionType, section.Title, section.Content, section.RenderedContent, section.OrderIndex, section.ChartType, section.ChartConfig, pq.Array(tags), section.EventTime).Scan(
 		&newSection.ID,
 		&newSection.NotebookID,
 		&newSection.SectionType,
@@ -1916,6 +1920,7 @@ func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section Note
 		&newSection.ChartType,
 		&newSection.ChartConfig,
 		pq.Array(&newSection.Tags),
+		&newSection.EventTime,
 		&newSection.CreatedAt,
 		&newSection.UpdatedAt,
 	)
@@ -1931,10 +1936,10 @@ func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section Note
 func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID string) ([]NotebookSection, error) {
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT id, notebook_id, section_type, title, content, rendered_content, order_index,
-		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), created_at, updated_at
+		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), event_time, created_at, updated_at
 		FROM notebook_sections
 		WHERE notebook_id = $1
-		ORDER BY order_index ASC
+		ORDER BY order_index ASC, created_at ASC, id ASC
 	`, notebookID)
 
 	if err != nil {
@@ -1958,6 +1963,7 @@ func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID str
 			&section.ChartType,
 			&section.ChartConfig,
 			pq.Array(&section.Tags),
+			&section.EventTime,
 			&section.CreatedAt,
 			&section.UpdatedAt,
 		)
@@ -1970,12 +1976,68 @@ func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID str
 	return sections, nil
 }
 
+// notebookPreviewChars caps how much prose a section summary carries. The cut is
+// in characters, not bytes, so it cannot split a multibyte rune.
+const notebookPreviewChars = 240
+
+// NotebookSectionSummary is a section without its cached result payload.
+type NotebookSectionSummary struct {
+	ID          string     `json:"id"`
+	SectionType string     `json:"section_type"`
+	Title       *string    `json:"title,omitempty"`
+	OrderIndex  int        `json:"order_index"`
+	Tags        []string   `json:"tags,omitempty"`
+	EventTime   *time.Time `json:"event_time,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	HasResults  bool       `json:"has_results"`
+
+	// Content is complete for query and comment_context sections, whose content
+	// is the section's data rather than prose and is what a caller needs to
+	// reproduce it. For prose sections it is a preview and ContentTruncated says so.
+	Content          string `json:"content"`
+	ContentTruncated bool   `json:"content_truncated,omitempty"`
+}
+
+// GetNotebookSectionSummaries lists a notebook's sections without reading
+// last_results or rendered_content. A notebook holding a page of results per
+// query section is megabytes; anything that only needs the outline (the search
+// page's notebook rail) must not pay for that.
+func (c *PostgresClient) GetNotebookSectionSummaries(ctx context.Context, notebookID string) ([]NotebookSectionSummary, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT id, section_type, title, order_index, COALESCE(tags, '{}'), event_time, created_at,
+		       last_results IS NOT NULL AND last_results <> 'null'::jsonb,
+		       CASE WHEN section_type IN ('query', 'comment_context') THEN content ELSE left(content, $2) END,
+		       CASE WHEN section_type IN ('query', 'comment_context') THEN false ELSE length(content) > $2 END
+		FROM notebook_sections
+		WHERE notebook_id = $1
+		ORDER BY order_index ASC, created_at ASC, id ASC
+	`, notebookID, notebookPreviewChars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query notebook section summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := []NotebookSectionSummary{}
+	for rows.Next() {
+		var s NotebookSectionSummary
+		if err := rows.Scan(&s.ID, &s.SectionType, &s.Title, &s.OrderIndex, pq.Array(&s.Tags),
+			&s.EventTime, &s.CreatedAt, &s.HasResults, &s.Content, &s.ContentTruncated); err != nil {
+			return nil, fmt.Errorf("failed to scan notebook section summary: %w", err)
+		}
+		summaries = append(summaries, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read notebook section summaries: %w", err)
+	}
+	return summaries, nil
+}
+
 // GetNotebookSection retrieves a specific notebook section by ID
 func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID string) (*NotebookSection, error) {
 	var section NotebookSection
 	err := c.db.QueryRowContext(ctx, `
 		SELECT id, notebook_id, section_type, title, content, rendered_content, order_index,
-		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), created_at, updated_at
+		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), event_time, created_at, updated_at
 		FROM notebook_sections
 		WHERE id = $1
 	`, sectionID).Scan(
@@ -1991,6 +2053,7 @@ func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID strin
 		&section.ChartType,
 		&section.ChartConfig,
 		pq.Array(&section.Tags),
+		&section.EventTime,
 		&section.CreatedAt,
 		&section.UpdatedAt,
 	)
@@ -2003,6 +2066,20 @@ func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID strin
 	}
 
 	return &section, nil
+}
+
+// NextNotebookSectionOrderIndex returns the index that places a section after
+// the notebook's current last one. Concurrent appends can tie; ordering breaks
+// the tie by created_at so the result is still stable.
+func (c *PostgresClient) NextNotebookSectionOrderIndex(ctx context.Context, notebookID string) (int, error) {
+	var next int
+	err := c.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(order_index) + 1, 0) FROM notebook_sections WHERE notebook_id = $1
+	`, notebookID).Scan(&next)
+	if err != nil {
+		return 0, fmt.Errorf("failed to compute next section order index: %w", err)
+	}
+	return next, nil
 }
 
 // GetNotebookSectionTags returns all distinct tags used across sections of a notebook, sorted.
@@ -2034,35 +2111,55 @@ func (c *PostgresClient) GetNotebookSectionTags(ctx context.Context, notebookID 
 	return tags, nil
 }
 
+// NotebookSectionUpdate carries the fields a section update may change. A nil
+// field is left as it is; ClearEventTime is how a caller sets event_time back
+// to NULL, which a nil EventTime cannot express.
+type NotebookSectionUpdate struct {
+	Title           *string
+	Content         *string
+	RenderedContent *string
+	ChartConfig     *string
+	Tags            *[]string
+	EventTime       *time.Time
+	ClearEventTime  bool
+}
+
 // UpdateNotebookSection updates a notebook section
-func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID string, title *string, content *string, renderedContent *string, chartConfig *string, tags *[]string) error {
+func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID string, upd NotebookSectionUpdate) error {
 	setParts := []string{}
 	args := []interface{}{}
 	argIndex := 1
 
-	if title != nil {
+	if upd.Title != nil {
 		setParts = append(setParts, fmt.Sprintf("title = $%d", argIndex))
-		args = append(args, title)
+		args = append(args, upd.Title)
 		argIndex++
 	}
-	if content != nil {
+	if upd.Content != nil {
 		setParts = append(setParts, fmt.Sprintf("content = $%d", argIndex))
-		args = append(args, *content)
+		args = append(args, *upd.Content)
 		argIndex++
 	}
-	if renderedContent != nil {
+	if upd.RenderedContent != nil {
 		setParts = append(setParts, fmt.Sprintf("rendered_content = $%d", argIndex))
-		args = append(args, renderedContent)
+		args = append(args, upd.RenderedContent)
 		argIndex++
 	}
-	if chartConfig != nil {
+	if upd.ChartConfig != nil {
 		setParts = append(setParts, fmt.Sprintf("chart_config = $%d::jsonb", argIndex))
-		args = append(args, chartConfig)
+		args = append(args, upd.ChartConfig)
 		argIndex++
 	}
-	if tags != nil {
+	if upd.Tags != nil {
 		setParts = append(setParts, fmt.Sprintf("tags = $%d", argIndex))
-		args = append(args, pq.Array(*tags))
+		args = append(args, pq.Array(*upd.Tags))
+		argIndex++
+	}
+	if upd.ClearEventTime {
+		setParts = append(setParts, "event_time = NULL")
+	} else if upd.EventTime != nil {
+		setParts = append(setParts, fmt.Sprintf("event_time = $%d", argIndex))
+		args = append(args, *upd.EventTime)
 		argIndex++
 	}
 

@@ -314,3 +314,21 @@ func TestAnUnusableScopeIsReported(t *testing.T) {
 		})
 	}
 }
+
+// A scope id reaches an HTTP header, so anything that could break the header
+// framing must be refused before it gets there.
+func TestScopeIdsThatCouldInjectAHeaderAreRefused(t *testing.T) {
+	for _, bad := range []string{
+		"f-1\r\nX-Injected: yes",
+		"f-1\nSet-Cookie: a=b",
+		"f-1 with spaces",
+		"f-1:extra",
+		"../../etc/passwd",
+		"f-1<script>",
+	} {
+		env(t, validEnv(map[string]string{"BIFRACT_FRACTAL_ID": bad}))
+		if _, err := LoadConfig(); err == nil {
+			t.Errorf("%q was accepted as a scope id", bad)
+		}
+	}
+}

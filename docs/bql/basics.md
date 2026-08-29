@@ -12,6 +12,16 @@ filter | command() | command()
 - Chain commands with `|`
 - All queries run against the selected time range and fractal
 
+### Comments
+
+A line beginning with `//` is a comment and is stripped before the query runs. Comments must
+be on their own line; `//` after query text on the same line is not a comment.
+
+```
+// failed logons, busiest source first
+event_id=4625 | groupBy(src_ip, function=count()) | sort(_count, order=desc)
+```
+
 ## Filtering
 
 ### Match all logs
@@ -38,7 +48,7 @@ Append `i` for case-insensitive matching.
 
 ### Contains-any (`=~`)
 
-Case-insensitive substring match against a comma-separated list of terms. Faster than equivalent regex for multi-term searches — uses SIMD multi-pattern search internally and gains additional speed from text indexes when present.
+Case-insensitive substring match against a comma-separated list of terms. Faster than equivalent regex for multi-term searches: it uses SIMD multi-pattern search internally and gains additional speed from text indexes when present.
 
 ```
 image=~powershell,pwsh,cmd
@@ -143,6 +153,13 @@ Implicit AND: multiple conditions without an operator are ANDed together.
 event_id=1 image=/powershell/i
 ```
 
+Condition functions are operands like any other, so they group and negate the same way:
+
+```
+cidr(dst_ip, "10.0.0.0/8") OR cidr(dst_ip, "192.168.0.0/16")
+!in(status, "200,301") AND user=admin
+```
+
 ## Variables
 
 Search, notebooks, and dashboards support variables that act as placeholders in queries. Define variables in the variables bar, then reference them with `@` in any query:
@@ -151,4 +168,4 @@ Search, notebooks, and dashboards support variables that act as placeholders in 
 user=@target_user AND image=@process
 ```
 
-When the query runs, `@target_user` and `@process` are replaced with the values set in the variables bar. Variables default to `*` if no value is set. This lets you reuse the same notebook or dashboard across different investigations by changing variable values instead of editing every query.
+When the query runs, `@target_user` and `@process` are replaced with the values set in the variables bar. Variables default to `*` if no value is set, so a notebook or dashboard is reused across investigations by changing values instead of editing every query.

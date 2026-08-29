@@ -442,13 +442,32 @@ const Timeline = {
         this._drawBars(canvas, this._currentBuckets);
     },
 
+    // Coalesced to at most one redraw per animation frame, and skipped entirely
+    // when the width did not actually change.
+    //
+    // Both side panels are push layouts that animate their width over 250ms, so
+    // the results section (and this canvas with it) is resized continuously for
+    // the length of every open and close. Unthrottled, a ResizeObserver can fire
+    // several times per frame, and each notification ran a full canvas redraw.
+    // That is what made opening or closing either panel feel sluggish while
+    // clicking between rows, which resizes nothing, stayed fast.
     _setupResizeObserver(canvas) {
         if (this._resizeObserver) this._resizeObserver.disconnect();
+        if (this._resizeFrame) {
+            cancelAnimationFrame(this._resizeFrame);
+            this._resizeFrame = null;
+        }
+        this._lastDrawnWidth = canvas.offsetWidth;
 
         this._resizeObserver = new ResizeObserver(() => {
-            if (this._currentBuckets) {
+            if (!this._currentBuckets || this._resizeFrame) return;
+            this._resizeFrame = requestAnimationFrame(() => {
+                this._resizeFrame = null;
+                const width = canvas.offsetWidth;
+                if (!width || width === this._lastDrawnWidth) return;
+                this._lastDrawnWidth = width;
                 this._drawBars(canvas, this._currentBuckets);
-            }
+            });
         });
         this._resizeObserver.observe(canvas.parentElement);
     },

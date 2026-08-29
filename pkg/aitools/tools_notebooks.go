@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -8,27 +8,31 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerNotebookTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
+func registerNotebookTools(d *set) {
+	add(d, &mcp.Tool{
 		Name:        "list_notebooks",
+		Annotations: readOnly(),
 		Description: "List the notebooks in this fractal, with their metadata.",
 	}, listNotebooks)
 
-	register(s, c, &mcp.Tool{
+	add(d, &mcp.Tool{
 		Name:        "get_notebook",
+		Annotations: readOnly(),
 		Description: "Read a notebook and all of its sections, in order.",
 	}, getNotebook)
 
-	register(s, c, &mcp.Tool{
-		Name: "create_notebook",
+	add(d, &mcp.Tool{
+		Name:        "create_notebook",
+		Annotations: mutates(),
 		Description: "Create a notebook.\n\n" +
 			"Notebooks interleave markdown and live BQL queries, so an investigation stays " +
 			"reproducible: a reader can re-run each step rather than trust a pasted result.\n\n" +
 			"Returns the created notebook, including its id.",
 	}, createNotebook)
 
-	register(s, c, &mcp.Tool{
-		Name: "add_notebook_section",
+	add(d, &mcp.Tool{
+		Name:        "add_notebook_section",
+		Annotations: mutates(),
 		Description: "Append a section to a notebook.\n\n" +
 			"Returns the created section, including its id.",
 	}, addNotebookSection)
@@ -39,7 +43,7 @@ type listNotebooksArgs struct {
 	Offset int `json:"offset,omitempty" jsonschema:"Pagination offset."`
 }
 
-func listNotebooks(ctx context.Context, c *Client, in listNotebooksArgs) (any, error) {
+func listNotebooks(ctx context.Context, c Client, in listNotebooksArgs) (any, error) {
 	return c.Get(ctx, "/notebooks", url.Values{
 		"limit":  {strconv.Itoa(clamp(in.Limit, 20, 1, 100))},
 		"offset": {strconv.Itoa(max(0, in.Offset))},
@@ -50,7 +54,7 @@ type notebookIDArgs struct {
 	NotebookID string `json:"notebook_id" jsonschema:"The notebook UUID."`
 }
 
-func getNotebook(ctx context.Context, c *Client, in notebookIDArgs) (any, error) {
+func getNotebook(ctx context.Context, c Client, in notebookIDArgs) (any, error) {
 	return c.Get(ctx, "/notebooks/"+url.PathEscape(in.NotebookID), nil)
 }
 
@@ -61,7 +65,7 @@ type createNotebookArgs struct {
 	MaxResultsPerSection int    `json:"max_results_per_section,omitempty" jsonschema:"Row cap per query section. Default 1000."`
 }
 
-func createNotebook(ctx context.Context, c *Client, in createNotebookArgs) (any, error) {
+func createNotebook(ctx context.Context, c Client, in createNotebookArgs) (any, error) {
 	timeRange := in.TimeRangeType
 	if timeRange == "" {
 		timeRange = "24h"
@@ -87,7 +91,7 @@ type addNotebookSectionArgs struct {
 	Tags        []string `json:"tags,omitempty" jsonschema:"Tags for the section, for example ['timeline', 'lateral-movement']."`
 }
 
-func addNotebookSection(ctx context.Context, c *Client, in addNotebookSectionArgs) (any, error) {
+func addNotebookSection(ctx context.Context, c Client, in addNotebookSectionArgs) (any, error) {
 	path := "/notebooks/" + url.PathEscape(in.NotebookID)
 
 	// Appending needs the current length: the API places a section at an explicit
@@ -101,10 +105,10 @@ func addNotebookSection(ctx context.Context, c *Client, in addNotebookSectionArg
 			return nil, err
 		}
 		notebook := current
-		if nested := field[map[string]any](current, "notebook"); nested != nil {
+		if nested := Field[map[string]any](current, "notebook"); nested != nil {
 			notebook = nested
 		}
-		order = len(field[[]any](notebook, "sections"))
+		order = len(Field[[]any](notebook, "sections"))
 	}
 
 	body := map[string]any{

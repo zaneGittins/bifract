@@ -30,11 +30,15 @@ type Message struct {
 
 // StreamEvent is sent over SSE to the frontend.
 type StreamEvent struct {
-	Type       string      `json:"type"` // "token", "tool_call", "tool_result", "think", "chart", "present", "error", "title", "done"
+	Type       string      `json:"type"` // "token", "tool_call", "tool_result", "tool_confirm", "think", "chart", "present", "error", "title", "done"
 	Content    string      `json:"content,omitempty"`
 	ToolName   string      `json:"tool_name,omitempty"`
 	ToolArgs   interface{} `json:"tool_args,omitempty"`
 	ToolResult interface{} `json:"tool_result,omitempty"`
+	// PendingID identifies a tool call waiting on the user, for the request that
+	// answers it. It is the only thing the browser sends back: the arguments stay
+	// on the server so what was shown is what runs.
+	PendingID string `json:"pending_id,omitempty"`
 }
 
 // Instruction is a reusable system prompt configuration scoped to a fractal.
@@ -100,24 +104,16 @@ type llmStreamChoice struct {
 }
 
 type llmDelta struct {
-	Role      string          `json:"role"`
-	Content   *string         `json:"content"`
-	ToolCalls []llmToolCall   `json:"tool_calls,omitempty"`
-}
-
-type runQueryArgs struct {
-	Query      string `json:"query"`
-	TimeRange  string `json:"time_range,omitempty"`
-	StartTime  string `json:"start_time,omitempty"`
-	EndTime    string `json:"end_time,omitempty"`
-	PostFilter string `json:"post_filter,omitempty"`
+	Role      string        `json:"role"`
+	Content   *string       `json:"content"`
+	ToolCalls []llmToolCall `json:"tool_calls,omitempty"`
 }
 
 type presentResultsArgs struct {
-	Summary  string            `json:"summary"`
-	Findings []presentFinding  `json:"findings,omitempty"`
-	Severity string            `json:"severity,omitempty"` // "info", "warning", "critical"
-	Chart    *renderChartArgs  `json:"chart,omitempty"`
+	Summary  string           `json:"summary"`
+	Findings []presentFinding `json:"findings,omitempty"`
+	Severity string           `json:"severity,omitempty"` // "info", "warning", "critical"
+	Chart    *renderChartArgs `json:"chart,omitempty"`
 }
 
 type presentFinding struct {
@@ -126,10 +122,10 @@ type presentFinding struct {
 }
 
 type renderChartArgs struct {
-	ChartType string           `json:"chart_type"` // "bar", "line", "pie"
-	Title     string           `json:"title"`
-	Labels    []string         `json:"labels"`
-	Datasets  []chartDataset   `json:"datasets"`
+	ChartType string         `json:"chart_type"` // "bar", "line", "pie"
+	Title     string         `json:"title"`
+	Labels    []string       `json:"labels"`
+	Datasets  []chartDataset `json:"datasets"`
 }
 
 type chartDataset struct {

@@ -513,6 +513,105 @@
     word-break: break-word;
 }
 
+.chat-tool-note {
+    margin-top: 0.25rem;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+
+/* ---- Confirmation card (a write waiting on the user) ---- */
+
+.chat-confirm {
+    margin: 0.5rem 0;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid var(--border-color);
+    border-left: 2px solid var(--warning);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+}
+
+.chat-confirm.is-approved {
+    border-left-color: var(--success);
+}
+
+.chat-confirm.is-declined {
+    border-left-color: var(--text-muted);
+    opacity: 0.7;
+}
+
+.chat-confirm-head {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chat-confirm-note {
+    margin-top: 0.2rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.chat-confirm-args {
+    margin: 0.55rem 0 0;
+    padding: 0.5rem 0.6rem;
+    max-height: 190px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-color);
+    font-family: var(--font-mono);
+    font-size: 0.71rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.chat-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+}
+
+.chat-confirm-btn {
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-family: var(--font-main);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.chat-confirm-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.chat-confirm-approve {
+    border-color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 18%, transparent);
+    color: var(--text-primary);
+}
+
+.chat-confirm-approve:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-primary) 30%, transparent);
+}
+
+.chat-confirm-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.chat-confirm-outcome {
+    margin-top: 0.55rem;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
 /* ---- Mini table (tool results) ---- */
 
 .chat-mini-table-wrap {

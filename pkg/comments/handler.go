@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,14 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	// Validate input
 	if req.LogID == "" || req.Text == "" {
 		api.WriteError(w, http.StatusBadRequest, "log_id and text are required")
+		return
+	}
+
+	// log_id is a storage.GenerateLogID hash and reaches ClickHouse lookups from
+	// several call sites, so it is constrained to hex here rather than trusted to
+	// be quoted correctly downstream.
+	if !validLogID(req.LogID) {
+		api.WriteError(w, http.StatusBadRequest, "log_id must be a hexadecimal log identifier")
 		return
 	}
 
@@ -205,7 +214,6 @@ func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request
 
 // HandleUpdateComment updates a comment (author only)
 func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value("user").(*storage.User)
 	commentID := chi.URLParam(r, "id")
 
 	var req UpdateCommentRequest
@@ -226,8 +234,10 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Update comment
-	err := h.pg.UpdateComment(r.Context(), commentID, user.Username, req.Text, req.Tags)
+	// Ownership matches on what was written as the author, which for an API key is
+	// the person who created it, not the synthetic apikey_<id> principal. Matching
+	// on the principal meant a key could not edit or delete its own comments.
+	err := h.pg.UpdateComment(r.Context(), commentID, auth.AttributionUsername(r.Context()), req.Text, req.Tags)
 	if err != nil {
 		api.WriteError(w, http.StatusNotFound, "Failed to update comment (not found or unauthorized)")
 		return
@@ -249,10 +259,9 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 
 // HandleDeleteComment deletes a comment (author only)
 func (h *CommentHandler) HandleDeleteComment(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value("user").(*storage.User)
 	commentID := chi.URLParam(r, "id")
 
-	err := h.pg.DeleteComment(r.Context(), commentID, user.Username)
+	err := h.pg.DeleteComment(r.Context(), commentID, auth.AttributionUsername(r.Context()))
 	if err != nil {
 		api.WriteError(w, http.StatusNotFound, "Failed to delete comment (not found or unauthorized)")
 		return
@@ -416,7 +425,7 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 	}
 
 	scopeFractal, scopePrism := h.getScope(r)
-	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin, scopeFractal, scopePrism)
+	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk add tag failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to add tag")
@@ -462,7 +471,7 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 	}
 
 	scopeFractal, scopePrism := h.getScope(r)
-	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, user.Username, user.IsAdmin, scopeFractal, scopePrism)
+	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk remove tag failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to remove tag")
@@ -509,7 +518,7 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 	}
 
 	scopeFractal, scopePrism := h.getScope(r)
-	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, user.Username, user.IsAdmin, scopeFractal, scopePrism)
+	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk delete failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to delete comments")
@@ -637,4 +646,14 @@ func (h *CommentHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Reque
 	}
 
 	api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: logs})
+}
+
+// logIDPattern matches a storage.GenerateLogID value. The length is a range
+// rather than a fixed 32 so ids written by earlier hash widths still validate;
+// the character class is the part that matters.
+var logIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8,64}$`)
+
+// validLogID reports whether s is a well-formed log identifier.
+func validLogID(s string) bool {
+	return logIDPattern.MatchString(s)
 }

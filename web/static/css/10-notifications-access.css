@@ -168,7 +168,7 @@
 }
 
 .mapping-sources-modal {
-    background: var(--bg-primary);
+    background: var(--bg-raised);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 1.25rem;
@@ -430,7 +430,7 @@
 }
 
 .nz-raw-pane {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     padding: 10px 12px;
@@ -472,7 +472,7 @@
     overflow: auto;
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
 }
 
 .nz-out-table {
@@ -639,8 +639,8 @@
 }
 
 .alerts-sub-tab.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
 }
 
 .feed-tabs-row {
@@ -673,8 +673,8 @@
 }
 
 .feed-sub-tab.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
 }
 
 /* Feed Alerts Table */
@@ -692,7 +692,7 @@
 
 .feed-badge {
     background: var(--accent-bg, rgba(99,102,241,0.1));
-    color: var(--accent);
+    color: var(--accent-primary);
     padding: 0.15rem 0.5rem;
     border-radius: 4px;
     font-size: 0.75rem;
@@ -810,7 +810,7 @@
 }
 
 .feed-alert-toggle input:checked + .toggle-slider {
-    background: var(--accent);
+    background: var(--accent-primary);
 }
 
 .feed-alert-toggle input:checked + .toggle-slider::before {
@@ -1063,34 +1063,37 @@
     opacity: 0.85;
 }
 
+/* Tint and border are mixed from the same token as the ink, so the scale stays
+   self-consistent in both themes and needs no per-theme override. "High" is the
+   midpoint of error and warning, keeping the ramp sequential. */
 .severity-critical {
-    background: rgba(248, 113, 113, 0.15);
+    background: color-mix(in srgb, var(--error) 15%, transparent);
     color: var(--error);
-    border: 1px solid rgba(248, 113, 113, 0.3);
+    border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
 }
 
 .severity-high {
-    background: rgba(251, 146, 60, 0.15);
-    color: #fb923c;
-    border: 1px solid rgba(251, 146, 60, 0.3);
+    background: color-mix(in srgb, var(--severity-high) 15%, transparent);
+    color: var(--severity-high);
+    border: 1px solid color-mix(in srgb, var(--severity-high) 30%, transparent);
 }
 
 .severity-medium {
-    background: rgba(251, 191, 36, 0.15);
+    background: color-mix(in srgb, var(--warning) 15%, transparent);
     color: var(--warning);
-    border: 1px solid rgba(251, 191, 36, 0.3);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
 
 .severity-low {
-    background: rgba(96, 165, 250, 0.15);
+    background: color-mix(in srgb, var(--info) 15%, transparent);
     color: var(--info);
-    border: 1px solid rgba(96, 165, 250, 0.3);
+    border: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
 }
 
 .severity-informational {
-    background: rgba(148, 163, 184, 0.1);
+    background: color-mix(in srgb, var(--text-muted) 12%, transparent);
     color: var(--text-secondary);
-    border: 1px solid rgba(148, 163, 184, 0.2);
+    border: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
 }
 
 /* Label pills (clickable in table and detail panel) */
@@ -1100,9 +1103,9 @@
     border-radius: 3px;
     font-size: 0.65rem;
     font-weight: 500;
-    background: var(--bg-tertiary);
-    color: var(--chip-color, var(--text-secondary));
-    border: 1px solid var(--chip-color, var(--border-color));
+    background: color-mix(in srgb, var(--chip-color, var(--border-color)) 13%, var(--bg-tertiary));
+    color: var(--text-primary);
+    border: 1px solid color-mix(in srgb, var(--chip-color, var(--border-color)) 55%, transparent);
     cursor: pointer;
     transition: var(--transition);
     max-width: 140px;
@@ -1151,9 +1154,9 @@
     border-radius: 3px;
     font-size: 0.65rem;
     font-weight: 500;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--chip-color, var(--border-color));
-    color: var(--chip-color, var(--text-secondary));
+    background: color-mix(in srgb, var(--chip-color, var(--border-color)) 13%, var(--bg-tertiary));
+    border: 1px solid color-mix(in srgb, var(--chip-color, var(--border-color)) 55%, transparent);
+    color: var(--text-primary);
     cursor: pointer;
     transition: opacity 0.15s;
     white-space: nowrap;
@@ -1273,9 +1276,9 @@
     border-radius: 10px;
     font-size: 0.68rem;
     cursor: pointer;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--chip-color, var(--border-color));
-    color: var(--chip-color, var(--text-secondary));
+    background: color-mix(in srgb, var(--chip-color, var(--border-color)) 13%, var(--bg-tertiary));
+    border: 1px solid color-mix(in srgb, var(--chip-color, var(--border-color)) 55%, transparent);
+    color: var(--text-primary);
     transition: opacity 0.15s, background 0.15s, color 0.15s;
     white-space: nowrap;
     user-select: none;
@@ -1286,9 +1289,9 @@
 }
 
 .filter-chip.active {
-    background: var(--chip-color, var(--accent-primary));
+    background: color-mix(in srgb, var(--chip-color, var(--accent-primary)) 30%, var(--bg-tertiary));
     border-color: var(--chip-color, var(--accent-primary));
-    color: #fff;
+    color: var(--text-primary);
     opacity: 1;
 }
 
@@ -1332,45 +1335,6 @@
 }
 
 /* Light theme severity overrides */
-[data-theme="light"] .severity-critical {
-    background: rgba(220, 38, 38, 0.1);
-    color: var(--error);
-    border-color: rgba(220, 38, 38, 0.25);
-}
-
-[data-theme="light"] .severity-high {
-    background: rgba(234, 88, 12, 0.1);
-    color: #ea580c;
-    border-color: rgba(234, 88, 12, 0.25);
-}
-
-[data-theme="light"] .severity-medium {
-    background: rgba(180, 83, 9, 0.1);
-    color: var(--warning);
-    border-color: rgba(180, 83, 9, 0.25);
-}
-
-[data-theme="light"] .severity-low {
-    background: rgba(37, 99, 235, 0.1);
-    color: var(--info);
-    border-color: rgba(37, 99, 235, 0.25);
-}
-
-[data-theme="light"] .severity-informational {
-    background: rgba(100, 116, 139, 0.08);
-    color: var(--text-secondary);
-    border-color: rgba(100, 116, 139, 0.2);
-}
-
-[data-theme="light"] .label-pill {
-    background: var(--bg-tertiary);
-    border-color: var(--chip-color, var(--border-color));
-}
-
-[data-theme="light"] .label-pill:hover {
-    opacity: 0.75;
-}
-
 @media (max-width: 768px) {
     .form-row-2col {
         grid-template-columns: 1fr;
@@ -1477,7 +1441,7 @@
 
 .inline-edit-input {
     width: 100%;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--accent-primary);
     border-radius: 4px;
     padding: 1px 4px;
@@ -1563,7 +1527,7 @@
     margin-left: auto;
     border: 1.5px solid var(--border-color);
     border-radius: 3px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     cursor: pointer;
     position: relative;
     flex-shrink: 0;
@@ -1892,10 +1856,10 @@
 .lifecycle-warning {
     margin-top: 0.375rem;
     padding: 0.375rem 0.5rem;
-    background: rgba(251, 191, 36, 0.1);
-    border-left: 2px solid rgba(251, 191, 36, 0.6);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    border-left: 2px solid color-mix(in srgb, var(--warning) 60%, transparent);
     border-radius: 0 4px 4px 0;
-    color: #fbbf24;
+    color: var(--warning);
     font-size: 0.75rem;
 }
 
@@ -2054,7 +2018,7 @@
 /* Children (expanded group contents) */
 
 .archive-children {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
 }
 
 .archive-child-row {
@@ -2104,19 +2068,19 @@
 }
 
 .archive-badge-info {
-    background: rgba(96, 165, 250, 0.12);
-    color: #60a5fa;
+    background: color-mix(in srgb, var(--info) 12%, transparent);
+    color: var(--info);
 }
 
 .archive-badge-error {
-    background: rgba(248, 113, 113, 0.12);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
     color: var(--error);
     cursor: help;
 }
 
 .archive-badge-warning {
-    background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    color: var(--warning);
     cursor: help;
 }
 
@@ -2183,7 +2147,7 @@
     width: 100%;
     padding: 0.4rem 0.6rem;
     font-size: 0.8125rem;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -2200,7 +2164,7 @@
 }
 
 .archive-restore-checkbox input[type="checkbox"] {
-    accent-color: var(--accent);
+    accent-color: var(--accent-primary);
 }
 
 .archive-restore-actions {

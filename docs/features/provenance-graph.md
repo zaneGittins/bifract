@@ -2,6 +2,8 @@
 
 The provenance graph (`pgr()`) reconstructs what a suspicious process did and cuts it down to what matters. Point it at a single process and it rebuilds the spawn tree, scores every file, network, DNS, and injection action by how unusual it is, and prunes the everyday noise, so a handful of suspicious actions surface instead of thousands of raw events to sift through.
 
+![Provenance graph of a process tree](../images/pgr.png)
+
 ## Enabling it
 
 Provenance requires baselines built from your endpoint logs, so it is **off by default**. An admin turns it on under **Admin > Settings > Features > Endpoint behavioral analytics**.

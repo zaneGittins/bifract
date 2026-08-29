@@ -1,6 +1,6 @@
 # Welcome to Bifract
 
-Bifract is an open source log management, detection, and collaboration platform. 
+Bifract is an open source log management, detection, and collaboration platform.
 
 ## Where to Start
 

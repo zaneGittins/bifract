@@ -317,17 +317,17 @@
 
 .tag-important {
     background: var(--accent-tertiary);
-    color: white;
+    color: var(--bg-primary);
 }
 
 .tag-todo {
-    background: #fbbf24;
-    color: #1a1a2e;
+    background: var(--warning);
+    color: var(--bg-primary);
 }
 
 .tag-resolved {
-    background: #4ade80;
-    color: white;
+    background: var(--success);
+    color: var(--bg-primary);
 }
 
 .comment-text {
@@ -422,7 +422,7 @@
 
 .comment-textarea {
     width: 100%;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     padding: 0.5rem;
@@ -465,7 +465,7 @@
 /* Comment Edit Mode */
 .comment-edit-input {
     width: 100%;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     padding: 0.5rem;
@@ -598,7 +598,7 @@
     height: 15px;
     border: 1.5px solid var(--border-color);
     border-radius: 3px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     cursor: pointer;
     position: relative;
     flex-shrink: 0;

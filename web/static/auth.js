@@ -29,6 +29,13 @@ const ThemeManager = {
         // Update toggle icon
         this.updateIcon();
 
+        // Drop the cached palette before the nudge, or every listener redraws
+        // itself in the colours of the theme just left.
+        this.clearCSSVarCache();
+
+        // Charts resolve their colours at render time, so they need a nudge.
+        window.dispatchEvent(new Event('bifract:themechange'));
+
         // Remove transition class after animation completes
         setTimeout(() => document.body.classList.remove('theme-transitioning'), 350);
     },
@@ -45,9 +52,27 @@ const ThemeManager = {
         }
     },
 
-    // Read a CSS variable value (for JS chart/canvas use)
+    // Read a CSS variable value (for JS chart/canvas use).
+    //
+    // Cached, because getComputedStyle forces a synchronous style recalculation
+    // and canvas redraw paths call this once per colour they need. The timeline
+    // asked for seven per redraw, and its ResizeObserver fires throughout the
+    // 250ms width animation of either side panel: that was several dozen forced
+    // recalcs per panel open. These are theme tokens, so the cache only has to
+    // survive until the theme changes.
+    _cssVarCache: new Map(),
+
     getCSSVar(name) {
-        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        let value = this._cssVarCache.get(name);
+        if (value === undefined) {
+            value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+            this._cssVarCache.set(name, value);
+        }
+        return value;
+    },
+
+    clearCSSVarCache() {
+        this._cssVarCache.clear();
     }
 };
 

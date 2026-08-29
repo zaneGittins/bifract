@@ -912,6 +912,15 @@ const CommentedLogs = {
         if (modal) modal.remove();
     },
 
+    postGenerateNotebook(tag, attackChain, overwrite) {
+        return fetch('/api/v1/notebooks/generate-from-comments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ tag: tag, attack_chain: attackChain, overwrite: overwrite })
+        });
+    },
+
     async handleGenerateNotebook(event) {
         event.preventDefault();
 
@@ -928,14 +937,22 @@ const CommentedLogs = {
         }
 
         try {
-            const response = await fetch('/api/v1/notebooks/generate-from-comments', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ tag: tag, attack_chain: attackChain })
-            });
+            let response = await this.postGenerateNotebook(tag, attackChain, false);
+            let data = await response.json();
 
-            const data = await response.json();
+            // 409 means a notebook of this name already exists. Regenerating
+            // replaces it wholesale, so the discard is confirmed before retrying.
+            if (response.status === 409 && data.data && data.data.conflict) {
+                if (!confirm(`"${data.data.name}" already exists.\n\nRegenerating replaces it and permanently discards any sections added to it since it was last generated.\n\nReplace it?`)) {
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Generate';
+                    }
+                    return;
+                }
+                response = await this.postGenerateNotebook(tag, attackChain, true);
+                data = await response.json();
+            }
 
             if (data.success) {
                 this.closeGenerateNotebookModal();

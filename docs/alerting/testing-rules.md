@@ -49,7 +49,7 @@ Exit codes: `0` all passed, `1` one or more failed, `2` could not run.
 
 Give each detection a folder holding its rule, its test, and its sample events:
 
-```
+```text
 detections/
 ├── normalizers/
 │   └── sysmon.yaml                 # exported from Settings -> Normalizers
@@ -140,7 +140,7 @@ case per file, as above.
 
 Output reports the ratio, and a failure names the event that broke:
 
-```
+```text
   PASS every known true positive fires (4/4 logs matched)
   FAIL every known true positive fires
        log 2: expected the rule to trigger, but it returned no rows
@@ -204,7 +204,7 @@ than no gate at all.
 
 ---
 
-# CI/CD setup
+## CI/CD setup
 
 The pattern is the same everywhere: run a ClickHouse alongside the job and point `--test` at
 it. Startup is a one-time cost of roughly ten seconds; after that thousands of cases are one
@@ -213,7 +213,7 @@ insert and one query each.
 Use the same ClickHouse version your deployment runs. That is
 `clickhouse/clickhouse-server:26.6.2.81-alpine` in the shipped `docker-compose.yml`.
 
-## GitHub Actions
+### GitHub Actions
 
 ```yaml
 name: Detections
@@ -270,7 +270,7 @@ Service containers are Linux-only on GitHub Actions. The tester provisions the B
 itself, so the service needs no initialization, and it waits for ClickHouse to accept queries
 before running, so the `--health-cmd` options above are belt-and-braces rather than required.
 
-## GitLab CI
+### GitLab CI
 
 ```yaml
 stages: [lint, test]
@@ -313,7 +313,7 @@ test-detections:
 The one difference from GitHub Actions: GitLab services are reachable by their `alias`
 hostname, so use `clickhouse:9000` rather than `localhost:9000`.
 
-## Without a service container
+### Without a service container
 
 If `--clickhouse` is omitted the tester starts its own container and removes it afterwards.
 This needs Docker in the job, and is slower because the database boots serially rather than
@@ -323,7 +323,7 @@ alongside checkout:
 - run: ./bifract --test ./detections/
 ```
 
-## Configuring via environment
+### Configuring via environment
 
 Useful when the endpoint differs per environment and you do not want it in the command:
 
@@ -333,7 +333,7 @@ Useful when the endpoint differs per environment and you do not want it in the c
 | `BIFRACT_TEST_CH_USER` | `--ch-user` |
 | `BIFRACT_TEST_CH_PASSWORD` | `--ch-password` |
 
-## Output formats
+### Output formats
 
 | `--format` | Use |
 |---|---|
@@ -341,7 +341,7 @@ Useful when the endpoint differs per environment and you do not want it in the c
 | `junit` | JUnit XML. Both GitHub and GitLab render per-case results from it. |
 | `json` | Full structured results for custom tooling. |
 
-## Recommended pipeline shape
+### Recommended pipeline shape
 
 1. **`--lint` on every push.** Seconds, no database, catches malformed rules and bad field
    references early.

@@ -186,3 +186,128 @@ func chunkStrings(s []string, size int) [][]string {
 func (c *ClickHouseClient) ParseLogFields(ctx context.Context, fieldsStr string) map[string]interface{} {
 	return c.parseLogFields(ctx, fieldsStr)
 }
+
+// commentLogChunkSize bounds how many log_ids go into a single display-row IN list.
+const commentLogChunkSize = 500
+
+// displayWindowSlack widens the event-time window. The caller's bound comes from
+// a denormalized copy of the event time (comments.log_timestamp), which has been
+// through a JSON round trip and a Postgres column of different precision, so an
+// exact match is not something to bet a lookup on.
+const displayWindowSlack = time.Minute
+
+// GetLogDisplayRowsByIDs batch-fetches display rows (timestamp, log_id, and
+// norm_log as fields) for a set of log ids, keyed by log_id. Rows that cannot be
+// found are absent from the returned map.
+//
+// from/to bound the event timestamp, which leads the logs ORDER BY, so the
+// lookup prunes granules rather than bloom-checking every granule of every
+// partition in the fractal. The bound is an optimisation, never a filter the
+// caller asked for: any id the bounded pass misses is retried unbounded, so a
+// drifted or wrong window costs an extra query rather than silently losing a
+// log. A zero window skips straight to the unbounded pass.
+func (c *ClickHouseClient) GetLogDisplayRowsByIDs(ctx context.Context, fractalID string, logIDs []string, from, to time.Time) (map[string]map[string]interface{}, error) {
+	ids := dedupeLogIDs(logKeysFromIDs(logIDs))
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Prefetch is background work behind a user action and must never starve
+	// interactive queries, same rationale as HydrateLogFields.
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.applyQuerySettings(ctx, clickhouse.Settings{
+		"priority":       5,
+		"max_query_size": maxGeneratedQuerySize,
+	})))
+
+	out := make(map[string]map[string]interface{}, len(ids))
+
+	if !from.IsZero() && !to.IsZero() {
+		if err := c.fetchLogDisplayRows(ctx, out, fractalID, ids,
+			from.Add(-displayWindowSlack), to.Add(displayWindowSlack)); err != nil {
+			return nil, err
+		}
+		ids = missingLogIDs(ids, out)
+		if len(ids) == 0 {
+			return out, nil
+		}
+	}
+
+	if err := c.fetchLogDisplayRows(ctx, out, fractalID, ids, time.Time{}, time.Time{}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// fetchLogDisplayRows runs the chunked lookup for one window and merges the rows
+// it finds into out. A zero from/to omits the event-time predicate.
+func (c *ClickHouseClient) fetchLogDisplayRows(ctx context.Context, out map[string]map[string]interface{}, fractalID string, ids []string, from, to time.Time) error {
+	bounded := !from.IsZero() && !to.IsZero()
+
+	query := "SELECT timestamp, log_id, norm_log AS fields FROM " + c.ReadTable() + " WHERE log_id IN (?)"
+	if fractalID != "" {
+		query += " AND fractal_id = ?"
+	}
+	if bounded {
+		query += " AND timestamp >= toDateTime64(?, 3, 'UTC') AND timestamp <= toDateTime64(?, 3, 'UTC')"
+	}
+	// Guards against re-ingested duplicate log_ids, matching HydrateLogFields.
+	query += " LIMIT 1 BY log_id"
+
+	for _, chunk := range chunkStrings(ids, commentLogChunkSize) {
+		args := []interface{}{chunk}
+		if fractalID != "" {
+			args = append(args, fractalID)
+		}
+		if bounded {
+			args = append(args, chTimeArg(from), chTimeArg(to))
+		}
+		if err := c.collectLogDisplayRows(ctx, out, query, args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// missingLogIDs returns the ids that found no row.
+func missingLogIDs(ids []string, found map[string]map[string]interface{}) []string {
+	var out []string
+	for _, id := range ids {
+		if _, ok := found[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// collectLogDisplayRows runs one display-row query and merges its rows into out.
+func (c *ClickHouseClient) collectLogDisplayRows(ctx context.Context, out map[string]map[string]interface{}, query string, args []interface{}) error {
+	rows, err := c.conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("fetch log display rows: %w", err)
+	}
+	defer rows.Close()
+
+	columnTypes := rows.ColumnTypes()
+	for rows.Next() {
+		row, err := scanRowMap(columnTypes, rows)
+		if err != nil {
+			return fmt.Errorf("fetch log display rows scan: %w", err)
+		}
+		if id, ok := row["log_id"].(string); ok && id != "" {
+			out[id] = row
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("fetch log display rows iterate: %w", err)
+	}
+	return nil
+}
+
+// logKeysFromIDs adapts a plain id list to the LogKey shape dedupeLogIDs takes.
+func logKeysFromIDs(ids []string) []LogKey {
+	keys := make([]LogKey, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, LogKey{LogID: id})
+	}
+	return keys
+}

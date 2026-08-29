@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 
+	"bifract/pkg/aitools"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -55,17 +57,8 @@ func New(c *Client) *mcp.Server {
 		&mcp.Implementation{Name: "bifract", Version: Version},
 		&mcp.ServerOptions{Instructions: instructions},
 	)
-	registerQueryTools(s, c)
-	registerAlertTools(s, c)
-	registerCatalogTools(s, c)
-	registerDictionaryTools(s, c)
-	registerCommentTools(s, c)
-	registerNotebookTools(s, c)
-	registerModelTools(s, c)
-	registerAttackTools(s, c)
-	registerRecallTools(s, c)
-	registerInstructionTools(s, c)
-	registerProvenanceTools(s, c)
+	aitools.Serve(s, c, aitools.All())
+	addContextTool(s, c)
 	return s
 }
 

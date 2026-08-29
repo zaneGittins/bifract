@@ -167,6 +167,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		MaxAge:           300,
 	}))
 
+	// Chat tools are served back through this same router, as the user whose
+	// request is in flight, so they pass every guard a browser request passes.
+	if d.chatHandler != nil {
+		d.chatHandler.SetRouter(mux)
+	}
+
 	// API routes
 	r := api.NewRouter(mux, reg)
 	r.Route("/api/v1", func(r api.Router) {
@@ -487,6 +493,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: settings.SettingsResponse{},
 				Summary:  "Update the instance settings.",
 				Handler:  d.settingsHandler.HandleUpdate,
+			})
+
+			r.Register(api.Route{
+				Method:  http.MethodGet,
+				Path:    "/system/pgr-calibration",
+				Access:  api.AccessTenantAdmin,
+				Summary: "Report pgr() severity calibration: derived cutoffs, observed distribution, and baseline maturity.",
+				Handler: d.handlePgrCalibration,
 			})
 
 			// Iceberg archive status + enable toggle (admin only).
@@ -1008,6 +1022,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.notebookHandler.HandleGetNotebook,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/notebooks/{id}/summary",
+					Access:   api.AccessViewer,
+					Response: notebooks.Response{},
+					Summary:  "Read one notebook's outline without its cached query results.",
+					Handler:  d.notebookHandler.HandleGetNotebookSummary,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPut,
 					Path:     "/notebooks/{id}",
 					Access:   api.AccessViewer,
@@ -1357,7 +1379,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:   http.MethodPut,
 					Path:     "/alerts/{id}",
-					Access:   api.AccessViewer,
+					Access:   api.AccessAnalyst,
 					Request:  alerts.AlertUpdateRequest{},
 					Response: api.Response[*alerts.Alert]{},
 					Summary:  "Update an alert.",
@@ -1366,7 +1388,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				r.Register(api.Route{
 					Method:  http.MethodDelete,
 					Path:    "/alerts/{id}",
-					Access:  api.AccessViewer,
+					Access:  api.AccessAnalyst,
 					Summary: "Delete an alert.",
 					Handler: d.alertHandler.HandleDeleteAlert,
 				})
@@ -2625,6 +2647,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Request:  chat.StreamMessageRequest{},
 					Summary:  "Send a message and stream the reply.",
 					Handler:  d.chatHandler.HandleStream,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/chat/conversations/{id}/tool-calls/{callId}/stream",
+					Produces: "text/event-stream",
+					Access:   api.AccessViewer,
+					Request:  chat.ResolveToolCallRequest{},
+					Summary:  "Approve or decline a tool call the assistant proposed, and stream the rest of the reply.",
+					Handler:  d.chatHandler.HandleResolveToolCall,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodPatch,

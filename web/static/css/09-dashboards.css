@@ -302,7 +302,7 @@
 }
 
 .widget-btn:hover {
-    background: var(--bg-secondary);
+    background: var(--bg-hover);
     color: var(--text-primary);
 }
 
@@ -369,7 +369,7 @@
     height: 36px;
     flex-shrink: 0;
     overflow: hidden;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border-bottom: 1px solid var(--border-color);
 }
 
@@ -1179,7 +1179,7 @@
     font-size: 0.7rem;
     padding: 2px 5px 2px 7px;
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     color: var(--text-secondary);
     max-width: 100%;

@@ -96,8 +96,16 @@ const App = {
             LogDetail.init();
         }
 
+        if (window.RailPanel) {
+            RailPanel.init();
+        }
+
         if (window.FieldStats) {
             FieldStats.init();
+        }
+
+        if (window.NotebookRail) {
+            NotebookRail.init();
         }
 
         if (window.QueryPalette) {
@@ -180,10 +188,6 @@ const App = {
         // Initialize performance module
         if (window.Performance) {
             Performance.init();
-        }
-
-        if (window.SendToNotebook) {
-            SendToNotebook.init();
         }
 
         if (window.ContextLinks) {
@@ -520,6 +524,14 @@ const App = {
                 if (window.QueryExecutor) {
                     QueryExecutor.runOrCancel();
                 }
+            });
+        }
+
+        // Send the current query to the active notebook.
+        const sendToNotebookBtn = document.getElementById('sendToNotebookBtn');
+        if (sendToNotebookBtn) {
+            sendToNotebookBtn.addEventListener('click', () => {
+                if (window.NotebookRail) NotebookRail.captureCurrentQuery();
             });
         }
 
@@ -1605,157 +1617,6 @@ const App = {
     }
 };
 
-// Send to Notebook module
-const SendToNotebook = {
-    init() {
-        const btn = document.getElementById('sendToNotebookBtn');
-        if (btn) {
-            btn.addEventListener('click', () => this.open());
-        }
-    },
-
-    open() {
-        const query = document.getElementById('queryInput')?.value?.trim();
-        if (!query) {
-            if (window.Toast) Toast.show('Enter a query first', 'warning');
-            return;
-        }
-
-        const modalHtml = `
-            <div id="sendToNotebookModal" class="modal-overlay">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h3>Send to Notebook</h3>
-                        <button class="modal-close" id="sendToNotebookCloseBtn">&times;</button>
-                    </div>
-                    <div style="padding: 16px 24px 0;">
-                        <input type="text" id="sendToNotebookSearch" class="dropdown-search"
-                            placeholder="Search notebooks..." style="width: 100%; margin-bottom: 12px;" />
-                    </div>
-                    <div id="sendToNotebookList" class="stn-list" style="padding: 0 24px 24px;">
-                        <div class="stn-loading">Loading notebooks...</div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-        const modal = document.getElementById('sendToNotebookModal');
-        if (modal) {
-            modal.addEventListener('click', (e) => {
-                if (e.target === modal) this.close();
-            });
-        }
-
-        const closeBtn = document.getElementById('sendToNotebookCloseBtn');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', () => this.close());
-        }
-
-        this._escHandler = (e) => {
-            if (e.key === 'Escape') this.close();
-        };
-        document.addEventListener('keydown', this._escHandler);
-
-        const searchInput = document.getElementById('sendToNotebookSearch');
-        if (searchInput) {
-            searchInput.focus();
-            let timer;
-            searchInput.addEventListener('input', (e) => {
-                clearTimeout(timer);
-                timer = setTimeout(() => this.loadNotebooks(e.target.value), 300);
-            });
-        }
-
-        this.loadNotebooks('');
-    },
-
-    close() {
-        const modal = document.getElementById('sendToNotebookModal');
-        if (modal) modal.remove();
-        if (this._escHandler) {
-            document.removeEventListener('keydown', this._escHandler);
-            this._escHandler = null;
-        }
-    },
-
-    async loadNotebooks(search) {
-        const list = document.getElementById('sendToNotebookList');
-        if (!list) return;
-
-        try {
-            const params = new URLSearchParams({ limit: 50, offset: 0 });
-            if (search) params.append('search', search);
-
-            const response = await fetch(`/api/v1/notebooks?${params.toString()}`, {
-                method: 'GET',
-                credentials: 'include'
-            });
-            const data = await response.json();
-
-            if (!data.success) throw new Error(data.error || 'Failed to load notebooks');
-
-            const notebooks = data.data || [];
-            if (notebooks.length === 0) {
-                list.innerHTML = '<div class="stn-empty">No notebooks found</div>';
-                return;
-            }
-
-            list.innerHTML = notebooks.map(nb => `
-                <div class="stn-item" onclick="SendToNotebook.selectNotebook('${nb.id}', '${Utils.escapeHtml(nb.name).replace(/'/g, "\\'")}')">
-                    <div class="stn-item-name">${Utils.escapeHtml(nb.name)}</div>
-                    ${nb.description ? `<div class="stn-item-desc">${Utils.escapeHtml(nb.description)}</div>` : ''}
-                </div>
-            `).join('');
-        } catch (err) {
-            list.innerHTML = `<div class="stn-empty" style="color: var(--error);">Error: ${err.message}</div>`;
-        }
-    },
-
-    async selectNotebook(notebookId, notebookName) {
-        const query = document.getElementById('queryInput')?.value?.trim();
-        if (!query) {
-            this.close();
-            return;
-        }
-
-        try {
-            // Fetch notebook to get section count for order_index
-            const nbResponse = await fetch(`/api/v1/notebooks/${notebookId}`, {
-                method: 'GET',
-                credentials: 'include'
-            });
-            const nbData = await nbResponse.json();
-            if (!nbData.success) throw new Error(nbData.error || 'Failed to load notebook');
-
-            const sections = nbData.data?.sections || [];
-            const orderIndex = sections.length;
-
-            const response = await fetch(`/api/v1/notebooks/${notebookId}/sections`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({
-                    section_type: 'query',
-                    title: '',
-                    content: query,
-                    order_index: orderIndex
-                })
-            });
-
-            const data = await response.json();
-            if (!data.success) throw new Error(data.error || 'Failed to add section');
-
-            this.close();
-            if (window.Toast) Toast.success('Sent', `Query added to "${notebookName}"`);
-        } catch (err) {
-            if (window.Toast) Toast.error('Error', err.message);
-        }
-    }
-};
-
-window.SendToNotebook = SendToNotebook;
 
 // Make globally available
 window.App = App;

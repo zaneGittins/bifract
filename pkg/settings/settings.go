@@ -46,6 +46,17 @@ const (
 	minSchemaSweepIntervalMinutes     = 5 // floor: each pass samples every fractal
 )
 
+// pgr() severity calibration. The single knob is a share of activity, not a score cutoff: an
+// admin can answer "how much can my team triage" but not "what should lambda be", and a raw
+// cutoff silently changes meaning every time the scoring model changes. The 0-1 cutoffs are
+// derived from the deployment's own observed score distribution (see pkg/pgrcal), so the flagged
+// share stays where the admin put it across model changes, fleet growth, and baseline maturity.
+const (
+	defaultPgrSensitivityPercent = 2.0  // flag the top 2% of edges as high
+	minPgrSensitivityPercent     = 0.1  // floor: below this a graph flags essentially nothing
+	maxPgrSensitivityPercent     = 50.0 // ceiling: past this "high" stops meaning anything
+)
+
 // Settings holds all Bifract configuration
 type Settings struct {
 	TimestampFields          []TimestampField `json:"timestamp_fields"`
@@ -72,6 +83,9 @@ type Settings struct {
 	// APIKeyRateLimit caps how fast one API key may call the API, so a runaway
 	// integration cannot crowd out everyone else. Per key, not per IP. 0 = uncapped.
 	APIKeyRateLimit int `json:"api_key_rate_limit"`
+	// PgrSensitivityPercent is the share of pgr() edges that should render as high severity.
+	// Medium derives from it; the 0-1 cutoffs are derived from observed scores, not set here.
+	PgrSensitivityPercent float64 `json:"pgr_sensitivity_percent"`
 	// RequireMFA makes every local account enroll a TOTP authenticator before it
 	// can use the app. SSO accounts are exempt because the identity provider owns
 	// their second factor, and API keys are unaffected: they are not interactive
@@ -151,6 +165,7 @@ func Init(pg *storage.PostgresClient) error {
 		RecallMemoryPercent:        storage.DefaultRecallMemoryPercent,
 		SchemaSweepIntervalMinutes: defaultSchemaSweepIntervalMinutes,
 		APIKeyRateLimit:            defaultAPIKeyRateLimit,
+		PgrSensitivityPercent:      defaultPgrSensitivityPercent,
 		pg:                         pg,
 	}
 
@@ -230,6 +245,13 @@ func Init(pg *storage.PostgresClient) error {
 		}
 	}
 
+	// Load pgr_sensitivity_percent
+	if v, err := pg.GetSetting(ctx, "pgr_sensitivity_percent"); err == nil && v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			globalSettings.PgrSensitivityPercent = ClampPgrSensitivity(f)
+		}
+	}
+
 	// Load query_cpu_percent (0 = uncapped)
 	if v, err := pg.GetSetting(ctx, "query_cpu_percent"); err == nil && v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -259,6 +281,21 @@ func Init(pg *storage.PostgresClient) error {
 	return nil
 }
 
+// ClampPgrSensitivity bounds the pgr severity share. A zero value means "unset" (an older client
+// omitting the field), which maps to the default rather than to "flag nothing".
+func ClampPgrSensitivity(f float64) float64 {
+	if f <= 0 {
+		return defaultPgrSensitivityPercent
+	}
+	if f < minPgrSensitivityPercent {
+		return minPgrSensitivityPercent
+	}
+	if f > maxPgrSensitivityPercent {
+		return maxPgrSensitivityPercent
+	}
+	return f
+}
+
 // clampRecallConcurrency bounds the recall concurrency setting to [1, ceiling].
 func clampRecallConcurrency(n int) int {
 	if n < 1 {
@@ -285,6 +322,7 @@ func Get() Settings {
 			RecallTimeoutSeconds:       defaultRecallTimeoutSeconds,
 			RecallMaxBytesRead:         0,
 			APIKeyRateLimit:            defaultAPIKeyRateLimit,
+			PgrSensitivityPercent:      defaultPgrSensitivityPercent,
 			RecallConcurrency:          defaultRecallConcurrency,
 			QueryCPUPercent:            storage.DefaultQueryCPUPercent,
 			QueryMemoryPercent:         storage.DefaultQueryMemoryPercent,
@@ -297,6 +335,7 @@ func Get() Settings {
 	defer globalSettings.mu.RUnlock()
 	return Settings{
 		APIKeyRateLimit:            globalSettings.APIKeyRateLimit,
+		PgrSensitivityPercent:      globalSettings.PgrSensitivityPercent,
 		RequireMFA:                 globalSettings.RequireMFA,
 		TimestampFields:            globalSettings.TimestampFields,
 		AlertTimeoutSeconds:        globalSettings.AlertTimeoutSeconds,
@@ -341,6 +380,7 @@ func Update(s *Settings) error {
 		return validationErrorf("Schema measurement interval must be at least %d minutes", minSchemaSweepIntervalMinutes)
 	}
 	s.RecallConcurrency = clampRecallConcurrency(s.RecallConcurrency)
+	s.PgrSensitivityPercent = ClampPgrSensitivity(s.PgrSensitivityPercent)
 	s.QueryCPUPercent = storage.ClampQueryLimitPercent(s.QueryCPUPercent)
 	s.QueryMemoryPercent = storage.ClampQueryLimitPercent(s.QueryMemoryPercent)
 	s.RecallCPUPercent = storage.ClampQueryLimitPercent(s.RecallCPUPercent)
@@ -363,6 +403,7 @@ func Update(s *Settings) error {
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
 	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
 	globalSettings.APIKeyRateLimit = s.APIKeyRateLimit
+	globalSettings.PgrSensitivityPercent = s.PgrSensitivityPercent
 	globalSettings.RequireMFA = s.RequireMFA
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
@@ -409,6 +450,10 @@ func Update(s *Settings) error {
 	if err := globalSettings.pg.SetSetting(ctx, "recall_concurrency", fmt.Sprintf("%d", s.RecallConcurrency)); err != nil {
 		return err
 	}
+	if err := globalSettings.pg.SetSetting(ctx, "pgr_sensitivity_percent", strconv.FormatFloat(s.PgrSensitivityPercent, 'f', -1, 64)); err != nil {
+		return err
+	}
+
 	if err := globalSettings.pg.SetSetting(ctx, "api_key_rate_limit", fmt.Sprintf("%d", s.APIKeyRateLimit)); err != nil {
 		return err
 	}

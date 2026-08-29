@@ -90,7 +90,10 @@ const Utils = {
     // always maps to the same color, used for notebook section tags and alert
     // labels so chips are visually distinguishable and consistent app-wide.
     tagColorFor(tag) {
-        const palette = ['#9c6ade','#6bcf7f','#5bbce4','#e07a8b','#d4a054','#ca6be0','#5bc4b5','#e07a4f','#7a9de0','#b5c44f'];
+        // Shares the chart series palette so a label and a series of the same
+        // name read as one colour language. Resolved lazily: pages that load
+        // utils.js without charts.js (login) never call this.
+        const palette = (window.BifractCharts && window.BifractCharts.SERIES_COLORS) || ['#9465d0'];
         let h = 0;
         const s = String(tag || '');
         for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;

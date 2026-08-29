@@ -47,6 +47,7 @@ import (
 	"bifract/pkg/objstore"
 	"bifract/pkg/oidc"
 	"bifract/pkg/parser"
+	"bifract/pkg/pgrcal"
 	"bifract/pkg/prisms"
 	"bifract/pkg/query"
 	"bifract/pkg/queryhistory"
@@ -597,6 +598,12 @@ func main() {
 	queryHandler := query.NewQueryHandlerFull(db, config.MaxQueryRows, fractalManager, dictionaryManager, prismManager)
 	queryHandler.SetPostgresClient(pg)
 	queryHandler.SetModelManager(modelManager)
+
+	// pgr() severity calibration: accumulate the rendered score distribution so the cutoffs come
+	// from what this deployment actually produces, not a hard-coded 0.9.
+	pgrRecorder := pgrcal.NewRecorder(pg.DB())
+	queryHandler.SetPgrRecorder(pgrRecorder)
+	pgrRecorder.Start(context.Background())
 
 	// Launch MaxMind background load after queryHandler exists
 	if maxmindManager != nil {

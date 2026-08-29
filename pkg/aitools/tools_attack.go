@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -16,9 +16,10 @@ const (
 	maxGaps       = 40
 )
 
-func registerAttackTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "get_attack_coverage",
+func registerAttackTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "get_attack_coverage",
+		Annotations: readOnly(),
 		Description: "Report which ATT&CK techniques this fractal's detections cover.\n\n" +
 			"Coverage is derived from the attack.* labels on the alerts that exist, so it " +
 			"describes what is configured, not what has fired. Use it to answer \"are we " +
@@ -27,8 +28,9 @@ func registerAttackTools(s *mcp.Server, c *Client) {
 			"rules behind each.",
 	}, getAttackCoverage)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_attack_gaps",
+	add(d, &mcp.Tool{
+		Name:        "get_attack_gaps",
+		Annotations: readOnly(),
 		Description: "List uncovered ATT&CK techniques, ranked by what could be covered today.\n\n" +
 			"The ranking accounts for whether rules exist that would detect the technique " +
 			"against the fields this fractal actually ingests, so the top entries are the " +
@@ -57,7 +59,7 @@ type technique struct {
 	MaxSeverity string   `json:"max_severity,omitempty"`
 }
 
-func getAttackCoverage(ctx context.Context, c *Client, in attackCoverageArgs) (any, error) {
+func getAttackCoverage(ctx context.Context, c Client, in attackCoverageArgs) (any, error) {
 	payload, err := c.Get(ctx, "/attack/coverage", nil)
 	if err != nil {
 		return nil, err
@@ -82,7 +84,7 @@ func getAttackCoverage(ctx context.Context, c *Client, in attackCoverageArgs) (a
 
 	covered := make([]technique, 0, len(cells))
 	for id, cell := range cells {
-		total := int(field[float64](cell, "total"))
+		total := int(Field[float64](cell, "total"))
 		if total == 0 {
 			continue
 		}
@@ -93,11 +95,11 @@ func getAttackCoverage(ctx context.Context, c *Client, in attackCoverageArgs) (a
 			ID:          id,
 			Name:        names[id],
 			Tactics:     tactics[id],
-			Direct:      int(field[float64](cell, "direct")),
-			Inherited:   int(field[float64](cell, "inherited")),
+			Direct:      int(Field[float64](cell, "direct")),
+			Inherited:   int(Field[float64](cell, "inherited")),
 			Total:       total,
-			Enabled:     int(field[float64](cell, "enabled")),
-			MaxSeverity: field[string](cell, "max_severity"),
+			Enabled:     int(Field[float64](cell, "enabled")),
+			MaxSeverity: Field[string](cell, "max_severity"),
 		})
 	}
 	// Ranked by rule count, then by id, so the same coverage always reads the same
@@ -148,20 +150,20 @@ func summaryFor(summary any, tactic string) any {
 
 // matrixIndex maps every technique id to its name and its tactics, from the
 // matrix the server embeds.
-func matrixIndex(ctx context.Context, c *Client) (map[string]string, map[string][]string, error) {
+func matrixIndex(ctx context.Context, c Client) (map[string]string, map[string][]string, error) {
 	matrix, err := c.Static(ctx, "/attack/matrix")
 	if err != nil {
 		return nil, nil, err
 	}
 	names := map[string]string{}
 	tactics := map[string][]string{}
-	for _, row := range field[[]any](matrix, "techniques") {
-		id := field[string](row, "id")
+	for _, row := range Field[[]any](matrix, "techniques") {
+		id := Field[string](row, "id")
 		if id == "" {
 			continue
 		}
-		names[id] = field[string](row, "name")
-		for _, tactic := range field[[]any](row, "tactics") {
+		names[id] = Field[string](row, "name")
+		for _, tactic := range Field[[]any](row, "tactics") {
 			if short, ok := tactic.(string); ok {
 				tactics[id] = append(tactics[id], short)
 			}
@@ -173,7 +175,7 @@ func matrixIndex(ctx context.Context, c *Client) (map[string]string, map[string]
 // resolveTactic maps an id, short name or name onto the short name the matrix
 // uses. An unknown tactic errors, since an empty result would read as "nothing
 // is covered here".
-func resolveTactic(ctx context.Context, c *Client, named string) (string, error) {
+func resolveTactic(ctx context.Context, c Client, named string) (string, error) {
 	needle := strings.ToLower(strings.TrimSpace(named))
 	if needle == "" {
 		return "", nil
@@ -183,10 +185,10 @@ func resolveTactic(ctx context.Context, c *Client, named string) (string, error)
 		return "", err
 	}
 	var known []string
-	for _, row := range field[[]any](matrix, "tactics") {
-		short := field[string](row, "short")
+	for _, row := range Field[[]any](matrix, "tactics") {
+		short := Field[string](row, "short")
 		known = append(known, short)
-		for _, form := range []string{field[string](row, "id"), short, field[string](row, "name")} {
+		for _, form := range []string{Field[string](row, "id"), short, Field[string](row, "name")} {
 			if strings.ToLower(form) == needle {
 				return short, nil
 			}
@@ -200,7 +202,7 @@ type attackGapsArgs struct {
 	Limit int `json:"limit,omitempty" jsonschema:"How many gaps to return, capped at 40. Default 20."`
 }
 
-func getAttackGaps(ctx context.Context, c *Client, in attackGapsArgs) (any, error) {
+func getAttackGaps(ctx context.Context, c Client, in attackGapsArgs) (any, error) {
 	limit := clamp(in.Limit, 20, 1, maxGaps)
 	payload, err := c.Get(ctx, "/attack/gaps", url.Values{"limit": {strconv.Itoa(limit)}})
 	if err != nil {
@@ -212,7 +214,7 @@ func getAttackGaps(ctx context.Context, c *Client, in attackGapsArgs) (any, erro
 	}
 	// Without a catalog the ranking has nothing to rank, and an empty list would
 	// otherwise read as "no gaps".
-	if !field[bool](payload, "catalog_populated") {
+	if !Field[bool](payload, "catalog_populated") {
 		return map[string]any{
 			"gaps": []any{},
 			"note": "No rule catalog is loaded, so candidate rules cannot be ranked. " +

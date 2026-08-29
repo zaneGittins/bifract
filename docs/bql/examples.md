@@ -1,24 +1,24 @@
 # Examples
 
-### Find all PowerShell executions grouped by user
+## Find all PowerShell executions grouped by user
 
 ```
 image=/powershell/i | groupBy(user, function=count()) | sort(_count, order=desc)
 ```
 
-### Top 10 users by data transferred
+## Top 10 users by data transferred
 
 ```
 * | groupBy(user, function=sum(bytes)) | sort(_sum, order=desc) | limit(10)
 ```
 
-### HTTP errors in the last time window
+## HTTP errors in the last time window
 
 ```
 status_code>=400 | groupBy(status_code, function=count()) | barchart()
 ```
 
-### Classify events by severity
+## Classify events by severity
 
 ```
 * | case {
@@ -28,13 +28,13 @@ status_code>=400 | groupBy(status_code, function=count()) | barchart()
 } | groupBy(severity, function=count())
 ```
 
-### Process ancestry graph
+## Process ancestry graph
 
 ```
 event_id=1 | table(process_guid, parent_process_guid) | graph(child=process_guid, parent=parent_process_guid)
 ```
 
-### Trace a process tree from a specific process
+## Trace a process tree from a specific process
 
 ```
 event_id=1
@@ -42,19 +42,19 @@ event_id=1
 | graph(child=process_guid, parent=parent_process_guid, labels=image)
 ```
 
-### Total event count as a single value
+## Total event count as a single value
 
 ```
 * | count() | singleval(label="Total Events")
 ```
 
-### Request volume over time by status
+## Request volume over time by status
 
 ```
 * | groupBy(status_code) | timechart(span=5m, function=count())
 ```
 
-### Detect patterns
+## Detect patterns
 
 ```
 chain(user, within=1h) {

@@ -400,54 +400,12 @@ func (h *Handler) HandleStream(w http.ResponseWriter, r *http.Request) {
 		req.TimeRange = "24h"
 	}
 
-	conv := h.verifyConversationOwner(w, r, id)
+	conv, fractal, flusher := h.openStream(w, r, id)
 	if conv == nil {
 		return
 	}
 
-	// Verify the user has access to this conversation's scope
-	user, _ := r.Context().Value("user").(*storage.User)
-	if h.rbacResolver != nil && user != nil && conv.FractalID != "" {
-		if !h.rbacResolver.HasFractalAccess(r.Context(), user, conv.FractalID) {
-			h.respondError(w, http.StatusForbidden, "access denied")
-			return
-		}
-	}
-
-	// Get context for the AI system prompt
-	var fractal *fractals.Fractal
-	if conv.FractalID != "" {
-		var err error
-		fractal, err = h.fractalManager.GetFractal(r.Context(), conv.FractalID)
-		if err != nil {
-			h.respondError(w, http.StatusInternalServerError, "failed to get fractal info")
-			return
-		}
-	} else if conv.PrismID != "" && h.prismResolver != nil {
-		id, name, desc, err := h.prismResolver.GetPrismInfo(r.Context(), conv.PrismID)
-		if err != nil {
-			h.respondError(w, http.StatusInternalServerError, "failed to get prism info")
-			return
-		}
-		fractal = &fractals.Fractal{ID: id, Name: name, Description: desc}
-	} else {
-		h.respondError(w, http.StatusBadRequest, "conversation has no scope")
-		return
-	}
-
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		api.WriteError(w, http.StatusInternalServerError, "streaming not supported")
-		return
-	}
-
-	if err := h.manager.StreamResponse(r.Context(), w, flusher, conv, fractal, req.Content, req.TimeRange); err != nil {
+	if err := h.manager.StreamResponse(r, w, flusher, conv, fractal, req.Content, req.TimeRange); err != nil {
 		// Error already sent as SSE event by StreamResponse
 	}
 }
@@ -484,3 +442,90 @@ func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
 	api.WriteError(w, status, msg)
 }
+
+// openStream checks that the caller owns the conversation and may act in its
+// scope, resolves the scope, and puts the response into SSE mode. It returns a
+// nil conversation once it has answered the request itself.
+func (h *Handler) openStream(w http.ResponseWriter, r *http.Request, id string) (*Conversation, *fractals.Fractal, http.Flusher) {
+	conv := h.verifyConversationOwner(w, r, id)
+	if conv == nil {
+		return nil, nil, nil
+	}
+
+	user, _ := r.Context().Value("user").(*storage.User)
+	if h.rbacResolver != nil && user != nil && conv.FractalID != "" {
+		if !h.rbacResolver.HasFractalAccess(r.Context(), user, conv.FractalID) {
+			h.respondError(w, http.StatusForbidden, "access denied")
+			return nil, nil, nil
+		}
+	}
+
+	var fractal *fractals.Fractal
+	switch {
+	case conv.FractalID != "":
+		var err error
+		fractal, err = h.fractalManager.GetFractal(r.Context(), conv.FractalID)
+		if err != nil {
+			h.respondError(w, http.StatusInternalServerError, "failed to get fractal info")
+			return nil, nil, nil
+		}
+	case conv.PrismID != "" && h.prismResolver != nil:
+		prismID, name, desc, err := h.prismResolver.GetPrismInfo(r.Context(), conv.PrismID)
+		if err != nil {
+			h.respondError(w, http.StatusInternalServerError, "failed to get prism info")
+			return nil, nil, nil
+		}
+		fractal = &fractals.Fractal{ID: prismID, Name: name, Description: desc}
+	default:
+		h.respondError(w, http.StatusBadRequest, "conversation has no scope")
+		return nil, nil, nil
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		api.WriteError(w, http.StatusInternalServerError, "streaming not supported")
+		return nil, nil, nil
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	return conv, fractal, flusher
+}
+
+// ResolveToolCallRequest answers a tool call the assistant proposed. Only the
+// decision travels: the arguments stay on the server, so what the user was
+// shown cannot differ from what runs.
+type ResolveToolCallRequest struct {
+	Decision string `json:"decision"` // "approve" or "deny"
+	// TimeRange governs any further tool calls the resumed reply makes. The
+	// approved call itself runs the arguments it was offered with.
+	TimeRange string `json:"time_range,omitempty"`
+}
+
+func (h *Handler) HandleResolveToolCall(w http.ResponseWriter, r *http.Request) {
+	var req ResolveToolCallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Decision != "approve" && req.Decision != "deny" {
+		h.respondError(w, http.StatusBadRequest, "decision must be approve or deny")
+		return
+	}
+	if req.TimeRange == "" {
+		req.TimeRange = "24h"
+	}
+
+	conv, fractal, flusher := h.openStream(w, r, chi.URLParam(r, "id"))
+	if conv == nil {
+		return
+	}
+	if err := h.manager.ResolveToolCall(r, w, flusher, conv, fractal, chi.URLParam(r, "callId"), req.Decision, req.TimeRange); err != nil {
+		log.Printf("[Chat] resolving a tool call: %v", err)
+	}
+}
+
+// SetRouter gives the manager the handler its tools dispatch through.
+func (h *Handler) SetRouter(router http.Handler) { h.manager.SetRouter(router) }

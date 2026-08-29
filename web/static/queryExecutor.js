@@ -3081,6 +3081,13 @@ const QueryExecutor = {
         // pills, relative shading) is suppressed rather than shown as a column of blanks.
         this._pgScored = !(this.chartConfig && this.chartConfig.scored === false);
         this._pgModel = this._pgBuildModel((results || []).slice(0, limit));
+        this._pgNovelSet = null; // recomputed lazily against the new model
+        // Window start bounds the novelty badge: a relationship first seen inside the window under
+        // investigation is new to it, one seen before is established.
+        const tr = this.currentTimeRange;
+        const ws = tr && tr.start ? Date.parse(tr.start) : NaN;
+        this._pgWindowStartMs = isNaN(ws) ? null : ws;
+        this._pgLoadCutoffs().then(() => { this._pgComputeSevScale(); this._pgRender(); });
         this._pgComputeSevScale();      // adaptive absolute/relative anomaly shading for this graph
         this._pgExpandedAggs = new Set(); // fan-out aggregate nodes the user expanded
         this._pgComputeFanout();        // collapse large same-image sibling fans into aggregate nodes
@@ -3143,9 +3150,86 @@ const QueryExecutor = {
             const t = (a - s.lo) / (s.span || 1);
             return t >= 0.66 ? 'high' : t >= 0.33 ? 'med' : 'low';
         }
-        return a >= 0.9 ? 'high' : a >= 0.7 ? 'med' : 'low';
+        const c = this._pgCutoffs || { high: 0.9, med: 0.7 };
+        return a >= c.high ? 'high' : a >= c.med ? 'med' : 'low';
+    },
+
+    // Severity cutoffs are derived from this deployment's own observed score distribution, so the
+    // share of edges rendered high tracks the admin's sensitivity setting instead of a fixed 0.9
+    // whose meaning drifts with the scoring model. Fetched once; falls back to the constants.
+    async _pgLoadCutoffs() {
+        if (this._pgCutoffs) return;
+        try {
+            const r = await fetch('/api/v1/system/pgr-calibration', { credentials: 'same-origin' });
+            if (!r.ok) return;
+            const j = await r.json();
+            if (j && j.cutoffs && j.cutoffs.calibrated) {
+                this._pgCutoffs = { high: j.cutoffs.high, med: j.cutoffs.med };
+            }
+        } catch (e) { /* fixed defaults are a correct fallback */ }
     },
     _pgSevHot(a) { const s = this._pgSev(a); return s === 'high' || s === 'med'; },
+
+    // Is this parent -> child relationship new, i.e. first observed inside the window being
+    // investigated rather than established beforehand? This is the fact rarity cannot express: a
+    // relationship seen five times over months and one seen for the first time today both look
+    // "rare", and only the second is a lead.
+    _pgIsNovel(guid) {
+        const m = this._pgModel;
+        if (!m || !m.firstSeenByNode) return false;
+        const fs = m.firstSeenByNode.get(guid);
+        if (!fs) return false;
+        const start = this._pgWindowStartMs;
+        if (start == null) return false;
+        const t = Date.parse(fs + 'T00:00:00Z');
+        return !isNaN(t) && t >= start;
+    },
+
+    // A run of new processes under a new parent is one event, not N. Mark only the shallowest:
+    // the children are new BECAUSE the parent is, and repeating the badge down the subtree turns a
+    // signal into wallpaper. Cached per model build.
+    _pgNovelRoots() {
+        if (this._pgNovelSet) return this._pgNovelSet;
+        const m = this._pgModel, s = new Set();
+        this._pgNovelSet = s;
+        if (!m) return s;
+        const parentOf = new Map();
+        m.spawnKids.forEach((kids, p) => kids.forEach(k => parentOf.set(k, p)));
+        m.procSet.forEach(g => {
+            if (!this._pgIsNovel(g)) return;
+            const p = parentOf.get(g);
+            if (p && this._pgIsNovel(p)) return; // inherited from an ancestor already marked
+            s.add(g);
+        });
+        return s;
+    },
+
+    // FIRST SEEN cell: relative age of the parent -> child relationship. Age reads faster than a
+    // date -- "30d" beside "2m" is the contrast that matters, not the calendar value. Highlighted
+    // only when the relationship began inside the window under investigation.
+    _pgFirstSeenCell(guid) {
+        const m = this._pgModel;
+        const fs = m && m.firstSeenByNode && m.firstSeenByNode.get(guid);
+        if (!fs) return '<span class="pg-fs"></span>';
+        const t = Date.parse(fs + 'T00:00:00Z');
+        if (isNaN(t)) return '<span class="pg-fs"></span>';
+        // first_day is a DATE, so day is the finest honest resolution -- no hours. Signed to mirror
+        // the gutter's forward "+5.0s": this one counts backwards from now.
+        const days = Math.max(0, Math.floor((Date.now() - t) / 86400000));
+        const txt = days < 1 ? 'today' : days < 365 ? '-' + days + 'd' : '-' + Math.floor(days / 365) + 'y';
+        const isNew = this._pgIsNovel(guid);
+        return `<span class="pg-fs"><span class="pg-fs-chip${isNew ? ' pg-fs-new' : ''}" title="This parent first spawned this child on ${Utils.escapeHtml(fs)}${isNew ? ' — inside the window being investigated' : ''}">${txt}</span></span>`;
+    },
+
+    // Human text for the drawer. Says nothing rather than guessing when the baseline is younger
+    // than the lookback: before migration 016 first_seen falls back to the row's own write day, so
+    // a recent-looking date on an old install is not evidence of novelty.
+    _pgFirstSeenText(guid) {
+        const m = this._pgModel;
+        const fs = m && m.firstSeenByNode && m.firstSeenByNode.get(guid);
+        if (!fs) return '';
+        return this._pgIsNovel(guid) ? `${fs} (new in this window)` : fs;
+    },
 
     // Decide absolute vs relative shading from the current graph's anomaly distribution. Relative
     // kicks in only when the scores are genuinely saturated (most of the graph already clears the
@@ -3163,7 +3247,8 @@ const QueryExecutor = {
         xs.sort((a, b) => a - b);
         const q = (p) => xs[Math.min(xs.length - 1, Math.max(0, Math.floor(p * (xs.length - 1))))];
         const lo = xs[0], hi = xs[xs.length - 1], p15 = q(0.15);
-        this._pgSevScale.saturated = p15 >= 0.7; // most of the graph already clears the absolute 'med' line
+        const medCut = (this._pgCutoffs && this._pgCutoffs.med) || 0.7;
+        this._pgSevScale.saturated = p15 >= medCut; // most of the graph already clears the 'med' line
         // Engage relative shading when saturated (most of the graph clears the absolute 'med'
         // line) and there is at least a sliver of spread to relativize. The floor is deliberately
         // small: a saturated diffuse graph may only span 0.90-1.00, and that 0.02+ spread is
@@ -3291,6 +3376,7 @@ const QueryExecutor = {
         const leafMeta = new Map();      // leaf id -> {type,label,anomaly} for promoted shared-object nodes
         const logInfoById = new Map();   // node id -> {log_id,timestamp,fractal_id,_shard_num}
         const anomalyByNode = new Map(); // node id -> anomaly on its incoming edge
+        const firstSeenByNode = new Map(); // node id -> first day this relationship was ever observed
         const procMeta = new Map();      // guid -> {cmd, user} (command line + user, cmd truncated server-side)
         const procTime = new Map();      // guid -> epoch ms (process creation / first-seen time)
         const procHost = new Map();      // guid -> computer_name (for cross-host reconnection notation)
@@ -3307,6 +3393,9 @@ const QueryExecutor = {
             if (!r.child) return; // a spawn row for a TRUE root has an empty parent; keep it (see below)
             const et = r.event_type || '';
             const anomaly = parseFloat(r.anomaly_score);
+            // Earliest day this (source, relationship, target) was ever seen. Empty when the
+            // relationship has no baseline row at all, which is itself the strongest novelty signal.
+            if (r.first_seen && !firstSeenByNode.has(r.child)) firstSeenByNode.set(r.child, r.first_seen);
             const info = r.log_id ? { log_id: r.log_id, timestamp: r.timestamp, fractal_id: r.fractal_id, _shard_num: r._shard_num } : null;
             const ctype = this._pgTypeOf(r.child);
             // parent_label names the PARENT process when it may have no row of its own: an ancestor
@@ -3491,7 +3580,7 @@ const QueryExecutor = {
         const labelDerived = (g) => !procLabel.get(g) && !!procLabelHint.get(g);
 
         return { procLabel, procLabelHint, labelOf, labelDerived, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats,
-            logInfoById, anomalyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
+            logInfoById, anomalyByNode, firstSeenByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
     },
 
     // Parse pgr's "YYYY-MM-DD HH:MM:SS.mmm" (UTC, no tz) into epoch ms, or null.
@@ -3556,11 +3645,10 @@ const QueryExecutor = {
         const reconLabel = ls.capped ? `${reconN} of ${ls.pairTotal}${ls.scanCapped ? '+' : ''}` : String(reconN);
         const reconTitle = `${ls.bridges} cross-tree bridge${ls.bridges === 1 ? '' : 's'} (shared artifacts) linking ${ls.pairTotal}${ls.scanCapped ? '+' : ''} process pair${ls.pairTotal === 1 ? '' : 's'}` +
             (ls.capped ? ` — showing the strongest ${reconN}` : '') + ' — click to list them';
-        let rareN = 0, maxAnom = 0;
-        const tally = (a) => { if (!isNaN(a)) { if (a >= 0.7) rareN++; if (a > maxAnom) maxAnom = a; } };
+        let rareN = 0;
+        const tally = (a) => { if (!isNaN(a) && a >= 0.7) rareN++; };
         if (m.leafMeta) m.leafMeta.forEach(v => tally(v.anomaly));
         m.interactions.forEach(list => list.forEach(it => tally(it.anomaly)));
-        const maxSev = this._pgSev(maxAnom);
         const sep = '<span class="graph-stat-separator"></span>';
         // When scores saturate near the top, shading switches to relative (spread across this
         // graph's own range) so contrast survives -- flag it so a "grey" node isn't misread as low.
@@ -3570,18 +3658,16 @@ const QueryExecutor = {
         bar.innerHTML = `
             <div class="pg-view-toggle" role="tablist">
                 <button class="pg-view-btn${this._pgView === 'graph' ? ' active' : ''}" data-view="graph" title="Diagonal process map">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19 19 5"/><circle cx="5" cy="19" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><path d="M12 12l4 6M12 12 8 8"/></svg>
                     <span>Graph</span>
                 </button>
                 <button class="pg-view-btn${this._pgView === 'table' ? ' active' : ''}" data-view="table" title="Indented process tree">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><path d="M4 5v14M4 12h3M4 6h3M4 18h3"/></svg>
                     <span>Table</span>
                 </button>
             </div>
             <div class="graph-stats pg-stats-right"><span class="graph-stat-item"><span class="graph-stat-count">${procN}</span> processes</span>` +
                 `${hostN ? sep + `<span class="graph-stat-item"><span class="graph-stat-count">${hostN}</span> host${hostN === 1 ? '' : 's'}</span>` : ''}` +
                 `${reconN ? sep + `<span class="graph-stat-item pg-stat-recon" title="${reconTitle}"><span class="graph-stat-count">${reconLabel}</span> reconnect${reconN === 1 ? 'ion' : 'ions'}</span>` : ''}` +
-                `${rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="rare/anomalous events (>= 0.70)"><span class="graph-stat-count">${rareN}</span> rare</span><span class="pg-anom pg-anom-${maxSev}" title="peak anomaly score">${maxAnom.toFixed(2)}</span>` : ''}` +
+                `${rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="rare/anomalous events (>= 0.70)"><span class="graph-stat-count">${rareN}</span> rare</span>` : ''}` +
                 relShade +
             `</div>
             <div class="pg-filters">
@@ -3600,6 +3686,7 @@ const QueryExecutor = {
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-low"></span>Common</div>` : ''}
                     <div class="pg-legend-title">Nodes</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-focus"></span>Start (queried)</div>
+                    ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-new"></span>First time this parent spawned this child</div>` : ''}
                     ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>` : ''}
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Collapsed similar processes (&times;N)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (name from another event)</div>
@@ -3972,10 +4059,12 @@ const QueryExecutor = {
             // (outlined, unfilled) hex. It is still NAMED whenever another process's event carries
             // its image (see labelOf); only a node nothing named at all falls back to the raw guid.
             // The "why" lives in the tooltip and the legend, not a per-node label (noisy on a big tree).
+            const novelMark = this._pgNovelRoots().has(id)
+                ? ` <span class="pg-new" title="First time this parent spawned this child (relationship first seen ${esc(String((m.firstSeenByNode && m.firstSeenByNode.get(id)) || ''))})"></span>` : '';
             const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}${ghost ? ' pg-node-ghost' : ''}`;
             nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\n' + this._pgGhostNote(id) : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}\nclick to inspect · right-click for actions">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
-                `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}</span>${hostLabel}${sub}</span></div>`;
+                `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}${novelMark}</span>${hostLabel}${sub}</span></div>`;
         });
 
         // 4) Assemble. Fill the available viewport height; a transformed canvas holds edges,
@@ -4399,7 +4488,8 @@ const QueryExecutor = {
         // Instant process-centric summary straight from the model, so the drawer is never empty while
         // the full field set loads.
         const instant = kv('command line', meta.cmd) + kv(m.labelDerived(guid) ? 'image (from a linked event)' : 'image', name) + kv('user', meta.user) +
-            kv('host', m.procHost && m.procHost.get(guid)) + kv('time', timeStr);
+            kv('host', m.procHost && m.procHost.get(guid)) + kv('time', timeStr) +
+            kv('relationship first seen', this._pgFirstSeenText(guid));
         // The process guid rides in the header as a subtle id; clicking it opens the complete raw log
         // (no more Full log button). Static (non-clickable) when there's no source log.
         const idLink = guid ? (info
@@ -4467,8 +4557,11 @@ const QueryExecutor = {
         // Escape for a BQL double-quoted string, and use a function replacement so a "$" in the
         // guid is not treated as a String.replace token (guids are braced hex, but be bulletproof).
         const q = String(guid).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        const re = /(\bpgr\s*\([^)]*?\bstart\s*=\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,)\s]+)/i;
-        qi.value = re.test(cur) ? cur.replace(re, (m, p1) => p1 + '"' + q + '"') : `pgr(start="${q}") | pgraph()`;
+        const re = /(\b(?:pgr|ptg)\s*\([^)]*?\bstart\s*=\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,)\s]+)/i;
+        // Preserve whichever traversal the analyst is already using: ptg() has no anomaly scoring
+        // or leaf activity, so silently promoting it to pgr() changes what the query means.
+        const cmd = /\bptg\s*\(/i.test(cur) ? 'ptg' : 'pgr';
+        qi.value = re.test(cur) ? cur.replace(re, (m, p1) => p1 + '"' + q + '"') : `${cmd}(start="${q}") | pgraph()`;
         qi.dispatchEvent(new Event('input', { bubbles: true }));
         const btn = document.getElementById('executeBtn');
         if (btn) setTimeout(() => btn.click(), 0);
@@ -4610,7 +4703,10 @@ const QueryExecutor = {
             return esc(s.slice(0, j)) + '<mark class="pg-hl">' + esc(s.slice(j, j + term.length)) + '</mark>' + esc(s.slice(j + term.length));
         };
         const badge = (type, count, guid, drill) => {
-            if (!count) return ''; // hide zero-count chips to cut noise
+            // Zero-count types keep their slot (invisible, same width) so the ACTIVITY column reads
+            // as columns: file is always where file is, and the eye can compare rows without
+            // re-reading each one. Hiding them made every row a different shape.
+            if (!count) return `<span class="pg-badge pg-badge-empty" aria-hidden="true">${ICON[type]}<b>0</b></span>`;
             const on = drill && this._pgLeafOpen.has(guid + ':' + type);
             const attr = (drill && count > 0) ? ` data-drill="${esc(guid)}" data-type="${type}"` : '';
             const noun = type === 'proc' ? 'child process' : type === 'file' ? 'file' : type === 'net' ? 'connection' : type === 'link' ? 'reconnection' : 'domain';
@@ -4618,7 +4714,7 @@ const QueryExecutor = {
         };
         const leafChildRow = (anc, isLast, type, x) => {
             const dl = x.info ? ` data-log='${esc(JSON.stringify(x.info))}'` : '';
-            rows.push(`<div class="pg-row pg-leaf"${dl}>${guidesHtml(anc, isLast)}<span class="pg-icon pg-icon-${type}">${ICON[type]}</span><span class="pg-name" title="${esc(x.label || '')}">${hl(x.label)}</span>${anomalyPill(x.anomaly)}</div>`);
+            rows.push(`<div class="pg-row pg-leaf"${dl}><span class="pg-gutter"></span>${guidesHtml(anc, isLast)}<span class="pg-icon pg-icon-${type}">${ICON[type]}</span><span class="pg-name" title="${esc(x.label || '')}">${hl(x.label)}</span>${anomalyPill(x.anomaly)}</div>`);
         };
         // Total spawn descendants of a node (shown as +N when it's collapsed).
         const descCache = new Map();
@@ -4647,7 +4743,9 @@ const QueryExecutor = {
             const dl = info ? ` data-log='${esc(JSON.stringify(info))}'` : '';
             const chev = hasKids ? `<button class="pg-chev${collapsed ? ' pg-collapsed' : ''}" data-guid="${esc(guid)}" title="${collapsed ? 'Expand' : 'Collapse'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>` : '<span class="pg-chev pg-chev-none"></span>';
             const linkN = (m.linkInfo && m.linkInfo.get(guid) || []).length;
-            const badges = `<span class="pg-badges">${badge('proc', childCount, guid, false)}${badge('file', groups.file.length, guid, true)}${badge('net', groups.net.length, guid, true)}${badge('dns', groups.dns.length, guid, true)}${badge('link', linkN, guid, true)}</span>`;
+            // No child-process chip: the tree already shows the children indented below, and a
+            // collapsed node carries its own +N descendant count. The chip restated both.
+            const badges = `<span class="pg-badges">${badge('file', groups.file.length, guid, true)}${badge('net', groups.net.length, guid, true)}${badge('dns', groups.dns.length, guid, true)}${badge('link', linkN, guid, true)}</span>`;
             // Name + optional command-line/user subline (triage context). +N when folded.
             const dc = collapsed ? descCount(guid) : 0;
             const descHtml = dc > 0 ? ` <span class="pg-desc" title="${dc} hidden descendant process${dc === 1 ? '' : 'es'}">+${dc}</span>` : '';
@@ -4666,7 +4764,8 @@ const QueryExecutor = {
             const showUser = !!meta.user && meta.user !== parentUser;
             let subline = '';
             if (meta.cmd || showUser || showHost) {
-                const u = showUser ? `<span class="pg-sub-user" title="user">${esc(meta.user)}</span>` : '';
+                const userHop = showUser && !!parentUser && meta.user !== parentUser;
+                const u = showUser ? `<span class="pg-sub-user${userHop ? ' pg-sub-user-x' : ''}" title="${userHop ? 'ran as a different user than its parent: ' : 'user: '}${esc(meta.user)}">${esc(meta.user)}</span>` : '';
                 const h = showHost ? `<span class="pg-sub-host${hostHop ? ' pg-sub-host-x' : ''}" title="${hostHop ? 'moved to host' : 'host'}: ${esc(String(rowHost))}">${esc(String(rowHost))}</span>` : '';
                 const c = meta.cmd ? `<span class="pg-sub-cmd" title="${esc(meta.cmd)}">${esc(meta.cmd)}</span>` : '';
                 // Command line is the hero (the #1 triage artifact) -- lead with it; user/host trail as
@@ -4678,10 +4777,11 @@ const QueryExecutor = {
             // per-row text tag. The tooltip still explains on hover.
             const nameTitle = ghost ? this._pgGhostNote(guid) + ': ' + m.labelOf(guid) : m.labelOf(guid);
             const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(nameTitle)}">${hl(m.labelOf(guid))}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
+            const firstSeenCell = this._pgFirstSeenCell(guid);
             // Time (absolute-aware) + gap since parent.
             const t = m.procTime.get(guid);
             const pt = parentGuid != null ? m.procTime.get(parentGuid) : null;
-            let timeCell = '';
+            let timeCell = '<span class="pg-gutter"></span>';
             if (t != null) {
                 const delta = pt != null ? this._pgFmtDelta(t - pt) : '';
                 const full = TZ.format(t, 'full');
@@ -4689,14 +4789,13 @@ const QueryExecutor = {
                 // noise on every row: show it only on a root (no parent to diff against), and keep the
                 // full timestamp in the tooltip everywhere.
                 timeCell = delta
-                    ? `<span class="pg-time-cell" title="${esc(full)}"><span class="pg-delta">${delta}</span></span>`
-                    : `<span class="pg-time-cell"><span class="pg-time" title="${esc(full)}">${esc(this._pgFmtTime(t))}</span></span>`;
+                    ? `<span class="pg-gutter" title="${esc(full)}"><span class="pg-delta">${delta}</span></span>`
+                    : `<span class="pg-gutter"><span class="pg-time" title="${esc(full)}">${esc(this._pgFmtTime(t))}</span></span>`;
             }
             const a = m.anomalyByNode.get(guid);
             // No per-row severity accent: the anomaly pill already carries severity, and a colored
             // left border on every elevated row was visually noisy on a large tree.
-            const focusCls = guid === this._pgFocus ? ' pg-focus-row' : '';
-            rows.push(`<div class="pg-row pg-proc${cyc ? ' pg-cycle' : ''}${ghost ? ' pg-proc-ghost' : ''}${focusCls}" data-guid="${esc(guid)}"${dl}>${guidesHtml(anc, isLast)}${chev}<span class="pg-icon pg-icon-proc">${ICON.gear}</span>${nameCell}${badges}${timeCell}${anomalyPill(a)}</div>`);
+            rows.push(`<div class="pg-row pg-proc pg-sev-${this._pgSev(a)}${cyc ? ' pg-cycle' : ''}${ghost ? ' pg-proc-ghost' : ''}" data-guid="${esc(guid)}"${dl}>${timeCell}${guidesHtml(anc, isLast)}${chev}${nameCell}${badges}${firstSeenCell}</div>`);
             if (cyc || collapsed) return;
             seen.add(guid);
             // rendered children: interactions, drilled/matching artifact leaves, child processes
@@ -4722,7 +4821,7 @@ const QueryExecutor = {
             let idx = 0;
             shownInter.forEach(it => {
                 const dl2 = it.info ? ` data-log='${esc(JSON.stringify(it.info))}'` : '';
-                rows.push(`<div class="pg-row pg-leaf pg-inject"${dl2}>${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-inject">${ICON.inject}</span><span class="pg-name">${hl(it.label || it.target)}</span><span class="pg-tag">${esc(it.type)}</span>${anomalyPill(it.anomaly)}</div>`);
+                rows.push(`<div class="pg-row pg-leaf pg-inject"${dl2}><span class="pg-gutter"></span>${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-inject">${ICON.inject}</span><span class="pg-name">${hl(it.label || it.target)}</span><span class="pg-tag">${esc(it.type)}</span>${anomalyPill(it.anomaly)}</div>`);
             });
             leafItems.forEach(({ t, x }) => leafChildRow(childAnc.concat([false]), ++idx === total, t, x));
             linkItems.forEach(l => {
@@ -4733,7 +4832,7 @@ const QueryExecutor = {
                 // so the "SHARED DOMAIN/IP" tag is dropped; the IOC value is the hero and the peer is a
                 // subtle "-> peer". Host chip only on a cross-host reconnection (lateral movement).
                 const hostChip = l.crossHost && l.peerHost ? `<span class="pg-host-chip" title="on another host">${esc(String(l.peerHost))}</span>` : '';
-                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="${esc(kindTxt)} with ${esc(String(peerName))}${l.crossHost ? ' on ' + esc(String(l.peerHost)) : ''} — click to jump">${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-${l.type}">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-to"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13m-5-6 6 6-6 6"/></svg>${hl(peerName)}</span>${hostChip}</div>`);
+                rows.push(`<div class="pg-row pg-leaf pg-link-item" data-peer="${esc(l.peerGuid)}" title="${esc(kindTxt)} with ${esc(String(peerName))}${l.crossHost ? ' on ' + esc(String(l.peerHost)) : ''} — click to jump"><span class="pg-gutter"></span>${guidesHtml(childAnc.concat([false]), ++idx === total)}<span class="pg-icon pg-icon-${l.type}">${licon}</span><span class="pg-name">${hl(l.label)}</span><span class="pg-link-to"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13m-5-6 6 6-6 6"/></svg>${hl(peerName)}</span>${hostChip}</div>`);
             });
             childEntries.forEach(c => {
                 const isLastEntry = ++idx === total;
@@ -4743,7 +4842,7 @@ const QueryExecutor = {
                 const ag = this._pgAggMeta.get(c.id); if (!ag) return;
                 const exp = this._pgExpandedAggs && this._pgExpandedAggs.has(c.id);
                 const chevA = `<button class="pg-chev${exp ? '' : ' pg-collapsed'}" data-aggtoggle="${esc(c.id)}" title="${exp ? 'Collapse' : 'Expand'} ${ag.count} similar processes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
-                rows.push(`<div class="pg-row pg-agg-row" data-agg="${esc(c.id)}" title="${ag.count} similar ${esc(String(ag.image))} processes — click to ${exp ? 'collapse' : 'expand'}">${guidesHtml(cAnc, isLastEntry)}${chevA}<span class="pg-icon pg-icon-agg">${ICON.gear}</span><span class="pg-name-wrap"><span class="pg-name">${hl(ag.image)} <span class="pg-agg-count">×${ag.count}</span></span></span>${anomalyPill(ag.anomaly)}</div>`);
+                rows.push(`<div class="pg-row pg-agg-row" data-agg="${esc(c.id)}" title="${ag.count} similar ${esc(String(ag.image))} processes — click to ${exp ? 'collapse' : 'expand'}"><span class="pg-gutter"></span>${guidesHtml(cAnc, isLastEntry)}${chevA}<span class="pg-name-wrap"><span class="pg-name">${hl(ag.image)} <span class="pg-agg-count">×${ag.count}</span></span></span>${anomalyPill(ag.anomaly)}</div>`);
                 if (exp) {
                     const mAnc = cAnc.slice(); mAnc[mAnc.length - 1] = !isLastEntry;
                     ag.members.forEach((mm, j) => walk(mm, mAnc.concat([false]), j === ag.members.length - 1, guid));
@@ -4756,8 +4855,8 @@ const QueryExecutor = {
         roots.forEach((r, i) => walk(r, [], i === roots.length - 1, null));
 
         // Sticky column header labelling the right-hand metadata columns (activity chips / Δt / score).
-        const treeHead = rows.length ? `<div class="pg-tree-head"><span class="pg-th-name">Process</span><span class="pg-th pg-th-act">Activity</span><span class="pg-th pg-th-dt">Time</span>` +
-            `${this._pgScored === false ? '' : '<span class="pg-th pg-th-score">Anomaly</span>'}</div>` : '';
+        const treeHead = rows.length ? `<div class="pg-tree-head"><span class="pg-th pg-th-gutter">Time</span><span class="pg-th-name">Process</span><span class="pg-th pg-th-act">Activity</span>` +
+            `${this._pgScored === false ? '' : '<span class="pg-th pg-th-fs">First seen</span>'}</div>` : '';
         container.innerHTML = `<div class="pg-tree-scroll" role="tree" tabindex="0">${treeHead}${rows.join('') || '<div class="pg-empty">No processes in this graph.</div>'}</div>`;
         const scroll = container.querySelector('.pg-tree-scroll');
         container.querySelectorAll('.pg-chev[data-guid]').forEach(btn => btn.addEventListener('click', (e) => {

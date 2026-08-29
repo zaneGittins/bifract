@@ -51,7 +51,7 @@ graph TB
 
 The ingest tier is a separate Deployment so it can be scaled (or paused to `0`) independently of the app tier, which keeps serving the UI, queries, and alerts.
 
-ClickHouse is sharded for throughput but **not replicated** — each shard is a single replica. Durability and disaster recovery come from the Apache Iceberg archive, which receives a copy of every ingested log. Keeper remains because it coordinates distributed (`ON CLUSTER`) DDL and cross-shard query routing even without replication.
+ClickHouse is sharded for throughput but **not replicated**: each shard is a single replica. Durability and disaster recovery come from the Apache Iceberg archive, which receives a copy of every ingested log. Keeper remains because it coordinates distributed (`ON CLUSTER`) DDL and cross-shard query routing even without replication.
 
 ## Step 1: Install ClickHouse Operator
 

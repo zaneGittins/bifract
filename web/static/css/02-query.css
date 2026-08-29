@@ -1122,6 +1122,12 @@ body.recall-active {
     opacity: 0.5;
 }
 
+/* Held only while the resize handle is being dragged: the panel must follow the
+   cursor exactly, not ease toward it. */
+.log-detail-panel.resizing {
+    transition: none;
+}
+
 /* Panel header: context info + actions */
 .panel-header-context {
     display: flex;
@@ -1149,19 +1155,19 @@ body.recall-active {
 .log-level-badge.level-error,
 .log-level-badge.level-critical,
 .log-level-badge.level-fatal {
-    background: rgba(220, 60, 60, 0.2);
-    color: #f87171;
+    background: color-mix(in srgb, var(--error) 20%, transparent);
+    color: var(--error);
 }
 
 .log-level-badge.level-warn,
 .log-level-badge.level-warning {
-    background: rgba(220, 160, 0, 0.2);
-    color: #fbbf24;
+    background: color-mix(in srgb, var(--warning) 20%, transparent);
+    color: var(--warning);
 }
 
 .log-level-badge.level-info {
-    background: rgba(56, 160, 220, 0.2);
-    color: #60a5fa;
+    background: color-mix(in srgb, var(--info) 20%, transparent);
+    color: var(--info);
 }
 
 .log-level-badge.level-debug,
@@ -1238,6 +1244,10 @@ body.recall-active {
     cursor: default;
 }
 
+/* Filled bookmark means this event is already evidence in the active notebook. */
+.panel-pin-btn.pinned { color: var(--accent-primary); }
+.panel-pin-btn.pinned .pin-icon { fill: currentColor; }
+
 /* Selected row highlight */
 .results-table tbody tr.selected {
     background: rgba(156, 106, 222, 0.08) !important;
@@ -1302,8 +1312,8 @@ body.recall-active {
 }
 
 .send-to-chat-btn:hover {
-    background: rgba(156, 106, 222, 0.1);
-    color: var(--accent-color);
+    background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+    color: var(--accent-primary);
     opacity: 1;
 }
 
@@ -1420,7 +1430,7 @@ body.recall-active {
 }
 
 .log-field-copy-btn:hover {
-    color: var(--accent-color);
+    color: var(--accent-primary);
 }
 
 .log-field-copy-btn.copied {
@@ -1430,7 +1440,7 @@ body.recall-active {
 
 .log-field-value.json {
     position: relative;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     padding: 0.375rem;
     border-radius: 4px;
     overflow-x: auto;
@@ -1471,8 +1481,8 @@ body.recall-active {
 }
 
 .log-detail-tab.active {
-    color: var(--accent-color);
-    border-bottom-color: var(--accent-color);
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
 }
 
 .log-detail-tab-content {
@@ -1512,7 +1522,7 @@ body.recall-active {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 3px;
     color: var(--text-muted);
@@ -1530,15 +1540,15 @@ body.recall-active {
 
 .log-detail-mode-toggle.active {
     background: rgba(139, 92, 246, 0.12);
-    border-color: var(--accent-color);
-    color: var(--accent-color);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
 }
 
 .log-detail-search-input {
     flex: 1;
     min-width: 0;
     padding: 0.3rem 0.5rem;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 3px;
     color: var(--text-primary);
@@ -1549,7 +1559,7 @@ body.recall-active {
 
 .log-detail-search-input:focus {
     outline: none;
-    border-color: var(--accent-color);
+    border-color: var(--accent-primary);
     box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.1);
 }
 
@@ -1635,8 +1645,8 @@ body.recall-active {
 }
 
 .raw-log-copy-btn:hover {
-    color: var(--accent-color);
-    border-color: var(--accent-color);
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
 }
 
 .raw-log-copy-btn.copied {
@@ -1949,7 +1959,7 @@ body.recall-active {
 
 .query-highlight .hl-regex,
 .model-query-highlight .hl-regex {
-    color: #c084fc;
+    color: var(--syntax-regex);
     font-weight: 500;
 }
 
@@ -2003,7 +2013,7 @@ body.recall-active {
 .palette-query .hl-pipe      { color: var(--syntax-operator); font-weight: 600; }
 .palette-query .hl-field     { color: var(--info); }
 .palette-query .hl-value     { color: var(--syntax-string); }
-.palette-query .hl-regex     { color: #c084fc; font-weight: 500; }
+.palette-query .hl-regex     { color: var(--syntax-regex); font-weight: 500; }
 .palette-query .hl-assignment{ color: var(--syntax-operator); font-weight: 600; }
 .palette-query .hl-number    { color: var(--syntax-number); }
 .palette-query .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
@@ -2049,7 +2059,7 @@ body.recall-active {
 }
 
 .query-display .hl-regex {
-    color: #c084fc;
+    color: var(--syntax-regex);
     font-weight: 500;
 }
 
@@ -2152,7 +2162,7 @@ body {
     max-width: 94vw;
     height: 76vh;
     max-height: 820px;
-    background: var(--bg-primary);
+    background: var(--bg-raised);
     border: 1px solid var(--border-color);
     border-radius: 10px;
     box-shadow: var(--shadow-lg);
@@ -2312,7 +2322,7 @@ body {
     gap: 10px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--border-color);
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     flex-shrink: 0;
 }
 
@@ -2362,7 +2372,7 @@ body {
     gap: 6px;
     position: sticky;
     top: 0;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     z-index: 1;
 }
 

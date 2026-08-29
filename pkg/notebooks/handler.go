@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -154,6 +155,11 @@ func (h *NotebookHandler) requireRoleOnPrism(r *http.Request, prismID string, re
 // name while there is one type, and one schema, behind it.
 type Response = api.Response[any]
 
+// commentPrefetchTimeout bounds the detached log prefetch that follows a
+// generate-from-comments call. The request has already returned, so nothing else
+// would ever cancel it.
+const commentPrefetchTimeout = 2 * time.Minute
+
 func NewNotebookHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, litellmURL, litellmKey string) *NotebookHandler {
 	return &NotebookHandler{
 		pg:             pg,
@@ -191,6 +197,12 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 			forbidden(w)
 			return
 		}
+	} else {
+		// Neither scope is selected, so there is nothing to authorize and
+		// nothing to list. Reported as a bad request, matching the other
+		// handlers here, rather than as a scope lookup that fails downstream.
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return
 	}
 
 	// Parse pagination parameters
@@ -213,22 +225,13 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Get notebooks with pagination
-	var notebooks []storage.Notebook
-	var total int
-	if selectedPrism != "" {
-		notebooks, total, err = h.pg.GetNotebooksByPrism(r.Context(), selectedPrism, limit, offset)
-	} else {
-		notebooks, total, err = h.pg.GetNotebooksByFractal(r.Context(), selectedFractal, limit, offset)
-	}
+	// Get notebooks with pagination, filtered by the search term when one is given
+	notebooks, total, err := h.pg.GetNotebooksByScope(r.Context(), selectedFractal, selectedPrism, searchQuery, limit, offset)
 	if err != nil {
+		log.Printf("[Notebooks] Failed to fetch notebooks: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch notebooks")
 		return
 	}
-
-	// TODO: Implement search filtering if searchQuery is provided
-	// For now, we'll return all notebooks
-	_ = searchQuery
 
 	// Return empty array if no notebooks
 	if notebooks == nil {
@@ -297,6 +300,12 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 		req.MaxResultsPerSection = 1000
 	}
 
+	req.Timezone = strings.TrimSpace(req.Timezone)
+	if req.Timezone != "" && !storage.ValidTimezone(req.Timezone) {
+		api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
+		return
+	}
+
 	// Get selected fractal for notebook isolation
 	selectedFractal, err := h.getSelectedFractal(r)
 	if err != nil {
@@ -313,6 +322,7 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 		TimeRangeStart:       req.TimeRangeStart,
 		TimeRangeEnd:         req.TimeRangeEnd,
 		MaxResultsPerSection: req.MaxResultsPerSection,
+		Timezone:             req.Timezone,
 		CreatedBy:            auth.AttributionUsername(r.Context()),
 	}
 	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
@@ -366,6 +376,7 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 		TimeRangeStart:        notebook.TimeRangeStart,
 		TimeRangeEnd:          notebook.TimeRangeEnd,
 		MaxResultsPerSection:  notebook.MaxResultsPerSection,
+		Timezone:              storage.SafeTimezone(notebook.Timezone),
 		FractalID:             notebook.FractalID,
 		Variables:             notebook.Variables,
 		CreatedBy:             notebook.CreatedBy,
@@ -391,6 +402,7 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 			ChartType:       section.ChartType,
 			ChartConfig:     section.ChartConfig,
 			Tags:            section.Tags,
+			EventTime:       section.EventTime,
 			CreatedAt:       section.CreatedAt,
 			UpdatedAt:       section.UpdatedAt,
 		})
@@ -399,6 +411,60 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data:    notebookResponse,
+	})
+}
+
+// HandleGetNotebookSummary returns a notebook's outline without any cached query
+// results. The search page's notebook rail refreshes on every notebook switch and
+// after every capture, so it must not pull the result blobs that HandleGetNotebook
+// returns; on a notebook of any size those dominate the payload.
+func (h *NotebookHandler) HandleGetNotebookSummary(w http.ResponseWriter, r *http.Request) {
+	notebookID := chi.URLParam(r, "id")
+
+	notebook, err := h.pg.GetNotebook(r.Context(), notebookID)
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
+		return
+	}
+	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	sections, err := h.pg.GetNotebookSectionSummaries(r.Context(), notebookID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch notebook sections")
+		return
+	}
+
+	counts := map[string]int{}
+	for _, sec := range sections {
+		counts[sec.SectionType]++
+	}
+
+	canEdit := false
+	if notebook.FractalID != "" {
+		canEdit = h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleAnalyst)
+	} else if notebook.PrismID != "" {
+		canEdit = h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleAnalyst)
+	}
+
+	api.WriteJSON(w, http.StatusOK, Response{
+		Success: true,
+		Data: NotebookSummary{
+			ID:            notebook.ID,
+			Name:          notebook.Name,
+			Description:   notebook.Description,
+			TimeRangeType: notebook.TimeRangeType,
+			Timezone:      storage.SafeTimezone(notebook.Timezone),
+			FractalID:     notebook.FractalID,
+			PrismID:       notebook.PrismID,
+			CanEdit:       canEdit,
+			SectionCount:  len(sections),
+			Counts:        counts,
+			Sections:      sections,
+			UpdatedAt:     notebook.UpdatedAt,
+		},
 	})
 }
 
@@ -423,8 +489,17 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	if req.Timezone != nil {
+		tz := strings.TrimSpace(*req.Timezone)
+		if !storage.ValidTimezone(tz) {
+			api.WriteError(w, http.StatusBadRequest, "Unknown timezone")
+			return
+		}
+		req.Timezone = &tz
+	}
+
 	// Update notebook
-	err = h.pg.UpdateNotebook(r.Context(), notebookID, req.Name, req.Description, req.TimeRangeType, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
+	err = h.pg.UpdateNotebook(r.Context(), notebookID, req.Name, req.Description, req.TimeRangeType, req.Timezone, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found or unauthorized") {
 			api.WriteError(w, http.StatusNotFound, "Notebook not found or unauthorized")
@@ -472,6 +547,76 @@ func (h *NotebookHandler) HandleDeleteNotebook(w http.ResponseWriter, r *http.Re
 }
 
 // HandleCreateSection creates a new section in a notebook
+// creatableSectionTypes are the section types a client may create directly.
+// comment_context is included: it is the evidence section, and pinning a log
+// from search is the same record the comment generator writes.
+var creatableSectionTypes = map[string]bool{
+	"markdown":        true,
+	"query":           true,
+	"comment_context": true,
+	"ai_summary":      true,
+	"ai_attack_chain": true,
+}
+
+var evidenceLogIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8,64}$`)
+
+// validateEvidenceContent checks that an evidence section's content is the JSON
+// object its renderer expects. Without this the section renders as an error for
+// everyone reading the notebook, with no way to tell why from the UI.
+func validateEvidenceContent(content string) error {
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &data); err != nil {
+		return fmt.Errorf("evidence content must be a JSON object")
+	}
+	logID, ok := data["log_id"].(string)
+	if !ok || logID == "" {
+		return fmt.Errorf("evidence content requires a log_id")
+	}
+	if !evidenceLogIDPattern.MatchString(logID) {
+		return fmt.Errorf("evidence log_id is not a valid log identifier")
+	}
+	return nil
+}
+
+// maxSectionTitleChars matches notebook_sections.title's column width. Cutting
+// here turns a client's long title into a short one instead of a 500 from
+// Postgres, and cuts on runes so the result is still valid UTF-8.
+const maxSectionTitleChars = 255
+
+func clampSectionTitle(title *string) *string {
+	if title == nil {
+		return nil
+	}
+	clamped := truncateRunes(*title, maxSectionTitleChars)
+	if clamped == *title {
+		return title
+	}
+	return &clamped
+}
+
+// truncateRunes cuts to at most n characters. Slicing a Go string cuts bytes,
+// which splits a multibyte rune whenever the cut lands mid-character: Postgres
+// rejects the result as invalid UTF-8 and the whole section is dropped with
+// only a log line to say why.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
+// normalizeEventTime stores event times in UTC and treats the zero value as
+// absent, so a client that serializes an unset time does not pin the section
+// to year one.
+func normalizeEventTime(t *time.Time) *time.Time {
+	if t == nil || t.IsZero() {
+		return nil
+	}
+	utc := t.UTC()
+	return &utc
+}
+
 func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Request) {
 	notebookID := chi.URLParam(r, "id")
 
@@ -493,9 +638,16 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 	}
 
 	// Validate input
-	if req.SectionType != "markdown" && req.SectionType != "query" && req.SectionType != "ai_summary" && req.SectionType != "ai_attack_chain" {
-		api.WriteError(w, http.StatusBadRequest, "section_type must be 'markdown', 'query', 'ai_summary', or 'ai_attack_chain'")
+	if !creatableSectionTypes[req.SectionType] {
+		api.WriteError(w, http.StatusBadRequest, "section_type must be 'markdown', 'query', 'comment_context', 'ai_summary', or 'ai_attack_chain'")
 		return
+	}
+
+	if req.SectionType == "comment_context" {
+		if err := validateEvidenceContent(req.Content); err != nil {
+			api.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	if req.SectionType == "ai_summary" || req.SectionType == "ai_attack_chain" {
@@ -503,7 +655,7 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 			api.WriteError(w, http.StatusServiceUnavailable, "AI is not configured")
 			return
 		}
-		sections, err := h.pg.GetNotebookSections(r.Context(), notebookID)
+		sections, err := h.pg.GetNotebookSectionSummaries(r.Context(), notebookID)
 		if err == nil {
 			for _, s := range sections {
 				if s.SectionType == req.SectionType {
@@ -522,14 +674,25 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	orderIndex := req.OrderIndex
+	if req.Append {
+		next, err := h.pg.NextNotebookSectionOrderIndex(r.Context(), notebookID)
+		if err != nil {
+			api.WriteError(w, http.StatusInternalServerError, "Failed to place section")
+			return
+		}
+		orderIndex = next
+	}
+
 	// Create section
 	section := storage.NotebookSection{
 		NotebookID:  notebookID,
 		SectionType: req.SectionType,
-		Title:       req.Title,
+		Title:       clampSectionTitle(req.Title),
 		Content:     req.Content,
-		OrderIndex:  req.OrderIndex,
+		OrderIndex:  orderIndex,
 		Tags:        req.Tags,
+		EventTime:   normalizeEventTime(req.EventTime),
 	}
 
 	newSection, err := h.pg.InsertNotebookSection(r.Context(), section)
@@ -579,7 +742,15 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 			chartConfigJSON = &s
 		}
 	}
-	err = h.pg.UpdateNotebookSection(r.Context(), sectionID, req.Title, req.Content, renderedContent, chartConfigJSON, req.Tags)
+	err = h.pg.UpdateNotebookSection(r.Context(), sectionID, storage.NotebookSectionUpdate{
+		Title:           clampSectionTitle(req.Title),
+		Content:         req.Content,
+		RenderedContent: renderedContent,
+		ChartConfig:     chartConfigJSON,
+		Tags:            req.Tags,
+		EventTime:       normalizeEventTime(req.EventTime),
+		ClearEventTime:  req.ClearEventTime,
+	})
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to update section")
 		return
@@ -602,6 +773,11 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 	}
 	if req.Tags != nil {
 		sseData["tags"] = *req.Tags
+	}
+	if req.ClearEventTime {
+		sseData["event_time"] = nil
+	} else if et := normalizeEventTime(req.EventTime); et != nil {
+		sseData["event_time"] = et
 	}
 	h.broadcastSSE(r, notebookID, sse.Event{
 		Type: sse.SectionUpdated,
@@ -1042,7 +1218,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			return
 		}
 
-		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &result, nil, nil, nil)
+		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, storage.NotebookSectionUpdate{Title: section.Title, Content: &result})
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "Failed to save attack chain summary")
 			return
@@ -1061,7 +1237,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			return
 		}
 
-		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, section.Title, &summary, nil, nil, nil)
+		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, storage.NotebookSectionUpdate{Title: section.Title, Content: &summary})
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "Failed to save summary")
 			return
@@ -1316,6 +1492,7 @@ type notebookYAML struct {
 	Description string           `yaml:"description,omitempty"`
 	TimeRange   string           `yaml:"time_range_type,omitempty"`
 	MaxResults  int              `yaml:"max_results_per_section,omitempty"`
+	Timezone    string           `yaml:"timezone,omitempty"`
 	Variables   []nbVariableYAML `yaml:"variables,omitempty"`
 	Sections    []sectionYAML    `yaml:"sections"`
 }
@@ -1328,6 +1505,7 @@ type sectionYAML struct {
 	ChartConfig interface{} `yaml:"chart_config,omitempty"`
 	Tags        []string    `yaml:"tags,omitempty"`
 	OrderIndex  int         `yaml:"order_index"`
+	EventTime   *time.Time  `yaml:"event_time,omitempty"`
 }
 
 // HandleGetNotebookTags returns all distinct tags used across sections of a notebook.
@@ -1379,6 +1557,7 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 		Description: notebook.Description,
 		TimeRange:   notebook.TimeRangeType,
 		MaxResults:  notebook.MaxResultsPerSection,
+		Timezone:    storage.SafeTimezone(notebook.Timezone),
 	}
 
 	if notebook.Variables != nil && len(notebook.Variables) > 0 {
@@ -1409,6 +1588,7 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 		if len(s.Tags) > 0 {
 			sec.Tags = s.Tags
 		}
+		sec.EventTime = s.EventTime
 		export.Sections = append(export.Sections, sec)
 	}
 
@@ -1475,7 +1655,10 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		TimeRangeType:        imported.TimeRange,
 		MaxResultsPerSection: imported.MaxResults,
 		Variables:            varsJSON,
-		CreatedBy:            auth.AttributionUsername(r.Context()),
+		// An unknown or absent zone falls back to UTC rather than failing the
+		// import, matching how a stale stored zone is handled on read.
+		Timezone:  storage.SafeTimezone(imported.Timezone),
+		CreatedBy: auth.AttributionUsername(r.Context()),
 	}
 	if selectedPrism != "" {
 		nb.PrismID = selectedPrism
@@ -1528,6 +1711,7 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		if len(sec.Tags) > 0 {
 			section.Tags = sec.Tags
 		}
+		section.EventTime = normalizeEventTime(sec.EventTime)
 		if _, err := h.pg.InsertNotebookSection(r.Context(), section); err != nil {
 			fmt.Printf("[Notebooks] Failed to import section %d: %v\n", i, err)
 		}
@@ -1588,16 +1772,33 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 
 	notebookName := fmt.Sprintf("Notebook: %s", req.Tag)
 
-	// Delete existing notebook with this name if it exists
-	existing, err := h.pg.GetNotebookByNameAndFractal(r.Context(), notebookName, selectedFractal)
+	// Generating replaces any notebook of the same name outright, discarding
+	// whatever was added to it by hand since the last run. That is destructive
+	// enough to require the caller to say so: without Overwrite this reports the
+	// conflict and changes nothing.
+	existing, err := h.pg.GetNotebookByNameAndScope(r.Context(), notebookName, selectedFractal, selectedPrism)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to check existing notebook: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to check for existing notebook")
 		return
 	}
 	if existing != nil {
+		if !req.Overwrite {
+			api.WriteJSON(w, http.StatusConflict, Response{
+				Success: false,
+				Error:   fmt.Sprintf("A notebook named %q already exists. Regenerating replaces it and discards any sections added to it since.", notebookName),
+				Data: map[string]interface{}{
+					"conflict":    true,
+					"notebook_id": existing.ID,
+					"name":        existing.Name,
+				},
+			})
+			return
+		}
 		if err := h.pg.DeleteNotebook(r.Context(), existing.ID); err != nil {
 			log.Printf("[Notebooks] Failed to delete existing notebook: %v", err)
+			api.WriteError(w, http.StatusInternalServerError, "Failed to replace the existing notebook")
+			return
 		}
 	}
 
@@ -1664,13 +1865,14 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		}
 	}
 
-	// Create a comment_context section for each comment, collecting section/log_id pairs for prefetch
+	// Create a comment_context section for each comment, collecting section/log_id
+	// pairs plus the event-time span they cover so the prefetch can bound its scan.
 	type sectionLogID struct {
 		SectionID string
 		LogID     string
-		FractalID string
 	}
 	var logIDSections []sectionLogID
+	var logsFrom, logsTo time.Time
 
 	for _, c := range comments {
 		displayName := c.AuthorDisplayName
@@ -1679,14 +1881,16 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		}
 
 		titleText := c.Text
-		if len(titleText) > 80 {
-			titleText = titleText[:80] + "..."
+		if trimmed := truncateRunes(titleText, 80); trimmed != titleText {
+			titleText = trimmed + "..."
 		}
-		sectionTitle := fmt.Sprintf("%s: %s", displayName, titleText)
+		sectionTitle := truncateRunes(fmt.Sprintf("%s: %s", displayName, titleText), maxSectionTitleChars)
 
 		gravatarInitial := c.AuthorGravatarInitial
-		if gravatarInitial == "" && len(c.Author) > 0 {
-			gravatarInitial = strings.ToUpper(string(c.Author[0]))
+		if gravatarInitial == "" {
+			if runes := []rune(c.Author); len(runes) > 0 {
+				gravatarInitial = strings.ToUpper(string(runes[0]))
+			}
 		}
 
 		contextData := map[string]string{
@@ -1698,6 +1902,11 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 			"query":                   c.Query,
 			"log_id":                  c.LogID,
 			"commented_at":            c.CreatedAt.Format(time.RFC3339),
+			// Event time, not comment time: pivoting back into search has to
+			// centre on when the log happened, which can predate the comment by
+			// days. Sections generated before this was stored fall back to the
+			// prefetched row's timestamp.
+			"log_timestamp": c.LogTimestamp.UTC().Format(time.RFC3339),
 		}
 		contentBytes, err := json.Marshal(contextData)
 		if err != nil {
@@ -1711,6 +1920,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 			Title:       &sectionTitle,
 			Content:     string(contentBytes),
 			OrderIndex:  orderIdx,
+			EventTime:   normalizeEventTime(&c.LogTimestamp),
 		}
 		created, err := h.pg.InsertNotebookSection(r.Context(), section)
 		if err != nil {
@@ -1719,31 +1929,51 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 			logIDSections = append(logIDSections, sectionLogID{
 				SectionID: created.ID,
 				LogID:     c.LogID,
-				FractalID: selectedFractal,
 			})
+			if logsFrom.IsZero() || c.LogTimestamp.Before(logsFrom) {
+				logsFrom = c.LogTimestamp
+			}
+			if logsTo.IsZero() || c.LogTimestamp.After(logsTo) {
+				logsTo = c.LogTimestamp
+			}
 		}
 		orderIdx++
 	}
 
-	// Prefetch log data for all comment_context sections asynchronously
+	// Prefetch log data for all comment_context sections asynchronously. The
+	// lookup is one bounded batch rather than a point query per comment: logs is
+	// ordered by (timestamp, log_id), so the event-time span the comments cover
+	// prunes granules instead of bloom-checking the fractal's whole history once
+	// per section.
 	if h.ch != nil && len(logIDSections) > 0 {
-		go func(sections []sectionLogID) {
+		go func(sections []sectionLogID, fractalID string, from, to time.Time) {
+			ids := make([]string, 0, len(sections))
 			for _, s := range sections {
-				sql := fmt.Sprintf(
-					"SELECT timestamp, log_id, norm_log AS fields FROM %s WHERE fractal_id = '%s' AND log_id = '%s' LIMIT 1",
-					h.ch.ReadTable(),
-					strings.ReplaceAll(s.FractalID, "'", "\\'"),
-					strings.ReplaceAll(s.LogID, "'", "\\'"),
-				)
-				rows, err := h.ch.Query(context.Background(), sql)
-				if err != nil {
-					log.Printf("[Notebooks] Failed to prefetch log_id %s: %v", s.LogID, err)
+				ids = append(ids, s.LogID)
+			}
+
+			readCtx, cancelRead := context.WithTimeout(context.Background(), commentPrefetchTimeout)
+			defer cancelRead()
+
+			rowsByID, err := h.ch.GetLogDisplayRowsByIDs(readCtx, fractalID, ids, from, to)
+			if err != nil {
+				log.Printf("[Notebooks] Failed to prefetch %d comment logs: %v", len(ids), err)
+				return
+			}
+
+			// The writes get their own budget: a read that used most of its own
+			// would otherwise cancel every save and discard the rows just fetched.
+			ctx, cancel := context.WithTimeout(context.Background(), commentPrefetchTimeout)
+			defer cancel()
+
+			for _, s := range sections {
+				row, ok := rowsByID[s.LogID]
+				if !ok {
 					continue
 				}
-
 				resultData := map[string]interface{}{
-					"results":       rows,
-					"count":         len(rows),
+					"results":       []map[string]interface{}{row},
+					"count":         1,
 					"execution_ms":  0,
 					"chart_type":    "table",
 					"is_aggregated": false,
@@ -1753,12 +1983,11 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					log.Printf("[Notebooks] Failed to marshal log results: %v", err)
 					continue
 				}
-
-				if err := h.pg.UpdateSectionQueryResults(context.Background(), s.SectionID, string(resultsJSON), nil, nil); err != nil {
+				if err := h.pg.UpdateSectionQueryResults(ctx, s.SectionID, string(resultsJSON), nil, nil); err != nil {
 					log.Printf("[Notebooks] Failed to save prefetched log results: %v", err)
 				}
 			}
-		}(logIDSections)
+		}(logIDSections, commentFractal, logsFrom, logsTo)
 	}
 
 	// Generate AI summary or attack chain asynchronously if enabled
@@ -1805,7 +2034,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					return
 				}
 				aiTitle := "AI Attack Chain Summary"
-				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, &aiTitle, &result, nil, nil, nil); err != nil {
+				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, storage.NotebookSectionUpdate{Title: &aiTitle, Content: &result}); err != nil {
 					log.Printf("[Notebooks] Failed to save AI attack chain: %v", err)
 				}
 			} else {
@@ -1815,7 +2044,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					return
 				}
 				aiTitle := "AI Summary"
-				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, &aiTitle, &summary, nil, nil, nil); err != nil {
+				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, storage.NotebookSectionUpdate{Title: &aiTitle, Content: &summary}); err != nil {
 					log.Printf("[Notebooks] Failed to save AI summary: %v", err)
 				}
 			}

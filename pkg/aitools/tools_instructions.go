@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -7,9 +7,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerInstructionTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "list_instruction_libraries",
+func registerInstructionTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "list_instruction_libraries",
+		Annotations: readOnly(),
 		Description: "List this fractal's instruction libraries.\n\n" +
 			"Libraries hold the operator's own guidance: playbooks, triage rules, escalation " +
 			"procedures. Worth reading at the start of an investigation, since it is where " +
@@ -17,32 +18,37 @@ func registerInstructionTools(s *mcp.Server, c *Client) {
 			"Returns libraries with names, descriptions, page counts, and sync status.",
 	}, listInstructionLibraries)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_instruction_library",
+	add(d, &mcp.Tool{
+		Name:        "get_instruction_library",
+		Annotations: readOnly(),
 		Description: "Get a library and the index of its pages.\n\n" +
 			"Page content is not included; load pages selectively with read_instruction_page.",
 	}, getInstructionLibrary)
 
-	register(s, c, &mcp.Tool{
+	add(d, &mcp.Tool{
 		Name:        "read_instruction_page",
+		Annotations: readOnly(),
 		Description: "Read one instruction page in full: its name, description, and instruction text.",
 	}, readInstructionPage)
 
-	register(s, c, &mcp.Tool{
+	add(d, &mcp.Tool{
 		Name:        "create_instruction_library",
+		Annotations: mutates(),
 		Description: "Create an instruction library.",
 	}, createInstructionLibrary)
 
-	register(s, c, &mcp.Tool{
-		Name: "create_instruction_page",
+	add(d, &mcp.Tool{
+		Name:        "create_instruction_page",
+		Annotations: mutates(),
 		Description: "Add a page to an instruction library.\n\n" +
 			"Pages marked always_include go into every AI conversation's system prompt; the " +
 			"rest appear in an index and are loaded on demand. Reserve always_include for " +
 			"guidance that applies to every investigation, since it costs context on all of them.",
 	}, createInstructionPage)
 
-	register(s, c, &mcp.Tool{
-		Name: "update_instruction_page",
+	add(d, &mcp.Tool{
+		Name:        "update_instruction_page",
+		Annotations: mutates(),
 		Description: "Replace an instruction page's contents.\n\n" +
 			"Every field is written, so read the page first unless you intend to overwrite it.",
 	}, updateInstructionPage)
@@ -52,11 +58,11 @@ type libraryIDArgs struct {
 	LibraryID string `json:"library_id" jsonschema:"The library UUID."`
 }
 
-func listInstructionLibraries(ctx context.Context, c *Client, _ noArgs) (any, error) {
+func listInstructionLibraries(ctx context.Context, c Client, _ noArgs) (any, error) {
 	return c.Get(ctx, "/instruction-libraries", nil)
 }
 
-func getInstructionLibrary(ctx context.Context, c *Client, in libraryIDArgs) (any, error) {
+func getInstructionLibrary(ctx context.Context, c Client, in libraryIDArgs) (any, error) {
 	return c.Get(ctx, "/instruction-libraries/"+url.PathEscape(in.LibraryID), nil)
 }
 
@@ -65,7 +71,7 @@ type readInstructionPageArgs struct {
 	PageID    string `json:"page_id" jsonschema:"The page UUID."`
 }
 
-func readInstructionPage(ctx context.Context, c *Client, in readInstructionPageArgs) (any, error) {
+func readInstructionPage(ctx context.Context, c Client, in readInstructionPageArgs) (any, error) {
 	return c.Get(ctx, "/instruction-libraries/"+url.PathEscape(in.LibraryID)+
 		"/pages/"+url.PathEscape(in.PageID), nil)
 }
@@ -76,7 +82,7 @@ type createInstructionLibraryArgs struct {
 	IsDefault   bool   `json:"is_default,omitempty" jsonschema:"Make it the fractal's default library. Only one can be default."`
 }
 
-func createInstructionLibrary(ctx context.Context, c *Client, in createInstructionLibraryArgs) (any, error) {
+func createInstructionLibrary(ctx context.Context, c Client, in createInstructionLibraryArgs) (any, error) {
 	return c.Post(ctx, "/instruction-libraries", map[string]any{
 		"name":        in.Name,
 		"description": in.Description,
@@ -111,7 +117,7 @@ type createInstructionPageArgs struct {
 	instructionPage
 }
 
-func createInstructionPage(ctx context.Context, c *Client, in createInstructionPageArgs) (any, error) {
+func createInstructionPage(ctx context.Context, c Client, in createInstructionPageArgs) (any, error) {
 	return c.Post(ctx, "/instruction-libraries/"+url.PathEscape(in.LibraryID)+"/pages", in.body())
 }
 
@@ -121,7 +127,7 @@ type updateInstructionPageArgs struct {
 	instructionPage
 }
 
-func updateInstructionPage(ctx context.Context, c *Client, in updateInstructionPageArgs) (any, error) {
+func updateInstructionPage(ctx context.Context, c Client, in updateInstructionPageArgs) (any, error) {
 	return c.Put(ctx, "/instruction-libraries/"+url.PathEscape(in.LibraryID)+
 		"/pages/"+url.PathEscape(in.PageID), in.body())
 }

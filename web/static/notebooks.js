@@ -794,10 +794,10 @@ const Notebooks = {
             `;
 
             // Search icon (magnifying glass) to open query in search view
-            const searchBtn = ccQuery ? `<button class="section-control-btn comment-context-search-icon" onclick="Notebooks.openQueryInSearch(this)" data-query="${Utils.escapeHtml(ccQuery)}" title="Open query in search"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="2"/><line x1="10.5" y1="10.5" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>` : '';
+            const searchBtn = ccQuery ? `<button class="section-control-btn comment-context-search-icon" onclick="Notebooks.openQueryInSearch(this)" data-query="${Utils.escapeHtml(ccQuery)}" data-section-id="${section.id}" title="Open query in search"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="2"/><line x1="10.5" y1="10.5" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>` : '';
 
             // Target icon to open log_id in search view
-            const targetBtn = ccLogId ? `<button class="section-control-btn comment-context-search-icon" onclick="Notebooks.openLogIdInSearch('${Utils.escapeJs(ccLogId)}')" title="Find log in search"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="8" y1="0.5" x2="8" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="0.5" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13" y1="8" x2="15.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>` : '';
+            const targetBtn = ccLogId ? `<button class="section-control-btn comment-context-search-icon" onclick="Notebooks.openLogIdInSearch('${Utils.escapeJs(ccLogId)}','${section.id}')" title="Find log in search"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="8" y1="0.5" x2="8" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="0.5" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13" y1="8" x2="15.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>` : '';
 
             // Play button to fetch log_id
             const playBtn = ccLogId ? `<button class="execute-query-btn" onclick="Notebooks.executeCommentContextSection('${section.id}', event)" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Fetch log">▶</button>` : '';
@@ -847,6 +847,7 @@ const Notebooks = {
                 <div class="section-header">
                     <div class="section-type">
                         ${titleHtml}
+                        ${this.renderEventTimeChip(section)}
                     </div>
                     <div class="section-controls">
                         ${controlsHtml}
@@ -859,6 +860,92 @@ const Notebooks = {
         `;
 
         return sectionHtml;
+    },
+
+    // ── Event time ───────────────────────────────────────────────────────────
+
+    // When the section's subject happened, which is what the chronological
+    // reading orders by. Shown on every section so a notebook that is meant to
+    // be a timeline can be checked against one.
+    renderEventTimeChip(section) {
+        const iso = section.event_time || null;
+        const label = iso ? TZ.format(iso, 'full') : 'set time';
+        const title = iso ? TZ.title(iso) : 'Place this section on the notebook timeline';
+        return `<button class="section-event-time${iso ? '' : ' unset'}" data-section-id="${section.id}" onclick="Notebooks.openEventTimeInput('${section.id}', this)" title="${Utils.escapeHtml(title)}">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            ${Utils.escapeHtml(label)}
+        </button>`;
+    },
+
+    // Wall clock in the viewer's display zone, same contract as the absolute
+    // time-range inputs: a native datetime-local would be browser-local and
+    // silently disagree with every timestamp rendered on the page.
+    openEventTimeInput(sectionId, chip) {
+        if (document.getElementById(`event-time-input-${sectionId}`)) return;
+        const section = (this.currentNotebook?.sections || []).find(s => s.id === sectionId);
+        if (!section) return;
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.id = `event-time-input-${sectionId}`;
+        input.className = 'section-event-time-input';
+        input.placeholder = 'YYYY-MM-DD HH:MM:SS';
+        input.spellcheck = false;
+        input.setAttribute('autocomplete', 'off');
+        if (section.event_time) input.value = TZ.formatInput(section.event_time, true);
+
+        const restore = () => {
+            const holder = document.createElement('span');
+            holder.innerHTML = this.renderEventTimeChip(section);
+            input.replaceWith(holder.firstElementChild);
+        };
+
+        let settled = false;
+        const commit = async () => {
+            if (settled) return;
+            settled = true;
+            const value = input.value.trim();
+            if (!value) {
+                if (section.event_time) await this.saveEventTime(section, null);
+                restore();
+                return;
+            }
+            const ms = TZ.parseWallClock(value);
+            if (!Number.isFinite(ms)) {
+                this.showError('Event time must look like YYYY-MM-DD HH:MM:SS');
+                restore();
+                return;
+            }
+            await this.saveEventTime(section, new Date(ms).toISOString());
+            restore();
+        };
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); commit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); settled = true; restore(); }
+        });
+        input.addEventListener('blur', () => commit());
+
+        chip.replaceWith(input);
+        input.focus();
+        input.select();
+    },
+
+    async saveEventTime(section, iso) {
+        const body = iso ? { event_time: iso } : { clear_event_time: true };
+        try {
+            const res = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${section.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save event time');
+            section.event_time = iso || null;
+        } catch (err) {
+            this.showError(err.message);
+        }
     },
 
     // ── Tag rendering ────────────────────────────────────────────────────────
@@ -1401,9 +1488,9 @@ const Notebooks = {
     /**
      * Open a log_id query in the search view
      */
-    openLogIdInSearch(logId) {
+    openLogIdInSearch(logId, sectionId) {
         const query = 'log_id="' + logId + '"';
-        this._openInSearch(query);
+        this._openInSearch(query, this.sectionEventTime(sectionId));
     },
 
     /**
@@ -1411,13 +1498,79 @@ const Notebooks = {
      */
     openQueryInSearch(el) {
         const query = el.dataset.query;
-        if (query) this._openInSearch(query);
+        if (query) this._openInSearch(query, this.sectionEventTime(el.dataset.sectionId));
     },
 
-    _openInSearch(query) {
+    // Event time a section points at, as an ISO string, or null. Sections
+    // written before event_time existed fall back to the log timestamp stored
+    // in the comment context, then the prefetched row, then the comment time.
+    sectionEventTime(sectionId) {
+        if (!sectionId || !this.currentNotebook) return null;
+        const section = (this.currentNotebook.sections || []).find(s => s.id === sectionId);
+        if (!section) return null;
+        if (section.event_time) return section.event_time;
+        if (section.section_type !== 'comment_context') return null;
+
+        let data = {};
+        try { data = JSON.parse(section.content || '{}'); } catch (e) { return null; }
+        if (data.log_timestamp) return data.log_timestamp;
+
+        try {
+            const results = this.parseSectionResults(section.last_results);
+            const ts = results && results.results && results.results[0] && results.results[0].timestamp;
+            if (ts) return ts;
+        } catch (e) { /* fall through */ }
+
+        return data.commented_at || null;
+    },
+
+    // Parse a section's cached results. The blob is JSON, but has been observed
+    // base64-wrapped, so both are accepted here rather than at each call site.
+    parseSectionResults(raw) {
+        if (!raw) return null;
+        if (typeof raw !== 'string') return raw;
+        let text = raw;
+        if (/^[A-Za-z0-9+/=]+$/.test(text)) {
+            try { text = atob(text); } catch (e) { /* use as-is */ }
+        }
+        return JSON.parse(text);
+    },
+
+    // Zone options for the notebook bucket-timezone select. UTC and the viewer's
+    // own zone lead because they are the two anyone reaches for; a zone set from
+    // another device stays selectable even if this engine does not enumerate it.
+    zoneOptionsHTML() {
+        const current = this.currentNotebook?.timezone || 'UTC';
+        const opt = (z) => `<option value="${Utils.escapeAttr(z)}"${z === current ? ' selected' : ''}>${Utils.escapeHtml(z)}</option>`;
+        const browser = window.TZ ? TZ.browserZone() : 'UTC';
+        const lead = ['UTC'];
+        if (browser !== 'UTC') lead.push(browser);
+        if (!lead.includes(current)) lead.push(current);
+        const all = (window.TZ ? TZ.zoneList() : ['UTC']).filter(z => !lead.includes(z));
+        return `<optgroup label="Common">${lead.map(opt).join('')}</optgroup>` +
+               `<optgroup label="All">${all.map(opt).join('')}</optgroup>`;
+    },
+
+    // Window applied around an event when pivoting into search, in ms. Wide
+    // enough to carry surrounding context, tight enough to stay cheap.
+    _pivotWindowMs: 60 * 60 * 1000,
+
+    _openInSearch(query, centerISO) {
         const input = document.getElementById('queryInput');
         if (input) input.value = query;
         if (window.SyntaxHighlight) SyntaxHighlight.updateHighlight('queryInput', 'queryHighlight');
+
+        // Without this the query runs against whatever range the search tab was
+        // left on, so pivoting to an older investigation silently returns nothing.
+        const center = centerISO ? new Date(centerISO) : null;
+        if (center && !isNaN(center.getTime()) && window.TimePicker) {
+            TimePicker.applyState({
+                type: 'custom',
+                customStart: new Date(center.getTime() - this._pivotWindowMs).toISOString(),
+                customEnd: new Date(center.getTime() + this._pivotWindowMs).toISOString()
+            });
+        }
+
         if (window.App) App.showFractalViewTab('search');
         if (window.QueryExecutor) setTimeout(() => QueryExecutor.execute(), 100);
     },
@@ -1950,7 +2103,10 @@ const Notebooks = {
             query_type: 'bql',
             start: timeRange.start,
             end: timeRange.end,
-            max_results: this.currentNotebook.max_results_per_section || 1000
+            max_results: this.currentNotebook.max_results_per_section || 1000,
+            // Buckets snap to the notebook's zone, not the viewer's: one cached
+            // result is read by everyone on the notebook.
+            timezone: this.currentNotebook.timezone || 'UTC'
         };
         // Variables substitute server-side (shared with search/dashboards).
         const _vars = this.variablesPayload();
@@ -2019,7 +2175,10 @@ const Notebooks = {
                 query_type: 'bql',
                 start: timeRange.start,
                 end: timeRange.end,
-                max_results: this.currentNotebook.max_results_per_section || 1000
+                max_results: this.currentNotebook.max_results_per_section || 1000,
+                // Buckets snap to the notebook's zone, not the viewer's: one
+                // cached result is read by everyone on the notebook.
+                timezone: this.currentNotebook.timezone || 'UTC'
             };
             // Variables substitute server-side (shared with search/dashboards).
             const _vars = this.variablesPayload();
@@ -3290,7 +3449,8 @@ const Notebooks = {
                 time_range_type: originalNotebook.time_range_type,
                 time_range_start: originalNotebook.time_range_start,
                 time_range_end: originalNotebook.time_range_end,
-                max_results_per_section: originalNotebook.max_results_per_section
+                max_results_per_section: originalNotebook.max_results_per_section,
+                timezone: originalNotebook.timezone || 'UTC'
             };
 
             // Create the duplicate notebook
@@ -3450,6 +3610,16 @@ const Notebooks = {
                                    value="${this.currentNotebook.max_results_per_section || 1000}" min="1" max="10000"
                                    style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
                         </div>
+                        <div class="form-group">
+                            <label for="settingsNotebookTimezone">Bucket Timezone</label>
+                            <select id="settingsNotebookTimezone" name="timezone"
+                                    style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
+                                ${this.zoneOptionsHTML()}
+                            </select>
+                            <small style="color: var(--text-muted); display: block; margin-top: 0.35rem;">
+                                Day and hour boundaries in query sections snap to this zone for everyone reading the notebook.
+                            </small>
+                        </div>
                         <div class="modal-buttons">
                             <button type="button" class="btn-secondary" onclick="Notebooks.closeNotebookSettingsModal()">Cancel</button>
                             <button type="submit" class="btn-primary">Update Settings</button>
@@ -3554,7 +3724,8 @@ const Notebooks = {
                 name: formData.get('name'),
                 description: formData.get('description') || '',
                 time_range_type: formData.get('time_range_type'),
-                max_results_per_section: parseInt(formData.get('max_results_per_section')) || 1000
+                max_results_per_section: parseInt(formData.get('max_results_per_section')) || 1000,
+                timezone: formData.get('timezone') || 'UTC'
             };
 
 
@@ -3605,6 +3776,11 @@ const Notebooks = {
             this.showSuccess('Notebook settings updated successfully!');
             this.closeNotebookSettingsModal();
 
+            // Cached results were bucketed in the previous zone, so a zone change
+            // makes every executed query section stale. Notebooks are manual-run,
+            // so flag them rather than re-running the whole notebook unasked.
+            const zoneChanged = data.timezone !== (this.currentNotebook.timezone || 'UTC');
+
             // Update the current notebook data
             Object.assign(this.currentNotebook, data);
             this.currentNotebook.updated_at = new Date().toISOString();
@@ -3613,6 +3789,10 @@ const Notebooks = {
             const titleEl = document.getElementById('notebookTitle');
             if (titleEl && data.name) {
                 titleEl.textContent = data.name;
+            }
+
+            if (zoneChanged) {
+                this.markQuerySectionsStale();
             }
 
         } catch (error) {

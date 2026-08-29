@@ -1,6 +1,10 @@
 package query
 
 import (
+	"bifract/pkg/parser"
+
+	"time"
+
 	"regexp"
 	"strings"
 	"testing"
@@ -10,7 +14,7 @@ import (
 func spawnRow(parent, child string) map[string]interface{} {
 	return map[string]interface{}{
 		"parent": parent, "child": child, "label": "", "event_type": "spawn",
-		"anomaly_score": 0.5, "log_id": "l", "timestamp": "t", "fractal_id": "f",
+		"anomaly_score": 0.5, "prevalence": 0.25, "log_id": "l", "timestamp": "t", "fractal_id": "f",
 		"command_line": "", "proc_user": "", "host": "h", "parent_label": "p.exe",
 	}
 }
@@ -18,7 +22,7 @@ func spawnRow(parent, child string) map[string]interface{} {
 func leafRow(parent, child string, score float64) map[string]interface{} {
 	return map[string]interface{}{
 		"parent": parent, "child": child, "label": "x", "event_type": "net_connect",
-		"anomaly_score": score, "log_id": "l", "timestamp": "t", "fractal_id": "f",
+		"anomaly_score": score, "prevalence": 0.25, "log_id": "l", "timestamp": "t", "fractal_id": "f",
 		"command_line": "", "proc_user": "", "host": "h", "parent_label": "",
 	}
 }
@@ -46,9 +50,11 @@ func TestEmitLiteralEdgeSource_AliasesOnlyOnFirstMember(t *testing.T) {
 	if members := strings.Count(sql, "SELECT "); members != len(rows) {
 		t.Errorf("expected %d UNION members, got %d", len(rows), members)
 	}
-	// anomaly_score must be typed on every member so the union column type is stable.
-	if n := strings.Count(sql, "toFloat64("); n != len(rows) {
-		t.Errorf("expected toFloat64 on all %d members, got %d", len(rows), n)
+	// Every numeric column must be typed on every member so union column types stay stable.
+	want := len(rows) * len(provenanceNumericColumns)
+	if n := strings.Count(sql, "toFloat64("); n != want {
+		t.Errorf("expected toFloat64 %d times (%d rows x %d numeric cols), got %d",
+			want, len(rows), len(provenanceNumericColumns), n)
 	}
 }
 
@@ -79,5 +85,36 @@ func TestEmitLiteralEdgeSource_OverflowWhenBackboneTooLarge(t *testing.T) {
 	_, _, overflow := emitLiteralEdgeSource(rows, provenanceColumns, provenanceNumericColumns, 200)
 	if !overflow {
 		t.Fatal("spawn backbone exceeding budget must signal overflow")
+	}
+}
+
+// The scoring SQL's projection and provenanceColumns must stay in lockstep: emitLiteralEdgeSource
+// builds its literal rows from provenanceColumns, so a column added to one and not the other
+// silently emits nulls (or a UNION type mismatch) rather than failing to compile.
+func TestScoringSQLProjectsExactlyProvenanceColumns(t *testing.T) {
+	opts := parser.QueryOptions{
+		StartTime: time.Now().Add(-time.Hour),
+		EndTime:   time.Now(),
+		MaxRows:   100,
+	}
+	sql, err := parser.BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, 10, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Statement opens with a WITH block, so find the outer projection rather than slicing from 0.
+	i := strings.Index(sql, "SELECT parent,")
+	if i < 0 {
+		t.Fatal("no outer projection found in scoring SQL")
+	}
+	head := sql[i+len("SELECT ") : i+strings.Index(sql[i:], " FROM (")]
+	got := strings.Split(strings.ReplaceAll(head, " ", ""), ",")
+	if len(got) != len(provenanceColumns) {
+		t.Fatalf("scoring SQL projects %d columns, provenanceColumns has %d\n got: %v\nwant: %v",
+			len(got), len(provenanceColumns), got, provenanceColumns)
+	}
+	for i, c := range provenanceColumns {
+		if got[i] != c {
+			t.Errorf("column %d: SQL projects %q, provenanceColumns says %q", i, got[i], c)
+		}
 	}
 }

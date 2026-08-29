@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -9,9 +9,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func registerModelTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "list_models",
+func registerModelTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "list_models",
+		Annotations: readOnly(),
 		Description: "List the behavioral models defined in this fractal.\n\n" +
 			"Models are baselines the platform maintains continuously (beaconing intervals, " +
 			"long-lived connections, first-seen values, volume norms) rather than " +
@@ -20,13 +21,15 @@ func registerModelTools(s *mcp.Server, c *Client) {
 			"Returns each model's id, name, type, status, and the BQL source query that feeds it.",
 	}, listModels)
 
-	register(s, c, &mcp.Tool{
+	add(d, &mcp.Tool{
 		Name:        "get_model",
+		Annotations: readOnly(),
 		Description: "Get one model's full definition, status, and backfill state.",
 	}, getModel)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_model_data",
+	add(d, &mcp.Tool{
+		Name:        "get_model_data",
+		Annotations: readOnly(),
 		Description: "Read the rows a model has accumulated.\n\n" +
 			"This is the baseline itself: what the model has observed and how often. Use it " +
 			"to check whether an artifact from an investigation is normal for this " +
@@ -35,12 +38,12 @@ func registerModelTools(s *mcp.Server, c *Client) {
 	}, getModelData)
 }
 
-func listModels(ctx context.Context, c *Client, _ noArgs) (any, error) {
+func listModels(ctx context.Context, c Client, _ noArgs) (any, error) {
 	response, err := c.Get(ctx, "/models", nil)
 	if err != nil {
 		return nil, err
 	}
-	summaries := summarize(field[[]any](response, "models"),
+	summaries := summarize(Field[[]any](response, "models"),
 		"id", "name", "description", "model_type", "status", "alert_mode",
 		"source_query", "backfill_status", "error_message")
 	if len(summaries) == 0 {
@@ -56,7 +59,7 @@ type modelIDArgs struct {
 	ModelID string `json:"model_id" jsonschema:"The model UUID."`
 }
 
-func getModel(ctx context.Context, c *Client, in modelIDArgs) (any, error) {
+func getModel(ctx context.Context, c Client, in modelIDArgs) (any, error) {
 	return c.Get(ctx, "/models/"+url.PathEscape(in.ModelID), nil)
 }
 
@@ -69,7 +72,7 @@ type getModelDataArgs struct {
 	Offset  int    `json:"offset,omitempty" jsonschema:"Pagination offset."`
 }
 
-func getModelData(ctx context.Context, c *Client, in getModelDataArgs) (any, error) {
+func getModelData(ctx context.Context, c Client, in getModelDataArgs) (any, error) {
 	query := url.Values{
 		"limit":  {strconv.Itoa(clamp(in.Limit, 50, 1, 500))},
 		"offset": {strconv.Itoa(max(0, in.Offset))},

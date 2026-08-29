@@ -75,7 +75,7 @@ Sections can be reordered by dragging.
 
 ## Time Range
 
-A notebook-level time range applies to all query sections. This ensures consistent results across an investigation.
+A notebook-level time range applies to all query sections, so results stay consistent across an investigation.
 
 ## Variables
 

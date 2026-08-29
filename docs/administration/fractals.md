@@ -26,4 +26,4 @@ Each fractal can have a configurable disk quota that caps raw log storage. See [
 
 ## Prisms
 
-Prisms are views of multiple fractals. They do not store data themselves. It is best practice to create alerts and attach alert feeds to Prisms so you can adjust the backend as your deployment grows. Admins can create Prisms from the main Fractal listing and add member Fractals on the Prism's manage page.
+Prisms are views of multiple fractals. They do not store data themselves. Create alerts and attach alert feeds to prisms so the member fractals can change as your deployment grows. Admins can create Prisms from the main Fractal listing and add member Fractals on the Prism's manage page.

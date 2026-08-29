@@ -16,6 +16,7 @@ import (
 
 	"bifract/pkg/archive"
 	"bifract/pkg/parser"
+	"bifract/pkg/pgrcal"
 	"bifract/pkg/query"
 	"bifract/pkg/rbac"
 	"bifract/pkg/settings"
@@ -1188,4 +1189,78 @@ func (d routerDeps) handleOpenAPI(reg *api.Registry) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Write(body)
 	}
+}
+
+// handlePgrCalibration reports the pgr() severity calibration: the derived cutoffs, the
+// distribution behind them, and whether the node-stability terms are active yet. This is what
+// makes the single sensitivity knob legible -- an admin can see the effect of a change instead of
+// guessing at a number.
+func (d routerDeps) handlePgrCalibration(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sens := settings.Get().PgrSensitivityPercent
+	cut := pgrcal.Cutoffs(ctx, d.pg.DB(), sens)
+
+	resp := map[string]interface{}{
+		"sensitivity_percent": sens,
+		"cutoffs":             cut,
+	}
+
+	// Observed share at the derived cutoffs, straight from the histogram.
+	var total, high, med int64
+	_ = d.pg.QueryRow(ctx,
+		`SELECT coalesce(sum(edge_count),0),
+		        coalesce(sum(edge_count) FILTER (WHERE bucket >= $1),0),
+		        coalesce(sum(edge_count) FILTER (WHERE bucket >= $2),0)
+		 FROM pgr_score_histogram`,
+		int(cut.High*1000), int(cut.Med*1000)).Scan(&total, &high, &med)
+	if total > 0 {
+		resp["observed"] = map[string]interface{}{
+			"edges":        total,
+			"high_percent": float64(high) / float64(total) * 100,
+			"med_percent":  float64(med) / float64(total) * 100,
+		}
+	}
+
+	// Baseline span per fractal decides whether NoDoze's IN/OUT terms carry information; below
+	// the minimum they are held at 1.0 and scoring falls back to the transition term alone.
+	if d.db != nil {
+		span, err := d.db.QueryProvenance(ctx,
+			`SELECT fractal_id, dateDiff('day', min(if(first_day = toDate(0), day, first_day)), today()) + 1 AS days
+			 FROM proc_freq GROUP BY fractal_id ORDER BY days DESC`)
+		if err == nil {
+			baselines := make([]map[string]interface{}, 0, len(span))
+			for _, row := range span {
+				days := toInt64(row["days"])
+				baselines = append(baselines, map[string]interface{}{
+					"fractal_id":       row["fractal_id"],
+					"days":             days,
+					"stability_active": days >= int64(parser.MinStabilityDays),
+				})
+			}
+			resp["baselines"] = baselines
+			resp["min_stability_days"] = parser.MinStabilityDays
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// toInt64 reads a ClickHouse numeric column that may arrive as any integer width.
+func toInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case uint64:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case uint32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case float64:
+		return int64(n)
+	}
+	return 0
 }

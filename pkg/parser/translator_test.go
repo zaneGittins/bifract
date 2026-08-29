@@ -2495,7 +2495,7 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 	t.Run("regex then lowercase on same alias produces single select entry", func(t *testing.T) {
 		// regex(as=x) adds "extract(...) AS x" to Selects; lowercase(x) must REPLACE
 		// that entry with "lower(extract(...)) AS x" rather than appending a second
-		// "... AS x" — which would produce ClickHouse error 179.
+		// "... AS x", which would produce ClickHouse error 179.
 		pipeline, err := ParseQuery(`* | regex(field=contents, regex="(?i)referrerurl=https?://([^/]+)", as=download_domain) | lowercase(download_domain)`)
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
@@ -2504,7 +2504,7 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected no error but got: %v", err)
 		}
-		// Count occurrences of "AS download_domain" — must be exactly one.
+		// Count occurrences of "AS download_domain": must be exactly one.
 		count := strings.Count(result.SQL, "AS download_domain")
 		if count != 1 {
 			t.Errorf("Expected exactly 1 'AS download_domain' in SELECT, got %d: %s", count, result.SQL)

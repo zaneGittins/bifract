@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"bifract/pkg/aitools"
 )
 
 // stub is a fake Bifract that answers every request with one payload and keeps
@@ -108,8 +110,8 @@ func TestEachAuthFailureExplainsWhatToFix(t *testing.T) {
 		status int
 		want   string
 	}{
-		{401, "BIFRACT_API_KEY is invalid"},
-		{403, "permissions do not cover this"},
+		{401, "not authenticated"},
+		{403, "permissions do not cover it"},
 		{404, "not found"},
 	} {
 		s := serve(t, tc.status, `{"success":false,"error":"nope"}`)
@@ -131,7 +133,7 @@ func TestANonJSONResponseIsReportedAndTruncated(t *testing.T) {
 	if !strings.Contains(err.Error(), "non-JSON") {
 		t.Errorf("error should say the response was not JSON: %v", err)
 	}
-	if len(err.Error()) > maxErrorBody+200 {
+	if len(err.Error()) > aitools.MaxErrorBody+200 {
 		t.Errorf("error body was not truncated: %d chars", len(err.Error()))
 	}
 }

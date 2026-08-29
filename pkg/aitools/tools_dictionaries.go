@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -15,9 +15,10 @@ import (
 // a wide question is a narrower search, not a bigger page.
 const maxDictionaryRows = 200
 
-func registerDictionaryTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "list_dictionaries",
+func registerDictionaryTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "list_dictionaries",
+		Annotations: readOnly(),
 		Description: "List the dictionaries available in this fractal.\n\n" +
 			"A dictionary is a keyed lookup table held alongside the logs: known-bad " +
 			"indicators, asset inventories, user-to-team mappings, allow lists. Detections " +
@@ -28,22 +29,25 @@ func registerDictionaryTools(s *mcp.Server, c *Client) {
 			"Returns each dictionary's id, name, key column and row count.",
 	}, listDictionaries)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_dictionary",
+	add(d, &mcp.Tool{
+		Name:        "get_dictionary",
+		Annotations: readOnly(),
 		Description: "Get one dictionary's definition: its columns, key, and how it is populated.\n\n" +
 			"This is the definition only; use search_dictionary to read the rows.",
 	}, getDictionary)
 
-	register(s, c, &mcp.Tool{
-		Name: "search_dictionary",
+	add(d, &mcp.Tool{
+		Name:        "search_dictionary",
+		Annotations: readOnly(),
 		Description: "Read rows from a dictionary, optionally filtered.\n\n" +
 			"Use this to answer \"is this indicator already on a watchlist\" before " +
 			"escalating, and to see what a detection's lookup would return for a given key.\n\n" +
 			"Returns the matching rows, each with its key and field values.",
 	}, searchDictionary)
 
-	register(s, c, &mcp.Tool{
-		Name: "add_dictionary_rows",
+	add(d, &mcp.Tool{
+		Name:        "add_dictionary_rows",
+		Annotations: mutates(),
 		Description: "Insert or update rows in a dictionary.\n\n" +
 			"This changes what live detections match on, so treat it as a production edit. " +
 			"Each row is written by column name, so call get_dictionary first if the columns " +
@@ -53,7 +57,7 @@ func registerDictionaryTools(s *mcp.Server, c *Client) {
 	}, addDictionaryRows)
 }
 
-func listDictionaries(ctx context.Context, c *Client, _ noArgs) (any, error) {
+func listDictionaries(ctx context.Context, c Client, _ noArgs) (any, error) {
 	payload, err := c.Get(ctx, "/dictionaries", nil)
 	if err != nil {
 		return nil, err
@@ -69,7 +73,7 @@ type dictionaryIDArgs struct {
 	DictionaryID string `json:"dictionary_id" jsonschema:"The dictionary UUID, from list_dictionaries."`
 }
 
-func getDictionary(ctx context.Context, c *Client, in dictionaryIDArgs) (any, error) {
+func getDictionary(ctx context.Context, c Client, in dictionaryIDArgs) (any, error) {
 	return c.Get(ctx, "/dictionaries/"+url.PathEscape(in.DictionaryID), nil)
 }
 
@@ -79,7 +83,7 @@ type searchDictionaryArgs struct {
 	Limit        int    `json:"limit,omitempty" jsonschema:"How many rows to return, capped at 200. Default 50. A dictionary can hold far more, so filter rather than paging through it."`
 }
 
-func searchDictionary(ctx context.Context, c *Client, in searchDictionaryArgs) (any, error) {
+func searchDictionary(ctx context.Context, c Client, in searchDictionaryArgs) (any, error) {
 	query := url.Values{"limit": {strconv.Itoa(clamp(in.Limit, 50, 1, maxDictionaryRows))}}
 	if needle := strings.TrimSpace(in.Search); needle != "" {
 		query.Set("search", needle)
@@ -92,7 +96,7 @@ type addDictionaryRowsArgs struct {
 	Rows         []map[string]string `json:"rows" jsonschema:"The rows to write. Each row maps column name to value and must include the dictionary's key column; a row already carrying that key is overwritten, not duplicated."`
 }
 
-func addDictionaryRows(ctx context.Context, c *Client, in addDictionaryRowsArgs) (any, error) {
+func addDictionaryRows(ctx context.Context, c Client, in addDictionaryRowsArgs) (any, error) {
 	if len(in.Rows) == 0 {
 		return nil, errors.New("no rows given, so there is nothing to write")
 	}
@@ -103,14 +107,14 @@ func addDictionaryRows(ctx context.Context, c *Client, in addDictionaryRowsArgs)
 	if err != nil {
 		return nil, err
 	}
-	keyColumn := field[string](definition, "key_column")
+	keyColumn := Field[string](definition, "key_column")
 	if keyColumn == "" {
 		return nil, errors.New("this dictionary declares no key column, so a row cannot be keyed")
 	}
 	known := map[string]bool{}
 	var columnNames []string
-	for _, column := range field[[]any](definition, "columns") {
-		if name := field[string](column, "name"); name != "" {
+	for _, column := range Field[[]any](definition, "columns") {
+		if name := Field[string](column, "name"); name != "" {
 			known[name] = true
 			columnNames = append(columnNames, name)
 		}

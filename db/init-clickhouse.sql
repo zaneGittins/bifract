@@ -282,6 +282,10 @@ CREATE TABLE IF NOT EXISTS proc_freq (
     -- Ingest day, not event day (see proc_lineage): it is both the TTL basis and an
     -- aggregation bucket, and nothing on the read side filters it.
     day         Date,
+    -- Earliest day this (src_image, event_type, target_norm) was ever observed. min() merges, so
+    -- the value survives the day bucket and is the basis for NoDoze's IN/OUT node-stability terms
+    -- (Eq.4/Eq.5): a node's stability is the share of days on which it gained NO new edge.
+    first_day   SimpleAggregateFunction(min, Date),
     event_count SimpleAggregateFunction(sum, UInt64),
     hosts       AggregateFunction(groupUniqArray(256), String)
 ) ENGINE = AggregatingMergeTree()
@@ -297,6 +301,7 @@ SELECT
     'spawn' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
+    toDate(ingest_timestamp) AS first_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -311,6 +316,7 @@ SELECT
     'file_write' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_file::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
+    toDate(ingest_timestamp) AS first_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -325,6 +331,7 @@ SELECT
     'net_connect' AS event_type,
     multiIf(match(fields.dst_ip::String, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.)'), concat(replaceRegexpOne(fields.dst_ip::String, '\\.[0-9]{1,3}$', ''), '.0/24'), match(fields.dst_ip::String, '^(::1$|fe80:|fc|fd)'), 'internal', fields.dst_ip::String) AS target_norm,
     toDate(ingest_timestamp) AS day,
+    toDate(ingest_timestamp) AS first_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -339,6 +346,7 @@ SELECT
     'dns_query' AS event_type,
     lower(replaceRegexpOne(fields.query::String, '\\.$', '')) AS target_norm,
     toDate(ingest_timestamp) AS day,
+    toDate(ingest_timestamp) AS first_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -353,6 +361,7 @@ SELECT
     'remote_thread' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
+    toDate(ingest_timestamp) AS first_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -367,6 +376,7 @@ SELECT
     'process_access' AS event_type,
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
+    toDate(ingest_timestamp) AS first_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs

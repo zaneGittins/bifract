@@ -55,7 +55,8 @@ const SettingsView = {
         // Set up system limits dropdowns
         ['alertTimeoutSettings', 'queryTimeoutSettings', 'queryCPUPercentSettings', 'queryMemoryPercentSettings', 'alertEvalIntervalSettings',
          'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings',
-         'recallCPUPercentSettings', 'recallMemoryPercentSettings', 'schemaSweepIntervalSettings'].forEach(id => {
+         'recallCPUPercentSettings', 'recallMemoryPercentSettings', 'schemaSweepIntervalSettings',
+         'pgrSensitivitySettings'].forEach(id => {
             const select = document.getElementById(id);
             if (select) select.addEventListener('change', () => this.saveSettings(select));
         });
@@ -456,8 +457,8 @@ const SettingsView = {
                 throw new Error(msg || 'Failed to update setting');
             }
             if (window.Toast) {
-                Toast.success('Endpoint Behavioral Analytics ' + (enabled ? 'Enabled' : 'Disabled'),
-                    enabled ? 'Process baselines are now building from new logs.' : 'Per-insert analysis paused. Existing baseline data is retained.');
+                Toast.success('Endpoint Analytics ' + (enabled ? 'Enabled' : 'Disabled'),
+                    enabled ? 'Baselines are now building from new logs.' : 'Baseline collection paused. Existing baseline data is retained.');
             }
         } catch (err) {
             toggle.checked = !enabled; // revert on failure
@@ -619,6 +620,7 @@ const SettingsView = {
         const groupsLoad = window.GroupsView ? GroupsView.loadGroups() : null;
         await Promise.all([
             this.loadSettings(),
+            this.loadPgrCalibration(),
             this.loadArchiveToggle(),
             this.loadEndpointAnalysisToggle(),
             this.loadSharedLinksToggle(),
@@ -729,6 +731,10 @@ const SettingsView = {
                 if (recallConcurrencySelect) {
                     recallConcurrencySelect.value = String(data.settings.recall_concurrency || 5);
                 }
+                const pgrSensSelect = document.getElementById('pgrSensitivitySettings');
+                if (pgrSensSelect) {
+                    pgrSensSelect.value = String(data.settings.pgr_sensitivity_percent || 2);
+                }
                 const schemaSweepSelect = document.getElementById('schemaSweepIntervalSettings');
                 if (schemaSweepSelect) {
                     schemaSweepSelect.value = String(data.settings.schema_sweep_interval_minutes || 15);
@@ -783,6 +789,7 @@ const SettingsView = {
                     recall_cpu_percent: parseInt(document.getElementById('recallCPUPercentSettings')?.value || '25', 10),
                     recall_memory_percent: parseInt(document.getElementById('recallMemoryPercentSettings')?.value || '25', 10),
                     schema_sweep_interval_minutes: parseInt(document.getElementById('schemaSweepIntervalSettings')?.value || '15', 10),
+                    pgr_sensitivity_percent: parseFloat(document.getElementById('pgrSensitivitySettings')?.value || '2'),
                     require_mfa: document.getElementById('requireMFAToggle')?.checked === true
                 })
             });
@@ -790,6 +797,7 @@ const SettingsView = {
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to save settings');
             this.flashSaved(triggerEl);
+            this.loadPgrCalibration();
         } catch (error) {
             console.error('Failed to save settings:', error);
             if (window.Toast) Toast.error('Save Failed', error.message);
@@ -1331,3 +1339,32 @@ window.SettingsView = SettingsView;
 document.addEventListener('DOMContentLoaded', () => {
     SettingsView.init();
 });
+
+// Process-graph calibration readout: what the derived cutoffs are, how much they currently flag,
+// and whether the node-stability terms have enough baseline to be active. Without this the
+// sensitivity knob would be a dial with no gauge.
+SettingsView.loadPgrCalibration = async function () {
+    const el = document.getElementById('pgrCalibrationReadout');
+    if (!el) return;
+    try {
+        const r = await fetch('/api/v1/system/pgr-calibration', { credentials: 'same-origin' });
+        if (!r.ok) { el.textContent = 'Unavailable.'; return; }
+        const j = await r.json();
+        const parts = [];
+        if (j.cutoffs && j.cutoffs.calibrated) {
+            parts.push(`Calibrated from ${Number(j.cutoffs.samples).toLocaleString()} scored edges: high at ${j.cutoffs.high.toFixed(2)}, medium at ${j.cutoffs.med.toFixed(2)}.`);
+            if (j.observed) parts.push(`Currently ${j.observed.high_percent.toFixed(1)}% render high, ${j.observed.med_percent.toFixed(1)}% medium or above.`);
+        } else {
+            const n = (j.cutoffs && j.cutoffs.samples) || 0;
+            parts.push(`Not yet calibrated (${Number(n).toLocaleString()} scored edges so far); using default cutoffs until enough process graphs have been run.`);
+        }
+        const bl = j.baselines || [];
+        if (bl.length) {
+            const active = bl.filter(b => b.stability_active).length;
+            parts.push(`Baseline maturity: ${active} of ${bl.length} fractal(s) have the ${j.min_stability_days}+ days of history that node-stability scoring needs; the rest score on transition frequency alone.`);
+        }
+        el.textContent = parts.join(' ');
+    } catch (e) {
+        el.textContent = 'Unavailable.';
+    }
+};

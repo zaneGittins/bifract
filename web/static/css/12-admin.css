@@ -137,7 +137,7 @@
 }
 
 .sp-row:hover {
-    background: rgba(255, 255, 255, 0.015);
+    background: var(--overlay-subtle);
 }
 
 .sp-row-info {
@@ -318,7 +318,7 @@
     padding: 6px 10px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-family: var(--font-main);
     font-size: 0.8125rem;

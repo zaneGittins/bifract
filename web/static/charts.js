@@ -93,31 +93,48 @@ window.VisView = {
 // All chart types are defined once here and called from search, notebooks, dashboards, and chat.
 window.BifractCharts = {
 
+    // Categorical palettes are theme-agnostic on purpose: every entry sits at
+    // L* 50-59, which clears 3:1 against both #ffffff and the dark ground, so a
+    // series keeps its colour when the theme is toggled. Hues are evenly spread
+    // with alternating lightness, so neighbours separate by lightness as well as
+    // hue where the sRGB gamut is thin (the cyan band).
     PIE_COLORS: [
-        '#9c6ade', '#b794f6', '#8b5fbf', '#a855f7', '#7c3aed',
-        '#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b',
-        '#ef4444', '#f97316', '#84cc16', '#22c55e', '#14b8a6'
+        '#9465d0', '#3b8de8', '#288686', '#2d9f54', '#79821c',
+        '#ba8421', '#cb5a2b', '#ee5765', '#d2418a', '#c762c4',
+        '#6f83f1', '#258669', '#609e2d', '#b36619', '#ea5084'
     ],
 
     SERIES_COLORS: [
-        '#9c6ade', '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
-        '#06b6d4', '#8b5fbf', '#f97316', '#84cc16', '#14b8a6'
+        '#9465d0', '#3b8de8', '#288686', '#2d9f54', '#79821c',
+        '#ba8421', '#cb5a2b', '#ee5765', '#d2418a', '#c762c4'
     ],
 
     // Named categorical palettes selectable from the Format panel.
-    // 'default' falls back to the per-chart-type defaults above.
+    // 'default' falls back to the per-chart-type defaults above. A palette is
+    // either one array or {light, dark}: only 'mono' needs the split, because a
+    // monochrome ramp differentiates by lightness and so has to run dark-to-mid
+    // on white and light-to-mid on the dark ground.
     PALETTES: {
-        colorblind: ['#0072B2', '#E69F00', '#009E73', '#D55E00', '#CC79A7', '#56B4E9', '#F0E442', '#999999'],
-        warm:       ['#ef4444', '#f97316', '#f59e0b', '#eab308', '#ec4899', '#fb7185', '#fbbf24', '#d946ef'],
-        cool:       ['#3b82f6', '#06b6d4', '#10b981', '#8b5cf6', '#14b8a6', '#6366f1', '#0ea5e9', '#22d3ee'],
-        mono:       ['#9c6ade', '#b794f6', '#8b5fbf', '#a855f7', '#7c3aed', '#c4b5fd', '#6d28d9', '#ddd6fe']
+        colorblind: ['#1a77b6', '#b98110', '#168d68', '#c2580b', '#c06e9c', '#339acd', '#989112', '#818181'],
+        warm:       ['#ae52b6', '#e258a8', '#d63b6b', '#eb5b59', '#c25721', '#c38020', '#8c791b', '#7d9521'],
+        cool:       ['#9465d0', '#3b8de8', '#2b83a2', '#2f9a99', '#278b6e', '#3ea141', '#556fdc', '#779321'],
+        mono: {
+            light: ['#5d1dc1', '#6a2fc2', '#753fc3', '#804dc4', '#895bc5', '#9269c4', '#9978bf', '#a389be'],
+            dark:  ['#8744e9', '#985aee', '#a672e7', '#b085e1', '#ba98de', '#c1a6dc', '#c8b4dc', '#cfc1dd']
+        }
+    },
+
+    _isLight() {
+        return document.documentElement.getAttribute('data-theme') === 'light';
     },
 
     // Resolve the active palette array for a config, or the supplied fallback
     // when no named palette is selected ('default').
     _palette(config, fallback) {
         const name = config && config.colors && config.colors.palette;
-        return (name && name !== 'default' && this.PALETTES[name]) ? this.PALETTES[name] : fallback;
+        const pal = (name && name !== 'default') ? this.PALETTES[name] : null;
+        if (!pal) return fallback;
+        return Array.isArray(pal) ? pal : (this._isLight() ? pal.light : pal.dark);
     },
 
     // Per-series/per-slice color override. Keyed by series label (by-value, e.g.
@@ -1058,17 +1075,19 @@ window.BifractCharts = {
         yVals.sort(smartSort);
 
         const cv = this._cv();
-        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        const isLight = this._isLight();
         const textColor = cv('--chart-text-secondary') || '#8b8fa3';
         const textPrimary = cv('--chart-text') || '#e0e0e0';
-        const borderColor = cv('--border-color') || (isLight ? '#d0d0d0' : '#333');
+        const borderColor = cv('--border-color') || (isLight ? '#dcd5cb' : '#333');
 
+        // Light uses a single-hue violet ramp on the brand axis (the same language
+        // as the ATT&CK coverage grid); dark keeps viridis, which reads well there.
         const colorStops = isLight ? [
-            { r: 198, g: 219, b: 239 },
-            { r: 107, g: 174, b: 214 },
-            { r: 49, g: 130, b: 189 },
-            { r: 8, g: 81, b: 156 },
-            { r: 8, g: 48, b: 107 },
+            { r: 235, g: 230, b: 240 },
+            { r: 210, g: 191, b: 230 },
+            { r: 184, g: 142, b: 231 },
+            { r: 147, g: 82, b: 238 },
+            { r: 99, g: 35, b: 199 },
         ] : [
             { r: 68, g: 1, b: 84 },
             { r: 59, g: 82, b: 139 },
@@ -1076,8 +1095,8 @@ window.BifractCharts = {
             { r: 94, g: 201, b: 98 },
             { r: 253, g: 231, b: 37 },
         ];
-        const emptyCellColor = isLight ? '#f0f0f0' : 'rgba(255, 255, 255, 0.04)';
-        const cellBorderColor = isLight ? 'rgba(0, 0, 0, 0.10)' : 'rgba(255, 255, 255, 0.06)';
+        const emptyCellColor = isLight ? (cv('--bg-sunken') || '#edeae3') : 'rgba(255, 255, 255, 0.04)';
+        const cellBorderColor = isLight ? 'rgba(30, 26, 22, 0.10)' : 'rgba(255, 255, 255, 0.06)';
 
         const interpolateColor = (t) => {
             t = Math.max(0, Math.min(1, t));
@@ -1229,7 +1248,7 @@ window.BifractCharts = {
 
                 if (cellW >= 36 && cellH >= 28 && v > 0) {
                     const intensity = maxVal > 0 ? v / maxVal : 0;
-                    const useWhiteText = isLight ? intensity > 0.4 : intensity < 0.7;
+                    const useWhiteText = isLight ? intensity > 0.72 : intensity < 0.7;
                     ctx.fillStyle = useWhiteText ? '#ffffff' : 'rgba(0,0,0,0.75)';
                     ctx.font = 'bold 10px Inter, sans-serif';
                     ctx.textAlign = 'center';
@@ -1328,11 +1347,11 @@ window.BifractCharts = {
                     lastHoverXi = xi;
                     lastHoverYi = yi;
                     overlayCtx.clearRect(0, 0, totalWidth, totalHeight);
-                    const hlColor = isLight ? 'rgba(0, 0, 0, 0.06)' : 'rgba(255, 255, 255, 0.06)';
+                    const hlColor = isLight ? 'rgba(30, 26, 22, 0.06)' : 'rgba(255, 255, 255, 0.06)';
                     overlayCtx.fillStyle = hlColor;
                     overlayCtx.fillRect(yLabelWidth, xLabelHeight + yi * cellH, gridWidth, cellH);
                     overlayCtx.fillRect(yLabelWidth + xi * cellW, xLabelHeight, cellW, gridHeight);
-                    const cellHlColor = isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.10)';
+                    const cellHlColor = isLight ? 'rgba(30, 26, 22, 0.08)' : 'rgba(255, 255, 255, 0.10)';
                     overlayCtx.fillStyle = cellHlColor;
                     overlayCtx.fillRect(yLabelWidth + xi * cellW, xLabelHeight + yi * cellH, cellW, cellH);
                 }
@@ -1712,3 +1731,83 @@ window.BifractCharts = {
         return null;
     }
 };
+
+// ---- Theme changes ----
+// Chart.js bakes resolved colours into its options, so a chart drawn before a
+// theme toggle keeps the old grid, tick and tooltip colours until something
+// re-renders it. Wrap the render entry points to remember the last call per
+// target, and replay them on 'bifract:themechange'. Categorical series colours
+// are theme-agnostic, so this is only ever re-resolving the chrome, the heatmap
+// ramp and the monochrome palette.
+(function (C) {
+    if (!C) return;
+
+    const TRACKED = [
+        'renderPieChart', 'renderBarChart', 'renderTimeChart', 'renderHistogram',
+        'renderSingleVal', 'renderHeatmap', 'renderGraphSimple', 'renderMeshSimple',
+        'renderFromPreprocessed', 'renderOnCanvas'
+    ];
+    const live = new Map();
+    let depth = 0;
+
+    // Derive how to tear down a render from what it returned.
+    function cleanupFor(result) {
+        if (!result || typeof result === 'string') return null;
+        // vis.Network also exposes a .canvas (its own module object, not a DOM
+        // node), so match Chart.js on a real element rather than the name alone.
+        if (result.canvas && result.canvas.nodeType === 1 && typeof result.destroy === 'function') {
+            const wrap = result.canvas.parentElement;
+            return () => {
+                try { result.destroy(); } catch (e) { /* already gone */ }
+                if (wrap && wrap.classList.contains('pie-chart-wrapper')) wrap.remove();
+            };
+        }
+        if (result.container && result.tooltip) {
+            return () => { result.container.remove(); result.tooltip.remove(); };
+        }
+        if (typeof result.destroy === 'function') {
+            return () => { try { result.destroy(); } catch (e) { /* already gone */ } };
+        }
+        if (result.nodeType === 1) return () => result.remove();
+        return null;
+    }
+
+    TRACKED.forEach(function (name) {
+        const orig = C[name];
+        if (typeof orig !== 'function') return;
+        C[name] = function () {
+            const args = Array.prototype.slice.call(arguments);
+            const outermost = depth === 0;
+            depth++;
+            let result;
+            try { result = orig.apply(this, args); } finally { depth--; }
+            // Only the outermost call registers: renderOnCanvas delegates inward.
+            if (outermost) {
+                const key = args[0];
+                const cleanup = cleanupFor(result);
+                if (key && key.nodeType === 1 && cleanup) {
+                    // Drop targets that have left the document, so the registry
+                    // does not pin detached nodes and their row data.
+                    live.forEach((_, k) => { if (!k.isConnected) live.delete(k); });
+                    live.set(key, { fn: name, args, cleanup });
+                }
+            }
+            return result;
+        };
+    });
+
+    C.retheme = function () {
+        live.forEach(function (rec, key) {
+            if (!key.isConnected) { live.delete(key); return; }
+            try {
+                rec.cleanup();
+                C[rec.fn].apply(C, rec.args);
+            } catch (e) {
+                live.delete(key);
+            }
+        });
+    };
+
+    window.addEventListener('bifract:themechange', function () { C.retheme(); });
+})(window.BifractCharts);
+

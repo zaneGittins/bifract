@@ -3,6 +3,9 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -109,3 +112,47 @@ func TestToolNamesAreUnique(t *testing.T) {
 		t.Fatal("no tools registered")
 	}
 }
+
+// docsPath is the page a user reads to decide what this server can do.
+const docsPath = "../../docs/features/mcp-server.md"
+
+// TestTheDocumentedToolListMatchesTheServer keeps the page honest. A tool added
+// without documenting it, or documented after being removed, fails here.
+func TestTheDocumentedToolListMatchesTheServer(t *testing.T) {
+	page, err := os.ReadFile(docsPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", docsPath, err)
+	}
+	// Scoped to the tool tables: the environment-variable table upstream uses the
+	// same row shape and would otherwise read as a tool named BIFRACT_URL.
+	section := string(page)
+	start := strings.Index(section, "## Available Tools")
+	if start < 0 {
+		t.Fatalf("%s has no '## Available Tools' section", docsPath)
+	}
+	section = section[start:]
+	if end := strings.Index(section[len("## Available Tools"):], "\n## "); end >= 0 {
+		section = section[:len("## Available Tools")+end]
+	}
+
+	documented := map[string]bool{}
+	for _, match := range toolRow.FindAllStringSubmatch(section, -1) {
+		documented[match[1]] = true
+	}
+
+	registered := map[string]bool{}
+	for _, tool := range tools(t) {
+		registered[tool.Name] = true
+		if !documented[tool.Name] {
+			t.Errorf("%s is registered but not in %s", tool.Name, docsPath)
+		}
+	}
+	for name := range documented {
+		if !registered[name] {
+			t.Errorf("%s is documented in %s but not registered", name, docsPath)
+		}
+	}
+}
+
+// toolRow matches a leading `| `name` |` cell in the tool tables.
+var toolRow = regexp.MustCompile("(?m)^\\|\\s*`([a-z_]+)`\\s*\\|")

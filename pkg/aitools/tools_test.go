@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func TestUpdateAlertResendsTheFieldsItWasNotAskedToChange(t *testing.T) {
 		"email_actions":[]}}`
 
 	s := serve(t, 200, current)
-	if _, err := updateAlert(context.Background(), s.client, updateAlertArgs{
+	if _, err := updateAlert(context.Background(), s, updateAlertArgs{
 		AlertID: "a1",
 		Name:    "new",
 	}); err != nil {
@@ -83,7 +83,7 @@ func stringsOf(value any) []string {
 // an invalid value for the type instead of as "not applicable".
 func TestCreateAlertSendsTypeSpecificFieldsOnlyWhenSet(t *testing.T) {
 	s := serve(t, 200, `{"success":true,"data":{}}`)
-	if _, err := createAlert(context.Background(), s.client, createAlertArgs{
+	if _, err := createAlert(context.Background(), s, createAlertArgs{
 		Name:        "plain",
 		QueryString: "level=error",
 	}); err != nil {
@@ -126,7 +126,7 @@ func TestAddDictionaryRowsRejectsARowThatCouldNeverMatch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := serve(t, 200, definition)
-			_, err := addDictionaryRows(context.Background(), s.client, addDictionaryRowsArgs{
+			_, err := addDictionaryRows(context.Background(), s, addDictionaryRowsArgs{
 				DictionaryID: "d1",
 				Rows:         tc.rows,
 			})
@@ -143,7 +143,7 @@ func TestAddDictionaryRowsRejectsARowThatCouldNeverMatch(t *testing.T) {
 func TestAddDictionaryRowsSendsTheKeyColumnBothWays(t *testing.T) {
 	s := serve(t, 200, `{"success":true,"data":{"id":"d1","key_column":"indicator",
 		"columns":[{"name":"indicator"},{"name":"note"}]}}`)
-	if _, err := addDictionaryRows(context.Background(), s.client, addDictionaryRowsArgs{
+	if _, err := addDictionaryRows(context.Background(), s, addDictionaryRowsArgs{
 		DictionaryID: "d1",
 		Rows:         []map[string]string{{"indicator": "evil.test", "note": "seen"}},
 	}); err != nil {
@@ -171,13 +171,13 @@ func TestAddDictionaryRowsSendsTheKeyColumnBothWays(t *testing.T) {
 func TestGetArchiveSearchDoesNotPresentARunningJobAsEmpty(t *testing.T) {
 	s := serve(t, 200, `{"success":true,"data":{"user":{"selected_fractal":"f1"}}}`)
 	// The scope lookup and the job read hit the same stub, so prime the scope first.
-	if _, err := s.client.FractalID(context.Background()); err != nil {
+	if _, err := s.FractalID(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
 	running := serve(t, 200, `{"success":true,"data":{"id":"j1","status":"running","rows":[]}}`)
-	running.client.fractal = "f1"
-	got, err := getArchiveSearch(context.Background(), running.client, recallJobArgs{JobID: "j1"})
+	running.fractal = "f1"
+	got, err := getArchiveSearch(context.Background(), running, recallJobArgs{JobID: "j1"})
 	if err != nil {
 		t.Fatal(err)
 	}

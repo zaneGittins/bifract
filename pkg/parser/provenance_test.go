@@ -264,9 +264,9 @@ func TestInternalDomainExpr(t *testing.T) {
 	}
 }
 
-// A ghost root (proc_lineage row with no parent_image) yields fkey_src='', which can never match
-// a proc_freq row because every proc_freq_* MV requires parent_image != ''. Without the guard it
-// falls through to the ft.tot=0 branch and scores 1.0, painting the root of most trees max-red.
+// A ghost root (proc_lineage row with no parent_image) yields fkey_src=”, which can never match
+// a proc_freq row because every proc_freq_* MV requires parent_image != ”. Without the guard it
+// scores max-anomalous, painting the root of most trees red.
 func TestScoringSQLGhostRootScoresZero(t *testing.T) {
 	opts := reconOpts()
 	opts.MaxRows = 100
@@ -274,12 +274,38 @@ func TestScoringSQLGhostRootScoresZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sql, "multiIf(e.fkey_src = '', 0.0,") {
-		t.Error("empty fkey_src must short-circuit to 0 before any ft.tot branch")
+	if !strings.Contains(sql, "if(e.fkey_src = '', 0.0,") {
+		t.Error("empty fkey_src must short-circuit to 0 before the regularity product")
 	}
-	guard := strings.Index(sql, "e.fkey_src = ''")
-	spawn := strings.Index(sql, "e.event_type = 'spawn', if(coalesce(ft.tot, 0) = 0, 1.0")
-	if guard < 0 || spawn < 0 || guard > spawn {
-		t.Errorf("guard must precede the spawn ft.tot=0 branch (guard=%d spawn=%d)", guard, spawn)
+}
+
+// Per-edge anomaly is NoDoze Eq.2/Eq.3: 1 - IN(SRC)*M*OUT(DST). Global rarity is a separate
+// column, never a factor -- combining it into the score measured worse than either input alone.
+func TestScoringSQLUsesNodeStabilityFactors(t *testing.T) {
+	opts := reconOpts()
+	opts.MaxRows = 100
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, 10, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"coalesce(ins.stab, 1.0)",                  // IN(SRC)
+		"coalesce(fe.cnt, 0) / ft.tot",             // M
+		"coalesce(outs.stab, 1.0)",                 // OUT(DST)
+		"LEFT JOIN ins ON ins.node = e.fkey_src",   // IN keys on the source node
+		"LEFT JOIN outs ON outs.node = e.fkey_tgt", // OUT keys on the destination node
+		"AS prevalence",                            // rarity survives, as its own column
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("scoring SQL missing %q", want)
+		}
+	}
+	// The anomaly expression must not fold global rarity in. Everything up to "AS anomaly_score"
+	// is that expression; gf.hostct belongs only to the prevalence column after it.
+	anom := sql[:strings.Index(sql, "AS anomaly_score")]
+	if i := strings.LastIndex(anom, "round(1 - "); i >= 0 {
+		if strings.Contains(anom[i:], "gf.hostct") {
+			t.Error("anomaly_score must not combine the transition term with global rarity")
+		}
 	}
 }

@@ -433,7 +433,7 @@
 }
 
 .chart-container #networkGraph {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     overflow: hidden;
     position: relative;
     touch-action: auto;
@@ -443,13 +443,13 @@
 }
 
 .chart-container #networkGraph .vis-network {
-    background: var(--bg-primary) !important;
+    background: var(--bg-sunken) !important;
     pointer-events: auto;
     touch-action: auto;
 }
 
 .chart-container #networkGraph canvas {
-    background: var(--bg-primary) !important;
+    background: var(--bg-sunken) !important;
     touch-action: auto;
 }
 
@@ -484,8 +484,8 @@
    next to the view controls; the view toggle stays left. */
 .graph-stats.pg-stats-right { margin-left: auto; }
 /* Triage summary chips: reconnections (violet) + rare/anomalous count (warning-toned). */
-.pg-stat-recon .graph-stat-count { color: var(--pg-recon, #a855f7); }
-.pg-stat-recon { color: color-mix(in srgb, var(--pg-recon, #a855f7) 80%, var(--text-secondary)); }
+.pg-stat-recon .graph-stat-count { color: var(--pg-recon); }
+.pg-stat-recon { color: color-mix(in srgb, var(--pg-recon) 80%, var(--text-secondary)); }
 .pg-stat-rare .graph-stat-count { color: var(--warning); }
 .pg-stat-rare { color: color-mix(in srgb, var(--warning) 70%, var(--text-secondary)); }
 /* Relative-shading badge: subtle, dashed underline so it reads as an informational note. */
@@ -515,11 +515,11 @@
 .pg-sw-med { background: var(--warning); }
 .pg-sw-low { background: var(--pg-process); }
 .pg-sw-focus { background: var(--accent-primary); }
-.pg-sw-ext { background: var(--pg-process); box-shadow: 0 0 0 2px var(--pg-recon, #a855f7); }
+.pg-sw-ext { background: var(--pg-process); box-shadow: 0 0 0 2px var(--pg-recon); }
 .pg-sw-agg { background: var(--pg-agg); box-shadow: 2px 2px 0 -0.5px color-mix(in srgb, var(--pg-agg) 50%, transparent); }
 .pg-sw-ghost { background: transparent; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--text-muted) 70%, transparent); }
 .pg-legend-line { flex: 0 0 20px; width: 20px; height: 0; border-top: 2px solid var(--graph-node-neutral, #6b7280); }
-.pg-ll-recon { border-top: 2px dashed var(--pg-recon, #a855f7); }
+.pg-ll-recon { border-top: 2px dashed var(--pg-recon); }
 .pg-legend-note { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border-color); color: var(--text-muted); font-size: 10.5px; }
 
 .graph-stat-item {
@@ -600,7 +600,7 @@
     padding: 3px 8px;
     font-size: 0.7rem;
     font-family: var(--font-main);
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     color: var(--text-primary);
@@ -810,7 +810,7 @@ div.vis-tooltip {
 
 .graph-detail-field {
     padding: 6px 8px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border-radius: 4px;
     border: 1px solid var(--border-color);
 }
@@ -844,7 +844,7 @@ div.vis-tooltip {
 
 .graph-mesh-neighbor:hover {
     border-color: var(--accent-primary);
-    background: var(--bg-secondary);
+    background: var(--bg-hover);
 }
 
 .graph-detail-empty {
@@ -869,9 +869,9 @@ div.vis-tooltip {
     font-family: var(--font-mono);
     padding: 2px 8px;
     border-radius: 3px;
-    background: transparent;
-    color: var(--chip-color, var(--text-secondary));
-    border: 1px solid var(--chip-color, var(--border-color));
+    background: color-mix(in srgb, var(--chip-color, var(--border-color)) 13%, transparent);
+    color: var(--text-primary);
+    border: 1px solid color-mix(in srgb, var(--chip-color, var(--border-color)) 55%, transparent);
     word-break: break-all;
 }
 
@@ -902,7 +902,7 @@ div.vis-tooltip {
     gap: 3px;
     padding: 8px;
     margin-bottom: 12px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     font-size: 0.7rem;
@@ -1038,11 +1038,11 @@ div.vis-tooltip {
     height: 500px;
     border-radius: 6px;
     overflow: hidden;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
 }
 
 .worldmap-container .leaflet-container {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     font-family: var(--font-main);
 }
 
@@ -1245,7 +1245,7 @@ div.vis-tooltip {
     padding: 6px 8px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-size: 0.8rem;
     font-family: var(--font-mono);
@@ -1256,7 +1256,7 @@ div.vis-tooltip {
     padding: 6px 4px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-size: 0.8rem;
     font-family: var(--font-mono);
@@ -1303,7 +1303,7 @@ div.vis-tooltip {
 .rule-target-btn {
     padding: 4px 10px;
     border: none;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-muted);
     font-size: 0.75rem;
     cursor: pointer;
@@ -1382,7 +1382,7 @@ div.vis-tooltip {
     padding: 7px 8px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-size: 0.82rem;
     box-sizing: border-box;
@@ -1487,7 +1487,7 @@ div.vis-tooltip {
     padding: 6px 4px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-size: 0.8rem;
     cursor: pointer;
@@ -1502,7 +1502,7 @@ div.vis-tooltip {
     padding: 6px 8px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-size: 0.8rem;
     box-sizing: border-box;

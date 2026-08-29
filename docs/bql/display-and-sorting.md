@@ -17,8 +17,11 @@ Aggregations are projected under a fixed generated alias, not the function name 
 Note the difference between the two ways to combine `groupBy` with `count()`:
 
 ```
-* | groupBy(image, function=count())   # one row per image, with its _count
-* | groupBy(image) | count()           # a single row: how many distinct images
+// one row per image, with its _count
+* | groupBy(image, function=count())
+
+// a single row: how many distinct images
+* | groupBy(image) | count()
 ```
 
 Use `function=` when you want a value per group and need the grouped field downstream in `table()` or `sort()`. A trailing `| count()` counts the rows the groupBy produced, so the result is a single total and the grouped field is no longer in scope.

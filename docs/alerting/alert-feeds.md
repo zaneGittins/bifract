@@ -58,9 +58,9 @@ Everything else passes through unchanged (`process_creation`, `dns_query`, `proc
 !!! warning "Rules for event types you do not collect will not match"
     Scoping means a `registry_set` rule matches nothing unless your normalizer emits
     `bifract_category=registry_event` (the alias the four Sigma registry categories collapse
-    onto, per the table above). This is intentional. Previously such rules appeared to
-    work while matching unrelated events on field-name collisions alone. If a rule you expect
-    to fire is silent, confirm your normalizer sets the category its `logsource` declares.
+    onto, per the table above). This is intentional: such rules previously appeared to work
+    while matching unrelated events on field-name collisions alone. If a rule you expect to
+    fire is silent, confirm your normalizer sets the category its `logsource` declares.
 
 Rules with no `logsource.category` (Windows Security log rules, for example) are not
 prefiltered. They scope themselves through `EventID` inside their own detection block.
@@ -105,7 +105,7 @@ Rules below the configured minimum status are skipped during sync.
 
 ## Recommended Community Feeds
 
-These public Sigma rule repositories work well as starting points. Add them from **Alerts > Alert Feeds**. This allows you to rapidly onboard detection rules that are normalized to your field names.
+These public Sigma rule repositories work well as starting points. Add them from **Alerts > Alert Feeds**.
 
 | Name | Repository URL | Path | Min Severity | Min Status | Schedule |
 |------|---------------|------|-------------|------------|----------|

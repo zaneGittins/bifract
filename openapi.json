@@ -62,7 +62,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "ingest_token"
       },
       "put": {
         "operationId": "put__bulk",
@@ -113,7 +114,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "ingest_token"
       }
     },
     "/api/v1/admin/alert-stats": {
@@ -175,7 +177,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/ingest-daily": {
@@ -244,7 +247,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/kill-query": {
@@ -306,7 +310,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/metrics": {
@@ -368,7 +373,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/processes": {
@@ -421,7 +427,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields": {
@@ -491,7 +498,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_admin_schema_fields",
@@ -569,7 +577,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/export": {
@@ -615,7 +624,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/ignore/{name}": {
@@ -698,7 +708,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_admin_schema_fields_ignore_byName",
@@ -779,7 +790,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/import": {
@@ -855,7 +867,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/insights": {
@@ -925,7 +938,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/refresh": {
@@ -998,7 +1012,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/reset": {
@@ -1081,7 +1096,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/admin/schema-fields/{name}": {
@@ -1164,7 +1180,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/alerts": {
@@ -1255,7 +1272,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_alerts",
@@ -1333,7 +1351,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/alerts/batch-toggle": {
@@ -1416,7 +1435,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/alerts/feed": {
@@ -1495,7 +1515,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/alerts/feed/batch-toggle": {
@@ -1578,7 +1599,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/alerts/import": {
@@ -1658,7 +1680,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/alerts/{id}": {
@@ -1738,12 +1761,13 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_alerts_byId",
         "summary": "Update an alert.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alerts"
         ],
@@ -1826,12 +1850,13 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_alerts_byId",
         "summary": "Delete an alert.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alerts"
         ],
@@ -1877,7 +1902,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/alerts/{id}/duplicate": {
@@ -1957,7 +1983,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/alerts/{id}/executions": {
@@ -2052,7 +2079,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/alerts/{id}/toggle-feed": {
@@ -2115,7 +2143,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/api-keys": {
@@ -2183,7 +2212,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_api_keys",
@@ -2261,7 +2291,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/api-keys/{keyId}": {
@@ -2341,7 +2372,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_api_keys_byKeyId",
@@ -2429,7 +2461,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_api_keys_byKeyId",
@@ -2480,7 +2513,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/api-keys/{keyId}/toggle": {
@@ -2563,7 +2597,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/attack/coverage": {
@@ -2633,7 +2668,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/attack/gaps": {
@@ -2712,7 +2748,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/attack/layer": {
@@ -2792,7 +2829,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/attack/matrix": {
@@ -2862,7 +2900,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/attack/techniques/{id}/gap": {
@@ -2942,7 +2981,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/attack/techniques/{id}/rules": {
@@ -3029,7 +3069,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/auth/admin-reset-mfa": {
@@ -3089,7 +3130,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/auth/admin-reset-password": {
@@ -3149,7 +3191,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/auth/change-password": {
@@ -3209,7 +3252,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/auth/invite/accept": {
@@ -3242,7 +3286,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/auth/invite/reset": {
@@ -3302,7 +3347,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/auth/invite/validate": {
@@ -3334,7 +3380,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/auth/login": {
@@ -3360,7 +3407,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/auth/logout": {
@@ -3410,7 +3458,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/mfa/confirm": {
@@ -3470,7 +3519,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/mfa/disable": {
@@ -3530,7 +3580,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/mfa/enroll": {
@@ -3580,7 +3631,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/mfa/recovery-codes": {
@@ -3640,7 +3692,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/mfa/status": {
@@ -3690,7 +3743,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/mfa/verify": {
@@ -3750,7 +3804,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/oidc/callback": {
@@ -3796,7 +3851,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/auth/oidc/config": {
@@ -3812,7 +3868,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/auth/oidc/login": {
@@ -3828,7 +3885,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/auth/preferences": {
@@ -3888,7 +3946,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/auth/register": {
@@ -3948,7 +4007,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/auth/user": {
@@ -3998,7 +4058,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/chat/conversations": {
@@ -4066,7 +4127,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_chat_conversations",
@@ -4144,7 +4206,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_chat_conversations",
@@ -4215,7 +4278,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/chat/conversations/{id}": {
@@ -4305,7 +4369,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_chat_conversations_byId",
@@ -4386,7 +4451,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/chat/conversations/{id}/libraries": {
@@ -4464,7 +4530,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "patch": {
         "operationId": "patch_api_v1_chat_conversations_byId_libraries",
@@ -4555,7 +4622,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/chat/conversations/{id}/messages": {
@@ -4633,7 +4701,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_chat_conversations_byId_messages",
@@ -4714,7 +4783,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/chat/conversations/{id}/stream": {
@@ -4780,7 +4850,83 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/chat/conversations/{id}/tool-calls/{callId}/stream": {
+      "post": {
+        "operationId": "post_api_v1_chat_conversations_byId_tool_calls_byCallId_stream",
+        "summary": "Approve or decline a tool call the assistant proposed, and stream the rest of the reply.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "chat"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "callId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/chat.ResolveToolCallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An open server-sent event stream; the response does not complete.",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/chat/instructions": {
@@ -4848,7 +4994,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_chat_instructions",
@@ -4926,7 +5073,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/chat/instructions/{instructionId}": {
@@ -5016,7 +5164,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_chat_instructions_byInstructionId",
@@ -5097,7 +5246,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/comments": {
@@ -5177,7 +5327,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/comments/bulk-add-tag": {
@@ -5230,7 +5381,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/comments/bulk-delete": {
@@ -5283,7 +5435,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/comments/bulk-remove-tag": {
@@ -5336,7 +5489,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/comments/flat": {
@@ -5420,7 +5574,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/comments/graph/log-fields": {
@@ -5500,7 +5655,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/comments/tags": {
@@ -5570,7 +5726,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/comments/{id}": {
@@ -5650,7 +5807,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_comments_byId",
@@ -5738,7 +5896,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_comments_byId",
@@ -5816,7 +5975,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/context-links": {
@@ -5884,7 +6044,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_context_links",
@@ -5962,7 +6123,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/context-links/enabled": {
@@ -6030,7 +6192,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/context-links/{id}": {
@@ -6110,7 +6273,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_context_links_byId",
@@ -6198,7 +6362,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_context_links_byId",
@@ -6279,7 +6444,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/dashboards": {
@@ -6363,7 +6529,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_dashboards",
@@ -6441,7 +6608,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dashboards/import": {
@@ -6517,7 +6685,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dashboards/{id}": {
@@ -6597,7 +6766,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_dashboards_byId",
@@ -6685,7 +6855,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_dashboards_byId",
@@ -6763,7 +6934,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/events": {
@@ -6819,7 +6991,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/execute": {
@@ -6899,7 +7072,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/export": {
@@ -6955,7 +7129,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/presence": {
@@ -7035,7 +7210,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_dashboards_byId_presence",
@@ -7113,7 +7289,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/refresh-interval": {
@@ -7203,7 +7380,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/shared-links": {
@@ -7283,7 +7461,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_dashboards_byId_shared_links",
@@ -7344,7 +7523,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/dashboards/{id}/shared-links/{link_id}": {
@@ -7432,7 +7612,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/variables": {
@@ -7522,7 +7703,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/widgets": {
@@ -7612,7 +7794,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/widgets/{widget_id}": {
@@ -7710,7 +7893,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_dashboards_byId_widgets_byWidget_id",
@@ -7796,7 +7980,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/widgets/{widget_id}/execute": {
@@ -7867,7 +8052,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dashboards/{id}/widgets/{widget_id}/layout": {
@@ -7965,7 +8151,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dictionaries": {
@@ -8033,7 +8220,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_dictionaries",
@@ -8111,7 +8299,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}": {
@@ -8191,7 +8380,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_dictionaries_byId",
@@ -8279,7 +8469,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_dictionaries_byId",
@@ -8360,7 +8551,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/columns": {
@@ -8450,7 +8642,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/columns/{name}": {
@@ -8538,7 +8731,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/columns/{name}/key": {
@@ -8626,7 +8820,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_dictionaries_byId_columns_byName_key",
@@ -8712,7 +8907,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/data": {
@@ -8811,7 +9007,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_dictionaries_byId_data",
@@ -8902,7 +9099,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/data/{key}": {
@@ -8993,7 +9191,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/export": {
@@ -9049,7 +9248,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dictionaries/{id}/import": {
@@ -9138,7 +9338,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionaries/{id}/reload": {
@@ -9221,7 +9422,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionary-actions": {
@@ -9289,7 +9491,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_dictionary_actions",
@@ -9367,7 +9570,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/dictionary-actions/{id}": {
@@ -9447,7 +9651,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_dictionary_actions_byId",
@@ -9535,7 +9740,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_dictionary_actions_byId",
@@ -9616,7 +9822,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/email-actions": {
@@ -9684,7 +9891,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_email_actions",
@@ -9762,7 +9970,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/email-actions/{id}": {
@@ -9842,7 +10051,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_email_actions_byId",
@@ -9930,7 +10140,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_email_actions_byId",
@@ -9981,7 +10192,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/email-actions/{id}/test": {
@@ -10061,7 +10273,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/feeds": {
@@ -10134,7 +10347,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_feeds",
@@ -10212,7 +10426,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/feeds/{id}": {
@@ -10292,7 +10507,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_feeds_byId",
@@ -10380,7 +10596,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_feeds_byId",
@@ -10431,7 +10648,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/feeds/{id}/alerts": {
@@ -10514,7 +10732,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/feeds/{id}/alerts/disable-all": {
@@ -10567,7 +10786,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/feeds/{id}/alerts/enable-all": {
@@ -10620,7 +10840,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/feeds/{id}/sync": {
@@ -10673,7 +10894,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractal-actions": {
@@ -10750,7 +10972,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractal_actions",
@@ -10828,7 +11051,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractal-actions/{id}": {
@@ -10908,7 +11132,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_fractal_actions_byId",
@@ -10996,7 +11221,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractal_actions_byId",
@@ -11047,7 +11273,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals": {
@@ -11117,7 +11344,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_fractals",
@@ -11195,7 +11423,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/stats/refresh": {
@@ -11238,7 +11467,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}": {
@@ -11318,7 +11548,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_fractals_byId",
@@ -11406,7 +11637,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId",
@@ -11457,7 +11689,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/api-keys": {
@@ -11535,7 +11768,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractals_byId_api_keys",
@@ -11623,7 +11857,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/api-keys/{keyId}": {
@@ -11711,7 +11946,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_fractals_byId_api_keys_byKeyId",
@@ -11807,7 +12043,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId_api_keys_byKeyId",
@@ -11866,7 +12103,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/api-keys/{keyId}/toggle": {
@@ -11957,7 +12195,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/archive-retention": {
@@ -12020,7 +12259,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/disk-quota": {
@@ -12083,7 +12323,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/ingest-tokens": {
@@ -12161,7 +12402,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractals_byId_ingest_tokens",
@@ -12249,7 +12491,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/ingest-tokens/{tokenId}": {
@@ -12337,7 +12580,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_fractals_byId_ingest_tokens_byTokenId",
@@ -12433,7 +12677,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId_ingest_tokens_byTokenId",
@@ -12492,7 +12737,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/ingest-tokens/{tokenId}/toggle": {
@@ -12583,7 +12829,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/permissions": {
@@ -12661,7 +12908,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_fractals_byId_permissions",
@@ -12749,7 +12997,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/permissions/{permId}": {
@@ -12820,7 +13069,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_fractals_byId_permissions_byPermId",
@@ -12879,7 +13129,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/retention": {
@@ -12942,7 +13193,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/fractals/{id}/select": {
@@ -13022,7 +13274,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/fractals/{id}/stats": {
@@ -13102,7 +13355,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/groups": {
@@ -13145,7 +13399,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_groups",
@@ -13196,7 +13451,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/groups/{id}": {
@@ -13249,7 +13505,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_groups_byId",
@@ -13310,7 +13567,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_groups_byId",
@@ -13361,7 +13619,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/groups/{id}/members": {
@@ -13414,7 +13673,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_groups_byId_members",
@@ -13475,7 +13735,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/groups/{id}/members/{username}": {
@@ -13536,7 +13797,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/health": {
@@ -13552,7 +13814,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/health/clickhouse": {
@@ -13595,7 +13858,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/ingest": {
@@ -13648,7 +13912,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "ingest_token"
       }
     },
     "/api/v1/instruction-libraries": {
@@ -13721,7 +13986,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_instruction_libraries",
@@ -13799,7 +14065,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/instruction-libraries/ensure-default": {
@@ -13869,7 +14136,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/instruction-libraries/{id}": {
@@ -13952,7 +14220,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_instruction_libraries_byId",
@@ -14040,7 +14309,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_instruction_libraries_byId",
@@ -14091,7 +14361,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/instruction-libraries/{id}/folders": {
@@ -14174,7 +14445,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_instruction_libraries_byId_folders",
@@ -14262,7 +14534,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/instruction-libraries/{id}/folders/{folderId}": {
@@ -14360,7 +14633,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_instruction_libraries_byId_folders_byFolderId",
@@ -14419,7 +14693,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/instruction-libraries/{id}/pages": {
@@ -14502,7 +14777,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_instruction_libraries_byId_pages",
@@ -14590,7 +14866,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/instruction-libraries/{id}/pages/{pageId}": {
@@ -14678,7 +14955,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_instruction_libraries_byId_pages_byPageId",
@@ -14774,7 +15052,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_instruction_libraries_byId_pages_byPageId",
@@ -14833,7 +15112,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/instruction-libraries/{id}/pages/{pageId}/backlinks": {
@@ -14924,7 +15204,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/instruction-libraries/{id}/pages/{pageId}/move": {
@@ -14995,7 +15276,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/instruction-libraries/{id}/sync": {
@@ -15075,7 +15357,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/internal/ingest/{fractal}": {
@@ -15134,7 +15417,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "internal"
       }
     },
     "/api/v1/logs": {
@@ -15196,7 +15480,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/logs/by-timestamp": {
@@ -15259,7 +15544,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/logs/commented": {
@@ -15346,7 +15632,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/logs/fields": {
@@ -15429,7 +15716,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/logs/histogram": {
@@ -15472,7 +15760,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/logs/recent": {
@@ -15515,7 +15804,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/logs/{log_id}/comments": {
@@ -15595,7 +15885,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_logs_byLog_id_comments",
@@ -15673,7 +15964,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "fractal_admin"
       }
     },
     "/api/v1/models": {
@@ -15741,7 +16033,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_models",
@@ -15819,7 +16112,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/generate-query": {
@@ -15902,7 +16196,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/models/import": {
@@ -15978,7 +16273,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/parse-query": {
@@ -16058,7 +16354,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/models/preview": {
@@ -16138,7 +16435,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/test-extraction": {
@@ -16218,7 +16516,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/models/{id}": {
@@ -16298,7 +16597,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_models_byId",
@@ -16386,7 +16686,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "delete": {
         "operationId": "delete_api_v1_models_byId",
@@ -16467,7 +16768,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/{id}/backfill": {
@@ -16557,7 +16859,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/{id}/backfill/cancel": {
@@ -16640,7 +16943,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/{id}/data": {
@@ -16756,7 +17060,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/models/{id}/disable-alert": {
@@ -16839,7 +17144,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/{id}/enable-alert": {
@@ -16922,7 +17228,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/models/{id}/export": {
@@ -16978,7 +17285,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/models/{id}/histogram": {
@@ -17061,7 +17369,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/models/{id}/stats": {
@@ -17144,7 +17453,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/normalizers": {
@@ -17212,7 +17522,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_normalizers",
@@ -17290,7 +17601,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/import": {
@@ -17366,7 +17678,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/preview": {
@@ -17446,7 +17759,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/samples": {
@@ -17530,7 +17844,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/{id}": {
@@ -17610,7 +17925,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_normalizers_byId",
@@ -17698,7 +18014,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_normalizers_byId",
@@ -17779,7 +18096,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/{id}/duplicate": {
@@ -17859,7 +18177,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/{id}/export": {
@@ -17915,7 +18234,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/{id}/set-default": {
@@ -17998,7 +18318,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/normalizers/{id}/tokens": {
@@ -18076,7 +18397,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/notebooks": {
@@ -18167,7 +18489,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_notebooks",
@@ -18245,7 +18568,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/notebooks/ai-status": {
@@ -18288,7 +18612,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/generate-from-comments": {
@@ -18368,7 +18693,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/notebooks/import": {
@@ -18444,7 +18770,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/notebooks/{id}": {
@@ -18524,7 +18851,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "put": {
         "operationId": "put_api_v1_notebooks_byId",
@@ -18612,7 +18940,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_notebooks_byId",
@@ -18690,7 +19019,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/events": {
@@ -18746,7 +19076,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/export": {
@@ -18802,7 +19133,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/presence": {
@@ -18882,7 +19214,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_notebooks_byId_presence",
@@ -18960,7 +19293,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/sections": {
@@ -19050,7 +19384,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/sections/reorder": {
@@ -19140,7 +19475,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/sections/{section_id}": {
@@ -19238,7 +19574,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_notebooks_byId_sections_bySection_id",
@@ -19324,7 +19661,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/sections/{section_id}/execute": {
@@ -19422,7 +19760,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/sections/{section_id}/results": {
@@ -19520,7 +19859,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/sections/{section_id}/summarize": {
@@ -19608,7 +19948,89 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/notebooks/{id}/summary": {
+      "get": {
+        "operationId": "get_api_v1_notebooks_byId_summary",
+        "summary": "Read one notebook's outline without its cached query results.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/tags": {
@@ -19661,7 +20083,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notebooks/{id}/variables": {
@@ -19751,7 +20174,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notifications": {
@@ -19821,7 +20245,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notifications/count": {
@@ -19891,7 +20316,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/notifications/read": {
@@ -19934,7 +20360,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/openapi.json": {
@@ -19977,7 +20404,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/prisms": {
@@ -20045,7 +20473,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_prisms",
@@ -20123,7 +20552,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}": {
@@ -20203,7 +20633,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_prisms_byId",
@@ -20291,7 +20722,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_prisms_byId",
@@ -20372,7 +20804,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/api-keys": {
@@ -20450,7 +20883,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_prisms_byId_api_keys",
@@ -20538,7 +20972,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/api-keys/{keyId}": {
@@ -20626,7 +21061,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_prisms_byId_api_keys_byKeyId",
@@ -20722,7 +21158,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_prisms_byId_api_keys_byKeyId",
@@ -20781,7 +21218,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/api-keys/{keyId}/toggle": {
@@ -20872,7 +21310,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/members": {
@@ -20962,7 +21401,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/members/{fractalID}": {
@@ -21050,7 +21490,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/permissions": {
@@ -21128,7 +21569,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_prisms_byId_permissions",
@@ -21216,7 +21658,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/permissions/{permId}": {
@@ -21317,7 +21760,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_prisms_byId_permissions_byPermId",
@@ -21406,7 +21850,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/prisms/{id}/select": {
@@ -21486,7 +21931,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query": {
@@ -21546,7 +21992,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query-history": {
@@ -21623,7 +22070,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_query_history",
@@ -21704,7 +22152,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_query_history",
@@ -21775,7 +22224,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/query-history/{id}": {
@@ -21858,7 +22308,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query/fields": {
@@ -21926,7 +22377,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query/fieldstats": {
@@ -21986,7 +22438,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query/reference": {
@@ -22029,7 +22482,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query/stream": {
@@ -22085,7 +22539,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/query/validate": {
@@ -22145,7 +22600,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/recall/available": {
@@ -22188,7 +22644,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/recall/{fractalID}": {
@@ -22248,7 +22705,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       },
       "post": {
         "operationId": "post_api_v1_recall_byFractalID",
@@ -22309,7 +22767,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/recall/{fractalID}/estimate": {
@@ -22376,7 +22835,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/recall/{fractalID}/{id}": {
@@ -22437,7 +22897,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/recall/{fractalID}/{id}/cancel": {
@@ -22498,7 +22959,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/saved-queries": {
@@ -22582,7 +23044,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_saved_queries",
@@ -22660,7 +23123,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/saved-queries/{id}": {
@@ -22750,7 +23214,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_saved_queries_byId",
@@ -22831,7 +23296,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/saved-queries/{id}/favorite": {
@@ -22914,7 +23380,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "delete": {
         "operationId": "delete_api_v1_saved_queries_byId_favorite",
@@ -22995,7 +23462,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/saved-queries/{id}/use": {
@@ -23078,7 +23546,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/settings": {
@@ -23128,7 +23597,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_settings",
@@ -23186,7 +23656,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/shared/{token}": {
@@ -23212,7 +23683,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/api/v1/smtp-settings": {
@@ -23282,7 +23754,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_smtp_settings",
@@ -23333,7 +23806,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/status": {
@@ -23383,7 +23857,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive": {
@@ -23426,7 +23901,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/clear": {
@@ -23469,7 +23945,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/enabled": {
@@ -23522,7 +23999,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/maintain/run": {
@@ -23565,7 +24043,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/restore": {
@@ -23659,7 +24138,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_system_archive_restore",
@@ -23710,7 +24190,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/restore/{id}/cancel": {
@@ -23763,7 +24244,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/restore/{id}/resume": {
@@ -23816,7 +24298,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/archive/spool/clear": {
@@ -23859,7 +24342,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/distribution-queue/reset": {
@@ -23912,7 +24396,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/distribution-queue/shards": {
@@ -23955,7 +24440,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/endpoint-analysis": {
@@ -23998,7 +24484,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_system_endpoint_analysis",
@@ -24049,7 +24536,52 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
+    "/api/v1/system/pgr-calibration": {
+      "get": {
+        "operationId": "get_api_v1_system_pgr_calibration",
+        "summary": "Report pgr() severity calibration: derived cutoffs, observed distribution, and baseline maturity.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "system"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success."
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/pressure": {
@@ -24101,7 +24633,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/system/shared-links": {
@@ -24144,7 +24677,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       },
       "post": {
         "operationId": "post_api_v1_system_shared_links",
@@ -24195,7 +24729,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/system/topology": {
@@ -24238,7 +24773,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/users": {
@@ -24325,7 +24861,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_users",
@@ -24382,7 +24919,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/users/mtls-status": {
@@ -24432,7 +24970,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/users/{username}": {
@@ -24502,7 +25041,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/users/{username}/client-cert": {
@@ -24565,7 +25105,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/users/{username}/enabled": {
@@ -24635,7 +25176,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/version": {
@@ -24678,7 +25220,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/webhooks": {
@@ -24755,7 +25298,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "post": {
         "operationId": "post_api_v1_webhooks",
@@ -24833,7 +25377,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/webhooks/{id}": {
@@ -24913,7 +25458,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "put": {
         "operationId": "put_api_v1_webhooks_byId",
@@ -25001,7 +25547,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       },
       "delete": {
         "operationId": "delete_api_v1_webhooks_byId",
@@ -25052,7 +25599,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/api/v1/webhooks/{id}/test": {
@@ -25132,7 +25680,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "tenant_admin"
       }
     },
     "/go/search": {
@@ -25148,7 +25697,8 @@
           "200": {
             "description": "Success."
           }
-        }
+        },
+        "x-bifract-access": "public"
       }
     },
     "/v1/logs": {
@@ -25221,7 +25771,8 @@
               }
             }
           }
-        }
+        },
+        "x-bifract-access": "ingest_token"
       }
     }
   },
@@ -27399,6 +27950,20 @@
         },
         "required": [
           "title"
+        ]
+      },
+      "chat.ResolveToolCallRequest": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "time_range": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
         ]
       },
       "chat.SetConversationLibrariesRequest": {
@@ -30744,6 +31309,9 @@
           },
           "time_range_type": {
             "type": "string"
+          },
+          "timezone": {
+            "type": "string"
           }
         },
         "required": [
@@ -30756,8 +31324,15 @@
       "notebooks.CreateSectionRequest": {
         "type": "object",
         "properties": {
+          "append": {
+            "type": "boolean"
+          },
           "content": {
             "type": "string"
+          },
+          "event_time": {
+            "type": "string",
+            "format": "date-time"
           },
           "order_index": {
             "type": "integer"
@@ -30803,13 +31378,17 @@
           "attack_chain": {
             "type": "boolean"
           },
+          "overwrite": {
+            "type": "boolean"
+          },
           "tag": {
             "type": "string"
           }
         },
         "required": [
           "tag",
-          "attack_chain"
+          "attack_chain",
+          "overwrite"
         ]
       },
       "notebooks.ReorderSectionsRequest": {
@@ -30848,6 +31427,9 @@
           },
           "time_range_type": {
             "type": "string"
+          },
+          "timezone": {
+            "type": "string"
           }
         }
       },
@@ -30857,8 +31439,15 @@
           "chart_config": {
             "description": "Any JSON value."
           },
+          "clear_event_time": {
+            "type": "boolean"
+          },
           "content": {
             "type": "string"
+          },
+          "event_time": {
+            "type": "string",
+            "format": "date-time"
           },
           "tags": {
             "type": "array",
@@ -31457,6 +32046,9 @@
             "type": "string"
           },
           "start": {
+            "type": "string"
+          },
+          "timezone": {
             "type": "string"
           },
           "variables": {
@@ -32190,6 +32782,9 @@
           "api_key_rate_limit": {
             "type": "integer"
           },
+          "pgr_sensitivity_percent": {
+            "type": "number"
+          },
           "query_cpu_percent": {
             "type": "integer"
           },
@@ -32241,6 +32836,7 @@
           "recall_memory_percent",
           "schema_sweep_interval_minutes",
           "api_key_rate_limit",
+          "pgr_sensitivity_percent",
           "require_mfa"
         ]
       },
@@ -32601,6 +33197,9 @@
           "time_range_type": {
             "type": "string"
           },
+          "timezone": {
+            "type": "string"
+          },
           "updated_at": {
             "type": "string",
             "format": "date-time"
@@ -32616,6 +33215,7 @@
           "time_range_type",
           "max_results_per_section",
           "variables",
+          "timezone",
           "created_by",
           "author_display_name",
           "author_gravatar_color",

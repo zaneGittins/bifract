@@ -30,7 +30,7 @@ action="denied" | join(src_ip) {
 
 Enrich events with user metadata using a left join:
 ```
-* | join(user, type=left, include=[department,role]) {
+* | join(user, type=left, include=[first_department,first_role]) {
   * | groupby(user) | selectFirst(department) | selectFirst(role)
 }
 ```

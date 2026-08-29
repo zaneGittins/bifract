@@ -19,12 +19,12 @@
 }
 
 [data-theme="light"] {
-    --atk-heat-1: #d3e0f0;
-    --atk-heat-2: #b0c9e5;
-    --atk-heat-3: #8bafd8;
-    --atk-heat-4: #3f74b5;
-    --atk-heat-5: #1e528f;
-    --atk-heat-ink-low: #1a1612;
+    --atk-heat-1: #efe4fa;
+    --atk-heat-2: #ddc6f4;
+    --atk-heat-3: #c7a5eb;
+    --atk-heat-4: #8659c0;
+    --atk-heat-5: #623c95;
+    --atk-heat-ink-low: #1e1a16;
     --atk-heat-ink-high: #ffffff;
 }
 
@@ -236,7 +236,7 @@
     height: 15px;
     border: 1.5px solid var(--border-color);
     border-radius: 3px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     cursor: pointer;
     position: relative;
     flex-shrink: 0;

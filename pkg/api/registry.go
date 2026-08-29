@@ -145,26 +145,37 @@ func (rt Router) Register(route Route) {
 	rt.Router.Method(route.Method, route.Path, guard(route.Access, route.Handler))
 }
 
-// guard refuses a request whose principal does not satisfy access. Handlers
-// still perform their own row-level checks; this is the route-level gate.
+// guard refuses a request whose principal does not satisfy access, or that
+// carries a ceiling below it. Handlers still perform their own row-level checks;
+// this is the route-level gate.
 func guard(access Access, h http.HandlerFunc) http.HandlerFunc {
+	authorized := h
 	// Only these three are reachable without a session, and each is enforced
 	// elsewhere: by nothing (public), by the ingest token, or by the
 	// private-network middleware. Every other value, including an access level
 	// nobody set, goes through Allows, which denies what it does not recognise.
 	// The default here is deny on purpose: an undeclared route must not be open.
-	if access == AccessPublic || access == AccessIngestToken || access == AccessInternal {
-		return h
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !access.Allows(r) {
-			if _, ok := r.Context().Value("user").(*storage.User); !ok {
-				WriteError(w, http.StatusUnauthorized, "Unauthorized")
+	if access != AccessPublic && access != AccessIngestToken && access != AccessInternal {
+		authorized = func(w http.ResponseWriter, r *http.Request) {
+			if !access.Allows(r) {
+				if _, ok := r.Context().Value("user").(*storage.User); !ok {
+					WriteError(w, http.StatusUnauthorized, "Unauthorized")
+					return
+				}
+				WriteError(w, http.StatusForbidden, "Insufficient permissions")
 				return
 			}
-			WriteError(w, http.StatusForbidden, "Insufficient permissions")
+			h(w, r)
+		}
+	}
+	// Checked on every route, the unauthenticated schemes included: an
+	// in-process caller under a ceiling must not reach an ingest or
+	// private-network route either.
+	return func(w http.ResponseWriter, r *http.Request) {
+		if ceiling, capped := CeilingFromContext(r.Context()); capped && !ceiling.Permits(access) {
+			WriteError(w, http.StatusForbidden, "Not permitted at this caller's access ceiling")
 			return
 		}
-		h(w, r)
+		authorized(w, r)
 	}
 }

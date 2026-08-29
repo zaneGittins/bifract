@@ -67,6 +67,7 @@ nav:
   - Getting Started:
     - Installation: getting-started/installation.md
     - Kubernetes: getting-started/kubernetes.md
+    - Sizing Guide: getting-started/sizing.md
     - ClickHouse Cloud: getting-started/clickhouse-cloud.md
     - Configuration: getting-started/configuration.md
   - Administration:

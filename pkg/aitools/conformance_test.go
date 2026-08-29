@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"encoding/json"
@@ -7,7 +7,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,7 +21,7 @@ const specPath = "../../openapi.json"
 // clientMethods are the calls that reach the API. Their first path argument is
 // what these tests recover.
 var clientMethods = map[string]bool{
-	"Get": true, "Post": true, "Put": true, "Delete": true, "Do": true, "Static": true,
+	"Get": true, "Post": true, "Put": true, "Delete": true, "Static": true,
 }
 
 // TestEveryEndpointAToolCallsExists fails when a route is renamed or removed,
@@ -39,8 +38,17 @@ func TestEveryEndpointAToolCallsExists(t *testing.T) {
 }
 
 type apiCall struct {
-	path  string
-	where string
+	method string
+	path   string
+	fn     string // the package-level function the call sits in
+	where  string
+}
+
+// methodOf maps a client method onto the HTTP verb it sends. A method missing
+// here reads as an unknown verb, which the ceiling gate reports rather than
+// skipping the call unchecked.
+var methodOf = map[string]string{
+	"Get": "GET", "Static": "GET", "Post": "POST", "Put": "PUT", "Delete": "DELETE",
 }
 
 // calledPaths walks the package for Client calls and rebuilds the path each one
@@ -58,33 +66,34 @@ func calledPaths(t *testing.T) []apiCall {
 	var calls []apiCall
 	for _, pkg := range pkgs {
 		for name, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
 				if !ok {
+					continue
+				}
+				ast.Inspect(fn, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					selector, ok := call.Fun.(*ast.SelectorExpr)
+					if !ok || !clientMethods[selector.Sel.Name] || len(call.Args) < 2 {
+						return true
+					}
+					// Every client method takes (ctx, path, ...).
+					path, ok := pathOf(call.Args[1])
+					if !ok {
+						return true
+					}
+					calls = append(calls, apiCall{
+						method: methodOf[selector.Sel.Name],
+						path:   path,
+						fn:     fn.Name.Name,
+						where:  filepath.Base(name) + ":" + strconv.Itoa(fset.Position(call.Pos()).Line),
+					})
 					return true
-				}
-				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || !clientMethods[selector.Sel.Name] || len(call.Args) < 2 {
-					return true
-				}
-				// Do takes (ctx, method, path, ...); the rest take (ctx, path, ...).
-				index := 1
-				if selector.Sel.Name == "Do" {
-					index = 2
-				}
-				if index >= len(call.Args) {
-					return true
-				}
-				path, ok := pathOf(call.Args[index])
-				if !ok {
-					return true
-				}
-				calls = append(calls, apiCall{
-					path:  path,
-					where: filepath.Base(name) + ":" + strconv.Itoa(fset.Position(call.Pos()).Line),
 				})
-				return true
-			})
+			}
 		}
 	}
 	if len(calls) == 0 {
@@ -229,47 +238,3 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
-
-// docsPath is the page a user reads to decide what this server can do.
-const docsPath = "../../docs/features/mcp-server.md"
-
-// TestTheDocumentedToolListMatchesTheServer keeps the page honest. A tool added
-// without documenting it, or documented after being removed, fails here.
-func TestTheDocumentedToolListMatchesTheServer(t *testing.T) {
-	page, err := os.ReadFile(docsPath)
-	if err != nil {
-		t.Fatalf("reading %s: %v", docsPath, err)
-	}
-	// Scoped to the tool tables: the environment-variable table upstream uses the
-	// same row shape and would otherwise read as a tool named BIFRACT_URL.
-	section := string(page)
-	start := strings.Index(section, "## Available Tools")
-	if start < 0 {
-		t.Fatalf("%s has no '## Available Tools' section", docsPath)
-	}
-	section = section[start:]
-	if end := strings.Index(section[len("## Available Tools"):], "\n## "); end >= 0 {
-		section = section[:len("## Available Tools")+end]
-	}
-
-	documented := map[string]bool{}
-	for _, match := range toolRow.FindAllStringSubmatch(section, -1) {
-		documented[match[1]] = true
-	}
-
-	registered := map[string]bool{}
-	for _, tool := range tools(t) {
-		registered[tool.Name] = true
-		if !documented[tool.Name] {
-			t.Errorf("%s is registered but not in %s", tool.Name, docsPath)
-		}
-	}
-	for name := range documented {
-		if !registered[name] {
-			t.Errorf("%s is documented in %s but not registered", name, docsPath)
-		}
-	}
-}
-
-// toolRow matches a leading `| `name` |` cell in the tool tables.
-var toolRow = regexp.MustCompile("(?m)^\\|\\s*`([a-z_]+)`\\s*\\|")

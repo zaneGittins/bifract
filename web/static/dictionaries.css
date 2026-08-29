@@ -108,6 +108,12 @@
     background: var(--bg-hover);
 }
 
+.dict-editable-title:focus-visible,
+.dict-editable-desc:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+
 .dict-editable-desc {
     font-size: 0.85rem;
     color: var(--text-secondary);
@@ -409,7 +415,7 @@
 
 /* Inline column name input in header */
 .dict-col-header-input {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--accent-primary);
     color: var(--text-primary);
     border-radius: 4px;
@@ -500,7 +506,7 @@
 
 /* Inline cell edit input */
 .dict-cell-input {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--accent-primary);
     color: var(--text-primary);
     border-radius: 3px;
@@ -582,7 +588,7 @@
 
 /* Row search */
 .dict-search {
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     border-radius: 6px;
@@ -643,7 +649,7 @@
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    border: 1.5px solid var(--border-primary);
+    border: 1.5px solid var(--border-color);
     border-radius: 3px;
     background: transparent;
     cursor: pointer;

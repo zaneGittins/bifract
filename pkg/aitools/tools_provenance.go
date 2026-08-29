@@ -1,4 +1,4 @@
-package mcpserver
+package aitools
 
 import (
 	"context"
@@ -15,9 +15,10 @@ var edgeTypes = []string{"dns_query", "file_write", "net_connect", "process_acce
 
 var directions = []string{"both", "forward", "backward"}
 
-func registerProvenanceTools(s *mcp.Server, c *Client) {
-	register(s, c, &mcp.Tool{
-		Name: "find_processes",
+func registerProvenanceTools(d *set) {
+	add(d, &mcp.Tool{
+		Name:        "find_processes",
+		Annotations: readOnly(),
 		Description: "Find process-creation events and return their process GUIDs.\n\n" +
 			"This is the step before get_provenance_graph, which needs a GUID to seed on. " +
 			"All filters are optional and combine with AND; the text ones are " +
@@ -25,8 +26,9 @@ func registerProvenanceTools(s *mcp.Server, c *Client) {
 			"Returns matching processes with process_guid, image, command line, host, user, and time.",
 	}, findProcesses)
 
-	register(s, c, &mcp.Tool{
-		Name: "get_provenance_graph",
+	add(d, &mcp.Tool{
+		Name:        "get_provenance_graph",
+		Annotations: readOnly(),
 		Description: "Build the provenance graph for a process: what it descends from and what it did.\n\n" +
 			"Runs pgr() on the seed GUID. It walks the spawn tree in both directions, scores " +
 			"every file write, network connection, DNS query, and injection by how unusual it " +
@@ -39,8 +41,7 @@ func registerProvenanceTools(s *mcp.Server, c *Client) {
 			"Requires an admin to have enabled endpoint behavioral analytics, and " +
 			"endpoint/EDR data (for example Sysmon) normalized to bifract_category " +
 			"process_creation.",
-	}, getProvenanceGraph,
-		choices{property: "direction", values: directions})
+	}, getProvenanceGraph, enumOf("direction", directions))
 }
 
 type findProcessesArgs struct {
@@ -52,7 +53,7 @@ type findProcessesArgs struct {
 	window
 }
 
-func findProcesses(ctx context.Context, c *Client, in findProcessesArgs) (any, error) {
+func findProcesses(ctx context.Context, c Client, in findProcessesArgs) (any, error) {
 	category, err := bqlEquals("bifract_category", "process_creation")
 	if err != nil {
 		return nil, err
@@ -87,7 +88,7 @@ func findProcesses(ctx context.Context, c *Client, in findProcessesArgs) (any, e
 		return nil, err
 	}
 
-	rows := field[[]any](result, "results")
+	rows := Field[[]any](result, "results")
 	if len(rows) == 0 {
 		return map[string]any{
 			"query": query,
@@ -114,7 +115,7 @@ type provenanceArgs struct {
 	window
 }
 
-func getProvenanceGraph(ctx context.Context, c *Client, in provenanceArgs) (any, error) {
+func getProvenanceGraph(ctx context.Context, c Client, in provenanceArgs) (any, error) {
 	direction := strings.ToLower(strings.TrimSpace(in.Direction))
 	if direction == "" {
 		direction = "both"
@@ -164,7 +165,7 @@ func getProvenanceGraph(ctx context.Context, c *Client, in provenanceArgs) (any,
 		return nil, err
 	}
 
-	rows := field[[]any](result, "results")
+	rows := Field[[]any](result, "results")
 	if len(rows) == 0 {
 		return map[string]any{
 			"query":     query,
@@ -181,7 +182,7 @@ func getProvenanceGraph(ctx context.Context, c *Client, in provenanceArgs) (any,
 	graph["seed"] = in.GUID
 	graph["edges_returned"] = len(rows)
 	graph["edges_truncated"] = len(rows) >= limit
-	graph["execution_ms"] = int(field[float64](result, "execution_ms"))
+	graph["execution_ms"] = int(Field[float64](result, "execution_ms"))
 	return graph, nil
 }
 

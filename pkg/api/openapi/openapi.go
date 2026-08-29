@@ -65,6 +65,10 @@ type Operation struct {
 	Security    []map[string][]string `json:"security"`
 	RequestBody *RequestBody          `json:"requestBody,omitempty"`
 	Responses   map[string]*Response  `json:"responses"`
+	// Access is the route's authorization requirement, machine-readable. The
+	// description says the same thing in prose; a client that must reason about
+	// authority should read this.
+	Access api.Access `json:"x-bifract-access,omitempty"`
 }
 
 type Parameter struct {
@@ -184,6 +188,7 @@ func (g *schemaGen) operation(route api.Route) *Operation {
 		Summary:     route.Summary,
 		Description: accessDescription[route.Access],
 		Tags:        []string{tagFor(route.Path)},
+		Access:      route.Access,
 		Responses:   map[string]*Response{},
 	}
 

@@ -26,7 +26,7 @@ This mode is the default and is suitable when you want to preserve existing logs
 
 ### Rollover
 
-New logs are always accepted. A background sweep runs once a minute, and for any rollover fractal over its quota it drops the oldest data until usage is back at 80% of the quota. This provides headroom before the next trim is triggered.
+New logs are always accepted. A background sweep runs once a minute, and for any rollover fractal over its quota it drops the oldest data until usage is back at 80% of the quota, leaving headroom before the next trim.
 
 Rollover drops whole ClickHouse **partitions** (one fractal per ingest day each), which is a near-instant metadata operation rather than a row-level mutation. Because it works a day at a time, actual usage after a trim can sit noticeably below the 80% target when a fractal has few, large days. Oldest means oldest *ingested*, so a trim evicts the data you have held longest rather than whichever day carries the oldest event timestamps.
 

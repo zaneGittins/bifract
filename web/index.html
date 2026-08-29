@@ -694,9 +694,9 @@
                     <!-- Section rail -->
                     <nav class="sp-rail" id="settingsSectionRail" aria-label="Settings sections">
                         <button class="sp-rail-item active" data-section="spSectionQuery">Query &amp; Alerting</button>
+                        <button class="sp-rail-item" data-section="spSectionEndpoint">Endpoint Analytics</button>
                         <button class="sp-rail-item" data-section="spSectionArchive">Archive</button>
                         <button class="sp-rail-item" data-section="spSectionSecurity">Security</button>
-                        <button class="sp-rail-item" data-section="spSectionFeatures">Features</button>
                         <button class="sp-rail-item sp-rail-danger" data-section="spSectionDanger">Danger Zone</button>
                     </nav>
 
@@ -726,7 +726,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="queryCPUPercentSettings" class="sp-row-label">Search CPU share</label>
-                                        <p class="sp-row-desc">Share of the ClickHouse service's CPU that running searches may use in total. Keeps one expensive search from starving ingestion.</p>
+                                        <p class="sp-row-desc">Share of the ClickHouse service's CPU that running searches may use in total.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="queryCPUPercentSettings" class="setting-select">
@@ -743,7 +743,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="queryMemoryPercentSettings" class="sp-row-label">Search memory share</label>
-                                        <p class="sp-row-desc">Most of each ClickHouse node's memory budget any one search may use. A search that would exceed it is cancelled instead of pressuring the server.</p>
+                                        <p class="sp-row-desc">The largest share of each ClickHouse node's memory budget any one search may use.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="queryMemoryPercentSettings" class="setting-select">
@@ -760,7 +760,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="alertTimeoutSettings" class="sp-row-label">Alert query timeout</label>
-                                        <p class="sp-row-desc">Maximum runtime for an alert query. Alerts that exceed it are disabled automatically.</p>
+                                        <p class="sp-row-desc">Maximum runtime for an alert query, after which the alert is disabled automatically.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="alertTimeoutSettings" class="setting-select">
@@ -776,7 +776,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="alertEvalIntervalSettings" class="sp-row-label">Alert evaluation interval</label>
-                                        <p class="sp-row-desc">How often the alert engine evaluates every enabled alert. Lower detects sooner but issues more ClickHouse queries.</p>
+                                        <p class="sp-row-desc">How often the alert engine evaluates every enabled alert.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="alertEvalIntervalSettings" class="setting-select">
@@ -792,7 +792,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallTimeoutSettings" class="sp-row-label">Recall search timeout</label>
-                                        <p class="sp-row-desc">Maximum runtime for an archive (Recall) search before it is cancelled. Archive scans over object storage are slower than the hot store.</p>
+                                        <p class="sp-row-desc">Maximum runtime for an archive (Recall) search before it is cancelled.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallTimeoutSettings" class="setting-select">
@@ -807,7 +807,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallMaxBytesSettings" class="sp-row-label">Recall scan limit</label>
-                                        <p class="sp-row-desc">Rejects a Recall search up front when its time window holds more than this much archived data, before it runs. Uses the same estimate shown under the search box. Keeps a broad search from scanning a huge window.</p>
+                                        <p class="sp-row-desc">Rejects a Recall search before it runs when its time window holds more than this much archived data.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallMaxBytesSettings" class="setting-select">
@@ -824,7 +824,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallConcurrencySettings" class="sp-row-label">Concurrent Recall searches</label>
-                                        <p class="sp-row-desc">How many archive searches may run at once across the deployment. Each is handed to ClickHouse and reads object storage, so higher serves more analysts but competes for cluster resources.</p>
+                                        <p class="sp-row-desc">How many archive searches may run at once across the deployment.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallConcurrencySettings" class="setting-select">
@@ -842,7 +842,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallCPUPercentSettings" class="sp-row-label">Recall CPU share</label>
-                                        <p class="sp-row-desc">Share of the ClickHouse service's CPU that running Recall searches may use in total. Recall is scheduled behind interactive search, so an archive scan cannot make live search feel slow.</p>
+                                        <p class="sp-row-desc">Share of the ClickHouse service's CPU that running Recall searches may use in total.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallCPUPercentSettings" class="setting-select">
@@ -858,7 +858,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="recallMemoryPercentSettings" class="sp-row-label">Recall memory share</label>
-                                        <p class="sp-row-desc">Most of each ClickHouse node's memory budget any one Recall search may use. This is the only enforced ceiling on an archive scan, since ClickHouse cannot apply a byte limit to Iceberg reads once a scan is running.</p>
+                                        <p class="sp-row-desc">The largest share of each ClickHouse node's memory budget any one Recall search may use.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="recallMemoryPercentSettings" class="setting-select">
@@ -874,7 +874,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="schemaSweepIntervalSettings" class="sp-row-label">Schema measurement interval</label>
-                                        <p class="sp-row-desc">How often Bifract measures field coverage, storage, and column capacity for the Schema tab. The measurement samples a bounded slice of each fractal's recent logs, so its cost does not grow with how much data you hold. Shorter surfaces a newly ingested field sooner.</p>
+                                        <p class="sp-row-desc">How often Bifract measures field coverage, storage, and column capacity for the Schema tab.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="schemaSweepIntervalSettings" class="setting-select">
@@ -884,6 +884,51 @@
                                             <option value="60">Every hour</option>
                                             <option value="360">Every 6 hours</option>
                                         </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Endpoint Analytics -->
+                        <section class="sp-section" id="spSectionEndpoint">
+                            <header class="sp-section-head">
+                                <h3>Endpoint Analytics</h3>
+                                <p>Process lineage and behavioral baselines behind <code>ptg</code> and <code>pgr</code>.</p>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="endpointAnalysisToggle" class="sp-row-label">Collect baselines</label>
+                                        <p class="sp-row-desc">Builds process lineage and behavior-frequency baselines from incoming logs.</p>
+                                        <p class="sp-row-meta sp-row-cost">Adds materialized views that run on every ingested log. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="endpointAnalysisToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="pgrSensitivitySettings" class="sp-row-label">Process graph sensitivity</label>
+                                        <p class="sp-row-desc">The share of process-graph activity <code>pgr()</code> renders as high severity.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="pgrSensitivitySettings" class="setting-select">
+                                            <option value="0.5">Top 0.5%</option>
+                                            <option value="1">Top 1%</option>
+                                            <option value="2">Top 2%</option>
+                                            <option value="5">Top 5%</option>
+                                            <option value="10">Top 10%</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label class="sp-row-label">Process graph calibration</label>
+                                        <p class="sp-row-desc" id="pgrCalibrationReadout">Loading...</p>
                                     </div>
                                 </div>
                             </div>
@@ -899,7 +944,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="archiveEnabledToggle" class="sp-row-label">Iceberg archive</label>
-                                        <p class="sp-row-desc">Writes every log to S3, Azure, MinIO, or disk as Apache Iceberg tables backed by Parquet files. This is the system of record for disaster recovery and long-term retention.</p>
+                                        <p class="sp-row-desc">Writes every log to S3, Azure, MinIO, or disk as Apache Iceberg tables backed by Parquet files.</p>
                                         <p class="sp-row-blocked" id="archiveToggleHint" style="display:none;"></p>
                                     </div>
                                     <div class="sp-row-control">
@@ -916,13 +961,13 @@
                         <section class="sp-section" id="spSectionSecurity">
                             <header class="sp-section-head">
                                 <h3>Security</h3>
-                                <p>How people prove who they are before they reach your logs.</p>
+                                <p>How people prove who they are before they reach your logs, and what can be reached without signing in.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="requireMFAToggle" class="sp-row-label">Require two-factor authentication</label>
-                                        <p class="sp-row-meta sp-row-cost">Users are required to enroll on their next sign in. SSO accounts are exempt. <span id="requireMFAHint" class="setting-inline-hint"></span></p>
+                                        <p class="sp-row-meta sp-row-cost">Users are required to enroll at their next sign in; SSO accounts are exempt. <span id="requireMFAHint" class="setting-inline-hint"></span></p>
                                         <p class="sp-row-blocked" id="requireMFABlocked" style="display:none;"></p>
                                     </div>
                                     <div class="sp-row-control">
@@ -932,34 +977,10 @@
                                         </label>
                                     </div>
                                 </div>
-                            </div>
-                        </section>
-
-                        <!-- Features -->
-                        <section class="sp-section" id="spSectionFeatures">
-                            <header class="sp-section-head">
-                                <h3>Features</h3>
-                                <p>Optional capabilities. Each one costs ingest or exposure, so enable only what you use.</p>
-                            </header>
-                            <div class="sp-card">
-                                <div class="sp-row">
-                                    <div class="sp-row-info">
-                                        <label for="endpointAnalysisToggle" class="sp-row-label">Endpoint behavioral analytics</label>
-                                        <p class="sp-row-desc">Builds the process tree graph <code>ptg</code> and provenance graph <code>pgr</code> baselines for behavioral hunting.</p>
-                                        <p class="sp-row-meta sp-row-cost">Adds materialized views that run on every ingested log. Baselines resume from the moment it is re-enabled. <span id="endpointAnalysisHint" class="setting-inline-hint"></span></p>
-                                    </div>
-                                    <div class="sp-row-control">
-                                        <label class="toggle-switch">
-                                            <input type="checkbox" id="endpointAnalysisToggle">
-                                            <span class="toggle-slider"></span>
-                                        </label>
-                                    </div>
-                                </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="sharedLinksEnabledToggle" class="sp-row-label">Dashboard shared links</label>
-                                        <p class="sp-row-desc">Lets analysts publish read-only dashboard links that anyone can view without signing in, for lobby TVs and wallboards.</p>
+                                        <p class="sp-row-desc">Publishes read-only dashboard links that anyone can view without signing in.</p>
                                         <p class="sp-row-meta sp-row-cost">Links serve cached results only, never run queries, stay behind your network controls (mTLS/IP), and are individually revocable. <span id="sharedLinksHint" class="setting-inline-hint"></span></p>
                                     </div>
                                     <div class="sp-row-control">
@@ -972,7 +993,6 @@
                             </div>
                         </section>
 
-                        <!-- Danger Zone -->
                         <section class="sp-section" id="spSectionDanger">
                             <header class="sp-section-head">
                                 <h3>Danger Zone</h3>
@@ -1644,19 +1664,81 @@
         <!-- Fields rail (left, push layout) -->
         <aside id="fieldsRail" class="fields-rail">
             <div class="fr-header">
-                <span class="fr-title">Fields</span>
-                <span id="fieldsRailCount" class="fr-count"></span>
+                <div class="fr-tabs" role="tablist">
+                    <button class="fr-tab active" data-rail-tab="fields" role="tab">Fields</button>
+                    <button class="fr-tab" data-rail-tab="notebook" role="tab">Notebook</button>
+                </div>
                 <div class="fr-header-actions">
-                    <button id="fieldsRailSort" class="fr-icon-btn" title="Sort alphabetically">#</button>
                     <button id="fieldsRailClose" class="fr-icon-btn fr-close" title="Close">&times;</button>
                 </div>
             </div>
-            <div id="fieldsRailNote" class="fr-sample-note" style="display:none;"></div>
-            <div class="fr-filter">
-                <input id="fieldsRailFilter" type="text" class="fr-filter-input" placeholder="Filter fields..." />
+
+            <div class="fr-pane" data-rail-pane="fields">
+                <div id="fieldsRailNote" class="fr-sample-note" style="display:none;"></div>
+                <div class="fr-filter">
+                    <input id="fieldsRailFilter" type="text" class="fr-filter-input" placeholder="Filter fields..." />
+                    <span id="fieldsRailCount" class="fr-count"></span>
+                    <button id="fieldsRailSort" class="fr-icon-btn" title="Sort alphabetically">#</button>
+                </div>
+                <div id="fieldsRailBody" class="fr-body">
+                    <div class="fr-empty">Run a search to explore its fields</div>
+                </div>
             </div>
-            <div id="fieldsRailBody" class="fr-body">
-                <div class="fr-empty">Run a search to explore its fields</div>
+
+            <div class="fr-pane nbr-pane" data-rail-pane="notebook" hidden>
+                <!-- No notebook chosen for this fractal yet. -->
+                <div id="nbrEmpty" class="nbr-empty">
+                    <div class="nbr-empty-text">Pick a notebook to collect what you find while you search.</div>
+                    <button id="nbrChooseBtn" class="nbr-btn nbr-btn-primary">Choose notebook</button>
+                </div>
+
+                <!-- Inline notebook picker (no modal: the rail is the surface). -->
+                <div id="nbrPicker" class="nbr-picker" hidden>
+                    <div class="fr-filter">
+                        <input id="nbrPickerSearch" type="text" class="fr-filter-input" placeholder="Search notebooks..." />
+                        <button id="nbrPickerClose" class="fr-icon-btn" title="Cancel">&times;</button>
+                    </div>
+                    <div id="nbrPickerList" class="fr-body nbr-picker-list"></div>
+                    <div class="nbr-picker-foot">
+                        <input id="nbrNewName" type="text" class="fr-filter-input" placeholder="New notebook name..." />
+                        <button id="nbrNewBtn" class="nbr-btn">Create</button>
+                    </div>
+                </div>
+
+                <div id="nbrActive" class="nbr-active" hidden>
+                    <div class="nbr-head">
+                        <button id="nbrSwitchBtn" class="nbr-name" title="Switch notebook">
+                            <span id="nbrName" class="nbr-name-text"></span>
+                            <svg class="nbr-name-chevron" width="9" height="9" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <button id="nbrOpenBtn" class="fr-icon-btn" title="Open this notebook">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M6 2.5H3.5A1 1 0 0 0 2.5 3.5v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2.5h4v4M13.5 2.5L7 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                    </div>
+                    <div id="nbrCounts" class="nbr-counts"></div>
+
+                    <div id="nbrCapture" class="nbr-capture">
+                        <button id="nbrAddQuery" class="nbr-cap-btn" title="Add the query in the search box">Add query</button>
+                        <button id="nbrAddNote" class="nbr-cap-btn" title="Add a note">Add note</button>
+                    </div>
+
+                    <div id="nbrNoteEditor" class="nbr-note-editor" hidden>
+                        <textarea id="nbrNoteText" class="nbr-note-input" rows="3" placeholder="What did you find?" spellcheck="true"></textarea>
+                        <div class="nbr-note-actions">
+                            <button id="nbrNoteCancel" class="nbr-btn">Cancel</button>
+                            <button id="nbrNoteSave" class="nbr-btn nbr-btn-primary">Add note</button>
+                        </div>
+                    </div>
+
+                    <div class="nbr-toolbar">
+                        <span id="nbrOrderLabel" class="nbr-order-label">Notebook order</span>
+                        <button id="nbrOrderToggle" class="fr-icon-btn" title="Sort chronologically">
+                            <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                    </div>
+
+                    <div id="nbrList" class="fr-body nbr-list"></div>
+                </div>
             </div>
         </aside>
 
@@ -1668,6 +1750,7 @@
                 <div class="timeline-inline-stats" id="timelineStats"></div>
             </div>
             <div class="results-header">
+                <div class="results-status">
                 <span class="output-type-wrapper">
                     <span id="outputTypeLabel" class="output-type-label">Table</span>
                     <svg id="outputTypeSpinner" class="output-type-spinner" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
@@ -1684,11 +1767,13 @@
                         <line x1="16" y1="8" x2="8" y2="16" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
                     </svg>
                 </span>
-                <div class="results-controls">
                     <span id="resultsCount" class="result-count">-</span>
                     <span id="executionTime" class="execution-time"></span>
+                </div>
+                <div class="results-controls">
                     <div class="results-btn-group">
-                        <button id="fieldsRailToggle" class="export-btn fields-rail-toggle" title="Show fields sidebar">Fields</button>
+                        <button id="fieldsRailToggle" class="export-btn fields-rail-toggle" title="Show field statistics">Fields</button>
+                        <button id="notebookRailToggle" class="export-btn fields-rail-toggle" title="Show the active notebook">Notebook</button>
                         <button id="wrapToggleBtn" class="export-btn wrap-toggle-btn" style="display: none;" onclick="QueryExecutor.toggleWrap()" title="Toggle row wrap">wrap</button>
                         <div class="toolbar-menu-wrap" id="exportMenuWrap" style="display: none;">
                             <button id="exportMenuBtn" class="export-btn" title="Export results">
@@ -1770,6 +1855,9 @@
                     <button id="panelNextBtn" class="panel-nav-btn panel-next-btn" title="Next event">&#8250;</button>
                     <button id="searchLogBtn" class="panel-nav-btn panel-search-btn" title="Search for this log" style="display:none;">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    </button>
+                    <button id="pinLogBtn" class="panel-nav-btn panel-pin-btn" title="Pin to the active notebook" style="display:none;">
+                        <svg class="pin-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 2h8v12l-4-3-4 3z"/></svg>
                     </button>
                     <button id="sendToChatBtn" class="send-to-chat-btn" title="Analyze with AI">
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
@@ -4152,7 +4240,9 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/schemaFields.js"></script>
     <script src="/static/logDetail.js"></script>
     <script src="/static/worldmap.js"></script>
+    <script src="/static/railPanel.js"></script>
     <script src="/static/fieldStats.js"></script>
+    <script src="/static/notebookRail.js"></script>
     <script src="/static/columnSizing.js"></script>
     <script src="/static/queryExecutor.js"></script>
     <!-- Fractal selector removed - using main page fractal listing instead -->

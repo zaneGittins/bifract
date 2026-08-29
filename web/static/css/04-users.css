@@ -57,7 +57,7 @@
 }
 
 .users-table tr[ondblclick]:hover {
-    background: var(--hover-bg);
+    background: var(--bg-hover);
 }
 
 .edit-user-input {
@@ -65,7 +65,7 @@
     font-size: 0.8125rem;
     border: 1px solid var(--accent-primary);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     width: 100%;
     max-width: 200px;
@@ -76,7 +76,7 @@
     font-size: 0.8125rem;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
 }
 
@@ -213,7 +213,7 @@
 
 .invite-link-input {
     flex: 1;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     padding: 0.4rem 0.6rem;
@@ -303,7 +303,7 @@
 
 .role-select {
     width: 100%;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
     padding: 0.625rem;
@@ -609,7 +609,7 @@
     padding: 8px 10px 8px 36px;
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: var(--text-primary);
     font-size: 0.85rem;
     font-family: var(--font-main);
@@ -632,7 +632,7 @@
     overflow-y: auto;
     border: 1px solid var(--border-color);
     border-radius: 6px;
-    background: var(--bg-primary);
+    background: var(--bg-raised);
     padding: 4px;
 }
 
@@ -709,7 +709,7 @@
     height: 16px;
     border: 1.5px solid var(--border-color);
     border-radius: 3px;
-    background: var(--bg-primary);
+    background: var(--bg-sunken);
     color: transparent;
     transition: all 0.15s ease;
     flex-shrink: 0;
@@ -837,6 +837,9 @@
     gap: 0.625rem;
     width: 100%;
     padding: 0.5rem 0.75rem;
+    /* Buttons centre their text by default, which only shows on a label long
+       enough to wrap. */
+    text-align: left;
     border: none;
     background: transparent;
     color: var(--text-secondary);

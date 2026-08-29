@@ -48,7 +48,7 @@ Individual users can enroll at any time from the user menu under **Two-Factor Au
 
 To require it for everyone, turn on **Require two-factor authentication** under **Admin > Settings > Security**. Users who have not enrolled are sent to set up an authenticator at their next sign in and can do nothing else until they finish. Once the requirement is on, users cannot remove their own authenticator; an admin resets it for them.
 
-Two exemptions are worth knowing about:
+Two exemptions:
 
 - **SSO accounts are exempt.** Their identity provider owns the second factor, so configure multi-factor there instead. See [OIDC / SSO](oidc-sso.md).
 - **API keys are unaffected.** They are not interactive logins and carry their own scoping and revocation. An API key granted tenant administration therefore reaches the API without a code, which is a reason to scope keys narrowly. See [API Keys](ingest-tokens.md).
