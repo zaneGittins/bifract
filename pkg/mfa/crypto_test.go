@@ -1,6 +1,7 @@
 package mfa
 
 import (
+	"encoding/base64"
 	"errors"
 	"testing"
 )
@@ -59,14 +60,51 @@ func TestOpenRejectsWrongPepper(t *testing.T) {
 	}
 }
 
+// Tampering happens to the ciphertext, not to its base64 text. The final
+// quantum of a base64 string carries bits the decoder ignores, so flipping a
+// bit in the encoded character often decodes to the very same bytes: the value
+// is then not tampered with at all, and GCM is right to accept it.
 func TestOpenRejectsTamperedCiphertext(t *testing.T) {
 	t.Setenv("BIFRACT_PASSWORD_PEPPER", "test-pepper-value")
-	sealed, _ := Seal("JBSWY3DPEHPK3PXP")
+	sealed, err := Seal("JBSWY3DPEHPK3PXP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := deriveKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := newGCM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceSize := gcm.NonceSize()
 
-	tampered := []byte(sealed)
-	tampered[len(tampered)-2] ^= 0x01
-	if _, err := Open(string(tampered)); err == nil {
-		t.Error("accepted tampered ciphertext")
+	// Every byte matters: the nonce, the ciphertext, and the tag.
+	for _, at := range []struct {
+		name  string
+		index int
+	}{
+		{"nonce", 0},
+		{"ciphertext", nonceSize},
+		{"tag", len(raw) - 1},
+	} {
+		tampered := append([]byte(nil), raw...)
+		tampered[at.index] ^= 0x01
+		if _, err := Open(base64.StdEncoding.EncodeToString(tampered)); err == nil {
+			t.Errorf("accepted a secret with a flipped %s byte", at.name)
+		}
+	}
+
+	// A truncated value must not open either, however it is cut.
+	for _, cut := range []int{1, nonceSize, len(raw) - 1} {
+		if _, err := Open(base64.StdEncoding.EncodeToString(raw[:cut])); err == nil {
+			t.Errorf("accepted a secret truncated to %d bytes", cut)
+		}
 	}
 }
 

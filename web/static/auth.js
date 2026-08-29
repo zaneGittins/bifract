@@ -1,4 +1,10 @@
 // Theme manager - runs immediately to prevent flash
+
+// Held outside the object rather than on it: every caller takes getCSSVar as a
+// bare reference (`const cv = ThemeManager.getCSSVar`), so the method cannot
+// reach the cache through `this`.
+const cssVarCache = new Map();
+
 const ThemeManager = {
     STORAGE_KEY: 'bifract-theme',
 
@@ -60,19 +66,17 @@ const ThemeManager = {
     // 250ms width animation of either side panel: that was several dozen forced
     // recalcs per panel open. These are theme tokens, so the cache only has to
     // survive until the theme changes.
-    _cssVarCache: new Map(),
-
     getCSSVar(name) {
-        let value = this._cssVarCache.get(name);
+        let value = cssVarCache.get(name);
         if (value === undefined) {
             value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-            this._cssVarCache.set(name, value);
+            cssVarCache.set(name, value);
         }
         return value;
     },
 
     clearCSSVarCache() {
-        this._cssVarCache.clear();
+        cssVarCache.clear();
     }
 };
 
