@@ -150,6 +150,16 @@ const AnalyticsModels = {
     _render() {
         const container = document.getElementById('modelsView');
         if (!container) return;
+        // Models are fractal-scoped, and the API rejects a prism outright. Say so
+        // rather than rendering a listing whose load can only fail: onFractalChange
+        // renders on every scope switch, including while this view is hidden.
+        if (window.FractalContext && FractalContext.isPrism()) {
+            container.innerHTML = `
+<div class="models-view-section">
+    <div class="models-empty">Analytics models are scoped to a fractal. Select a fractal to manage them.</div>
+</div>`;
+            return;
+        }
         switch (this.currentView) {
             case 'editor': this._renderEditorView(container); break;
             case 'data':   this._renderDataViewerView(container); break;

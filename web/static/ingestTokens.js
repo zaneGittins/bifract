@@ -85,7 +85,10 @@ const IngestTokens = {
 
     async loadTokens() {
         const fractal = window.FractalContext?.getCurrentFractal();
-        if (!fractal) return;
+        // Tokens belong to a fractal. In a prism the id here is the prism's, so
+        // the request can only 404, and the same scope change is already hiding
+        // this tab.
+        if (!fractal || window.FractalContext?.isPrism?.()) return;
 
         const tbody = document.getElementById('ingestTokensTableBody');
         if (tbody) {
