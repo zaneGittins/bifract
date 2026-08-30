@@ -499,6 +499,13 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	patternStr := pattern.String()
 	condArgs := strings.Join(steps, ", ")
+	// Prefilters the scan, and bounds the completion marker below. Each step is
+	// parenthesized so the union holds whatever shape a step compiled to.
+	parenSteps := make([]string, len(steps))
+	for i, s := range steps {
+		parenSteps[i] = "(" + s + ")"
+	}
+	stepUnion := strings.Join(parenSteps, " OR ")
 	// Millisecond ordering: toDateTime() leaves same-second event order undefined,
 	// which misorders spawn-then-connect sequences. UInt64 millis; the aggregate
 	// rejects DateTime64 and Int64.
@@ -523,6 +530,16 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		countExpr = fmt.Sprintf("least(%s)", strings.Join(counts, ", "))
 		matchExpr = strings.Join(presence, " AND ")
 		anchorExpr = fmt.Sprintf("[%s]", strings.Join(anchors, ", "))
+	}
+
+	// Narrow the scan to rows a step can use: the sequence aggregates skip events
+	// matching no condition and an entity with none fails the HAVING, so the result
+	// is unchanged while GROUP BY state drops to just the matching entities.
+	// Only when chain() aggregates the scan itself: behind an earlier aggregation
+	// this WHERE would filter that stage's input and silently change its counts.
+	if len(ctx.Plan.Stages) == 1 {
+		scan := &ctx.Plan.SourceStage().Layer
+		scan.Where = append(scan.Where, "("+stepUnion+")")
 	}
 
 	meta := &ChainMeta{AnchorColumn: chainAnchorColumn, StepConditions: steps, StepFields: stepFields}
@@ -595,7 +612,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if ctx.Opts.UseIngestTimestamp {
 		scopeTs = "ingest_timestamp"
 	}
-	doneExpr := fmt.Sprintf("maxIf(toUnixTimestamp64Milli(%s), %s)", scopeTs, strings.Join(steps, " OR "))
+	doneExpr := fmt.Sprintf("maxIf(toUnixTimestamp64Milli(%s), %s)", scopeTs, stepUnion)
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
 		Expr: fmt.Sprintf("%s AS %s", doneExpr, chainDoneColumn),
 	})

@@ -1686,18 +1686,15 @@
             </div>
 
             <div class="fr-pane nbr-pane" data-rail-pane="notebook" hidden>
-                <!-- No notebook chosen for this fractal yet. -->
-                <div id="nbrEmpty" class="nbr-empty">
-                    <div class="nbr-empty-text">Pick a notebook to collect what you find while you search.</div>
-                    <button id="nbrChooseBtn" class="nbr-btn nbr-btn-primary">Choose notebook</button>
-                </div>
-
-                <!-- Inline notebook picker (no modal: the rail is the surface). -->
+                <!-- The picker is the pane until a notebook is active: with none
+                     chosen there is nothing else to show, so it needs no button
+                     in front of it. -->
                 <div id="nbrPicker" class="nbr-picker" hidden>
                     <div class="fr-filter">
                         <input id="nbrPickerSearch" type="text" class="fr-filter-input" placeholder="Search notebooks..." />
-                        <button id="nbrPickerClose" class="fr-icon-btn" title="Cancel">&times;</button>
+                        <button id="nbrPickerClose" class="fr-icon-btn" title="Cancel" hidden>&times;</button>
                     </div>
+                    <div id="nbrPickerHint" class="nbr-picker-hint">Pick a notebook to collect what you find while you search.</div>
                     <div id="nbrPickerList" class="fr-body nbr-picker-list"></div>
                     <div class="nbr-picker-foot">
                         <input id="nbrNewName" type="text" class="fr-filter-input" placeholder="New notebook name..." />
@@ -1715,11 +1712,15 @@
                             <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M6 2.5H3.5A1 1 0 0 0 2.5 3.5v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M9.5 2.5h4v4M13.5 2.5L7 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </button>
                     </div>
-                    <div id="nbrCounts" class="nbr-counts"></div>
-
-                    <div id="nbrCapture" class="nbr-capture">
-                        <button id="nbrAddQuery" class="nbr-cap-btn" title="Add the query in the search box">Add query</button>
-                        <button id="nbrAddNote" class="nbr-cap-btn" title="Add a note">Add note</button>
+                    <!-- Counts and capture share a line: both are about the
+                         notebook, and a row of its own made capture the loudest
+                         thing in a pane whose point is the outline below. -->
+                    <div class="nbr-meta">
+                        <span id="nbrCounts" class="nbr-counts"></span>
+                        <div id="nbrCapture" class="nbr-capture">
+                            <button id="nbrAddQuery" class="nbr-cap-btn" title="Add the query in the search box">+ query</button>
+                            <button id="nbrAddNote" class="nbr-cap-btn" title="Add a note">+ note</button>
+                        </div>
                     </div>
 
                     <div id="nbrNoteEditor" class="nbr-note-editor" hidden>

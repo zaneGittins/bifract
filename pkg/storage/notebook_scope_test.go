@@ -20,6 +20,9 @@ func TestNotebookScopePredicate(t *testing.T) {
 		{"aliased fractal", "n", "f-1", "", "n.fractal_id", "f-1", false},
 		{"aliased prism", "n", "", "p-1", "n.prism_id", "p-1", false},
 		{"neither", "n", "", "", "", "", true},
+		// A caller that resolved a default fractal alongside a prism must still
+		// read the prism's notebooks, not the fractal's.
+		{"both prefers prism", "n", "f-1", "p-1", "n.prism_id", "p-1", false},
 	}
 
 	for _, tt := range tests {

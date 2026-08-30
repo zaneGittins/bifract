@@ -56,6 +56,7 @@ services:
     # 013 removed). k8s and the dev compose have always let the app provision.
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.d/system-logs.xml:/etc/clickhouse-server/config.d/bifract-system-logs.xml:ro
     environment:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default

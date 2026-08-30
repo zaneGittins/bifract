@@ -91,6 +91,24 @@ func NewFieldRegistry(mode SourceMode, icePromoted map[string]bool) *FieldRegist
 	return r
 }
 
+// Clone returns an independent copy. A chain step compiles its own projections
+// (len, match, lookupIP) into the registry to resolve its own predicates; those
+// must not outlive the step, since nothing downstream of the aggregate can
+// reference them.
+func (r *FieldRegistry) Clone() *FieldRegistry {
+	c := &FieldRegistry{
+		fields:      make(map[string]*FieldEntry, len(r.fields)),
+		order:       append([]string(nil), r.order...),
+		sourceMode:  r.sourceMode,
+		icePromoted: r.icePromoted,
+	}
+	for k, v := range r.fields {
+		entry := *v
+		c.fields[k] = &entry
+	}
+	return c
+}
+
 // fieldRef returns the source-mode-appropriate reference for a JSON/MAP field.
 func (r *FieldRegistry) fieldRef(field string) string {
 	return fieldRefMode(field, r.sourceMode)

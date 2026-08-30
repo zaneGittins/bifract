@@ -81,6 +81,47 @@ spec:
     # them instead of running searches unscheduled.
     extraConfig:
       workload_zookeeper_path: /clickhouse/workload/definitions.sql
+      # ClickHouse ships logger.level=trace and no TTL on any system.*_log table, so
+      # its own telemetry grows without bound and eventually dwarfs the log data the
+      # cluster exists to store (observed: system.text_log at 1.49 billion rows / 74 GiB
+      # against 22 GiB of real data). Bifract reads only system.query_log, never further
+      # back than 24h. `information` stops the Debug/Trace firehose; the TTLs cap what is
+      # still written if the level is raised again for troubleshooting.
+      #
+      # Kept in sync with internal/setup/templates/clickhouse-system-logs.xml (the docker
+      # equivalent) by TestClickHouseSystemLogConfigMatchesK8s.
+      logger:
+        level: information
+      asynchronous_insert_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      asynchronous_metric_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      background_schedule_pool_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      backup_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      error_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      iceberg_metadata_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      metric_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      part_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      processors_profile_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      query_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      query_metric_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      query_thread_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      query_views_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      text_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
+      trace_log:
+        ttl: event_date + INTERVAL 7 DAY DELETE
 {{- if .CHMaxServerMemory}}
       # Explicit memory cap + disabled cgroup memory worker. Under a container memory
       # limit, page cache counts toward cgroup usage, and ClickHouse's cgroup observer

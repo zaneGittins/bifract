@@ -2051,6 +2051,13 @@ func (h *QueryHandler) getSelectedIndex(r *http.Request) (string, error) {
 				return fractalID, nil
 			}
 		}
+		// A prism session has no single fractal. Return empty so the caller's
+		// prism path handles it, the same as a prism API key: falling through to
+		// the default fractal below would hand every caller a fractal the prism
+		// need not even contain.
+		if selectedPrism, _ := r.Context().Value("selected_prism").(string); selectedPrism != "" {
+			return "", nil
+		}
 	}
 
 	// Fall back to default fractal if no specific selection

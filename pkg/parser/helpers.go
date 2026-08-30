@@ -1735,12 +1735,6 @@ func spanToSeconds(span string) int {
 	}
 }
 
-// chainStepDisallowed names commands whose effect cannot be a per-step row
-// predicate. Everything else is admitted and validated by its actual effect.
-var chainStepDisallowed = map[string]string{
-	"match": "match() adds enrichment columns, which cannot be scoped to one chain step",
-}
-
 // parseChainSteps parses chain block tokens into per-step SQL boolean expressions
 // plus the fields those steps filter on.
 //
@@ -1773,9 +1767,6 @@ func parseChainSteps(tokens []Token, opts QueryOptions, parentReg *FieldRegistry
 		if err != nil {
 			return nil, nil, err
 		}
-		if sql == "" {
-			continue
-		}
 		steps = append(steps, sql)
 		for _, f := range stepFields {
 			if !seen[f] {
@@ -1788,16 +1779,20 @@ func parseChainSteps(tokens []Token, opts QueryOptions, parentReg *FieldRegistry
 	return steps, fields, nil
 }
 
-// buildChainStep compiles one step into a single boolean expression.
+// buildChainStep compiles one step into a single boolean expression, or errors.
+// It never returns an empty expression: a step that matched nothing would be
+// dropped from the pattern and silently change which sequences match.
 func buildChainStep(stepTokens []Token, opts QueryOptions, parentReg *FieldRegistry) (string, []string, error) {
 	pl, err := NewParser(stepTokens).Parse()
 	if err != nil {
 		return "", nil, fmt.Errorf("chain step: %w", err)
 	}
 
-	reg := parentReg
-	if reg == nil {
-		reg = NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	// A clone: the step's own projections must resolve its own predicates without
+	// leaking into the query that contains the chain.
+	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	if parentReg != nil {
+		reg = parentReg.Clone()
 	}
 
 	var conjuncts []string
@@ -1818,20 +1813,8 @@ func buildChainStep(stepTokens []Token, opts QueryOptions, parentReg *FieldRegis
 		fields = collectConditionFieldsOrdered(pl.Filter.Conditions, seen, fields)
 	}
 
-	// Later filter stages in the step (`a=1 | b=2`) arrive as HavingConditions, as
-	// do condition functions used as boolean operands.
-	if len(pl.HavingConditions) > 0 {
-		if err := resolveCommandConditions(pl.HavingConditions, opts); err != nil {
-			return "", nil, fmt.Errorf("chain step: %w", err)
-		}
-		if h := materializeCondGroup(pl.HavingConditions, reg, nil); h != "" {
-			conjuncts = append(conjuncts, h)
-		}
-		for _, c := range pl.HavingConditions {
-			fields = collectHavingFieldsOrdered(c, seen, &fields)
-		}
-	}
-
+	// Before the conditions below: len()/match()/lookupIP() register the expressions
+	// that a later `_len > 500` in the same step resolves against.
 	if len(pl.Commands) > 0 {
 		w, cf, err := harvestChainCommands(pl, opts, reg)
 		if err != nil {
@@ -1846,13 +1829,29 @@ func buildChainStep(stepTokens []Token, opts QueryOptions, parentReg *FieldRegis
 		}
 	}
 
+	// Later filter stages in the step (`a=1 | b=2`) arrive as HavingConditions, as
+	// do condition functions used as boolean operands.
+	if len(pl.HavingConditions) > 0 {
+		if err := resolveCommandConditions(pl.HavingConditions, opts); err != nil {
+			return "", nil, fmt.Errorf("chain step: %w", err)
+		}
+		if h := materializeCondGroup(pl.HavingConditions, reg, nil); h != "" {
+			conjuncts = append(conjuncts, h)
+		}
+		for _, c := range pl.HavingConditions {
+			fields = collectHavingFieldsOrdered(c, seen, &fields)
+		}
+	}
+
 	if len(pl.Assignments) > 0 {
 		return "", nil, fmt.Errorf("chain step: field assignments cannot be used inside a chain step")
 	}
 
 	switch len(conjuncts) {
 	case 0:
-		return "", fields, nil
+		// Dropping it silently would shorten the pattern and quietly change which
+		// sequences match, so a step that only projects is an error.
+		return "", nil, fmt.Errorf("chain step: no condition; each step must match events")
 	case 1:
 		return conjuncts[0], fields, nil
 	default:
@@ -1869,23 +1868,29 @@ func CommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(where) == 1 {
+	switch len(where) {
+	case 0:
+		return "", fmt.Errorf("%s() is not a condition", cmd.Name)
+	case 1:
 		return where[0], nil
+	default:
+		return "(" + strings.Join(where, " AND ") + ")", nil
 	}
-	return "(" + strings.Join(where, " AND ") + ")", nil
 }
 
 // harvestChainCommands runs a step's commands against a throwaway plan and returns
-// the predicates they produced, rejecting any non-predicate effect.
+// the predicates they produced, rejecting anything that reshapes the result. A
+// command that only projects contributes no predicate but registers an expression
+// the step's own conditions can reference.
 func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
 	plan := NewQueryPlan()
-	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	reg := parentReg
+	if reg == nil {
+		reg = NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	}
 	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
 
 	for _, cmd := range pl.Commands {
-		if why, bad := chainStepDisallowed[cmd.Name]; bad {
-			return nil, nil, fmt.Errorf("chain step: %s", why)
-		}
 		if getCommandHandler(cmd.Name) == nil {
 			return nil, nil, fmt.Errorf("chain step: unsupported command %s()", cmd.Name)
 		}
@@ -1904,13 +1909,25 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	}
 
 	src := &plan.SourceStage().Layer
-	if len(src.Selects) > 0 || len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
+	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
 		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
 		plan.IsTraversal || plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
 		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
 		return nil, nil, fmt.Errorf("chain step: only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name)
 	}
-	if len(src.Where) == 0 {
+
+	// A projection (len, match, lookupIP) is a per-row scalar, so it belongs in a
+	// step even though a step projects nothing: the registry resolves references to
+	// it as the expression itself, folding it into the predicate. An alias the
+	// registry does not know would resolve to a column that never exists.
+	for _, sel := range src.Selects {
+		alias := extractFieldAlias(sel.String())
+		if alias == "" || !reg.Has(alias) {
+			return nil, nil, fmt.Errorf("chain step: only row conditions are allowed; %s() projects a column that cannot be scoped to one step", pl.Commands[0].Name)
+		}
+	}
+
+	if len(src.Where) == 0 && len(src.Selects) == 0 {
 		return nil, nil, fmt.Errorf("chain step: %s() produced no condition", pl.Commands[0].Name)
 	}
 

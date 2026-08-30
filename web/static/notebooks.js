@@ -787,9 +787,7 @@ const Notebooks = {
             const ccLogId = ccData.log_id || '';
 
             titleHtml = `
-                <span class="section-drag-handle" draggable="true" style="cursor: grab; user-select: none; padding: 4px;">⋮⋮</span>
-                <span class="section-type-text" style="font-weight: 400; color: var(--text-muted); font-size: 0.8rem;">${displayName}</span>
-                ${commentedAt ? `<span style="color: var(--text-muted); font-size: 0.75rem; margin-left: 4px;">${commentedAt}</span>` : ''}
+                <span class="section-type-text section-author"${commentedAt ? ` title="Filed ${Utils.escapeHtml(commentedAt)}"` : ''}>${displayName}</span>
                 ${this.renderTagsArea(section)}
             `;
 
@@ -819,7 +817,6 @@ const Notebooks = {
             `;
         } else {
             titleHtml = `
-                <span class="section-drag-handle" draggable="true" style="cursor: grab; user-select: none; padding: 4px;">⋮⋮</span>
                 <span class="section-type-text">${section.title ? Utils.escapeHtml(section.title) : 'Untitled Section'}</span>
                 ${this.renderTagsArea(section)}
             `;
@@ -845,9 +842,10 @@ const Notebooks = {
         const sectionHtml = `
             <div class="notebook-section" data-section-id="${section.id}">
                 <div class="section-header">
+                    <span class="section-drag-handle" draggable="true">⋮⋮</span>
+                    ${this.renderEventTimeChip(section)}
                     <div class="section-type">
                         ${titleHtml}
-                        ${this.renderEventTimeChip(section)}
                     </div>
                     <div class="section-controls">
                         ${controlsHtml}
@@ -864,17 +862,67 @@ const Notebooks = {
 
     // ── Event time ───────────────────────────────────────────────────────────
 
-    // When the section's subject happened, which is what the chronological
-    // reading orders by. Shown on every section so a notebook that is meant to
-    // be a timeline can be checked against one.
+    // The notebook's zero point: its earliest dated section. Offsets are
+    // measured from here, not from the card above, so they stay true however
+    // the sections are dragged: this page orders by order_index, not by time.
+    eventTimeBase() {
+        let base = NaN;
+        for (const sec of (this.currentNotebook?.sections || [])) {
+            if (!sec.event_time) continue;
+            const ms = TZ.toEpoch(sec.event_time);
+            if (!Number.isFinite(ms)) continue;
+            if (!Number.isFinite(base) || ms < base) base = ms;
+        }
+        return base;
+    },
+
+    // "T+32m40s": how far into the incident this section sits. Seconds survive
+    // up to the hour, where a burst of activity is the thing being read.
+    formatEventOffset(ms) {
+        if (!Number.isFinite(ms) || ms < 1000) return 'T+0';
+        const secs = Math.floor(ms / 1000);
+        if (secs < 60) return `T+${secs}s`;
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) {
+            const rem = secs % 60;
+            return rem ? `T+${mins}m${rem}s` : `T+${mins}m`;
+        }
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) {
+            const rem = mins % 60;
+            return rem ? `T+${hours}h${rem}m` : `T+${hours}h`;
+        }
+        const days = Math.floor(hours / 24);
+        const rem = hours % 24;
+        return rem ? `T+${days}d${rem}h` : `T+${days}d`;
+    },
+
+    // The timeline gutter: one aligned column down the left of every section
+    // header. The absolute timestamp is the tooltip, since an offset is what
+    // gets read and a wall clock on every card is just noise.
     renderEventTimeChip(section) {
         const iso = section.event_time || null;
-        const label = iso ? TZ.format(iso, 'full') : 'set time';
-        const title = iso ? TZ.title(iso) : 'Place this section on the notebook timeline';
-        return `<button class="section-event-time${iso ? '' : ' unset'}" data-section-id="${section.id}" onclick="Notebooks.openEventTimeInput('${section.id}', this)" title="${Utils.escapeHtml(title)}">
-            <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            ${Utils.escapeHtml(label)}
-        </button>`;
+        if (!iso) {
+            return `<button class="section-event-time unset" data-section-id="${section.id}" onclick="Notebooks.openEventTimeInput('${section.id}', this)" title="Place this section on the notebook timeline">set time</button>`;
+        }
+        const base = this.eventTimeBase();
+        const ms = TZ.toEpoch(iso);
+        const label = (Number.isFinite(base) && Number.isFinite(ms))
+            ? this.formatEventOffset(ms - base)
+            : TZ.format(iso, 'full');
+        return `<button class="section-event-time" data-section-id="${section.id}" onclick="Notebooks.openEventTimeInput('${section.id}', this)" title="${Utils.escapeHtml(TZ.title(iso))}">${Utils.escapeHtml(label)}</button>`;
+    },
+
+    // Editing one section's time can move the notebook's zero point, which
+    // shifts every other offset on the page.
+    refreshEventTimes() {
+        for (const sec of (this.currentNotebook?.sections || [])) {
+            const el = document.querySelector(`.section-event-time[data-section-id="${CSS.escape(sec.id)}"]`);
+            if (!el) continue;
+            const holder = document.createElement('span');
+            holder.innerHTML = this.renderEventTimeChip(sec);
+            el.replaceWith(holder.firstElementChild);
+        }
     },
 
     // Wall clock in the viewer's display zone, same contract as the absolute
@@ -943,6 +991,7 @@ const Notebooks = {
             const data = await res.json();
             if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save event time');
             section.event_time = iso || null;
+            this.refreshEventTimes();
         } catch (err) {
             this.showError(err.message);
         }
@@ -3283,18 +3332,14 @@ const Notebooks = {
         // Re-render section content
         contentContainer.innerHTML = this.renderSectionContent(section);
 
-        // Update section header with new title. Rebuild the full header content
-        // (drag handle + title + tags area) so editing does not strip the tag
-        // controls or break dragging.
+        // Rebuild the title and its tag controls. The drag handle and the event
+        // time are header siblings, so this no longer replaces either of them.
         const headerTitle = sectionContainer.querySelector('.section-type');
         if (headerTitle) {
             headerTitle.innerHTML = `
-                <span class="section-drag-handle" draggable="true" style="cursor: grab; user-select: none; padding: 4px;">⋮⋮</span>
                 <span class="section-type-text">${section.title ? Utils.escapeHtml(section.title) : 'Untitled Section'}</span>
                 ${this.renderTagsArea(section)}
             `;
-            // Re-bind drag listeners since the handle node was replaced.
-            this.bindSectionEvents();
         }
 
         // Restore Edit button

@@ -291,14 +291,10 @@ func RunUpgrade(dir string) error {
 		}
 	}
 
-	if err := CopyEmbeddedFile("templates/entrypoint.sh", filepath.Join(caddyDir, "entrypoint.sh")); err != nil {
-		printWarn(fmt.Sprintf("entrypoint.sh: %v", err))
-	}
-	if err := CopyEmbeddedFile("templates/ship-logs.sh", filepath.Join(caddyDir, "ship-logs.sh")); err != nil {
-		printWarn(fmt.Sprintf("ship-logs.sh: %v", err))
-	}
-	if err := CopyEmbeddedFile("templates/litellm-config.yaml", filepath.Join(dir, "litellm-config.yaml")); err != nil {
-		printWarn(fmt.Sprintf("litellm-config.yaml: %v", err))
+	for _, f := range staticInstallFiles {
+		if err := CopyEmbeddedFile(f.src, filepath.Join(dir, filepath.Join(f.dest...))); err != nil {
+			printWarn(fmt.Sprintf("%s: %v", filepath.Base(f.src), err))
+		}
 	}
 	printDone("Configuration updated")
 

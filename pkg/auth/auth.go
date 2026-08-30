@@ -1513,30 +1513,6 @@ func (h *AuthHandler) HandleSetUserEnabled(w http.ResponseWriter, r *http.Reques
 // Fractal Selection Methods
 // ============================
 
-// GetSelectedFractalFromSession retrieves the selected fractal ID from a user's session
-func (h *AuthHandler) GetSelectedFractalFromSession(r *http.Request) (string, error) {
-	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
-		return "", fmt.Errorf("no session found")
-	}
-
-	session, exists := h.getSession(cookie.Value)
-	if !exists {
-		return "", fmt.Errorf("invalid session")
-	}
-
-	// If no selected fractal, return default fractal
-	if session.SelectedFractal == "" && h.fractalManager != nil {
-		defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context())
-		if err != nil {
-			return "", fmt.Errorf("failed to get default fractal: %w", err)
-		}
-		return defaultFractal.ID, nil
-	}
-
-	return session.SelectedFractal, nil
-}
-
 // SetSelectedFractalInSession updates the selected fractal for a user's session, clearing any selected prism.
 func (h *AuthHandler) SetSelectedFractalInSession(sessionID, fractalID string) error {
 	return h.store.UpdateFractal(sessionID, fractalID)

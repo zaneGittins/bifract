@@ -54,7 +54,6 @@ const NotebookRail = {
             });
         }
 
-        this._wire('nbrChooseBtn', 'click', () => this.openPicker());
         this._wire('nbrSwitchBtn', 'click', () => this.openPicker());
         this._wire('nbrPickerClose', 'click', () => this.closePicker());
         this._wire('nbrOpenBtn', 'click', () => this.openNotebook());
@@ -169,7 +168,12 @@ const NotebookRail = {
     // ---- loading ----------------------------------------------------------
 
     async load() {
-        if (!this.activeId) { this._state = 'idle'; this.render(); return; }
+        if (!this.activeId) {
+            this._state = 'idle';
+            this.render();
+            this.loadPickerList(document.getElementById('nbrPickerSearch')?.value || '');
+            return;
+        }
 
         this._abort();
         const controller = new AbortController();
@@ -342,8 +346,8 @@ const NotebookRail = {
     // the missing-notebook case, and the refresh are handled once.
     async _addSection(body, successMessage) {
         if (!this.activeId) {
+            // The rail opens straight onto the picker when nothing is active.
             this.reveal();
-            this.openPicker();
             if (window.Toast) Toast.show('Choose an active notebook first', 'warning');
             return false;
         }
@@ -499,10 +503,9 @@ const NotebookRail = {
         const sections = (this.summary?.sections || []).slice();
         if (this.order !== 'time') return sections;
 
-        const epoch = v => (v && window.TZ ? TZ.toEpoch(v) : NaN);
         return sections.sort((a, b) => {
-            const at = epoch(a.event_time);
-            const bt = epoch(b.event_time);
+            const at = this._eventMs(a);
+            const bt = this._eventMs(b);
             const aMissing = !Number.isFinite(at);
             const bMissing = !Number.isFinite(bt);
             if (aMissing && bMissing) return a.order_index - b.order_index;
@@ -513,17 +516,28 @@ const NotebookRail = {
         });
     },
 
+    _eventMs(sec) {
+        const v = sec && sec.event_time;
+        return v && window.TZ ? TZ.toEpoch(v) : NaN;
+    },
+
     // ---- rendering --------------------------------------------------------
 
     render() {
-        const empty = document.getElementById('nbrEmpty');
         const picker = document.getElementById('nbrPicker');
         const active = document.getElementById('nbrActive');
-        if (!empty || !picker || !active) return;
+        if (!picker || !active) return;
 
-        picker.hidden = !this._pickerOpen;
-        empty.hidden = this._pickerOpen || !!this.activeId;
-        active.hidden = this._pickerOpen || !this.activeId;
+        // With no notebook active the picker is the whole pane. Cancelling and
+        // the orienting hint only make sense on either side of that.
+        const choosing = this._pickerOpen || !this.activeId;
+        picker.hidden = !choosing;
+        active.hidden = choosing;
+
+        const close = document.getElementById('nbrPickerClose');
+        if (close) close.hidden = !this.activeId;
+        const hint = document.getElementById('nbrPickerHint');
+        if (hint) hint.hidden = !!this.activeId;
 
         // Before the early return: deactivating a notebook has to clear the
         // detail panel's pinned marks too, not just when the pane is showing.
@@ -589,7 +603,60 @@ const NotebookRail = {
             return;
         }
 
-        list.innerHTML = sections.map(sec => this._rowHtml(sec)).join('');
+        list.innerHTML = this.order === 'time'
+            ? this._chronologicalHtml(sections)
+            : sections.map(sec => this._rowHtml(sec)).join('');
+    },
+
+    // Elapsed time between adjacent sections, which is often the finding: three
+    // quiet days then a two minute burst. Only in the chronological view, since
+    // notebook order is manual and its neighbours are not sequential in time.
+    _chronologicalHtml(sections) {
+        const parts = [];
+        let prevMs = null;
+        let datedAbove = false;
+
+        for (const sec of sections) {
+            const ms = this._eventMs(sec);
+            const dated = Number.isFinite(ms);
+            if (parts.length) {
+                if (dated && prevMs !== null) {
+                    parts.push(this._gapHtml(ms - prevMs));
+                } else if (!dated && datedAbove) {
+                    // Undated sections sort to the tail; mark the boundary once
+                    // rather than implying they follow the last event.
+                    parts.push('<div class="nbr-gap undated"><span class="nbr-gap-line"></span><span class="nbr-gap-label">no event time</span></div>');
+                    datedAbove = false;
+                }
+            }
+            parts.push(this._rowHtml(sec));
+            if (dated) { prevMs = ms; datedAbove = true; }
+        }
+        return parts.join('');
+    },
+
+    _gapHtml(deltaMs) {
+        const label = this._humanGap(deltaMs);
+        const wide = deltaMs >= 86400000;
+        return `<div class="nbr-gap${wide ? ' wide' : ''}"><span class="nbr-gap-line"></span>${label ? `<span class="nbr-gap-label">${label}</span>` : ''}</div>`;
+    },
+
+    // Coarse by design: the reader wants "a day passed", not the seconds.
+    // Under a second reads as simultaneous and gets the connector with no label.
+    _humanGap(ms) {
+        if (!Number.isFinite(ms) || ms < 1000) return '';
+        const secs = Math.floor(ms / 1000);
+        if (secs < 60) return `+${secs}s`;
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `+${mins}m`;
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) {
+            const rem = mins % 60;
+            return rem ? `+${hours}h ${rem}m` : `+${hours}h`;
+        }
+        const days = Math.floor(hours / 24);
+        const rem = hours % 24;
+        return rem ? `+${days}d ${rem}h` : `+${days}d`;
     },
 
     _rowHtml(sec) {

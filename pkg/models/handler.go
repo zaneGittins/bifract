@@ -3,6 +3,7 @@ package models
 import (
 	"bifract/pkg/api"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -40,7 +41,7 @@ func NewHandler(manager *Manager, fractalManager *fractals.Manager) *Handler {
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 	models, err := h.manager.List(r.Context(), fractalID)
@@ -80,7 +81,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 
@@ -154,7 +155,7 @@ func (h *Handler) HandleGetData(w http.ResponseWriter, r *http.Request) {
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 
@@ -238,7 +239,7 @@ type ExtractionTest struct {
 func (h *Handler) HandleTestExtraction(w http.ResponseWriter, r *http.Request) {
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 
@@ -347,7 +348,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 	var req PreviewRequest
@@ -375,7 +376,7 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 	stats, err := h.manager.GetStats(r.Context(), model, fractalID)
@@ -396,7 +397,7 @@ func (h *Handler) HandleGetHistogram(w http.ResponseWriter, r *http.Request) {
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 	hist, err := h.manager.GetHistogram(r.Context(), model, fractalID)
@@ -438,7 +439,7 @@ func (h *Handler) HandleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -482,7 +483,7 @@ func (h *Handler) getModelScoped(w http.ResponseWriter, r *http.Request) *Model 
 	}
 	fractalID, err := h.getFractalID(r)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+		h.respondScopeError(w, err)
 		return nil
 	}
 	if model.FractalID != fractalID {
@@ -492,7 +493,28 @@ func (h *Handler) getModelScoped(w http.ResponseWriter, r *http.Request) *Model 
 	return model
 }
 
+// errPrismScope reports a prism scope on a fractal-only endpoint.
+var errPrismScope = errors.New("analytics models are scoped to a fractal, not a prism")
+
+// respondScopeError turns a getFractalID failure into a response, naming the
+// prism case so an API caller knows to select a fractal instead of guessing.
+func (h *Handler) respondScopeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errPrismScope) {
+		h.respondError(w, http.StatusBadRequest, "Analytics models are scoped to a fractal. Select a fractal rather than a prism.")
+		return
+	}
+	h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
+}
+
+// getFractalID resolves the fractal an analytics model belongs to. Models are
+// fractal-scoped (there is no prism_id on them), so a prism scope is rejected
+// rather than resolved: falling through to the default fractal let a caller with
+// a role on the prism alone read and write models in a fractal they may have no
+// access to at all.
 func (h *Handler) getFractalID(r *http.Request) (string, error) {
+	if pid, ok := r.Context().Value("selected_prism").(string); ok && pid != "" {
+		return "", errPrismScope
+	}
 	if fid, ok := r.Context().Value("selected_fractal").(string); ok && fid != "" {
 		return fid, nil
 	}

@@ -700,19 +700,31 @@ func (c *PostgresClient) GetCommentsByLogIDAndPrism(ctx context.Context, logID, 
 	return comments, nil
 }
 
-// GetCommentsByTagAndFractal returns all comments with the given tag in a fractal, ordered by log event time.
-func (c *PostgresClient) GetCommentsByTagAndFractal(ctx context.Context, fractalID, tag string) ([]Comment, error) {
+// GetCommentsByTagAndScope returns all comments with the given tag in a fractal
+// or a prism, ordered by log event time. A comment carries the scope it was made
+// in, so a prism lookup must read prism_id: reading the fractal instead returns
+// somebody else's comments and none of the caller's own.
+func (c *PostgresClient) GetCommentsByTagAndScope(ctx context.Context, fractalID, prismID, tag string) ([]Comment, error) {
+	scopeCol := "c.fractal_id"
+	scopeVal := fractalID
+	if prismID != "" {
+		scopeCol, scopeVal = "c.prism_id", prismID
+	}
+	if scopeVal == "" {
+		return nil, fmt.Errorf("comment lookup requires a fractal or prism id")
+	}
+
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
 		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM comments c
 		LEFT JOIN users u ON c.author = u.username
-		WHERE c.fractal_id = $1 AND c.tags @> ARRAY[$2]::text[]
+		WHERE `+scopeCol+` = $1 AND c.tags @> ARRAY[$2]::text[]
 		ORDER BY c.log_timestamp ASC, c.created_at ASC
-	`, fractalID, tag)
+	`, scopeVal, tag)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get comments by tag and fractal: %w", err)
+		return nil, fmt.Errorf("failed to get comments by tag and scope: %w", err)
 	}
 	defer rows.Close()
 
@@ -1657,9 +1669,11 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 // string can never be bound: a prism caller passing its empty fractal id used to
 // make Postgres reject ” outright rather than match nothing.
 func notebookScopePredicate(alias, fractalID, prismID string) (string, interface{}, error) {
-	col := "fractal_id"
-	val := fractalID
-	if fractalID == "" {
+	// A notebook carries exactly one scope, so the prism wins when a caller
+	// supplies both: a stray fractal id (a default-fractal fallback, say) must
+	// never redirect a prism lookup at the wrong scope's rows.
+	col, val := "fractal_id", fractalID
+	if prismID != "" {
 		col, val = "prism_id", prismID
 	}
 	if val == "" {

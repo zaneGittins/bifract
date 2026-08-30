@@ -50,17 +50,21 @@ func TestChainStepConditionCommands(t *testing.T) {
 	}
 }
 
-// A chain step is a row predicate. Anything that reshapes the result, projects a
-// column, or aggregates cannot be scoped to one step and must be rejected loudly
-// rather than silently applied to the whole query.
+// A chain step is a row predicate. Anything that reshapes the result or aggregates
+// cannot be scoped to one step, and a step that only projects matches no event, so
+// both must be rejected loudly rather than silently applied to the whole query.
 func TestChainStepRejectsNonPredicates(t *testing.T) {
 	cases := []struct{ name, query, wantErr string }{
 		{"groupby", `* | chain(user) { groupby(x); b="y" }`, "only row conditions"},
-		{"regex projection", `* | chain(user) { regex("(?P<n>x)", field=image); b="y" }`, "only row conditions"},
 		{"sort", `* | chain(user) { sort(x); b="y" }`, "only row conditions"},
 		{"nested chain", `* | chain(user) { chain(a) { b="1"; c="2" }; d="y" }`, "chain"},
-		{"match enrichment", `* | chain(user) { match(list, field=image, strict=true); b="y" }`, "match()"},
 		{"unknown command", `* | chain(user) { nosuchfn(x); b="y" }`, "unsupported command"},
+		{"match without a dictionary", `* | chain(user) { match(list, field=image, strict=true); b="y" }`, "match()"},
+		// A projection alone matches no event. Dropping such a step would shorten
+		// the pattern and quietly change which sequences match.
+		{"bare regex projection", `* | chain(user) { regex("(?P<n>x)", field=image); b="y" }`, "no condition"},
+		{"bare len projection", `* | chain(user) { len(commandline); b="y" }`, "no condition"},
+		{"bare projection in the middle", `* | chain(user) { a="1"; len(commandline); c="3" }`, "no condition"},
 	}
 
 	for _, tc := range cases {
@@ -213,5 +217,98 @@ func TestChainEventsFetchBoundsByScopingBasis(t *testing.T) {
 	}
 	if !strings.Contains(hot.SQL, "FROM logs_hot") {
 		t.Errorf("fetch must read the query's table: %s", hot.SQL)
+	}
+}
+
+// Rows matching no step contribute to nothing: the sequence aggregates skip them,
+// the unordered countIf/minIf ignore them, and an entity with none fails the
+// HAVING. The scan must exclude them so GROUP BY state stays proportional to
+// matching entities rather than to every entity in the window.
+func TestChainPrefiltersScanToStepUnion(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{
+			"ordered",
+			`* | chain(process_guid) { event_id=1; event_id=3 }`,
+			"AND ((fields.`event_id`::String = '1') OR (fields.`event_id`::String = '3'))",
+		},
+		{
+			"unordered",
+			`* | chain(user, order=false) { event_id=1; event_id=3 }`,
+			"AND ((fields.`event_id`::String = '1') OR (fields.`event_id`::String = '3'))",
+		},
+		{
+			"multi-identity",
+			`* | chain(user, src_host) { event_id=1; event_id=3 }`,
+			"AND ((fields.`event_id`::String = '1') OR (fields.`event_id`::String = '3'))",
+		},
+		{
+			"composes with a preceding filter rather than replacing it",
+			`image="a.exe" | chain(user) { event_id=1; event_id=3 }`,
+			"fields.`image`::String = 'a.exe' AND ((fields.`event_id`::String = '1') OR (fields.`event_id`::String = '3'))",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pl, err := ParseQuery(tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+			if err != nil {
+				t.Fatalf("translate: %v", err)
+			}
+			if !strings.Contains(res.SQL, tc.want) {
+				t.Errorf("scan not narrowed to the step union, missing %q:\n%s", tc.want, res.SQL)
+			}
+		})
+	}
+}
+
+// The prefilter and the aggregates must use identical step SQL: if they ever drift,
+// the scan would drop rows the aggregate still expects to see.
+func TestChainPrefilterMatchesAggregateConditions(t *testing.T) {
+	pl, err := ParseQuery(`* | chain(user) { event_id=1 | cidr(src_ip,"10.0.0.0/8"); event_id=3 }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Chain == nil || len(res.Chain.StepConditions) != 2 {
+		t.Fatalf("expected 2 step conditions, got %+v", res.Chain)
+	}
+	paren := make([]string, len(res.Chain.StepConditions))
+	for i, c := range res.Chain.StepConditions {
+		paren[i] = "(" + c + ")"
+	}
+	want := "(" + strings.Join(paren, " OR ") + ")"
+	if !strings.Contains(res.SQL, want) {
+		t.Errorf("prefilter is not the step union:\nwant substring: %s\ngot: %s", want, res.SQL)
+	}
+}
+
+// Behind an earlier aggregation the scan feeds that stage, not chain(). Filtering
+// it there would change the earlier stage's own aggregates, so the prefilter must
+// stay off.
+func TestChainPrefilterSkippedBehindEarlierAggregation(t *testing.T) {
+	pl, err := ParseQuery(`* | groupby(user) | groupby(user) | chain(user) { a="x"; b="y" }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// _chain_done's maxIf carries the same union unwrapped; only the prefilter adds
+	// the outer parens that make it a WHERE conjunct, wherever it were placed.
+	prefilter := "((fields.`a`::String = 'x') OR (fields.`b`::String = 'y'))"
+	if strings.Contains(res.SQL, prefilter) {
+		t.Errorf("prefilter leaked into a scan feeding an earlier aggregation:\n%s", res.SQL)
 	}
 }

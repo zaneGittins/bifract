@@ -183,16 +183,15 @@ func NewDashboardHandler(pg *storage.PostgresClient, fractalManager *fractals.Ma
 }
 
 func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.Request) {
-	selectedFractal, err := h.getSelectedFractal(r)
+	selectedFractal, selectedPrism, err := h.getScope(r)
 	if err != nil {
-		log.Printf("[Dashboards] Failed to get selected fractal: %v", err)
+		log.Printf("[Dashboards] Failed to resolve scope: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
 	// Re-check access on the scope every request. The scope was authorized when
 	// it was selected, but permissions can be revoked while the session lives on.
-	selectedPrism, _ := r.Context().Value("selected_prism").(string)
 	if selectedPrism != "" {
 		if !h.requireRoleOnPrism(r, selectedPrism, rbac.RoleViewer) {
 			jsonForbidden(w)
@@ -203,6 +202,9 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 			jsonForbidden(w)
 			return
 		}
+	} else {
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return
 	}
 
 	limit := 20
@@ -275,10 +277,14 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
-	selectedFractal, err := h.getSelectedFractal(r)
+	selectedFractal, selectedPrism, err := h.getScope(r)
 	if err != nil {
-		log.Printf("[Dashboards] Failed to get selected fractal: %v", err)
+		log.Printf("[Dashboards] Failed to resolve scope: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+		return
+	}
+	if selectedFractal == "" && selectedPrism == "" {
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
 	}
 
@@ -291,8 +297,8 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		Timezone:       req.Timezone,
 		CreatedBy:      auth.AttributionUsername(r.Context()),
 	}
-	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
-		d.PrismID = prismID
+	if selectedPrism != "" {
+		d.PrismID = selectedPrism
 	} else {
 		d.FractalID = selectedFractal
 	}
@@ -581,20 +587,25 @@ func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Req
 	})
 }
 
-func (h *DashboardHandler) getSelectedFractal(r *http.Request) (string, error) {
-	if selectedFractal := r.Context().Value("selected_fractal"); selectedFractal != nil {
-		if fractalID, ok := selectedFractal.(string); ok && fractalID != "" {
-			return fractalID, nil
-		}
+// getScope returns the scope the request is acting in, never both at once. The
+// prism is checked first so a prism session cannot fall through to the default
+// fractal, which would silently point its reads and writes at another scope's
+// rows. Both come back empty only when no scope resolves; callers reject that.
+func (h *DashboardHandler) getScope(r *http.Request) (fractalID, prismID string, err error) {
+	if pid, ok := r.Context().Value("selected_prism").(string); ok && pid != "" {
+		return "", pid, nil
+	}
+	if fid, ok := r.Context().Value("selected_fractal").(string); ok && fid != "" {
+		return fid, "", nil
 	}
 	if h.fractalManager == nil {
-		return "", nil
+		return "", "", nil
 	}
 	defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context())
 	if err != nil {
-		return "", fmt.Errorf("failed to get default fractal: %w", err)
+		return "", "", fmt.Errorf("failed to get default fractal: %w", err)
 	}
-	return defaultFractal.ID, nil
+	return defaultFractal.ID, "", nil
 }
 
 func (h *DashboardHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Request) {
@@ -901,8 +912,12 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
-	selectedFractal, _ := h.getSelectedFractal(r)
-	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	selectedFractal, selectedPrism, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Dashboards] Failed to resolve scope: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+		return
+	}
 	if selectedFractal == "" && selectedPrism == "" {
 		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return

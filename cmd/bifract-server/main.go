@@ -189,6 +189,13 @@ func main() {
 		log.Printf("Warning: failed to revert tiered storage policy (will retry next start): %v", err)
 	}
 
+	// Reclaim system.*_log_N tables stranded by past ClickHouse version upgrades.
+	// Runs here rather than in the installer because a ClickHouse image bump strands
+	// them on every deployment mode, and this is the one path all of them share.
+	if err := db.DropOrphanedSystemLogTables(context.Background()); err != nil {
+		log.Printf("Warning: failed to drop stranded system log tables (will retry next start): %v", err)
+	}
+
 	// Start hot table cleaner: drops expired logs_hot partitions every 5 minutes.
 	hotCleanerCtx, hotCleanerCancel := context.WithCancel(context.Background())
 	defer hotCleanerCancel()

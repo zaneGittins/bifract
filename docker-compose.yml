@@ -45,6 +45,7 @@ services:
     container_name: bifract-clickhouse
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./internal/setup/templates/clickhouse-system-logs.xml:/etc/clickhouse-server/config.d/bifract-system-logs.xml:ro
     environment:
       CLICKHOUSE_DB: logs
       CLICKHOUSE_USER: default

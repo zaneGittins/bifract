@@ -167,12 +167,6 @@ func WriteAllFiles(cfg *SetupConfig) error {
 		}
 	}
 
-	if err := CopyEmbeddedFile("templates/entrypoint.sh", filepath.Join(dir, "caddy", "entrypoint.sh")); err != nil {
-		return err
-	}
-	if err := CopyEmbeddedFile("templates/ship-logs.sh", filepath.Join(dir, "caddy", "ship-logs.sh")); err != nil {
-		return err
-	}
 
 	initPG, err := RenderInitPostgres(cfg)
 	if err != nil {
@@ -190,11 +184,30 @@ func WriteAllFiles(cfg *SetupConfig) error {
 	// only invites being mounted back into the ClickHouse container, which is what left
 	// installs with a current schema and an empty migration table.
 
-	if err := CopyEmbeddedFile("templates/litellm-config.yaml", filepath.Join(dir, "litellm-config.yaml")); err != nil {
-		return err
+	for _, f := range staticInstallFiles {
+		if err := CopyEmbeddedFile(f.src, filepath.Join(dir, filepath.Join(f.dest...))); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// staticInstallFiles are copied verbatim from the embedded templates on both a
+// fresh install and an upgrade. Upgrades render their own config rather than
+// calling WriteAllFiles, so anything listed only in one path silently never
+// reaches existing installs -- and a compose mount whose source file was never
+// written makes Docker create a directory at that path instead.
+var staticInstallFiles = []struct {
+	src  string
+	dest []string
+}{
+	{"templates/entrypoint.sh", []string{"caddy", "entrypoint.sh"}},
+	{"templates/ship-logs.sh", []string{"caddy", "ship-logs.sh"}},
+	{"templates/litellm-config.yaml", []string{"litellm-config.yaml"}},
+	// Bounds ClickHouse's own telemetry (logger level + system.*_log TTLs); see the
+	// fragment's header. Mounted into the ClickHouse container's config.d.
+	{"templates/clickhouse-system-logs.xml", []string{"clickhouse", "config.d", "system-logs.xml"}},
 }
 
 func writeFile(path, content string) error {

@@ -176,17 +176,15 @@ func (h *NotebookHandler) aiEnabled() bool {
 
 // HandleListNotebooks retrieves all notebooks for the current fractal with search and pagination
 func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Request) {
-	// Get selected fractal for notebook isolation
-	selectedFractal, err := h.getSelectedFractal(r)
+	selectedFractal, selectedPrism, err := h.getScope(r)
 	if err != nil {
-		log.Printf("[Notebooks] Failed to get selected fractal: %v", err)
+		log.Printf("[Notebooks] Failed to resolve scope: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
 		return
 	}
 
 	// Re-check access on the scope every request. The scope was authorized when
 	// it was selected, but permissions can be revoked while the session lives on.
-	selectedPrism, _ := r.Context().Value("selected_prism").(string)
 	if selectedPrism != "" {
 		if !h.requireRoleOnPrism(r, selectedPrism, rbac.RoleViewer) {
 			forbidden(w)
@@ -306,11 +304,14 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Get selected fractal for notebook isolation
-	selectedFractal, err := h.getSelectedFractal(r)
+	selectedFractal, selectedPrism, err := h.getScope(r)
 	if err != nil {
-		log.Printf("[Notebooks] Failed to get selected fractal: %v", err)
+		log.Printf("[Notebooks] Failed to resolve scope: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+		return
+	}
+	if selectedFractal == "" && selectedPrism == "" {
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
 	}
 
@@ -325,14 +326,15 @@ func (h *NotebookHandler) HandleCreateNotebook(w http.ResponseWriter, r *http.Re
 		Timezone:             req.Timezone,
 		CreatedBy:            auth.AttributionUsername(r.Context()),
 	}
-	if prismID, ok := r.Context().Value("selected_prism").(string); ok && prismID != "" {
-		notebook.PrismID = prismID
+	if selectedPrism != "" {
+		notebook.PrismID = selectedPrism
 	} else {
 		notebook.FractalID = selectedFractal
 	}
 
 	newNotebook, err := h.pg.InsertNotebook(r.Context(), notebook)
 	if err != nil {
+		log.Printf("[Notebooks] Failed to create notebook: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to create notebook")
 		return
 	}
@@ -1068,27 +1070,25 @@ func (h *NotebookHandler) HandleGetPresence(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// getSelectedFractal retrieves the selected fractal for the current user session
-func (h *NotebookHandler) getSelectedFractal(r *http.Request) (string, error) {
-	// First try to get the selected fractal from the request context (set by auth middleware)
-	if selectedFractal := r.Context().Value("selected_fractal"); selectedFractal != nil {
-		if fractalID, ok := selectedFractal.(string); ok && fractalID != "" {
-			return fractalID, nil
-		}
+// getScope returns the scope the request is acting in, never both at once. The
+// prism is checked first so a prism session cannot fall through to the default
+// fractal, which would silently point its reads and writes at another scope's
+// rows. Both come back empty only when no scope resolves; callers reject that.
+func (h *NotebookHandler) getScope(r *http.Request) (fractalID, prismID string, err error) {
+	if pid, ok := r.Context().Value("selected_prism").(string); ok && pid != "" {
+		return "", pid, nil
 	}
-
-	// If no fractal manager is available, use default behavior (backwards compatibility)
+	if fid, ok := r.Context().Value("selected_fractal").(string); ok && fid != "" {
+		return fid, "", nil
+	}
 	if h.fractalManager == nil {
-		return "", nil
+		return "", "", nil
 	}
-
-	// Fall back to default fractal if none selected in session
 	defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context())
 	if err != nil {
-		return "", fmt.Errorf("failed to get default fractal: %w", err)
+		return "", "", fmt.Errorf("failed to get default fractal: %w", err)
 	}
-
-	return defaultFractal.ID, nil
+	return defaultFractal.ID, "", nil
 }
 
 func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.Request) {
@@ -1613,8 +1613,12 @@ func (h *NotebookHandler) HandleImportNotebook(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	selectedFractal, _ := h.getSelectedFractal(r)
-	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	selectedFractal, selectedPrism, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Notebooks] Failed to resolve scope: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+		return
+	}
 	if selectedFractal == "" && selectedPrism == "" {
 		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
@@ -1743,22 +1747,18 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		return
 	}
 
-	selectedFractal, _ := h.getSelectedFractal(r)
-	selectedPrism, _ := r.Context().Value("selected_prism").(string)
+	selectedFractal, selectedPrism, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Notebooks] Failed to resolve scope: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+		return
+	}
 	if selectedFractal == "" && selectedPrism == "" {
 		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
 		return
 	}
 
-	// Comments are fractal-scoped; in prism context use default fractal for comment lookup
-	commentFractal := selectedFractal
-	if commentFractal == "" && h.fractalManager != nil {
-		if df, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
-			commentFractal = df.ID
-		}
-	}
-
-	comments, err := h.pg.GetCommentsByTagAndFractal(r.Context(), commentFractal, req.Tag)
+	comments, err := h.pg.GetCommentsByTagAndScope(r.Context(), selectedFractal, selectedPrism, req.Tag)
 	if err != nil {
 		log.Printf("[Notebooks] Failed to get comments by tag: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch comments")
@@ -1944,7 +1944,9 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	// lookup is one bounded batch rather than a point query per comment: logs is
 	// ordered by (timestamp, log_id), so the event-time span the comments cover
 	// prunes granules instead of bloom-checking the fractal's whole history once
-	// per section.
+	// per section. In a prism the fractal filter is empty: the comments span the
+	// member fractals, and log_id is a content hash, so the id alone identifies
+	// the row.
 	if h.ch != nil && len(logIDSections) > 0 {
 		go func(sections []sectionLogID, fractalID string, from, to time.Time) {
 			ids := make([]string, 0, len(sections))
@@ -1987,7 +1989,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					log.Printf("[Notebooks] Failed to save prefetched log results: %v", err)
 				}
 			}
-		}(logIDSections, commentFractal, logsFrom, logsTo)
+		}(logIDSections, selectedFractal, logsFrom, logsTo)
 	}
 
 	// Generate AI summary or attack chain asynchronously if enabled
