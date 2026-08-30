@@ -49,8 +49,7 @@ const AttackCoverage = {
         if (grid) grid.innerHTML = '';
         const gaps = document.getElementById('atkGaps');
         if (gaps) gaps.innerHTML = '';
-        const view = document.getElementById('attackCoverageView');
-        if (view && view.style.display !== 'none') this.show();
+        if (FractalContext.shouldReload('attackCoverageView')) this.show();
     },
 
     async show() {

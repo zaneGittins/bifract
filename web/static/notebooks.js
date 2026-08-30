@@ -47,10 +47,7 @@ const Notebooks = {
         const tbody = document.getElementById('notebooksTableBody');
         if (tbody) tbody.innerHTML = '';
 
-        const view = document.getElementById('notebooksView');
-        if (view && view.offsetParent !== null) {
-            this.showNotebookListing();
-        }
+        if (FractalContext.shouldReload('notebooksView')) this.showNotebookListing();
     },
 
     /**

@@ -860,6 +860,12 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 		LEFT JOIN email_actions ea ON aea.email_action_id = ea.id AND ea.enabled = true
 	`
 
+	// No scope means no alerts, not every alert: without this the query below
+	// carries no scope predicate and spans every fractal and prism.
+	if prismID == "" && fractalID == "" {
+		return nil, fmt.Errorf("no fractal or prism scope")
+	}
+
 	var whereConditions []string
 	var args []interface{}
 
@@ -867,7 +873,7 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 	if prismID != "" {
 		whereConditions = append(whereConditions, "a.prism_id = $1")
 		args = append(args, prismID)
-	} else if fractalID != "" {
+	} else {
 		whereConditions = append(whereConditions, "a.fractal_id = $1")
 		args = append(args, fractalID)
 	}

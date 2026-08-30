@@ -75,6 +75,9 @@ const RealTimeComments = {
         this.knownCommentIds.clear();
         this.markAsRead();
 
+        // Nothing to poll at the listing level.
+        if (!window.FractalContext?.hasScope?.()) return;
+
         const token = window.FractalContext?.scopeToken?.();
         await this.loadInitialComments();
         if (window.FractalContext?.isScopeStale?.(token)) return;
@@ -87,6 +90,7 @@ const RealTimeComments = {
         if (!window.Auth || !window.Auth.isAuthenticated()) {
             return;
         }
+        if (!window.FractalContext?.hasScope?.()) return;
 
         try {
             // Load initial comments to populate known set (without notifications)
@@ -143,6 +147,7 @@ const RealTimeComments = {
             this.stop();
             return;
         }
+        if (!window.FractalContext?.hasScope?.()) return;
 
         try {
             const response = await fetch('/api/v1/logs/commented?limit=100', {

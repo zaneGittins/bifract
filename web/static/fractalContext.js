@@ -5,19 +5,21 @@
 // silently repoints every other tab: their lists, their writes, and (in prism
 // context, where no fractal_id is sent) their queries all follow the session.
 //
-// So every same-origin /api/v1 request carries this tab's scope in X-Bifract-Scope.
-// The server authorizes the header against RBAC and only falls back to the
-// session scope when the header is absent (fresh load, or a recovery endpoint).
-// See ScopeHeader in pkg/auth/auth.go.
+// So every same-origin /api/v1 request carries this tab's scope in X-Bifract-Scope,
+// including 'none' while the tab sits at the listing level with nothing selected.
+// Sending 'none' rather than omitting the header is the point: an absent header
+// means "use the session", which answers a scopeless page from whatever scope the
+// session last held. See ScopeHeader in pkg/auth/auth.go.
 (function installScopeHeader() {
     const SCOPE_HEADER = 'X-Bifract-Scope';
     const SCOPE_INVALID_HEADER = 'X-Bifract-Scope-Invalid';
+    const SCOPE_NONE = 'none';
     const nativeFetch = window.fetch.bind(window);
     let rejectionHandled = false;
 
     function currentScope() {
         const ctx = window.FractalContext;
-        if (!ctx || !ctx.currentFractal || !ctx.currentFractal.id) return null;
+        if (!ctx || !ctx.currentFractal || !ctx.currentFractal.id) return SCOPE_NONE;
         return (ctx.isPrism() ? 'prism:' : 'fractal:') + ctx.currentFractal.id;
     }
 
@@ -68,18 +70,19 @@
     }
 
     window.fetch = function (input, init) {
+        if (!isApiCall(input)) return nativeFetch(input, init);
         const scope = currentScope();
-        if (!scope || !isApiCall(input)) return nativeFetch(input, init);
 
         if (typeof Request !== 'undefined' && input instanceof Request) {
             const req = new Request(input, init);
-            req.headers.set(SCOPE_HEADER, scope);
+            // A caller that named its own scope (the API explorer) means it.
+            if (!req.headers.has(SCOPE_HEADER)) req.headers.set(SCOPE_HEADER, scope);
             return nativeFetch(req).then(checkResponse);
         }
 
         const opts = Object.assign({}, init || {});
         const headers = new Headers(opts.headers || {});
-        headers.set(SCOPE_HEADER, scope);
+        if (!headers.has(SCOPE_HEADER)) headers.set(SCOPE_HEADER, scope);
         opts.headers = headers;
         return nativeFetch(input, opts).then(checkResponse);
     };
@@ -143,6 +146,24 @@ const FractalContext = {
 
     isPrism() {
         return this.currentItemType === 'prism';
+    },
+
+    // True when a fractal or prism is selected. Scoped requests must not be issued
+    // when it is false: the listing level sends scope 'none' and the server has
+    // nothing to answer them with.
+    hasScope() {
+        return !!(this.currentFractal && this.currentFractal.id);
+    },
+
+    // The single test for "should this scoped panel reload after a scope change".
+    // Panels that fail it clear their stale content and return; re-entering the tab
+    // always calls the module's show(). Visibility is offsetParent, not
+    // style.display: entering a tab sets a panel to block and nothing resets it, so
+    // a panel under a hidden ancestor still reads as displayed.
+    shouldReload(viewId) {
+        if (!this.hasScope()) return false;
+        const view = document.getElementById(viewId);
+        return !!view && view.offsetParent !== null;
     },
 
     // Restore the current fractal/prism from localStorage (for new-tab hash routing).

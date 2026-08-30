@@ -102,8 +102,14 @@ func (m *Manager) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 	return m.storage.GetFractalByName(ctx, name)
 }
 
-// GetDefaultFractal retrieves the default index
+// GetDefaultFractal retrieves the default index. Handlers use it as the last
+// resort when a request carries no scope, so a caller that explicitly declared
+// none is refused here: inventing a default answers a scopeless page from the
+// default fractal's data.
 func (m *Manager) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
+	if NoScopeDeclared(ctx) {
+		return nil, ErrNoScope
+	}
 	return m.storage.GetDefaultFractal(ctx)
 }
 

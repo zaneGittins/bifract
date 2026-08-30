@@ -63,10 +63,8 @@ func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get selected index: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+	fractalID, prismID, ok := h.requireScope(w, r, "alerts")
+	if !ok {
 		return
 	}
 
@@ -116,10 +114,8 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get selected index: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+	fractalID, prismID, ok := h.requireScope(w, r, "alerts")
+	if !ok {
 		return
 	}
 
@@ -341,10 +337,8 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get selected index: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+	fractalID, prismID, ok := h.requireScope(w, r, "alerts")
+	if !ok {
 		return
 	}
 
@@ -490,10 +484,8 @@ func (h *Handler) HandleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for webhooks: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, "webhooks")
+	if !ok {
 		return
 	}
 
@@ -530,10 +522,8 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for webhook create: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, "webhook create")
+	if !ok {
 		return
 	}
 
@@ -698,10 +688,8 @@ func (h *Handler) HandleListFractalActions(w http.ResponseWriter, r *http.Reques
 
 	ctx := r.Context()
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for fractal actions: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, "fractal actions")
+	if !ok {
 		return
 	}
 
@@ -738,10 +726,8 @@ func (h *Handler) HandleCreateFractalAction(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for fractal action create: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, "fractal action create")
+	if !ok {
 		return
 	}
 
@@ -986,10 +972,8 @@ func parseIntParam(param string) (int, error) {
 // caller's current session scope. It writes a 404 and returns false on mismatch.
 // resourceName is used for the error message (e.g. "Webhook", "Fractal action").
 func (h *Handler) requireActionInScope(w http.ResponseWriter, r *http.Request, actionFractalID, actionPrismID, resourceName string) bool {
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for %s: %v", resourceName, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, resourceName)
+	if !ok {
 		return false
 	}
 	inScope := (prismID != "" && actionPrismID == prismID) ||
@@ -1001,6 +985,24 @@ func (h *Handler) requireActionInScope(w http.ResponseWriter, r *http.Request, a
 	return true
 }
 
+// requireScope resolves the request scope and answers the request itself when
+// there is none. Every scoped handler goes through it: an empty scope reaching
+// the manager builds a query with no scope predicate, which lists every alert in
+// every fractal and prism.
+func (h *Handler) requireScope(w http.ResponseWriter, r *http.Request, what string) (fractalID, prismID string, ok bool) {
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] Failed to get scope for %s: %v", what, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+		return "", "", false
+	}
+	if fractalID == "" && prismID == "" {
+		h.respondError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return "", "", false
+	}
+	return fractalID, prismID, true
+}
+
 // getScope returns the current fractal or prism scope from the request context.
 // Returns (fractalID, prismID, error) — exactly one will be non-empty when err == nil.
 func (h *Handler) getScope(r *http.Request) (string, string, error) {
@@ -1010,7 +1012,8 @@ func (h *Handler) getScope(r *http.Request) (string, string, error) {
 	if fractalID, _ := r.Context().Value("selected_fractal").(string); fractalID != "" {
 		return fractalID, "", nil
 	}
-	if h.fractalManager == nil {
+	// A caller that declared no scope has none; callers reject that below.
+	if h.fractalManager == nil || fractals.NoScopeDeclared(r.Context()) {
 		return "", "", nil
 	}
 	defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context())
@@ -1092,14 +1095,8 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 	var err error
 	switch {
 	case req.Filter != nil:
-		fractalID, prismID, scopeErr := h.getScope(r)
-		if scopeErr != nil {
-			log.Printf("[Alerts] Failed to get scope for feed alert batch toggle: %v", scopeErr)
-			h.respondError(w, http.StatusInternalServerError, "Failed to update feed alerts")
-			return
-		}
-		if fractalID == "" && prismID == "" {
-			h.respondError(w, http.StatusBadRequest, "no fractal or prism selected")
+		fractalID, prismID, ok := h.requireScope(w, r, "feed alert batch toggle")
+		if !ok {
 			return
 		}
 		unset := func(v string) string {
@@ -1223,10 +1220,8 @@ func (h *Handler) HandleToggleFeedAlert(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) HandleListEmailActions(w http.ResponseWriter, r *http.Request) {
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for email actions: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, "email actions")
+	if !ok {
 		return
 	}
 
@@ -1248,10 +1243,8 @@ func (h *Handler) HandleCreateEmailAction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Alerts] Failed to get scope for email action create: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine scope")
+	fractalID, prismID, ok := h.requireScope(w, r, "email action create")
+	if !ok {
 		return
 	}
 

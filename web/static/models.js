@@ -46,7 +46,9 @@ const AnalyticsModels = {
     },
 
     init() {
-        this._render();
+        // No render here: the panel is hidden at startup and entering the tab
+        // always calls show(). Rendering at init loaded models before any scope
+        // was chosen.
         if (window.FractalContext && FractalContext.subscribe) {
             FractalContext.subscribe('AnalyticsModels', () => this.onFractalChange());
         }
@@ -71,12 +73,17 @@ const AnalyticsModels = {
         }
         this._runSeq++;
 
-        const view = document.getElementById('modelsView');
-        if (view && view.style.display !== 'none' && !FractalContext.isPrism()) {
-            this.show('');
-        } else {
-            this._render();
+        if (!FractalContext.shouldReload('modelsView')) {
+            // Drop the previous scope's markup; re-entry goes through show().
+            const view = document.getElementById('modelsView');
+            if (view) view.innerHTML = '';
+            return;
         }
+        if (FractalContext.isPrism()) {
+            this._render();
+            return;
+        }
+        this.show('');
     },
 
     show(subPath = '') {

@@ -40,10 +40,7 @@ const AlertFeeds = {
         const feedManageList = document.getElementById('feedManageList');
         if (feedManageList) feedManageList.innerHTML = '';
 
-        const view = document.getElementById('feedAlertsView');
-        if (view && view.offsetParent !== null) {
-            this.show();
-        }
+        if (FractalContext.shouldReload('feedAlertsView')) this.show();
     },
 
     // Every sub-tab view is listed here so adding one cannot leave a stale panel

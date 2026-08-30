@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"bifract/pkg/fractals"
 )
 
 // TestGetScopeResolvesPrismFirst mirrors the notebook case: a prism session must
@@ -40,5 +42,23 @@ func TestGetScopeResolvesPrismFirst(t *testing.T) {
 				t.Errorf("getScope() = (%q, %q), want (%q, %q)", fractalID, prismID, tt.wantFractal, tt.wantPrism)
 			}
 		})
+	}
+}
+
+// A client that declared no scope must not be resolved to the default fractal.
+// The fractal manager is real here, so only the declaration prevents it.
+func TestGetScopeRefusesDefaultForDeclaredNoScope(t *testing.T) {
+	h := &DashboardHandler{fractalManager: fractals.NewManager(nil, nil)}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/dashboards", nil)
+	ctx := fractals.WithNoScope(r.Context())
+	ctx = context.WithValue(ctx, "selected_fractal", "")
+	ctx = context.WithValue(ctx, "selected_prism", "")
+
+	fractalID, prismID, err := h.getScope(r.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fractalID != "" || prismID != "" {
+		t.Errorf("getScope() = (%q, %q), want empty scope", fractalID, prismID)
 	}
 }

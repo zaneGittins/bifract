@@ -198,7 +198,10 @@ func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request
 	}
 
 	// Verify the caller's scope matches the comment's scope
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 	scopeMatch := (comment.FractalID != "" && comment.FractalID == scopeFractal) ||
 		(comment.PrismID != "" && comment.PrismID == scopePrism)
 	if !scopeMatch {
@@ -277,7 +280,10 @@ func (h *CommentHandler) HandleDeleteComment(w http.ResponseWriter, r *http.Requ
 func (h *CommentHandler) HandleGetLogComments(w http.ResponseWriter, r *http.Request) {
 	logID := chi.URLParam(r, "log_id")
 
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 
 	var comments []storage.Comment
 	var err error
@@ -304,7 +310,10 @@ func (h *CommentHandler) HandleGetLogComments(w http.ResponseWriter, r *http.Req
 
 // HandleGetCommentedLogs gets all logs that have comments
 func (h *CommentHandler) HandleGetCommentedLogs(w http.ResponseWriter, r *http.Request) {
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
@@ -364,7 +373,10 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 
 	var comments []storage.Comment
 	var total int
@@ -424,7 +436,10 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 	count, err := h.pg.BulkAddTagToComments(r.Context(), req.CommentIDs, req.Tag, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk add tag failed: %v", err)
@@ -470,7 +485,10 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 	count, err := h.pg.BulkRemoveTagFromComments(r.Context(), req.CommentIDs, req.Tag, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk remove tag failed: %v", err)
@@ -517,7 +535,10 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 		return
 	}
 
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 	count, err := h.pg.BulkDeleteComments(r.Context(), req.CommentIDs, auth.AttributionUsername(r.Context()), user.IsAdmin, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Bulk delete failed: %v", err)
@@ -534,7 +555,10 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 
 // HandleGetTags returns distinct tags used in comments for the current scope.
 func (h *CommentHandler) HandleGetTags(w http.ResponseWriter, r *http.Request) {
-	scopeFractal, scopePrism := h.getScope(r)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 
 	var tags []string
 	var err error
@@ -595,7 +619,19 @@ func (h *CommentHandler) HandleDeleteCommentsByLogID(w http.ResponseWriter, r *h
 	})
 }
 
-// getScope returns the fractalID and prismID from context. Exactly one will be non-empty.
+// requireScope resolves the request scope and answers the request itself when
+// there is none, so a scopeless lookup cannot reach the store as an empty id.
+func (h *CommentHandler) requireScope(w http.ResponseWriter, r *http.Request) (fractalID, prismID string, ok bool) {
+	fractalID, prismID = h.getScope(r)
+	if fractalID == "" && prismID == "" {
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return "", "", false
+	}
+	return fractalID, prismID, true
+}
+
+// getScope returns the fractalID and prismID from context. Exactly one will be
+// non-empty, or both empty when the request declared no scope.
 func (h *CommentHandler) getScope(r *http.Request) (fractalID, prismID string) {
 	if pid, _ := r.Context().Value("selected_prism").(string); pid != "" {
 		return "", pid

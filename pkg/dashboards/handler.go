@@ -598,7 +598,8 @@ func (h *DashboardHandler) getScope(r *http.Request) (fractalID, prismID string,
 	if fid, ok := r.Context().Value("selected_fractal").(string); ok && fid != "" {
 		return fid, "", nil
 	}
-	if h.fractalManager == nil {
+	// A caller that declared no scope has none; callers reject that below.
+	if h.fractalManager == nil || fractals.NoScopeDeclared(r.Context()) {
 		return "", "", nil
 	}
 	defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context())

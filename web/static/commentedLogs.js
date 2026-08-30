@@ -781,10 +781,7 @@ const CommentedLogs = {
     // ============================
 
     onFractalChange() {
-        const commentedView = document.getElementById('commentedView');
-        if (commentedView && commentedView.offsetParent !== null) {
-            this.fetchComments();
-        }
+        if (FractalContext.shouldReload('commentedView')) this.fetchComments();
     },
 
     // ============================

@@ -43,7 +43,7 @@ const InstructionLibraries = {
         this._setSaveState('idle');
         const container = document.getElementById('instructionLibrariesView');
         if (container) container.innerHTML = '';
-        if (container && container.offsetParent !== null) this.show();
+        if (FractalContext.shouldReload('instructionLibrariesView')) this.show();
     },
 
     get libraryId() { return this.library ? this.library.id : null; },

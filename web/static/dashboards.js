@@ -59,10 +59,7 @@ const Dashboards = {
         const tbody = document.getElementById('dashboardsTableBody');
         if (tbody) tbody.innerHTML = '';
 
-        const view = document.getElementById('dashboardsView');
-        if (view && view.offsetParent !== null) {
-            this.showDashboardListing();
-        }
+        if (FractalContext.shouldReload('dashboardsView')) this.showDashboardListing();
     },
 
     bindEvents() {

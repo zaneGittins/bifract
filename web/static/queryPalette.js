@@ -82,7 +82,7 @@ const QueryPalette = {
         this.saved = [];
         this.editingId = null;
         this.saveFormOpen = false;
-        if (this.isOpen) this.reload();
+        if (this.isOpen && FractalContext.hasScope()) this.reload();
     },
 
     toggle() { this.isOpen ? this.close() : this.open(); },

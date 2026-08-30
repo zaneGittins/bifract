@@ -18,10 +18,7 @@ const FractalManageTab = {
         this.currentFractal = window.FractalContext?.currentFractal || null;
         this.currentPrismData = null;
 
-        const content = document.getElementById('fractalManageTabContent');
-        if (this.currentFractal && content && content.style.display !== 'none') {
-            this.show('');
-        }
+        if (FractalContext.shouldReload('fractalManageTabContent')) this.show('');
     },
 
     // Returns the id to write to, or null if the rendered snapshot no longer

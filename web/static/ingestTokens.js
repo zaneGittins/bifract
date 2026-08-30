@@ -77,17 +77,12 @@ const IngestTokens = {
         this.searchQuery = '';
         const searchInput = document.getElementById('ingestTokenSearchInput');
         if (searchInput) searchInput.value = '';
-        const container = document.getElementById('fractalIngestTabContent');
-        if (container && container.offsetParent !== null) {
-            this.loadTokens();
-        }
+        if (FractalContext.shouldReload('fractalIngestTabContent')) this.loadTokens();
     },
 
     async loadTokens() {
         const fractal = window.FractalContext?.getCurrentFractal();
-        // Tokens belong to a fractal. In a prism the id here is the prism's, so
-        // the request can only 404, and the same scope change is already hiding
-        // this tab.
+        // Tokens belong to a fractal; in a prism the id here is the prism's.
         if (!fractal || window.FractalContext?.isPrism?.()) return;
 
         const tbody = document.getElementById('ingestTokensTableBody');

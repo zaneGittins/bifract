@@ -141,7 +141,7 @@ const NotebookRail = {
         this._abort();
         this._restoreActive();
         this.render();
-        if (window.RailPanel && RailPanel.isPaneVisible('notebook')) this.load();
+        if (FractalContext.hasScope() && window.RailPanel && RailPanel.isPaneVisible('notebook')) this.load();
     },
 
     // ---- lifecycle --------------------------------------------------------

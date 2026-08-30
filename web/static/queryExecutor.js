@@ -1922,6 +1922,9 @@ const QueryExecutor = {
     onFractalChange(retryCount = 0) {
         // Add small delay to ensure fractal context is fully updated
         setTimeout(() => {
+            // Nothing to restore or re-run without a scope (listing level).
+            if (!FractalContext.hasScope()) return;
+
             // Restore the per-fractal time range selection
             this.restoreTimeRangeFromStorage();
 
@@ -1951,10 +1954,7 @@ const QueryExecutor = {
             }
 
             // Only attempt to execute or load logs if we're in the search view
-            const searchView = document.getElementById('searchView');
-            if (!searchView || searchView.style.display === 'none') {
-                return;
-            }
+            if (!FractalContext.shouldReload('searchView')) return;
 
             // Check if we're in the search view and elements are available
             if (!elements.queryInput || !elements.resultsTable) {

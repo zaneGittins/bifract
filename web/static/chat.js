@@ -181,7 +181,7 @@ const Chat = {
         this.conversations = [];
         this.instructionLibraries = [];
         this.showEmptyState();
-        if (window.FractalContext?.currentFractal) {
+        if (window.FractalContext?.hasScope()) {
             this.loadConversations();
             this.loadInstructions();
         }

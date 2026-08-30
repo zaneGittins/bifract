@@ -767,7 +767,8 @@ const Comments = {
 
     // Refresh commented log IDs cache when index context changes
     onFractalChange() {
-        this.fetchCommentedLogIds();
+        this.commentedLogIds.clear();
+        if (FractalContext.hasScope()) this.fetchCommentedLogIds();
     }
 };
 

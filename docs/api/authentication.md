@@ -41,10 +41,15 @@ instance-wide key. Requests made with either say which scope they mean:
 ```
 X-Bifract-Scope: fractal:<fractal-id>
 X-Bifract-Scope: prism:<prism-id>
+X-Bifract-Scope: none
 ```
 
 The header is authorized on every request, never trusted on its own: asking for a scope you
 cannot reach answers `403`, not the data.
+
+`none` states that the caller holds no scope, which is not the same as omitting the header.
+Omitting it falls back to the session's last selected scope, so a page that holds no scope
+must send `none` rather than be answered from a scope it is not on.
 
 ## When authentication fails
 

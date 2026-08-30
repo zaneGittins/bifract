@@ -3673,10 +3673,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
         this.filteredAlerts = [];
         this.alertsCurrentPage = 1;
 
-        const alertsView = document.getElementById('alertsView');
-        if (alertsView && alertsView.offsetParent !== null) {
-            this.loadAlerts();
-        }
+        if (FractalContext.shouldReload('alertsView')) this.loadAlerts();
     },
 
     // ============================

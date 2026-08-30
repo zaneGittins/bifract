@@ -1090,10 +1090,16 @@ func (h *AuthHandler) HandleAdminResetPassword(w http.ResponseWriter, r *http.Re
 }
 
 // ScopeHeader lets a single request override the session's fractal/prism scope.
-// Value is "fractal:<id>" or "prism:<id>". The web UI sends it on every API call
-// so that browser tabs sharing one session cookie can hold different scopes
-// without silently repointing each other.
+// Value is "fractal:<id>", "prism:<id>", or ScopeNone. The web UI sends it on
+// every API call so that browser tabs sharing one session cookie can hold
+// different scopes without silently repointing each other.
 const ScopeHeader = "X-Bifract-Scope"
+
+// ScopeNone is the header value for a client that holds no scope at all, such as
+// a tab sitting at the fractal listing. It is distinct from omitting the header:
+// omitting means "no opinion, use the session", which answers a scopeless client
+// from whatever scope the session last held, in another tab or another page.
+const ScopeNone = "none"
 
 // ScopeInvalidHeader marks a rejection caused by ScopeHeader so the client can
 // drop its stale context instead of surfacing a generic permission error.
@@ -1107,10 +1113,14 @@ func scopeHeaderExempt(path string) bool {
 		strings.HasSuffix(path, "/select")
 }
 
-// parseScopeHeader splits "fractal:<id>" / "prism:<id>". Exactly one of the
-// returned ids is non-empty.
+// parseScopeHeader splits "fractal:<id>" / "prism:<id>". ScopeNone returns two
+// empty ids. Otherwise exactly one of the returned ids is non-empty.
 func parseScopeHeader(v string) (fractalID, prismID string, err error) {
-	kind, id, ok := strings.Cut(strings.TrimSpace(v), ":")
+	v = strings.TrimSpace(v)
+	if v == ScopeNone {
+		return "", "", nil
+	}
+	kind, id, ok := strings.Cut(v, ":")
 	if !ok || id == "" || len(id) > 36 || !isScopeID(id) {
 		return "", "", fmt.Errorf("invalid scope header")
 	}
@@ -1200,7 +1210,13 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 							writeScopeError(w, http.StatusBadRequest, "Malformed scope header")
 							return
 						}
-						if !h.canAccessScope(ctx, user, hdrFractal, hdrPrism) {
+						// ScopeNone parses to no ids and authorizes nothing. It
+						// drops the session scope rather than replacing it, and
+						// marks the request so no handler resolves a default
+						// fractal in its place.
+						if hdrFractal == "" && hdrPrism == "" {
+							ctx = fractals.WithNoScope(ctx)
+						} else if !h.canAccessScope(ctx, user, hdrFractal, hdrPrism) {
 							writeScopeError(w, http.StatusForbidden, "No access to the requested fractal or prism")
 							return
 						}
@@ -1296,6 +1312,9 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 							if err != nil {
 								writeScopeError(w, http.StatusBadRequest, "Malformed scope header")
 								return
+							}
+							if hdrFractal == "" && hdrPrism == "" {
+								ctx = fractals.WithNoScope(ctx)
 							}
 							ctx = context.WithValue(ctx, "selected_fractal", hdrFractal)
 							ctx = context.WithValue(ctx, "selected_prism", hdrPrism)

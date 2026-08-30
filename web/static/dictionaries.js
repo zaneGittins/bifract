@@ -34,10 +34,7 @@ const Dictionaries = {
         const tbody = document.getElementById('dictsTableBody');
         if (tbody) tbody.innerHTML = '';
 
-        const view = document.getElementById('dictionariesView');
-        if (view && view.offsetParent !== null) {
-            this.showListing();
-        }
+        if (FractalContext.shouldReload('dictionariesView')) this.showListing();
     },
 
     show(subPath = '') {
