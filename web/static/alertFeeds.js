@@ -149,6 +149,7 @@ const AlertFeeds = {
 
     // Extract severity from an alert's labels (e.g. "sigma:high" -> "high")
     getAlertSeverity(alert) {
+        if (alert.severity) return alert.severity.toLowerCase();
         if (!alert.labels) return '';
         for (const l of alert.labels) {
             if (l.startsWith('sigma:')) {
@@ -288,11 +289,6 @@ const AlertFeeds = {
         this.loadFeedAlerts({ facets: false, showLoading: false });
     },
 
-    sortIndicator(column) {
-        if (this.sortColumn !== column) return '';
-        return this.sortDirection === 'asc' ? ' &#9650;' : ' &#9660;';
-    },
-
     // Applies a filter change immediately (clicks, unlike typing, need no debounce).
     applyFilterNow() {
         clearTimeout(this._filterTimer);
@@ -377,115 +373,60 @@ const AlertFeeds = {
         if (!container) return;
 
         if (this.alertRows.length === 0) {
-            const filtered = this.hasActiveFilter();
-            container.innerHTML = `
-                <div class="alerts-table-container">
-                    <div class="empty-state">
-                        <p>No feed alerts ${filtered ? 'match these filters' : 'found'}.</p>
-                        <p class="empty-hint">${filtered
-                            ? 'Clear or widen the filters above to see more.'
-                            : 'Configure feeds in the "Manage Feeds" tab to sync alerts from git repositories.'}</p>
-                    </div>
-                </div>`;
+            container.innerHTML = AlertList.renderEmptyState({
+                filtered: this.hasActiveFilter(),
+                noun: 'feed alerts',
+                onClear: 'AlertFeeds.clearFilters',
+                hint: 'Configure feeds in the Manage Feeds panel to sync alerts from git repositories.'
+            });
             return;
         }
 
-        const pageAlerts = this.alertRows;
+        const cols = [
+            { key: 'name', label: 'Name', sortable: true },
+            { key: 'feed', label: 'Feed' },
+            { key: 'severity', label: 'Severity', sortable: true },
+            { key: 'labels', label: 'Labels' },
+            { key: 'exec_time', label: 'Exec Time', sortable: true },
+            { key: 'last_triggered', label: 'Last Triggered', sortable: true }
+        ];
 
-        let html = `
+        const rows = this.alertRows.map(alert => AlertList.renderRow(alert, [
+            `<td><span class="feed-badge-sm">${Utils.escapeHtml(alert.feed_name || 'Unknown')}</span></td>`,
+            AlertList.severityCell(alert, 'AlertFeeds.setSeverityFilter'),
+            AlertList.labelsCell(this.getDisplayLabels(alert), 'AlertFeeds.setLabelFilter'),
+            AlertList.execTimeCell(alert),
+            AlertList.lastTriggeredCell(alert)
+        ])).join('');
+
+        container.innerHTML = `
             <div class="alerts-table-container">
-                <div class="alerts-table-header">
-                    <div class="alerts-count">
-                        Showing ${pageAlerts.length} of ${this.total} alerts
-                        ${this.hasActiveFilter() && this.unfiltered ? ` (filtered from ${this.unfiltered} total)` : ''}
-                    </div>
-                    <div class="alerts-page-size">
-                        <label>Show:</label>
-                        <select onchange="AlertFeeds.changePageSize(this.value)">
-                            <option value="10" ${this.alertsPerPage === 10 ? 'selected' : ''}>10</option>
-                            <option value="25" ${this.alertsPerPage === 25 ? 'selected' : ''}>25</option>
-                            <option value="50" ${this.alertsPerPage === 50 ? 'selected' : ''}>50</option>
-                            <option value="100" ${this.alertsPerPage === 100 ? 'selected' : ''}>100</option>
-                        </select>
-                    </div>
-                </div>
+                ${AlertList.renderTableHeader({
+                    shown: this.alertRows.length,
+                    total: this.total,
+                    unfiltered: this.hasActiveFilter() ? this.unfiltered : 0,
+                    pageSize: this.alertsPerPage,
+                    onPageSize: 'AlertFeeds.changePageSize'
+                })}
                 <table class="alerts-table">
                     <thead>
-                        <tr>
-                            <th class="sortable-th" onclick="AlertFeeds.toggleSort('name')">Name${this.sortIndicator('name')}</th>
-                            <th>Feed</th>
-                            <th class="sortable-th" onclick="AlertFeeds.toggleSort('severity')">Severity${this.sortIndicator('severity')}</th>
-                            <th>Labels</th>
-                            <th class="sortable-th" onclick="AlertFeeds.toggleSort('exec_time')">Exec Time${this.sortIndicator('exec_time')}</th>
-                            <th class="sortable-th" onclick="AlertFeeds.toggleSort('last_triggered')">Last Triggered${this.sortIndicator('last_triggered')}</th>
-                        </tr>
+                        <tr>${AlertList.renderColumns(cols, {
+                            onSort: 'AlertFeeds.toggleSort',
+                            sortColumn: this.sortColumn,
+                            sortDirection: this.sortDirection
+                        })}</tr>
                     </thead>
-                    <tbody>`;
-
-        for (const alert of pageAlerts) {
-            const isAutoDisabled = !alert.enabled && alert.disabled_reason;
-            const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
-            const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
-            const lastTriggered = alert.last_triggered
-                ? TZ.format(alert.last_triggered, 'friendly')
-                : 'Never';
-            const lastRunTime = alert.last_execution_time_ms != null
-                ? (alert.last_execution_time_ms >= 1000
-                    ? `${(alert.last_execution_time_ms / 1000).toFixed(1)}s`
-                    : `${alert.last_execution_time_ms}ms`)
-                : '-';
-            const runTimeClass = alert.last_execution_time_ms != null && alert.last_execution_time_ms >= 3000
-                ? 'alert-run-time-slow' : '';
-            const feedName = alert.feed_name || 'Unknown';
-            const severity = this.getAlertSeverity(alert);
-            const displayLabels = this.getDisplayLabels(alert);
-
-            // Severity badge
-            const severityHtml = severity
-                ? `<span class="severity-pill severity-${severity}" onclick="event.stopPropagation(); AlertFeeds.setSeverityFilter('${severity}')" title="Filter by ${severity}">${severity}</span>`
-                : '<span class="text-muted">-</span>';
-
-            // Label pills (show max 3, with overflow count)
-            const maxLabels = 3;
-            let labelsHtml = '';
-            if (displayLabels.length > 0) {
-                const shown = displayLabels.slice(0, maxLabels);
-                labelsHtml = shown.map(l =>
-                    `<span class="label-pill" style="--chip-color:${Utils.tagColorFor(l)}" onclick="event.stopPropagation(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="${Utils.escapeHtml(l)}">${Utils.escapeHtml(this.truncateLabel(l))}</span>`
-                ).join('');
-                if (displayLabels.length > maxLabels) {
-                    labelsHtml += `<span class="label-pill label-pill-more" title="${Utils.escapeHtml(displayLabels.slice(maxLabels).join(', '))}">+${displayLabels.length - maxLabels}</span>`;
-                }
-            } else {
-                labelsHtml = '<span class="text-muted">-</span>';
-            }
-
-            html += `
-                        <tr class="alert-row ${statusClass}" data-alert-id="${alert.id}">
-                            <td class="alert-name">
-                                <div class="alert-name-row">
-                                    <span class="status-dot status-${statusClass}" title="${statusText}"></span>
-                                    <strong>${Utils.escapeHtml(alert.name)}</strong>
-                                    ${isAutoDisabled ? '<span class="alert-auto-disabled-badge">timeout</span>' : ''}
-                                </div>
-                                ${alert.description ? `<div class="alert-description-preview">${Utils.escapeHtml(alert.description.substring(0, 60))}${alert.description.length > 60 ? '...' : ''}</div>` : ''}
-                            </td>
-                            <td><span class="feed-badge-sm">${Utils.escapeHtml(feedName)}</span></td>
-                            <td class="alert-severity-cell">${severityHtml}</td>
-                            <td class="alert-labels-cell">${labelsHtml}</td>
-                            <td class="alert-run-time ${runTimeClass}">${lastRunTime}</td>
-                            <td class="alert-triggered">${lastTriggered}</td>
-                        </tr>`;
-        }
-
-        html += `
-                    </tbody>
+                    <tbody>${rows}</tbody>
                 </table>
-                ${this.renderPagination()}
+                ${AlertList.renderPagination({
+                    current: this.alertsPage,
+                    totalPages: Math.max(1, Math.ceil(this.total / this.alertsPerPage)),
+                    onPage: 'AlertFeeds.goToPage'
+                })}
             </div>`;
 
-        container.innerHTML = html;
         this.addRowClickHandlers();
+        this.restoreDetailPanel();
     },
 
     truncateLabel(label) {
@@ -502,15 +443,11 @@ const AlertFeeds = {
         });
     },
 
-    renderPagination() {
+    goToPage(page) {
         const totalPages = Math.max(1, Math.ceil(this.total / this.alertsPerPage));
-
-        return `
-            <div class="alerts-pagination">
-                <button class="btn-secondary btn-sm" ${this.alertsPage <= 1 ? 'disabled' : ''} onclick="AlertFeeds.feedAlertsPrevPage()">Previous</button>
-                <span class="pagination-info">Page ${this.alertsPage} of ${totalPages} (${this.total} alerts)</span>
-                <button class="btn-secondary btn-sm" ${this.alertsPage >= totalPages ? 'disabled' : ''} onclick="AlertFeeds.feedAlertsNextPage()">Next</button>
-            </div>`;
+        if (page < 1 || page > totalPages || page === this.alertsPage) return;
+        this.alertsPage = page;
+        this.loadFeedAlerts({ facets: false, showLoading: false });
     },
 
     changePageSize(size) {
@@ -519,18 +456,14 @@ const AlertFeeds = {
         this.loadFeedAlerts({ facets: false, showLoading: false });
     },
 
-    feedAlertsPrevPage() {
-        if (this.alertsPage > 1) {
-            this.alertsPage--;
-            this.loadFeedAlerts({ facets: false, showLoading: false });
+    clearFilters() {
+        const search = document.getElementById('feedAlertSearch');
+        if (search) search.value = '';
+        for (const id of ['feedAlertStatusFilter', 'feedAlertFeedFilter', 'feedAlertSeverityFilter', 'feedAlertLabelFilter']) {
+            const el = document.getElementById(id);
+            if (el) el.value = 'all';
         }
-    },
-
-    feedAlertsNextPage() {
-        if (this.alertsPage < Math.ceil(this.total / this.alertsPerPage)) {
-            this.alertsPage++;
-            this.loadFeedAlerts({ facets: false, showLoading: false });
-        }
+        this.applyFilterNow();
     },
 
     // ============================
@@ -606,121 +539,101 @@ const AlertFeeds = {
         const panel = document.getElementById('feedAlertDetailsPanel');
         const title = document.getElementById('feedAlertDetailsTitle');
         const content = document.getElementById('feedAlertDetailsContent');
+        const footer = document.getElementById('feedAlertDetailsFooter');
         if (!panel || !title || !content) return;
 
-        window.App?.pushSubPath(alert.id);
+        if (this.currentDetailAlert?.id !== alert.id) {
+            window.App?.pushSubPath(alert.id);
+        }
         title.textContent = alert.name;
+        title.title = alert.name;
         this.currentDetailAlert = alert;
 
         const feedNames = {};
         for (const f of this.feeds) feedNames[f.id] = f.name;
         const feedName = feedNames[alert.feed_id] || 'Unknown';
 
-        const isAutoDisabled = !alert.enabled && alert.disabled_reason;
-        const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
-        const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
-        const lastTriggered = alert.last_triggered
-            ? TZ.format(alert.last_triggered, 'friendly')
-            : 'Never';
+        content.innerHTML = AlertDetail.renderBody(alert, {
+            metaExtra: [{
+                label: 'Feed',
+                html: `<span class="feed-badge-sm">${Utils.escapeHtml(feedName)}</span>`
+            }],
+            labels: this.getDisplayLabels(alert),
+            renderLabel: l => `<span class="label-pill label-pill-detail" style="--chip-color:${Utils.tagColorFor(l)}" onclick="AlertFeeds.closeDetailsPanel(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="Filter by this label">${Utils.escapeHtml(l)}</span>`,
+            blocks: alert.feed_rule_path ? [{
+                label: 'Rule Path',
+                html: `<div class="feed-rule-path">${Utils.escapeHtml(alert.feed_rule_path)}</div>`
+            }] : []
+        });
+        content.scrollTop = 0;
 
-        const severity = this.getAlertSeverity(alert);
-        const displayLabels = this.getDisplayLabels(alert);
+        if (footer) {
+            footer.innerHTML = `
+                <button onclick="AlertFeeds.editFromPanel()" class="btn-primary">Edit</button>
+                <button onclick="AlertFeeds.toggleCurrentAlert()" class="btn-secondary">${alert.enabled ? 'Disable' : 'Enable'}</button>
+                <button onclick="Alerts.exportYAML('${alert.id}')" class="btn-secondary">Export YAML</button>
+            `;
+        }
 
-        content.innerHTML = `
-            <div class="alert-details-section">
-                ${isAutoDisabled ? `
-                    <div class="alert-auto-disabled-banner">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                            <line x1="12" y1="9" x2="12" y2="13"/>
-                            <line x1="12" y1="17" x2="12.01" y2="17"/>
-                        </svg>
-                        <span>${Utils.escapeHtml(alert.disabled_reason)}</span>
-                    </div>
-                ` : ''}
-
-                <div class="alert-detail-field">
-                    <label>Status:</label>
-                    <span class="status-badge status-${statusClass}">${statusText}</span>
-                </div>
-
-                <div class="alert-detail-field">
-                    <label>Feed:</label>
-                    <span class="feed-badge-sm">${Utils.escapeHtml(feedName)}</span>
-                </div>
-
-                ${severity ? `
-                    <div class="alert-detail-field">
-                        <label>Severity:</label>
-                        <span class="severity-pill severity-${severity}">${severity}</span>
-                    </div>
-                ` : ''}
-
-                <div class="alert-detail-field">
-                    <label>Query:</label>
-                    <pre class="alert-query-display"><code>${Utils.escapeHtml(alert.query_string)}</code></pre>
-                </div>
-
-                ${alert.description ? `
-                    <div class="alert-detail-field">
-                        <label>Description:</label>
-                        <p>${Utils.escapeHtml(alert.description)}</p>
-                    </div>
-                ` : ''}
-
-                ${displayLabels.length > 0 ? `
-                    <div class="alert-detail-field">
-                        <label>Labels:</label>
-                        <div class="alert-labels">
-                            ${displayLabels.map(l => `<span class="label-pill label-pill-detail" style="--chip-color:${Utils.tagColorFor(l)}" onclick="AlertFeeds.closeDetailsPanel(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="Filter by this label">${Utils.escapeHtml(l)}</span>`).join('')}
-                        </div>
-                    </div>
-                ` : ''}
-
-                ${alert.references && alert.references.length > 0 ? `
-                    <div class="alert-detail-field">
-                        <label>References:</label>
-                        <ul class="alert-references">
-                            ${alert.references.map(ref => `<li><a href="${Utils.escapeHtml(ref)}" target="_blank" rel="noopener noreferrer" class="alert-reference-link">${Utils.escapeHtml(ref)}</a></li>`).join('')}
-                        </ul>
-                    </div>
-                ` : ''}
-
-                ${alert.feed_rule_path ? `
-                    <div class="alert-detail-field">
-                        <label>Rule Path:</label>
-                        <span style="font-family: var(--font-mono); font-size: 0.8rem;">${Utils.escapeHtml(alert.feed_rule_path)}</span>
-                    </div>
-                ` : ''}
-
-                <div class="alert-detail-field">
-                    <label>Created:</label>
-                    <span>${TZ.format(alert.created_at, 'friendly')}</span>
-                </div>
-
-                <div class="alert-detail-field">
-                    <label>Last Triggered:</label>
-                    <span>${lastTriggered}</span>
-                </div>
-            </div>
-
-            <div class="alert-details-actions">
-                <button onclick="AlertFeeds.editFromPanel()" class="btn-primary">
-                    Edit Alert
-                </button>
-                <button onclick="AlertFeeds.toggleCurrentAlert()" class="btn-secondary">
-                    ${alert.enabled ? 'Disable' : 'Enable'}
-                </button>
-            </div>
-        `;
-
+        AlertDetail.applyWidth(panel);
+        AlertDetail.startInset(panel);
+        AlertDetail.setupResize(panel);
+        AlertDetail.bindCopy(panel, alert);
         panel.classList.add('open');
 
-        // Close on Escape
-        this._detailEscHandler = (e) => {
-            if (e.key === 'Escape') this.closeDetailsPanel();
-        };
-        document.addEventListener('keydown', this._detailEscHandler);
+        AlertDetail.markSelectedRow(alert.id, document.getElementById('feedAlertsList'));
+        AlertDetail.loadActivity(panel, alert.id);
+        AlertDetail.bindKeys({
+            onClose: () => this.closeDetailsPanel(),
+            onMove: (d) => this.moveDetailSelection(d)
+        });
+    },
+
+    // Walks the current page, and crosses a page boundary by re-fetching and
+    // selecting the row at the far edge once the new page lands.
+    moveDetailSelection(delta) {
+        if (!this.currentDetailAlert) return;
+        const idx = this.alertRows.findIndex(r => r.id === this.currentDetailAlert.id);
+        if (idx === -1) return;
+
+        const next = idx + delta;
+        if (next >= 0 && next < this.alertRows.length) {
+            this.viewFeedAlert(this.alertRows[next].id);
+            return;
+        }
+
+        const totalPages = Math.ceil(this.total / this.alertsPerPage);
+        if (next < 0 && this.alertsPage > 1) {
+            this.alertsPage--;
+            this._pendingSelectEdge = 'last';
+            this.loadFeedAlerts({ showLoading: false });
+        } else if (next >= this.alertRows.length && this.alertsPage < totalPages) {
+            this.alertsPage++;
+            this._pendingSelectEdge = 'first';
+            this.loadFeedAlerts({ showLoading: false });
+        }
+    },
+
+    // The table markup owns the panel node, so a re-render destroys it. Called
+    // after every list render to put the selection and panel back.
+    restoreDetailPanel() {
+        const edge = this._pendingSelectEdge;
+        this._pendingSelectEdge = null;
+
+        if (edge) {
+            const row = edge === 'first' ? this.alertRows[0] : this.alertRows[this.alertRows.length - 1];
+            if (row) this.viewFeedAlert(row.id);
+            return;
+        }
+
+        const open = this.currentDetailAlert;
+        if (!open) return;
+        if (this.alertRows.some(r => r.id === open.id)) {
+            AlertDetail.markSelectedRow(open.id, document.getElementById('feedAlertsList'));
+        } else {
+            // Filtered or paged out from under the panel.
+            this.closeDetailsPanel(true);
+        }
     },
 
     closeDetailsPanel(silent = false) {
@@ -728,10 +641,10 @@ const AlertFeeds = {
         if (panel) panel.classList.remove('open');
         if (!silent) window.App?.pushSubPath('feeds');
         this.currentDetailAlert = null;
-        if (this._detailEscHandler) {
-            document.removeEventListener('keydown', this._detailEscHandler);
-            this._detailEscHandler = null;
-        }
+        this._pendingSelectEdge = null;
+        AlertDetail.markSelectedRow(null, document.getElementById('feedAlertsList'));
+        AlertDetail.stopInset();
+        AlertDetail.unbindKeys();
     },
 
     editFromPanel() {

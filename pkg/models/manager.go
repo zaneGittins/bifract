@@ -156,17 +156,19 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 		_ = json.Unmarshal(defRaw, &def)
 
 		tableName := chModelTableName(id)
-		if m.ch.Topology().DistributedTables {
+		distributed := m.ch.Topology().DistributedTables
+		if distributed {
 			tableName = chModelDistName(id)
 		}
 
 		result[name] = ModelInfo{
-			ID:         id,
-			TableName:  tableName,
-			ModelType:  ModelType(modelType),
-			MinSample:  def.MinSample,
-			TimeBucket: def.TimeBucket,
-			FractalID:  fractalID,
+			ID:          id,
+			TableName:   tableName,
+			ModelType:   ModelType(modelType),
+			MinSample:   def.MinSample,
+			TimeBucket:  def.TimeBucket,
+			FractalID:   fractalID,
+			Distributed: distributed,
 		}
 	}
 	return result, rows.Err()
@@ -209,17 +211,19 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 		}
 
 		tableName := chModelTableName(id)
-		if m.ch.Topology().DistributedTables {
+		distributed := m.ch.Topology().DistributedTables
+		if distributed {
 			tableName = chModelDistName(id)
 		}
 
 		result[name] = ModelInfo{
-			ID:         id,
-			TableName:  tableName,
-			ModelType:  ModelType(modelType),
-			MinSample:  def.MinSample,
-			TimeBucket: def.TimeBucket,
-			FractalID:  ownerFractalID,
+			ID:          id,
+			TableName:   tableName,
+			ModelType:   ModelType(modelType),
+			MinSample:   def.MinSample,
+			TimeBucket:  def.TimeBucket,
+			FractalID:   ownerFractalID,
+			Distributed: distributed,
 		}
 	}
 	return result, rows.Err()

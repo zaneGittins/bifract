@@ -145,6 +145,12 @@ type QueryPlan struct {
 	ModelLookupFields    []string // output field names added to outer SELECT
 	ModelLookupKeyExprs  []string // outer join-key expressions, projected as hidden _mlk_k<i> columns
 	ModelLookupKeyFields []string // the BQL field names behind ModelLookupKeyExprs (for error messages)
+	ModelLookupStrict    bool     // true (default) = INNER JOIN: keep only rows the model scored
+	ModelLookupPrefilter string   // strict-mode semi-join predicate pushed into the source scan
+	// ModelLookupPrefilterExact is set when the prefilter selects exactly the key set
+	// the JOIN matches, so the scan-level LIMIT may stay below the join.
+	ModelLookupPrefilterExact bool
+	ModelLookupGlobal         bool // model table is Distributed: emit GLOBAL IN/JOIN
 
 	// Table command tracking
 	HasTableCmd             bool
@@ -332,6 +338,15 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// before it does. Each wrapper takes the WHERE with it, so outerWhere is
 	// emptied once a wrapper has applied it.
 	rowSource := opts.EffectiveTableName()
+
+	// Strict mode's semi-join prefilter belongs in the scan's own WHERE: it is the
+	// only place the model's key set can prune granules through the skip indexes on
+	// the key sub-columns, and it turns the INNER JOIN above from a filter over
+	// every log in the range into a join over the rows that can possibly match.
+	if p.ModelLookupPrefilter != "" {
+		source.Layer.Where = append(source.Layer.Where, p.ModelLookupPrefilter)
+	}
+
 	whereSQL := ""
 	if len(source.Layer.Where) > 0 {
 		whereSQL = " WHERE " + strings.Join(source.Layer.Where, " AND ")
@@ -730,11 +745,12 @@ func (p *QueryPlan) validateJoinKeysSurviveAggregation(source *QueryStage, what 
 		what, strings.Join(missing, ", "), strings.Join(missing, ", "))
 }
 
-// wrapWithModelLookup wraps the outer query with a LEFT JOIN against the model
-// scoring subquery. The outer query projects the join keys as hidden `_mlk_k<i>`
-// columns (see renderStandard); the JOIN ON matches them against the model side and
-// they are dropped from the result via `EXCEPT`, so only the original columns plus
-// the model output fields are returned.
+// wrapWithModelLookup wraps the outer query with a JOIN against the model scoring
+// subquery: INNER in strict mode (the default, keeping only scored rows), LEFT when
+// the query opted out with strict=false. The outer query projects the join keys as
+// hidden `_mlk_k<i>` columns (see renderStandard); the ON matches them against the
+// model side and they are dropped from the result via `EXCEPT`, so only the original
+// columns plus the model output fields are returned.
 func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
 	var b strings.Builder
 	b.WriteString("SELECT _outer.*")
@@ -750,7 +766,19 @@ func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
 	}
 	b.WriteString(" FROM (")
 	b.WriteString(outerSQL)
-	b.WriteString(") AS _outer LEFT JOIN (")
+	b.WriteString(") AS _outer ")
+	if p.ModelLookupGlobal {
+		// The model table is Distributed and so is the left side. Without GLOBAL,
+		// ClickHouse refuses the double-distributed subquery outright
+		// (distributed_product_mode='deny', code 288); with it the initiator reads
+		// the model across every shard once and ships that result to the shards.
+		b.WriteString("GLOBAL ")
+	}
+	if p.ModelLookupStrict {
+		b.WriteString("INNER JOIN (")
+	} else {
+		b.WriteString("LEFT JOIN (")
+	}
 	b.WriteString(p.ModelLookupSQL)
 	b.WriteString(") AS _mlookup ON ")
 	b.WriteString(p.ModelLookupOn)

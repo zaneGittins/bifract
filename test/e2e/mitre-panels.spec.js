@@ -5,31 +5,20 @@
 // falls back to a table still looks like a working dashboard, so these drive the
 // real widgets end to end.
 const { test, expect } = require('@playwright/test');
+const { login, populatedFractal, selectFractal, openFractal } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
 const QUERY = '* | mitre(tags=rule_tags, by=computer_name)';
 
-// Scope is session state (the fractal selector POSTs /select), not a header, so
-// the fixtures select the fractal exactly the way the UI does before creating
-// anything under it.
-async function loginAndSelectFractal(page) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-
-  const body = await (await page.request.get('/api/v1/fractals')).json();
-  const fractals = body.data.fractals || body.data;
-  expect(fractals.length, 'no fractal to test against').toBeGreaterThan(0);
-
-  await page.request.post(`/api/v1/fractals/${fractals[0].id}/select`);
-  return fractals[0].id;
-}
-
-async function openFractal(page, tabButtonId) {
-  await page.goto('/');
-  await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-  await page.locator('.fractal-listing-table tbody tr td').first().click();
-  await page.locator(`#${tabButtonId}`).click();
+// A panel can only be asserted against events carrying attack.* tags, so the
+// fixture is probed and the test skips rather than waiting 30s for a cell that
+// can never render. Scope is session state (the fractal selector POSTs
+// /select), not a header, so the fractal is selected the way the UI does it
+// before anything is created under it.
+async function mitreFractal(page) {
+  await login(page);
+  const fractal = await populatedFractal(page, QUERY);
+  if (fractal) await selectFractal(page, fractal.id);
+  return fractal;
 }
 
 // Each test runs a real ClickHouse aggregation over the fractal, so the budget
@@ -39,7 +28,8 @@ test.describe.configure({ timeout: 90000 });
 
 test.describe('ATT&CK matrix panels', () => {
   test('renders inside a dashboard widget, observed-only by default', async ({ page }) => {
-    await loginAndSelectFractal(page);
+    const fractal = await mitreFractal(page);
+    test.skip(!fractal, 'no fractal on this stack has events carrying attack.* tags');
 
     const dash = await (await page.request.post('/api/v1/dashboards', {
       data: { name: `e2e mitre ${Date.now()}`, time_range_type: 'last24h' },
@@ -52,7 +42,7 @@ test.describe('ATT&CK matrix panels', () => {
     })).json();
     expect(widget.success, `widget create failed: ${JSON.stringify(widget)}`).toBeTruthy();
 
-    await openFractal(page, 'fractalDashboardsTabBtn');
+    await openFractal(page, 'fractalDashboardsTabBtn', fractal.name);
     await page.evaluate(id => window.Dashboards.openDashboard(id), dashboardId);
 
     // Observed-only drops whole columns, so the assertion targets a surviving one.
@@ -78,7 +68,8 @@ test.describe('ATT&CK matrix panels', () => {
   });
 
   test('renders inside a notebook section', async ({ page }) => {
-    await loginAndSelectFractal(page);
+    const fractal = await mitreFractal(page);
+    test.skip(!fractal, 'no fractal on this stack has events carrying attack.* tags');
 
     const nb = await (await page.request.post('/api/v1/notebooks', {
       data: { name: `e2e mitre ${Date.now()}`, description: 'matrix panel', time_range_type: '24h' },
@@ -91,7 +82,7 @@ test.describe('ATT&CK matrix panels', () => {
     })).json();
     expect(section.success, `section create failed: ${JSON.stringify(section)}`).toBeTruthy();
 
-    await openFractal(page, 'fractalNotebooksTabBtn');
+    await openFractal(page, 'fractalNotebooksTabBtn', fractal.name);
     await page.evaluate(id => window.Notebooks.openNotebook(id), notebookId);
 
     const run = page.locator('.execute-query-btn').first();

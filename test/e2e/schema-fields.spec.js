@@ -6,18 +6,8 @@
 // rule outranks the UA stylesheet's `display: none` for [hidden]. Only a real
 // layout engine can catch that.
 const { test, expect } = require('@playwright/test');
+const { login } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
-async function login(page) {
-  const res = await page.request.post('/api/v1/auth/login', {
-    data: { username: USER, password: PASS },
-  });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-  const body = await res.json();
-  expect(body.success, `login rejected: ${JSON.stringify(body)}`).toBeTruthy();
-}
 
 async function openSchemaTab(page) {
   await login(page);
@@ -57,7 +47,7 @@ test.describe('Schema Fields', () => {
 
     await expect(bar).toBeVisible();
     await expect(page.locator('#schemaBulkN')).toContainText('1 field selected');
-    await expect(page.locator('#schemaBulkImpact')).toContainText('Capacity');
+    await expect(page.locator('#schemaBulkImpact')).toContainText('Dynamic columns');
 
     await page.locator('#schemaBulkClear').click();
     await expect(bar).toBeHidden();
@@ -92,8 +82,10 @@ test.describe('Schema Fields', () => {
     const checked = await span.evaluate(el => getComputedStyle(el).backgroundColor);
     expect(checked, 'checked state must change the box fill').not.toBe(unchecked);
 
-    // A white box on the dark theme was the original complaint.
-    if (testInfo.project.name === 'dark') {
+    // A white box on the dark theme was the original complaint. Keyed off the
+    // scheme rather than the project name, so renaming a project cannot quietly
+    // stop this from running.
+    if (testInfo.project.use.colorScheme === 'dark') {
       const [r, g, b] = unchecked.match(/\d+/g).map(Number);
       expect(r + g + b, `unchecked box is near-white on dark: ${unchecked}`).toBeLessThan(300);
     }

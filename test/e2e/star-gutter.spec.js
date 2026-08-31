@@ -7,23 +7,12 @@
 // shows that. The reveal-on-hover behaviour and the "absent until the scope uses
 // notebooks" rule are likewise not checkable from the markup alone.
 const { test, expect } = require('@playwright/test');
-
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
-async function login(page) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-  const body = await res.json();
-  expect(body.success, `login rejected: ${JSON.stringify(body)}`).toBeTruthy();
-}
+const { login, scopeHeader, openSearchByClick, rerunAllTime } = require('./fixtures');
 
 // The scope the page is currently on, for API calls made outside the page's own
 // fetch (which is what stamps the scope header).
 async function currentScope(page) {
-  const id = await page.evaluate(() => window.FractalContext && FractalContext.currentFractal && FractalContext.currentFractal.id);
-  const isPrism = await page.evaluate(() => window.FractalContext && FractalContext.isPrism && FractalContext.isPrism());
-  return { header: { 'X-Bifract-Scope': `${isPrism ? 'prism' : 'fractal'}:${id}` } };
+  return { header: await scopeHeader(page) };
 }
 
 // Pick a notebook to capture into, for the tests that are not about what happens
@@ -49,42 +38,25 @@ async function ensureActiveNotebook(page) {
   return id;
 }
 
-// The first fractal that holds at least one log, so the table has rows to star.
-async function openSearchOnPopulatedFractal(page) {
-  await page.goto('/');
-  await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-
-  const rows = page.locator('.fractal-listing-table tbody tr');
-  const count = await rows.count();
-  for (let i = 0; i < count; i++) {
-    await rows.nth(i).locator('td').first().click();
-    await page.locator('#fractalSearchTabBtn').click();
-    await page.locator('#queryInput').waitFor({ timeout: 15000 });
-
-    await page.locator('#timePickerBtn').click();
-    await page.locator('#timePickerPanel .tp-preset[data-value="all"]').click();
-    await page.locator('#queryInput').fill('*');
-    await page.locator('#executeBtn').click();
-
-    const firstRow = page.locator('#resultsTable .result-row').first();
-    if (await firstRow.isVisible({ timeout: 20000 }).catch(() => false)) return true;
-
-    await page.goto('/');
-    await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-  }
-  return false;
+// The gutter is opt-in: it appears only once a scope has used notebooks or
+// comments. A test about how the gutter renders has to establish that itself,
+// or it silently skips on a clean fractal and proves nothing.
+async function openWithGutter(page) {
+  if (!await openSearchByClick(page)) return null;
+  await ensureActiveNotebook(page);
+  return openSearchByClick(page);
 }
 
 test.describe('star gutter', () => {
   test('is a real column that keeps the table aligned', async ({ page }) => {
     await login(page);
-    expect(await openSearchOnPopulatedFractal(page), 'no fractal with logs').toBeTruthy();
+    test.skip(!await openWithGutter(page), 'no fractal on this stack holds logs');
 
     const table = page.locator('#resultsTable table.results-table');
     await expect(table).toBeVisible();
 
     const hasGutter = await table.evaluate(t => t.classList.contains('has-gutter'));
-    test.skip(!hasGutter, 'scope has no notebooks or comments, so the gutter is correctly absent');
+    expect(hasGutter, 'a scope with a notebook must render the gutter').toBeTruthy();
 
     // One <col> per <th>, or resizing drags the wrong column.
     const counts = await table.evaluate(t => ({
@@ -110,11 +82,11 @@ test.describe('star gutter', () => {
 
   test('reveals on hover and stays put', async ({ page }) => {
     await login(page);
-    expect(await openSearchOnPopulatedFractal(page), 'no fractal with logs').toBeTruthy();
+    test.skip(!await openWithGutter(page), 'no fractal on this stack holds logs');
 
     const table = page.locator('#resultsTable table.results-table');
     const hasGutter = await table.evaluate(t => t.classList.contains('has-gutter'));
-    test.skip(!hasGutter, 'scope has no notebooks or comments');
+    expect(hasGutter, 'a scope with a notebook must render the gutter').toBeTruthy();
 
     const row = page.locator('#resultsTable .result-row').first();
     const star = row.locator('.sg-star');
@@ -133,17 +105,15 @@ test.describe('star gutter', () => {
 
   test('stars and unstars a row', async ({ page }) => {
     await login(page);
-    expect(await openSearchOnPopulatedFractal(page), 'no fractal with logs').toBeTruthy();
+    test.skip(!await openWithGutter(page), 'no fractal on this stack holds logs');
 
     const table = page.locator('#resultsTable table.results-table');
     const hasGutter = await table.evaluate(t => t.classList.contains('has-gutter'));
-    test.skip(!hasGutter, 'scope has no notebooks or comments');
+    expect(hasGutter, 'a scope with a notebook must render the gutter').toBeTruthy();
 
     await ensureActiveNotebook(page);
     await page.reload();
-    await page.locator('#queryInput').waitFor({ timeout: 15000 });
-    await page.locator('#executeBtn').click();
-    await page.locator('#resultsTable .result-row').first().waitFor({ timeout: 20000 });
+    await rerunAllTime(page);
 
     const row = page.locator('#resultsTable .result-row').first();
     const star = row.locator('.sg-star');
@@ -151,16 +121,20 @@ test.describe('star gutter', () => {
     test.skip(await star.evaluate(el => el.getAttribute('aria-pressed')) === 'true', 'row already starred');
 
     const logId = await star.getAttribute('data-log-id');
+    const commentCount = async () => {
+      const res = await page.request.get(`/api/v1/logs/${logId}/comments`);
+      return ((await res.json()).data || []).length;
+    };
+    // A log can already carry comments from other work in this fractal, so what
+    // is asserted is what starring adds and unstarring takes back.
+    const before = await commentCount();
+
     await row.hover();
     await star.click();
 
     // Starring writes a comment, which is what makes the row visible to the
     // comments tab and to comments(). The star is meaningless if that is missing.
-    await expect.poll(async () => {
-      const res = await page.request.get(`/api/v1/logs/${logId}/comments`);
-      const body = await res.json();
-      return (body.data || []).length;
-    }, { timeout: 10000 }).toBeGreaterThan(0);
+    await expect.poll(commentCount, { timeout: 10000 }).toBe(before + 1);
 
     await expect(row).toHaveClass(/starred/);
     await expect(star).toHaveAttribute('aria-pressed', 'true');
@@ -173,11 +147,7 @@ test.describe('star gutter', () => {
     await star.click();
     await expect(star).toHaveAttribute('aria-pressed', 'false', { timeout: 10000 });
     await expect(row).not.toHaveClass(/starred/);
-    await expect.poll(async () => {
-      const res = await page.request.get(`/api/v1/logs/${logId}/comments`);
-      const body = await res.json();
-      return (body.data || []).length;
-    }, { timeout: 10000 }).toBe(0);
+    await expect.poll(commentCount, { timeout: 10000 }).toBe(before);
   });
 
   test('is absent in a scope that has never used notebooks or comments', async ({ page }) => {
@@ -207,17 +177,15 @@ test.describe('star gutter', () => {
   // load path, and that only ran when the rail was showing.
   test('a starred row is still starred after a reload with the rail closed', async ({ page }) => {
     await login(page);
-    expect(await openSearchOnPopulatedFractal(page), 'no fractal with logs').toBeTruthy();
+    test.skip(!await openWithGutter(page), 'no fractal on this stack holds logs');
 
     const table = page.locator('#resultsTable table.results-table');
     const hasGutter = await table.evaluate(t => t.classList.contains('has-gutter'));
-    test.skip(!hasGutter, 'scope has no notebooks or comments');
+    expect(hasGutter, 'a scope with a notebook must render the gutter').toBeTruthy();
 
     const notebookId = await ensureActiveNotebook(page);
     await page.reload();
-    await page.locator('#queryInput').waitFor({ timeout: 15000 });
-    await page.locator('#executeBtn').click();
-    await page.locator('#resultsTable .result-row').first().waitFor({ timeout: 20000 });
+    await rerunAllTime(page);
 
     const row = page.locator('#resultsTable .result-row').first();
     const star = row.locator('.sg-star');
@@ -232,9 +200,7 @@ test.describe('star gutter', () => {
     const { header } = await currentScope(page);
     try {
       await page.reload();
-      await page.locator('#queryInput').waitFor({ timeout: 15000 });
-      await page.locator('#executeBtn').click();
-      await page.locator('#resultsTable .result-row').first().waitFor({ timeout: 20000 });
+      await rerunAllTime(page);
 
       // The rail is closed here, which is the normal state. Its markup still
       // exists; what matters is that nothing opened the panel.
@@ -251,14 +217,12 @@ test.describe('star gutter', () => {
   // something, which is the whole reason the scratch notebook exists.
   test('starring with no notebook chosen opens one', async ({ page }) => {
     await login(page);
-    expect(await openSearchOnPopulatedFractal(page), 'no fractal with logs').toBeTruthy();
+    test.skip(!await openWithGutter(page), 'no fractal on this stack holds logs');
 
     const { header } = await currentScope(page);
     await page.request.put('/api/v1/notebooks/active', { headers: header, data: { notebook_id: '' } });
     await page.reload();
-    await page.locator('#queryInput').waitFor({ timeout: 15000 });
-    await page.locator('#executeBtn').click();
-    await page.locator('#resultsTable .result-row').first().waitFor({ timeout: 20000 });
+    await rerunAllTime(page);
 
     const row = page.locator('#resultsTable .result-row').first();
     const star = row.locator('.sg-star');

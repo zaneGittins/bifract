@@ -135,12 +135,13 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 			modelInfos = make(map[string]parser.AnalyticsModelInfo, len(infos))
 			for name, mi := range infos {
 				modelInfos[name] = parser.AnalyticsModelInfo{
-					ID:         mi.ID,
-					TableName:  mi.TableName,
-					ModelType:  string(mi.ModelType),
-					MinSample:  mi.MinSample,
-					TimeBucket: mi.TimeBucket,
-					FractalID:  mi.FractalID,
+					ID:          mi.ID,
+					TableName:   mi.TableName,
+					ModelType:   string(mi.ModelType),
+					MinSample:   mi.MinSample,
+					TimeBucket:  mi.TimeBucket,
+					FractalID:   mi.FractalID,
+					Distributed: mi.Distributed,
 				}
 			}
 		}

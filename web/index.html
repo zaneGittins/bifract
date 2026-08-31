@@ -2323,10 +2323,21 @@
                     <select id="alertActionFilter" class="alerts-filter-select">
                         <option value="all">All Actions</option>
                     </select>
+                    <select id="alertSeverityFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
+                        <option value="all">All Severities</option>
+                        <option value="critical">Critical</option>
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                        <option value="informational">Informational</option>
+                    </select>
+                    <select id="alertLabelFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
+                        <option value="all">All Labels</option>
+                    </select>
                     <button id="alertsBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkEnableFiltered()">Enable Filtered</button>
                     <button id="alertsBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkDisableFiltered()">Disable Filtered</button>
-                    <button id="alertsRefreshBtn" class="btn-secondary">Refresh</button>
                     <span class="filters-spacer"></span>
+                    <button id="alertsRefreshBtn" class="btn-secondary">Refresh</button>
                     <button id="importYamlBtn" class="btn-primary">Import YAML</button>
                     <button id="createAlertBtn" class="btn-primary">Create Alert</button>
                 </div>
@@ -2387,9 +2398,13 @@
 
                     <!-- Feed Alert Details Panel (slides in from right) -->
                     <div id="feedAlertDetailsPanel" class="alert-details-panel">
+                        <div class="alert-details-resize" title="Drag to resize"></div>
                         <div class="alert-details-header">
                             <h3 id="feedAlertDetailsTitle">Alert Details</h3>
-                            <button onclick="AlertFeeds.closeDetailsPanel()" class="btn-icon">
+                            <span class="alert-details-navhint" title="Move between alerts">
+                                <kbd>&uarr;</kbd><kbd>&darr;</kbd>
+                            </span>
+                            <button onclick="AlertFeeds.closeDetailsPanel()" class="btn-icon" title="Close (Esc)">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <line x1="18" y1="6" x2="6" y2="18"></line>
                                     <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -2398,6 +2413,7 @@
                         </div>
                         <div id="feedAlertDetailsContent" class="alert-details-content">
                         </div>
+                        <div id="feedAlertDetailsFooter" class="alert-details-actions"></div>
                     </div>
                 </div>
             </section>
@@ -4226,6 +4242,8 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/settingsView.js"></script>
     <script src="/static/groupsView.js"></script>
     <script src="/static/performance.js"></script>
+    <script src="/static/alertDetail.js"></script>
+    <script src="/static/alertList.js"></script>
     <script src="/static/alerts.js"></script>
     <script src="/static/alertFeeds.js"></script>
     <script src="/static/attackCoverage.js"></script>

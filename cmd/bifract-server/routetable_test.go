@@ -39,6 +39,7 @@ var routeTable = []string{
 	"DELETE /api/v1/alerts/{id} 9 auth analyst",
 	"GET /api/v1/alerts/{id} 9 auth resp viewer",
 	"PUT /api/v1/alerts/{id} 9 auth body resp analyst",
+	"GET /api/v1/alerts/{id}/activity 9 auth resp viewer",
 	"POST /api/v1/alerts/{id}/duplicate 9 auth resp viewer",
 	"GET /api/v1/alerts/{id}/executions 9 auth resp viewer",
 	"POST /api/v1/alerts/{id}/toggle-feed 9 auth body viewer",

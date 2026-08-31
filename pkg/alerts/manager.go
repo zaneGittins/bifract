@@ -2,7 +2,9 @@ package alerts
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -16,6 +18,10 @@ import (
 	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 )
+
+// ErrAlertNotFound distinguishes a missing alert from a failed lookup, so
+// handlers answer 404 rather than 500 for an id that simply does not exist.
+var ErrAlertNotFound = errors.New("alert not found")
 
 // Manager handles CRUD operations and YAML import/export for alerts and webhooks
 type Manager struct {
@@ -760,6 +766,9 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		&webhookActionsJSON, &fractalActionsJSON, &emailActionsJSON,
 	)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrAlertNotFound
+		}
 		return nil, fmt.Errorf("failed to get alert: %w", err)
 	}
 

@@ -314,6 +314,9 @@ type ModelInfo struct {
 	MinSample  int
 	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
 	FractalID  string
+	// Distributed is true when TableName is the cluster-mode Distributed table, which
+	// a query joining against it must reach with GLOBAL.
+	Distributed bool
 }
 
 type CreateRequest struct {

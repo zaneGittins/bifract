@@ -5,18 +5,8 @@
 // renders left because its lone child sits under `justify-content: space-between`,
 // and content width that jumps as you move between sub-tabs.
 const { test, expect } = require('@playwright/test');
+const { login } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
-async function login(page) {
-  const res = await page.request.post('/api/v1/auth/login', {
-    data: { username: USER, password: PASS },
-  });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-  const body = await res.json();
-  expect(body.success, `login rejected: ${JSON.stringify(body)}`).toBeTruthy();
-}
 
 async function openAdmin(page, subtab) {
   await login(page);
@@ -145,7 +135,9 @@ test.describe('Admin panels', () => {
 
   test('users search filters the table and reports an empty result', async ({ page }) => {
     await openAdmin(page, 'users');
-    await expect(page.locator('#usersListSettings table')).toBeVisible();
+    // First paint of the panel fetches the user list, which can outrun the
+    // default expect budget when the suite is running several specs at once.
+    await expect(page.locator('#usersListSettings table')).toBeVisible({ timeout: 15000 });
     const before = await page.locator('#usersListSettings tbody tr').count();
     expect(before).toBeGreaterThan(0);
 

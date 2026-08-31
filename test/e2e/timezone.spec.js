@@ -6,13 +6,12 @@
 // stored value really comes back from Postgres rather than from the browser
 // mirror, and that flipping the zone issues no new query.
 const { test, expect } = require('@playwright/test');
+const { login: signIn } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
+// These cases turn on the account's display zone, so signing in and setting it
+// is one step.
 async function login(page, zone) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
+  await signIn(page);
   await page.request.patch('/api/v1/auth/preferences', { data: { display_timezone: zone } });
 }
 
@@ -80,11 +79,23 @@ test('switching zones relabels the results in place and issues no query', async 
 });
 
 test('the stored log keeps its UTC value while the column is relabelled', async ({ page }) => {
-  await login(page, 'America/Denver');
+  // Read the row under UTC first: what the stored payload must still say is
+  // this row's UTC time, whatever format the source wrote it in. Asserting a
+  // literal "Z" instead only tested how the fixture happened to be generated.
+  await login(page, 'UTC');
   await openSearch(page);
-  const shown = (await page.locator('.results-table .timestamp-cell').first().textContent()).trim();
+  const cell = page.locator('.results-table .timestamp-cell').first();
+  const utcText = (await cell.textContent()).trim();
+
+  await pickZone(page, 'Denver');
+  const shown = (await cell.textContent()).trim();
+  expect(shown, 'the column must relabel when the zone changes').not.toBe(utcText);
+
+  // norm_log is the stored payload; relabelling the column must not rewrite it.
+  // Sources write the separator either way, so both forms count as the same
+  // instant: what matters is that the UTC value is still what is stored.
   const raw = await page.locator('.results-table .raw-log-col').first().textContent();
-  // norm_log is the stored payload; it must still read UTC.
-  expect(raw).toContain('Z');
+  const storedUTC = raw.includes(utcText) || raw.includes(utcText.replace(' ', 'T'));
+  expect(storedUTC, `stored payload does not carry ${utcText}: ${raw.slice(0, 200)}`).toBeTruthy();
   expect(raw).not.toContain(shown);
 });

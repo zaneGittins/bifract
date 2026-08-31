@@ -397,6 +397,9 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 	}
 
 	notebook.Timezone = storage.SafeTimezone(notebook.Timezone)
+	if sections == nil {
+		sections = []storage.NotebookSection{}
+	}
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
 		Data:    NotebookWithSections{Notebook: *notebook, Sections: sections},

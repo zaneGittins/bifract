@@ -8,46 +8,12 @@
 // be offered against the computed chronological order, where a drop would be
 // silently discarded.
 const { test, expect } = require('@playwright/test');
-
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
-async function login(page) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-  expect((await res.json()).success, 'login rejected').toBeTruthy();
-}
-
-async function scopeHeader(page) {
-  const id = await page.evaluate(() => FractalContext.currentFractal && FractalContext.currentFractal.id);
-  const isPrism = await page.evaluate(() => FractalContext.isPrism && FractalContext.isPrism());
-  return { 'X-Bifract-Scope': `${isPrism ? 'prism' : 'fractal'}:${id}` };
-}
+const { login, scopeHeader, openSearchByClick, rerunAllTime } = require('./fixtures');
 
 // Land on a fractal with logs, in a notebook of this test's own making so the
 // assertions do not depend on what else is in the fixture.
 async function openRailWithCaptures(page, count) {
-  await page.goto('/');
-  await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-
-  const rows = page.locator('.fractal-listing-table tbody tr');
-  let found = false;
-  for (let i = 0; i < await rows.count(); i++) {
-    await rows.nth(i).locator('td').first().click();
-    await page.locator('#fractalSearchTabBtn').click();
-    await page.locator('#queryInput').waitFor({ timeout: 15000 });
-    await page.locator('#timePickerBtn').click();
-    await page.locator('#timePickerPanel .tp-preset[data-value="all"]').click();
-    await page.locator('#queryInput').fill('*');
-    await page.locator('#executeBtn').click();
-    if (await page.locator('#resultsTable .result-row').first().isVisible({ timeout: 20000 }).catch(() => false)) {
-      found = true;
-      break;
-    }
-    await page.goto('/');
-    await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-  }
-  expect(found, 'no fractal with logs').toBeTruthy();
+  test.skip(!await openSearchByClick(page), 'no fractal on this stack holds logs');
 
   const headers = await scopeHeader(page);
   const made = await page.request.post('/api/v1/notebooks', {
@@ -59,9 +25,7 @@ async function openRailWithCaptures(page, count) {
   await page.request.put('/api/v1/notebooks/active', { headers, data: { notebook_id: notebookId } });
 
   await page.reload();
-  await page.locator('#queryInput').waitFor({ timeout: 15000 });
-  await page.locator('#executeBtn').click();
-  await page.locator('#resultsTable .result-row').first().waitFor({ timeout: 20000 });
+  await rerunAllTime(page);
 
   // The rail no longer forces itself open on every capture, so open it the same
   // way the reveal path does.
@@ -69,20 +33,33 @@ async function openRailWithCaptures(page, count) {
   await page.locator('#nbrName').waitFor({ timeout: 15000 });
 
   const starred = [];
+  // A log may already carry comments from other work in this fractal, so what
+  // this fixture records is the count before starring. Assertions are then
+  // about what the test itself added and removed, not about the log's history.
+  const baseline = {};
   const resultRows = page.locator('#resultsTable .result-row');
   for (let i = 0; starred.length < count && i < await resultRows.count(); i++) {
     const star = resultRows.nth(i).locator('.sg-star');
     if (await star.count() === 0) continue;
     if (await star.getAttribute('aria-pressed') === 'true') continue;
+
+    const logID = await star.getAttribute('data-log-id');
+    baseline[logID] = await commentCount(page, headers, logID);
+
     await resultRows.nth(i).hover();
     await star.click();
-    starred.push(await star.getAttribute('data-log-id'));
+    starred.push(logID);
     await expect(resultRows.nth(i)).toHaveClass(/starred/, { timeout: 10000 });
   }
   expect(starred.length, 'not enough rows to star').toBe(count);
 
   await expect(page.locator('#nbrList .nbr-row')).toHaveCount(count, { timeout: 10000 });
-  return { notebookId, headers, starred };
+  return { notebookId, headers, starred, baseline };
+}
+
+async function commentCount(page, headers, logID) {
+  const res = await page.request.get(`/api/v1/logs/${logID}/comments`, { headers });
+  return ((await res.json()).data || []).length;
 }
 
 test.describe('notebook rail', () => {
@@ -147,7 +124,7 @@ test.describe('notebook rail', () => {
         { timeout: 10000 }).toBe(before[1]);
 
       await page.reload();
-      await page.locator('#queryInput').waitFor({ timeout: 15000 });
+      await rerunAllTime(page);
       await page.evaluate(() => RailPanel.open('notebook'));
       await page.locator('#nbrName').waitFor({ timeout: 15000 });
       await page.locator('#nbrOrderToggle').click();
@@ -164,7 +141,7 @@ test.describe('notebook rail', () => {
 
   test('removes a capture from the rail, clearing its star', async ({ page }) => {
     await login(page);
-    const { notebookId, headers, starred } = await openRailWithCaptures(page, 1);
+    const { notebookId, headers, starred, baseline } = await openRailWithCaptures(page, 1);
 
     try {
       const row = page.locator('#nbrList .nbr-row').first();
@@ -175,10 +152,8 @@ test.describe('notebook rail', () => {
 
       // Removing an event that carried no written comment takes the star
       // comment with it, rather than leaving one nothing points at.
-      await expect.poll(async () => {
-        const res = await page.request.get(`/api/v1/logs/${starred[0]}/comments`, { headers });
-        return ((await res.json()).data || []).length;
-      }, { timeout: 10000 }).toBe(0);
+      await expect.poll(() => commentCount(page, headers, starred[0]), { timeout: 10000 })
+        .toBe(baseline[starred[0]]);
 
       const star = page.locator(`#resultsTable .sg-star[data-log-id="${starred[0]}"]`);
       await expect(star).toHaveAttribute('aria-pressed', 'false', { timeout: 10000 });

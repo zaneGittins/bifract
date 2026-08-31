@@ -350,10 +350,24 @@ const Alerts = {
         this.updateAlertCount();
         this.startPressurePolling();
 
-        if (subPath) {
-            const alert = this.alerts?.find(a => a.id === subPath);
-            if (alert) this.showAlertDetailsPanel(alert);
+        if (subPath) this.openAlertById(subPath);
+    },
+
+    // Opens a panel from outside the table (a deep link), landing on the page
+    // that holds the row so the selection is actually visible.
+    openAlertById(alertId) {
+        const list = this.filteredAlerts || [];
+        const idx = list.findIndex(a => a.id === alertId);
+        if (idx === -1) return;
+
+        const page = Math.floor(idx / this.alertsPageSize) + 1;
+        if (page !== this.alertsCurrentPage) {
+            this.currentDetailAlert = list[idx];
+            this.alertsCurrentPage = page;
+            this.updateAlertsTable();
+            return;
         }
+        this.showAlertDetailsPanel(list[idx]);
     },
 
     startPressurePolling() {
@@ -452,6 +466,10 @@ const Alerts = {
             return;
         }
 
+        // Replacing the list markup destroys the detail panel with it, so drop
+        // the geometry listeners bound to the old node.
+        AlertDetail.stopInset();
+
         const alertsHTML = this.renderAlertsTable(alerts);
         alertsList.innerHTML = alertsHTML;
 
@@ -460,6 +478,7 @@ const Alerts = {
         this.filteredAlerts = alerts;
         this.alertsCurrentPage = 1;
         this.buildActionFilterOptions();
+        this.buildLabelFilterOptions();
         this.addAlertTableClickHandlers();
         this.filterAlerts();
     },
@@ -541,125 +560,86 @@ const Alerts = {
         `;
     },
 
-    formatThrottleTime(seconds) {
-        if (seconds < 60) return `${seconds}s`;
-        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-        return `${Math.floor(seconds / 86400)}d`;
-    },
-
-    formatWindowDuration(seconds) {
-        if (!seconds) return '';
-        if (seconds % 86400 === 0) return `${seconds / 86400}d`;
-        if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-        return `${Math.round(seconds / 60)}m`;
-    },
-
-    formatCronSchedule(cronExpr) {
-        const presets = {
-            '0 * * * *': 'hourly',
-            '0 0 * * *': 'daily',
-            '0 0 * * 1': 'weekly',
-            '0 0 1 * *': 'monthly'
-        };
-        return presets[cronExpr] || cronExpr;
-    },
+    // Table badges and the detail panel share one set of formatters.
+    formatThrottleTime(seconds) { return AlertDetail.formatThrottle(seconds); },
+    formatWindowDuration(seconds) { return AlertDetail.formatWindow(seconds); },
+    formatCronSchedule(cronExpr) { return AlertDetail.formatCron(cronExpr); },
 
     renderAlertsTable(alerts) {
-        // Get current page of alerts
         const currentPageAlerts = this.getCurrentPageAlerts();
+        const cols = [
+            { key: 'name', label: 'Name', sortable: true },
+            { key: 'type', label: 'Type' },
+            { key: 'severity', label: 'Severity', sortable: true },
+            { key: 'labels', label: 'Labels' },
+            { key: 'exec_time', label: 'Exec Time', sortable: true },
+            { key: 'last_triggered', label: 'Last Triggered', sortable: true }
+        ];
 
         return `
             <div class="alerts-table-container">
-                <div class="alerts-table-header">
-                    <div class="alerts-count">
-                        Showing ${currentPageAlerts.length} of ${this.filteredAlerts.length} alerts
-                        ${this.filteredAlerts.length !== this.allAlerts?.length ? ` (filtered from ${this.allAlerts?.length} total)` : ''}
-                    </div>
-                    <div class="alerts-page-size">
-                        <label>Show:</label>
-                        <select id="alertsPageSizeSelect" onchange="Alerts.changePageSize(this.value)">
-                            <option value="10" ${this.alertsPageSize === 10 ? 'selected' : ''}>10</option>
-                            <option value="25" ${this.alertsPageSize === 25 ? 'selected' : ''}>25</option>
-                            <option value="50" ${this.alertsPageSize === 50 ? 'selected' : ''}>50</option>
-                            <option value="100" ${this.alertsPageSize === 100 ? 'selected' : ''}>100</option>
-                        </select>
-                    </div>
-                </div>
+                ${AlertList.renderTableHeader({
+                    shown: currentPageAlerts.length,
+                    total: this.filteredAlerts.length,
+                    unfiltered: this.allAlerts?.length,
+                    pageSize: this.alertsPageSize,
+                    onPageSize: 'Alerts.changePageSize'
+                })}
                 <table class="alerts-table">
                     <thead>
-                        <tr>
-                            <th class="sortable-th" onclick="Alerts.toggleAlertsSort('name')">Name${this.alertsSortIndicator('name')}</th>
-                            <th>Type</th>
-                            <th>Actions</th>
-                            <th>Last Modified By</th>
-                            <th class="sortable-th" onclick="Alerts.toggleAlertsSort('exec_time')">Exec Time${this.alertsSortIndicator('exec_time')}</th>
-                            <th class="sortable-th" onclick="Alerts.toggleAlertsSort('last_triggered')">Last Triggered${this.alertsSortIndicator('last_triggered')}</th>
-                        </tr>
+                        <tr>${AlertList.renderColumns(cols, {
+                            onSort: 'Alerts.toggleAlertsSort',
+                            sortColumn: this.alertsSortColumn,
+                            sortDirection: this.alertsSortDirection
+                        })}</tr>
                     </thead>
                     <tbody>
                         ${currentPageAlerts.map(alert => this.renderAlertTableRow(alert)).join('')}
                     </tbody>
                 </table>
-                ${this.renderAlertsPagination()}
+                ${AlertList.renderPagination({
+                    current: this.alertsCurrentPage,
+                    totalPages: this.getTotalPages(),
+                    onPage: 'Alerts.goToPage'
+                })}
             </div>
 
             <!-- Alert Details Panel -->
             <div id="alertDetailsPanel" class="alert-details-panel">
+                <div class="alert-details-resize" title="Drag to resize"></div>
                 <div class="alert-details-header">
                     <h3 id="alertDetailsTitle">Alert Details</h3>
-                    <button onclick="Alerts.closeAlertDetailsPanel()" class="btn-icon">
+                    <span class="alert-details-navhint" title="Move between alerts">
+                        <kbd>&uarr;</kbd><kbd>&darr;</kbd>
+                    </span>
+                    <button onclick="Alerts.closeAlertDetailsPanel()" class="btn-icon" title="Close (Esc)">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
                         </svg>
                     </button>
                 </div>
-                <div id="alertDetailsContent" class="alert-details-content">
-                    <!-- Alert details will be populated here -->
-                </div>
+                <div id="alertDetailsContent" class="alert-details-content"></div>
+                <div id="alertDetailsFooter" class="alert-details-actions"></div>
             </div>
         `;
     },
 
     renderAlertTableRow(alert) {
-        const isAutoDisabled = !alert.enabled && alert.disabled_reason;
-        const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
-        const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
-        const lastTriggered = alert.last_triggered
-            ? TZ.format(alert.last_triggered, 'friendly')
-            : 'Never';
+        let type = Utils.escapeHtml(alert.alert_type || 'event');
+        if (alert.alert_type === 'compound' && alert.window_duration) {
+            type += ` <span class="alert-window-badge">${this.formatWindowDuration(alert.window_duration)}</span>`;
+        } else if (alert.alert_type === 'scheduled' && alert.schedule_cron) {
+            type += ` <span class="alert-window-badge">${this.formatCronSchedule(alert.schedule_cron)}</span>`;
+        }
 
-        const modifiedBy = alert.updated_by || alert.created_by || '-';
-        const actionCount = (alert.webhook_actions?.length || 0)
-            + (alert.fractal_actions?.length || 0)
-            + (alert.dictionary_actions?.length || 0);
-
-        const lastRunTime = alert.last_execution_time_ms != null
-            ? (alert.last_execution_time_ms >= 1000
-                ? `${(alert.last_execution_time_ms / 1000).toFixed(1)}s`
-                : `${alert.last_execution_time_ms}ms`)
-            : '-';
-        const runTimeClass = alert.last_execution_time_ms != null && alert.last_execution_time_ms >= 3000
-            ? 'alert-run-time-slow' : '';
-
-        return `
-            <tr class="alert-row ${statusClass}" data-alert-id="${alert.id}">
-                <td class="alert-name">
-                    <div class="alert-name-row">
-                        <span class="status-dot status-${statusClass}" title="${statusText}"></span>
-                        <strong>${Utils.escapeHtml(alert.name)}</strong>
-                        ${isAutoDisabled ? '<span class="alert-auto-disabled-badge">timeout</span>' : ''}
-                    </div>
-                    ${alert.description ? `<div class="alert-description-preview">${Utils.escapeHtml(alert.description.substring(0, 60))}${alert.description.length > 60 ? '...' : ''}</div>` : ''}
-                </td>
-                <td class="alert-type">${Utils.escapeHtml(alert.alert_type || 'event')}${alert.alert_type === 'compound' && alert.window_duration ? ` <span class="alert-window-badge">${this.formatWindowDuration(alert.window_duration)}</span>` : ''}${alert.alert_type === 'scheduled' && alert.schedule_cron ? ` <span class="alert-window-badge">${this.formatCronSchedule(alert.schedule_cron)}</span>` : ''}</td>
-                <td class="alert-action-count">${actionCount}</td>
-                <td class="alert-modified-by">${Utils.escapeHtml(modifiedBy)}</td>
-                <td class="alert-run-time ${runTimeClass}">${lastRunTime}</td>
-                <td class="alert-triggered">${lastTriggered}</td>
-            </tr>
-        `;
+        return AlertList.renderRow(alert, [
+            `<td class="alert-type">${type}</td>`,
+            AlertList.severityCell(alert, 'Alerts.setSeverityFilter'),
+            AlertList.labelsCell(alert.labels, 'Alerts.setLabelFilter'),
+            AlertList.execTimeCell(alert),
+            AlertList.lastTriggeredCell(alert)
+        ]);
     },
 
     addAlertTableClickHandlers() {
@@ -679,150 +659,136 @@ const Alerts = {
         const panel = document.getElementById('alertDetailsPanel');
         const title = document.getElementById('alertDetailsTitle');
         const content = document.getElementById('alertDetailsContent');
+        const footer = document.getElementById('alertDetailsFooter');
 
         if (!panel || !title || !content) return;
 
-        window.App?.pushSubPath(alert.id);
+        // Re-opening for the same alert (a sort or page re-render rebuilt the
+        // table markup, and the panel with it) must not stack history entries.
+        if (this.currentDetailAlert?.id !== alert.id) {
+            window.App?.pushSubPath(alert.id);
+        }
         title.textContent = alert.name;
-        content.innerHTML = this.renderAlertDetails(alert);
+        title.title = alert.name;
+        content.innerHTML = AlertDetail.renderBody(alert);
+        if (footer) footer.innerHTML = this.renderDetailFooter(alert);
+        content.scrollTop = 0;
 
+        AlertDetail.applyWidth(panel);
+        AlertDetail.startInset(panel);
+        AlertDetail.setupResize(panel);
+        AlertDetail.bindCopy(panel, alert);
         panel.classList.add('open');
 
-        // Store current alert for actions
         this.currentDetailAlert = alert;
+        AlertDetail.markSelectedRow(alert.id, document.getElementById('alertsList'));
+        AlertDetail.loadActivity(panel, alert.id);
+        AlertDetail.bindKeys({
+            onClose: () => this.closeAlertDetailsPanel(),
+            onMove: (d) => this.moveDetailSelection(d)
+        });
+    },
 
-        // Close on Escape
-        this._detailEscHandler = (e) => {
-            if (e.key === 'Escape') this.closeAlertDetailsPanel();
-        };
-        document.addEventListener('keydown', this._detailEscHandler);
+    // Walks the filtered set, crossing page boundaries so the whole list is
+    // reachable from the keyboard.
+    moveDetailSelection(delta) {
+        if (!this.currentDetailAlert) return;
+        const page = this.getCurrentPageAlerts();
+        const idx = page.findIndex(a => a.id === this.currentDetailAlert.id);
+        if (idx === -1) return;
+
+        const next = idx + delta;
+        if (next >= 0 && next < page.length) {
+            this.showAlertDetailsPanel(page[next]);
+            return;
+        }
+
+        if (next < 0 && this.alertsCurrentPage > 1) {
+            this.alertsCurrentPage--;
+            this._pendingSelectEdge = 'last';
+            this.updateAlertsTable();
+        } else if (next >= page.length && this.alertsCurrentPage < this.getTotalPages()) {
+            this.alertsCurrentPage++;
+            this._pendingSelectEdge = 'first';
+            this.updateAlertsTable();
+        }
+    },
+
+    // The table markup owns the panel node, so any re-render destroys it.
+    // Re-open it for the same alert when that alert survived the re-render.
+    restoreDetailPanel() {
+        const edge = this._pendingSelectEdge;
+        this._pendingSelectEdge = null;
+
+        if (edge) {
+            const page = this.getCurrentPageAlerts();
+            const target = edge === 'first' ? page[0] : page[page.length - 1];
+            if (target) {
+                this.showAlertDetailsPanel(target);
+                return;
+            }
+        }
+
+        if (!this.currentDetailAlert) return;
+        const list = this.filteredAlerts || [];
+        const idx = list.findIndex(a => a.id === this.currentDetailAlert.id);
+        if (idx === -1) {
+            // Filtered out from under the panel: drop it rather than leave a
+            // detail view for a row that is no longer in the list.
+            this.closeAlertDetailsPanel();
+            return;
+        }
+
+        // A filter or sort can move the open alert off the current page, which
+        // would leave the panel open with no highlighted row. Follow it. The
+        // page is derived from the index, so this re-renders at most once.
+        const page = Math.floor(idx / this.alertsPageSize) + 1;
+        if (page !== this.alertsCurrentPage) {
+            this.alertsCurrentPage = page;
+            this.updateAlertsTable();
+            return;
+        }
+
+        this.showAlertDetailsPanel(list[idx]);
+    },
+
+    // Opens a panel from outside the table (a deep link), landing on the page
+    // that holds the row so the selection is actually visible.
+    openAlertById(alertId) {
+        const list = this.filteredAlerts || [];
+        const idx = list.findIndex(a => a.id === alertId);
+        if (idx === -1) return;
+
+        const page = Math.floor(idx / this.alertsPageSize) + 1;
+        if (page !== this.alertsCurrentPage) {
+            this.currentDetailAlert = list[idx];
+            this.alertsCurrentPage = page;
+            this.updateAlertsTable();
+            return;
+        }
+        this.showAlertDetailsPanel(list[idx]);
+    },
+
+    renderDetailFooter(alert) {
+        return `
+            <button onclick="Alerts.editAlert('${alert.id}')" class="btn-primary">Edit</button>
+            <button onclick="Alerts.toggleAlert('${alert.id}', ${!alert.enabled})" class="btn-secondary">${alert.enabled ? 'Disable' : 'Enable'}</button>
+            <button onclick="Alerts.exportYAML('${alert.id}')" class="btn-secondary">Export YAML</button>
+            <button onclick="Alerts.deleteAlert('${alert.id}')" class="btn-detail-delete">Delete</button>
+        `;
     },
 
     closeAlertDetailsPanel() {
         const panel = document.getElementById('alertDetailsPanel');
-        if (panel) {
-            panel.classList.remove('open');
-        }
+        if (panel) panel.classList.remove('open');
         window.App?.pushSubPath('');
         this.currentDetailAlert = null;
-        if (this._detailEscHandler) {
-            document.removeEventListener('keydown', this._detailEscHandler);
-            this._detailEscHandler = null;
-        }
+        this._pendingSelectEdge = null;
+        AlertDetail.markSelectedRow(null, document.getElementById('alertsList'));
+        AlertDetail.stopInset();
+        AlertDetail.unbindKeys();
     },
 
-    renderAlertDetails(alert) {
-        const isAutoDisabled = !alert.enabled && alert.disabled_reason;
-        const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
-        const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
-        const lastTriggered = alert.last_triggered
-            ? TZ.format(alert.last_triggered, 'friendly')
-            : 'Never';
-
-        return `
-            <div class="alert-details-section">
-                ${isAutoDisabled ? `
-                    <div class="alert-auto-disabled-banner">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                            <line x1="12" y1="9" x2="12" y2="13"/>
-                            <line x1="12" y1="17" x2="12.01" y2="17"/>
-                        </svg>
-                        <span>${Utils.escapeHtml(alert.disabled_reason)}</span>
-                    </div>
-                ` : ''}
-
-                <div class="alert-detail-field">
-                    <label>Status:</label>
-                    <span class="status-badge status-${statusClass}">${statusText}</span>
-                </div>
-
-                ${(() => {
-                    const sev = (alert.severity || 'medium').toLowerCase();
-                    const cls = sev === 'info' ? 'informational' : sev;
-                    return `
-                <div class="alert-detail-field">
-                    <label>Severity:</label>
-                    <span class="severity-pill severity-${cls}" style="cursor:default">${Utils.escapeHtml(sev)}</span>
-                </div>`;
-                })()}
-
-                <div class="alert-detail-field">
-                    <label>Query:</label>
-                    <pre class="alert-query-display"><code>${Utils.escapeHtml(alert.query_string)}</code></pre>
-                </div>
-
-                ${alert.description ? `
-                    <div class="alert-detail-field">
-                        <label>Description:</label>
-                        <p>${Utils.escapeHtml(alert.description)}</p>
-                    </div>
-                ` : ''}
-
-                ${alert.labels && alert.labels.length > 0 ? `
-                    <div class="alert-detail-field">
-                        <label>Labels:</label>
-                        <div class="alert-labels">
-                            ${alert.labels.map(label => `<span class="label" style="--chip-color:${Utils.tagColorFor(label)}">${Utils.escapeHtml(label)}</span>`).join('')}
-                        </div>
-                    </div>
-                ` : ''}
-
-                ${alert.references && alert.references.length > 0 ? `
-                    <div class="alert-detail-field">
-                        <label>References:</label>
-                        <ul class="alert-references">
-                            ${alert.references.map(ref => `<li><a href="${Utils.escapeHtml(ref)}" target="_blank" rel="noopener noreferrer" class="alert-reference-link">${Utils.escapeHtml(ref)}</a></li>`).join('')}
-                        </ul>
-                    </div>
-                ` : ''}
-
-                <div class="alert-detail-field">
-                    <label>Webhook Actions:</label>
-                    <span>${alert.webhook_actions?.length || 0}</span>
-                </div>
-
-                ${alert.throttle_time_seconds > 0 ? `
-                    <div class="alert-detail-field">
-                        <label>Throttle Time:</label>
-                        <span>${this.formatThrottleTime(alert.throttle_time_seconds)}</span>
-                    </div>
-                ` : ''}
-
-                ${alert.throttle_field ? `
-                    <div class="alert-detail-field">
-                        <label>Throttle Field:</label>
-                        <span>${Utils.escapeHtml(alert.throttle_field)}</span>
-                    </div>
-                ` : ''}
-
-                <div class="alert-detail-field">
-                    <label>Created:</label>
-                    <span>${TZ.format(alert.created_at, 'friendly')}</span>
-                </div>
-
-                <div class="alert-detail-field">
-                    <label>Last Triggered:</label>
-                    <span>${lastTriggered}</span>
-                </div>
-            </div>
-
-            <div class="alert-details-actions">
-                <button onclick="Alerts.editAlert('${alert.id}')" class="btn-primary">
-                    Edit Alert
-                </button>
-                <button onclick="Alerts.toggleAlert('${alert.id}', ${!alert.enabled})" class="btn-secondary">
-                    ${alert.enabled ? 'Disable' : 'Enable'}
-                </button>
-                <button onclick="Alerts.exportYAML('${alert.id}')" class="btn-secondary">
-                    Export YAML
-                </button>
-                <button onclick="Alerts.deleteAlert('${alert.id}')" class="btn-danger">
-                    Delete
-                </button>
-            </div>
-        `;
-    },
 
     buildActionFilterOptions() {
         const select = document.getElementById('alertActionFilter');
@@ -916,6 +882,8 @@ const Alerts = {
 
         const searchTerm = document.getElementById('alertSearchInput')?.value.toLowerCase() || '';
         const statusFilter = document.getElementById('alertStatusFilter')?.value || 'all';
+        const severityFilter = document.getElementById('alertSeverityFilter')?.value || 'all';
+        const labelFilter = document.getElementById('alertLabelFilter')?.value || 'all';
         const actionFilter = document.getElementById('alertActionFilter')?.value || 'all';
 
         this.filteredAlerts = this.allAlerts.filter(alert => {
@@ -929,9 +897,15 @@ const Alerts = {
                 (statusFilter === 'enabled' && alert.enabled) ||
                 (statusFilter === 'disabled' && !alert.enabled);
 
+            const matchesSeverity = severityFilter === 'all'
+                || (alert.severity || 'medium').toLowerCase() === severityFilter;
+
+            const matchesLabel = labelFilter === 'all'
+                || (alert.labels || []).includes(labelFilter);
+
             const matchesAction = this.matchesActionFilter(alert, actionFilter);
 
-            return matchesSearch && matchesStatus && matchesAction;
+            return matchesSearch && matchesStatus && matchesSeverity && matchesLabel && matchesAction;
         });
 
         // Reset to first page when filters change
@@ -944,12 +918,59 @@ const Alerts = {
         this.updateBulkButtons();
     },
 
-    updateBulkButtons() {
-        const search = (document.getElementById('alertSearchInput')?.value || '').trim();
-        const statusFilter = document.getElementById('alertStatusFilter')?.value || 'all';
-        const actionFilter = document.getElementById('alertActionFilter')?.value || 'all';
+    hasActiveFilter() {
+        const val = id => document.getElementById(id)?.value || 'all';
+        return !!(document.getElementById('alertSearchInput')?.value || '').trim()
+            || val('alertStatusFilter') !== 'all'
+            || val('alertSeverityFilter') !== 'all'
+            || val('alertLabelFilter') !== 'all'
+            || val('alertActionFilter') !== 'all';
+    },
 
-        const hasFilter = search || statusFilter !== 'all' || actionFilter !== 'all';
+    clearFilters() {
+        const search = document.getElementById('alertSearchInput');
+        if (search) search.value = '';
+        for (const id of ['alertStatusFilter', 'alertSeverityFilter', 'alertLabelFilter', 'alertActionFilter']) {
+            const el = document.getElementById(id);
+            if (el) el.value = 'all';
+        }
+        this.filterAlerts();
+    },
+
+    setSeverityFilter(severity) {
+        const el = document.getElementById('alertSeverityFilter');
+        if (!el) return;
+        el.value = severity;
+        this.filterAlerts();
+    },
+
+    setLabelFilter(label) {
+        const el = document.getElementById('alertLabelFilter');
+        if (!el) return;
+        if (![...el.options].some(o => o.value === label)) {
+            el.add(new Option(label, label));
+        }
+        el.value = label;
+        this.filterAlerts();
+    },
+
+    // Label dropdown options come from the loaded set, like the feed facets.
+    buildLabelFilterOptions() {
+        const select = document.getElementById('alertLabelFilter');
+        if (!select || !this.allAlerts) return;
+        const current = select.value;
+        const labels = new Set();
+        for (const alert of this.allAlerts) {
+            for (const l of (alert.labels || [])) labels.add(l);
+        }
+        select.innerHTML = '<option value="all">All Labels</option>'
+            + [...labels].sort((a, b) => a.localeCompare(b))
+                .map(l => `<option value="${Utils.escapeHtml(l)}">${Utils.escapeHtml(l)}</option>`).join('');
+        if ([...select.options].some(o => o.value === current)) select.value = current;
+    },
+
+    updateBulkButtons() {
+        const hasFilter = this.hasActiveFilter();
 
         const enableBtn = document.getElementById('alertsBulkEnableBtn');
         const disableBtn = document.getElementById('alertsBulkDisableBtn');
@@ -1026,6 +1047,10 @@ const Alerts = {
                     va = a.last_execution_time_ms ?? -1;
                     vb = b.last_execution_time_ms ?? -1;
                     return (va - vb) * dir;
+                case 'severity':
+                    va = AlertList.severityRank(a.severity);
+                    vb = AlertList.severityRank(b.severity);
+                    return (va - vb) * dir;
                 case 'last_triggered':
                     va = a.last_triggered ? new Date(a.last_triggered).getTime() : 0;
                     vb = b.last_triggered ? new Date(b.last_triggered).getTime() : 0;
@@ -1036,28 +1061,22 @@ const Alerts = {
         });
     },
 
-    alertsSortIndicator(column) {
-        if (this.alertsSortColumn !== column) return '';
-        return this.alertsSortDirection === 'asc' ? ' &#9650;' : ' &#9660;';
-    },
-
     updateAlertsTable() {
         const alertsList = document.getElementById('alertsList');
         if (!alertsList) return;
 
         if (this.filteredAlerts.length === 0 && this.allAlerts.length > 0) {
-            alertsList.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-text">No alerts match your filters</div>
-                    <div class="empty-actions">
-                        <button onclick="document.getElementById('alertSearchInput').value=''; document.getElementById('alertStatusFilter').value='all'; document.getElementById('alertActionFilter').value='all'; Alerts.filterAlerts();" class="btn-secondary">Clear Filters</button>
-                    </div>
-                </div>
-            `;
+            this.closeAlertDetailsPanel();
+            alertsList.innerHTML = AlertList.renderEmptyState({
+                filtered: this.hasActiveFilter(),
+                noun: 'alerts',
+                onClear: 'Alerts.clearFilters'
+            });
         } else {
             const alertsHTML = this.renderAlertsTable(this.filteredAlerts);
             alertsList.innerHTML = alertsHTML;
             this.addAlertTableClickHandlers();
+            this.restoreDetailPanel();
         }
     },
 
@@ -1069,69 +1088,6 @@ const Alerts = {
 
     getTotalPages() {
         return Math.ceil(this.filteredAlerts.length / this.alertsPageSize);
-    },
-
-    renderAlertsPagination() {
-        const totalPages = this.getTotalPages();
-
-        if (totalPages <= 1) {
-            return '<div class="alerts-pagination" style="display: none;"></div>';
-        }
-
-        const current = this.alertsCurrentPage;
-        const maxVisible = 5;
-
-        let startPage = Math.max(1, current - Math.floor(maxVisible / 2));
-        let endPage = Math.min(totalPages, startPage + maxVisible - 1);
-
-        // Adjust start if we're near the end
-        if (endPage - startPage + 1 < maxVisible) {
-            startPage = Math.max(1, endPage - maxVisible + 1);
-        }
-
-        let paginationHTML = '<div class="alerts-pagination">';
-
-        // Previous button
-        if (current > 1) {
-            paginationHTML += `<button onclick="Alerts.goToPage(${current - 1})" class="pagination-btn">‹</button>`;
-        } else {
-            paginationHTML += `<button class="pagination-btn disabled">‹</button>`;
-        }
-
-        // First page and ellipsis
-        if (startPage > 1) {
-            paginationHTML += `<button onclick="Alerts.goToPage(1)" class="pagination-btn">1</button>`;
-            if (startPage > 2) {
-                paginationHTML += `<span class="pagination-ellipsis">...</span>`;
-            }
-        }
-
-        // Page numbers
-        for (let i = startPage; i <= endPage; i++) {
-            if (i === current) {
-                paginationHTML += `<button class="pagination-btn active">${i}</button>`;
-            } else {
-                paginationHTML += `<button onclick="Alerts.goToPage(${i})" class="pagination-btn">${i}</button>`;
-            }
-        }
-
-        // Last page and ellipsis
-        if (endPage < totalPages) {
-            if (endPage < totalPages - 1) {
-                paginationHTML += `<span class="pagination-ellipsis">...</span>`;
-            }
-            paginationHTML += `<button onclick="Alerts.goToPage(${totalPages})" class="pagination-btn">${totalPages}</button>`;
-        }
-
-        // Next button
-        if (current < totalPages) {
-            paginationHTML += `<button onclick="Alerts.goToPage(${current + 1})" class="pagination-btn">›</button>`;
-        } else {
-            paginationHTML += `<button class="pagination-btn disabled">›</button>`;
-        }
-
-        paginationHTML += '</div>';
-        return paginationHTML;
     },
 
     goToPage(page) {

@@ -15,6 +15,11 @@ type AnalyticsModelInfo struct {
 	MinSample  int
 	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
 	FractalID  string
+	// Distributed reports that TableName is a Distributed table (cluster mode). The
+	// model join and its strict-mode prefilter must then be GLOBAL: a non-GLOBAL
+	// subquery over a Distributed table inside a query that already reads
+	// logs_distributed is rejected outright (distributed_product_mode='deny').
+	Distributed bool
 }
 
 type QueryOptions struct {
@@ -1345,7 +1350,13 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 		}
 	}
 
-	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0)
+	// A strict model_lookup drops rows at the join, so a LIMIT left on the scan would
+	// be applied before that filter and return an arbitrary subset of the newest
+	// MaxRows logs. The exception is an exact prefilter: the scan's own WHERE then
+	// rejects precisely the rows the join would, so the LIMIT is already counting
+	// only matches and can stay where read-in-order can use it.
+	strictInexactJoin := plan.ModelLookupSQL != "" && plan.ModelLookupStrict && !plan.ModelLookupPrefilterExact
+	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0) || strictInexactJoin
 	if liftLimit && hasJoinWrap {
 		// The ordering must follow the filter, so it moves out with the LIMIT.
 		deferredOrder = append(deferredOrder, innerOrder...)

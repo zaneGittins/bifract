@@ -34,21 +34,6 @@ func (h *NotebookHandler) HandleLockNotebook(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// A locked notebook cannot execute, so a query section that has never run
-	// would be sealed permanently blank. Report it rather than seal it.
-	pending, err := h.pg.UnexecutedQuerySections(r.Context(), nb.ID)
-	if err != nil {
-		log.Printf("[Notebooks] Failed to check query sections before locking: %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "Failed to check the notebook's query sections")
-		return
-	}
-	if len(pending) > 0 {
-		api.WriteError(w, http.StatusConflict, fmt.Sprintf(
-			"%s never been run. Run every query before locking, or it will be sealed with no results.",
-			pendingSections(len(pending))))
-		return
-	}
-
 	locked, err := h.pg.LockNotebook(r.Context(), nb.ID, user.Username)
 	if err != nil {
 		h.writeLockError(w, err, "lock")
@@ -114,7 +99,12 @@ func (h *NotebookHandler) lockTarget(w http.ResponseWriter, r *http.Request) (*s
 }
 
 func (h *NotebookHandler) writeLockError(w http.ResponseWriter, err error, verb string) {
+	var unrun *storage.UnrunQueriesError
 	switch {
+	case errors.As(err, &unrun):
+		api.WriteError(w, http.StatusConflict, fmt.Sprintf(
+			"%s never been run. Run every query before locking, or it will be sealed with no results.",
+			pendingSections(unrun.Count)))
 	case errors.Is(err, sql.ErrNoRows):
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 	case errors.Is(err, storage.ErrNotebookAlreadyLocked):

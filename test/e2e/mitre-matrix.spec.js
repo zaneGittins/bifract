@@ -8,22 +8,31 @@
 // Requires the sample detections ingested by the accompanying fixture, or any
 // events carrying attack.* tags in the selected fractal.
 const { test, expect } = require('@playwright/test');
+const { login, populatedFractal, openFractal } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
 const QUERY = process.env.BIFRACT_E2E_MITRE_QUERY || '* | mitre(tags=rule_tags, by=computer_name)';
 
-async function runMitreQuery(page, query = QUERY) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
+// The matrix can only be asserted against events that carry attack.* tags. A
+// stack without them has nothing to draw, and waiting 30s for a cell that can
+// never appear reports a missing fixture as a product failure, so the fixture
+// is probed first and the test skips itself when it is absent.
+async function mitreFractal(page) {
+  await login(page);
+  return populatedFractal(page, QUERY);
+}
 
-  await page.goto('/');
-  await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-  await page.locator('.fractal-listing-table tbody tr td').first().click();
-  await page.locator('#fractalSearchTabBtn').click();
+async function runMitreQuery(page, query = QUERY) {
+  const fractal = await mitreFractal(page);
+  test.skip(!fractal, 'no fractal on this stack has events carrying attack.* tags');
+
+  await openFractal(page, 'fractalSearchTabBtn', fractal.name);
 
   const input = page.locator('#queryInput');
   await input.waitFor({ timeout: 15000 });
+  // Pin the window: the default range decides whether events that exist are in
+  // scope, so leaving it implicit makes the result depend on fixture age.
+  await page.locator('#timePickerBtn').click();
+  await page.locator('#timePickerPanel .tp-preset[data-value="all"]').click();
   await input.fill(query);
   await page.locator('#executeBtn').click();
 

@@ -2003,23 +2003,39 @@ body.recall-active {
     font-style: italic;
 }
 
-/* BQL highlighting inside the query palette previews. */
-.palette-query .hl-default   { color: var(--text-primary); }
-.palette-query .hl-function  { color: var(--syntax-function); font-weight: 500; }
-.palette-query .hl-operator  { color: var(--syntax-operator); }
-.palette-query .hl-keyword   { color: var(--syntax-keyword); font-weight: 500; }
-.palette-query .hl-string    { color: var(--syntax-string); }
-.palette-query .hl-pipe      { color: var(--syntax-operator); font-weight: 600; }
-.palette-query .hl-field     { color: var(--info); }
-.palette-query .hl-value     { color: var(--syntax-string); }
-.palette-query .hl-regex     { color: var(--syntax-regex); font-weight: 500; }
-.palette-query .hl-assignment{ color: var(--syntax-operator); font-weight: 600; }
-.palette-query .hl-number    { color: var(--syntax-number); }
-.palette-query .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
-.palette-query .hl-boolean   { color: var(--syntax-keyword); font-weight: 500; }
-.palette-query .hl-wildcard  { color: var(--warning); font-weight: 600; }
-.palette-query .hl-variable  { color: var(--syntax-variable); font-weight: 600; }
-.palette-query .hl-comment   { color: var(--syntax-comment); font-style: italic; }
+/* BQL highlighting inside static previews (query palette, alert detail). */
+.palette-query .hl-default,
+.alert-query-highlight .hl-default   { color: var(--text-primary); }
+.palette-query .hl-function,
+.alert-query-highlight .hl-function  { color: var(--syntax-function); font-weight: 500; }
+.palette-query .hl-operator,
+.alert-query-highlight .hl-operator  { color: var(--syntax-operator); }
+.palette-query .hl-keyword,
+.alert-query-highlight .hl-keyword   { color: var(--syntax-keyword); font-weight: 500; }
+.palette-query .hl-string,
+.alert-query-highlight .hl-string    { color: var(--syntax-string); }
+.palette-query .hl-pipe,
+.alert-query-highlight .hl-pipe      { color: var(--syntax-operator); font-weight: 600; }
+.palette-query .hl-field,
+.alert-query-highlight .hl-field     { color: var(--info); }
+.palette-query .hl-value,
+.alert-query-highlight .hl-value     { color: var(--syntax-string); }
+.palette-query .hl-regex,
+.alert-query-highlight .hl-regex     { color: var(--syntax-regex); font-weight: 500; }
+.palette-query .hl-assignment,
+.alert-query-highlight .hl-assignment{ color: var(--syntax-operator); font-weight: 600; }
+.palette-query .hl-number,
+.alert-query-highlight .hl-number    { color: var(--syntax-number); }
+.palette-query .hl-bracket,
+.alert-query-highlight .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
+.palette-query .hl-boolean,
+.alert-query-highlight .hl-boolean   { color: var(--syntax-keyword); font-weight: 500; }
+.palette-query .hl-wildcard,
+.alert-query-highlight .hl-wildcard  { color: var(--warning); font-weight: 600; }
+.palette-query .hl-variable,
+.alert-query-highlight .hl-variable  { color: var(--syntax-variable); font-weight: 600; }
+.palette-query .hl-comment,
+.alert-query-highlight .hl-comment   { color: var(--syntax-comment); font-style: italic; }
 
 /* Syntax highlighting for display mode (notebooks) */
 .query-display .hl-default {

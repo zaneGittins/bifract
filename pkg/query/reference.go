@@ -370,17 +370,19 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "model_lookup",
 				Category:    "Enrichment",
-				Description: "Scores each log row against a trained analytics model (Models tab) and adds that model's output columns, so a rarity/first-seen/volume/beacon verdict can be filtered, sorted and displayed like any other field. key= maps YOUR log fields onto the model's key positionally, so the field names need not match the model's. Output columns by model type: rarity -> percent, confidence, model_count; first_seen -> first_seen, last_seen, is_new; volume_baseline -> z_score, baseline_median, latest_count, mad, n_buckets; beacon -> beacon_score, regularity_score, ts_score, ds_score, dur_score, hist_score, prevalence, prevalence_score, conn_count; long_connection -> longconn_score, total_duration, conn_count, prevalence, prevalence_score. Filter the source logs BEFORE model_lookup() so the scan stays small, then threshold on the model outputs after it. Aggregating after model_lookup() requires every key field to be one of the group columns, since the score is joined on that key. Only one model_lookup() per query, and it cannot be combined with join(). In a prism the model is resolved across the member fractals. Models score forward from creation, so rows older than the model (or outside its backfill) have no match and come back empty.",
-				Syntax:      `| model_lookup(model="name", key=[field1, field2, ...])`,
+				Description: "Scores each log row against a trained analytics model (Models tab) and adds that model's output columns, so a rarity/first-seen/volume/beacon verdict can be filtered, sorted and displayed like any other field. key= maps YOUR log fields onto the model's key positionally, so the field names need not match the model's. Output columns by model type: rarity -> percent, confidence, model_count; first_seen -> first_seen, last_seen, is_new; volume_baseline -> z_score, baseline_median, latest_count, mad, n_buckets; beacon -> beacon_score, regularity_score, ts_score, ds_score, dur_score, hist_score, prevalence, prevalence_score, conn_count; long_connection -> longconn_score, total_duration, conn_count, prevalence, prevalence_score. Filter the source logs BEFORE model_lookup() so the scan stays small, then threshold on the model outputs after it. Aggregating after model_lookup() requires every key field to be one of the group columns, since the score is joined on that key. Only one model_lookup() per query, and it cannot be combined with join(). In a prism the model is resolved across the member fractals. By default (strict=true) only rows the model scored are returned, and the model's key set is pushed into the log scan so the query reads just those rows; strict=false keeps the unscored rows with their model columns at type defaults (0 for a score), which makes a `less than` threshold match every one of them. Models score forward from creation, so under the default a window older than the model returns nothing.",
+				Syntax:      `| model_lookup(model="name", key=[field1, field2, ...], strict=true)`,
 				Parameters: []Param{
 					{Name: "model", Type: "string", Required: true, Description: "Name of an active model from the Models tab"},
 					{Name: "key", Type: "array", Required: true, Description: "Log fields matched against the model's key, in order. rarity: [partition_key, value_key]; first_seen and volume_baseline: [entity]; beacon and long_connection: [src_ip, dst_ip, dst_port]"},
+					{Name: "strict", Type: "boolean", Required: false, Description: "true (default) returns only rows the model scored; false keeps unscored rows with empty enrichment"},
 				},
 				Examples: []string{
 					`event_id=3 | model_lookup(model="zeek_beacons", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8`,
 					`event_id=3 | model_lookup(model="zeek_beacons", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8 AND NOT image=~zerotier | table(timestamp, src_ip, dst_ip, dst_port, beacon_score, conn_count)`,
 					`event_id=1 | model_lookup(model="rare_images", key=[computer_name, image]) | percent < 0.1 | sort(percent)`,
 					`* | model_lookup(model="new_users", key=[user]) | is_new = "1"`,
+					`* | model_lookup(model="rare_images", key=[computer_name, image], strict=false)`,
 				},
 			},
 			{

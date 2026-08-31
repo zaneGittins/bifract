@@ -55,6 +55,7 @@ Enrich rows with the baseline an analytics [model](../features/models.md) has bu
 |-----------|----------|-------------|
 | `model` | Yes | Name of an active model in this fractal |
 | `key` | Yes | Log fields matched against the model's key, in order |
+| `strict` | No | `true` (default) returns only rows the model scored; `false` keeps the rest with empty enrichment |
 
 The key shape depends on the model type:
 
@@ -65,7 +66,21 @@ The key shape depends on the model type:
 | `volume_baseline` | `[entity]` |
 | `beacon`, `long_connection` | `[src_ip, dst_ip, dst_port]` |
 
-Rows with no match in the model are kept with empty enrichment columns, so a "never seen before" event is itself a signal. Enrichment columns can be filtered and aggregated like any other field.
+Enrichment columns can be filtered and aggregated like any other field.
+
+### strict
+
+By default a row the model never scored is dropped. The model's key set is pushed into the log scan, so the query reads only the logs that can match rather than every log in the range and discarding the rest after the join.
+
+`strict=false` keeps unscored rows with their enrichment columns at ClickHouse's type defaults (`0` for a score, empty for a date). Those defaults compare like real values, so a threshold that looks for something small matches every unscored row:
+
+```
+* | model_lookup(model="rare_images", key=[computer_name, image], strict=false) | percent < 0.1
+```
+
+That query returns every log the model has no entry for. Use `strict=false` only to see which rows went unscored, and test the enrichment column for emptiness rather than thresholding it.
+
+A model scores forward from its creation (plus whatever its backfill covered), so under the default a query over a window older than the model returns nothing.
 
 ## comment()
 

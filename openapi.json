@@ -1906,6 +1906,94 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/alerts/{id}/activity": {
+      "get": {
+        "operationId": "get_api_v1_alerts_byId_activity",
+        "summary": "Daily trigger counts for an alert.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.AlertActivity"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/alerts/{id}/duplicate": {
       "post": {
         "operationId": "post_api_v1_alerts_byId_duplicate",
@@ -26530,6 +26618,55 @@
           "created_at",
           "updated_at",
           "last_evaluated_at"
+        ]
+      },
+      "alerts.AlertActivity": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertActivityDay"
+            }
+          },
+          "retention_days": {
+            "type": "integer"
+          },
+          "total_executions": {
+            "type": "integer"
+          },
+          "total_logs": {
+            "type": "integer"
+          },
+          "window_days": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "days",
+          "total_executions",
+          "total_logs",
+          "window_days",
+          "retention_days"
+        ]
+      },
+      "alerts.AlertActivityDay": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "executions": {
+            "type": "integer"
+          },
+          "logs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "executions",
+          "logs"
         ]
       },
       "alerts.AlertCreateRequest": {

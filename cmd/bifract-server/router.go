@@ -1486,6 +1486,17 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Summary:  "List an alert's evaluation history.",
 					Handler:  d.alertHandler.HandleGetExecutions,
 				})
+				r.Register(api.Route{
+					Method: http.MethodGet,
+					Path:   "/alerts/{id}/activity",
+					Query: []api.QueryParam{
+						{Name: "days", Type: "integer"},
+					},
+					Access:   api.AccessViewer,
+					Response: api.Response[alerts.AlertActivity]{},
+					Summary:  "Daily trigger counts for an alert.",
+					Handler:  d.alertHandler.HandleGetActivity,
+				})
 
 				// MITRE ATT&CK coverage, derived from the attack.* labels rules
 				// already carry. Read-only, scoped to the session's fractal/prism.

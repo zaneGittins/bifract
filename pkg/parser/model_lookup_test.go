@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -65,7 +66,7 @@ func TestModelLookup_TrailingThresholdDefersPostJoin(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8`)
 
 	// The filter must appear as an outer WHERE over the join wrap (SELECT * FROM (...) WHERE ...).
-	joinIdx := strings.Index(sql, "LEFT JOIN")
+	joinIdx := strings.Index(sql, "INNER JOIN")
 	whereIdx := strings.LastIndex(sql, "beacon_score > 0.8")
 	if joinIdx < 0 || whereIdx < 0 || whereIdx < joinIdx {
 		t.Errorf("expected beacon_score filter AFTER the join, got:\n%s", sql)
@@ -91,10 +92,11 @@ func TestModelLookup_SourceFilterStaysInner(t *testing.T) {
 	}
 }
 
-// rarity still works and the composite key is matched against partition_val/value_val.
+// rarity still works: one key field per model key column, so the ON is plain
+// equalities rather than a char(30)-encoded pair.
 func TestModelLookup_RarityJoinShape(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="rare", key=[image, hash]) | confidence > 0.9`)
-	if !strings.Contains(sql, "concat(_outer._mlk_k0, char(30), _outer._mlk_k1) = concat(_mlookup.partition_val, char(30), _mlookup.value_val)") {
+	if !strings.Contains(sql, "ON _outer._mlk_k0 = _mlookup.partition_val AND _outer._mlk_k1 = _mlookup.value_val") {
 		t.Errorf("unexpected rarity ON clause, got:\n%s", sql)
 	}
 	if !strings.Contains(sql, "EXCEPT (_mlk_k0, _mlk_k1)") {
@@ -444,5 +446,257 @@ func TestModelLookup_FirstSeenSingleKey(t *testing.T) {
 	}
 	if !strings.Contains(sql, "EXCEPT (_mlk_k0)") {
 		t.Errorf("expected EXCEPT for single key, got:\n%s", sql)
+	}
+}
+
+// ---- strict mode (model_lookup default) ----
+
+// translateMLWith is translateML against caller-supplied options (prism, cluster).
+func translateMLWith(t *testing.T, query string, opts QueryOptions) string {
+	t.Helper()
+	pipeline, err := ParseQuery(query)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
+	}
+	return result.SQL
+}
+
+// Strict is the default: the join keeps only scored rows, and the same key set is
+// pushed into the scan so the join is not fed every log in the range.
+func TestModelLookup_StrictIsDefault(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`)
+
+	if !strings.Contains(sql, "INNER JOIN") || strings.Contains(sql, "LEFT JOIN") {
+		t.Errorf("expected an INNER JOIN by default, got:\n%s", sql)
+	}
+	want := "(fields.`src_ip`::String, fields.`dst_ip`::String, fields.`dst_port`::String) IN " +
+		"(SELECT _mlk_src.src_ip, _mlk_src.dst_ip, _mlk_src.dst_port FROM `model_beacon` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1'))"
+	if !strings.Contains(sql, want) {
+		t.Errorf("expected the semi-join prefilter %s, got:\n%s", want, sql)
+	}
+	// It must sit in the scan's WHERE, i.e. before the join wrap.
+	if strings.Index(sql, want) > strings.Index(sql, "INNER JOIN") {
+		t.Errorf("prefilter must be in the source scan WHERE, got:\n%s", sql)
+	}
+}
+
+// strict=false restores the enrich-everything behaviour: LEFT JOIN, no prefilter.
+func TestModelLookup_StrictFalseKeepsUnscoredRows(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port], strict=false)`)
+
+	if !strings.Contains(sql, "LEFT JOIN") || strings.Contains(sql, "INNER JOIN") {
+		t.Errorf("expected a LEFT JOIN for strict=false, got:\n%s", sql)
+	}
+	if strings.Contains(sql, "IN (SELECT src_ip, dst_ip, dst_port FROM") {
+		t.Errorf("strict=false must not prefilter the scan (it would drop unscored rows), got:\n%s", sql)
+	}
+}
+
+func TestModelLookup_StrictRejectsBadValue(t *testing.T) {
+	pipeline, err := ParseQuery(`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port], strict=maybe)`)
+	if err == nil {
+		_, err = TranslateToSQLWithOrder(pipeline, mlookupOpts())
+	}
+	if err == nil || !strings.Contains(err.Error(), "strict=") {
+		t.Errorf("expected a strict= validation error, got: %v", err)
+	}
+}
+
+// The prefilter reads the model table's raw key columns: no FINAL, no aggregation and
+// no window functions, so it stays a two-column read of the sorting-key prefix.
+func TestModelLookup_PrefilterReadsRawKeysOnly(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="rare", key=[image, hash])`)
+
+	const want = "(fields.`image`::String, fields.`hash`::String) IN " +
+		"(SELECT _mlk_src.partition_val, _mlk_src.value_val FROM `model_rare` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1'))"
+	if !strings.Contains(sql, want) {
+		t.Errorf("expected raw-key prefilter %s, got:\n%s", want, sql)
+	}
+}
+
+// The prefilter's left side is ModelLookupKeyExprs verbatim, so it can never disagree
+// with the hidden _mlk_k<i> projections the JOIN ON compares.
+func TestModelLookup_PrefilterKeysMatchProjectedKeys(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`)
+
+	inIdx := strings.Index(sql, " IN (SELECT _mlk_src.src_ip")
+	if inIdx < 0 {
+		t.Fatalf("no prefilter in:\n%s", sql)
+	}
+	lhs := sql[strings.LastIndex(sql[:inIdx], "AND "):inIdx]
+
+	keyExprs := regexp.MustCompile(`([^,\s]+) AS _mlk_k\d`).FindAllStringSubmatch(sql, -1)
+	if len(keyExprs) != 3 {
+		t.Fatalf("expected 3 projected key expressions, got %d in:\n%s", len(keyExprs), sql)
+	}
+	for _, m := range keyExprs {
+		if !strings.Contains(lhs, m[1]) {
+			t.Errorf("join key %q is not the prefilter left side %q", m[1], lhs)
+		}
+	}
+}
+
+// An exact prefilter rejects precisely what the join would, so the scan keeps its
+// LIMIT and ClickHouse can still stop early reading in sorting-key order.
+func TestModelLookup_ExactPrefilterKeepsScanLimit(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`)
+
+	limitIdx := strings.Index(sql, "LIMIT 1000")
+	joinIdx := strings.Index(sql, "INNER JOIN")
+	if limitIdx < 0 || joinIdx < 0 || limitIdx > joinIdx {
+		t.Errorf("expected the LIMIT to stay on the source scan, got:\n%s", sql)
+	}
+}
+
+// A model type that scores keys away (rarity's min_sample) leaves the prefilter a
+// superset, so the join is still the filter and the LIMIT must move above it.
+func TestModelLookup_SupersetPrefilterLiftsLimit(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["rare5"] = AnalyticsModelInfo{ID: "4", TableName: "model_rare5", ModelType: "rarity", MinSample: 5, FractalID: "f1"}
+	sql := translateMLWith(t, `* | model_lookup(model="rare5", key=[image, hash])`, opts)
+
+	limitIdx := strings.LastIndex(sql, "LIMIT 1000")
+	joinIdx := strings.Index(sql, "INNER JOIN")
+	if limitIdx < 0 || joinIdx < 0 || limitIdx < joinIdx {
+		t.Errorf("expected the LIMIT to be lifted above the join, got:\n%s", sql)
+	}
+	if strings.Count(sql, "LIMIT 1000") != 1 {
+		t.Errorf("the scan must not keep a LIMIT of its own, got:\n%s", sql)
+	}
+}
+
+// A trailing threshold on a model output lifts the LIMIT whatever the mode: the
+// filter runs above the join, so a scan-level LIMIT would pre-truncate its input.
+func TestModelLookup_ThresholdLiftsLimit(t *testing.T) {
+	for _, q := range []string{
+		`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8`,
+		`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port], strict=false) | beacon_score > 0.8`,
+	} {
+		sql := translateML(t, q)
+		if strings.Count(sql, "LIMIT 1000") != 1 || strings.LastIndex(sql, "LIMIT 1000") < strings.Index(sql, "JOIN") {
+			t.Errorf("expected a single LIMIT above the join for %s, got:\n%s", q, sql)
+		}
+	}
+}
+
+// In a prism the prefilter must span every member fractal, exactly like the scoring
+// subquery it mirrors; scoping it to one member would drop the others' rows.
+func TestModelLookup_PrefilterCoversPrismMembers(t *testing.T) {
+	opts := mlookupOpts()
+	opts.FractalIDs = []string{"f1", "f2"}
+	sql := translateMLWith(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`, opts)
+
+	// Once for the log scan, once for the prefilter, once for the scoring subquery.
+	if strings.Count(sql, "fractal_id IN ('f1', 'f2')") != 3 {
+		t.Errorf("expected the prefilter and the scoring subquery to span the members, got:\n%s", sql)
+	}
+}
+
+// Against a Distributed model table both the join and its prefilter must be GLOBAL:
+// ClickHouse rejects a non-GLOBAL subquery over a Distributed table inside a query
+// that already reads logs_distributed (distributed_product_mode='deny').
+func TestModelLookup_ClusterUsesGlobal(t *testing.T) {
+	opts := mlookupOpts()
+	opts.TableName = "logs_distributed"
+	opts.Models["beacon"] = AnalyticsModelInfo{ID: "3", TableName: "model_beacon_dist", ModelType: "beacon", FractalID: "f1", Distributed: true}
+	sql := translateMLWith(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`, opts)
+
+	if !strings.Contains(sql, "GLOBAL INNER JOIN") {
+		t.Errorf("expected GLOBAL INNER JOIN in cluster mode, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "GLOBAL IN (SELECT _mlk_src.src_ip, _mlk_src.dst_ip, _mlk_src.dst_port FROM `model_beacon_dist`") {
+		t.Errorf("expected the prefilter to use GLOBAL IN, got:\n%s", sql)
+	}
+}
+
+// Single-node queries must not pay for GLOBAL.
+func TestModelLookup_SingleNodeHasNoGlobal(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`)
+	if strings.Contains(sql, "GLOBAL") {
+		t.Errorf("expected no GLOBAL outside cluster mode, got:\n%s", sql)
+	}
+}
+
+// The network scoring subquery must return exactly one row per pair, or an INNER JOIN
+// multiplies log rows. FINAL cannot promise that: it collapses per shard, and a prism
+// reads several fractals whose rows share the pair but not the sorting key.
+func TestModelLookup_NetworkScoringIsOneRowPerPair(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`)
+
+	if strings.Contains(sql, "FINAL") {
+		t.Errorf("network scoring must not rely on FINAL, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "GROUP BY src_ip, dst_ip, dst_port") {
+		t.Errorf("expected the scoring subquery to group by the pair, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "argMax(final_score, scored_at) AS beacon_score") {
+		t.Errorf("expected the newest score per pair via argMax, got:\n%s", sql)
+	}
+}
+
+// volume_baseline scores only complete buckets in a bounded window, so the prefilter
+// carries the same bounds: an entity whose buckets all fall outside cannot match.
+func TestModelLookup_VolumePrefilterCarriesBucketBounds(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1"}
+	sql := translateMLWith(t, `* | model_lookup(model="vol", key=[user])`, opts)
+
+	const want = "fields.`user`::String IN (SELECT _mlk_src.entity_val FROM `model_vol` AS _mlk_src " +
+		"WHERE _mlk_src.fractal_id IN ('f1') AND _mlk_src.bucket >= today() - 90 AND _mlk_src.bucket < today())"
+	if !strings.Contains(sql, want) {
+		t.Errorf("expected bucket-bounded prefilter %s, got:\n%s", want, sql)
+	}
+}
+
+// Several key fields against a single model key column (how first_seen and
+// volume_baseline encode a composite entity) must still prefilter, using the model's
+// own char(30) encoding. Skipping it there would leave a strict join with no scan
+// filter and a LIMIT lifted above it: a full-range scan on the most common
+// multi-field first_seen shape.
+func TestModelLookup_CompositeKeyPrefilters(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="fs", key=[user, computer_name])`)
+
+	const want = "concat(fields.`user`::String, char(30), fields.`computer_name`::String) IN " +
+		"(SELECT _mlk_src.entity_key FROM `model_fs` AS _mlk_src WHERE _mlk_src.fractal_id IN ('f1'))"
+	if !strings.Contains(sql, want) {
+		t.Errorf("expected composite prefilter %s, got:\n%s", want, sql)
+	}
+	// The prefilter is exactly the ON predicate, so the scan keeps its LIMIT.
+	if strings.Index(sql, "LIMIT 1000") > strings.Index(sql, "INNER JOIN") {
+		t.Errorf("expected the LIMIT to stay on the source scan, got:\n%s", sql)
+	}
+}
+
+// The prefilter and the JOIN ON must express the same predicate in every key shape:
+// one drops rows at the scan on the strength of the other matching them.
+func TestModelLookup_PrefilterMirrorsJoinOn(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 1, TimeBucket: "day", FractalID: "f1"}
+	cases := map[string]struct{ on, prefilter string }{
+		`* | model_lookup(model="fs", key=[user])`: {
+			on:        "ON _outer._mlk_k0 = _mlookup.entity_key",
+			prefilter: "fields.`user`::String IN (SELECT _mlk_src.entity_key",
+		},
+		`* | model_lookup(model="rare", key=[image, hash])`: {
+			on:        "ON _outer._mlk_k0 = _mlookup.partition_val AND _outer._mlk_k1 = _mlookup.value_val",
+			prefilter: "(fields.`image`::String, fields.`hash`::String) IN (SELECT _mlk_src.partition_val, _mlk_src.value_val",
+		},
+		`* | model_lookup(model="vol", key=[user, computer_name])`: {
+			on:        "ON concat(_outer._mlk_k0, char(30), _outer._mlk_k1) = _mlookup.entity_val",
+			prefilter: "concat(fields.`user`::String, char(30), fields.`computer_name`::String) IN (SELECT _mlk_src.entity_val",
+		},
+	}
+	for query, want := range cases {
+		sql := translateMLWith(t, query, opts)
+		if !strings.Contains(sql, want.on) {
+			t.Errorf("%s: expected ON %q, got:\n%s", query, want.on, sql)
+		}
+		if !strings.Contains(sql, want.prefilter) {
+			t.Errorf("%s: expected prefilter %q, got:\n%s", query, want.prefilter, sql)
+		}
 	}
 }

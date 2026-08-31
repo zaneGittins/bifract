@@ -6,23 +6,13 @@
 // the interesting case is the one nobody clicks through by hand, where a star is
 // aimed at a notebook that was locked out from under it.
 const { test, expect } = require('@playwright/test');
+const { login, scopeHeader, openFractal } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
-async function login(page) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-  expect((await res.json()).success, 'login rejected').toBeTruthy();
-}
-
+// Locking needs a notebook, not logs, so any fractal will do.
 async function openFirstFractal(page) {
-  await page.goto('/');
-  await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
-  await page.locator('.fractal-listing-table tbody tr td').first().click();
+  await openFractal(page);
   await page.locator('#fractalSearchTabBtn').waitFor({ timeout: 15000 });
-  const id = await page.evaluate(() => FractalContext.currentFractal && FractalContext.currentFractal.id);
-  return { 'X-Bifract-Scope': `fractal:${id}` };
+  return scopeHeader(page);
 }
 
 // Open a notebook of this test's own making in the editor.

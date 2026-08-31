@@ -15,13 +15,20 @@ import (
 // A workflow control, not tamper evidence: unlocking is allowed and recorded.
 
 var (
-	// ErrNotebookLocked is returned by any write against a locked notebook.
-	ErrNotebookLocked = errors.New("notebook is locked")
 	// ErrNotebookAlreadyLocked distinguishes a redundant lock from a rejected write.
 	ErrNotebookAlreadyLocked = errors.New("notebook is already locked")
 	// ErrNotebookNotLocked is returned when unlocking a notebook that is not locked.
 	ErrNotebookNotLocked = errors.New("notebook is not locked")
 )
+
+// UnrunQueriesError refuses a lock that would seal a query section which has
+// never run, and says how many. A locked notebook cannot execute, so the
+// section would stay blank for as long as the lock stands.
+type UnrunQueriesError struct{ Count int }
+
+func (e *UnrunQueriesError) Error() string {
+	return fmt.Sprintf("%d query sections have never been run", e.Count)
+}
 
 // IsLocked reports whether the notebook is frozen.
 func (n *Notebook) IsLocked() bool { return n != nil && n.LockedAt != nil }
@@ -34,31 +41,6 @@ func (n *Notebook) LockedMessage() string {
 	}
 	return fmt.Sprintf("This notebook was locked by %s on %s. Unlock it to make changes.",
 		who, n.LockedAt.UTC().Format("2 Jan 2006 15:04 UTC"))
-}
-
-// UnexecutedQuerySections returns the ids of query sections that have never
-// run. Locking one would seal a permanently blank section, since a locked
-// notebook cannot execute.
-func (c *PostgresClient) UnexecutedQuerySections(ctx context.Context, notebookID string) ([]string, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT id::text FROM notebook_sections
-		WHERE notebook_id = $1 AND section_type = 'query' AND last_results IS NULL
-		ORDER BY order_index
-	`, notebookID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find unexecuted query sections: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("failed to scan section id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 // LockNotebook freezes a notebook and clears it as every user's capture target.
@@ -82,6 +64,19 @@ func (c *PostgresClient) LockNotebook(ctx context.Context, notebookID, username 
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, lockNoopReason(ctx, c, notebookID, true)
+	}
+
+	// Counted inside the transaction, so a section added between the check and
+	// the lock cannot slip through and be sealed blank.
+	var unrun int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM notebook_sections
+		WHERE notebook_id = $1 AND section_type = 'query' AND last_results IS NULL
+	`, notebookID).Scan(&unrun); err != nil {
+		return nil, fmt.Errorf("failed to check the notebook's query sections: %w", err)
+	}
+	if unrun > 0 {
+		return nil, &UnrunQueriesError{Count: unrun}
 	}
 
 	if _, err := tx.ExecContext(ctx,

@@ -6,27 +6,18 @@
 // all arriving intact. Those three used to be dropped on whichever load path the
 // page happened to take, which no static check catches.
 const { test, expect } = require('@playwright/test');
+const { USER, PASS, login, populatedFractal } = require('./fixtures');
 
-const USER = process.env.BIFRACT_E2E_USER || 'admin';
-const PASS = process.env.BIFRACT_E2E_PASS || 'bifractbifract';
-
-async function login(page) {
-  const res = await page.request.post('/api/v1/auth/login', { data: { username: USER, password: PASS } });
-  expect(res.ok(), 'login request failed').toBeTruthy();
-}
-
-async function anyFractal(page) {
-  const res = await page.request.get('/api/v1/fractals');
-  expect(res.ok(), 'fractal listing failed').toBeTruthy();
-  const fractals = (await res.json())?.data?.fractals || [];
-  return fractals.find(f => !f.is_system) || fractals[0] || null;
-}
+// Every case here asserts that a link ran a query and produced rows, so the
+// fractal has to be one that holds logs. Taking the first non-system fractal
+// instead made these fail on any box where that one happens to be empty.
+const anyFractal = (page) => populatedFractal(page);
 
 test.describe('deep links', () => {
   test('a hand-built link runs the query in the right fractal and window', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -47,7 +38,7 @@ test.describe('deep links', () => {
   test('the link survives a reload and stays in the address bar', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     await page.goto(`/go/search?q=${encodeURIComponent('* | limit(5)')}&fractal=${encodeURIComponent(fractal.name)}&from=-90d`);
     await expect(page.locator('#resultsTable table tr').first()).toBeVisible({ timeout: 30000 });
@@ -65,7 +56,7 @@ test.describe('deep links', () => {
   test('an absolute window arrives as a custom range', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     const to = new Date();
     const from = new Date(to.getTime() - 90 * 24 * 3600 * 1000);
@@ -82,7 +73,7 @@ test.describe('deep links', () => {
   test('var. parameters bind to the query @variables', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     await page.goto(`/go/search?q=${encodeURIComponent('bifract_category=@category | limit(5)')}` +
       `&fractal=${encodeURIComponent(fractal.name)}&from=-90d&var.category=process_creation`);
@@ -106,7 +97,9 @@ test.describe('deep links', () => {
   for (const hostile of ['//example.com', '/%0A/example.com', '/%09/example.com', '/\\/example.com']) {
     test(`login next=${hostile} cannot be turned into an open redirect`, async ({ browser }) => {
       // A context per case: a stale page redirecting itself races the next goto.
-      const context = await browser.newContext();
+      // Signed out on purpose: this drives the login form, and the suite's
+      // shared session would skip straight past it.
+      const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
       const page = await context.newPage();
       // Record the attempt, then block it. Blocking alone is not an assertion:
       // an aborted navigation never commits, so page.url() would still read as
@@ -140,7 +133,8 @@ test.describe('deep links', () => {
   test('an unauthenticated link bounces through login and comes back', async ({ browser }) => {
     // A fresh context: no session cookie, which is the state an analyst clicking
     // a link from chat two days later is actually in.
-    const context = await browser.newContext();
+    // Signed out on purpose: the point is the bounce through login.
+    const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
     const page = await context.newPage();
 
     const target = `/go/search?q=${encodeURIComponent('* | limit(5)')}&from=-90d`;
@@ -181,6 +175,9 @@ test.describe('query URL mirroring', () => {
 
   async function runQuery(page, query) {
     await page.locator('#queryInput').fill(query);
+    // A toast from the previous run can still be on screen, and its container
+    // sits over the button and swallows the click.
+    await page.locator('.toast-container .toast').first().waitFor({ state: 'detached', timeout: 10000 }).catch(() => {});
     await page.locator('#executeBtn').click();
     await expectUrlQuery(page, query);
   }
@@ -188,38 +185,38 @@ test.describe('query URL mirroring', () => {
   test('running a query writes it into the URL', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
     await openSearch(page, fractal);
 
     // The q param is base64(encodeURIComponent(query)), the form the reader wants.
-    await runQuery(page, 'bifract_category=* | limit(7)');
+    await runQuery(page, '* | limit(7)');
   });
 
   test('back returns to the previous query and re-runs it', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
     await openSearch(page, fractal);
 
-    await runQuery(page, 'bifract_category=* | limit(7)');
-    await runQuery(page, 'bifract_category=* | limit(9)');
+    await runQuery(page, '* | limit(7)');
+    await runQuery(page, '* | limit(9)');
 
     await page.goBack();
-    await expect(page.locator('#queryInput')).toHaveValue('bifract_category=* | limit(7)', { timeout: 15000 });
+    await expect(page.locator('#queryInput')).toHaveValue('* | limit(7)', { timeout: 15000 });
     // Restored, not just rewritten: the results below must belong to it.
     await expect(page.locator('#resultsTable table tr').first()).toBeVisible({ timeout: 30000 });
 
     await page.goForward();
-    await expect(page.locator('#queryInput')).toHaveValue('bifract_category=* | limit(9)', { timeout: 15000 });
+    await expect(page.locator('#queryInput')).toHaveValue('* | limit(9)', { timeout: 15000 });
   });
 
   test('re-running the same query does not stack history entries', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
     await openSearch(page, fractal);
 
-    await runQuery(page, 'bifract_category=* | limit(7)');
+    await runQuery(page, '* | limit(7)');
     const afterFirst = await page.evaluate(() => history.length);
 
     // Three identical runs describe one state, so Back must not have to chew
@@ -234,10 +231,10 @@ test.describe('query URL mirroring', () => {
   test('arriving on a deep link does not stack a duplicate entry', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     await openSearch(page, fractal);
-    await runQuery(page, 'bifract_category=* | limit(7)');
+    await runQuery(page, '* | limit(7)');
 
     // One Back must reach the link's own query. If the execute the link triggers
     // pushed its own entry, this would land on a second copy of limit(7).
@@ -248,11 +245,13 @@ test.describe('query URL mirroring', () => {
   test('leaving the search tab drops the query from the URL', async ({ page }) => {
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
     await openSearch(page, fractal);
-    await runQuery(page, 'bifract_category=* | limit(7)');
+    await runQuery(page, '* | limit(7)');
 
-    await page.locator('#fractalCommentsTabBtn').click();
+    // The Comments tab was merged into Notebooks, so this leaves search by the
+    // route that still exists.
+    await page.locator('#fractalNotebooksTabBtn').click();
     await expect(page).not.toHaveURL(/[?&]q=/, { timeout: 10000 });
   });
 });
@@ -266,7 +265,7 @@ test.describe('share button', () => {
 
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     await page.goto(`/go/search?q=${encodeURIComponent('bifract_category=@category | limit(5)')}` +
       `&fractal=${encodeURIComponent(fractal.name)}&from=-90d&var.category=process_creation`);
@@ -297,7 +296,7 @@ test.describe('share button', () => {
 
     await login(page);
     const fractal = await anyFractal(page);
-    test.skip(!fractal, 'no fractal on this stack');
+    test.skip(!fractal, 'no fractal on this stack holds logs');
 
     const to = new Date();
     const from = new Date(to.getTime() - 90 * 24 * 3600 * 1000);
