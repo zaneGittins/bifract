@@ -449,8 +449,11 @@ const App = {
         // Fractal View Tab Buttons
         // Hash is a function so ctrl+click open-in-new-tab captures the live fractal ID.
         this._bindTab(document.getElementById('fractalSearchTabBtn'), () => this.showFractalViewTab('search'), () => this._buildHash('search'));
-        this._bindTab(document.getElementById('fractalCommentsTabBtn'), () => this.showFractalViewTab('comments'), () => this._buildHash('comments'));
         this._bindTab(document.getElementById('fractalNotebooksTabBtn'), () => this.showFractalViewTab('notebooks'), () => this._buildHash('notebooks'));
+
+        document.querySelectorAll('[data-investigation-subtab]').forEach(btn => {
+            btn.addEventListener('click', () => this.showFractalViewTab('notebooks', btn.dataset.investigationSubtab === 'evidence' ? 'evidence' : ''));
+        });
         this._bindTab(document.getElementById('fractalDashboardsTabBtn'), () => this.showFractalViewTab('dashboards'), () => this._buildHash('dashboards'));
         this._bindTab(document.getElementById('fractalDictionariesTabBtn'), () => this.showFractalViewTab('dictionaries'), () => this._buildHash('dictionaries'));
         this._bindTab(document.getElementById('fractalModelsTabBtn'), () => this.showFractalViewTab('models'), () => this._buildHash('models'));
@@ -1186,8 +1189,9 @@ const App = {
 
         // Remove active class from all fractal view tabs
         const searchTab = document.getElementById('fractalSearchTabBtn');
-        const commentsTab = document.getElementById('fractalCommentsTabBtn');
         const notebooksTab = document.getElementById('fractalNotebooksTabBtn');
+        const investigationSubTabs = document.getElementById('investigationSubTabs');
+        if (investigationSubTabs) investigationSubTabs.style.display = 'none';
         const dashboardsTab = document.getElementById('fractalDashboardsTabBtn');
         const dictionariesTab = document.getElementById('fractalDictionariesTabBtn');
         const modelsTab = document.getElementById('fractalModelsTabBtn');
@@ -1198,7 +1202,7 @@ const App = {
         const recallTab = document.getElementById('fractalRecallTabBtn');
         const manageTab = document.getElementById('fractalManageTabBtn');
 
-        [searchTab, commentsTab, notebooksTab, dashboardsTab, dictionariesTab, modelsTab, chatTab, libraryTab, alertsTab, ingestTab, recallTab, manageTab].forEach(tabBtn => {
+        [searchTab, notebooksTab, dashboardsTab, dictionariesTab, modelsTab, chatTab, libraryTab, alertsTab, ingestTab, recallTab, manageTab].forEach(tabBtn => {
             if (tabBtn) tabBtn.classList.remove('active');
         });
 
@@ -1218,35 +1222,35 @@ const App = {
                 // QueryExecutor.onFractalChange() will handle loading recent logs when fractal changes
                 // No need to duplicate the call here as it causes race conditions
                 break;
+            // 'comments' is kept as an alias so links made before the merge still
+            // land somewhere sensible.
             case 'comments':
-                if (commentsContent) {
-                    commentsContent.style.display = 'block';
-                }
-                if (commentedView) {
-                    commentedView.style.display = 'block';
-                }
-                if (commentsTab) commentsTab.classList.add('active');
-                if (window.CommentedLogs) {
-                    CommentedLogs.show();
-                }
-                if (window.RealTimeComments) {
-                    RealTimeComments.markAsRead();
-                } else {
-                    console.error('[App] CommentedLogs not found! Check if commentedLogs.js loaded properly.');
-                }
-                break;
-            case 'notebooks':
-                if (notebooksContent) notebooksContent.style.display = 'block';
-                if (notebooksView) notebooksView.style.display = 'block';
+                subPath = 'evidence';
+                // falls through
+            case 'notebooks': {
                 if (notebooksTab) notebooksTab.classList.add('active');
+                if (investigationSubTabs) investigationSubTabs.style.display = 'flex';
 
-                if (window.Notebooks) {
-                    Notebooks.init();
-                    if (subPath) Notebooks.openNotebook(subPath);
+                const onEvidence = subPath === 'evidence';
+                document.querySelectorAll('[data-investigation-subtab]').forEach(btn => {
+                    btn.classList.toggle('active', (btn.dataset.investigationSubtab === 'evidence') === onEvidence);
+                });
+
+                if (onEvidence) {
+                    if (commentsContent) commentsContent.style.display = 'block';
+                    if (commentedView) commentedView.style.display = 'block';
+                    if (window.CommentedLogs) CommentedLogs.show();
+                    if (window.RealTimeComments) RealTimeComments.markAsRead();
                 } else {
-                    console.error('[App] Notebooks module not found! Check if notebooks.js loaded properly.');
+                    if (notebooksContent) notebooksContent.style.display = 'block';
+                    if (notebooksView) notebooksView.style.display = 'block';
+                    if (window.Notebooks) {
+                        Notebooks.init();
+                        if (subPath) Notebooks.openNotebook(subPath);
+                    }
                 }
                 break;
+            }
             case 'dashboards':
                 if (dashboardsContent) dashboardsContent.style.display = 'block';
                 if (dashboardsView) dashboardsView.style.display = 'block';

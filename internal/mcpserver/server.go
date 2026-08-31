@@ -42,10 +42,12 @@ fractal's real query patterns. get_attack_coverage and get_attack_gaps say which
 ATT&CK techniques are covered and which are worth covering next. Validate a query
 before creating an alert on it.
 
-Recording. Findings belong in the product, not only in your reply: add_comment
-against the logs that evidence them (tag related comments IR-<Name>), or collect the
-narrative in a notebook. This is a collaborative platform and other analysts read
-what you leave behind.
+Recording. Findings belong in the product, not only in your reply. There is one way
+to mark an event: add_comment on the log that evidences it. Pass a notebook_id and
+the same call files it into an investigation, so create_notebook once at the start of
+a hunt and file every finding into it as you go, with add_notebook_section for the
+narrative and the queries between them. Tag related comments IR-<Name> as well. This
+is a collaborative platform and other analysts read what you leave behind.
 
 Writes are real. Creating an alert, or adding rows to a dictionary, changes what a
 live system detects. Confirm scope with get_context before changing anything, and

@@ -3,6 +3,7 @@ package comments
 import (
 	"bifract/pkg/api"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,7 +14,9 @@ import (
 
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
+	"bifract/pkg/prisms"
 	"bifract/pkg/rbac"
+	"bifract/pkg/sse"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +26,8 @@ type CommentHandler struct {
 	pg             *storage.PostgresClient
 	ch             *storage.ClickHouseClient
 	fractalManager *fractals.Manager
+	prismManager   *prisms.Manager
+	sseHub         *sse.Hub
 }
 
 type CreateCommentRequest struct {
@@ -33,10 +38,20 @@ type CreateCommentRequest struct {
 	Query        string   `json:"query,omitempty"`
 	FractalID    string   `json:"fractal_id,omitempty"`
 	PrismID      string   `json:"prism_id,omitempty"`
+
+	// NotebookID files the comment into a notebook as evidence. Starring a row
+	// is this request with an empty Text: the comment records that the log
+	// matters whether or not anyone has written about it yet.
+	NotebookID string `json:"notebook_id,omitempty"`
+	// Title is the evidence section's line in the notebook outline. Ignored
+	// without NotebookID.
+	Title string `json:"title,omitempty"`
 }
 
 type UpdateCommentRequest struct {
-	Text string   `json:"text"`
+	// Text absent leaves the comment's words alone; empty clears them, which
+	// returns the row to a bare star rather than deleting the evidence.
+	Text *string  `json:"text,omitempty"`
 	Tags []string `json:"tags,omitempty"`
 }
 
@@ -44,12 +59,41 @@ type UpdateCommentRequest struct {
 // name while there is one type, and one schema, behind it.
 type Response = api.Response[any]
 
-func NewCommentHandlerWithFractals(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager) *CommentHandler {
+func NewCommentHandlerWithFractals(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, prismManager *prisms.Manager) *CommentHandler {
 	return &CommentHandler{
 		pg:             pg,
 		ch:             ch,
 		fractalManager: fractalManager,
+		prismManager:   prismManager,
 	}
+}
+
+// SetSSEHub wires live notebook updates so evidence filed from the search page
+// reaches anyone reading that notebook.
+func (h *CommentHandler) SetSSEHub(hub *sse.Hub) {
+	h.sseHub = hub
+}
+
+// logScope resolves which fractals a lookup by log_id may read from. A prism
+// session has no single fractal id, and both ClickHouse helpers below drop their
+// fractal filter when given an empty one, which spans every fractal.
+func (h *CommentHandler) logScope() fractals.LogScope {
+	return fractals.LogScope{Fractals: h.fractalManager, Prisms: h.prismManager}
+}
+
+// answerScopeError answers the request when a logScope lookup failed. Returns
+// true when it did, meaning the caller must stop.
+func (h *CommentHandler) answerScopeError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fractals.ErrNoScope) {
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return true
+	}
+	log.Printf("[Comments] Failed to resolve accessible fractals: %v", err)
+	api.WriteError(w, http.StatusInternalServerError, "Failed to determine scope")
+	return true
 }
 
 // HandleCreateComment creates a new comment (analyst+)
@@ -72,8 +116,9 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 
 	log.Printf("[HandleCreateComment] Received request: LogID=%s, Timestamp=%s", req.LogID, req.LogTimestamp)
 
-	// Validate input
-	if req.LogID == "" || req.Text == "" {
+	// Text is optional only when filing into a notebook: that is a star, and
+	// the annotation may be written later.
+	if req.LogID == "" || (req.Text == "" && req.NotebookID == "") {
 		api.WriteError(w, http.StatusBadRequest, "log_id and text are required")
 		return
 	}
@@ -93,12 +138,13 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Scope is ALWAYS derived from the session - never from the request body.
-	// Accepting request-body scope was a cross-fractal probe vector: an
-	// attacker could set req.FractalID to a fractal they don't own and use
-	// this endpoint's log lookup + comment create to confirm log existence
-	// in that fractal, or create a comment in an unauthorized scope.
-	sessionFractalID, sessionPrismID := h.getScope(r)
+	// Scope is ALWAYS derived from the session - never from the request body,
+	// which was a cross-fractal probe vector: the log lookup below would confirm
+	// a log's existence in a fractal the caller has no access to.
+	sessionFractalID, sessionPrismID, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
 
 	// Resolve log timestamp: if provided, parse it; otherwise look it up
 	// from ClickHouse. The log lookup is scoped so callers can only look
@@ -112,14 +158,19 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	} else {
-		// For prism sessions GetLogByTimestamp with an empty fractalID would
-		// match anywhere, so we explicitly fall back to an empty string only
-		// for admins. Non-admins on a prism must rely on the prism's members
-		// but the single-string API can't express that - they'll get a 404
-		// for logs not in their current fractal, which is the safe default.
-		lookupFractal := sessionFractalID
-		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, lookupFractal)
+		// sessionFractalID is empty in a prism, which makes the lookup span every
+		// fractal, so the log's own fractal_id is checked against the scope after.
+		accessible, err := h.logScope().AccessibleFractalIDs(r.Context())
+		if h.answerScopeError(w, err) {
+			return
+		}
+		logEntry, err := h.ch.GetLogByTimestamp(r.Context(), time.Time{}, req.LogID, sessionFractalID)
 		if err != nil || logEntry == nil {
+			api.WriteError(w, http.StatusBadRequest, "Could not find log entry; provide log_timestamp or verify log_id")
+			return
+		}
+		logFractalID, _ := logEntry["fractal_id"].(string)
+		if !h.logScope().Allows(r.Context(), logFractalID, accessible) {
 			api.WriteError(w, http.StatusBadRequest, "Could not find log entry; provide log_timestamp or verify log_id")
 			return
 		}
@@ -148,10 +199,6 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 	// comments" pattern) would fail at the DB layer anyway.
 	fractalID := sessionFractalID
 	prismID := sessionPrismID
-	if fractalID == "" && prismID == "" {
-		api.WriteError(w, http.StatusBadRequest, "No fractal or prism context")
-		return
-	}
 
 	// comments.author is NOT NULL and references users(username), so an API key
 	// posts as its creator. A key whose creator was deleted has nobody to
@@ -174,17 +221,77 @@ func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Requ
 		PrismID:      prismID,
 	}
 
-	newComment, err := h.pg.InsertComment(r.Context(), comment)
+	notebookID, ok := h.resolveEvidenceNotebook(w, r, req.NotebookID, fractalID, prismID)
+	if !ok {
+		return
+	}
+
+	var title *string
+	if t := strings.TrimSpace(req.Title); t != "" && notebookID != "" {
+		clamped := truncateRunes(t, maxEvidenceTitleChars)
+		title = &clamped
+	}
+
+	// A star carries no text, so a repeat of one is a no-op: one event is one
+	// row in a notebook's outline. A comment carrying text is always written,
+	// even on an event the notebook already holds, because it is a new
+	// annotation rather than a duplicate of the same click.
+	write, err := h.pg.InsertCommentWithEvidence(r.Context(), comment, notebookID, title, req.Text == "")
 	if err != nil {
+		log.Printf("[Comments] Failed to create comment: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to create comment")
 		return
 	}
 
+	message := "Comment created successfully"
+	if write.Existing {
+		message = "Log is already evidence in this notebook"
+	}
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
-		Message: "Comment created successfully",
-		Data:    newComment,
+		Message: message,
+		Data:    write.Comment,
 	})
+
+	if write.Section != nil && h.sseHub != nil {
+		h.sseHub.Broadcast("notebook:"+notebookID, sse.Event{Type: sse.SectionAdded, Data: write.Section}, r.Header.Get("X-SSE-Client-ID"))
+	}
+}
+
+// maxEvidenceTitleChars matches notebook_sections.title's column width.
+const maxEvidenceTitleChars = 255
+
+// truncateRunes cuts to at most n characters. Slicing bytes would split a
+// multibyte rune and Postgres rejects the result as invalid UTF-8.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
+// resolveEvidenceNotebook validates the notebook a comment is being filed into.
+// It must exist in the caller's own scope: accepting one from another fractal
+// would let a comment leak into a notebook the author cannot read.
+func (h *CommentHandler) resolveEvidenceNotebook(w http.ResponseWriter, r *http.Request, notebookID, fractalID, prismID string) (string, bool) {
+	if notebookID == "" {
+		return "", true
+	}
+	nb, err := h.pg.GetNotebook(r.Context(), notebookID)
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "Notebook not found")
+		return "", false
+	}
+	if nb.FractalID != fractalID || nb.PrismID != prismID {
+		api.WriteError(w, http.StatusForbidden, "Notebook is not in the current scope")
+		return "", false
+	}
+	if nb.IsLocked() {
+		api.WriteError(w, http.StatusConflict, nb.LockedMessage())
+		return "", false
+	}
+	return nb.ID, true
 }
 
 // HandleGetComment gets a single comment by ID
@@ -215,6 +322,84 @@ func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// UpdateCommentTagsRequest replaces a comment's tags.
+type UpdateCommentTagsRequest struct {
+	Tags []string `json:"tags"`
+}
+
+// maxCommentTags and maxCommentTagChars bound what one comment can carry, so a
+// client cannot turn the tag array into unbounded storage.
+const (
+	maxCommentTags     = 32
+	maxCommentTagChars = 64
+)
+
+// HandleUpdateCommentTags replaces a comment's tags. Unlike its text, which is
+// one person's words and only they may change, tags are how a team organises
+// shared evidence, so any analyst in the comment's scope may set them.
+func (h *CommentHandler) HandleUpdateCommentTags(w http.ResponseWriter, r *http.Request) {
+	user := r.Context().Value("user").(*storage.User)
+	fractalRole := rbac.RoleFromContext(r.Context())
+	prismRole := rbac.PrismRoleFromContext(r.Context())
+	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
+		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+		return
+	}
+
+	commentID := chi.URLParam(r, "id")
+
+	var req UpdateCommentTagsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.Tags) > maxCommentTags {
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("At most %d tags per comment", maxCommentTags))
+		return
+	}
+	tags := make([]string, 0, len(req.Tags))
+	seen := map[string]bool{}
+	for _, tag := range req.Tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] {
+			continue
+		}
+		if len(tag) > maxCommentTagChars {
+			api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Tag too long (max %d characters)", maxCommentTagChars))
+			return
+		}
+		seen[tag] = true
+		tags = append(tags, tag)
+	}
+
+	comment, err := h.pg.GetComment(r.Context(), commentID)
+	if err != nil {
+		api.WriteError(w, http.StatusNotFound, "Comment not found")
+		return
+	}
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+	if comment.FractalID != scopeFractal || comment.PrismID != scopePrism {
+		api.WriteError(w, http.StatusForbidden, "Comment is not in the current scope")
+		return
+	}
+
+	if err := h.pg.UpdateCommentTags(r.Context(), commentID, tags); err != nil {
+		log.Printf("[Comments] Failed to update tags: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to update tags")
+		return
+	}
+
+	updated, err := h.pg.GetComment(r.Context(), commentID)
+	if err != nil {
+		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch updated comment")
+		return
+	}
+	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Tags updated", Data: updated})
+}
+
 // HandleUpdateComment updates a comment (author only)
 func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Request) {
 	commentID := chi.URLParam(r, "id")
@@ -225,15 +410,9 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Validate input
-	if req.Text == "" {
-		api.WriteError(w, http.StatusBadRequest, "text is required")
-		return
-	}
-
 	const maxCommentLength = 5000
-	if len(req.Text) > maxCommentLength {
-		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Comment too long (%d chars, max %d)", len(req.Text), maxCommentLength))
+	if req.Text != nil && len(*req.Text) > maxCommentLength {
+		api.WriteError(w, http.StatusBadRequest, fmt.Sprintf("Comment too long (%d chars, max %d)", len(*req.Text), maxCommentLength))
 		return
 	}
 
@@ -378,14 +557,17 @@ func (h *CommentHandler) HandleGetFlatComments(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var comments []storage.Comment
-	var total int
-	var err error
-	if scopePrism != "" {
-		comments, total, err = h.pg.GetAllCommentsByPrism(r.Context(), scopePrism, limit, offset)
-	} else {
-		comments, total, err = h.pg.GetAllCommentsByFractal(r.Context(), scopeFractal, limit, offset)
+	// filed=unfiled is the bucket of annotations nobody collected into a
+	// notebook, which is the one view that finds work left half done.
+	filing := storage.CommentFilingAny
+	switch r.URL.Query().Get("filed") {
+	case "filed":
+		filing = storage.CommentFilingFiled
+	case "unfiled":
+		filing = storage.CommentFilingUnfiled
 	}
+
+	comments, total, err := h.pg.GetCommentsByScope(r.Context(), scopeFractal, scopePrism, filing, limit, offset)
 	if err != nil {
 		log.Printf("[Comments] Failed to get flat comments: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch comments")
@@ -654,16 +836,9 @@ type LogFieldsRequest struct {
 
 // HandleGetLogFields batch-fetches parsed field data for multiple logs.
 func (h *CommentHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request) {
-	selectedFractal, _ := h.getScope(r)
-
 	var req LogFieldsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	if len(req.LogIDs) == 0 {
-		api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: []interface{}{}})
 		return
 	}
 	if len(req.LogIDs) > 500 {
@@ -671,7 +846,16 @@ func (h *CommentHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	logs, err := h.ch.GetLogFieldsByIDs(r.Context(), req.LogIDs, selectedFractal)
+	accessible, err := h.logScope().ReadFilterIDs(r.Context())
+	if h.answerScopeError(w, err) {
+		return
+	}
+	if len(req.LogIDs) == 0 || len(accessible) == 0 {
+		api.WriteJSON(w, http.StatusOK, Response{Success: true, Data: []interface{}{}})
+		return
+	}
+
+	logs, err := h.ch.GetLogFieldsByIDs(r.Context(), req.LogIDs, accessible)
 	if err != nil {
 		log.Printf("[Comments] Failed to get log fields: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch log fields")

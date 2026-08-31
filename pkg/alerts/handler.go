@@ -1004,7 +1004,8 @@ func (h *Handler) requireScope(w http.ResponseWriter, r *http.Request, what stri
 }
 
 // getScope returns the current fractal or prism scope from the request context.
-// Returns (fractalID, prismID, error) — exactly one will be non-empty when err == nil.
+// At most one is non-empty; both are empty when the request declared no scope.
+// Handlers go through requireScope rather than calling this directly.
 func (h *Handler) getScope(r *http.Request) (string, string, error) {
 	if prismID, _ := r.Context().Value("selected_prism").(string); prismID != "" {
 		return "", prismID, nil

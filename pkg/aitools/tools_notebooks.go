@@ -24,16 +24,20 @@ func registerNotebookTools(d *set) {
 	add(d, &mcp.Tool{
 		Name:        "create_notebook",
 		Annotations: mutates(),
-		Description: "Create a notebook.\n\n" +
-			"Notebooks interleave markdown and live BQL queries, so an investigation stays " +
-			"reproducible: a reader can re-run each step rather than trust a pasted result.\n\n" +
+		Description: "Create a notebook to collect an investigation in.\n\n" +
+			"A notebook interleaves narrative, live BQL queries and the events they turned up, " +
+			"so an investigation stays reproducible: a reader can re-run each step rather than " +
+			"trust a pasted result.\n\n" +
+			"Make one at the start of a hunt, then pass its id to add_comment as you go.\n\n" +
 			"Returns the created notebook, including its id.",
 	}, createNotebook)
 
 	add(d, &mcp.Tool{
 		Name:        "add_notebook_section",
 		Annotations: mutates(),
-		Description: "Append a section to a notebook.\n\n" +
+		Description: "Append narrative or a runnable query step to a notebook.\n\n" +
+			"Evidence does not go here: an event is filed with add_comment and a notebook_id, " +
+			"which writes the comment and the notebook entry as one record.\n\n" +
 			"Returns the created section, including its id.",
 	}, addNotebookSection)
 }
@@ -84,7 +88,7 @@ func createNotebook(ctx context.Context, c Client, in createNotebookArgs) (any, 
 
 type addNotebookSectionArgs struct {
 	NotebookID  string   `json:"notebook_id" jsonschema:"The notebook UUID."`
-	SectionType string   `json:"section_type" jsonschema:"'markdown' for narrative, or 'query' for a runnable BQL step."`
+	SectionType string   `json:"section_type" jsonschema:"'markdown' for narrative, or 'query' for a runnable BQL step. Evidence is filed with add_comment instead."`
 	Content     string   `json:"content" jsonschema:"The markdown text, or the BQL query for a query section."`
 	Title       string   `json:"title,omitempty" jsonschema:"Optional section heading."`
 	OrderIndex  *int     `json:"order_index,omitempty" jsonschema:"Position, 0-based. Omit to append at the end."`

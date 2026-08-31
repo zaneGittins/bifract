@@ -1245,8 +1245,7 @@ body.recall-active {
 }
 
 /* Filled bookmark means this event is already evidence in the active notebook. */
-.panel-pin-btn.pinned { color: var(--accent-primary); }
-.panel-pin-btn.pinned .pin-icon { fill: currentColor; }
+.panel-pin-btn.starred { color: var(--accent-primary); }
 
 /* Selected row highlight */
 .results-table tbody tr.selected {

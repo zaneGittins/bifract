@@ -21,10 +21,16 @@ type fakeClient struct {
 	status  int
 	body    string
 	fractal string
+	// byPath overrides body for one path, for tools that call more than one
+	// endpoint. A path with no entry falls back to body.
+	byPath map[string]string
 
 	last  recorded
 	sent  []byte
 	calls int
+	// seen records every request in order, for tools whose behaviour is which
+	// calls they make rather than what one call carried.
+	seen []recorded
 }
 
 func serve(t *testing.T, status int, body string) *fakeClient {
@@ -35,6 +41,7 @@ func serve(t *testing.T, status int, body string) *fakeClient {
 func (f *fakeClient) do(method, path string, body any) (any, error) {
 	f.calls++
 	f.last = recorded{Method: method, Path: path}
+	f.seen = append(f.seen, f.last)
 	f.sent = nil
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -43,7 +50,11 @@ func (f *fakeClient) do(method, path string, body any) (any, error) {
 		}
 		f.sent = encoded
 	}
-	return Decode(method, path, f.status, []byte(f.body))
+	payload := f.body
+	if override, ok := f.byPath[path]; ok {
+		payload = override
+	}
+	return Decode(method, path, f.status, []byte(payload))
 }
 
 func (f *fakeClient) Get(_ context.Context, path string, query url.Values) (any, error) {

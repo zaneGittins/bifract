@@ -1306,6 +1306,8 @@ const QueryExecutor = {
         const built = this.buildResultsTable(fields, results, {
             sizingKey: { fractalId, sig: sizingSig },
             features: { resize: true, reorder: true, sort: true },
+            // Aggregated rows are not events, so there is nothing to star.
+            gutter: !this.isAggregated,
             sortColumn: this.sortColumn,
             sortDirection: this.sortDirection,
             rowClass: (row) => (window.Comments && Comments.hasComments(row)) ? 'has-comments' : '',
@@ -1404,8 +1406,14 @@ const QueryExecutor = {
 
         const seq = ++this._tableSeq;
 
+        // The gutter is a caller opt-in, and only appears once the scope has
+        // something to capture into.
+        const gutter = !!opts.gutter && window.StarGutter && StarGutter.enabled();
+        const logIdOf = (row) => (gutter && row ? String(row.log_id || '') : '');
+
         let tableClass = 'results-table is-fixed';
         if (features.reorder) tableClass += ' col-reorderable';
+        if (gutter) tableClass += ' has-gutter';
 
         // Stamp the persistence key so the globally-delegated resize/autofit
         // handler can save widths without any per-table wiring.
@@ -1413,7 +1421,9 @@ const QueryExecutor = {
             ? ` data-colsize-fractal="${Utils.escapeAttr(fractalId)}" data-colsize-sig="${Utils.escapeAttr(sig)}"`
             : '';
 
-        let html = `<table class="${tableClass}" data-table-id="${seq}"${sizeAttrs}>` + ColumnSizing.buildColgroup(fields, sizing) + '<thead><tr>';
+        let html = `<table class="${tableClass}" data-table-id="${seq}"${sizeAttrs}>`
+            + ColumnSizing.buildColgroup(fields, sizing, gutter ? StarGutter.colHtml() : '')
+            + '<thead><tr>' + (gutter ? StarGutter.headerHtml() : '');
         fields.forEach(field => {
             const sortable = features.sort ? ' sortable' : '';
             const sortIcon = (features.sort && opts.sortColumn === field)
@@ -1425,9 +1435,13 @@ const QueryExecutor = {
         html += (sizing.hasFiller ? '<th class="filler-col"></th>' : '') + '</tr></thead><tbody>';
 
         rows.forEach((result, index) => {
-            const extra = opts.rowClass ? (opts.rowClass(result, index) || '') : '';
+            const logID = logIdOf(result);
+            const classes = [opts.rowClass ? (opts.rowClass(result, index) || '') : ''];
+            if (gutter) classes.push(StarGutter.rowClass(logID));
+            const extra = classes.filter(Boolean).join(' ');
             const rowStyle = opts.rowStyle ? (opts.rowStyle(result, index) || '') : '';
             html += `<tr class="result-row${extra ? ' ' + extra : ''}" data-index="${index}"${rowStyle ? ` style="${rowStyle}"` : ''}>`;
+            if (gutter) html += StarGutter.cellHtml(logID);
             fields.forEach(field => {
                 const value = result[field];
                 let cellHtml, cellClass;
@@ -1477,10 +1491,23 @@ const QueryExecutor = {
                 });
             }
 
+            if (gutter) {
+                const tbody = table.querySelector('tbody');
+                if (tbody) tbody.addEventListener('click', (e) => {
+                    const btn = e.target.closest('.sg-star');
+                    if (!btn) return;
+                    e.stopPropagation();
+                    const rowEl = btn.closest('.result-row');
+                    const index = rowEl ? parseInt(rowEl.dataset.index) : -1;
+                    StarGutter.toggle(btn.dataset.logId, rows[index]);
+                });
+            }
+
             if (opts.onRowClick) {
                 const tbody = table.querySelector('tbody');
                 if (tbody) tbody.addEventListener('click', (e) => {
                     if (e.target.classList.contains('column-resizer')) return;
+                    if (e.target.closest('.sg-star')) return;
                     const rowEl = e.target.closest('.result-row');
                     if (!rowEl) return;
                     const index = parseInt(rowEl.dataset.index);
@@ -1496,7 +1523,7 @@ const QueryExecutor = {
                     const rowEl = e.target.closest('.result-row');
                     const td = e.target.closest('td');
                     if (!rowEl || !td) return;
-                    const cellIndex = Array.prototype.indexOf.call(rowEl.children, td);
+                    const cellIndex = Array.prototype.indexOf.call(rowEl.children, td) - (gutter ? 1 : 0);
                     const field = fields[cellIndex];
                     const index = parseInt(rowEl.dataset.index);
                     const row = rows[index];
@@ -1529,6 +1556,13 @@ const QueryExecutor = {
 
         const page = window.Pagination ? Pagination.getCurrentPageResults() : this.currentResults;
         this.renderResults(page);
+    },
+
+    // Redraw the page currently on screen. Used when something outside the query
+    // changes how a row renders, such as the star gutter becoming available.
+    rerenderCurrentPage() {
+        const page = window.Pagination ? Pagination.getCurrentPageResults() : this.currentResults;
+        if (page && page.length) this.renderResults(page);
     },
 
     // Update comment highlighting on already-rendered rows

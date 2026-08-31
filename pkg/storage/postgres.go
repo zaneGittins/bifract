@@ -55,6 +55,9 @@ type Comment struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 	FractalID             string    `json:"fractal_id,omitempty"` // Fractal UUID for multi-tenant isolation
 	PrismID               string    `json:"prism_id,omitempty"`   // Prism UUID (mutually exclusive with FractalID)
+	// Notebooks this comment is filed into, empty when it is unfiled. Populated
+	// only by listings that ask for it.
+	Notebooks []CommentNotebook `json:"notebooks,omitempty"`
 }
 
 func (c *PostgresClient) Initialize(ctx context.Context, initSQL string) error {
@@ -489,59 +492,6 @@ func (c *PostgresClient) ResetUserToInvite(ctx context.Context, username, tokenH
 
 // Comment methods
 
-func (c *PostgresClient) InsertComment(ctx context.Context, comment Comment) (*Comment, error) {
-	// Convert empty slice to nil for proper database handling
-	var tags interface{}
-	if len(comment.Tags) == 0 {
-		tags = nil
-	} else {
-		tags = pq.Array(comment.Tags)
-	}
-
-	var newComment Comment
-
-	var fractalIDPtr, prismIDPtr interface{}
-	if comment.FractalID != "" {
-		fractalIDPtr = comment.FractalID
-	}
-	if comment.PrismID != "" {
-		prismIDPtr = comment.PrismID
-	}
-
-	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO comments (log_id, log_timestamp, text, author, tags, query, fractal_id, prism_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, log_id, log_timestamp, text, author, tags, query, created_at, updated_at,
-		          COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
-	`, comment.LogID, comment.LogTimestamp, comment.Text, comment.Author, tags, comment.Query, fractalIDPtr, prismIDPtr).Scan(
-		&newComment.ID,
-		&newComment.LogID,
-		&newComment.LogTimestamp,
-		&newComment.Text,
-		&newComment.Author,
-		pq.Array(&newComment.Tags),
-		&newComment.Query,
-		&newComment.CreatedAt,
-		&newComment.UpdatedAt,
-		&newComment.FractalID,
-		&newComment.PrismID,
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to insert comment: %w", err)
-	}
-
-	// Fetch author details
-	author, err := c.GetUser(ctx, newComment.Author)
-	if err == nil {
-		newComment.AuthorDisplayName = author.DisplayName
-		newComment.AuthorGravatarColor = author.GravatarColor
-		newComment.AuthorGravatarInitial = author.GravatarInitial
-	}
-
-	return &newComment, nil
-}
-
 func (c *PostgresClient) GetComment(ctx context.Context, id string) (*Comment, error) {
 	comment := &Comment{}
 	err := c.db.QueryRowContext(ctx, `
@@ -804,7 +754,9 @@ func (c *PostgresClient) GetDistinctTagsByPrism(ctx context.Context, prismID str
 	return tags, nil
 }
 
-func (c *PostgresClient) UpdateComment(ctx context.Context, id string, authorUsername string, text string, tags []string) error {
+// UpdateComment rewrites a comment's words and tags. A nil text leaves the words
+// alone, so a caller changing only tags does not have to resend them.
+func (c *PostgresClient) UpdateComment(ctx context.Context, id string, authorUsername string, text *string, tags []string) error {
 	// Convert empty slice to nil for proper database handling
 	var tagsVal interface{}
 	if len(tags) == 0 {
@@ -815,7 +767,7 @@ func (c *PostgresClient) UpdateComment(ctx context.Context, id string, authorUse
 
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE comments
-		SET text = $1, tags = $2
+		SET text = COALESCE($1, text), tags = $2
 		WHERE id = $3 AND author = $4
 	`, text, tagsVal, id, authorUsername)
 
@@ -1222,75 +1174,67 @@ func (c *PostgresClient) GetAllCommentedLogsByPrism(ctx context.Context, prismID
 	return results, total, nil
 }
 
-// GetAllCommentsByFractal returns individual comments for a fractal with author display info.
-func (c *PostgresClient) GetAllCommentsByFractal(ctx context.Context, fractalID string, limit, offset int) ([]Comment, int, error) {
-	var total int
-	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM comments WHERE fractal_id = $1
-	`, fractalID).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
-	}
-
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query,
-		       c.created_at, c.updated_at, COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
-		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
-		FROM comments c
-		LEFT JOIN users u ON c.author = u.username
-		WHERE c.fractal_id = $1
-		ORDER BY c.created_at DESC
-		LIMIT $2 OFFSET $3
-	`, fractalID, limit, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get comments: %w", err)
-	}
-	defer rows.Close()
-
-	var comments []Comment
-	for rows.Next() {
-		var comment Comment
-		var tags pq.StringArray
-		err := rows.Scan(
-			&comment.ID, &comment.LogID, &comment.LogTimestamp, &comment.Text,
-			&comment.Author, &tags, &comment.Query,
-			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID, &comment.PrismID,
-			&comment.AuthorDisplayName, &comment.AuthorGravatarColor, &comment.AuthorGravatarInitial,
-		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan comment: %w", err)
-		}
-		comment.Tags = tags
-		comments = append(comments, comment)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("failed to iterate comments: %w", err)
-	}
-
-	return comments, total, nil
+// CommentNotebook is a notebook a comment is filed into.
+type CommentNotebook struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
-// GetAllCommentsByPrism returns comments scoped to a specific prism.
-func (c *PostgresClient) GetAllCommentsByPrism(ctx context.Context, prismID string, limit, offset int) ([]Comment, int, error) {
+// CommentFiling narrows a listing to comments that are, or are not, filed into
+// a notebook. The unfiled bucket is what someone annotated without collecting.
+type CommentFiling string
+
+const (
+	CommentFilingAny     CommentFiling = ""
+	CommentFilingFiled   CommentFiling = "filed"
+	CommentFilingUnfiled CommentFiling = "unfiled"
+)
+
+// GetCommentsByScope lists a scope's comments with author display info and the
+// notebooks each is filed into. Fractal and prism share one implementation:
+// they differ only in which column carries the scope.
+func (c *PostgresClient) GetCommentsByScope(ctx context.Context, fractalID, prismID string, filing CommentFiling, limit, offset int) ([]Comment, int, error) {
+	scopeCol := "fractal_id"
+	scopeVal := fractalID
+	if prismID != "" {
+		scopeCol, scopeVal = "prism_id", prismID
+	}
+	if scopeVal == "" {
+		return nil, 0, fmt.Errorf("comment listing requires a fractal or prism id")
+	}
+
+	filed := "TRUE"
+	switch filing {
+	case CommentFilingFiled:
+		filed = "EXISTS (SELECT 1 FROM notebook_sections s WHERE s.comment_id = c.id)"
+	case CommentFilingUnfiled:
+		filed = "NOT EXISTS (SELECT 1 FROM notebook_sections s WHERE s.comment_id = c.id)"
+	}
+
 	var total int
 	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM comments WHERE prism_id = $1
-	`, prismID).Scan(&total)
+		SELECT COUNT(*) FROM comments c WHERE c.`+scopeCol+` = $1::uuid AND `+filed,
+		scopeVal).Scan(&total)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+		return nil, 0, fmt.Errorf("failed to count comments: %w", err)
 	}
 
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query,
+		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, COALESCE(c.tags, '{}'), c.query,
 		       c.created_at, c.updated_at, COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
-		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
+		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, ''),
+		       COALESCE(nb.notebooks, '[]'::json)::text
 		FROM comments c
 		LEFT JOIN users u ON c.author = u.username
-		WHERE c.prism_id = $1
+		LEFT JOIN LATERAL (
+			SELECT json_agg(json_build_object('id', n.id, 'name', n.name) ORDER BY n.name) AS notebooks
+			FROM notebook_sections s JOIN notebooks n ON n.id = s.notebook_id
+			WHERE s.comment_id = c.id
+		) nb ON TRUE
+		WHERE c.`+scopeCol+` = $1::uuid AND `+filed+`
 		ORDER BY c.created_at DESC
 		LIMIT $2 OFFSET $3
-	`, prismID, limit, offset)
+	`, scopeVal, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get comments: %w", err)
 	}
@@ -1300,16 +1244,21 @@ func (c *PostgresClient) GetAllCommentsByPrism(ctx context.Context, prismID stri
 	for rows.Next() {
 		var comment Comment
 		var tags pq.StringArray
+		var notebooks string
 		err := rows.Scan(
 			&comment.ID, &comment.LogID, &comment.LogTimestamp, &comment.Text,
 			&comment.Author, &tags, &comment.Query,
 			&comment.CreatedAt, &comment.UpdatedAt, &comment.FractalID, &comment.PrismID,
 			&comment.AuthorDisplayName, &comment.AuthorGravatarColor, &comment.AuthorGravatarInitial,
+			&notebooks,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to scan comment: %w", err)
 		}
 		comment.Tags = tags
+		if err := json.Unmarshal([]byte(notebooks), &comment.Notebooks); err != nil {
+			comment.Notebooks = nil
+		}
 		comments = append(comments, comment)
 	}
 
@@ -1520,23 +1469,32 @@ func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unl
 
 // Notebook represents a notebook document
 type Notebook struct {
-	ID                    string          `json:"id"`
-	Name                  string          `json:"name"`
-	Description           string          `json:"description"`
-	TimeRangeType         string          `json:"time_range_type"`
-	TimeRangeStart        *time.Time      `json:"time_range_start,omitempty"`
-	TimeRangeEnd          *time.Time      `json:"time_range_end,omitempty"`
-	MaxResultsPerSection  int             `json:"max_results_per_section"`
-	FractalID             string          `json:"fractal_id,omitempty"`
-	PrismID               string          `json:"prism_id,omitempty"`
-	Variables             json.RawMessage `json:"variables"`
-	Timezone              string          `json:"timezone"`
-	CreatedBy             string          `json:"created_by"`
-	AuthorDisplayName     string          `json:"author_display_name"`
-	AuthorGravatarColor   string          `json:"author_gravatar_color"`
-	AuthorGravatarInitial string          `json:"author_gravatar_initial"`
-	CreatedAt             time.Time       `json:"created_at"`
-	UpdatedAt             time.Time       `json:"updated_at"`
+	ID                   string          `json:"id"`
+	Name                 string          `json:"name"`
+	Description          string          `json:"description"`
+	TimeRangeType        string          `json:"time_range_type"`
+	TimeRangeStart       *time.Time      `json:"time_range_start,omitempty"`
+	TimeRangeEnd         *time.Time      `json:"time_range_end,omitempty"`
+	MaxResultsPerSection int             `json:"max_results_per_section"`
+	FractalID            string          `json:"fractal_id,omitempty"`
+	PrismID              string          `json:"prism_id,omitempty"`
+	Variables            json.RawMessage `json:"variables"`
+	Timezone             string          `json:"timezone"`
+	// ExternalRef links this investigation to the case that owns it in whatever
+	// system tracks cases here. A link, not a lifecycle: Bifract tracks no
+	// status or ownership of its own.
+	ExternalRefURL   string `json:"external_ref_url,omitempty"`
+	ExternalRefLabel string `json:"external_ref_label,omitempty"`
+	// LockedAt freezes the notebook as the record of an investigation: no edits
+	// and no re-running queries, so a later reader sees the rows the author saw.
+	LockedAt              *time.Time `json:"locked_at,omitempty"`
+	LockedBy              string     `json:"locked_by,omitempty"`
+	CreatedBy             string     `json:"created_by"`
+	AuthorDisplayName     string     `json:"author_display_name"`
+	AuthorGravatarColor   string     `json:"author_gravatar_color"`
+	AuthorGravatarInitial string     `json:"author_gravatar_initial"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 // NotebookSection represents a section within a notebook
@@ -1553,6 +1511,10 @@ type NotebookSection struct {
 	ChartType       *string         `json:"chart_type,omitempty"`
 	ChartConfig     json.RawMessage `json:"chart_config,omitempty"`
 	Tags            []string        `json:"tags,omitempty"`
+	// CommentID is the comment an evidence section shows. Set for every
+	// comment_context section written since migration 066; Content is projected
+	// from it on read.
+	CommentID *string `json:"comment_id,omitempty"`
 	// EventTime is when the section's subject happened, as opposed to CreatedAt
 	// which is when it was added. Nil when the section has no single point in time.
 	EventTime *time.Time `json:"event_time,omitempty"`
@@ -1628,7 +1590,10 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 	err := c.db.QueryRowContext(ctx, `
 		SELECT n.id, n.name, COALESCE(n.description, ''), n.time_range_type, n.time_range_start, n.time_range_end,
 		       n.max_results_per_section, COALESCE(n.fractal_id::text, ''), COALESCE(n.prism_id::text, ''),
-		       COALESCE(n.variables, '[]'), COALESCE(n.timezone, 'UTC'), COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       COALESCE(n.variables, '[]'), COALESCE(n.timezone, 'UTC'),
+		       COALESCE(n.external_ref_url, ''), COALESCE(n.external_ref_label, ''),
+		       n.locked_at, COALESCE(n.locked_by, ''),
+		       COALESCE(n.created_by, ''), n.created_at, n.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
 		LEFT JOIN users u ON n.created_by = u.username
@@ -1645,6 +1610,10 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 		&notebook.PrismID,
 		&notebook.Variables,
 		&notebook.Timezone,
+		&notebook.ExternalRefURL,
+		&notebook.ExternalRefLabel,
+		&notebook.LockedAt,
+		&notebook.LockedBy,
 		&notebook.CreatedBy,
 		&notebook.CreatedAt,
 		&notebook.UpdatedAt,
@@ -1703,7 +1672,9 @@ func (c *PostgresClient) GetNotebookByNameAndScope(ctx context.Context, name, fr
 	err = c.db.QueryRowContext(ctx, `
 		SELECT id, name, description, time_range_type, time_range_start, time_range_end,
 		       max_results_per_section, fractal_id, prism_id, COALESCE(variables, '[]'),
-		       COALESCE(timezone, 'UTC'), COALESCE(created_by, ''), created_at, updated_at
+		       COALESCE(timezone, 'UTC'), COALESCE(external_ref_url, ''), COALESCE(external_ref_label, ''),
+		       locked_at, COALESCE(locked_by, ''),
+		       COALESCE(created_by, ''), created_at, updated_at
 		FROM notebooks
 		WHERE name = $1 AND `+scopeCol+` = $2
 	`, name, scopeVal).Scan(
@@ -1718,6 +1689,10 @@ func (c *PostgresClient) GetNotebookByNameAndScope(ctx context.Context, name, fr
 		&scanPrismID,
 		&notebook.Variables,
 		&notebook.Timezone,
+		&notebook.ExternalRefURL,
+		&notebook.ExternalRefLabel,
+		&notebook.LockedAt,
+		&notebook.LockedBy,
 		&notebook.CreatedBy,
 		&notebook.CreatedAt,
 		&notebook.UpdatedAt,
@@ -1759,7 +1734,10 @@ func (c *PostgresClient) GetNotebooksByScope(ctx context.Context, fractalID, pri
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT n.id, n.name, n.description, n.time_range_type, n.time_range_start, n.time_range_end,
 		       n.max_results_per_section, COALESCE(n.fractal_id::text, ''), COALESCE(n.prism_id::text, ''),
-		       COALESCE(n.variables, '[]'), COALESCE(n.timezone, 'UTC'), COALESCE(n.created_by, ''), n.created_at, n.updated_at,
+		       COALESCE(n.variables, '[]'), COALESCE(n.timezone, 'UTC'),
+		       COALESCE(n.external_ref_url, ''), COALESCE(n.external_ref_label, ''),
+		       n.locked_at, COALESCE(n.locked_by, ''),
+		       COALESCE(n.created_by, ''), n.created_at, n.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM notebooks n
 		LEFT JOIN users u ON n.created_by = u.username
@@ -1787,6 +1765,10 @@ func (c *PostgresClient) GetNotebooksByScope(ctx context.Context, fractalID, pri
 			&notebook.PrismID,
 			&notebook.Variables,
 			&notebook.Timezone,
+			&notebook.ExternalRefURL,
+			&notebook.ExternalRefLabel,
+			&notebook.LockedAt,
+			&notebook.LockedBy,
 			&notebook.CreatedBy,
 			&notebook.CreatedAt,
 			&notebook.UpdatedAt,
@@ -1806,7 +1788,7 @@ func (c *PostgresClient) GetNotebooksByScope(ctx context.Context, fractalID, pri
 }
 
 // UpdateNotebook updates a notebook's metadata
-func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, description, timeRangeType, timezone *string, timeRangeStart, timeRangeEnd *time.Time, maxResults *int) error {
+func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, description, timeRangeType, timezone, externalRefURL, externalRefLabel *string, timeRangeStart, timeRangeEnd *time.Time, maxResults *int) error {
 	// Build dynamic query based on provided fields
 	setParts := []string{}
 	args := []interface{}{}
@@ -1815,6 +1797,16 @@ func (c *PostgresClient) UpdateNotebook(ctx context.Context, id string, name, de
 	if name != nil {
 		setParts = append(setParts, fmt.Sprintf("name = $%d", argIndex))
 		args = append(args, *name)
+		argIndex++
+	}
+	if externalRefURL != nil {
+		setParts = append(setParts, fmt.Sprintf("external_ref_url = $%d", argIndex))
+		args = append(args, *externalRefURL)
+		argIndex++
+	}
+	if externalRefLabel != nil {
+		setParts = append(setParts, fmt.Sprintf("external_ref_label = $%d", argIndex))
+		args = append(args, *externalRefLabel)
 		argIndex++
 	}
 	if description != nil {
@@ -1910,50 +1902,70 @@ func (c *PostgresClient) DeleteNotebook(ctx context.Context, id string) error {
 }
 
 // InsertNotebookSection creates a new notebook section
+// evidenceContentSQL renders an evidence section's content from the comment it
+// references, so an edited comment is never read back stale. Sections written
+// before comment_id existed fall back to their stored snapshot.
+const evidenceContentSQL = `CASE WHEN s.comment_id IS NULL THEN s.content ELSE jsonb_build_object(
+		'log_id', c.log_id,
+		'log_timestamp', to_char(c.log_timestamp, 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+		'comment_text', c.text,
+		'query', c.query,
+		'commented_at', to_char(c.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+		'author', c.author,
+		'author_display_name', COALESCE(NULLIF(u.display_name, ''), c.author),
+		'author_gravatar_color', COALESCE(u.gravatar_color, ''),
+		'author_gravatar_initial', COALESCE(u.gravatar_initial, ''),
+		'tags', COALESCE(to_jsonb(c.tags), '[]'::jsonb)
+	)::text END`
+
+// evidenceJoinSQL pairs with evidenceContentSQL: every section read aliases
+// notebook_sections as s and left joins the comment and its author.
+const evidenceJoinSQL = `FROM notebook_sections s
+	LEFT JOIN comments c ON c.id = s.comment_id
+	LEFT JOIN users u ON u.username = c.author`
+
 func (c *PostgresClient) InsertNotebookSection(ctx context.Context, section NotebookSection) (*NotebookSection, error) {
-	var newSection NotebookSection
+	id, err := insertNotebookSectionRow(ctx, c.db, section)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetNotebookSection(ctx, id)
+}
+
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// insertNotebookSectionRow inserts the row and returns its id. Evidence
+// sections store no content: it is projected from the referenced comment.
+func insertNotebookSectionRow(ctx context.Context, q rowQuerier, section NotebookSection) (string, error) {
 	tags := section.Tags
 	if tags == nil {
 		tags = []string{}
 	}
-	err := c.db.QueryRowContext(ctx, `
-		INSERT INTO notebook_sections (notebook_id, section_type, title, content, rendered_content, order_index, chart_type, chart_config, tags, event_time)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, notebook_id, section_type, title, content, rendered_content, order_index,
-		          last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), event_time, created_at, updated_at
-	`, section.NotebookID, section.SectionType, section.Title, section.Content, section.RenderedContent, section.OrderIndex, section.ChartType, section.ChartConfig, pq.Array(tags), section.EventTime).Scan(
-		&newSection.ID,
-		&newSection.NotebookID,
-		&newSection.SectionType,
-		&newSection.Title,
-		&newSection.Content,
-		&newSection.RenderedContent,
-		&newSection.OrderIndex,
-		&newSection.LastExecutedAt,
-		&newSection.LastResults,
-		&newSection.ChartType,
-		&newSection.ChartConfig,
-		pq.Array(&newSection.Tags),
-		&newSection.EventTime,
-		&newSection.CreatedAt,
-		&newSection.UpdatedAt,
-	)
-
+	var id string
+	err := q.QueryRowContext(ctx, `
+		INSERT INTO notebook_sections (notebook_id, section_type, title, content, rendered_content, order_index, chart_type, chart_config, tags, event_time, comment_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id
+	`, section.NotebookID, section.SectionType, section.Title, section.Content, section.RenderedContent,
+		section.OrderIndex, section.ChartType, section.ChartConfig, pq.Array(tags), section.EventTime, section.CommentID).Scan(&id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert notebook section: %w", err)
+		return "", fmt.Errorf("failed to insert notebook section: %w", err)
 	}
-
-	return &newSection, nil
+	return id, nil
 }
 
 // GetNotebookSections retrieves all sections for a notebook
 func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID string) ([]NotebookSection, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, notebook_id, section_type, title, content, rendered_content, order_index,
-		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), event_time, created_at, updated_at
-		FROM notebook_sections
-		WHERE notebook_id = $1
-		ORDER BY order_index ASC, created_at ASC, id ASC
+		SELECT s.id, s.notebook_id, s.section_type, s.title, `+evidenceContentSQL+`, s.rendered_content, s.order_index,
+		       s.last_executed_at, COALESCE(s.last_results, 'null'::jsonb), s.chart_type, COALESCE(s.chart_config, 'null'::jsonb),
+		       COALESCE(s.tags, '{}'), s.comment_id::text, s.event_time, s.created_at, s.updated_at
+		`+evidenceJoinSQL+`
+		WHERE s.notebook_id = $1
+		ORDER BY s.order_index ASC, s.created_at ASC, s.id ASC
 	`, notebookID)
 
 	if err != nil {
@@ -1977,6 +1989,7 @@ func (c *PostgresClient) GetNotebookSections(ctx context.Context, notebookID str
 			&section.ChartType,
 			&section.ChartConfig,
 			pq.Array(&section.Tags),
+			&section.CommentID,
 			&section.EventTime,
 			&section.CreatedAt,
 			&section.UpdatedAt,
@@ -2001,6 +2014,7 @@ type NotebookSectionSummary struct {
 	Title       *string    `json:"title,omitempty"`
 	OrderIndex  int        `json:"order_index"`
 	Tags        []string   `json:"tags,omitempty"`
+	CommentID   *string    `json:"comment_id,omitempty"`
 	EventTime   *time.Time `json:"event_time,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	HasResults  bool       `json:"has_results"`
@@ -2018,13 +2032,13 @@ type NotebookSectionSummary struct {
 // page's notebook rail) must not pay for that.
 func (c *PostgresClient) GetNotebookSectionSummaries(ctx context.Context, notebookID string) ([]NotebookSectionSummary, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, section_type, title, order_index, COALESCE(tags, '{}'), event_time, created_at,
-		       last_results IS NOT NULL AND last_results <> 'null'::jsonb,
-		       CASE WHEN section_type IN ('query', 'comment_context') THEN content ELSE left(content, $2) END,
-		       CASE WHEN section_type IN ('query', 'comment_context') THEN false ELSE length(content) > $2 END
-		FROM notebook_sections
-		WHERE notebook_id = $1
-		ORDER BY order_index ASC, created_at ASC, id ASC
+		SELECT s.id, s.section_type, s.title, s.order_index, COALESCE(s.tags, '{}'), s.comment_id::text, s.event_time, s.created_at,
+		       s.last_results IS NOT NULL AND s.last_results <> 'null'::jsonb,
+		       CASE WHEN s.section_type IN ('query', 'comment_context') THEN `+evidenceContentSQL+` ELSE left(s.content, $2) END,
+		       CASE WHEN s.section_type IN ('query', 'comment_context') THEN false ELSE length(s.content) > $2 END
+		`+evidenceJoinSQL+`
+		WHERE s.notebook_id = $1
+		ORDER BY s.order_index ASC, s.created_at ASC, s.id ASC
 	`, notebookID, notebookPreviewChars)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query notebook section summaries: %w", err)
@@ -2034,7 +2048,7 @@ func (c *PostgresClient) GetNotebookSectionSummaries(ctx context.Context, notebo
 	summaries := []NotebookSectionSummary{}
 	for rows.Next() {
 		var s NotebookSectionSummary
-		if err := rows.Scan(&s.ID, &s.SectionType, &s.Title, &s.OrderIndex, pq.Array(&s.Tags),
+		if err := rows.Scan(&s.ID, &s.SectionType, &s.Title, &s.OrderIndex, pq.Array(&s.Tags), &s.CommentID,
 			&s.EventTime, &s.CreatedAt, &s.HasResults, &s.Content, &s.ContentTruncated); err != nil {
 			return nil, fmt.Errorf("failed to scan notebook section summary: %w", err)
 		}
@@ -2050,10 +2064,11 @@ func (c *PostgresClient) GetNotebookSectionSummaries(ctx context.Context, notebo
 func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID string) (*NotebookSection, error) {
 	var section NotebookSection
 	err := c.db.QueryRowContext(ctx, `
-		SELECT id, notebook_id, section_type, title, content, rendered_content, order_index,
-		       last_executed_at, COALESCE(last_results, 'null'::jsonb), chart_type, COALESCE(chart_config, 'null'::jsonb), COALESCE(tags, '{}'), event_time, created_at, updated_at
-		FROM notebook_sections
-		WHERE id = $1
+		SELECT s.id, s.notebook_id, s.section_type, s.title, `+evidenceContentSQL+`, s.rendered_content, s.order_index,
+		       s.last_executed_at, COALESCE(s.last_results, 'null'::jsonb), s.chart_type, COALESCE(s.chart_config, 'null'::jsonb),
+		       COALESCE(s.tags, '{}'), s.comment_id::text, s.event_time, s.created_at, s.updated_at
+		`+evidenceJoinSQL+`
+		WHERE s.id = $1
 	`, sectionID).Scan(
 		&section.ID,
 		&section.NotebookID,
@@ -2067,6 +2082,7 @@ func (c *PostgresClient) GetNotebookSection(ctx context.Context, sectionID strin
 		&section.ChartType,
 		&section.ChartConfig,
 		pq.Array(&section.Tags),
+		&section.CommentID,
 		&section.EventTime,
 		&section.CreatedAt,
 		&section.UpdatedAt,

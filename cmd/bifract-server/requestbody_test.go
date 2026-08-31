@@ -36,6 +36,8 @@ var bodylessRoutes = []string{
 	"POST /api/v1/models/{id}/enable-alert",
 	"POST /api/v1/normalizers/{id}/duplicate",
 	"POST /api/v1/normalizers/{id}/set-default",
+	"POST /api/v1/notebooks/active",
+	"POST /api/v1/notebooks/{id}/lock",
 	"POST /api/v1/notebooks/{id}/presence",
 	"POST /api/v1/notebooks/{id}/sections/{section_id}/summarize",
 	"POST /api/v1/notifications/read",

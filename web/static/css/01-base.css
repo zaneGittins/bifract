@@ -2259,13 +2259,106 @@ body.col-reordering * {
 }
 
 
+/* Annotated by someone. Where the star gutter is present the mark lives in it
+   as a 2px rule, so the row carries one channel rather than two competing ones;
+   tables without a gutter (notebook and dashboard embeds) keep a row border. */
 .results-table tbody tr.has-comments {
-    border-left: 4px solid rgba(156, 106, 222, 0.85) !important;
-    background: rgba(156, 106, 222, 0.08) !important;
+    background: rgba(156, 106, 222, 0.05);
 }
 
 .results-table tbody tr.has-comments:hover {
-    background: rgba(156, 106, 222, 0.14) !important;
+    background: rgba(156, 106, 222, 0.12);
+}
+
+.results-table:not(.has-gutter) tbody tr.has-comments {
+    border-left: 3px solid rgba(156, 106, 222, 0.85);
+}
+
+/* ---- star gutter ---- */
+
+/* Fixed width and never resizable, sortable or reorderable: it is not a data
+   column. Top aligned rather than centred because a wrapped norm_log row runs
+   hundreds of pixels tall, and centring would strand the glyph in the middle of
+   the blob and leave the column ragged from row to row. */
+.results-table th.sg-gutter,
+.results-table td.sg-gutter {
+    width: 26px;
+    padding: 4px 0 0;
+    text-align: center;
+    vertical-align: top;
+    position: relative;
+    overflow: visible;
+}
+
+.results-table th.sg-gutter {
+    padding: 0;
+}
+
+.results-table tbody tr.has-comments td.sg-gutter::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(156, 106, 222, 0.85);
+}
+
+/* Transparent at rest, so a table nobody stars reads as it did before. The cell
+   always holds its width, so revealing the glyph reflows nothing. */
+.sg-star {
+    appearance: none;
+    background: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    width: 26px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+
+.results-table tbody tr:hover .sg-star {
+    opacity: 1;
+}
+
+.sg-star:hover {
+    color: var(--accent-secondary);
+    transform: scale(1.12);
+}
+
+.sg-star:focus-visible {
+    opacity: 1;
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+    border-radius: 4px;
+}
+
+.results-table tbody tr.starred .sg-star {
+    opacity: 1;
+    color: var(--accent-primary);
+}
+
+.sg-star svg {
+    display: block;
+}
+
+.sg-star .sg-fill {
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+
+.results-table tbody tr.starred .sg-star .sg-fill {
+    opacity: 1;
+}
+
+.results-table tbody tr.starred .sg-star .sg-outline {
+    opacity: 0;
 }
 
 .results-table tbody tr:last-child {

@@ -674,7 +674,7 @@ func main() {
 	// Groups handler (tenant admin only)
 	groupHandler := groups.NewHandler(pg)
 
-	commentHandler := comments.NewCommentHandlerWithFractals(pg, db, fractalManager)
+	commentHandler := comments.NewCommentHandlerWithFractals(pg, db, fractalManager, prismManager)
 	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey)
 	notebookHandler.SetRBACResolver(authHandler.RBACResolver())
 	dashboardHandler := dashboards.NewDashboardHandler(pg, fractalManager)
@@ -684,6 +684,7 @@ func main() {
 	sseHub := sse.NewHub()
 	notebookHandler.SetSSEHub(sseHub)
 	dashboardHandler.SetSSEHub(sseHub)
+	commentHandler.SetSSEHub(sseHub)
 
 	// The hub only reaches clients on this process. Attach the Postgres relay so
 	// collaborators spread across replicas still see each other's edits and

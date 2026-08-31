@@ -88,7 +88,7 @@ const CommentedLogs = {
         }
 
         try {
-            let url = '/api/v1/comments/flat?limit=5000';
+            const url = '/api/v1/comments/flat?limit=5000';
 
             const response = await fetch(url, { credentials: 'include' });
             const data = await response.json();
@@ -418,6 +418,7 @@ const CommentedLogs = {
                             <th>Comment</th>
                             <th class="sortable-th" onclick="CommentedLogs.toggleSort('tag_count')">
                                 Tags${this.sortIndicator('tag_count')}</th>
+                            <th>Notebook</th>
                             <th>Log</th>
                         </tr>
                     </thead>
@@ -449,6 +450,11 @@ const CommentedLogs = {
                 tagsHtml = '<span class="text-muted">-</span>';
             }
 
+            const notebooks = comment.notebooks || [];
+            const notebooksHtml = notebooks.length
+                ? notebooks.map(n => `<span class="label-pill" onclick="event.stopPropagation(); App.showFractalViewTab('notebooks', '${Utils.escapeJs(n.id)}')" title="Open ${Utils.escapeHtml(n.name)}">${Utils.escapeHtml(n.name.length > 22 ? n.name.substring(0, 20) + '..' : n.name)}</span>`).join(' ')
+                : '<span class="text-muted">unfiled</span>';
+
             html += `
                 <tr class="alert-row" data-comment-id="${comment.id}"
                     data-index="${globalIndex}"
@@ -470,6 +476,7 @@ const CommentedLogs = {
                     </td>
                     <td class="comment-text-cell comment-markdown" title="${Utils.escapeHtml(comment.text)}">${Utils.renderCommentMarkdown(textPreview)}</td>
                     <td class="comment-tags-cell">${tagsHtml}</td>
+                    <td class="comment-notebooks-cell">${notebooksHtml}</td>
                     <td class="comment-log-cell" title="${Utils.escapeHtml(comment.log_id)}">
                         <code>${Utils.escapeHtml(logIdShort)}</code>
                     </td>
@@ -909,14 +916,6 @@ const CommentedLogs = {
         if (modal) modal.remove();
     },
 
-    postGenerateNotebook(tag, attackChain, overwrite) {
-        return fetch('/api/v1/notebooks/generate-from-comments', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ tag: tag, attack_chain: attackChain, overwrite: overwrite })
-        });
-    },
 
     async handleGenerateNotebook(event) {
         event.preventDefault();
@@ -934,27 +933,24 @@ const CommentedLogs = {
         }
 
         try {
-            let response = await this.postGenerateNotebook(tag, attackChain, false);
-            let data = await response.json();
-
-            // 409 means a notebook of this name already exists. Regenerating
-            // replaces it wholesale, so the discard is confirmed before retrying.
-            if (response.status === 409 && data.data && data.data.conflict) {
-                if (!confirm(`"${data.data.name}" already exists.\n\nRegenerating replaces it and permanently discards any sections added to it since it was last generated.\n\nReplace it?`)) {
-                    if (submitBtn) {
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = 'Generate';
-                    }
-                    return;
-                }
-                response = await this.postGenerateNotebook(tag, attackChain, true);
-                data = await response.json();
-            }
+            // Filing is additive: an existing notebook for this tag gains the
+            // comments it does not already hold and keeps everything else.
+            const response = await fetch('/api/v1/notebooks/generate-from-comments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ tag: tag, attack_chain: attackChain })
+            });
+            const data = await response.json();
 
             if (data.success) {
                 this.closeGenerateNotebookModal();
                 if (window.Toast) {
-                    Toast.success('Notebook Generated', `Created "Notebook: ${tag}" with ${data.data.sections} sections`);
+                    const added = data.data.added;
+                    const title = data.data.created ? 'Notebook Created' : 'Notebook Updated';
+                    Toast.success(title, added === 0
+                        ? `"Notebook: ${tag}" already had every tagged comment`
+                        : `Added ${added} ${added === 1 ? 'comment' : 'comments'} to "Notebook: ${tag}"`);
                 }
             } else {
                 if (window.Toast) {

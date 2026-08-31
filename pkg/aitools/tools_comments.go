@@ -22,13 +22,17 @@ func registerCommentTools(d *set) {
 	add(d, &mcp.Tool{
 		Name:        "add_comment",
 		Annotations: mutates(),
-		Description: "Attach a comment to a log entry.\n\n" +
-			"Comments are how findings are recorded for other analysts. The tag " +
-			"\"AI-Generated\" is always added.\n\n" +
-			"When several logs belong to one investigation, give them a shared tag of the " +
-			"form IR-<OneWord> (IR-BruteForce, IR-Exfiltration, IR-LateralMovement) and " +
-			"reuse it across every comment in that investigation so they can be pulled up " +
-			"together.\n\n" +
+		Description: "Record that a log matters, and why.\n\n" +
+			"This is the only way to mark an event. A comment is what an analyst sees as the " +
+			"row's mark in search results, what comments() finds, and, with notebook_id, what " +
+			"appears in that notebook's timeline. The tag \"AI-Generated\" is always added.\n\n" +
+			"Pass notebook_id to file the event into an investigation, which is where evidence " +
+			"belongs: create_notebook once at the start of a hunt, then file every finding into " +
+			"it as you go. Filing the same log twice is a no-op, so re-running is safe.\n\n" +
+			"Text may be empty when filing: that marks the event as evidence without claiming " +
+			"anything about it yet.\n\n" +
+			"Also give related comments a shared tag of the form IR-<OneWord> (IR-BruteForce, " +
+			"IR-Exfiltration), which is how they are pulled up together outside a notebook.\n\n" +
 			"Returns the created comment.",
 	}, addComment)
 
@@ -36,7 +40,8 @@ func registerCommentTools(d *set) {
 		Name:        "list_comments",
 		Annotations: readOnly(),
 		Description: "List every comment in the fractal, most recent first.\n\n" +
-			"Returns comments with their text, tags, author, and the log they annotate.",
+			"Returns comments with their text, tags, author, the log they annotate, and the " +
+			"notebooks each is filed into. A comment with no notebooks was never collected.",
 	}, listComments)
 
 	add(d, &mcp.Tool{
@@ -73,9 +78,11 @@ func registerCommentTools(d *set) {
 }
 
 type addCommentArgs struct {
-	LogID string   `json:"log_id" jsonschema:"The log_id of the entry to comment on. Query results carry it."`
-	Text  string   `json:"text" jsonschema:"The comment body; markdown is supported."`
-	Tags  []string `json:"tags,omitempty" jsonschema:"Additional tags to attach, for example ['IR-BruteForce']."`
+	LogID      string   `json:"log_id" jsonschema:"The log_id of the entry to comment on. Query results carry it."`
+	Text       string   `json:"text" jsonschema:"The comment body; markdown is supported. May be empty when filing into a notebook."`
+	Tags       []string `json:"tags,omitempty" jsonschema:"Additional tags to attach, for example ['IR-BruteForce']."`
+	NotebookID string   `json:"notebook_id,omitempty" jsonschema:"File the event into this notebook as evidence. Ids come from list_notebooks or create_notebook. Omit to leave the comment unfiled."`
+	Title      string   `json:"title,omitempty" jsonschema:"One line naming the event in the notebook outline, for example 'WKSTN-4471 - rundll32'. Ignored without notebook_id."`
 }
 
 func addComment(ctx context.Context, c Client, in addCommentArgs) (any, error) {
@@ -85,11 +92,36 @@ func addComment(ctx context.Context, c Client, in addCommentArgs) (any, error) {
 			tags = append(tags, tag)
 		}
 	}
-	return c.Post(ctx, "/comments", map[string]any{
+
+	body := map[string]any{
 		"log_id": in.LogID,
 		"text":   in.Text,
 		"tags":   tags,
-	})
+	}
+	if notebookID := resolveNotebook(ctx, c, in.NotebookID); notebookID != "" {
+		body["notebook_id"] = notebookID
+		if in.Title != "" {
+			body["title"] = in.Title
+		}
+	}
+	return c.Post(ctx, "/comments", body)
+}
+
+// resolveNotebook picks where a comment is filed: what the caller named, or the
+// notebook the analyst is capturing into.
+//
+// The active notebook is per-user state, so it answers only when the tool runs
+// inside someone's session (the chat tab). Over MCP the credential is a machine
+// principal with no such state, and the model has to name a notebook.
+func resolveNotebook(ctx context.Context, c Client, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	state, err := c.Get(ctx, "/notebooks/active", nil)
+	if err != nil {
+		return ""
+	}
+	return Field[string](state, "notebook_id")
 }
 
 func listComments(ctx context.Context, c Client, _ noArgs) (any, error) {

@@ -863,10 +863,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Query: []api.QueryParam{
 					{Name: "limit", Type: "integer"},
 					{Name: "offset", Type: "integer"},
+					{Name: "filed", Description: "filed, unfiled, or empty for both."},
 				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[storage.Comment]{},
-				Summary:  "List comments individually rather than grouped by log.",
+				Summary:  "List comments individually rather than grouped by log, with the notebooks each is filed into.",
 				Handler:  d.commentHandler.HandleGetFlatComments,
 			})
 			r.Register(api.Route{
@@ -926,6 +927,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: comments.Response{},
 				Summary:  "Update one comment.",
 				Handler:  d.commentHandler.HandleUpdateComment,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPut,
+				Path:     "/comments/{id}/tags",
+				Access:   api.AccessAnalyst,
+				Request:  comments.UpdateCommentTagsRequest{},
+				Response: comments.Response{},
+				Summary:  "Replace a comment's tags. Any analyst in scope may retag shared evidence.",
+				Handler:  d.commentHandler.HandleUpdateCommentTags,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodDelete,
@@ -1010,8 +1020,33 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Access:   api.AccessAnalyst,
 					Request:  notebooks.GenerateFromCommentsRequest{},
 					Response: notebooks.Response{},
-					Summary:  "Build a notebook from every comment carrying a tag.",
+					Summary:  "File every comment carrying a tag into a notebook, without removing anything already there.",
 					Handler:  d.notebookHandler.HandleGenerateFromComments,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/notebooks/active",
+					Access:   api.AccessViewer,
+					Response: notebooks.Response{},
+					Summary:  "Read the notebook this user captures into for the current scope.",
+					Handler:  d.notebookHandler.HandleGetActiveNotebook,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/notebooks/active",
+					Access:   api.AccessViewer,
+					Request:  notebooks.SetActiveNotebookRequest{},
+					Response: notebooks.Response{},
+					Summary:  "Set or clear the notebook this user captures into for the current scope.",
+					Handler:  d.notebookHandler.HandleSetActiveNotebook,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/notebooks/active",
+					Access:   api.AccessAnalyst,
+					Response: notebooks.Response{},
+					Summary:  "Return the notebook this user captures into, creating a scratch one when there is none.",
+					Handler:  d.notebookHandler.HandleEnsureActiveNotebook,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodGet,
@@ -1056,6 +1091,23 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.notebookHandler.HandleCreateSection,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/evidence",
+					Access:   api.AccessAnalyst,
+					Request:  notebooks.FileEvidenceRequest{},
+					Response: notebooks.Response{},
+					Summary:  "File existing comments into a notebook as evidence.",
+					Handler:  d.notebookHandler.HandleFileEvidence,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodDelete,
+					Path:     "/notebooks/{id}/evidence/{log_id}",
+					Access:   api.AccessAnalyst,
+					Response: notebooks.Response{},
+					Summary:  "Remove a log from a notebook's evidence.",
+					Handler:  d.notebookHandler.HandleDeleteEvidence,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPut,
 					Path:     "/notebooks/{id}/sections/{section_id}",
 					Access:   api.AccessViewer,
@@ -1074,15 +1126,6 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				})
 				r.Register(api.Route{
 					Method:   http.MethodPost,
-					Path:     "/notebooks/{id}/sections/{section_id}/execute",
-					Access:   api.AccessViewer,
-					Request:  notebooks.ExecuteQueryRequest{},
-					Response: notebooks.Response{},
-					Summary:  "Run a query section and cache its results.",
-					Handler:  d.notebookHandler.HandleExecuteQuerySection,
-				})
-				r.Register(api.Route{
-					Method:   http.MethodPost,
 					Path:     "/notebooks/{id}/sections/{section_id}/summarize",
 					Access:   api.AccessViewer,
 					Response: notebooks.Response{},
@@ -1097,6 +1140,22 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Response: notebooks.Response{},
 					Summary:  "Replace a query section's cached results.",
 					Handler:  d.notebookHandler.HandleUpdateSectionResults,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/notebooks/{id}/lock",
+					Access:   api.AccessViewer,
+					Response: notebooks.Response{},
+					Summary:  "Lock a notebook, freezing its content and query results.",
+					Handler:  d.notebookHandler.HandleLockNotebook,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodDelete,
+					Path:     "/notebooks/{id}/lock",
+					Access:   api.AccessViewer,
+					Response: notebooks.Response{},
+					Summary:  "Unlock a notebook, returning it to editable.",
+					Handler:  d.notebookHandler.HandleUnlockNotebook,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodPost,
@@ -1144,8 +1203,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Path:     "/notebooks/{id}/export",
 					Produces: "text/yaml",
 					Access:   api.AccessViewer,
-					Summary:  "Export a notebook as YAML.",
-					Handler:  d.notebookHandler.HandleExportNotebook,
+					Query: []api.QueryParam{
+						{Name: "format", Description: "yaml (default) or md for a report."},
+						{Name: "order", Description: "time for chronological, otherwise notebook order."},
+						{Name: "tags", Description: "Comma-separated tags; keeps only sections carrying one."},
+					},
+					Summary: "Export a notebook as YAML, or as a Markdown report.",
+					Handler: d.notebookHandler.HandleExportNotebook,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodGet,

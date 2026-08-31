@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -149,6 +148,34 @@ func (h *NotebookHandler) requireRoleOnPrism(r *http.Request, prismID string, re
 		return rbac.HasAccess(user, prismRole, required)
 	}
 	return rbac.HasAccess(user, h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID), required)
+}
+
+// requireEditable gates a write on a notebook: analyst on its scope, and not
+// locked. The lock is checked here rather than in each handler so a route added
+// later cannot quietly skip it; the route table test asserts every mutating
+// notebook route goes through it.
+func (h *NotebookHandler) requireEditable(w http.ResponseWriter, r *http.Request, nb *storage.Notebook) bool {
+	if !h.canWrite(r, nb) {
+		forbidden(w)
+		return false
+	}
+	if nb.IsLocked() {
+		api.WriteError(w, http.StatusConflict, nb.LockedMessage())
+		return false
+	}
+	return true
+}
+
+// canWrite is the role half of requireEditable, for the few callers that report
+// editability rather than enforce it.
+func (h *NotebookHandler) canWrite(r *http.Request, nb *storage.Notebook) bool {
+	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
+		return false
+	}
+	if nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst) {
+		return false
+	}
+	return true
 }
 
 // Response is the shared API envelope. The alias keeps the package-local
@@ -369,50 +396,10 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Convert storage types to response types
-	notebookResponse := Notebook{
-		ID:                    notebook.ID,
-		Name:                  notebook.Name,
-		Description:           notebook.Description,
-		TimeRangeType:         notebook.TimeRangeType,
-		TimeRangeStart:        notebook.TimeRangeStart,
-		TimeRangeEnd:          notebook.TimeRangeEnd,
-		MaxResultsPerSection:  notebook.MaxResultsPerSection,
-		Timezone:              storage.SafeTimezone(notebook.Timezone),
-		FractalID:             notebook.FractalID,
-		Variables:             notebook.Variables,
-		CreatedBy:             notebook.CreatedBy,
-		AuthorDisplayName:     notebook.AuthorDisplayName,
-		AuthorGravatarColor:   notebook.AuthorGravatarColor,
-		AuthorGravatarInitial: notebook.AuthorGravatarInitial,
-		CreatedAt:             notebook.CreatedAt,
-		UpdatedAt:             notebook.UpdatedAt,
-	}
-
-	// Convert sections
-	for _, section := range sections {
-		notebookResponse.Sections = append(notebookResponse.Sections, NotebookSection{
-			ID:              section.ID,
-			NotebookID:      section.NotebookID,
-			SectionType:     section.SectionType,
-			Title:           section.Title,
-			Content:         section.Content,
-			RenderedContent: section.RenderedContent,
-			OrderIndex:      section.OrderIndex,
-			LastExecutedAt:  section.LastExecutedAt,
-			LastResults:     section.LastResults,
-			ChartType:       section.ChartType,
-			ChartConfig:     section.ChartConfig,
-			Tags:            section.Tags,
-			EventTime:       section.EventTime,
-			CreatedAt:       section.CreatedAt,
-			UpdatedAt:       section.UpdatedAt,
-		})
-	}
-
+	notebook.Timezone = storage.SafeTimezone(notebook.Timezone)
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
-		Data:    notebookResponse,
+		Data:    NotebookWithSections{Notebook: *notebook, Sections: sections},
 	})
 }
 
@@ -444,12 +431,9 @@ func (h *NotebookHandler) HandleGetNotebookSummary(w http.ResponseWriter, r *htt
 		counts[sec.SectionType]++
 	}
 
-	canEdit := false
-	if notebook.FractalID != "" {
-		canEdit = h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleAnalyst)
-	} else if notebook.PrismID != "" {
-		canEdit = h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleAnalyst)
-	}
+	// A locked notebook is read-only for everyone, so the client renders it that
+	// way rather than offering edits the server will reject.
+	canEdit := h.canWrite(r, notebook) && !notebook.IsLocked()
 
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
@@ -480,8 +464,7 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -500,8 +483,24 @@ func (h *NotebookHandler) HandleUpdateNotebook(w http.ResponseWriter, r *http.Re
 		req.Timezone = &tz
 	}
 
-	// Update notebook
-	err = h.pg.UpdateNotebook(r.Context(), notebookID, req.Name, req.Description, req.TimeRangeType, req.Timezone, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
+	// A case link has to be a URL the browser will actually follow: anything
+	// else here is either a mistake or an attempt to smuggle javascript: into a
+	// link every reader of the notebook is invited to click.
+	if req.ExternalRefURL != nil {
+		trimmed := strings.TrimSpace(*req.ExternalRefURL)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+			api.WriteError(w, http.StatusBadRequest, "The case link must be an http or https URL")
+			return
+		}
+		req.ExternalRefURL = &trimmed
+	}
+	if req.ExternalRefLabel != nil {
+		label := truncateRunes(strings.TrimSpace(*req.ExternalRefLabel), 120)
+		req.ExternalRefLabel = &label
+	}
+
+	err = h.pg.UpdateNotebook(r.Context(), notebookID, req.Name, req.Description, req.TimeRangeType, req.Timezone,
+		req.ExternalRefURL, req.ExternalRefLabel, req.TimeRangeStart, req.TimeRangeEnd, req.MaxResultsPerSection)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found or unauthorized") {
 			api.WriteError(w, http.StatusNotFound, "Notebook not found or unauthorized")
@@ -527,8 +526,7 @@ func (h *NotebookHandler) HandleDeleteNotebook(w http.ResponseWriter, r *http.Re
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -548,36 +546,15 @@ func (h *NotebookHandler) HandleDeleteNotebook(w http.ResponseWriter, r *http.Re
 	})
 }
 
-// HandleCreateSection creates a new section in a notebook
 // creatableSectionTypes are the section types a client may create directly.
-// comment_context is included: it is the evidence section, and pinning a log
-// from search is the same record the comment generator writes.
+// comment_context is not among them: an evidence section references a comment,
+// so it is created by POST /comments with a notebook_id, which writes both in
+// one transaction.
 var creatableSectionTypes = map[string]bool{
 	"markdown":        true,
 	"query":           true,
-	"comment_context": true,
 	"ai_summary":      true,
 	"ai_attack_chain": true,
-}
-
-var evidenceLogIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8,64}$`)
-
-// validateEvidenceContent checks that an evidence section's content is the JSON
-// object its renderer expects. Without this the section renders as an error for
-// everyone reading the notebook, with no way to tell why from the UI.
-func validateEvidenceContent(content string) error {
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(content), &data); err != nil {
-		return fmt.Errorf("evidence content must be a JSON object")
-	}
-	logID, ok := data["log_id"].(string)
-	if !ok || logID == "" {
-		return fmt.Errorf("evidence content requires a log_id")
-	}
-	if !evidenceLogIDPattern.MatchString(logID) {
-		return fmt.Errorf("evidence log_id is not a valid log identifier")
-	}
-	return nil
 }
 
 // maxSectionTitleChars matches notebook_sections.title's column width. Cutting
@@ -628,8 +605,7 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -641,15 +617,12 @@ func (h *NotebookHandler) HandleCreateSection(w http.ResponseWriter, r *http.Req
 
 	// Validate input
 	if !creatableSectionTypes[req.SectionType] {
-		api.WriteError(w, http.StatusBadRequest, "section_type must be 'markdown', 'query', 'comment_context', 'ai_summary', or 'ai_attack_chain'")
-		return
-	}
-
-	if req.SectionType == "comment_context" {
-		if err := validateEvidenceContent(req.Content); err != nil {
-			api.WriteError(w, http.StatusBadRequest, err.Error())
+		if req.SectionType == "comment_context" {
+			api.WriteError(w, http.StatusBadRequest, "Evidence is created by posting a comment with a notebook_id")
 			return
 		}
+		api.WriteError(w, http.StatusBadRequest, "section_type must be 'markdown', 'query', 'ai_summary', or 'ai_attack_chain'")
+		return
 	}
 
 	if req.SectionType == "ai_summary" || req.SectionType == "ai_attack_chain" {
@@ -723,8 +696,7 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -732,6 +704,21 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
+	}
+
+	// An evidence section's content is projected from its comment, so a content
+	// edit here would be written and never read again. Refuse it rather than
+	// silently dropping what someone typed.
+	if req.Content != nil {
+		existing, err := h.pg.GetNotebookSection(r.Context(), sectionID)
+		if err != nil {
+			api.WriteError(w, http.StatusNotFound, "Section not found")
+			return
+		}
+		if existing.CommentID != nil {
+			api.WriteError(w, http.StatusBadRequest, "Edit the comment to change this evidence")
+			return
+		}
 	}
 
 	// Update section
@@ -802,8 +789,7 @@ func (h *NotebookHandler) HandleDeleteSection(w http.ResponseWriter, r *http.Req
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -824,77 +810,6 @@ func (h *NotebookHandler) HandleDeleteSection(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// HandleExecuteQuerySection executes a query section and updates cached results
-func (h *NotebookHandler) HandleExecuteQuerySection(w http.ResponseWriter, r *http.Request) {
-	notebookID := chi.URLParam(r, "id")
-	sectionID := chi.URLParam(r, "section_id")
-
-	var req ExecuteQueryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// It's okay if no body is provided, we'll use notebook defaults
-	}
-
-	// Get the notebook to access time range settings
-	notebook, err := h.pg.GetNotebook(r.Context(), notebookID)
-	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "Notebook not found")
-		return
-	}
-
-	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleAnalyst)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
-		return
-	}
-
-	// Get the specific section
-	section, err := h.pg.GetNotebookSection(r.Context(), sectionID)
-	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "Section not found")
-		return
-	}
-
-	// Verify this section belongs to the notebook
-	if section.NotebookID != notebookID || section.NotebookID != notebook.ID {
-		api.WriteError(w, http.StatusBadRequest, "Section does not belong to notebook")
-		return
-	}
-
-	// Verify this is a query section
-	if section.SectionType != "query" {
-		api.WriteError(w, http.StatusBadRequest, "Section is not a query section")
-		return
-	}
-
-	// TODO: Implement full query execution integration with QueryHandler
-	// Calculate time range: startTime, endTime := h.calculateTimeRange(notebook)
-	// Create query request and execute it properly
-
-	// Create a placeholder response for now - this would be replaced with actual query execution
-	queryResults := map[string]interface{}{
-		"success":      true,
-		"results":      []map[string]interface{}{},
-		"count":        0,
-		"query":        section.Content,
-		"execution_ms": 0,
-		"error":        "Query execution integration pending - requires QueryHandler instance",
-	}
-
-	// Store the results in the section
-	resultsJSON, _ := json.Marshal(queryResults)
-	err = h.pg.UpdateSectionQueryResults(r.Context(), sectionID, string(resultsJSON), section.ChartType, section.ChartConfig)
-	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "Failed to update section results")
-		return
-	}
-
-	// Return the query results
-	api.WriteJSON(w, http.StatusOK, Response{
-		Success: true,
-		Message: "Query executed (placeholder implementation)",
-		Data:    queryResults,
-	})
-}
-
 // HandleReorderSections reorders sections in a notebook
 func (h *NotebookHandler) HandleReorderSections(w http.ResponseWriter, r *http.Request) {
 	notebookID := chi.URLParam(r, "id")
@@ -904,8 +819,7 @@ func (h *NotebookHandler) HandleReorderSections(w http.ResponseWriter, r *http.R
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -959,8 +873,7 @@ func (h *NotebookHandler) HandleUpdateSectionResults(w http.ResponseWriter, r *h
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -1100,8 +1013,7 @@ func (h *NotebookHandler) HandleUpdateVariables(w http.ResponseWriter, r *http.R
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 
@@ -1142,8 +1054,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireEditable(w, r, nb) {
 		return
 	}
 	if !h.aiEnabled() {
@@ -1552,6 +1463,21 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 		sections = []storage.NotebookSection{}
 	}
 
+	// Markdown is the hand-off format, YAML the round-trip one. Default stays
+	// YAML so existing callers keep working.
+	if strings.EqualFold(r.URL.Query().Get("format"), "md") || strings.EqualFold(r.URL.Query().Get("format"), "markdown") {
+		opts := markdownExportOptions{Chronological: r.URL.Query().Get("order") == "time"}
+		for _, tag := range strings.Split(r.URL.Query().Get("tags"), ",") {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				opts.Tags = append(opts.Tags, tag)
+			}
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.md"`, exportFilename(notebook.Name)))
+		w.Write([]byte(exportMarkdown(notebook, sections, opts)))
+		return
+	}
+
 	export := notebookYAML{
 		Kind:        "Notebook",
 		Name:        notebook.Name,
@@ -1600,8 +1526,27 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "text/yaml")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"`, notebook.Name))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"`, exportFilename(notebook.Name)))
 	w.Write(out)
+}
+
+// exportFilename strips what a Content-Disposition filename cannot carry. A
+// notebook name is free text, and a quote or newline in it would truncate or
+// split the header.
+func exportFilename(name string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case r < 32, r == '"', r == '\\', r == '/', r == 127:
+			return '-'
+		default:
+			return r
+		}
+	}, name)
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return "notebook"
+	}
+	return truncateRunes(cleaned, 100)
 }
 
 // HandleImportNotebook imports a notebook from YAML
@@ -1771,174 +1716,87 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		return
 	}
 
-	notebookName := fmt.Sprintf("Notebook: %s", req.Tag)
-
-	// Generating replaces any notebook of the same name outright, discarding
-	// whatever was added to it by hand since the last run. That is destructive
-	// enough to require the caller to say so: without Overwrite this reports the
-	// conflict and changes nothing.
-	existing, err := h.pg.GetNotebookByNameAndScope(r.Context(), notebookName, selectedFractal, selectedPrism)
-	if err != nil {
-		log.Printf("[Notebooks] Failed to check existing notebook: %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "Failed to check for existing notebook")
-		return
-	}
-	if existing != nil {
-		if !req.Overwrite {
-			api.WriteJSON(w, http.StatusConflict, Response{
-				Success: false,
-				Error:   fmt.Sprintf("A notebook named %q already exists. Regenerating replaces it and discards any sections added to it since.", notebookName),
-				Data: map[string]interface{}{
-					"conflict":    true,
-					"notebook_id": existing.ID,
-					"name":        existing.Name,
-				},
-			})
-			return
-		}
-		if err := h.pg.DeleteNotebook(r.Context(), existing.ID); err != nil {
-			log.Printf("[Notebooks] Failed to delete existing notebook: %v", err)
-			api.WriteError(w, http.StatusInternalServerError, "Failed to replace the existing notebook")
-			return
-		}
-	}
-
-	notebook := storage.Notebook{
-		Name:                 notebookName,
-		Description:          fmt.Sprintf("Auto-generated from comments tagged \"%s\"", req.Tag),
-		TimeRangeType:        "all",
-		MaxResultsPerSection: 1000,
-		CreatedBy:            auth.AttributionUsername(r.Context()),
-	}
-	if selectedPrism != "" {
-		notebook.PrismID = selectedPrism
-	} else {
-		notebook.FractalID = selectedFractal
-	}
-
-	newNotebook, err := h.pg.InsertNotebook(r.Context(), notebook)
-	if err != nil {
-		log.Printf("[Notebooks] Failed to create notebook: %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "Failed to create notebook")
+	// Filing is additive. The old behaviour deleted and recreated the notebook,
+	// which discarded everything added to it by hand since the last run; now an
+	// existing notebook gains only the comments it does not already hold.
+	notebookID, createdNotebook, ok := h.resolveGenerateTarget(w, r, req, selectedFractal, selectedPrism)
+	if !ok {
 		return
 	}
 
-	orderIdx := 0
-
-	// If AI is enabled, add an AI summary or attack chain section first
-	var aiSectionID string
-	var aiSectionType string
+	// AI summary and attack chain are one-per-notebook, so a repeat run against
+	// an existing notebook reuses the one already there.
+	var aiSectionID, aiSectionType string
 	if h.aiEnabled() {
+		aiSectionType = "ai_summary"
+		aiTitle := "AI Summary"
 		if req.AttackChain {
 			aiSectionType = "ai_attack_chain"
-			aiTitle := "AI Attack Chain Summary"
-			aiSection := storage.NotebookSection{
-				NotebookID:  newNotebook.ID,
-				SectionType: "ai_attack_chain",
-				Title:       &aiTitle,
-				Content:     "",
-				OrderIndex:  orderIdx,
-			}
-			created, err := h.pg.InsertNotebookSection(r.Context(), aiSection)
-			if err != nil {
-				log.Printf("[Notebooks] Failed to create AI attack chain section: %v", err)
-			} else {
-				aiSectionID = created.ID
-				orderIdx++
-			}
+			aiTitle = "AI Attack Chain Summary"
+		}
+		if existingID, err := h.findSectionByType(r.Context(), notebookID, aiSectionType); err != nil {
+			log.Printf("[Notebooks] Failed to check for an existing %s section: %v", aiSectionType, err)
+		} else if existingID != "" {
+			aiSectionID = existingID
+		} else if orderIdx, err := h.pg.NextNotebookSectionOrderIndex(r.Context(), notebookID); err != nil {
+			log.Printf("[Notebooks] Failed to place the %s section: %v", aiSectionType, err)
 		} else {
-			aiSectionType = "ai_summary"
-			aiTitle := "AI Summary"
-			aiSection := storage.NotebookSection{
-				NotebookID:  newNotebook.ID,
-				SectionType: "ai_summary",
+			created, err := h.pg.InsertNotebookSection(r.Context(), storage.NotebookSection{
+				NotebookID:  notebookID,
+				SectionType: aiSectionType,
 				Title:       &aiTitle,
 				Content:     "",
 				OrderIndex:  orderIdx,
-			}
-			created, err := h.pg.InsertNotebookSection(r.Context(), aiSection)
+			})
 			if err != nil {
-				log.Printf("[Notebooks] Failed to create AI summary section: %v", err)
+				log.Printf("[Notebooks] Failed to create %s section: %v", aiSectionType, err)
 			} else {
 				aiSectionID = created.ID
-				orderIdx++
 			}
 		}
 	}
 
-	// Create a comment_context section for each comment, collecting section/log_id
-	// pairs plus the event-time span they cover so the prefetch can bound its scan.
+	items := make([]storage.EvidenceItem, 0, len(comments))
+	commentsByID := make(map[string]storage.Comment, len(comments))
+	for _, c := range comments {
+		commentsByID[c.ID] = c
+		items = append(items, storage.EvidenceItem{
+			CommentID: c.ID,
+			Title:     evidenceTitle(c),
+			EventTime: c.LogTimestamp,
+		})
+	}
+
+	sections, err := h.pg.InsertEvidenceSections(r.Context(), notebookID, items)
+	if err != nil {
+		log.Printf("[Notebooks] Failed to file comments into notebook: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to file comments into the notebook")
+		return
+	}
+
+	// Section/log_id pairs plus the event-time span they cover, so the prefetch
+	// can bound its scan.
 	type sectionLogID struct {
 		SectionID string
 		LogID     string
 	}
 	var logIDSections []sectionLogID
 	var logsFrom, logsTo time.Time
-
-	for _, c := range comments {
-		displayName := c.AuthorDisplayName
-		if displayName == "" {
-			displayName = c.Author
-		}
-
-		titleText := c.Text
-		if trimmed := truncateRunes(titleText, 80); trimmed != titleText {
-			titleText = trimmed + "..."
-		}
-		sectionTitle := truncateRunes(fmt.Sprintf("%s: %s", displayName, titleText), maxSectionTitleChars)
-
-		gravatarInitial := c.AuthorGravatarInitial
-		if gravatarInitial == "" {
-			if runes := []rune(c.Author); len(runes) > 0 {
-				gravatarInitial = strings.ToUpper(string(runes[0]))
-			}
-		}
-
-		contextData := map[string]string{
-			"author":                  c.Author,
-			"author_display_name":     displayName,
-			"author_gravatar_color":   c.AuthorGravatarColor,
-			"author_gravatar_initial": gravatarInitial,
-			"comment_text":            c.Text,
-			"query":                   c.Query,
-			"log_id":                  c.LogID,
-			"commented_at":            c.CreatedAt.Format(time.RFC3339),
-			// Event time, not comment time: pivoting back into search has to
-			// centre on when the log happened, which can predate the comment by
-			// days. Sections generated before this was stored fall back to the
-			// prefetched row's timestamp.
-			"log_timestamp": c.LogTimestamp.UTC().Format(time.RFC3339),
-		}
-		contentBytes, err := json.Marshal(contextData)
-		if err != nil {
-			log.Printf("[Notebooks] Failed to marshal comment context: %v", err)
+	for _, sec := range sections {
+		if sec.CommentID == nil {
 			continue
 		}
-
-		section := storage.NotebookSection{
-			NotebookID:  newNotebook.ID,
-			SectionType: "comment_context",
-			Title:       &sectionTitle,
-			Content:     string(contentBytes),
-			OrderIndex:  orderIdx,
-			EventTime:   normalizeEventTime(&c.LogTimestamp),
+		c, ok := commentsByID[*sec.CommentID]
+		if !ok || c.LogID == "" {
+			continue
 		}
-		created, err := h.pg.InsertNotebookSection(r.Context(), section)
-		if err != nil {
-			log.Printf("[Notebooks] Failed to create comment_context section: %v", err)
-		} else if c.LogID != "" {
-			logIDSections = append(logIDSections, sectionLogID{
-				SectionID: created.ID,
-				LogID:     c.LogID,
-			})
-			if logsFrom.IsZero() || c.LogTimestamp.Before(logsFrom) {
-				logsFrom = c.LogTimestamp
-			}
-			if logsTo.IsZero() || c.LogTimestamp.After(logsTo) {
-				logsTo = c.LogTimestamp
-			}
+		logIDSections = append(logIDSections, sectionLogID{SectionID: sec.ID, LogID: c.LogID})
+		if logsFrom.IsZero() || c.LogTimestamp.Before(logsFrom) {
+			logsFrom = c.LogTimestamp
 		}
-		orderIdx++
+		if logsTo.IsZero() || c.LogTimestamp.After(logsTo) {
+			logsTo = c.LogTimestamp
+		}
 	}
 
 	// Prefetch log data for all comment_context sections asynchronously. The
@@ -1996,7 +1854,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 	// Generate AI summary or attack chain asynchronously if enabled
 	if h.aiEnabled() && aiSectionID != "" {
 		go func() {
-			sections, err := h.pg.GetNotebookSections(context.Background(), newNotebook.ID)
+			sections, err := h.pg.GetNotebookSections(context.Background(), notebookID)
 			if err != nil {
 				log.Printf("[Notebooks] Failed to load sections for AI summary: %v", err)
 				return
@@ -2054,13 +1912,105 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 		}()
 	}
 
+	message := fmt.Sprintf("Added %d of %d tagged comments", len(sections), len(comments))
+	if createdNotebook {
+		message = fmt.Sprintf("Notebook created with %d tagged comments", len(sections))
+	}
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
-		Message: "Notebook generated successfully",
+		Message: message,
 		Data: map[string]interface{}{
-			"notebook_id": newNotebook.ID,
-			"name":        newNotebook.Name,
-			"sections":    orderIdx,
+			"notebook_id": notebookID,
+			"created":     createdNotebook,
+			"added":       len(sections),
+			"matched":     len(comments),
 		},
 	})
+}
+
+// resolveGenerateTarget picks the notebook tagged comments are filed into:
+// an explicit one when given, otherwise the tag's own notebook, created on
+// first use. Both must sit in the caller's scope.
+func (h *NotebookHandler) resolveGenerateTarget(w http.ResponseWriter, r *http.Request, req GenerateFromCommentsRequest, fractalID, prismID string) (string, bool, bool) {
+	if req.NotebookID != "" {
+		nb, err := h.pg.GetNotebook(r.Context(), req.NotebookID)
+		if err != nil {
+			api.WriteError(w, http.StatusNotFound, "Notebook not found")
+			return "", false, false
+		}
+		if nb.FractalID != fractalID || nb.PrismID != prismID {
+			api.WriteError(w, http.StatusForbidden, "Notebook is not in the current scope")
+			return "", false, false
+		}
+		if !h.requireEditable(w, r, nb) {
+			return "", false, false
+		}
+		return nb.ID, false, true
+	}
+
+	name := fmt.Sprintf("Notebook: %s", req.Tag)
+	existing, err := h.pg.GetNotebookByNameAndScope(r.Context(), name, fractalID, prismID)
+	if err != nil {
+		log.Printf("[Notebooks] Failed to check existing notebook: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to check for existing notebook")
+		return "", false, false
+	}
+	if existing != nil {
+		if !h.requireEditable(w, r, existing) {
+			return "", false, false
+		}
+		return existing.ID, false, true
+	}
+
+	notebook := storage.Notebook{
+		Name:                 name,
+		Description:          fmt.Sprintf("Comments tagged %q", req.Tag),
+		TimeRangeType:        "all",
+		MaxResultsPerSection: 1000,
+		CreatedBy:            auth.AttributionUsername(r.Context()),
+	}
+	if prismID != "" {
+		notebook.PrismID = prismID
+	} else {
+		notebook.FractalID = fractalID
+	}
+	created, err := h.pg.InsertNotebook(r.Context(), notebook)
+	if err != nil {
+		log.Printf("[Notebooks] Failed to create notebook: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to create notebook")
+		return "", false, false
+	}
+	return created.ID, true, true
+}
+
+// findSectionByType returns the id of the notebook's section of this type, or
+// empty. Used for the at-most-one AI sections.
+func (h *NotebookHandler) findSectionByType(ctx context.Context, notebookID, sectionType string) (string, error) {
+	sections, err := h.pg.GetNotebookSectionSummaries(ctx, notebookID)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range sections {
+		if s.SectionType == sectionType {
+			return s.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// evidenceTitle is the line a filed comment gets in a notebook outline:
+// who wrote it and the start of what they said.
+func evidenceTitle(c storage.Comment) string {
+	displayName := c.AuthorDisplayName
+	if displayName == "" {
+		displayName = c.Author
+	}
+	text := c.Text
+	if trimmed := truncateRunes(text, 80); trimmed != text {
+		text = trimmed + "..."
+	}
+	if text == "" {
+		return truncateRunes(displayName, maxSectionTitleChars)
+	}
+	return truncateRunes(fmt.Sprintf("%s: %s", displayName, text), maxSectionTitleChars)
 }

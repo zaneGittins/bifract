@@ -180,8 +180,11 @@ const ColumnSizing = {
         };
     },
 
-    buildColgroup(fields, resolved) {
-        let html = '<colgroup>';
+    // leadingCols is raw <col> markup for fixed columns that sit before the data
+    // columns (the star gutter). Keeping them in the colgroup means th.cellIndex
+    // still lines up with colgroup.children for resize and autofit.
+    buildColgroup(fields, resolved, leadingCols) {
+        let html = '<colgroup>' + (leadingCols || '');
         fields.forEach(field => {
             if (field === resolved.flexField) {
                 html += '<col class="col-flex">';

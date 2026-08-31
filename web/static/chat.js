@@ -1182,69 +1182,6 @@ const Chat = {
         await this._streamToAssistant(fullContent);
     },
 
-    /**
-     * Start an AI chat session with notebook content as context
-     */
-    async analyzeNotebook(notebook) {
-        if (!notebook || !notebook.sections) return;
-
-        const parts = [];
-        if (notebook.name) parts.push(`# Notebook: ${notebook.name}`);
-        if (notebook.description) parts.push(notebook.description);
-
-        for (const section of notebook.sections) {
-            if (section.section_type === 'markdown' && section.content) {
-                parts.push(section.content);
-            } else if (section.section_type === 'query' && section.content) {
-                parts.push('```bql\n' + section.content + '\n```');
-                if (section.last_results) {
-                    try {
-                        let results = section.last_results;
-                        if (typeof results === 'string') results = JSON.parse(results);
-                        if (results.results && results.results.length > 0) {
-                            const preview = results.results.slice(0, 20);
-                            parts.push('Query results (' + results.count + ' rows):\n```json\n' + JSON.stringify(preview, null, 2) + '\n```');
-                        }
-                    } catch (e) { /* skip unparseable results */ }
-                }
-            } else if (section.section_type === 'comment_context') {
-                try {
-                    const data = JSON.parse(section.content || '{}');
-                    if (data.comment_text) parts.push('Comment: ' + data.comment_text);
-                    if (data.query) parts.push('Query context: `' + data.query + '`');
-                } catch (e) { /* skip */ }
-            }
-        }
-
-        const context = parts.join('\n\n');
-        const fullContent = `I have a notebook with the following content. Use it as context for our conversation. Summarize key findings and ask what I want to explore further.\n\n<notebook>\n${context}\n</notebook>`;
-
-        if (window.App) App.showFractalViewTab('chat');
-
-        try {
-            const res = await HttpUtils.safeFetch('/api/v1/chat/conversations', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: notebook.name || 'Notebook Analysis' }),
-                credentials: 'include',
-            });
-            const conv = res.data;
-            this.conversations.unshift(conv);
-            this.renderConversationList();
-            this.selectConversation(conv.id);
-
-            await new Promise(r => setTimeout(r, 100));
-
-            this.lastUserMessage = fullContent;
-            this.appendUserMessage('Analyze this notebook');
-            await this._streamToAssistant(fullContent);
-        } catch (err) {
-            if (err.name !== 'AbortError') {
-                console.error('[Chat] Notebook analysis error:', err);
-                if (window.Toast) Toast.error('Chat', 'Failed to analyze notebook');
-            }
-        }
-    },
 
     // ---- Instructions ----
 

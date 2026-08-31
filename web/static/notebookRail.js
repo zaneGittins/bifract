@@ -11,7 +11,7 @@
 const NotebookRail = {
     activeId: null,
     summary: null,
-    order: 'manual',        // 'manual' | 'time'
+    order: 'time',          // 'time' | 'manual'; an investigation reads back as a chronology
     _state: 'idle',         // 'idle' | 'loading' | 'ready' | 'error'
     _controller: null,
     _pickerOpen: false,
@@ -57,7 +57,6 @@ const NotebookRail = {
         this._wire('nbrSwitchBtn', 'click', () => this.openPicker());
         this._wire('nbrPickerClose', 'click', () => this.closePicker());
         this._wire('nbrOpenBtn', 'click', () => this.openNotebook());
-        this._wire('nbrAddQuery', 'click', () => this.captureCurrentQuery());
         this._wire('nbrAddNote', 'click', () => this.showNoteEditor());
         this._wire('nbrNoteCancel', 'click', () => this.hideNoteEditor());
         this._wire('nbrNoteSave', 'click', () => this.saveNote());
@@ -81,7 +80,10 @@ const NotebookRail = {
         }
 
         const list = document.getElementById('nbrList');
-        if (list) list.addEventListener('click', (e) => this._onListClick(e));
+        if (list) {
+            list.addEventListener('click', (e) => this._onListClick(e));
+            this._wireDragReorder(list);
+        }
 
         const pickerList = document.getElementById('nbrPickerList');
         if (pickerList) pickerList.addEventListener('click', (e) => this._onPickerClick(e));
@@ -90,7 +92,7 @@ const NotebookRail = {
             FractalContext.subscribe('NotebookRail', () => this.onFractalChange());
         }
 
-        this._restoreActive();
+        this._restoreActive().then(() => this.render()).then(() => this._syncCaptureState());
     },
 
     _wire(id, event, fn) {
@@ -98,50 +100,83 @@ const NotebookRail = {
         if (el) el.addEventListener(event, fn);
     },
 
-    // ---- scope ------------------------------------------------------------
+    // ---- active notebook --------------------------------------------------
 
-    _scopeId() {
-        const ctx = window.FractalContext;
-        if (!ctx || !ctx.currentFractal || !ctx.currentFractal.id) return null;
-        return (ctx.isPrism() ? 'prism:' : 'fractal:') + ctx.currentFractal.id;
-    },
-
-    _storageKey() {
-        const scope = this._scopeId();
-        return scope ? `bifract_active_notebook_${scope}` : null;
-    },
-
+    // Stored per user and per scope on the server, so it
+    // survives a browser change and so anything writing on the user's behalf can
+    // see where captures belong. _activeReady is what every read waits on.
     _restoreActive() {
-        const key = this._storageKey();
         this.activeId = null;
         this.summary = null;
         this._state = 'idle';
-        if (!key) return;
-        try {
-            this.activeId = localStorage.getItem(key) || null;
-        } catch (e) {
-            this.activeId = null;
+
+        this._captureEnabled = false;
+
+        const scopeToken = window.FractalContext ? FractalContext.scopeToken() : null;
+        this._activeReady = (async () => {
+            if (window.FractalContext && !FractalContext.hasScope()) return;
+            try {
+                const res = await fetch('/api/v1/notebooks/active', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (scopeToken !== null && FractalContext.isScopeStale(scopeToken)) return;
+                if (!data.success || !data.data) return;
+                this.activeId = data.data.notebook_id || null;
+                this.setCaptureEnabled(data.data.has_notebooks || data.data.has_comments);
+            } catch (e) {
+                // The rail still works this session without a remembered notebook.
+            }
+        })();
+        return this._activeReady;
+    },
+
+    // Which events are already in the active notebook is what the results
+    // table's stars are drawn from, so it has to be read whether or not the rail
+    // is open. Gating this on the panel being visible is why a starred row came
+    // back empty after a refresh.
+    _syncCaptureState() {
+        if (window.FractalContext && !FractalContext.hasScope()) return;
+        if (!this.activeId) return;
+        return this.load();
+    },
+
+    // Whether this scope has ever used notebooks or comments. Until it has, the
+    // results table renders no star gutter at all, so Bifract is unchanged for
+    // anyone who does not use the feature.
+    captureEnabled() {
+        return !!this._captureEnabled;
+    },
+
+    // Turning capture on mid-session (the first comment, the first notebook) has
+    // to bring the gutter with it, which means re-rendering the table that was
+    // drawn without one.
+    setCaptureEnabled(enabled) {
+        if (!!enabled === !!this._captureEnabled) return;
+        this._captureEnabled = !!enabled;
+        if (window.QueryExecutor && typeof QueryExecutor.rerenderCurrentPage === 'function') {
+            QueryExecutor.rerenderCurrentPage();
         }
     },
 
     _persistActive() {
-        const key = this._storageKey();
-        if (!key) return;
-        try {
-            if (this.activeId) localStorage.setItem(key, this.activeId);
-            else localStorage.removeItem(key);
-        } catch (e) {
-            // localStorage may be unavailable; the rail still works for this session.
-        }
+        if (window.FractalContext && !FractalContext.hasScope()) return;
+        fetch('/api/v1/notebooks/active', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ notebook_id: this.activeId || '' }),
+        }).catch(() => {});
     },
 
     onFractalChange() {
         this.closePicker();
         this.hideNoteEditor();
         this._abort();
-        this._restoreActive();
         this.render();
-        if (FractalContext.hasScope() && window.RailPanel && RailPanel.isPaneVisible('notebook')) this.load();
+        this._restoreActive().then(() => {
+            this.render();
+            this._syncCaptureState();
+        });
     },
 
     // ---- lifecycle --------------------------------------------------------
@@ -168,6 +203,7 @@ const NotebookRail = {
     // ---- loading ----------------------------------------------------------
 
     async load() {
+        if (this._activeReady) await this._activeReady;
         if (!this.activeId) {
             this._state = 'idle';
             this.render();
@@ -208,6 +244,7 @@ const NotebookRail = {
 
             this.summary = data.data;
             this._indexPinnedLogIds();
+            if (window.StarGutter) StarGutter.syncRendered();
             this._state = 'ready';
         } catch (err) {
             if (err.name === 'AbortError' || token !== this._loadToken) return;
@@ -219,6 +256,27 @@ const NotebookRail = {
     // The stub carries the name so the header is not blank while the summary
     // loads. It deliberately does not assert can_edit: a viewer would see
     // capture buttons that every click answers with a 403.
+    // A locked notebook accepts no captures, and the server clears it as
+    // everyone's target when it is locked. This page may still be holding the
+    // id, so a refusal drops it and the next star opens a fresh notebook rather
+    // than failing again.
+    _dropLockedTarget(message) {
+        this.activeId = null;
+        this._pinnedLogIds = new Set();
+        this.summary = null;
+        this._state = 'idle';
+        this._persistActive();
+        this.render();
+        if (window.StarGutter) StarGutter.syncRendered();
+        if (window.Toast) Toast.show(message || 'That notebook is locked. Your next capture will start a new one.', 'warning');
+    },
+
+    // onNotebookLocked is called when the notebook was locked from this page.
+    onNotebookLocked(notebookId) {
+        if (!notebookId || this.activeId !== notebookId) return;
+        this._dropLockedTarget('Locked. Your next capture will start a new notebook.');
+    },
+
     setActive(notebookId, name) {
         this.activeId = notebookId || null;
         this._pinnedLogIds = new Set();
@@ -344,13 +402,42 @@ const NotebookRail = {
 
     // POST one section. Every capture goes through here so append placement,
     // the missing-notebook case, and the refresh are handled once.
-    async _addSection(body, successMessage) {
-        if (!this.activeId) {
-            // The rail opens straight onto the picker when nothing is active.
+    // Resolve where a capture goes, creating a scratch notebook when the user
+    // has not chosen one. Capture must not stop to ask for a name at the moment
+    // someone found something.
+    async _ensureActive() {
+        if (this._activeReady) await this._activeReady;
+        if (this.activeId) return { id: this.activeId, created: false };
+
+        try {
+            const res = await fetch('/api/v1/notebooks/active', {
+                method: 'POST',
+                credentials: 'include',
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) throw new Error(data.error || 'Failed to open a notebook');
+
+            this.activeId = data.data.notebook_id;
+            this._pinnedLogIds = new Set();
+            this.summary = { id: this.activeId, name: data.data.name, sections: [], counts: {} };
+            this._state = 'loading';
+            this.setCaptureEnabled(true);
+            this.render();
+            if (data.data.created) {
+                this.reveal();
+                if (window.Toast) Toast.show(`Capturing into "${data.data.name}" - rename it to keep it`, 'info');
+            }
+            return { id: this.activeId, created: !!data.data.created };
+        } catch (err) {
             this.reveal();
-            if (window.Toast) Toast.show('Choose an active notebook first', 'warning');
-            return false;
+            if (window.Toast) Toast.error('Notebook', err.message);
+            return null;
         }
+    },
+
+    async _addSection(body, successMessage) {
+        const target = await this._ensureActive();
+        if (!target) return false;
 
         try {
             const res = await fetch(`/api/v1/notebooks/${encodeURIComponent(this.activeId)}/sections`, {
@@ -365,9 +452,13 @@ const NotebookRail = {
                 throw new Error('That notebook no longer exists');
             }
             const data = await res.json();
+            if (res.status === 409) {
+                this._dropLockedTarget(data.error);
+                return false;
+            }
             if (!res.ok || !data.success) throw new Error(data.error || 'Failed to add to notebook');
 
-            if (window.Toast) Toast.success('Added', successMessage);
+            if (window.Toast && !target.created) Toast.success('Added', successMessage);
             this.load();
             return true;
         } catch (err) {
@@ -396,48 +487,93 @@ const NotebookRail = {
             title: '',
             content: query,
             event_time: eventTime,
-        }, 'Query added to the notebook');
+        }, 'Query step added to the notebook');
     },
 
-    // Pin the event a caller is looking at as evidence. Shares the section shape
-    // the comment generator writes, so it renders and pivots identically.
-    pinLog(logData) {
+    // Star the event a caller is looking at. This writes a comment with no text
+    // yet, so the row is visible to the comments tab, to the row accent and to
+    // comments(), and the notebook section is created alongside it server-side.
+    async pinLog(logData) {
         if (!logData || !logData.log_id) {
             if (window.Toast) Toast.show('This row has no log id to pin', 'warning');
             return;
         }
+        const target = await this._ensureActive();
+        if (!target) return;
         if (this.hasPinned(logData.log_id)) {
-            this.reveal();
-            if (window.Toast) Toast.show('Already pinned to this notebook', 'info');
+            if (window.Toast) Toast.show('Already in this notebook', 'info');
             return;
         }
-        this.reveal();
 
-        const eventTime = this._isoOrNull(logData.timestamp);
-        const context = {
+        const body = {
             log_id: String(logData.log_id),
-            log_timestamp: eventTime || '',
-            commented_at: new Date().toISOString(),
-            comment_text: '',
-            query: document.getElementById('queryInput')?.value?.trim() || '',
-            source: 'pin',
-        };
-
-        const author = window.Auth && Auth.currentUser;
-        if (author) {
-            context.author = author.username || '';
-            context.author_display_name = author.display_name || author.username || '';
-            context.author_gravatar_color = author.gravatar_color || '';
-            context.author_gravatar_initial = author.gravatar_initial || '';
-        }
-
-        const section = {
-            section_type: 'comment_context',
+            text: '',
+            notebook_id: this.activeId,
             title: this._pinTitle(logData),
-            content: JSON.stringify(context),
+            query: document.getElementById('queryInput')?.value?.trim() || '',
         };
-        if (eventTime) section.event_time = eventTime;
-        this._addSection(section, 'Event pinned to the notebook');
+        const eventTime = this._isoOrNull(logData.timestamp);
+        if (eventTime) body.log_timestamp = eventTime;
+
+        try {
+            const res = await fetch('/api/v1/comments', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(body),
+            });
+            if (res.status === 404) {
+                this.setActive(null);
+                this.render();
+                throw new Error('That notebook no longer exists');
+            }
+            const data = await res.json();
+            if (res.status === 409) {
+                this._dropLockedTarget(data.error);
+                return false;
+            }
+            if (!res.ok || !data.success) throw new Error(data.error || 'Failed to add to notebook');
+
+            if (window.Toast && !target.created) Toast.success('Added', 'Event added to the notebook');
+            this._pinnedLogIds.add(body.log_id);
+            if (window.StarGutter) StarGutter.syncRendered();
+            this.load();
+            if (window.Comments) Comments.markCommented(body.log_id);
+        } catch (err) {
+            if (window.Toast) Toast.error('Notebook', err.message);
+        }
+    },
+
+    // Remove an event from the active notebook. The comment goes with it only
+    // when nobody wrote anything in it; an annotation someone typed survives as
+    // a comment on a log the notebook no longer holds.
+    async unstarLog(logID) {
+        if (!logID || !this.activeId) return;
+
+        this._pinnedLogIds.delete(String(logID));
+        if (window.StarGutter) StarGutter.syncRendered();
+
+        try {
+            const res = await fetch(`/api/v1/notebooks/${encodeURIComponent(this.activeId)}/evidence/${encodeURIComponent(logID)}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+            const data = await res.json();
+            if (res.status === 409) {
+                this._dropLockedTarget(data.error);
+                return;
+            }
+            if (!res.ok || !data.success) throw new Error(data.error || 'Failed to remove from notebook');
+            this.load();
+            // Removing a bare star deletes its comment, so the row's annotated
+            // mark has to be re-read rather than left showing an annotation that
+            // no longer exists.
+            if (window.Comments) Comments.fetchCommentedLogIds();
+        } catch (err) {
+            this._pinnedLogIds.add(String(logID));
+            if (window.StarGutter) StarGutter.syncRendered();
+            if (window.Toast) Toast.error('Notebook', err.message);
+        }
     },
 
     // A pinned row needs a line that identifies it in an outline. Prefer the
@@ -664,17 +800,45 @@ const NotebookRail = {
         const title = this._rowTitle(sec);
         const when = sec.event_time ? TZ.format(sec.event_time, 'full') : '';
         const pivot = this._pivotFor(sec);
+        const canEdit = this.summary?.can_edit !== false;
+        // Dragging only makes sense against the order it would rewrite. Event
+        // order is computed from event_time, so there is nothing to drag into.
+        const draggable = canEdit && this.order === 'manual';
+        const tags = this._rowTags(sec);
+        const open = this._editing === sec.id;
 
         return `
-            <div class="nbr-row${pivot ? ' pivotable' : ''}" data-section-id="${Utils.escapeHtml(sec.id)}">
+            <div class="nbr-row${pivot ? ' pivotable' : ''}${open ? ' editing' : ''}" data-section-id="${Utils.escapeHtml(sec.id)}"${draggable ? ' draggable="true"' : ''}>
                 <span class="nbr-dot" style="background:${color}" title="${Utils.escapeHtml(this._typeLabels[sec.section_type] || sec.section_type)}"></span>
                 <span class="nbr-row-main">
                     <span class="nbr-row-title">${Utils.escapeHtml(title)}</span>
+                    ${tags.length ? `<span class="nbr-row-tags">${tags.map(t => `<span class="nbr-tag">${Utils.escapeHtml(t)}</span>`).join('')}</span>` : ''}
                     ${when ? `<span class="nbr-row-time" title="${Utils.escapeHtml(TZ.title(sec.event_time))}">${Utils.escapeHtml(when)}</span>` : ''}
                 </span>
-                ${pivot ? '<span class="nbr-row-go" title="Open in search">&rsaquo;</span>' : ''}
+                ${canEdit ? `<button type="button" class="nbr-row-act" data-act="edit" title="Annotate">${this._pencilSvg()}</button>` : ''}
+                ${canEdit ? `<button type="button" class="nbr-row-act nbr-row-danger" data-act="delete" title="Remove from the notebook">${this._trashSvg()}</button>` : ''}
+                ${pivot ? '<span class="nbr-row-go" data-act="pivot" title="Open in search">&rsaquo;</span>' : ''}
             </div>
+            ${open ? this._editorHtml(sec) : ''}
         `;
+    },
+
+    _pencilSvg() {
+        return '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L6 12l-2.5.5.5-2.5z"/></svg>';
+    },
+
+    _trashSvg() {
+        return '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h10M6.5 4V2.5h3V4M4.5 4l.5 9h6l.5-9"/></svg>';
+    },
+
+    // Evidence carries the comment's tags, which are what comments() and the
+    // tag-to-notebook filing read. Other sections carry their own.
+    _rowTags(sec) {
+        if (sec.section_type === 'comment_context') {
+            const data = this._parseJson(sec.content);
+            return Array.isArray(data.tags) ? data.tags : [];
+        }
+        return Array.isArray(sec.tags) ? sec.tags : [];
     },
 
     _rowTitle(sec) {
@@ -708,18 +872,274 @@ const NotebookRail = {
     },
 
     _onListClick(e) {
-        const row = e.target.closest('[data-section-id]');
+        const editor = e.target.closest('.nbr-editor');
+        if (editor) {
+            this._onEditorClick(e, editor);
+            return;
+        }
+
+        const row = e.target.closest('.nbr-row[data-section-id]');
         if (!row) return;
         const sec = (this.summary?.sections || []).find(s => s.id === row.dataset.sectionId);
         if (!sec) return;
+
+        const act = e.target.closest('[data-act]');
+        const which = act ? act.dataset.act : '';
+        if (which === 'edit') { this.toggleEditor(sec.id); return; }
+        if (which === 'delete') { this.deleteSection(sec.id); return; }
+
+        // The row runs what it holds: a query step re-runs, an event opens in
+        // search. A note has nothing to run, so it opens for editing instead of
+        // swallowing the click.
         const pivot = this._pivotFor(sec);
-        if (!pivot || !pivot.query) return;
+        if (!pivot || !pivot.query) {
+            if (this.summary?.can_edit !== false) this.toggleEditor(sec.id);
+            return;
+        }
 
         // One implementation of the pivot, shared with the notebook page: it
         // also re-centres the time range, without which an older investigation
         // silently returns nothing.
         if (window.Notebooks && typeof Notebooks._openInSearch === 'function') {
             Notebooks._openInSearch(pivot.query, pivot.center);
+        }
+    },
+
+    // ---- reordering -------------------------------------------------------
+
+    // Drag to reorder, and only under Notebook order: Event order is computed
+    // from event_time, so a drop there would be discarded on the next render.
+    _wireDragReorder(list) {
+        list.addEventListener('dragstart', (e) => {
+            const row = e.target.closest('.nbr-row[data-section-id]');
+            if (!row || this.order !== 'manual') { e.preventDefault(); return; }
+            this._dragId = row.dataset.sectionId;
+            row.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            // Firefox starts no drag without payload.
+            e.dataTransfer.setData('text/plain', this._dragId);
+        });
+
+        list.addEventListener('dragover', (e) => {
+            if (!this._dragId) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const over = e.target.closest('.nbr-row[data-section-id]');
+            list.querySelectorAll('.nbr-row.drop-before, .nbr-row.drop-after')
+                .forEach(el => el.classList.remove('drop-before', 'drop-after'));
+            if (!over || over.dataset.sectionId === this._dragId) return;
+            const box = over.getBoundingClientRect();
+            over.classList.add(e.clientY < box.top + box.height / 2 ? 'drop-before' : 'drop-after');
+        });
+
+        list.addEventListener('drop', (e) => {
+            if (!this._dragId) return;
+            e.preventDefault();
+            const over = e.target.closest('.nbr-row[data-section-id]');
+            const marker = list.querySelector('.nbr-row.drop-before, .nbr-row.drop-after');
+            const before = marker ? marker.classList.contains('drop-before') : true;
+            this._clearDrag(list);
+            if (over) {
+                this.reorderTo(this._dragId, over.dataset.sectionId, before);
+            }
+            this._dragId = null;
+        });
+
+        list.addEventListener('dragend', () => { this._clearDrag(list); this._dragId = null; });
+    },
+
+    _clearDrag(list) {
+        list.querySelectorAll('.nbr-row.dragging, .nbr-row.drop-before, .nbr-row.drop-after')
+            .forEach(el => el.classList.remove('dragging', 'drop-before', 'drop-after'));
+    },
+
+    async reorderTo(movedId, targetId, before) {
+        if (!this.activeId || movedId === targetId) return;
+
+        const order = (this.summary?.sections || [])
+            .slice()
+            .sort((a, b) => a.order_index - b.order_index)
+            .map(s => s.id);
+
+        const from = order.indexOf(movedId);
+        if (from === -1) return;
+        order.splice(from, 1);
+        let to = order.indexOf(targetId);
+        if (to === -1) return;
+        if (!before) to += 1;
+        order.splice(to, 0, movedId);
+
+        // Repaint from the new order straight away: waiting for the round trip
+        // makes the row snap back under the pointer.
+        const byId = new Map((this.summary.sections || []).map(s => [s.id, s]));
+        order.forEach((id, i) => { const sec = byId.get(id); if (sec) sec.order_index = i; });
+        this.summary.sections = order.map(id => byId.get(id)).filter(Boolean);
+        this.render();
+
+        try {
+            const res = await fetch(`/api/v1/notebooks/${encodeURIComponent(this.activeId)}/sections/reorder`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ section_order: order }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.error || 'Failed to reorder');
+        } catch (err) {
+            if (window.Toast) Toast.error('Notebook', err.message);
+            this.load();
+        }
+    },
+
+    // ---- annotating -------------------------------------------------------
+
+    // The editor is the reason the rail exists as more than a list: a capture is
+    // worth little without the sentence saying why it was captured, and a tag
+    // applied days later during cleanup is a tag nobody applies.
+    toggleEditor(sectionId) {
+        this._editing = this._editing === sectionId ? null : sectionId;
+        this.render();
+        if (this._editing) {
+            const field = document.querySelector('.nbr-editor .nbr-editor-text');
+            if (field) { field.focus(); field.setSelectionRange(field.value.length, field.value.length); }
+        }
+    },
+
+    _editorHtml(sec) {
+        const evidence = sec.section_type === 'comment_context';
+        const data = evidence ? this._parseJson(sec.content) : {};
+        const body = evidence ? (data.comment_text || '') : (sec.content || '');
+        const bodyLabel = evidence ? 'Comment' : (sec.section_type === 'markdown' ? 'Note' : 'Query');
+        const editableBody = evidence || sec.section_type === 'markdown';
+        const me = (window.Auth && Auth.currentUser && Auth.currentUser.username) || '';
+        // A comment is one person's words. Tags are how a team organises shared
+        // evidence, so those stay editable either way.
+        const mine = !evidence || !data.author || data.author === me;
+
+        return `
+            <div class="nbr-editor" data-section-id="${Utils.escapeHtml(sec.id)}">
+                <label class="nbr-editor-label">Title</label>
+                <input type="text" class="nbr-editor-title" value="${Utils.escapeAttr(sec.title || '')}" placeholder="${Utils.escapeAttr(this._rowTitle(sec))}" maxlength="255" />
+
+                ${editableBody ? `
+                    <label class="nbr-editor-label">${bodyLabel}${mine ? '' : ` (only ${Utils.escapeHtml(data.author_display_name || data.author)} can edit this)`}</label>
+                    <textarea class="nbr-editor-text" rows="3" placeholder="What did you find?"${mine ? '' : ' readonly'}>${Utils.escapeHtml(body)}</textarea>
+                ` : ''}
+
+                <label class="nbr-editor-label">Tags</label>
+                <input type="text" class="nbr-editor-tags" value="${Utils.escapeAttr(this._rowTags(sec).join(', '))}" placeholder="lateral, persistence" />
+
+                <div class="nbr-editor-actions">
+                    <button type="button" class="nbr-btn" data-act="cancel">Cancel</button>
+                    <button type="button" class="nbr-btn nbr-btn-primary" data-act="save">Save</button>
+                </div>
+            </div>
+        `;
+    },
+
+    _onEditorClick(e, editor) {
+        const act = e.target.closest('[data-act]');
+        if (!act) return;
+        if (act.dataset.act === 'cancel') { this._editing = null; this.render(); return; }
+        if (act.dataset.act === 'save') this.saveEditor(editor.dataset.sectionId, editor);
+    },
+
+    _parseTagInput(value) {
+        return String(value || '')
+            .split(',')
+            .map(t => t.trim())
+            .filter(Boolean)
+            .filter((t, i, all) => all.indexOf(t) === i);
+    },
+
+    async saveEditor(sectionId, editor) {
+        const sec = (this.summary?.sections || []).find(s => s.id === sectionId);
+        if (!sec) return;
+
+        const evidence = sec.section_type === 'comment_context';
+        const data = evidence ? this._parseJson(sec.content) : {};
+        const title = editor.querySelector('.nbr-editor-title').value.trim();
+        const textField = editor.querySelector('.nbr-editor-text');
+        const body = textField ? textField.value : null;
+        const tags = this._parseTagInput(editor.querySelector('.nbr-editor-tags').value);
+
+        const writes = [];
+
+        // Title lives on the section for every type: it is the outline line,
+        // authored by whoever is reading, not part of what anyone wrote.
+        if ((sec.title || '') !== title) {
+            writes.push(this._putSection(sectionId, { title }));
+        }
+
+        if (evidence) {
+            const commentID = sec.comment_id;
+            if (textField && !textField.readOnly && (data.comment_text || '') !== body) {
+                writes.push(this._putJson(`/api/v1/comments/${encodeURIComponent(commentID)}`, { text: body, tags }));
+            } else if (!this._sameTags(this._rowTags(sec), tags)) {
+                writes.push(this._putJson(`/api/v1/comments/${encodeURIComponent(commentID)}/tags`, { tags }));
+            }
+        } else {
+            const patch = {};
+            if (textField && (sec.content || '') !== body) patch.content = body;
+            if (!this._sameTags(this._rowTags(sec), tags)) patch.tags = tags;
+            if (Object.keys(patch).length) writes.push(this._putSection(sectionId, patch));
+        }
+
+        if (!writes.length) { this._editing = null; this.render(); return; }
+
+        try {
+            await Promise.all(writes);
+            this._editing = null;
+            await this.load();
+        } catch (err) {
+            if (window.Toast) Toast.error('Notebook', err.message);
+        }
+    },
+
+    _sameTags(a, b) {
+        return a.length === b.length && a.every((t, i) => t === b[i]);
+    },
+
+    _putSection(sectionId, patch) {
+        return this._putJson(`/api/v1/notebooks/${encodeURIComponent(this.activeId)}/sections/${encodeURIComponent(sectionId)}`, patch);
+    },
+
+    async _putJson(url, body) {
+        const res = await fetch(url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.error || 'Save failed');
+        return data;
+    },
+
+    // ---- removing ---------------------------------------------------------
+
+    // Evidence is removed by log rather than by section, so the star on its row
+    // clears with it and an empty star comment does not survive as a stray.
+    async deleteSection(sectionId) {
+        const sec = (this.summary?.sections || []).find(s => s.id === sectionId);
+        if (!sec || !this.activeId) return;
+
+        if (sec.section_type === 'comment_context') {
+            const logID = this._parseJson(sec.content).log_id;
+            if (logID) { this.unstarLog(logID); return; }
+        }
+
+        try {
+            const res = await fetch(`/api/v1/notebooks/${encodeURIComponent(this.activeId)}/sections/${encodeURIComponent(sectionId)}`, {
+                method: 'DELETE',
+                credentials: 'include',
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.error || 'Failed to remove');
+            if (this._editing === sectionId) this._editing = null;
+            this.load();
+        } catch (err) {
+            if (window.Toast) Toast.error('Notebook', err.message);
         }
     },
 

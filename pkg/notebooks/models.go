@@ -7,72 +7,15 @@ import (
 	"bifract/pkg/storage"
 )
 
-// Notebook represents a notebook document with metadata
-type Notebook struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-
-	// Time range settings
-	TimeRangeType  string     `json:"time_range_type"`            // '1h', '24h', '7d', '30d', 'custom'
-	TimeRangeStart *time.Time `json:"time_range_start,omitempty"` // For custom ranges
-	TimeRangeEnd   *time.Time `json:"time_range_end,omitempty"`   // For custom ranges
-
-	// Settings
-	MaxResultsPerSection int `json:"max_results_per_section"`
-
-	// Timezone is the IANA zone this notebook's calendar-aligned buckets snap
-	// to. It lives on the notebook, not the viewer, because a query section's
-	// results are cached and read by everyone.
-	Timezone string `json:"timezone"`
-
-	// Multi-tenant and ownership
-	FractalID string          `json:"fractal_id"`
-	Variables json.RawMessage `json:"variables"`
-	CreatedBy string          `json:"created_by"`
-
-	// Author metadata
-	AuthorDisplayName     string `json:"author_display_name"`
-	AuthorGravatarColor   string `json:"author_gravatar_color"`
-	AuthorGravatarInitial string `json:"author_gravatar_initial"`
-
-	// Timestamps
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-
-	// Optional: sections will be loaded separately but can be included in responses
-	Sections []NotebookSection `json:"sections,omitempty"`
-}
-
-// NotebookSection represents a section within a notebook
-type NotebookSection struct {
-	ID         string `json:"id"`
-	NotebookID string `json:"notebook_id"`
-
-	// Section metadata
-	SectionType     string  `json:"section_type"` // 'markdown', 'query', 'ai_summary', 'comment_context', or 'ai_attack_chain'
-	Title           *string `json:"title,omitempty"`
-	Content         string  `json:"content"`
-	RenderedContent *string `json:"rendered_content,omitempty"` // For cached markdown
-	OrderIndex      int     `json:"order_index"`
-
-	// Query section specific fields
-	LastExecutedAt *time.Time      `json:"last_executed_at,omitempty"`
-	LastResults    json.RawMessage `json:"last_results,omitempty"`
-	ChartType      *string         `json:"chart_type,omitempty"`
-	ChartConfig    json.RawMessage `json:"chart_config,omitempty"`
-
-	// Tags for filtering/grouping sections
-	Tags []string `json:"tags,omitempty"`
-
-	// EventTime is when the section's subject happened, which is what a
-	// chronological reading of the notebook orders by. Nil for sections with no
-	// single point in time.
-	EventTime *time.Time `json:"event_time,omitempty"`
-
-	// Timestamps
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+// NotebookWithSections is a notebook and everything in it, in one response.
+//
+// It embeds the storage type rather than restating its fields: this endpoint
+// used to hand-copy them into a mirrored struct, which silently dropped every
+// column added afterwards, locked_at, external_ref_url and comment_id among
+// them, with nothing failing to say so.
+type NotebookWithSections struct {
+	storage.Notebook
+	Sections []storage.NotebookSection `json:"sections"`
 }
 
 // NotebookPresence represents a user's presence in a notebook
@@ -100,8 +43,12 @@ type CreateNotebookRequest struct {
 
 // UpdateNotebookRequest represents the request to update notebook metadata
 type UpdateNotebookRequest struct {
-	Name                 *string    `json:"name,omitempty"`
-	Description          *string    `json:"description,omitempty"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// ExternalRefURL and ExternalRefLabel point at the case that owns this
+	// investigation elsewhere. Empty strings clear the link.
+	ExternalRefURL       *string    `json:"external_ref_url,omitempty"`
+	ExternalRefLabel     *string    `json:"external_ref_label,omitempty"`
 	TimeRangeType        *string    `json:"time_range_type,omitempty"`
 	TimeRangeStart       *time.Time `json:"time_range_start,omitempty"`
 	TimeRangeEnd         *time.Time `json:"time_range_end,omitempty"`
@@ -135,6 +82,19 @@ type UpdateSectionRequest struct {
 	ClearEventTime bool `json:"clear_event_time,omitempty"`
 }
 
+// FileEvidenceRequest files comments that already exist into a notebook.
+type FileEvidenceRequest struct {
+	Evidence []FileEvidenceItem `json:"evidence"`
+}
+
+// FileEvidenceItem names one comment to file. OrderIndex places it explicitly,
+// which duplicating a notebook needs to keep evidence interleaved where it was;
+// omitted, the section is appended.
+type FileEvidenceItem struct {
+	CommentID  string `json:"comment_id"`
+	OrderIndex *int   `json:"order_index,omitempty"`
+}
+
 // NotebookSummary is a notebook plus its section outline, without any cached
 // query results. It backs the search page's notebook rail.
 type NotebookSummary struct {
@@ -157,32 +117,17 @@ type ReorderSectionsRequest struct {
 	SectionOrder []string `json:"section_order"` // Array of section IDs in new order
 }
 
-// ExecuteQueryRequest represents the request to execute a query section
-type ExecuteQueryRequest struct {
-	// Optional: override notebook time range settings
-	TimeRangeType  *string    `json:"time_range_type,omitempty"`
-	TimeRangeStart *time.Time `json:"time_range_start,omitempty"`
-	TimeRangeEnd   *time.Time `json:"time_range_end,omitempty"`
-}
-
-// NotebookListResponse represents the paginated response for notebook listing
-type NotebookListResponse struct {
-	Notebooks []Notebook `json:"notebooks"`
-	Total     int        `json:"total"`
-	Limit     int        `json:"limit"`
-	Offset    int        `json:"offset"`
-}
-
 // UpdateVariablesRequest saves notebook variables
 type UpdateVariablesRequest struct {
 	Variables json.RawMessage `json:"variables"`
 }
 
-// GenerateFromCommentsRequest represents the request to generate a notebook from tagged comments.
+// GenerateFromCommentsRequest files every comment carrying a tag into a
+// notebook. Filing is additive: nothing already in the notebook is removed.
 type GenerateFromCommentsRequest struct {
 	Tag         string `json:"tag"`
 	AttackChain bool   `json:"attack_chain"`
-	// Overwrite acknowledges that an existing notebook of the same name will be
-	// replaced. Without it a name collision returns 409 and changes nothing.
-	Overwrite bool `json:"overwrite"`
+	// NotebookID files into an existing notebook. Empty uses the tag's own
+	// notebook, created on first use.
+	NotebookID string `json:"notebook_id,omitempty"`
 }

@@ -156,7 +156,7 @@ const Comments = {
                     <div class="comment-tags-chips" id="commentTagsChips"></div>
                     <input type="text" id="commentTagField" class="comment-tag-field" placeholder="Add tag..." />
                 </div>
-                <button onclick="Comments.saveComment()" class="btn-primary btn-add-comment">Post Comment</button>
+                <button onclick="Comments.saveComment()" class="btn-primary btn-add-comment" title="Files this event in the active notebook with your comment">Comment and add to notebook</button>
             </div>
             <div class="comments-divider"></div>
             <div class="comments-list" id="commentsList">
@@ -303,6 +303,15 @@ const Comments = {
         }
     },
 
+    // Outline title for a comment filed from the detail panel. Shares the rail's
+    // rule so an event reads the same however it was captured.
+    _evidenceTitle() {
+        if (window.NotebookRail && typeof NotebookRail._pinTitle === 'function' && this.currentLogData) {
+            return NotebookRail._pinTitle(this.currentLogData);
+        }
+        return '';
+    },
+
     async saveComment() {
         if (!Auth.isAuthenticated()) {
             if (window.Toast) {
@@ -372,6 +381,16 @@ const Comments = {
         const queryInput = document.getElementById('queryInput');
         const currentQuery = queryInput ? queryInput.value.trim() : '';
 
+        // Writing about a log is saying it matters, so the comment is filed into
+        // the notebook exactly as a star is. One record, one place, whichever
+        // control created it. A scratch notebook is opened if none is active.
+        let notebookID = null;
+        if (window.NotebookRail) {
+            const target = await NotebookRail._ensureActive();
+            if (!target) return;
+            notebookID = target.id;
+        }
+
         // Scope is derived server-side from the session; don't send it in
         // the body (the backend now rejects it, and sending it was also a
         // cross-scope probe vector historically).
@@ -382,6 +401,10 @@ const Comments = {
             tags: this.pendingTags.slice(),
             query: currentQuery,
         };
+        if (notebookID) {
+            requestBody.notebook_id = notebookID;
+            requestBody.title = this._evidenceTitle();
+        }
 
         try {
             const response = await fetch('/api/v1/comments', {
@@ -397,16 +420,12 @@ const Comments = {
                 textArea.value = '';
                 this.pendingTags = [];
                 this.renderPendingTags();
+                if (window.NotebookRail) NotebookRail.load();
                 this.fetchKnownTags(); // Refresh tags cache with any new tags
                 await this.loadComments(this.currentLogData);
 
-                // Add this log to the commented logs cache so highlighting appears immediately
-                if (this.currentLogID) {
-                    this.commentedLogIds.add(this.currentLogID);
-
-                    // Update the specific row's highlighting without re-rendering everything
-                    this.updateRowHighlighting(this.currentLogID, true);
-                }
+                // Mark the row immediately rather than waiting for a refresh.
+                if (this.currentLogID) this.markCommented(this.currentLogID);
             } else {
                 const errorMsg = data.error || 'Unknown error';
                 if (window.Toast) {
@@ -512,9 +531,7 @@ const Comments = {
 
                 if (this.currentLogID) {
                     if (hasRemainingComments) {
-                        // Still has comments, ensure it's in the cache
-                        this.commentedLogIds.add(this.currentLogID);
-                        this.updateRowHighlighting(this.currentLogID, true);
+                        this.markCommented(this.currentLogID);
                     } else {
                         // No more comments, remove from cache
                         this.commentedLogIds.delete(this.currentLogID);
@@ -663,6 +680,17 @@ const Comments = {
         } catch (error) {
             console.error('[Comments] Error fetching commented log IDs:', error);
         }
+    },
+
+    // Record that a log now carries a comment, so the row accent appears without
+    // waiting for the next results refresh. Starring writes a comment too, which
+    // is why it goes through here rather than the notebook rail alone.
+    markCommented(logId) {
+        if (!logId) return;
+        this.commentedLogIds.add(logId);
+        this.updateRowHighlighting(logId, true);
+        // The first comment in a scope is what brings the star gutter with it.
+        if (window.NotebookRail) NotebookRail.setCaptureEnabled(true);
     },
 
     // Check if a log has comments

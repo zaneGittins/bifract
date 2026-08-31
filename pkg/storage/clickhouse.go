@@ -2609,7 +2609,9 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 }
 
 // GetLogFieldsByIDs batch-fetches parsed field data for multiple log_ids.
-func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []string, fractalID string) ([]map[string]interface{}, error) {
+// fractalIDs prunes the scan to the caller's scope; empty means no filter, which
+// spans every fractal, so callers that answer a user must pass their own set.
+func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []string, fractalIDs []string) ([]map[string]interface{}, error) {
 	if len(logIDs) == 0 {
 		return nil, nil
 	}
@@ -2619,10 +2621,10 @@ func (c *ClickHouseClient) GetLogFieldsByIDs(ctx context.Context, logIDs []strin
 
 	var rows driver.Rows
 	var err error
-	if fractalID != "" {
+	if len(fractalIDs) > 0 {
 		rows, err = c.conn.Query(ctx,
-			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?) AND fractal_id = ?", c.ReadTable()),
-			logIDs, fractalID)
+			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?) AND fractal_id IN (?)", c.ReadTable()),
+			logIDs, fractalIDs)
 	} else {
 		rows, err = c.conn.Query(ctx,
 			fmt.Sprintf("SELECT log_id, fractal_id, norm_log AS fields FROM %s WHERE log_id IN (?)", c.ReadTable()),

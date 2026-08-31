@@ -1595,10 +1595,118 @@
     transition: var(--transition);
 }
 
-.nbr-row.pivotable { cursor: pointer; }
-.nbr-row.pivotable:hover {
+.nbr-row { cursor: pointer; }
+.nbr-row:hover {
     background: var(--bg-tertiary);
     border-left-color: var(--accent-primary);
+}
+
+.nbr-row.editing {
+    background: var(--bg-tertiary);
+    border-left-color: var(--accent-primary);
+}
+
+/* Row actions: hidden until the row is hovered, so a long outline stays a list
+   of what was captured rather than a wall of controls. */
+.nbr-row-act {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 1px 3px;
+    margin: 0;
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.nbr-row:hover .nbr-row-act,
+.nbr-row.editing .nbr-row-act { opacity: 1; }
+.nbr-row-act:hover { color: var(--accent-primary); }
+.nbr-row-danger:hover { color: var(--error); }
+.nbr-row-act:focus-visible {
+    opacity: 1;
+    outline: 1px solid var(--accent-primary);
+}
+
+.nbr-row-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem;
+    margin-top: 0.15rem;
+}
+
+.nbr-tag {
+    font-size: 0.6rem;
+    line-height: 1.5;
+    padding: 0 0.3rem;
+    border-radius: 3px;
+    color: var(--accent-secondary);
+    background: rgba(156, 106, 222, 0.14);
+    white-space: nowrap;
+}
+
+/* Drag to reorder. The insertion point is a line between rows rather than a
+   moving placeholder: the rail is narrow and a shifting list is hard to aim at. */
+.nbr-row[draggable="true"] { cursor: grab; }
+.nbr-row.dragging { opacity: 0.4; cursor: grabbing; }
+.nbr-row.drop-before { box-shadow: inset 0 2px 0 0 var(--accent-primary); }
+.nbr-row.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent-primary); }
+
+/* Inline annotation editor. */
+.nbr-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.4rem 0.625rem 0.6rem 1.1rem;
+    background: var(--bg-tertiary);
+    border-left: 2px solid var(--accent-primary);
+}
+
+.nbr-editor-label {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.nbr-editor-title,
+.nbr-editor-tags,
+.nbr-editor-text {
+    width: 100%;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    font-size: 0.7rem;
+    padding: 0.25rem 0.35rem;
+}
+
+.nbr-editor-text {
+    resize: vertical;
+    min-height: 3.2rem;
+}
+
+.nbr-editor-text[readonly] {
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+}
+
+.nbr-editor-title:focus,
+.nbr-editor-tags:focus,
+.nbr-editor-text:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.nbr-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.3rem;
+    margin-top: 0.15rem;
 }
 
 .nbr-gap {
@@ -1674,11 +1782,15 @@
     font-size: 0.85rem;
     line-height: 1;
     margin-top: 0.15rem;
+    padding: 0 0.15rem;
     opacity: 0;
+    cursor: pointer;
     transition: var(--transition);
 }
 
-.nbr-row.pivotable:hover .nbr-row-go {
+.nbr-row.pivotable:hover .nbr-row-go,
+.nbr-row.pivotable.editing .nbr-row-go {
     opacity: 1;
-    color: var(--accent-primary);
 }
+
+.nbr-row-go:hover { color: var(--accent-primary); }

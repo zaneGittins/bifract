@@ -5496,7 +5496,7 @@
     "/api/v1/comments/flat": {
       "get": {
         "operationId": "get_api_v1_comments_flat",
-        "summary": "List comments individually rather than grouped by log.",
+        "summary": "List comments individually rather than grouped by log, with the notebooks each is filed into.",
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "comments"
@@ -5514,6 +5514,14 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "filed",
+            "in": "query",
+            "description": "filed, unfiled, or empty for both.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -5977,6 +5985,97 @@
           }
         },
         "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/comments/{id}/tags": {
+      "put": {
+        "operationId": "put_api_v1_comments_byId_tags",
+        "summary": "Replace a comment's tags. Any analyst in scope may retag shared evidence.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "comments"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/comments.UpdateCommentTagsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
       }
     },
     "/api/v1/context-links": {
@@ -18572,6 +18671,225 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/notebooks/active": {
+      "get": {
+        "operationId": "get_api_v1_notebooks_active",
+        "summary": "Read the notebook this user captures into for the current scope.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      },
+      "post": {
+        "operationId": "post_api_v1_notebooks_active",
+        "summary": "Return the notebook this user captures into, creating a scratch one when there is none.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      },
+      "put": {
+        "operationId": "put_api_v1_notebooks_active",
+        "summary": "Set or clear the notebook this user captures into for the current scope.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/notebooks.SetActiveNotebookRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/notebooks/ai-status": {
       "get": {
         "operationId": "get_api_v1_notebooks_ai_status",
@@ -18619,7 +18937,7 @@
     "/api/v1/notebooks/generate-from-comments": {
       "post": {
         "operationId": "post_api_v1_notebooks_generate_from_comments",
-        "summary": "Build a notebook from every comment carrying a tag.",
+        "summary": "File every comment carrying a tag into a notebook, without removing anything already there.",
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "notebooks"
@@ -19080,10 +19398,271 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/notebooks/{id}/evidence": {
+      "post": {
+        "operationId": "post_api_v1_notebooks_byId_evidence",
+        "summary": "File existing comments into a notebook as evidence.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/notebooks.FileEvidenceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/notebooks/{id}/evidence/{log_id}": {
+      "delete": {
+        "operationId": "delete_api_v1_notebooks_byId_evidence_byLog_id",
+        "summary": "Remove a log from a notebook's evidence.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "log_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/notebooks/{id}/export": {
       "get": {
         "operationId": "get_api_v1_notebooks_byId_export",
-        "summary": "Export a notebook as YAML.",
+        "summary": "Export a notebook as YAML, or as a Markdown report.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "yaml (default) or md for a report.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "time for chronological, otherwise notebook order.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated tags; keeps only sections carrying one.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A YAML document download.",
+            "content": {
+              "text/yaml": {}
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/notebooks/{id}/lock": {
+      "post": {
+        "operationId": "post_api_v1_notebooks_byId_lock",
+        "summary": "Lock a notebook, freezing its content and query results.",
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "notebooks"
@@ -19108,9 +19687,112 @@
         ],
         "responses": {
           "200": {
-            "description": "A YAML document download.",
+            "description": "Success.",
             "content": {
-              "text/yaml": {}
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      },
+      "delete": {
+        "operationId": "delete_api_v1_notebooks_byId_lock",
+        "summary": "Unlock a notebook, returning it to editable.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "notebooks"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
             }
           },
           "401": {
@@ -19610,105 +20292,6 @@
             "session": []
           }
         ],
-        "responses": {
-          "200": {
-            "description": "Success.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "data": {
-                      "description": "Any JSON value."
-                    },
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "success": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "success"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/api.Response_interface{}"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Authenticated, but not permitted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/api.Response_interface{}"
-                }
-              }
-            }
-          }
-        },
-        "x-bifract-access": "viewer"
-      }
-    },
-    "/api/v1/notebooks/{id}/sections/{section_id}/execute": {
-      "post": {
-        "operationId": "post_api_v1_notebooks_byId_sections_bySection_id_execute",
-        "summary": "Run a query section and cache its results.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
-        "tags": [
-          "notebooks"
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "section_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "security": [
-          {
-            "apiKey": []
-          },
-          {
-            "session": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/notebooks.ExecuteQueryRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -28039,6 +28622,9 @@
           "log_timestamp": {
             "type": "string"
           },
+          "notebook_id": {
+            "type": "string"
+          },
           "prism_id": {
             "type": "string"
           },
@@ -28052,6 +28638,9 @@
             }
           },
           "text": {
+            "type": "string"
+          },
+          "title": {
             "type": "string"
           }
         },
@@ -28087,9 +28676,20 @@
           "text": {
             "type": "string"
           }
+        }
+      },
+      "comments.UpdateCommentTagsRequest": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         },
         "required": [
-          "text"
+          "tags"
         ]
       },
       "contextlinks.ContextLink": {
@@ -31356,21 +31956,33 @@
           "order_index"
         ]
       },
-      "notebooks.ExecuteQueryRequest": {
+      "notebooks.FileEvidenceItem": {
         "type": "object",
         "properties": {
-          "time_range_end": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "time_range_start": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "time_range_type": {
+          "comment_id": {
             "type": "string"
+          },
+          "order_index": {
+            "type": "integer"
           }
-        }
+        },
+        "required": [
+          "comment_id"
+        ]
+      },
+      "notebooks.FileEvidenceRequest": {
+        "type": "object",
+        "properties": {
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/notebooks.FileEvidenceItem"
+            }
+          }
+        },
+        "required": [
+          "evidence"
+        ]
       },
       "notebooks.GenerateFromCommentsRequest": {
         "type": "object",
@@ -31378,8 +31990,8 @@
           "attack_chain": {
             "type": "boolean"
           },
-          "overwrite": {
-            "type": "boolean"
+          "notebook_id": {
+            "type": "string"
           },
           "tag": {
             "type": "string"
@@ -31387,8 +31999,7 @@
         },
         "required": [
           "tag",
-          "attack_chain",
-          "overwrite"
+          "attack_chain"
         ]
       },
       "notebooks.ReorderSectionsRequest": {
@@ -31405,10 +32016,27 @@
           "section_order"
         ]
       },
+      "notebooks.SetActiveNotebookRequest": {
+        "type": "object",
+        "properties": {
+          "notebook_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "notebook_id"
+        ]
+      },
       "notebooks.UpdateNotebookRequest": {
         "type": "object",
         "properties": {
           "description": {
+            "type": "string"
+          },
+          "external_ref_label": {
+            "type": "string"
+          },
+          "external_ref_url": {
             "type": "string"
           },
           "max_results_per_section": {
@@ -32929,6 +33557,12 @@
             "type": "string",
             "format": "date-time"
           },
+          "notebooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/storage.CommentNotebook"
+            }
+          },
           "prism_id": {
             "type": "string"
           },
@@ -32962,6 +33596,21 @@
           "query",
           "created_at",
           "updated_at"
+        ]
+      },
+      "storage.CommentNotebook": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
         ]
       },
       "storage.Dashboard": {
@@ -33171,10 +33820,23 @@
           "description": {
             "type": "string"
           },
+          "external_ref_label": {
+            "type": "string"
+          },
+          "external_ref_url": {
+            "type": "string"
+          },
           "fractal_id": {
             "type": "string"
           },
           "id": {
+            "type": "string"
+          },
+          "locked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "locked_by": {
             "type": "string"
           },
           "max_results_per_section": {

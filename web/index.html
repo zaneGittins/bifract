@@ -58,11 +58,10 @@
                 <!-- Fractal View Navigation (inline with logo) -->
                 <nav id="fractalViewNav" class="header-nav" style="display: none;">
                     <button id="fractalSearchTabBtn" class="nav-tab active">Query</button>
-                    <button id="fractalCommentsTabBtn" class="nav-tab">
-                        Comments
+                    <button id="fractalNotebooksTabBtn" class="nav-tab">
+                        Notebooks
                         <span id="commentedCountBadge" class="badge" style="display: none;"></span>
                     </button>
-                    <button id="fractalNotebooksTabBtn" class="nav-tab">Notebooks</button>
                     <button id="fractalDashboardsTabBtn" class="nav-tab">Dashboards</button>
                     <button id="fractalDictionariesTabBtn" class="nav-tab">Dicts</button>
                     <button id="fractalModelsTabBtn" class="nav-tab">Models</button>
@@ -1718,7 +1717,6 @@
                     <div class="nbr-meta">
                         <span id="nbrCounts" class="nbr-counts"></span>
                         <div id="nbrCapture" class="nbr-capture">
-                            <button id="nbrAddQuery" class="nbr-cap-btn" title="Add the query in the search box">+ query</button>
                             <button id="nbrAddNote" class="nbr-cap-btn" title="Add a note">+ note</button>
                         </div>
                     </div>
@@ -1732,8 +1730,8 @@
                     </div>
 
                     <div class="nbr-toolbar">
-                        <span id="nbrOrderLabel" class="nbr-order-label">Notebook order</span>
-                        <button id="nbrOrderToggle" class="fr-icon-btn" title="Sort chronologically">
+                        <span id="nbrOrderLabel" class="nbr-order-label">Event order</span>
+                        <button id="nbrOrderToggle" class="fr-icon-btn active" title="Sort in notebook order">
                             <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </button>
                     </div>
@@ -1857,9 +1855,7 @@
                     <button id="searchLogBtn" class="panel-nav-btn panel-search-btn" title="Search for this log" style="display:none;">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
                     </button>
-                    <button id="pinLogBtn" class="panel-nav-btn panel-pin-btn" title="Pin to the active notebook" style="display:none;">
-                        <svg class="pin-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 2h8v12l-4-3-4 3z"/></svg>
-                    </button>
+                    <button id="pinLogBtn" class="panel-nav-btn panel-pin-btn" title="Add to the active notebook" style="display:none;"></button>
                     <button id="sendToChatBtn" class="send-to-chat-btn" title="Analyze with AI">
                         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
                     </button>
@@ -1872,6 +1868,14 @@
         </div><!-- end search-results-split -->
         </div>
 
+            </div>
+
+            <!-- Notebooks and the evidence in them are one destination, entered
+                 once per investigation. Two top-level tabs for that was the
+                 scattering. Lives outside both panes so it survives the switch. -->
+            <div id="investigationSubTabs" class="alerts-sub-tabs" style="display: none;">
+                <button class="alerts-sub-tab active" data-investigation-subtab="notebooks">Notebooks</button>
+                <button class="alerts-sub-tab" data-investigation-subtab="evidence">Evidence</button>
             </div>
 
             <!-- Comments Tab Content -->
@@ -1899,7 +1903,7 @@
                 <button id="commentedBulkDeleteBtn" class="btn-danger btn-sm"
                         style="display:none;" onclick="CommentedLogs.bulkDelete()">Delete</button>
                 <span class="filters-spacer"></span>
-                <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">Generate Notebook</button>
+                <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">File by Tag</button>
                 <button id="commentedRefreshBtn" class="btn-secondary">Refresh</button>
             </div>
 
@@ -1991,6 +1995,7 @@
                             <div class="notebook-header">
                                 <div class="notebook-title-area">
                                     <h2 id="notebookTitle">Untitled Notebook</h2>
+                                    <span id="notebookLockBadge" class="nb-lock-badge" style="display:none"></span>
                                 </div>
 
                                 <div class="notebook-controls">
@@ -1999,11 +2004,8 @@
                                         <!-- Active users will be shown here -->
                                     </div>
 
-                                    <button id="sendNotebookToChatBtn" class="btn-secondary" title="Analyze notebook with AI" style="padding: 6px 8px; gap: 4px;">
-                                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
-                                        AI
-                                    </button>
                                     <button id="runAllSectionsBtn" class="btn-secondary" title="Run all query sections">Run All</button>
+                                    <button id="notebookLockBtn" class="btn-secondary nb-lock-btn" title="Lock this notebook"></button>
                                     <button id="notebookSettingsBtn" class="btn-secondary">Settings</button>
                                     <button id="saveNotebookBtn" class="btn-primary">Save</button>
                                 </div>
@@ -4243,6 +4245,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/worldmap.js"></script>
     <script src="/static/railPanel.js"></script>
     <script src="/static/fieldStats.js"></script>
+    <script src="/static/starGutter.js"></script>
     <script src="/static/notebookRail.js"></script>
     <script src="/static/columnSizing.js"></script>
     <script src="/static/queryExecutor.js"></script>

@@ -9,6 +9,8 @@ const (
 	SectionUpdated        = "section_updated"
 	SectionResultsUpdated = "section_results_updated"
 	SectionsReordered     = "sections_reordered"
+	NotebookLocked        = "notebook_locked"
+	NotebookUnlocked      = "notebook_unlocked"
 )
 
 // Event types for dashboards.

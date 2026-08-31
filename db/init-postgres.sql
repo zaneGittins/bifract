@@ -648,6 +648,12 @@ CREATE TABLE IF NOT EXISTS notebooks (
 ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS variables JSONB DEFAULT '[]';
 -- Zone for calendar-aligned buckets; see migration 063.
 ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
+-- Link to the case this investigation belongs to elsewhere; see migration 067.
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS external_ref_url   TEXT;
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS external_ref_label VARCHAR(120);
+-- Frozen as the record of an investigation; see migration 068.
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS locked_at TIMESTAMP;
+ALTER TABLE notebooks ADD COLUMN IF NOT EXISTS locked_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS notebook_sections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -669,6 +675,8 @@ CREATE TABLE IF NOT EXISTS notebook_sections (
 ALTER TABLE notebook_sections ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
 -- When the section's subject happened, in UTC; see migration 064.
 ALTER TABLE notebook_sections ADD COLUMN IF NOT EXISTS event_time TIMESTAMP;
+-- Evidence sections point at the comment they show rather than a copy of it; see migration 066.
+ALTER TABLE notebook_sections ADD COLUMN IF NOT EXISTS comment_id UUID REFERENCES comments(id) ON DELETE CASCADE;
 
 -- Allow ai_summary and comment_context section types (for upgrades where table already exists with old constraint)
 ALTER TABLE notebook_sections DROP CONSTRAINT IF EXISTS notebook_sections_section_type_check;
@@ -686,6 +694,17 @@ CREATE TABLE IF NOT EXISTS notebook_presence (
     PRIMARY KEY (notebook_id, username)
 );
 
+-- The notebook the rail captures into, per user and per scope; see migration 066.
+CREATE TABLE IF NOT EXISTS user_active_notebooks (
+    username VARCHAR(50) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    scope_key VARCHAR(64) NOT NULL,
+    notebook_id UUID NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (username, scope_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_active_notebooks_notebook ON user_active_notebooks(notebook_id);
+
 CREATE INDEX IF NOT EXISTS idx_notebooks_fractal_id ON notebooks(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_notebooks_created_by ON notebooks(created_by);
 CREATE INDEX IF NOT EXISTS idx_notebooks_created_at ON notebooks(created_at DESC);
@@ -697,6 +716,9 @@ CREATE INDEX IF NOT EXISTS idx_notebook_sections_type ON notebook_sections(secti
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_created_at ON notebook_sections(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_tags ON notebook_sections USING GIN (tags);
 CREATE INDEX IF NOT EXISTS idx_notebook_sections_event_time ON notebook_sections(notebook_id, event_time);
+CREATE INDEX IF NOT EXISTS idx_notebook_sections_comment_id ON notebook_sections(comment_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notebook_sections_comment_unique
+    ON notebook_sections(notebook_id, comment_id) WHERE comment_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_notebook_presence_notebook_id ON notebook_presence(notebook_id);
 CREATE INDEX IF NOT EXISTS idx_notebook_presence_last_seen ON notebook_presence(last_seen_at DESC);

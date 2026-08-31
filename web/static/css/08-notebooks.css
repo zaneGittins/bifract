@@ -1491,3 +1491,60 @@
     width: 170px;
     outline: none;
 }
+
+/* Locked notebooks
+ *
+ * A locked notebook is the record of an investigation: read-only, with its
+ * query sections serving the rows stored when it was sealed. The controls that
+ * would change it are hidden rather than disabled, so the page reads as a
+ * document instead of a form with everything greyed out.
+ */
+.nb-lock-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-tertiary, var(--bg-secondary));
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.nb-lock-badge svg {
+    flex: 0 0 auto;
+    opacity: 0.8;
+}
+
+.nb-lock-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+}
+
+.notebook-editor.notebook-locked #runAllSectionsBtn,
+.notebook-editor.notebook-locked #saveNotebookBtn,
+.notebook-editor.notebook-locked .add-section-container,
+.notebook-editor.notebook-locked .section-controls,
+.notebook-editor.notebook-locked .section-kebab-wrapper,
+.notebook-editor.notebook-locked .section-drag-handle,
+.notebook-editor.notebook-locked .section-tag-remove,
+.notebook-editor.notebook-locked .section-tag-add,
+.notebook-editor.notebook-locked #addSectionBtn {
+    display: none !important;
+}
+
+.notebook-editor.notebook-locked .notebook-section {
+    cursor: default;
+}
+
+/* Lock state in the notebooks listing. */
+.nb-row-lock {
+    margin-left: 6px;
+    color: var(--text-secondary);
+    opacity: 0.7;
+    vertical-align: -1px;
+}

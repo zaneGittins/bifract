@@ -54,9 +54,33 @@ const Notebooks = {
      * Bind event listeners
      */
     bindEvents() {
-
-        // Remove any existing event listeners to prevent duplicates
+        // The document-level handlers below are re-created on every call, so
+        // they are torn down first. Everything else wires static markup and is
+        // attached once: init() runs on every visit to the tab, and re-adding
+        // them stacked a listener per visit, so one click sent several requests.
         this.unbindEvents();
+        this.bindStaticEvents();
+
+        // Global keyboard shortcuts
+        if (!this.keyboardHandler) {
+            this.keyboardHandler = (e) => this.handleKeyboardShortcuts(e);
+            document.addEventListener('keydown', this.keyboardHandler);
+        }
+
+        // Close kebab menus on outside click
+        if (!this.kebabCloseHandler) {
+            this.kebabCloseHandler = (e) => {
+                if (!e.target.closest('.section-kebab-wrapper')) {
+                    document.querySelectorAll('.section-kebab-menu.open').forEach(m => m.classList.remove('open'));
+                }
+            };
+            document.addEventListener('click', this.kebabCloseHandler);
+        }
+    },
+
+    bindStaticEvents() {
+        if (this._staticEventsBound) return;
+        this._staticEventsBound = true;
 
         // Notebook listing events
         const createBtn = document.getElementById('createNotebookBtn');
@@ -105,9 +129,9 @@ const Notebooks = {
             runAllBtn.addEventListener('click', () => this.runAllSections());
         }
 
-        const sendToChatBtn = document.getElementById('sendNotebookToChatBtn');
-        if (sendToChatBtn) {
-            sendToChatBtn.addEventListener('click', () => this.sendNotebookToChat());
+        const lockBtn = document.getElementById('notebookLockBtn');
+        if (lockBtn) {
+            lockBtn.addEventListener('click', () => this.toggleNotebookLock());
         }
 
         const tocClose = document.getElementById('notebookTOCClose');
@@ -143,22 +167,6 @@ const Notebooks = {
             }, { passive: false });
         }
 
-        // Global keyboard shortcuts
-        if (!this.keyboardHandler) {
-            this.keyboardHandler = (e) => this.handleKeyboardShortcuts(e);
-            document.addEventListener('keydown', this.keyboardHandler);
-        }
-
-        // Close kebab menus on outside click
-        if (!this.kebabCloseHandler) {
-            this.kebabCloseHandler = (e) => {
-                if (!e.target.closest('.section-kebab-wrapper')) {
-                    document.querySelectorAll('.section-kebab-menu.open').forEach(m => m.classList.remove('open'));
-                }
-            };
-            document.addEventListener('click', this.kebabCloseHandler);
-        }
-
     },
 
     /**
@@ -185,12 +193,20 @@ const Notebooks = {
         }
     },
 
+    // The Notebooks/Evidence switcher belongs to the listing. Inside a notebook
+    // it is a row of chrome above content that wants the height.
+    _showSubTabs(visible) {
+        const el = document.getElementById('investigationSubTabs');
+        if (el) el.style.display = visible ? 'flex' : 'none';
+    },
+
     /**
      * Show notebook listing view
      */
     async showNotebookListing() {
         document.getElementById('notebookListing').style.display = 'block';
         document.getElementById('notebookEditor').style.display = 'none';
+        this._showSubTabs(true);
         const fab = document.getElementById('notebookTOCFab');
         if (fab) fab.style.display = 'none';
 
@@ -267,6 +283,7 @@ const Notebooks = {
                     <a href="javascript:void(0)" onclick="Notebooks.openNotebook('${notebook.id}')" style="color: var(--accent-primary); text-decoration: none;">
                         ${Utils.escapeHtml(notebook.name)}
                     </a>
+                    ${notebook.locked_at ? `<span class="nb-row-lock" title="Locked by ${Utils.escapeAttr(notebook.locked_by || 'another user')}">${this.lockIconSvg(false)}</span>` : ''}
                 </td>
                 <td>${Utils.escapeHtml(notebook.description || '')}</td>
                 <td>
@@ -280,7 +297,7 @@ const Notebooks = {
                         <div class="kebab-menu">
                             <button class="kebab-item" onclick="Notebooks.exportNotebook('${notebook.id}')">Export</button>
                             <button class="kebab-item" onclick="Notebooks.duplicateNotebook('${notebook.id}')">Duplicate</button>
-                            <button class="kebab-item danger" onclick="Notebooks.deleteNotebook('${Utils.escapeJs(notebook.id)}', '${Utils.escapeJs(notebook.name)}')">Delete</button>
+                            ${notebook.locked_at ? '' : `<button class="kebab-item danger" onclick="Notebooks.deleteNotebook('${Utils.escapeJs(notebook.id)}', '${Utils.escapeJs(notebook.name)}')">Delete</button>`}
                         </div>
                     </div>
                 </td>
@@ -661,6 +678,7 @@ const Notebooks = {
 
         listingEl.style.display = 'none';
         editorEl.style.display = 'block';
+        this._showSubTabs(false);
         const fab = document.getElementById('notebookTOCFab');
         if (fab) fab.style.display = 'flex';
 
@@ -669,6 +687,7 @@ const Notebooks = {
         if (titleEl && this.currentNotebook) {
             titleEl.textContent = this.currentNotebook.name;
         }
+        this.applyLockState();
 
         // Render variables bar
         this.renderVariablesBar();
@@ -977,6 +996,7 @@ const Notebooks = {
     },
 
     async saveEventTime(section, iso) {
+        if (this.guardLocked()) return;
         const body = iso ? { event_time: iso } : { clear_event_time: true };
         try {
             const res = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${section.id}`, {
@@ -996,8 +1016,25 @@ const Notebooks = {
 
     // ── Tag rendering ────────────────────────────────────────────────────────
 
+    // Evidence carries its comment's tags, which are what comments(), the
+    // comments tab and tag-based filing all read. Everything else carries its
+    // own. One object with two tag sets is the duplication this feature exists
+    // to remove, so the notebook page reads the same ones the rail edits.
+    sectionTags(section) {
+        if (!section) return [];
+        if (section.section_type === 'comment_context') {
+            try {
+                const data = JSON.parse(section.content || '{}');
+                return Array.isArray(data.tags) ? data.tags : [];
+            } catch (e) {
+                return [];
+            }
+        }
+        return section.tags || [];
+    },
+
     renderTagsArea(section) {
-        const tags = (section.tags || []);
+        const tags = this.sectionTags(section);
         const chips = tags.map(t => {
             const color = Utils.tagColorFor(t);
             return `<span class="section-tag-chip" data-tag="${Utils.escapeHtml(t)}" style="--chip-color:${color}" onclick="Notebooks.onTagChipClick('${Utils.escapeJs(t)}')">${Utils.escapeHtml(t)}<button class="section-tag-remove" data-section-id="${section.id}" data-tag="${Utils.escapeHtml(t)}" onclick="event.stopPropagation();Notebooks.removeTagFromSection('${section.id}','${Utils.escapeJs(t)}')" title="Remove tag">×</button></span>`;
@@ -1074,7 +1111,7 @@ const Notebooks = {
         if (!dropdown) return;
         const allTags = this._tagCache || [];
         const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
-        const existing = new Set(section ? (section.tags || []) : []);
+        const existing = new Set(this.sectionTags(section));
         const q = (query || '').toLowerCase();
         const matches = allTags.filter(t => !existing.has(t) && (q === '' || t.includes(q)));
         if (matches.length === 0) { dropdown.style.display = 'none'; return; }
@@ -1108,34 +1145,54 @@ const Notebooks = {
     },
 
     async addTagToSection(sectionId, tag) {
+        if (this.guardLocked()) return;
         tag = tag.trim().toLowerCase().replace(/[^a-z0-9_\-\.]/g, '-');
         if (!tag) return;
         const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
         if (!section) return;
-        const existing = section.tags || [];
+        const existing = this.sectionTags(section);
         if (existing.includes(tag)) return;
         const newTags = [...existing, tag];
         await this._saveTagsForSection(sectionId, newTags, section);
     },
 
     async removeTagFromSection(sectionId, tag) {
+        if (this.guardLocked()) return;
         const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
         if (!section) return;
-        const newTags = (section.tags || []).filter(t => t !== tag);
+        const newTags = this.sectionTags(section).filter(t => t !== tag);
         await this._saveTagsForSection(sectionId, newTags, section);
     },
 
     async _saveTagsForSection(sectionId, newTags, section) {
         const notebookId = this.currentNotebook.id;
+
+        // Tagging evidence tags the comment, so the tag reaches comments() and
+        // the comments tab rather than living only on this notebook's copy.
+        const evidence = !!section.comment_id;
+        const url = evidence
+            ? `/api/v1/comments/${encodeURIComponent(section.comment_id)}/tags`
+            : `/api/v1/notebooks/${notebookId}/sections/${sectionId}`;
+
         try {
-            const res = await fetch(`/api/v1/notebooks/${notebookId}/sections/${sectionId}`, {
+            const res = await fetch(url, {
                 method: 'PUT',
                 headers: this.sseHeaders(),
                 credentials: 'include',
                 body: JSON.stringify({ tags: newTags }),
             });
             if (!res.ok) throw new Error('Failed to save tags');
-            section.tags = newTags;
+            if (evidence) {
+                try {
+                    const data = JSON.parse(section.content || '{}');
+                    data.tags = newTags;
+                    section.content = JSON.stringify(data);
+                } catch (e) {
+                    // Content is rebuilt from the comment on the next read anyway.
+                }
+            } else {
+                section.tags = newTags;
+            }
             this._tagCache = null; // invalidate cache
             this._refreshTagsAreaDOM(sectionId, section);
             this.updateTagFilterBar();
@@ -1217,7 +1274,7 @@ const Notebooks = {
             const sectionId = el.dataset.sectionId;
             const section = this.currentNotebook && this.currentNotebook.sections.find(s => s.id === sectionId);
             if (!section) return;
-            if (active.length === 0 || active.every(t => (section.tags || []).includes(t))) {
+            if (active.length === 0 || active.every(t => this.sectionTags(section).includes(t))) {
                 el.style.display = '';
             } else {
                 el.style.display = 'none';
@@ -1457,6 +1514,7 @@ const Notebooks = {
      * Execute a comment_context section's log_id query
      */
     async executeCommentContextSection(sectionId, evt) {
+        if (this.guardLocked()) return;
         const button = evt ? evt.target.closest('button') : document.querySelector(`button[onclick*="executeCommentContextSection('${sectionId}')"]`);
         try {
             if (button) {
@@ -2072,16 +2130,8 @@ const Notebooks = {
     /**
      * Run all executable sections in batches of 2
      */
-    sendNotebookToChat() {
-        if (!this.currentNotebook) return;
-        if (window.Chat) {
-            Chat.analyzeNotebook(this.currentNotebook);
-        } else {
-            this.showError('Chat is not available');
-        }
-    },
-
     async runAllSections() {
+        if (this.guardLocked()) return;
         if (!this.currentNotebook || !this.currentNotebook.sections) return;
 
         const executableSections = this.currentNotebook.sections.filter(s =>
@@ -2201,6 +2251,7 @@ const Notebooks = {
      * Execute query section
      */
     async executeQuerySection(sectionId) {
+        if (this.guardLocked()) return;
         try {
             const button = event.target;
             const originalContent = button.innerHTML;
@@ -2354,6 +2405,7 @@ const Notebooks = {
     },
 
     async saveSectionFormat(sectionId, cfg) {
+        if (this.guardLocked()) return;
         const section = this.currentNotebook && this.currentNotebook.sections
             ? this.currentNotebook.sections.find(s => s.id === sectionId) : null;
         if (!section) return;
@@ -2549,6 +2601,12 @@ const Notebooks = {
                 break;
             case 'sections_reordered':
                 this.onRemoteSectionsReordered(event.data);
+                break;
+            case 'notebook_locked':
+                this.onRemoteLockChanged(true, event.data);
+                break;
+            case 'notebook_unlocked':
+                this.onRemoteLockChanged(false, event.data);
                 break;
             case 'presence_joined':
             case 'presence_left':
@@ -2819,6 +2877,112 @@ const Notebooks = {
         }
     },
 
+    // Locking freezes a notebook as the record of an investigation. The server
+    // is what enforces it; the page stops offering edits so a locked notebook
+    // reads as a document rather than a form that rejects every change.
+    isLocked() {
+        return !!(this.currentNotebook && this.currentNotebook.locked_at);
+    },
+
+    // guardLocked short-circuits an edit and says why. Every mutating action
+    // calls it, so a locked notebook cannot be changed from the keyboard or a
+    // stale menu either.
+    guardLocked() {
+        if (!this.isLocked()) return false;
+        const who = this.currentNotebook.locked_by || 'another user';
+        if (window.Toast) Toast.show(`Locked by ${who}. Unlock to edit.`, 'error');
+        return true;
+    },
+
+    lockIconSvg(open) {
+        const shackle = open
+            ? '<path d="M5 7V5a3 3 0 0 1 5.83-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'
+            : '<path d="M4.5 7V5a3.5 3.5 0 0 1 7 0v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>';
+        return `<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">${shackle}<rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/></svg>`;
+    },
+
+    // applyLockState repaints everything that depends on the lock: the badge,
+    // the button, and the class the stylesheet keys the read-only view off.
+    applyLockState() {
+        const editor = document.getElementById('notebookEditor');
+        const badge = document.getElementById('notebookLockBadge');
+        const btn = document.getElementById('notebookLockBtn');
+        const locked = this.isLocked();
+
+        if (editor) editor.classList.toggle('notebook-locked', locked);
+
+        if (badge) {
+            if (locked) {
+                const nb = this.currentNotebook;
+                const when = this.formatRelativeTime(nb.locked_at);
+                badge.innerHTML = `${this.lockIconSvg(false)}<span>Locked by ${Utils.escapeHtml(nb.locked_by || 'another user')} ${Utils.escapeHtml(when)}</span>`;
+                badge.style.display = '';
+            } else {
+                badge.style.display = 'none';
+                badge.innerHTML = '';
+            }
+        }
+
+        if (btn) {
+            btn.innerHTML = `${this.lockIconSvg(locked)}<span>${locked ? 'Unlock' : 'Lock'}</span>`;
+            btn.title = locked
+                ? 'Unlock to edit this notebook'
+                : 'Lock this notebook so its content and results stop changing';
+        }
+    },
+
+    async toggleNotebookLock() {
+        const nb = this.currentNotebook;
+        if (!nb) return;
+        const locking = !this.isLocked();
+
+        if (locking && !confirm(
+            'Lock this notebook?\n\n' +
+            'It becomes read-only and its query sections stop re-running, so it keeps showing the results stored now. ' +
+            'You can unlock it again.')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/v1/notebooks/${nb.id}/lock`, {
+                method: locking ? 'POST' : 'DELETE',
+                headers: this.sseHeaders(),
+                credentials: 'include',
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                if (window.Toast) Toast.show(data.error || `Failed to ${locking ? 'lock' : 'unlock'} the notebook`, 'error');
+                return;
+            }
+            // The lock endpoint answers with the notebook alone, so merge the
+            // new state in rather than replacing an object that carries the
+            // loaded sections.
+            Object.assign(this.currentNotebook, data.data, {
+                locked_at: data.data.locked_at || null,
+                locked_by: data.data.locked_by || '',
+            });
+            this.applyLockState();
+            this.renderNotebookSections();
+            // The rail may be holding this notebook as its capture target; the
+            // server has already cleared it, so the page has to catch up.
+            if (locking && window.NotebookRail) NotebookRail.onNotebookLocked(nb.id);
+            if (window.Toast) Toast.show(locking ? 'Notebook locked' : 'Notebook unlocked', 'success');
+        } catch (error) {
+            console.error('[Notebooks] Lock toggle failed:', error);
+            if (window.Toast) Toast.show(`Failed to ${locking ? 'lock' : 'unlock'} the notebook`, 'error');
+        }
+    },
+
+    // onRemoteLockChanged keeps a second reader in step: someone else locking
+    // the notebook has to take the controls away here too.
+    onRemoteLockChanged(locked, data) {
+        if (!this.currentNotebook) return;
+        this.currentNotebook.locked_at = locked ? (data && data.locked_at) || new Date().toISOString() : null;
+        this.currentNotebook.locked_by = locked ? (data && data.locked_by) || '' : '';
+        this.applyLockState();
+        this.renderNotebookSections();
+    },
+
     showError(message) {
         // Create error toast
         const toast = document.createElement('div');
@@ -2900,6 +3064,7 @@ const Notebooks = {
      * Show add section menu
      */
     async showAddSectionMenu() {
+        if (this.guardLocked()) return;
         // Get the position of the Add Section button
         const addSectionBtn = document.getElementById('addSectionBtn');
         if (!addSectionBtn) {
@@ -2982,6 +3147,7 @@ const Notebooks = {
      * Add a new section to the current notebook
      */
     async addSection(sectionType) {
+        if (this.guardLocked()) return;
         this.closeAddSectionMenu();
 
         if (!this.currentNotebook) {
@@ -3202,6 +3368,7 @@ const Notebooks = {
      * Save section edit
      */
     async saveEditSection(sectionId) {
+        if (this.guardLocked()) return;
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -3352,6 +3519,7 @@ const Notebooks = {
      * Duplicate a section
      */
     async duplicateSection(sectionId) {
+        if (this.guardLocked()) return;
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -3421,6 +3589,7 @@ const Notebooks = {
      * Delete a section
      */
     async deleteSection(sectionId) {
+        if (this.guardLocked()) return;
 
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
@@ -3515,23 +3684,35 @@ const Notebooks = {
 
             const newNotebook = createResult.data;
 
-            // Duplicate all sections
-            if (originalNotebook.sections && originalNotebook.sections.length > 0) {
-                for (const section of originalNotebook.sections) {
-                    const sectionData = {
+            // Evidence sections reference a comment rather than holding a copy of
+            // one, so the duplicate points at the same comments instead of
+            // re-creating them.
+            const sections = originalNotebook.sections || [];
+            for (const section of sections) {
+                if (section.comment_id) continue;
+                await fetch(`/api/v1/notebooks/${newNotebook.id}/sections`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
                         section_type: section.section_type,
                         title: section.title,
                         content: section.content,
                         order_index: section.order_index
-                    };
+                    })
+                });
+            }
 
-                    await fetch(`/api/v1/notebooks/${newNotebook.id}/sections`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'include',
-                        body: JSON.stringify(sectionData)
-                    });
-                }
+            const evidence = sections
+                .filter(s => s.comment_id)
+                .map(s => ({ comment_id: s.comment_id, order_index: s.order_index }));
+            if (evidence.length > 0) {
+                await fetch(`/api/v1/notebooks/${newNotebook.id}/evidence`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ evidence })
+                });
             }
 
             this.showSuccess(`Notebook "${originalNotebook.name}" duplicated successfully!`);
@@ -3653,6 +3834,18 @@ const Notebooks = {
                                    style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
                         </div>
                         <div class="form-group">
+                            <label for="settingsExternalRefUrl">Case link</label>
+                            <input type="url" id="settingsExternalRefUrl" name="external_ref_url" placeholder="https://cases.example.com/CASE-1234" maxlength="2000"
+                                   value="${Utils.escapeAttr(this.currentNotebook.external_ref_url || '')}"
+                                   style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
+                            <input type="text" id="settingsExternalRefLabel" name="external_ref_label" placeholder="CASE-1234" maxlength="120"
+                                   value="${Utils.escapeAttr(this.currentNotebook.external_ref_label || '')}"
+                                   style="width: 100%; padding: 8px; margin-top: 6px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
+                            <small style="color: var(--text-muted); display: block; margin-top: 0.35rem;">
+                                Points at the case that owns this investigation in whatever system tracks cases here. Bifract tracks no status of its own.
+                            </small>
+                        </div>
+                        <div class="form-group">
                             <label for="settingsNotebookTimezone">Bucket Timezone</label>
                             <select id="settingsNotebookTimezone" name="timezone"
                                     style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
@@ -3767,7 +3960,9 @@ const Notebooks = {
                 description: formData.get('description') || '',
                 time_range_type: formData.get('time_range_type'),
                 max_results_per_section: parseInt(formData.get('max_results_per_section')) || 1000,
-                timezone: formData.get('timezone') || 'UTC'
+                timezone: formData.get('timezone') || 'UTC',
+                external_ref_url: (formData.get('external_ref_url') || '').trim(),
+                external_ref_label: (formData.get('external_ref_label') || '').trim()
             };
 
 
@@ -3850,6 +4045,7 @@ const Notebooks = {
     },
 
     saveCurrentNotebook() {
+        if (this.guardLocked()) return;
     },
 
     bindSectionEvents() {
@@ -3923,6 +4119,7 @@ const Notebooks = {
      * Handle drag start
      */
     handleDragStart(e) {
+        if (this.isLocked()) { e.preventDefault(); return; }
         this.draggedSection = e.target.closest('.notebook-section');
         this.draggedSectionId = this.draggedSection.dataset.sectionId;
 
@@ -4087,6 +4284,7 @@ const Notebooks = {
      * Move section up one position
      */
     async moveSectionUp(sectionId) {
+        if (this.guardLocked()) return;
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
             return;
@@ -4146,6 +4344,7 @@ const Notebooks = {
      * Move section down one position
      */
     async moveSectionDown(sectionId) {
+        if (this.guardLocked()) return;
         if (!this.currentNotebook) {
             this.showError('No notebook is currently open');
             return;
@@ -4202,6 +4401,7 @@ const Notebooks = {
     },
 
     async moveSectionToTop(sectionId) {
+        if (this.guardLocked()) return;
         if (!this.currentNotebook) return;
         const currentIndex = this.currentNotebook.sections.findIndex(s => s.id === sectionId);
         if (currentIndex <= 0) return;
@@ -4655,6 +4855,7 @@ const Notebooks = {
     },
 
     async saveVariables() {
+        if (this.guardLocked()) return;
         if (!this.currentNotebook) return;
         try {
             await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/variables`, {

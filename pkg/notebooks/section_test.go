@@ -5,44 +5,9 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"bifract/pkg/storage"
 )
-
-func TestValidateEvidenceContent(t *testing.T) {
-	cases := []struct {
-		name    string
-		content string
-		wantErr bool
-	}{
-		{"valid", `{"log_id":"a3f5c1d2e4b60718"}`, false},
-		{"valid with fields", `{"log_id":"A3F5C1D2","comment_text":"suspicious","query":"host=x"}`, false},
-		{"not json", `log_id=a3f5c1d2`, true},
-		{"json array", `[{"log_id":"a3f5c1d2"}]`, true},
-		{"missing log_id", `{"comment_text":"note"}`, true},
-		{"empty log_id", `{"log_id":""}`, true},
-		{"log_id not a string", `{"log_id":12345678}`, true},
-		{"log_id too short", `{"log_id":"a3f5"}`, true},
-		{"log_id not hex", `{"log_id":"a3f5c1d2' OR 1=1--"}`, true},
-		{"log_id with quote", `{"log_id":"a3f5c1d2\\' OR 1=1--"}`, true},
-		{"log_id too long", `{"log_id":"` + repeat("a", 65) + `"}`, true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateEvidenceContent(tc.content)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("validateEvidenceContent(%q) error = %v, wantErr %v", tc.content, err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func repeat(s string, n int) string {
-	out := make([]byte, 0, n*len(s))
-	for i := 0; i < n; i++ {
-		out = append(out, s...)
-	}
-	return string(out)
-}
 
 func TestNormalizeEventTime(t *testing.T) {
 	if got := normalizeEventTime(nil); got != nil {
@@ -71,15 +36,16 @@ func TestNormalizeEventTime(t *testing.T) {
 	}
 }
 
-// comment_context is what "pin this log" writes, so it has to be creatable
-// through the section API rather than only by the comment generator.
+// Evidence references a comment, so it is created by posting a comment with a
+// notebook_id. Allowing it here again would reintroduce sections holding a copy
+// of a comment that nothing keeps in step.
 func TestCreatableSectionTypes(t *testing.T) {
-	for _, typ := range []string{"markdown", "query", "comment_context", "ai_summary", "ai_attack_chain"} {
+	for _, typ := range []string{"markdown", "query", "ai_summary", "ai_attack_chain"} {
 		if !creatableSectionTypes[typ] {
 			t.Errorf("section type %q should be creatable", typ)
 		}
 	}
-	for _, typ := range []string{"", "evidence", "chart", "sql"} {
+	for _, typ := range []string{"", "comment_context", "evidence", "chart", "sql"} {
 		if creatableSectionTypes[typ] {
 			t.Errorf("section type %q should not be creatable", typ)
 		}
@@ -130,5 +96,35 @@ func TestTruncateRunesAlwaysValidUTF8(t *testing.T) {
 		if want := min(n, utf8.RuneCountInString(subject)); utf8.RuneCountInString(got) != want {
 			t.Fatalf("cut at %d gave %d runes, want %d", n, utf8.RuneCountInString(got), want)
 		}
+	}
+}
+
+// The outline line for a filed comment. A star carries no text yet, so the
+// author's name alone has to remain a usable title.
+func TestEvidenceTitle(t *testing.T) {
+	cases := []struct {
+		name    string
+		comment storage.Comment
+		want    string
+	}{
+		{"display name and text", storage.Comment{Author: "zane", AuthorDisplayName: "Zane G", Text: "beaconing"}, "Zane G: beaconing"},
+		{"falls back to username", storage.Comment{Author: "zane", Text: "beaconing"}, "zane: beaconing"},
+		{"star has no text", storage.Comment{Author: "zane", AuthorDisplayName: "Zane G"}, "Zane G"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evidenceTitle(tc.comment); got != tc.want {
+				t.Fatalf("evidenceTitle() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	long := storage.Comment{Author: "zane", Text: strings.Repeat("x", 200)}
+	got := evidenceTitle(long)
+	if utf8.RuneCountInString(got) > maxSectionTitleChars {
+		t.Fatalf("title of %d runes exceeds the column width", utf8.RuneCountInString(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("a cut title should say so: %q", got)
 	}
 }

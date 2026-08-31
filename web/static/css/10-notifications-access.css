@@ -2227,3 +2227,5 @@
 }
 
 /* Field Statistics Bottom Drawer */
+
+.comment-notebooks-cell { white-space: nowrap; }

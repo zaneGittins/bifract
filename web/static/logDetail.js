@@ -67,7 +67,8 @@ const LogDetail = {
         });
         if (host.pinBtn) host.pinBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (window.NotebookRail) NotebookRail.pinLog(this.currentLogData);
+            const logID = this.currentLogData && this.currentLogData.log_id;
+            if (window.StarGutter) StarGutter.toggle(logID, this.currentLogData);
         });
         this.initResizeHandle(host);
     },
@@ -233,16 +234,21 @@ const LogDetail = {
         this.syncPinState();
     },
 
-    // Mark the pin button when this event is already evidence in the active
-    // notebook. Called again whenever the rail reloads, so pinning from here
-    // updates the button without reopening the panel.
+    // The panel's star. Unlike the row gutter's it is always visible: the row
+    // star is a hover accelerator, and something has to be reachable without
+    // hovering. Called again whenever the rail reloads, so starring from a row
+    // updates the panel without reopening it.
     syncPinState() {
         const host = this.activeHost;
         if (!host || !host.pinBtn) return;
         const logID = this.currentLogData && this.currentLogData.log_id;
-        const pinned = !!logID && !!window.NotebookRail && NotebookRail.hasPinned(logID);
-        host.pinBtn.classList.toggle('pinned', pinned);
-        host.pinBtn.title = pinned ? 'Already pinned to the active notebook' : 'Pin to the active notebook';
+        const starred = !!logID && !!window.NotebookRail && NotebookRail.hasPinned(logID);
+        const label = starred ? 'Remove from the active notebook' : 'Add to the active notebook';
+        host.pinBtn.classList.toggle('starred', starred);
+        host.pinBtn.setAttribute('aria-pressed', String(starred));
+        host.pinBtn.title = label;
+        host.pinBtn.setAttribute('aria-label', label);
+        if (window.StarGutter) host.pinBtn.innerHTML = StarGutter._star(starred);
     },
 
     async show(logData, isAggregated = false, hostRef) {

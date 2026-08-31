@@ -2108,7 +2108,7 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 	// cross-fractal probing via crafted log_ids and the legacy "empty
 	// fractal_id = public" bypass the old code path had.
 	user, _ := r.Context().Value("user").(*storage.User)
-	accessible, err := h.accessibleFractalIDs(r)
+	accessible, err := h.logScope().AccessibleFractalIDs(r.Context())
 	if err != nil {
 		log.Printf("[QueryHandler] Failed to resolve accessible fractals: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -2152,29 +2152,13 @@ func (h *QueryHandler) HandleGetLogByTimestamp(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if !isAdmin {
-		logFractalID, _ := logEntry["fractal_id"].(string)
-		// Legacy rows with empty fractal_id belong to the default fractal -
-		// treat them as such for the access check rather than fail-open.
-		if logFractalID == "" && h.fractalManager != nil {
-			if def, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
-				logFractalID = def.ID
-			}
-		}
-		allowed := false
-		for _, id := range accessible {
-			if id == logFractalID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			respondJSON(w, http.StatusNotFound, map[string]interface{}{
-				"success": false,
-				"error":   "Log not found",
-			})
-			return
-		}
+	logFractalID, _ := logEntry["fractal_id"].(string)
+	if !isAdmin && !h.logScope().Allows(r.Context(), logFractalID, accessible) {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Log not found",
+		})
+		return
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -2210,7 +2194,7 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	}
 
 	user, _ := r.Context().Value("user").(*storage.User)
-	accessible, err := h.accessibleFractalIDs(r)
+	accessible, err := h.logScope().AccessibleFractalIDs(r.Context())
 	if err != nil {
 		log.Printf("[QueryHandler] HandleGetLogFields: failed to resolve accessible fractals: %v", err)
 		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -2274,27 +2258,13 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if !isAdmin {
-		logFractalID, _ := logEntry["fractal_id"].(string)
-		if logFractalID == "" && h.fractalManager != nil {
-			if def, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
-				logFractalID = def.ID
-			}
-		}
-		allowed := false
-		for _, id := range accessible {
-			if id == logFractalID {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			respondJSON(w, http.StatusNotFound, map[string]interface{}{
-				"success": false,
-				"error":   "Log not found",
-			})
-			return
-		}
+	logFractalID, _ := logEntry["fractal_id"].(string)
+	if !isAdmin && !h.logScope().Allows(r.Context(), logFractalID, accessible) {
+		respondJSON(w, http.StatusNotFound, map[string]interface{}{
+			"success": false,
+			"error":   "Log not found",
+		})
+		return
 	}
 
 	fields, _ := logEntry["fields"].(map[string]interface{})
@@ -2358,30 +2328,10 @@ func scopedFractalFilter(requested string, accessible []string, isAdmin bool) st
 	return ""
 }
 
-// accessibleFractalIDs returns the list of fractal IDs the current session is
-// scoped to: a single ID for a fractal session, the member fractal IDs for a
-// prism session, or an empty list if no scope is set. Admin bypass is handled
-// by callers.
-func (h *QueryHandler) accessibleFractalIDs(r *http.Request) ([]string, error) {
-	if prismID, _ := r.Context().Value("selected_prism").(string); prismID != "" {
-		if h.prismManager == nil {
-			return nil, nil
-		}
-		return h.prismManager.GetMemberFractalIDs(r.Context(), prismID)
-	}
-	if fractalID, _ := r.Context().Value("selected_fractal").(string); fractalID != "" {
-		return []string{fractalID}, nil
-	}
-	// No session scope: fall back to the default fractal so single-fractal
-	// callers still work.
-	if h.fractalManager != nil {
-		def, err := h.fractalManager.GetDefaultFractal(r.Context())
-		if err != nil {
-			return nil, err
-		}
-		return []string{def.ID}, nil
-	}
-	return nil, nil
+// logScope resolves which fractals a lookup by log_id may read from. Shared with
+// the comment handlers, which do the same by-id lookups.
+func (h *QueryHandler) logScope() fractals.LogScope {
+	return fractals.LogScope{Fractals: h.fractalManager, Prisms: h.prismManager}
 }
 
 // buildFractalCondition constructs the fractal_id WHERE fragment for the given request.
