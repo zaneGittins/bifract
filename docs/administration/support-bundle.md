@@ -50,4 +50,4 @@ Output is capped so it stays small enough to email and cannot fill the disk: 4 M
 
 Values whose key names indicate a secret (passwords, tokens, API and access keys, credentials, bearer tokens, credentials embedded in URLs) are replaced with `***REDACTED***`. Kubernetes secret values are never read at all; only secret and key names are listed.
 
-The bundle does still contain operational data: container log lines, query text truncated to 300 characters, table and column names, fractal ids, and object counts. Review it before sending if that matters in your environment. `README.txt` inside the bundle repeats this notice.
+The bundle does still contain operational data: container log lines, query text truncated to 300 characters, table and column names, fractal ids, and object counts.

@@ -1,6 +1,6 @@
 # Disk Quotas
 
-Disk quotas let you cap how much raw log data a fractal can store. When a fractal reaches its quota, Bifract either rejects new logs or automatically deletes the oldest ones to make room.
+Disk quotas let you cap how much data a fractal stores. When a fractal reaches its quota, Bifract either rejects new logs or automatically deletes the oldest to free up space for new data.
 
 ## Configuration
 
