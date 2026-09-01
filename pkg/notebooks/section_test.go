@@ -99,8 +99,8 @@ func TestTruncateRunesAlwaysValidUTF8(t *testing.T) {
 	}
 }
 
-// The outline line for a filed comment. A star carries no text yet, so the
-// author's name alone has to remain a usable title.
+// The outline line for a filed comment: who wrote it and the start of what they
+// said, or the event itself when a star carries no words to quote.
 func TestEvidenceTitle(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -109,7 +109,9 @@ func TestEvidenceTitle(t *testing.T) {
 	}{
 		{"display name and text", storage.Comment{Author: "zane", AuthorDisplayName: "Zane G", Text: "beaconing"}, "Zane G: beaconing"},
 		{"falls back to username", storage.Comment{Author: "zane", Text: "beaconing"}, "zane: beaconing"},
-		{"star has no text", storage.Comment{Author: "zane", AuthorDisplayName: "Zane G"}, "Zane G"},
+		// Titling these with the author read as a notebook full of "Administrator".
+		{"star names the event", storage.Comment{Author: "zane", AuthorDisplayName: "Zane G", LogID: "3108992d8c9741ab"}, "Event 3108992d8c97"},
+		{"star with no log id falls back to the name", storage.Comment{Author: "zane", AuthorDisplayName: "Zane G"}, "Zane G"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

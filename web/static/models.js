@@ -1506,7 +1506,7 @@ ${isBeacon ? `
         this._setModelRunState(true);
 
         const { start, end } = this._editorTimeRange();
-        const qbody = { query: e.query || '*', start, end };
+        const qbody = { query: e.query || '*', start, end, source: 'model' };
         if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
             qbody.fractal_id = window.FractalContext.currentFractal.id;
         }

@@ -1,12 +1,11 @@
 // Performance monitoring module (admin-only)
 
 const Performance = {
+    initialized: false,
     isActive: false,
     refreshInterval: null,
     refreshRate: 5000,
     timeRange: '1h',
-    durationChart: null,
-    memoryChart: null,
     cpuChart: null,
     ingestChart: null,
     alertChart: null,
@@ -20,18 +19,18 @@ const Performance = {
     fractalNames: {},
     _ingestData: [],
     _ingestSeries: null,
-    _lastProcesses: [],
-    _lastRecentQueries: [],
-    _shownProcesses: [],
-    _shownRecentQueries: [],
-    _drawerQuery: '',
-    hideInserts: false,
 
+    // Called from DOMContentLoaded and again from the app's startup sequence, so
+    // it must bind its listeners exactly once.
     init() {
+        if (this.initialized) return;
+        this.initialized = true;
+
         const refreshSelect = document.getElementById('perfRefreshRate');
         if (refreshSelect) {
             refreshSelect.addEventListener('change', (e) => {
                 this.refreshRate = parseInt(e.target.value, 10);
+                window.Activity?.setRefreshRate(this.refreshRate);
                 if (this.isActive) {
                     this.stopUpdates();
                     this.startUpdates();
@@ -44,25 +43,12 @@ const Performance = {
                 this.timeRange = e.target.value;
                 this.destroyCharts();
                 this.prevCpuTimes = null;
+                window.Activity?.setRange(this.timeRange);
                 this.refresh();
             });
         }
 
-        const procSearch = document.getElementById('perfProcessSearch');
-        if (procSearch) {
-            procSearch.addEventListener('input', () => this.filterProcesses());
-        }
-        const recentSearch = document.getElementById('perfRecentSearch');
-        if (recentSearch) {
-            recentSearch.addEventListener('input', () => this.filterRecentQueries());
-        }
-        const hideInserts = document.getElementById('perfHideInserts');
-        if (hideInserts) {
-            hideInserts.addEventListener('change', (e) => {
-                this.hideInserts = e.target.checked;
-                this.filterRecentQueries();
-            });
-        }
+        window.Activity?.init();
 
         // Ingest-per-day filters (Storage & Ingest sub-tab)
         const ingestFractalSel = document.getElementById('perfIngestFractal');
@@ -82,12 +68,12 @@ const Performance = {
 
         // Restore last-used sub-tab.
         const savedTab = sessionStorage.getItem('perfSubTab');
-        if (['overview', 'storage', 'activity', 'alerts'].includes(savedTab)) {
+        if (['overview', 'storage', 'activity', 'alerts', 'archive'].includes(savedTab)) {
             this.subTab = savedTab;
         }
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') { this.closeDrawer(); this.closeArchiveDrawers(); }
+            if (e.key === 'Escape') this.closeArchiveDrawers();
         });
     },
 
@@ -96,6 +82,7 @@ const Performance = {
         this.subTab = name;
         sessionStorage.setItem('perfSubTab', name);
         this.applySubTab(name);
+        this.syncActivity();
         this.refresh();
     },
 
@@ -127,15 +114,28 @@ const Performance = {
             sessionStorage.setItem('perfSubTab', subPath);
         }
         this.applySubTab(this.subTab);
-        this.loadFractalOptions();
+        await this.loadFractalOptions();
         await this.refresh();
         this.startUpdates();
+        this.syncActivity();
     },
 
     hide() {
         this.isActive = false;
         this.stopUpdates();
         this.destroyCharts();
+        window.Activity?.stop();
+    },
+
+    // The Activity tab polls its own endpoints, so it runs only while it is the
+    // visible sub-tab.
+    syncActivity() {
+        if (!window.Activity) return;
+        if (this.isActive && this.subTab === 'activity') {
+            if (!Activity.isActive) Activity.start(this.timeRange, this.refreshRate);
+        } else if (Activity.isActive) {
+            Activity.stop();
+        }
     },
 
     startUpdates() {
@@ -155,14 +155,11 @@ const Performance = {
     async refresh() {
         const tab = this.subTab;
         try {
-            // Metrics (server + storage cards, CPU, recent queries) and pressure
-            // are always fetched; processes only for Activity; ingest only for
-            // Storage. This keeps each poll scoped to what the active tab shows.
+            // Metrics (server + storage cards, CPU) and pressure are always
+            // fetched; ingest only for Storage; alert stats only for Alerts. The
+            // Activity tab polls its own endpoints on its own cadence.
             const metPromise = fetch(`/api/v1/admin/metrics?range=${this.timeRange}`, { credentials: 'include' });
             const pressurePromise = fetch(`/api/v1/system/pressure?range=${this.timeRange}`, { credentials: 'include' });
-            const procPromise = tab === 'activity'
-                ? fetch('/api/v1/admin/processes', { credentials: 'include' })
-                : null;
             const alertStatsPromise = tab === 'alerts'
                 ? fetch(`/api/v1/admin/alert-stats?range=${this.timeRange}`, { credentials: 'include' })
                 : null;
@@ -180,10 +177,6 @@ const Performance = {
                         metData.memory_history_nodes || null
                     );
                 }
-                if (tab === 'activity') {
-                    this.renderRecentQueries(metData.recent_queries || []);
-                    this.updateCharts(metData.recent_queries || []);
-                }
             }
 
             this.renderPressureBanner(pressureData);
@@ -193,9 +186,8 @@ const Performance = {
                 this.renderDDLQueueChart(pressureData.ddl_queue_history || []);
             }
 
-            if (procPromise) {
-                const procData = await (await procPromise).json();
-                if (procData.success) this.renderProcesses(procData.processes || []);
+            if (tab === 'overview') {
+                this.loadBackgroundOps();
             }
 
             if (tab === 'storage') {
@@ -239,6 +231,71 @@ const Performance = {
         } catch (err) {
             console.error('[Performance] fractal options error:', err);
         }
+    },
+
+    // Merges, mutations and the replication backlog. A merge running for hours or
+    // a mutation that never finishes is the classic production incident, and the
+    // single "Active Merges" count above cannot show either.
+    async loadBackgroundOps() {
+        try {
+            const res = await fetch('/api/v1/admin/background', { credentials: 'include' });
+            const data = await res.json();
+            if (data.success) this.renderBackgroundOps(data);
+        } catch (err) {
+            console.error('[Performance] background ops error:', err);
+        }
+    },
+
+    renderBackgroundOps(bg) {
+        const host = document.getElementById('actBackground');
+        if (!host) return;
+        const merges = bg.merges || [];
+        const mutations = bg.mutations || [];
+        const summary = document.getElementById('actBgSummary');
+        if (summary) {
+            const parts = [`${merges.length} merge${merges.length === 1 ? '' : 's'}`,
+                `${mutations.length} mutation${mutations.length === 1 ? '' : 's'}`];
+            if (bg.replication) parts.push(`${Number(bg.replication.queued || 0)} queued parts`);
+            summary.textContent = parts.join(' \u00b7 ');
+        }
+        if (!merges.length && !mutations.length) {
+            host.innerHTML = '<div class="empty-state" style="min-height: 80px;"><p>Nothing running</p></div>';
+            return;
+        }
+
+        const esc = (v) => this.escapeHtml(v === undefined || v === null ? '' : String(v));
+        const age = (seconds, warnAt, dangerAt) => {
+            const cls = seconds > dangerAt ? 'act-age-critical' : seconds > warnAt ? 'act-age-warn' : '';
+            return `<span class="act-age ${cls}">${this.formatDuration(seconds * 1000)}</span>`;
+        };
+
+        let html = '<table class="results-table perf-table"><thead><tr>' +
+            '<th>Kind</th><th>Table</th><th>Detail</th><th class="act-num">Elapsed</th><th>Progress</th>' +
+            '<th class="act-num">Memory</th><th>Node</th></tr></thead><tbody>';
+        for (const m of merges) {
+            const pct = Math.max(0, Math.min(100, Math.round(Number(m.progress || 0) * 100)));
+            html += '<tr>' +
+                `<td>${Number(m.is_mutation) ? 'Mutation merge' : 'Merge'}</td>` +
+                `<td class="act-mono">${esc(m.table)}</td>` +
+                `<td class="act-mono act-muted">${esc(m.detail)}</td>` +
+                `<td class="act-num">${age(Number(m.elapsed_sec || 0), 120, 600)}</td>` +
+                `<td><span class="act-bar-track"><span class="act-bar" style="width:${pct}%"></span></span>` +
+                `<span class="act-num act-muted act-bar-label">${pct}%</span></td>` +
+                `<td class="act-num">${this.formatBytes(m.memory || 0)}</td>` +
+                `<td class="act-num act-muted">${esc(m.node)}</td></tr>`;
+        }
+        for (const m of mutations) {
+            const failed = !!String(m.fail_reason || '').trim();
+            html += '<tr>' +
+                '<td>Mutation</td>' +
+                `<td class="act-mono">${esc(m.table)}</td>` +
+                `<td class="act-mono act-muted">${esc(m.detail)}</td>` +
+                `<td class="act-num">${age(Number(m.elapsed_sec || 0), 0, failed ? 0 : 900)}</td>` +
+                `<td>${failed ? `<span class="act-fail">${esc(m.fail_reason)}</span>` : `${this.formatNumber(m.parts_to_do || 0)} parts to do`}</td>` +
+                '<td class="act-num">--</td>' +
+                `<td class="act-num act-muted">${esc(m.node)}</td></tr>`;
+        }
+        host.innerHTML = html + '</tbody></table>';
     },
 
     async loadIngest() {
@@ -1522,307 +1579,6 @@ const Performance = {
         });
     },
 
-    renderProcesses(processes) {
-        this._lastProcesses = processes.filter(p => {
-            const q = (p.query || '').toLowerCase();
-            return !q.includes('system.processes') &&
-                   !q.includes('system.metrics') &&
-                   !q.includes('system.asynchronous_metrics') &&
-                   !q.includes('system.query_log');
-        });
-        this.filterProcesses();
-    },
-
-    filterProcesses() {
-        const input = document.getElementById('perfProcessSearch');
-        const term = input ? input.value.toLowerCase().trim() : '';
-        this._shownProcesses = term
-            ? this._lastProcesses.filter(p =>
-                (p.query || '').toLowerCase().includes(term) ||
-                (p.user || '').toLowerCase().includes(term))
-            : this._lastProcesses;
-        const countEl = document.getElementById('perfProcessCount');
-        if (countEl) countEl.textContent = this._shownProcesses.length;
-        this._renderProcessTable();
-    },
-
-    _renderProcessTable() {
-        const container = document.getElementById('perfProcessesTable');
-        if (!container) return;
-        const data = this._shownProcesses;
-
-        if (data.length === 0) {
-            container.innerHTML = '<div class="empty-state" style="min-height: 120px;"><p>No active queries</p></div>';
-            return;
-        }
-
-        let html = '<table class="results-table perf-table"><thead><tr>';
-        html += '<th>Elapsed</th><th>User</th><th>Query</th><th>Rows Read</th><th>Memory</th><th></th>';
-        html += '</tr></thead><tbody>';
-
-        data.forEach((p, idx) => {
-            const elapsed = parseFloat(p.elapsed || 0);
-            const elapsedClass = elapsed > 30 ? 'perf-danger' : elapsed > 10 ? 'perf-warning' : '';
-            const queryText = this.truncateQuery(p.query || '', 120);
-            const memReadable = p.memory_readable || this.formatBytes(p.memory_usage || 0);
-            const readRows = this.formatNumber(p.read_rows || 0);
-            const queryId = this.escapeHtml(p.query_id || '');
-
-            html += `<tr class="${elapsedClass} perf-row-clickable" onclick="Performance.openQueryDrawer('proc',${idx})">`;
-            html += `<td class="perf-elapsed">${elapsed.toFixed(1)}s</td>`;
-            html += `<td>${this.escapeHtml(p.user || '')}</td>`;
-            html += `<td class="perf-query-cell">${this.escapeHtml(queryText)}</td>`;
-            html += `<td>${readRows}</td>`;
-            html += `<td>${memReadable}</td>`;
-            // A cancelled query stops at its next interruptible point, which can take
-            // a while inside a long read; say so rather than offering Kill again.
-            const cancelled = Number(p.is_cancelled || 0) > 0;
-            html += cancelled
-                ? '<td><span class="perf-kill-pending">Stopping</span></td>'
-                : `<td><button class="btn-kill-query" onclick="event.stopPropagation();Performance.killQuery('${queryId}')">Kill</button></td>`;
-            html += '</tr>';
-        });
-
-        html += '</tbody></table>';
-        container.innerHTML = html;
-    },
-
-    renderRecentQueries(queries) {
-        this._lastRecentQueries = queries.filter(q => (q.query_kind || '') !== '');
-        this.filterRecentQueries();
-    },
-
-    filterRecentQueries() {
-        const input = document.getElementById('perfRecentSearch');
-        const term = input ? input.value.toLowerCase().trim() : '';
-        let rows = this._lastRecentQueries;
-        if (this.hideInserts) {
-            rows = rows.filter(q => (q.query_kind || '').toLowerCase() !== 'insert');
-        }
-        if (term) {
-            this._shownRecentQueries = rows.filter(q =>
-                (q.query || '').toLowerCase().includes(term) ||
-                (q.query_kind || '').toLowerCase().includes(term));
-        } else {
-            this._shownRecentQueries = rows.slice(0, 50);
-        }
-        const countEl = document.getElementById('perfRecentCount');
-        if (countEl) countEl.textContent = this._shownRecentQueries.length;
-        this._renderRecentTable();
-    },
-
-    _renderRecentTable() {
-        const container = document.getElementById('perfRecentTable');
-        if (!container) return;
-        const data = this._shownRecentQueries;
-
-        if (data.length === 0) {
-            container.innerHTML = '<div class="empty-state" style="min-height: 120px;"><p>No recent queries</p></div>';
-            return;
-        }
-
-        let html = '<table class="results-table perf-table"><thead><tr>';
-        html += '<th>Time</th><th>Type</th><th>Query</th><th>Duration</th><th>Rows Read</th><th>Memory</th><th>Status</th>';
-        html += '</tr></thead><tbody>';
-
-        data.forEach((q, idx) => {
-            const duration = q.query_duration_ms || 0;
-            const durationClass = duration > 30000 ? 'perf-danger' : duration > 5000 ? 'perf-warning' : '';
-            const isError = (q.type || '') === 'ExceptionWhileProcessing';
-            const statusClass = isError ? 'perf-status-error' : 'perf-status-ok';
-            const statusText = isError ? 'Error' : 'OK';
-            const timeStr = this.formatEventTime(q.event_time);
-
-            html += `<tr class="${durationClass} perf-row-clickable" onclick="Performance.openQueryDrawer('recent',${idx})">`;
-            html += `<td class="perf-time">${timeStr}</td>`;
-            html += `<td>${this.escapeHtml(q.query_kind || '--')}</td>`;
-            html += `<td class="perf-query-cell">${this.escapeHtml(this.truncateQuery(q.query || '', 120))}</td>`;
-            html += `<td>${this.formatDuration(duration)}</td>`;
-            html += `<td>${this.formatNumber(q.read_rows || 0)}</td>`;
-            html += `<td>${this.formatBytes(q.memory_usage || 0)}</td>`;
-            html += `<td><span class="${statusClass}">${statusText}</span></td>`;
-            html += '</tr>';
-        });
-
-        html += '</tbody></table>';
-        container.innerHTML = html;
-    },
-
-    openQueryDrawer(source, idx) {
-        const item = source === 'proc' ? this._shownProcesses[idx] : this._shownRecentQueries[idx];
-        if (!item) return;
-
-        this._drawerQuery = item.query || '';
-
-        let metaHtml = '';
-        if (source === 'proc') {
-            const elapsed = parseFloat(item.elapsed || 0);
-            metaHtml = [
-                item.user ? `<span>${this.escapeHtml(item.user)}</span>` : '',
-                `<span>${elapsed.toFixed(1)}s elapsed</span>`,
-                `<span>${this.formatBytes(item.memory_usage || 0)} memory</span>`,
-                `<span>${this.formatNumber(item.read_rows || 0)} rows read</span>`,
-            ].filter(Boolean).join('');
-        } else {
-            const isError = (item.type || '') === 'ExceptionWhileProcessing';
-            metaHtml = [
-                `<span>${this.formatEventTime(item.event_time)}</span>`,
-                `<span>${this.escapeHtml(item.query_kind || '--')}</span>`,
-                `<span>${this.formatDuration(item.query_duration_ms || 0)}</span>`,
-                `<span>${this.formatBytes(item.memory_usage || 0)}</span>`,
-                `<span class="${isError ? 'perf-status-error' : 'perf-status-ok'}">${isError ? 'Error' : 'OK'}</span>`,
-            ].join('');
-        }
-
-        const pre = document.getElementById('perfDrawerQuery');
-        const metaEl = document.getElementById('perfDrawerMeta');
-        const drawer = document.getElementById('perfQueryDrawer');
-        if (pre) pre.textContent = this._drawerQuery;
-        if (metaEl) metaEl.innerHTML = metaHtml;
-        if (drawer) drawer.classList.add('open');
-    },
-
-    closeDrawer() {
-        const drawer = document.getElementById('perfQueryDrawer');
-        if (drawer) drawer.classList.remove('open');
-    },
-
-    async copyDrawerQuery() {
-        try {
-            await navigator.clipboard.writeText(this._drawerQuery);
-            const btn = document.getElementById('perfDrawerCopy');
-            if (btn) {
-                const orig = btn.innerHTML;
-                btn.textContent = 'Copied!';
-                setTimeout(() => { btn.innerHTML = orig; }, 1500);
-            }
-        } catch (e) {
-            console.error('[Performance] clipboard copy failed:', e);
-        }
-    },
-
-    updateCharts(recentQueries) {
-        if (!recentQueries || recentQueries.length === 0) return;
-
-        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-
-        // Build scatter data from recent queries
-        const durationData = [];
-        const memoryData = [];
-
-        // Reverse so oldest is first (left-to-right chronological)
-        [...recentQueries].reverse().forEach(q => {
-            if (q.type === 'ExceptionWhileProcessing') return;
-            const time = q.event_time;
-            const duration = q.query_duration_ms || 0;
-            const mem = q.memory_usage || 0;
-
-            durationData.push({ x: time, y: duration });
-            memoryData.push({ x: time, y: mem });
-        });
-
-        // Duration chart
-        this.renderScatterChart(
-            'perfQueryDurationChart',
-            'durationChart',
-            durationData,
-            'Duration (ms)',
-            cv('--accent-primary') || '#9c6ade',
-            (val) => val > 1000 ? (val / 1000).toFixed(1) + 's' : val + 'ms'
-        );
-
-        // Memory chart
-        this.renderScatterChart(
-            'perfMemoryChart',
-            'memoryChart',
-            memoryData,
-            'Memory',
-            cv('--info') || '#60a5fa',
-            (val) => this.formatBytes(val)
-        );
-    },
-
-    renderScatterChart(canvasId, chartProp, data, label, color, tooltipFormatter) {
-        const canvas = document.getElementById(canvasId);
-        if (!canvas) return;
-
-        if (this[chartProp]) {
-            this[chartProp].data.datasets[0].data = data;
-            this[chartProp].update('none');
-            return;
-        }
-
-        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-        const chartBg = cv('--chart-bg') || '#1a1a2e';
-        const chartText = cv('--chart-text') || '#e8eaed';
-        const chartGrid = cv('--chart-grid') || '#24243e';
-        const chartBorder = cv('--chart-border') || '#24243e';
-
-        const ctx = canvas.getContext('2d');
-        this[chartProp] = new Chart(ctx, {
-            type: 'scatter',
-            data: {
-                datasets: [{
-                    label: label,
-                    data: data,
-                    backgroundColor: color + '99',
-                    borderColor: color,
-                    borderWidth: 1,
-                    pointRadius: 3,
-                    pointHoverRadius: 5
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                // nearest, not index: scatter points share x buckets, so index would stack every point in the bucket
-                interaction: { intersect: false, mode: 'nearest' },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        backgroundColor: chartBg,
-                        titleColor: chartText,
-                        bodyColor: chartText,
-                        borderColor: chartBorder,
-                        borderWidth: 1,
-                        callbacks: {
-                            label: (ctx) => tooltipFormatter(ctx.parsed.y)
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        type: 'category',
-                        display: true,
-                        grid: { color: chartGrid, drawBorder: false },
-                        ticks: {
-                            color: chartText,
-                            font: { family: 'Inter', size: 10 },
-                            maxTicksLimit: 6,
-                            callback: function(value, index) {
-                                const label = this.getLabelForValue(value);
-                                if (!label) return '';
-                                // Show only time portion
-                                const parts = String(label).split(' ');
-                                return parts.length > 1 ? parts[1] : parts[0];
-                            }
-                        }
-                    },
-                    y: {
-                        display: true,
-                        grid: { color: chartGrid, drawBorder: false },
-                        ticks: {
-                            color: chartText,
-                            font: { family: 'Inter', size: 10 },
-                            callback: (value) => tooltipFormatter(value)
-                        }
-                    }
-                }
-            }
-        });
-    },
-
     renderAlertStats(data) {
         const summary = data.summary || {};
         this.setText('alertMetricActive', summary.total_active ?? '--');
@@ -2268,14 +2024,6 @@ const Performance = {
             this.cpuChart.destroy();
             this.cpuChart = null;
         }
-        if (this.durationChart) {
-            this.durationChart.destroy();
-            this.durationChart = null;
-        }
-        if (this.memoryChart) {
-            this.memoryChart.destroy();
-            this.memoryChart = null;
-        }
         if (this.ingestChart) {
             this.ingestChart.destroy();
             this.ingestChart = null;
@@ -2357,7 +2105,13 @@ const Performance = {
         if (ms == null) return '--';
         if (ms < 1) return '<1ms';
         if (ms < 1000) return ms + 'ms';
-        return (ms / 1000).toFixed(1) + 's';
+        if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+        // Past a minute, seconds stop being readable: a merge running for
+        // "1084.0s" is the same fact as "18m 04s" and much harder to judge.
+        const minutes = Math.floor(ms / 60000);
+        const seconds = Math.round((ms % 60000) / 1000);
+        if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+        return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
     },
 
     // Deliberately UTC. The value is a whole calendar day produced by a

@@ -94,6 +94,9 @@ type queryLogsArgs struct {
 func queryLogs(ctx context.Context, c Client, in queryLogsArgs) (any, error) {
 	body := in.window.body()
 	body["query"] = in.Query
+	// Attribution only: the assistant's searches are the user's searches, but the
+	// admin activity view should be able to tell them apart.
+	body["source"] = "chat"
 
 	result, err := c.Post(ctx, "/query", body)
 	if err != nil {

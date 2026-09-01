@@ -661,6 +661,11 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 
 	alertCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
+	alertCtx = storage.TagContext(alertCtx, storage.QueryTag{
+		Source:  storage.SourceAlert,
+		Fractal: alert.FractalID,
+		Label:   alert.Name,
+	})
 
 	results, err := e.ch.QueryLowPriority(alertCtx, sql)
 	if err != nil {

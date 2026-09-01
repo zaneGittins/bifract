@@ -2351,7 +2351,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
         this.hideAlertPagination();
 
         const timeRange = this.getTimeRange();
-        const requestBody = { query, start: timeRange.start, end: timeRange.end };
+        const requestBody = { query, start: timeRange.start, end: timeRange.end, source: 'alert' };
         if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
             requestBody.fractal_id = window.FractalContext.currentFractal.id;
         }
@@ -3332,7 +3332,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
         try {
             const query = this.stripComments(formData.query_string);
             const timeRange = this.getTimeRange();
-            const validateBody = { query, start: timeRange.start, end: timeRange.end };
+            const validateBody = { query, start: timeRange.start, end: timeRange.end, source: 'alert' };
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
                 validateBody.fractal_id = window.FractalContext.currentFractal.id;
             }

@@ -22,13 +22,23 @@ var errWidgetMismatch = errors.New("widget does not belong to dashboard")
 // scopeOf builds the execution scope for one of a dashboard's widgets. Time
 // buckets snap to the dashboard's zone, not any viewer's: one widget result is
 // cached and served to everyone, including share links with no user at all.
-func scopeOf(d *storage.Dashboard, start, end time.Time) query.ExecuteScope {
+func scopeOf(d *storage.Dashboard, start, end time.Time, widget *storage.DashboardWidget, bql string) query.ExecuteScope {
+	label := d.Name
+	if widget != nil && widget.Title != nil && *widget.Title != "" {
+		label += " / " + *widget.Title
+	}
 	return query.ExecuteScope{
 		FractalID: d.FractalID,
 		PrismID:   d.PrismID,
 		Start:     start,
 		End:       end,
 		Timezone:  d.Timezone,
+		Tag: storage.QueryTag{
+			Source:  storage.SourceDashboard,
+			Fractal: d.FractalID,
+			Label:   label,
+			BQL:     bql,
+		},
 	}
 }
 
@@ -328,7 +338,7 @@ func (e *Executor) executeWidget(ctx context.Context, d *storage.Dashboard, w *s
 	start, end := computeTimeRange(d)
 	queryStr := bqlvars.Substitute(w.QueryContent, d.Variables)
 
-	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end))
+	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end, w, queryStr))
 	if err != nil {
 		return nil, "", err
 	}
@@ -403,7 +413,7 @@ func (e *Executor) executeWidgetPreview(ctx context.Context, d *storage.Dashboar
 	}
 	queryStr := bqlvars.SubstituteMap(w.QueryContent, values)
 
-	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end))
+	res, err := e.runner.ExecuteBQL(ctx, queryStr, scopeOf(d, start, end, w, queryStr))
 	if err != nil {
 		return nil, "", err
 	}

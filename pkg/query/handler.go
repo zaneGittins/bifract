@@ -151,6 +151,39 @@ type QueryRequest struct {
 	// cached and shared (a notebook section) has to bucket in one zone for every
 	// reader; an ad-hoc search omits it and gets the viewer's zone.
 	Timezone string `json:"timezone,omitempty"`
+	// Source names the feature that issued the query (notebook, model, alert...).
+	// It is attribution only: it reaches ClickHouse as a log_comment tag so the
+	// admin activity view can name the work, and never changes what runs. Anything
+	// unrecognised is treated as an ad-hoc search.
+	Source string `json:"source,omitempty"`
+}
+
+// requestSources is the allowlist for QueryRequest.Source. The value is client-
+// supplied and ends up in ClickHouse's query log, so it is mapped through a fixed
+// set rather than passed through.
+var requestSources = map[string]string{
+	storage.SourceSearch:    storage.SourceSearch,
+	storage.SourceNotebook:  storage.SourceNotebook,
+	storage.SourceDashboard: storage.SourceDashboard,
+	storage.SourceModel:     storage.SourceModel,
+	storage.SourceAlert:     storage.SourceAlert,
+	storage.SourceChat:      storage.SourceChat,
+}
+
+// requestTag attributes a search's ClickHouse queries to the person and scope that
+// issued it, so the admin activity view shows who is running what.
+func requestTag(r *http.Request, req QueryRequest) storage.QueryTag {
+	source, ok := requestSources[strings.ToLower(strings.TrimSpace(req.Source))]
+	if !ok {
+		source = storage.SourceSearch
+	}
+	// req.Query is post-substitution here, so the tag carries the query that
+	// actually ran rather than its @variable form.
+	tag := storage.QueryTag{Source: source, Fractal: req.FractalID, BQL: req.Query}
+	if u, uok := r.Context().Value("user").(*storage.User); uok && u != nil {
+		tag.User = u.Username
+	}
+	return tag
 }
 
 // ProfileShardRow holds per-node metrics fetched from system.query_log.
@@ -1278,7 +1311,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	// Execute main query (and histogram if needed) with timeout
 	queryStart := time.Now()
 
-	queryCtx, cancel := searchContext(r.Context(), settings.Get().QueryTimeoutSeconds)
+	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, req)), settings.Get().QueryTimeoutSeconds)
 	// A query left running server-side is the expensive kind of leak: cancel the
 	// client side first, then kill anything that outlived the request.
 	searchClean := true
@@ -1648,7 +1681,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	// client that navigated away mid-scan -- gets killed instead of running unowned.
 	searchID := newSearchID()
 	searchClean := false
-	queryCtx, cancel := searchContext(r.Context(), settings.Get().QueryTimeoutSeconds)
+	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds)
 	defer func() {
 		cancel()
 		if !searchClean {

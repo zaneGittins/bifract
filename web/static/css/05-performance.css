@@ -1320,3 +1320,751 @@ tr.perf-danger td {
     }
 }
 
+
+/* ============================================================
+   System > Activity
+   Every colour comes from a token, so the view follows the theme.
+   ============================================================ */
+
+.act-tiles {
+    margin-bottom: 0.875rem;
+}
+
+.perf-metric-card.act-tile-attn {
+    border-color: color-mix(in srgb, var(--error) 45%, var(--border-color));
+}
+
+.perf-metric-card.act-tile-attn .perf-metric-value {
+    color: var(--error);
+}
+
+.act-charts {
+    margin-bottom: 1rem;
+}
+
+.act-chart-card {
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.act-chart-card h3 {
+    margin-bottom: 0;
+}
+
+.act-chart-body {
+    position: relative;
+    flex: 1;
+    min-height: 200px;
+    display: flex;
+    align-items: center;
+}
+
+.act-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.act-chart-body .perf-chart-placeholder {
+    position: absolute;
+    inset: 0;
+}
+
+.act-grid {
+    stroke: var(--chart-grid);
+    stroke-width: 1;
+}
+
+.act-axis {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    fill: var(--text-muted);
+}
+
+.act-line {
+    fill: none;
+    stroke-width: 2;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+
+.act-endpoint {
+    stroke: var(--bg-secondary);
+    stroke-width: 2;
+}
+
+/* Element-qualified so a quantile's colour lands on the right property: a
+   polyline strokes and must never fill, the endpoint dot and its label fill. */
+polyline.act-q50 { stroke: var(--act-q50); fill: none; }
+polyline.act-q95 { stroke: var(--act-q95); fill: none; }
+polyline.act-q99 { stroke: var(--act-q99); fill: none; }
+
+circle.act-q50 { fill: var(--act-q50); }
+circle.act-q95 { fill: var(--act-q95); }
+circle.act-q99 { fill: var(--act-q99); }
+
+text.act-q50 { fill: var(--act-q50); stroke: none; }
+text.act-q95 { fill: var(--act-q95); stroke: none; }
+text.act-q99 { fill: var(--act-q99); stroke: none; }
+
+.act-legend {
+    display: flex;
+    gap: 0.875rem;
+    flex-wrap: wrap;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+}
+
+.act-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+}
+
+.act-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    display: inline-block;
+}
+
+.act-dot.act-q50 { background: var(--act-q50); }
+.act-dot.act-q95 { background: var(--act-q95); }
+.act-dot.act-q99 { background: var(--act-q99); }
+.act-c-search { background: var(--act-search); }
+.act-c-alert { background: var(--act-alert); }
+.act-c-ingest { background: var(--act-ingest); }
+.act-c-system { background: var(--act-system); }
+
+.act-c-search-text { color: var(--act-search); }
+.act-c-alert-text { color: var(--act-alert); }
+.act-c-ingest-text { color: var(--act-ingest); }
+.act-c-system-text { color: var(--act-system); }
+
+.act-c-search-stroke { stroke: var(--act-search); }
+.act-c-alert-stroke { stroke: var(--act-alert); }
+.act-c-ingest-stroke { stroke: var(--act-ingest); }
+.act-c-system-stroke { stroke: var(--act-system); }
+
+.act-c-search-fill { fill: var(--act-search); }
+.act-c-alert-fill { fill: var(--act-alert); }
+.act-c-ingest-fill { fill: var(--act-ingest); }
+.act-c-system-fill { fill: var(--act-system); }
+
+/* Small multiples: each class keeps its own scale, so search stays readable
+   next to an ingest rate two orders of magnitude above it. */
+/* The card is a flex column and its sibling (the latency chart) sets the row
+   height, so the grid takes the leftover space and splits it evenly rather than
+   sitting at its content height with dead space underneath. */
+.act-smalls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    flex: 1;
+    min-height: 0;
+}
+
+.act-small {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 0.5rem 0.5rem 0.4375rem;
+    min-height: 0;
+}
+
+.act-small-head {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+}
+
+.act-small-name {
+    font-size: 0.625rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.act-small-rate {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* flex-basis 0 with height 0: without it the SVG contributes its intrinsic
+   aspect ratio as content height, which grows the card instead of filling it and
+   pushes dead space under the chart beside it. min-height keeps a floor. */
+.act-spark {
+    display: block;
+    width: 100%;
+    flex: 1 1 0;
+    height: 0;
+    min-height: 48px;
+    margin-top: 0.3125rem;
+}
+
+.act-spark-fill { opacity: 0.16; }
+
+.act-spark-line {
+    fill: none;
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+}
+
+.act-spark-empty {
+    flex: 1;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+}
+
+/* Filter chips replace the old hide-inserts checkbox and second search box. */
+.act-chips {
+    display: flex;
+    gap: 0.3125rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6875rem;
+}
+
+.act-chip {
+    font-family: inherit;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 0.1875rem 0.625rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    transition: var(--transition);
+}
+
+.act-chip:hover {
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
+.act-chip.active {
+    background: var(--accent-glow);
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
+
+.act-chip-divider {
+    width: 1px;
+    background: var(--border-color);
+    margin: 0.125rem 0.25rem;
+}
+
+.act-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+    border-radius: 4px;
+    padding: 0.1875rem 0.5rem;
+}
+
+.act-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: actPulse 2s ease-in-out infinite;
+}
+
+.act-live.paused {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 32%, transparent);
+}
+
+.act-live.paused .act-live-dot {
+    animation: none;
+}
+
+@keyframes actPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .act-live-dot { animation: none; }
+}
+
+/* Stream table */
+.act-stream-container {
+    max-height: 520px;
+}
+
+.act-stream td,
+.act-stream th {
+    white-space: nowrap;
+}
+
+.act-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.act-mono {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+}
+
+.act-muted {
+    color: var(--text-muted);
+}
+
+.act-node {
+    color: var(--text-muted);
+}
+
+.act-query-cell {
+    max-width: 340px;
+}
+
+.act-query {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.act-who {
+    font-size: 0.6875rem;
+}
+
+.act-user {
+    color: var(--text-primary);
+}
+
+.act-fractal {
+    color: var(--text-muted);
+}
+
+.act-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+}
+
+.act-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    font-size: 0.6875rem;
+    font-weight: 500;
+}
+
+.act-state-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+}
+
+.act-state-running { color: var(--success); }
+.act-state-stopping { color: var(--severity-high); }
+.act-state-finished { color: var(--text-muted); }
+.act-state-error { color: var(--error); }
+.act-state-killed { color: var(--warning); }
+
+.act-state-stopping .act-state-dot {
+    animation: actPulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .act-state-stopping .act-state-dot { animation: none; }
+}
+
+.act-age {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.act-age-warn { color: var(--warning); }
+.act-age-critical { color: var(--error); }
+
+.act-code {
+    color: var(--severity-high);
+}
+
+.act-fail {
+    color: var(--error);
+    font-size: 0.6875rem;
+}
+
+.act-pending {
+    font-size: 0.625rem;
+    color: var(--severity-high);
+}
+
+.act-kill {
+    font-family: inherit;
+    font-size: 0.625rem;
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error) 32%, transparent);
+    border-radius: 4px;
+    padding: 0.125rem 0.5rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.act-kill:hover {
+    background: color-mix(in srgb, var(--error) 22%, transparent);
+}
+
+.act-stream tbody tr.act-row-selected {
+    background: var(--accent-glow);
+    outline: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
+    outline-offset: -1px;
+}
+
+.act-bar-track {
+    display: inline-block;
+    width: 64px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-tertiary);
+    vertical-align: middle;
+    overflow: hidden;
+}
+
+.act-bar {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent-primary);
+}
+
+.act-bar-danger {
+    background: var(--error);
+}
+
+.act-bar-label {
+    margin-left: 0.4375rem;
+    font-size: 0.6875rem;
+}
+
+.act-split {
+    display: grid;
+    grid-template-columns: 1.25fr 1fr;
+    gap: 0.75rem;
+}
+
+.act-split .perf-section {
+    margin-bottom: 1rem;
+}
+
+@media (max-width: 1100px) {
+    .act-split {
+        grid-template-columns: 1fr;
+    }
+
+    .act-smalls {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+/* Side drawer: a query's detail is a reference panel, not a bottom sheet that
+   covers the row it came from. */
+.act-drawer-scrim {
+    position: fixed;
+    inset: 0;
+    /* Matches the other drawer scrims: a neutral dim reads as a scrim in both
+       themes, where a tinted one goes near-white on the light ground. */
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+    z-index: 999;
+}
+
+.act-drawer-scrim.open {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.act-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(620px, 94vw);
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(100%);
+    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+}
+
+.act-drawer.open {
+    transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .act-drawer,
+    .act-drawer-scrim {
+        transition: none;
+    }
+}
+
+.act-drawer-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    flex-shrink: 0;
+}
+
+.act-drawer-head h3 {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.act-drawer-body {
+    padding: 0.875rem 1rem 1.5rem;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.act-drawer-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4375rem;
+    margin-bottom: 0.8125rem;
+}
+
+.act-drawer-meta span {
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.1875rem 0.5rem;
+}
+
+.act-drawer-pre {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 0.6875rem 0.75rem;
+    /* Generated SQL arrives as one very long line. Wrapping shows all of it;
+       a horizontal scrollbar would hide most of it behind a drag. */
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-y: auto;
+    margin: 0 0 0.875rem;
+    max-height: 260px;
+}
+
+.act-drawer-sub {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+    margin: 0 0 0.4375rem;
+}
+
+.act-drawer-table {
+    overflow-x: auto;
+    margin-bottom: 0.875rem;
+}
+
+.act-drawer-loading {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    padding: 0.5rem 0 0.875rem;
+}
+
+.act-exception {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    line-height: 1.6;
+    color: var(--error);
+    background: color-mix(in srgb, var(--error) 8%, var(--bg-primary));
+    border: 1px solid color-mix(in srgb, var(--error) 26%, transparent);
+    border-radius: 5px;
+    padding: 0.6875rem 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.act-finding-key {
+    width: 36%;
+}
+
+.act-finding-warn {
+    color: var(--warning);
+}
+
+/* Live / Patterns: one table, two questions. */
+.act-modes {
+    display: inline-flex;
+    gap: 2px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    padding: 2px;
+}
+
+.act-mode {
+    font-family: inherit;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    background: none;
+    border: 0;
+    border-radius: 3px;
+    padding: 0.25rem 0.625rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.act-mode:hover {
+    color: var(--text-primary);
+}
+
+.act-mode.active {
+    background: var(--accent-glow);
+    color: var(--accent-primary);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 30%, transparent);
+}
+
+/* Failure counts, grouped, in one line. */
+.act-failstrip {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6875rem;
+}
+
+.act-failstrip-label {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+    margin-right: 0.125rem;
+}
+
+.act-failpill {
+    font-family: inherit;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    background: color-mix(in srgb, var(--error) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error) 26%, transparent);
+    border-radius: 12px;
+    padding: 0.1875rem 0.5rem 0.1875rem 0.4375rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    transition: var(--transition);
+}
+
+.act-failpill:hover {
+    background: color-mix(in srgb, var(--error) 18%, transparent);
+    color: var(--text-primary);
+}
+
+.act-failpill-n {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--error);
+}
+
+/* Chart tooltip: a quantile read out as a sentence. */
+.act-tip {
+    position: fixed;
+    z-index: 1400;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    box-shadow: var(--shadow-md);
+    padding: 0.5rem 0.6875rem;
+    max-width: 320px;
+}
+
+.act-tip.open {
+    opacity: 1;
+}
+
+.act-tip-head {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    margin-bottom: 0.3125rem;
+}
+
+.act-tip-line {
+    display: flex;
+    align-items: center;
+    gap: 0.4375rem;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    line-height: 1.7;
+    white-space: nowrap;
+}
+
+/* BQL sits above the SQL it compiled to. .query-display is the existing static
+   BQL highlight scope, as used by notebooks. */
+#actDrawerBql {
+    margin-bottom: 0.875rem;
+    color: var(--text-primary);
+}
+
+.act-drawer-sub + .act-drawer-pre {
+    margin-top: 0;
+}

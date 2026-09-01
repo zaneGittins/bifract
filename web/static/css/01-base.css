@@ -102,6 +102,18 @@
     --overlay-border: rgba(255, 255, 255, 0.1);
     --overlay-border-hover: rgba(255, 255, 255, 0.2);
 
+    /* System > Activity. Four workload classes and the latency quantile ramp.
+       Validated against the dark chart surface for lightness band, chroma,
+       colour-vision separation and contrast; the ramp is one hue with
+       monotonic lightness. Keep the two sets in step across themes. */
+    --act-search: #9c6ade;
+    --act-alert: #1b93b0;
+    --act-ingest: #c47c0c;
+    --act-system: #0d9268;
+    --act-q50: #8a67ab;
+    --act-q95: #9c6ade;
+    --act-q99: #cba6f5;
+
     /* Scrollbar */
     --scrollbar-track: var(--bg-secondary);
     --scrollbar-thumb: var(--bg-hover);
@@ -201,6 +213,15 @@
     --overlay-light: rgba(30, 26, 22, 0.05);
     --overlay-border: rgba(30, 26, 22, 0.10);
     --overlay-border-hover: rgba(30, 26, 22, 0.18);
+
+    /* System > Activity (see the dark block) */
+    --act-search: #6f43ad;
+    --act-alert: #0284c7;
+    --act-ingest: #b45309;
+    --act-system: #047857;
+    --act-q50: #9878c6;
+    --act-q95: #7a4fb5;
+    --act-q99: #45217a;
 
     /* Scrollbar */
     --scrollbar-track: var(--bg-sunken);

@@ -39,6 +39,10 @@ type ExecuteScope struct {
 	// means UTC. It belongs to the artifact that owns the query, never to the
 	// person reading it: these results are cached and shared.
 	Timezone string
+	// Tag attributes the ClickHouse queries this run issues, so a dashboard
+	// refresh is identifiable in the admin activity view. Empty means the caller
+	// did not attribute it and it shows as background work.
+	Tag storage.QueryTag
 }
 
 // ExecuteBQL runs a BQL query server-side without an HTTP request, scoped to a
@@ -64,6 +68,9 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	// share the search workload's budget rather than getting an unbounded one of their
 	// own: a dashboard is one page that happens to issue many queries at once.
 	ctx = storage.UserSearchContext(ctx)
+	if scope.Tag.Source != "" {
+		ctx = storage.TagContext(ctx, scope.Tag)
+	}
 	const maxQueryLength = 10000
 	if len(queryStr) > maxQueryLength {
 		return nil, fmt.Errorf("query too long (%d chars, max %d)", len(queryStr), maxQueryLength)

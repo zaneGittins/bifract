@@ -2012,7 +2012,12 @@ func evidenceTitle(c storage.Comment) string {
 	if trimmed := truncateRunes(text, 80); trimmed != text {
 		text = trimmed + "..."
 	}
+	// A pin has no words to quote, and the author's name titled every such
+	// section after whoever clicked it. Name the event instead.
 	if text == "" {
+		if c.LogID != "" {
+			return "Event " + shortID(c.LogID)
+		}
 		return truncateRunes(displayName, maxSectionTitleChars)
 	}
 	return truncateRunes(fmt.Sprintf("%s: %s", displayName, text), maxSectionTitleChars)

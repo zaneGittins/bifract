@@ -20,43 +20,15 @@ func parseCPUQuantity(q string) float64 {
 	return n
 }
 
-// nonClickHouseFootprint sums every component the size profile sizes except
-// ClickHouse and Keeper, which get their own shard nodes. Bifract counts twice:
-// the profile sizes both the app deployment and the ingest container. One ingest
-// replica, matching the doc's stated basis.
-func nonClickHouseFootprint(p SizeProfile) (cpuReq, cpuLim float64, memReq, memLim int64) {
-	type entry struct {
-		res   ResourceProfile
-		count int
-	}
-	for _, e := range []entry{
-		{p.Bifract, 2},
-		{p.Archiver, 1},
-		{p.ArchiveMaintain, 1},
-		{p.Postgres, 1},
-		{p.Caddy, 1},
-		{p.CaddyShipper, 1},
-		{p.LiteLLM, 1},
-	} {
-		n := float64(e.count)
-		cpuReq += parseCPUQuantity(e.res.CPURequest) * n
-		cpuLim += parseCPUQuantity(e.res.CPULimit) * n
-		memReq += parseK8sQuantityBytes(e.res.MemRequest) * int64(e.count)
-		memLim += parseK8sQuantityBytes(e.res.MemLimit) * int64(e.count)
-	}
-	return
-}
-
+// | Dev | ~1-10 GB/day | 1 | 4 vCPU / 8GB | 2 / 3 | 4Gi / 5Gi |
 var sizingDocRow = regexp.MustCompile(
-	`^\|\s*([\w-]+)\s*\|\s*([\d.]+)\s*/\s*([\d.]+)\s*\|\s*([\d.]+)Gi\s*/\s*([\d.]+)Gi\s*\|`)
+	`^\|\s*([\w-]+)\s*\|[^|]*\|\s*(\d+)\s*\|[^|]*\|\s*([\d.]+)\s*/\s*([\d.]+)\s*\|\s*([\d.]+)Gi\s*/\s*([\d.]+)Gi\s*\|`)
 
-// The sizing doc's non-ClickHouse capacity table is hand-maintained while the
-// numbers behind it live in sizeProfiles, so it silently goes stale the first
-// time a profile is edited -- which is exactly what happened when the archiver
-// got its own resources. Under-stating capacity is the harmful direction: an
-// operator provisions to the doc and the pods will not schedule. Assert the doc
-// is never below what the manifests actually ask for.
-func TestSizingDocCoversActualFootprint(t *testing.T) {
+// The sizing doc's profile table is hand-maintained while the numbers behind it
+// live in sizeProfiles, so it silently goes stale the first time a profile is
+// edited. Operators provision node pools from this table, so a wrong figure
+// means pods that will not schedule. Assert it restates the manifests exactly.
+func TestSizingDocMatchesProfiles(t *testing.T) {
 	path := filepath.Join("..", "..", "docs", "getting-started", "sizing.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -64,18 +36,18 @@ func TestSizingDocCoversActualFootprint(t *testing.T) {
 	}
 	content := string(data)
 
-	section := strings.Index(content, "### Capacity for everything else")
+	section := strings.Index(content, "## Resource Profiles")
 	if section < 0 {
-		t.Fatal("sizing doc has no 'Capacity for everything else' section; the table was renamed or removed")
+		t.Fatal("sizing doc has no 'Resource Profiles' section; the table was renamed or removed")
 	}
 
-	documented := map[string][4]float64{}
+	documented := map[string][5]float64{}
 	for _, line := range strings.Split(content[section:], "\n") {
 		m := sizingDocRow.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
-		var v [4]float64
+		var v [5]float64
 		for i := range v {
 			v[i], _ = strconv.ParseFloat(m[i+2], 64)
 		}
@@ -87,29 +59,22 @@ func TestSizingDocCoversActualFootprint(t *testing.T) {
 		t.Run(p.Name, func(t *testing.T) {
 			doc, ok := documented[p.Name]
 			if !ok {
-				t.Fatalf("profile is missing from the sizing doc's capacity table")
+				t.Fatalf("profile is missing from the sizing doc's profile table")
 			}
-			cpuReq, cpuLim, memReq, memLim := nonClickHouseFootprint(p)
 
 			for _, c := range []struct {
 				what      string
 				doc, real float64
 			}{
-				{"CPU request", doc[0], cpuReq},
-				{"CPU limit", doc[1], cpuLim},
-				{"memory request (Gi)", doc[2], float64(memReq) / Gi},
-				{"memory limit (Gi)", doc[3], float64(memLim) / Gi},
+				{"shards", doc[0], float64(p.CHShards)},
+				{"ClickHouse CPU request", doc[1], parseCPUQuantity(p.ClickHouse.CPURequest)},
+				{"ClickHouse CPU limit", doc[2], parseCPUQuantity(p.ClickHouse.CPULimit)},
+				{"ClickHouse memory request (Gi)", doc[3], float64(parseK8sQuantityBytes(p.ClickHouse.MemRequest)) / Gi},
+				{"ClickHouse memory limit (Gi)", doc[4], float64(parseK8sQuantityBytes(p.ClickHouse.MemLimit)) / Gi},
 			} {
-				// Float tolerance: the real figures are sums of fractional CPU
-				// quantities, so an exact-looking 8 lands at 8.0000000001.
 				const eps = 0.01
-				if c.doc < c.real-eps {
-					t.Errorf("doc understates %s: says %g, manifests need %.1f", c.what, c.doc, c.real)
-				}
-				// Catch a doc left far above reality after a profile shrinks, which
-				// would have operators over-provisioning for no reason.
-				if c.real > 0 && c.doc > c.real*1.6 {
-					t.Errorf("doc overstates %s: says %g, manifests need only %.1f", c.what, c.doc, c.real)
+				if diff := c.doc - c.real; diff > eps || diff < -eps {
+					t.Errorf("doc %s is %g, manifests set %g", c.what, c.doc, c.real)
 				}
 			}
 		})

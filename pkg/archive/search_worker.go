@@ -167,6 +167,12 @@ func (w *SearchWorker) execute(ctx context.Context, j searchJob) {
 	}
 	defer cancel()
 	queryID := fmt.Sprintf("recall_%d", j.ID)
+	jctx = storage.TagContext(jctx, storage.QueryTag{
+		Source:  storage.SourceRecall,
+		Fractal: j.FractalID,
+		Label:   fmt.Sprintf("recall job %d", j.ID),
+		BQL:     j.Query,
+	})
 
 	// Live state published by the ClickHouse read loop and drained by the watcher.
 	// An archive scan can run for minutes, so rows and scan cost are streamed onto

@@ -1669,8 +1669,7 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 		"priority":       5,
 		"max_query_size": maxGeneratedQuerySize,
 	})
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
-	return c.Query(ctx, query)
+	return c.query(ctx, query, settings)
 }
 
 // QueryLowPriorityBounded is QueryLowPriority plus an explicit, isolated memory budget:
@@ -1692,8 +1691,7 @@ func (c *ClickHouseClient) QueryLowPriorityBounded(ctx context.Context, query st
 	// and must win over any workload-derived ceiling.
 	settings["max_memory_usage"] = maxMemoryBytes
 	settings["memory_overcommit_ratio_denominator"] = 0
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
-	return c.Query(ctx, query)
+	return c.query(ctx, query, settings)
 }
 
 // Provenance scan budget: bounds each pgr ClickHouse scan server-side so a pathological (giant or
@@ -1718,15 +1716,14 @@ var ProvenanceQuerySettings = fmt.Sprintf("max_rows_to_read=%d, max_execution_ti
 // (see ProvenanceMaxRowsToRead). Used for pgr's tree hops, probe, reconnection, totals, and the
 // diffusion scan so none of them can run away on a pathological tree.
 func (c *ClickHouseClient) QueryProvenance(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+	return c.query(ctx, query, clickhouse.Settings{
 		"priority":              5,
 		"max_query_size":        maxGeneratedQuerySize,
 		"max_rows_to_read":      ProvenanceMaxRowsToRead,
 		"max_execution_time":    ProvenanceMaxExecutionSec,
 		"read_overflow_mode":    "throw",
 		"timeout_overflow_mode": "throw",
-	}))
-	return c.Query(ctx, query)
+	})
 }
 
 func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
@@ -1749,6 +1746,7 @@ func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, q
 }
 
 func (c *ClickHouseClient) query(ctx context.Context, query string, settings clickhouse.Settings) ([]map[string]interface{}, error) {
+	settings = c.taggedSettings(ctx, settings)
 	if len(settings) > 0 {
 		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 	}
@@ -1774,6 +1772,36 @@ func (c *ClickHouseClient) query(ctx context.Context, query string, settings cli
 	}
 
 	return results, nil
+}
+
+// taggedSettings adds the ctx's attribution to settings so the query shows up in
+// system.processes and system.query_log as the Bifract activity that issued it.
+// Settings maps arrive here already built by applyQuerySettings or a caller's own
+// literal, so this merges rather than replacing; an existing log_comment wins.
+func (c *ClickHouseClient) taggedSettings(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
+	comment := ContextTag(ctx).String()
+	if comment == "" {
+		return settings
+	}
+	if settings == nil {
+		return clickhouse.Settings{"log_comment": comment}
+	}
+	if _, ok := settings["log_comment"]; !ok {
+		settings["log_comment"] = comment
+	}
+	return settings
+}
+
+// unwrapLowCardinality strips the LowCardinality wrapper. It is a storage
+// encoding, not a type: LowCardinality(String) scans exactly like String, and a
+// system table hands them out freely (system.processes.Settings is a map of
+// them).
+func unwrapLowCardinality(typeName string) string {
+	const prefix = "LowCardinality("
+	if !strings.HasPrefix(typeName, prefix) || !strings.HasSuffix(typeName, ")") {
+		return typeName
+	}
+	return strings.TrimSpace(typeName[len(prefix) : len(typeName)-1])
 }
 
 // unwrapSimpleAggregateFunction returns the underlying value type of a
@@ -1832,7 +1860,7 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	// Create typed destination variables based on column types
 	values := make([]interface{}, len(columnTypes))
 	for i, col := range columnTypes {
-		typeName := unwrapSimpleAggregateFunction(col.DatabaseTypeName())
+		typeName := unwrapLowCardinality(unwrapSimpleAggregateFunction(col.DatabaseTypeName()))
 		switch {
 		case typeName == "String" || typeName == "Nullable(String)":
 			values[i] = new(string)
@@ -1842,6 +1870,25 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 			values[i] = new(int64)
 		case typeName == "Float64" || typeName == "Nullable(Float64)":
 			values[i] = new(float64)
+		// The narrower fixed-width types. Without these they fall through to the
+		// *string default below and the whole query fails on the first row with
+		// "converting Int32 to *string is unsupported". A system table column is
+		// routinely Int32 or UInt8, so the trap is easy to walk into and the
+		// failure names the scanner rather than the query.
+		case typeName == "Int8" || typeName == "Nullable(Int8)":
+			values[i] = new(int8)
+		case typeName == "Int16" || typeName == "Nullable(Int16)":
+			values[i] = new(int16)
+		case typeName == "Int32" || typeName == "Nullable(Int32)":
+			values[i] = new(int32)
+		case typeName == "UInt8" || typeName == "Nullable(UInt8)":
+			values[i] = new(uint8)
+		case typeName == "UInt16" || typeName == "Nullable(UInt16)":
+			values[i] = new(uint16)
+		case typeName == "UInt32" || typeName == "Nullable(UInt32)":
+			values[i] = new(uint32)
+		case typeName == "Float32" || typeName == "Nullable(Float32)":
+			values[i] = new(float32)
 		case isCHDateTimeType(typeName):
 			values[i] = new(time.Time)
 		case strings.HasPrefix(typeName, "Array("):
@@ -1897,6 +1944,22 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 			row[colName] = *v
 		case *float64:
 			row[colName] = *v
+		// Widened so a column's storage width never leaks into the API shape:
+		// exception_code reads the same whether it arrives as Int32 or Int64.
+		case *int8:
+			row[colName] = int64(*v)
+		case *int16:
+			row[colName] = int64(*v)
+		case *int32:
+			row[colName] = int64(*v)
+		case *uint8:
+			row[colName] = uint64(*v)
+		case *uint16:
+			row[colName] = uint64(*v)
+		case *uint32:
+			row[colName] = uint64(*v)
+		case *float32:
+			row[colName] = float64(*v)
 		case *time.Time:
 			row[colName] = v.Format("2006-01-02 15:04:05.000")
 		case *[]string:

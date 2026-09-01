@@ -3434,6 +3434,52 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			})
 			r.Register(api.Route{
 				Method: http.MethodGet,
+				Path:   "/admin/activity",
+				Query: []api.QueryParam{
+					{Name: "range"},
+					{Name: "state"},
+					{Name: "class"},
+					{Name: "node"},
+					{Name: "q"},
+					{Name: "limit", Type: "integer"},
+				},
+				Access:   api.AccessTenantAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Return the merged stream of running and recently finished ClickHouse queries.",
+				Handler:  d.performanceHandler.HandleActivityStream,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/admin/background",
+				Access:   api.AccessTenantAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Return running merges, mutations and the replication backlog.",
+				Handler:  d.performanceHandler.HandleBackgroundOps,
+			})
+			r.Register(api.Route{
+				Method: http.MethodGet,
+				Path:   "/admin/activity/summary",
+				Query: []api.QueryParam{
+					{Name: "range"},
+				},
+				Access:   api.AccessTenantAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Return query latency, rate, cost patterns, failures and background operations.",
+				Handler:  d.performanceHandler.HandleActivitySummary,
+			})
+			r.Register(api.Route{
+				Method: http.MethodGet,
+				Path:   "/admin/activity/detail",
+				Query: []api.QueryParam{
+					{Name: "query_id"},
+				},
+				Access:   api.AccessTenantAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Return one query's per-shard cost from the ClickHouse query log.",
+				Handler:  d.performanceHandler.HandleActivityDetail,
+			})
+			r.Register(api.Route{
+				Method: http.MethodGet,
 				Path:   "/admin/ingest-daily",
 				Query: []api.QueryParam{
 					{Name: "days", Type: "integer"},

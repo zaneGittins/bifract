@@ -502,11 +502,15 @@ func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clic
 		memCap = c.queryMemoryCap(name)
 	}
 	budget := contextQueryBudget(ctx)
-	if !tag && budget <= 0 && memCap <= 0 {
+	comment := ContextTag(ctx).String()
+	if !tag && budget <= 0 && memCap <= 0 && comment == "" {
 		return settings
 	}
 	if settings == nil {
 		settings = clickhouse.Settings{}
+	}
+	if comment != "" {
+		settings["log_comment"] = comment
 	}
 	if tag {
 		settings["workload"] = name

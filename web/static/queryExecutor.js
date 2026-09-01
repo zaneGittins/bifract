@@ -1243,19 +1243,7 @@ const QueryExecutor = {
 
         // Use field order from backend if available (to overcome ClickHouse JSON alphabetization)
         // Otherwise fall back to Object.keys() order
-        let fields = [];
-        if (this.fieldOrder && this.fieldOrder.length > 0) {
-            // Use the field order provided by the backend
-            fields = this.fieldOrder.filter(f => f !== 'fractal_id');
-        } else if (results.length > 0) {
-            // Fall back to extracting from first result
-            const firstResult = results[0];
-            for (const key of Object.keys(firstResult)) {
-                if (key !== '_all_fields' && key !== 'fractal_id') {
-                    fields.push(key);
-                }
-            }
-        }
+        let fields = this.baseDisplayFields(results, this.fieldOrder);
 
         // Layout key for this fractal + query shape (order-independent), used
         // for both persisted widths and persisted column order.
@@ -1269,34 +1257,10 @@ const QueryExecutor = {
             if (savedOrder && savedOrder.length) this.columnOrder = savedOrder;
         }
 
-        // Apply custom column order if available
-        if (this.columnOrder && this.columnOrder.length > 0) {
-            const orderedFields = [];
-            this.columnOrder.forEach(colField => {
-                if (fields.includes(colField)) {
-                    orderedFields.push(colField);
-                }
-            });
-            // Add any new fields that weren't in the saved order
-            fields.forEach(field => {
-                if (!orderedFields.includes(field)) {
-                    orderedFields.push(field);
-                }
-            });
-            fields = orderedFields;
-        } else if (!this.isAggregated) {
-            // Default source-event column order: timestamp, log_id, norm_log, then rest
-            const priority = ['timestamp', 'log_id', 'norm_log'];
-            const prioritized = priority.filter(f => fields.includes(f));
-            const rest = fields.filter(f => !priority.includes(f));
-            fields = [...prioritized, ...rest];
-        }
-
-        const hasNormLog = fields.includes('norm_log');
-
-        // Hide log_id from the display when norm_log is present (default source-event view).
-        // log_id stays in the row data so the detail pane can still fetch by it.
-        if (hasNormLog) fields = fields.filter(f => f !== 'log_id');
+        fields = this.orderDisplayFields(fields, {
+            order: this.columnOrder,
+            prioritize: !this.isAggregated,
+        });
 
         this._sizingFractalId = fractalId;
         this._sizingSig = sizingSig;
@@ -1345,6 +1309,30 @@ const QueryExecutor = {
     // row-click and lazy JSON highlighting. Surface-specific behaviour is
     // supplied through hooks rather than forked implementations.
     _tableSeq: 0,
+
+    // Which columns a result set shows. Shared so every table agrees: the
+    // notebook kept fractal_id and denied norm_log, the exact inverse of this,
+    // which left an evidence lookup rendering two columns of nothing.
+    baseDisplayFields(results, fieldOrder) {
+        const skip = new Set(['_all_fields', 'fractal_id']);
+        if (fieldOrder && fieldOrder.length) return fieldOrder.filter(f => !skip.has(f));
+        if (!results || !results.length) return [];
+        return Object.keys(results[0]).filter(f => !skip.has(f));
+    },
+
+    // norm_log is the log, so log_id beside it is redundant; it stays in the row
+    // data for the detail pane.
+    orderDisplayFields(fields, { order = null, prioritize = true } = {}) {
+        let out = fields.slice();
+        if (order && order.length) {
+            const kept = order.filter(f => out.includes(f));
+            out = [...kept, ...out.filter(f => !kept.includes(f))];
+        } else if (prioritize) {
+            const priority = ['timestamp', 'log_id', 'norm_log'];
+            out = [...priority.filter(f => out.includes(f)), ...out.filter(f => !priority.includes(f))];
+        }
+        return out.includes('norm_log') ? out.filter(f => f !== 'log_id') : out;
+    },
 
     _computeNumericFields(fields, results) {
         return new Set(fields.filter(field =>

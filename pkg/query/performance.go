@@ -401,17 +401,10 @@ func (h *PerformanceHandler) HandleKillQuery(w http.ResponseWriter, r *http.Requ
 // Accepts optional ?range= param: 1h (default), 8h, 24h.
 func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 
-	// Parse time range. `since`/`bucketSec` drive the persisted CPU history read;
-	// `interval` bounds the live query_log scan (capped at 24h for long ranges).
-	rangeParam := r.URL.Query().Get("range")
-	since, bucketSec := MetricRange(rangeParam)
-	interval := "1 HOUR"
-	switch rangeParam {
-	case "8h":
-		interval = "8 HOUR"
-	case "24h", "7d", "30d":
-		interval = "24 HOUR"
-	}
+	// Parse time range: `since`/`bucketSec` drive the persisted CPU history read.
+	// Query-log reads live on the activity endpoints, which only the Activity tab
+	// polls; this handler backs every sub-tab and must stay metadata-only.
+	since, bucketSec := MetricRange(r.URL.Query().Get("range"))
 
 	result := map[string]interface{}{
 		"success": true,
@@ -470,28 +463,6 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 		log.Printf("[Performance] cluster server stats query failed: %v", err)
 	} else if cluster != nil {
 		result["cluster"] = cluster
-	}
-
-	// Recent query performance
-	queryLogSQL := fmt.Sprintf(`SELECT
-		type,
-		query_kind,
-		query_duration_ms,
-		read_rows,
-		read_bytes,
-		result_rows,
-		memory_usage,
-		event_time,
-		substring(query, 1, 500) AS query
-	FROM system.query_log
-	WHERE event_time > now() - INTERVAL %s
-		AND type IN ('QueryFinish', 'ExceptionWhileProcessing')
-		AND is_initial_query = 1
-	ORDER BY event_time DESC
-	LIMIT 500`, interval)
-	recentQueries, err := h.db.Query(r.Context(), queryLogSQL)
-	if err == nil {
-		result["recent_queries"] = recentQueries
 	}
 
 	// Log-specific storage stats (metadata-only, no data scan)

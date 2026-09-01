@@ -16,9 +16,13 @@ const Notebooks = {
     searchQuery: '',
     isEditing: false,
     aiEnabled: false,
-    _tocObserver: null,
-    _tocVisibleSections: new Set(),
+    _tocScrollHandler: null,
+    _tocGestureHandler: null,
+    _tocSpyFrame: 0,
     _currentTOCActiveId: null,
+    _tocPinnedId: null,
+    // 'structure' reads the notebook as a document, 'timeline' as a chronology.
+    _tocMode: 'structure',
 
     /**
      * Initialize the notebooks module
@@ -75,6 +79,15 @@ const Notebooks = {
                 }
             };
             document.addEventListener('click', this.kebabCloseHandler);
+        }
+
+        // A fixed menu does not travel with the page. Separate from the click
+        // handler, whose event target on a scroll has no closest().
+        if (!this.kebabScrollHandler) {
+            this.kebabScrollHandler = () => {
+                document.querySelectorAll('.section-kebab-menu.open').forEach(m => m.classList.remove('open'));
+            };
+            document.addEventListener('scroll', this.kebabScrollHandler, true);
         }
     },
 
@@ -140,6 +153,11 @@ const Notebooks = {
         const tocSearch = document.getElementById('notebookTOCSearch');
         if (tocSearch) tocSearch.addEventListener('input', (e) => this.filterTOC(e.target.value));
 
+        const tocStructure = document.getElementById('notebookTOCModeStructure');
+        if (tocStructure) tocStructure.addEventListener('click', () => this.setTOCMode('structure'));
+        const tocTimeline = document.getElementById('notebookTOCModeTimeline');
+        if (tocTimeline) tocTimeline.addEventListener('click', () => this.setTOCMode('timeline'));
+
         // Wheel over TOC → jump between sections; page scroll is unaffected
         const tocPanel = document.getElementById('notebookTOC');
         if (tocPanel) {
@@ -150,19 +168,18 @@ const Notebooks = {
                 this._tocScrollLock = true;
                 setTimeout(() => { this._tocScrollLock = false; }, 120);
                 const dir = e.deltaY > 0 ? 1 : -1;
-                const sections = [...(this.currentNotebook?.sections || [])]
-                    .sort((a, b) => a.order_index - b.order_index);
+                const sections = this._tocNavOrder();
                 const cur = sections.findIndex(s => s.id === this._currentTOCActiveId);
                 const next = sections[Math.max(0, Math.min(sections.length - 1, cur + dir))];
                 if (!next) return;
                 // Instant jump for wheel nav — no animation to fight
-                const el = document.querySelector(`[data-section-id="${next.id}"]`);
+                const el = document.querySelector(`#notebookSections [data-section-id="${next.id}"]`);
                 if (el) {
-                    const targetY = window.scrollY + el.getBoundingClientRect().top - (window.innerHeight - el.offsetHeight) / 2;
+                    const targetY = window.scrollY + el.getBoundingClientRect().top - this._tocReadingLine();
                     window.scrollTo(0, Math.max(0, targetY));
                     el.style.outline = '2px solid var(--accent-primary)';
                     setTimeout(() => { el.style.outline = ''; }, 2000);
-                    this._updateTOCActive(next.id);
+                    this._pinTOCSelection(next.id);
                 }
             }, { passive: false });
         }
@@ -177,15 +194,15 @@ const Notebooks = {
             this._sectionObserver.disconnect();
             this._sectionObserver = null;
         }
-        if (this._tocObserver) {
-            this._tocObserver.disconnect();
-            this._tocObserver = null;
-        }
-        this._tocVisibleSections.clear();
+        this._stopTOCSpy();
         this._currentTOCActiveId = null;
         if (this.keyboardHandler) {
             document.removeEventListener('keydown', this.keyboardHandler);
             this.keyboardHandler = null;
+        }
+        if (this.kebabScrollHandler) {
+            document.removeEventListener('scroll', this.kebabScrollHandler, true);
+            this.kebabScrollHandler = null;
         }
         if (this.kebabCloseHandler) {
             document.removeEventListener('click', this.kebabCloseHandler);
@@ -781,7 +798,7 @@ const Notebooks = {
         this.activeTagFilters = [];
         this.updateTagFilterBar();
         this.renderTOCList();
-        this._setupTOCObserver();
+        this._startTOCSpy();
     },
 
     /**
@@ -802,29 +819,35 @@ const Notebooks = {
             const ccQuery = ccData.query || '';
             const ccLogId = ccData.log_id || '';
 
+            // The title says what was filed; the author alone named every
+            // textless pin after whoever clicked it.
+            const evidenceLabel = section.title ? Utils.escapeHtml(section.title) : displayName;
+            const filedBy = [displayName, commentedAt ? `filed ${commentedAt}` : ''].filter(Boolean).join(' - ');
+
             titleHtml = `
-                <span class="section-type-text section-author"${commentedAt ? ` title="Filed ${Utils.escapeHtml(commentedAt)}"` : ''}>${displayName}</span>
+                ${this.sectionKindHtml(section)}
+                <span class="section-type-text" title="${Utils.escapeHtml(filedBy)}">${evidenceLabel}</span>
                 ${this.renderTagsArea(section)}
             `;
 
-            // Search icon (magnifying glass) to open query in search view
-            const searchBtn = ccQuery ? `<button class="section-control-btn comment-context-search-icon" onclick="Notebooks.openQueryInSearch(this)" data-query="${Utils.escapeHtml(ccQuery)}" data-section-id="${section.id}" title="Open query in search"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="2"/><line x1="10.5" y1="10.5" x2="15" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>` : '';
-
-            // Target icon to open log_id in search view
-            const targetBtn = ccLogId ? `<button class="section-control-btn comment-context-search-icon" onclick="Notebooks.openLogIdInSearch('${Utils.escapeJs(ccLogId)}','${section.id}')" title="Find log in search"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="8" y1="0.5" x2="8" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="8" y1="13" x2="8" y2="15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="0.5" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="13" y1="8" x2="15.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>` : '';
+            // Labelled: a crosshair and a magnifier could not say which was
+            // "this one log" and which was "the search that found it".
+            const searchBtn = ccQuery ? `<button onclick="Notebooks.openQueryInSearch(this)" data-query="${Utils.escapeHtml(ccQuery)}" data-section-id="${section.id}">Run query</button>` : '';
+            const targetBtn = ccLogId ? `<button onclick="Notebooks.openLogIdInSearch('${Utils.escapeJs(ccLogId)}','${section.id}')">Goto log</button>` : '';
 
             // Play button to fetch log_id
             const playBtn = ccLogId ? `<button class="execute-query-btn" onclick="Notebooks.executeCommentContextSection('${section.id}', event)" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Fetch log">▶</button>` : '';
 
             controlsHtml = `
-                ${searchBtn}
-                ${targetBtn}
                 ${playBtn}
-                <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; display: inline-flex; align-items: center; justify-content: center;" title="Move Up"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 10 8 5 13 10"/></svg></button>
-                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; display: inline-flex; align-items: center; justify-content: center;" title="Move Down"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg></button>
                 <div class="section-kebab-wrapper">
                     <button class="section-kebab-btn" onclick="Notebooks.toggleSectionKebab('${section.id}', event)" title="More options">⋯</button>
                     <div class="section-kebab-menu" id="kebab-menu-${section.id}">
+                        ${targetBtn}
+                        ${searchBtn}
+                        ${targetBtn || searchBtn ? '<div class="kebab-divider"></div>' : ''}
+                        <button onclick="Notebooks.moveSectionUp('${section.id}')">Move up</button>
+                        <button onclick="Notebooks.moveSectionDown('${section.id}')">Move down</button>
                         <button onclick="Notebooks.moveSectionToTop('${section.id}')">Move to top</button>
                         <div class="kebab-divider"></div>
                         <button class="kebab-danger" onclick="Notebooks.deleteSection('${section.id}')">Delete</button>
@@ -833,19 +856,22 @@ const Notebooks = {
             `;
         } else {
             titleHtml = `
+                ${this.sectionKindHtml(section)}
                 <span class="section-type-text">${section.title ? Utils.escapeHtml(section.title) : 'Untitled Section'}</span>
                 ${this.renderTagsArea(section)}
             `;
 
             controlsHtml = `
-                ${section.section_type === 'query' ? `<button class="execute-query-btn" onclick="Notebooks.executeQuerySection('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Execute Query">▶</button><button onclick="Notebooks.openFormatPanel('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75rem; margin-right: 8px;" title="Format">&#9881;</button>` : ''}
+                ${section.section_type === 'query' ? `<button class="execute-query-btn" onclick="Notebooks.executeQuerySection('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="Execute Query">▶</button>` : ''}
                 ${section.section_type === 'ai_summary' || section.section_type === 'ai_attack_chain' ? `<button class="execute-query-btn" onclick="Notebooks.generateAISummary('${section.id}')" id="ai-summary-btn-${section.id}" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; transition: var(--transition); margin-right: 4px;" onmouseover="this.style.background='var(--accent-primary)'; this.style.color='white'; this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.background='var(--bg-tertiary)'; this.style.color='var(--text-primary)'; this.style.borderColor='var(--border-color)'" title="${section.section_type === 'ai_attack_chain' ? 'Regenerate Attack Chain' : 'Generate AI Summary'}">▶</button>` : ''}
-                <button class="section-move-btn section-move-up" onclick="Notebooks.moveSectionUp('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; display: inline-flex; align-items: center; justify-content: center;" title="Move Up"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 10 8 5 13 10"/></svg></button>
-                <button class="section-move-btn section-move-down" onclick="Notebooks.moveSectionDown('${section.id}')" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; margin-right: 4px; display: inline-flex; align-items: center; justify-content: center;" title="Move Down"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg></button>
-                ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button class="section-control-btn" onclick="Notebooks.toggleEditSection('${section.id}')">Edit</button>` : ''}
                 <div class="section-kebab-wrapper">
                     <button class="section-kebab-btn" onclick="Notebooks.toggleSectionKebab('${section.id}', event)" title="More options">⋯</button>
                     <div class="section-kebab-menu" id="kebab-menu-${section.id}">
+                        ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button onclick="Notebooks.toggleEditSection('${section.id}')">Edit</button>` : ''}
+                        ${section.section_type === 'query' ? `<button onclick="Notebooks.openFormatPanel('${section.id}')">Format</button>` : ''}
+                        <div class="kebab-divider"></div>
+                        <button onclick="Notebooks.moveSectionUp('${section.id}')">Move up</button>
+                        <button onclick="Notebooks.moveSectionDown('${section.id}')">Move down</button>
                         <button onclick="Notebooks.moveSectionToTop('${section.id}')">Move to top</button>
                         ${section.section_type !== 'ai_summary' && section.section_type !== 'ai_attack_chain' ? `<button onclick="Notebooks.duplicateSection('${section.id}')">Duplicate</button>` : ''}
                         <div class="kebab-divider"></div>
@@ -859,10 +885,10 @@ const Notebooks = {
             <div class="notebook-section" data-section-id="${section.id}">
                 <div class="section-header">
                     <span class="section-drag-handle" draggable="true">⋮⋮</span>
-                    ${this.renderEventTimeChip(section)}
                     <div class="section-type">
                         ${titleHtml}
                     </div>
+                    ${this.renderEventTimeChip(section)}
                     <div class="section-controls">
                         ${controlsHtml}
                     </div>
@@ -1009,6 +1035,8 @@ const Notebooks = {
             if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save event time');
             section.event_time = iso || null;
             this.refreshEventTimes();
+            // Dating a section can make timeline mode available, or reorder it.
+            this.renderTOCList();
         } catch (err) {
             this.showError(err.message);
         }
@@ -1424,17 +1452,20 @@ const Notebooks = {
      * Scroll to a section by its ID
      */
     scrollToSection(sectionId) {
-        const el = document.querySelector(`[data-section-id="${sectionId}"]`);
-        if (el) {
-            this._smoothScrollToElement(el);
-            el.style.outline = '2px solid var(--accent-primary)';
-            setTimeout(() => { el.style.outline = ''; }, 2000);
-        }
+        const el = document.querySelector(`#notebookSections [data-section-id="${sectionId}"]`);
+        if (!el) return;
+        // Select first, so the highlight answers the click rather than the scroll.
+        this._pinTOCSelection(sectionId);
+        this._smoothScrollToElement(el);
+        el.style.outline = '2px solid var(--accent-primary)';
+        setTimeout(() => { el.style.outline = ''; }, 2000);
     },
 
     _smoothScrollToElement(el, duration = 325) {
         const rect = el.getBoundingClientRect();
-        const targetY = window.scrollY + rect.top - Math.max(0, (window.innerHeight - rect.height) / 2);
+        // Top to the reading line, not centred: centring left the line inside
+        // the section above, so the navigator disagreed with the click.
+        const targetY = Math.max(0, window.scrollY + rect.top - this._tocReadingLine());
         const startY = window.scrollY;
         const diff = targetY - startY;
         if (Math.abs(diff) < 1) return;
@@ -1487,13 +1518,16 @@ const Notebooks = {
                         results = JSON.parse(results);
                     }
                     if (results && results.results && results.results.length > 0) {
-                        const sectionConfig = this.parseSectionChartConfig(section);
-                        const tableHtml = this.renderResultsTable(results.results, results, sectionConfig);
+                        // Evidence is exactly one log, so it reads as a field
+                        // grid, not as a one-row table with the log squeezed
+                        // into a column that scrolls off the right.
+                        const gridId = `evfields-${section.id}`;
                         logResultsHtml = `
                             <details class="comment-context-logid-details" style="margin-top: 8px;">
                                 <summary style="cursor: pointer; color: var(--text-muted); font-size: 0.8rem; padding: 4px 0; user-select: none;">Log details</summary>
-                                <div class="comment-context-logid" style="margin-top: 4px;"><div class="query-results-container">${tableHtml}</div></div>
+                                <div class="comment-context-logid log-fields-embedded" id="${gridId}"></div>
                             </details>`;
+                        setTimeout(() => this.renderEvidenceFields(gridId, results.results[0]), 0);
                     }
                 } catch (e) {
                     console.error('[Notebooks] Error parsing comment context results:', e);
@@ -1503,11 +1537,93 @@ const Notebooks = {
 
         return `
             <div class="comment-context-section">
-                <div class="comment-context-body">${commentText}</div>
+                <div class="comment-context-body" data-section-id="${section.id}">${commentText}</div>
                 ${queryHtml}
                 ${logResultsHtml}
             </div>
         `;
+    },
+
+    // The same field grid the log detail panel draws. norm_log arrives as a JSON
+    // string from a query and as `fields` from the server-side prefetch; the
+    // grid wants an object either way.
+    renderEvidenceFields(containerId, row) {
+        const container = document.getElementById(containerId);
+        if (!container || !row || !window.LogDetail) return;
+
+        const logData = { ...row };
+        if (typeof logData.fields === 'string') {
+            try { logData.fields = JSON.parse(logData.fields); } catch (e) { delete logData.fields; }
+        }
+        if (!logData.fields && typeof row.norm_log === 'string') {
+            try { logData.fields = JSON.parse(row.norm_log); } catch (e) { /* leave it out */ }
+        }
+        LogDetail.renderFields(logData, container);
+    },
+
+    // The note is the analyst's own words, and the API only lets its author
+    // change them, so no one else is offered an editor that would 404.
+    canEditEvidenceNote(section, data) {
+        if (!section.comment_id || this.isLocked()) return false;
+        const me = window.Auth && Auth.currentUser && Auth.currentUser.username;
+        return !!me && me === (data && data.author);
+    },
+
+    editEvidenceNote(sectionId) {
+        if (this.guardLocked()) return;
+        const section = this.currentNotebook?.sections?.find(s => s.id === sectionId);
+        if (!section) return;
+
+        let data = {};
+        try { data = JSON.parse(section.content || '{}'); } catch (e) { return; }
+        if (!this.canEditEvidenceNote(section, data)) return;
+
+        const body = document.querySelector(`.comment-context-body[data-section-id="${CSS.escape(sectionId)}"]`);
+        if (!body || body.querySelector('textarea')) return;
+
+        const input = document.createElement('textarea');
+        input.className = 'comment-context-editor';
+        input.value = data.comment_text || '';
+        input.rows = Math.min(10, Math.max(2, input.value.split('\n').length + 1));
+
+        const rerender = () => {
+            const el = document.getElementById(`section-content-${sectionId}`);
+            if (el) el.innerHTML = this.renderSectionContent(section);
+        };
+
+        let settled = false;
+        const commit = async () => {
+            if (settled) return;
+            settled = true;
+            const text = input.value.trim();
+            if (text === (data.comment_text || '')) { rerender(); return; }
+            try {
+                const res = await fetch(`/api/v1/comments/${section.comment_id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ text }),
+                });
+                const out = await res.json().catch(() => ({}));
+                if (!res.ok || out.success === false) throw new Error(out.error || 'Failed to save the note');
+                data.comment_text = text;
+                section.content = JSON.stringify(data);
+            } catch (err) {
+                this.showError(err.message);
+            }
+            rerender();
+        };
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); settled = true; rerender(); }
+            else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        });
+        input.addEventListener('blur', () => commit());
+
+        body.innerHTML = '';
+        body.appendChild(input);
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
     },
 
     /**
@@ -1541,7 +1657,8 @@ const Notebooks = {
                 query_type: 'bql',
                 start: fiveYearsAgo.toISOString(),
                 end: now.toISOString(),
-                max_results: 1
+                max_results: 1,
+                source: 'notebook'
             };
 
             if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
@@ -2048,9 +2165,11 @@ const Notebooks = {
             // Use ONLY the specified columns in the specified order
             headers = tableColumns;
         } else {
-            // Fall back to all columns, but filter out system fields
-            const systemFields = ['_all_fields', 'raw_log', 'norm_log', 'log_id'];
-            headers = Object.keys(results[0]).filter(header => !systemFields.includes(header));
+            // Same policy as the search results table, which is where these rows
+            // are read everywhere else.
+            headers = QueryExecutor.orderDisplayFields(
+                QueryExecutor.baseDisplayFields(results, resultMetadata?.field_order),
+                { prioritize: !resultMetadata?.is_aggregated });
         }
 
         const rules = (sectionConfig && sectionConfig.row_coloring_rules) || [];
@@ -2202,7 +2321,8 @@ const Notebooks = {
             max_results: this.currentNotebook.max_results_per_section || 1000,
             // Buckets snap to the notebook's zone, not the viewer's: one cached
             // result is read by everyone on the notebook.
-            timezone: this.currentNotebook.timezone || 'UTC'
+            timezone: this.currentNotebook.timezone || 'UTC',
+            source: 'notebook'
         };
         // Variables substitute server-side (shared with search/dashboards).
         const _vars = this.variablesPayload();
@@ -2277,6 +2397,7 @@ const Notebooks = {
                 // cached result is read by everyone on the notebook.
                 timezone: this.currentNotebook.timezone || 'UTC'
             };
+            requestBody.source = 'notebook';
             // Variables substitute server-side (shared with search/dashboards).
             const _vars = this.variablesPayload();
             if (_vars) requestBody.variables = _vars;
@@ -2332,7 +2453,7 @@ const Notebooks = {
             await this.updateSectionResults(sectionId, section.last_executed_at, section.last_results);
 
             // Re-render just this section to show results
-            const sectionContainer = document.querySelector(`[data-section-id="${sectionId}"]`);
+            const sectionContainer = document.querySelector(`#notebookSections [data-section-id="${sectionId}"]`);
             const contentContainer = document.getElementById(`section-content-${sectionId}`);
 
             if (sectionContainer && contentContainer) {
@@ -2662,7 +2783,6 @@ const Notebooks = {
         this.updateTagFilterBar();
         this.applyTagFilter();
         this.renderTOCList();
-        if (this._tocObserver) this._tocObserver.observe(newEl);
         this.syncNotebookVariables(false);
     },
 
@@ -2673,7 +2793,7 @@ const Notebooks = {
         if (!this.currentNotebook) return;
 
         const sectionId = data.id;
-        const el = document.querySelector(`[data-section-id="${sectionId}"]`);
+        const el = document.querySelector(`#notebookSections [data-section-id="${sectionId}"]`);
 
         // If user is editing this section, warn them
         if (el && el.classList.contains('editing')) {
@@ -2683,7 +2803,7 @@ const Notebooks = {
 
         this.currentNotebook.sections = this.currentNotebook.sections.filter(s => s.id !== sectionId);
         if (el) el.remove();
-        this._tocVisibleSections.delete(sectionId);
+        if (this._tocPinnedId === sectionId) this._tocPinnedId = null;
         this.syncNotebookVariables(false);
 
         this.updateTagFilterBar();
@@ -2712,7 +2832,7 @@ const Notebooks = {
         if (!section) return;
 
         // Don't overwrite if user is currently editing this section
-        const el = document.querySelector(`[data-section-id="${data.id}"]`);
+        const el = document.querySelector(`#notebookSections [data-section-id="${data.id}"]`);
         if (el && el.classList.contains('editing')) return;
 
         // Update local data. Use != null so an omitted/null field in a partial
@@ -2736,8 +2856,14 @@ const Notebooks = {
             contentEl.innerHTML = this.renderSectionContent(section);
             contentEl.dataset.rendered = 'true';
         }
-        // Title may have changed
-        if (data.title !== undefined) this.renderTOCList();
+        // event_time is sent only when it changed, and null means it was cleared.
+        if (data.event_time !== undefined) {
+            section.event_time = data.event_time;
+            this.refreshEventTimes();
+        }
+
+        // Either can change what the navigator shows, and where.
+        if (data.title !== undefined || data.event_time !== undefined) this.renderTOCList();
     },
 
     /**
@@ -3239,7 +3365,7 @@ const Notebooks = {
             return;
         }
 
-        const sectionContainer = document.querySelector(`[data-section-id="${sectionId}"]`);
+        const sectionContainer = document.querySelector(`#notebookSections [data-section-id="${sectionId}"]`);
         const contentContainer = document.getElementById(`section-content-${sectionId}`);
 
         if (!sectionContainer || !contentContainer) {
@@ -3273,12 +3399,6 @@ const Notebooks = {
                 playButton.title = 'Cannot execute while editing';
             }
         }
-
-        // Hide up/down move buttons while editing
-        const moveButtons = sectionContainer.querySelectorAll('.section-move-btn');
-        moveButtons.forEach(btn => {
-            btn.style.display = 'none';
-        });
 
         // Create inline editor based on section type
         let editorHtml = '';
@@ -3328,14 +3448,6 @@ const Notebooks = {
 
         // Replace content with editor
         contentContainer.innerHTML = editorHtml;
-
-        // Update Edit button to Cancel
-        const editButton = sectionContainer.querySelector('.section-control-btn');
-        if (editButton && editButton.textContent.trim() === 'Edit') {
-            editButton.textContent = 'Cancel';
-            editButton.style.background = 'var(--error)';
-            editButton.style.color = 'white';
-        }
 
         // Focus the content textarea and auto-expand to fit existing content
         const contentTextarea = document.getElementById(`edit-content-${section.id}`);
@@ -3434,6 +3546,7 @@ const Notebooks = {
 
             // Exit edit mode and re-render the section
             this.exitEditMode(sectionId);
+            this.renderTOCList();
 
         } catch (error) {
             console.error('[Notebooks] Error updating section:', error);
@@ -3458,7 +3571,7 @@ const Notebooks = {
      * Exit edit mode and restore section display
      */
     exitEditMode(sectionId) {
-        const sectionContainer = document.querySelector(`[data-section-id="${sectionId}"]`);
+        const sectionContainer = document.querySelector(`#notebookSections [data-section-id="${sectionId}"]`);
         const contentContainer = document.getElementById(`section-content-${sectionId}`);
 
         if (!sectionContainer || !contentContainer) {
@@ -3481,12 +3594,6 @@ const Notebooks = {
             }
         }
 
-        // Show up/down move buttons again
-        const moveButtons = sectionContainer.querySelectorAll('.section-move-btn');
-        moveButtons.forEach(btn => {
-            btn.style.display = '';
-        });
-
         // Section was already found above, no need to find again
         if (!section) {
             console.error('[Notebooks] Section not found in current notebook');
@@ -3501,17 +3608,10 @@ const Notebooks = {
         const headerTitle = sectionContainer.querySelector('.section-type');
         if (headerTitle) {
             headerTitle.innerHTML = `
+                ${this.sectionKindHtml(section)}
                 <span class="section-type-text">${section.title ? Utils.escapeHtml(section.title) : 'Untitled Section'}</span>
                 ${this.renderTagsArea(section)}
             `;
-        }
-
-        // Restore Edit button
-        const editButton = sectionContainer.querySelector('.section-control-btn');
-        if (editButton && (editButton.textContent.trim() === 'Cancel' || editButton.style.background)) {
-            editButton.textContent = 'Edit';
-            editButton.style.background = '';
-            editButton.style.color = '';
         }
     },
 
@@ -4102,9 +4202,17 @@ const Notebooks = {
                         return;
                     }
 
-                    // Don't trigger for non-editable section types
                     const sectionData = this.currentNotebook?.sections?.find(s => s.id === sectionId);
-                    if (sectionData && (sectionData.section_type === 'comment_context' || sectionData.section_type === 'ai_summary' || sectionData.section_type === 'ai_attack_chain')) {
+
+                    // Evidence has no content of its own to edit; the note in it
+                    // does, and editEvidenceNote gates on authorship.
+                    if (sectionData && sectionData.section_type === 'comment_context') {
+                        // Selecting a field value or the query is not an edit.
+                        if (e.target.closest('.log-fields-embedded') || e.target.closest('.comment-context-query')) return;
+                        this.editEvidenceNote(sectionId);
+                        return;
+                    }
+                    if (sectionData && (sectionData.section_type === 'ai_summary' || sectionData.section_type === 'ai_attack_chain')) {
                         return;
                     }
 
@@ -4438,11 +4546,7 @@ const Notebooks = {
         if (fab) fab.style.display = 'none';
         const panel = document.getElementById('notebookTOC');
         if (panel) panel.classList.add('collapsed');
-        if (this._tocObserver) {
-            this._tocObserver.disconnect();
-            this._tocObserver = null;
-        }
-        this._tocVisibleSections.clear();
+        this._stopTOCSpy();
         this._currentTOCActiveId = null;
     },
 
@@ -4453,19 +4557,133 @@ const Notebooks = {
         panel.classList.toggle('collapsed', !opening);
         if (opening) {
             this.renderTOCList();
-            this._setupTOCObserver();
+            this._startTOCSpy();
             setTimeout(() => {
                 const search = document.getElementById('notebookTOCSearch');
                 if (search) search.focus();
             }, 260);
         } else {
-            if (this._tocObserver) {
-                this._tocObserver.disconnect();
-                this._tocObserver = null;
-            }
-            this._tocVisibleSections.clear();
+            this._stopTOCSpy();
             this._currentTOCActiveId = null;
         }
+    },
+
+    _tocTypeColor: {
+        markdown:       'var(--text-muted)',
+        query:          'var(--accent-primary)',
+        comment_context:'#d4a054',
+        ai_summary:     '#9c6ade',
+        ai_attack_chain:'#e07a8b',
+    },
+    // Note/Evidence, matching the search rail: what a section is, not how it is stored.
+    _tocTypeLabel: {
+        markdown:       'Note',
+        query:          'Query',
+        comment_context:'Evidence',
+        ai_summary:     'AI Summary',
+        ai_attack_chain:'Attack Chain',
+    },
+
+    // The dot alone carries the kind, matching the navigator. Spelling it out
+    // beside a title that already says "Event" was three ways of saying evidence.
+    sectionKindHtml(section) {
+        const color = this._tocTypeColor[section.section_type] || 'var(--text-muted)';
+        const label = this._tocTypeLabel[section.section_type] || 'Section';
+        return `<span class="section-kind-dot" style="background:${color}" title="${Utils.escapeHtml(label)}"></span>`;
+    },
+
+    _tocLabel(section) {
+        return section.title || this._tocTypeLabel[section.section_type] || 'Untitled';
+    },
+
+    _tocMatches(section, q) {
+        if (!q) return true;
+        return this._tocLabel(section).toLowerCase().includes(q) ||
+               (this._tocTypeLabel[section.section_type] || '').toLowerCase().includes(q);
+    },
+
+    // Sections in notebook order, which is the order the document itself reads in.
+    _tocSections() {
+        return [...(this.currentNotebook?.sections || [])].sort((a, b) => a.order_index - b.order_index);
+    },
+
+    // Undated sections come back separately: sorting them to the epoch would
+    // bury the first real event under every note.
+    _tocSplitByTime() {
+        const dated = [];
+        const undated = [];
+        for (const section of this._tocSections()) {
+            const ms = section.event_time ? TZ.toEpoch(section.event_time) : NaN;
+            if (Number.isFinite(ms)) dated.push({ section, ms });
+            else undated.push(section);
+        }
+        dated.sort((a, b) => a.ms - b.ms || a.section.order_index - b.section.order_index);
+        return { dated, undated };
+    },
+
+    // Below two dated sections a timeline says nothing a list cannot, so a
+    // documentation notebook never gets the control.
+    _tocTimelineAvailable() {
+        return this._tocSplitByTime().dated.length >= 2;
+    },
+
+    // Display order, which is what wheel nav steps through.
+    _tocNavOrder() {
+        if (this._tocMode !== 'timeline') return this._tocSections();
+        const { dated, undated } = this._tocSplitByTime();
+        return dated.map(d => d.section).concat(undated);
+    },
+
+    setTOCMode(mode) {
+        if (this._tocMode === mode) return;
+        if (mode === 'timeline' && !this._tocTimelineAvailable()) return;
+        this._tocMode = mode;
+        this.renderTOCList();
+    },
+
+    _renderTOCModes() {
+        const available = this._tocTimelineAvailable();
+        if (!available && this._tocMode === 'timeline') this._tocMode = 'structure';
+
+        for (const [id, mode] of [['notebookTOCModeStructure', 'structure'], ['notebookTOCModeTimeline', 'timeline']]) {
+            const btn = document.getElementById(id);
+            if (!btn) continue;
+            const on = this._tocMode === mode;
+            btn.classList.toggle('active', on);
+            btn.setAttribute('aria-pressed', String(on));
+        }
+
+        const timeline = document.getElementById('notebookTOCModeTimeline');
+        if (timeline) {
+            timeline.disabled = !available;
+            timeline.title = available
+                ? 'Order sections by when they happened'
+                : 'Needs at least two sections with an event time';
+        }
+    },
+
+    // Coarse by design: "a day passed", not the seconds. Matches the search rail.
+    _tocGapLabel(ms) {
+        if (!Number.isFinite(ms) || ms < 1000) return '';
+        const secs = Math.floor(ms / 1000);
+        if (secs < 60) return `+${secs}s`;
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `+${mins}m`;
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) {
+            const rem = mins % 60;
+            return rem ? `+${hours}h ${rem}m` : `+${hours}h`;
+        }
+        const days = Math.floor(hours / 24);
+        const rem = hours % 24;
+        return rem ? `+${days}d ${rem}h` : `+${days}d`;
+    },
+
+    // Height carries the gap, which is often the finding: three quiet days then
+    // a two minute burst. Clamped so a long one stays on the panel.
+    _tocGapHeight(ms) {
+        if (!Number.isFinite(ms) || ms <= 0) return 10;
+        return Math.round(Math.max(10, Math.min(64, 10 + 14 * Math.log10(1 + ms / 60000))));
     },
 
     renderTOCList(filterQuery) {
@@ -4475,89 +4693,180 @@ const Notebooks = {
         if (!panel || panel.classList.contains('collapsed')) return;
 
         const q = (filterQuery !== undefined ? filterQuery : (document.getElementById('notebookTOCSearch')?.value || '')).toLowerCase();
-        const sections = [...(this.currentNotebook?.sections || [])].sort((a, b) => a.order_index - b.order_index);
 
-        const typeColor = {
-            markdown:       'var(--text-muted)',
-            query:          'var(--accent-primary)',
-            comment_context:'#d4a054',
-            ai_summary:     '#9c6ade',
-            ai_attack_chain:'#e07a8b',
-        };
-        const typeLabel = {
-            markdown:       'Markdown',
-            query:          'Query',
-            comment_context:'Comment',
-            ai_summary:     'AI Summary',
-            ai_attack_chain:'Attack Chain',
-        };
+        this._renderTOCModes();
 
-        if (sections.length === 0) {
+        if (this._tocSections().length === 0) {
             list.innerHTML = '<div class="notebook-toc-empty">No sections</div>';
             return;
         }
 
+        const timeline = this._tocMode === 'timeline';
+        const { html, anyVisible } = timeline ? this._tocTimelineHtml(q) : this._tocStructureHtml(q);
+        list.classList.toggle('toc-timeline', timeline);
+        list.innerHTML = anyVisible ? html : html + '<div class="notebook-toc-empty">No matches</div>';
+
+        // Re-apply active highlight after re-render
+        if (this._currentTOCActiveId) this._updateTOCActive(this._currentTOCActiveId);
+    },
+
+    _tocStructureHtml(q) {
         let anyVisible = false;
-        list.innerHTML = sections.map(section => {
-            const raw = section.title || typeLabel[section.section_type] || 'Untitled';
-            const title = Utils.escapeHtml(raw);
-            const color = typeColor[section.section_type] || 'var(--text-muted)';
-            const matches = !q || raw.toLowerCase().includes(q) || (typeLabel[section.section_type] || '').toLowerCase().includes(q);
+        const html = this._tocSections().map(section => {
+            const title = Utils.escapeHtml(this._tocLabel(section));
+            const color = this._tocTypeColor[section.section_type] || 'var(--text-muted)';
+            const matches = this._tocMatches(section, q);
             if (matches) anyVisible = true;
             return `<div class="notebook-toc-item${matches ? '' : ' toc-hidden'}" data-section-id="${section.id}" onclick="Notebooks.scrollToSection('${section.id}')" title="${title}">
                 <span class="toc-type-dot" style="background:${color}"></span>
                 <span class="toc-item-label">${title}</span>
             </div>`;
         }).join('');
+        return { html, anyVisible };
+    },
 
-        if (!anyVisible) {
-            list.innerHTML += '<div class="notebook-toc-empty">No matches</div>';
+    _tocTimelineHtml(q) {
+        const { dated, undated } = this._tocSplitByTime();
+        const parts = [];
+        let anyVisible = false;
+        let prevMs = null;
+        let prevDay = null;
+
+        for (const { section, ms } of dated) {
+            if (!this._tocMatches(section, q)) continue;
+            anyVisible = true;
+
+            const day = TZ.format(section.event_time, 'date');
+
+            // Shown across date changes too: a bare heading does not say how
+            // long the quiet stretch was. Filtering hides the sections a gap
+            // spans, so connectors are dropped rather than shown wrong.
+            if (prevMs !== null && !q) {
+                const delta = ms - prevMs;
+                const label = this._tocGapLabel(delta);
+                if (label) {
+                    parts.push(`<div class="toc-gap${delta >= 86400000 ? ' long' : ''}" style="height:${this._tocGapHeight(delta)}px">
+                        <span class="toc-gap-rule"></span><span class="toc-gap-label">${label}</span>
+                    </div>`);
+                }
+            }
+            if (day !== prevDay) {
+                parts.push(`<div class="toc-daymark">${Utils.escapeHtml(day)}</div>`);
+            }
+
+            parts.push(this._tocTimelineNode(section, TZ.format(section.event_time, 'time')));
+            prevDay = day;
+            prevMs = ms;
         }
 
-        // Re-apply active highlight after re-render
-        if (this._currentTOCActiveId) this._updateTOCActive(this._currentTOCActiveId);
+        const visibleUndated = undated.filter(s => this._tocMatches(s, q));
+        if (visibleUndated.length) {
+            anyVisible = true;
+            parts.push(`<div class="toc-undated">No event time</div>`);
+            for (const section of visibleUndated) {
+                parts.push(this._tocTimelineNode(section, this._tocTypeLabel[section.section_type] || ''));
+            }
+        }
+
+        return { html: parts.join(''), anyVisible };
+    },
+
+    _tocTimelineNode(section, when) {
+        const title = Utils.escapeHtml(this._tocLabel(section));
+        const color = this._tocTypeColor[section.section_type] || 'var(--text-muted)';
+        const hover = section.event_time ? Utils.escapeHtml(TZ.title(section.event_time)) : title;
+        return `<div class="notebook-toc-item toc-node" data-section-id="${section.id}" onclick="Notebooks.scrollToSection('${section.id}')" title="${hover}">
+            <span class="toc-node-marker"><span class="toc-type-dot" style="background:${color}"></span></span>
+            <span class="toc-node-body">
+                <span class="toc-node-when">${Utils.escapeHtml(when)}</span>
+                <span class="toc-item-label">${title}</span>
+            </span>
+        </div>`;
     },
 
     filterTOC(query) {
         this.renderTOCList(query);
     },
 
-    _setupTOCObserver() {
+    // The current section is the last one to have crossed this line. Measuring
+    // from the viewport top instead named the section just scrolled past.
+    _tocReadingLine() {
+        return Math.min(180, Math.max(80, window.innerHeight * 0.25));
+    },
+
+    _tocSectionAtReadingLine() {
+        const line = this._tocReadingLine();
+        let activeId = null;
+        let firstId = null;
+        let best = -Infinity;
+        for (const el of document.querySelectorAll('.notebook-section')) {
+            if (!firstId) firstId = el.dataset.sectionId;
+            const top = el.getBoundingClientRect().top;
+            if (top <= line && top > best) {
+                best = top;
+                activeId = el.dataset.sectionId;
+            }
+        }
+        // Above the first section, that one is still current.
+        return activeId || firstId;
+    },
+
+    // A navigator selection holds until the reader scrolls. Without the pin the
+    // spy reclaimed the highlight the moment the scroll settled, and at the end
+    // of a notebook the page cannot scroll far enough to agree with the click.
+    _pinTOCSelection(sectionId) {
+        this._tocPinnedId = sectionId;
+        this._updateTOCActive(sectionId);
+    },
+
+    _startTOCSpy() {
         const panel = document.getElementById('notebookTOC');
         if (!panel || panel.classList.contains('collapsed')) return;
+        this._stopTOCSpy();
 
-        if (this._tocObserver) {
-            this._tocObserver.disconnect();
-            this._tocObserver = null;
-        }
-        this._tocVisibleSections.clear();
-
-        this._tocObserver = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                const id = entry.target.dataset.sectionId;
-                if (entry.isIntersecting) {
-                    this._tocVisibleSections.add(id);
-                } else {
-                    this._tocVisibleSections.delete(id);
-                }
+        this._tocScrollHandler = () => {
+            if (this._tocSpyFrame) return;
+            this._tocSpyFrame = requestAnimationFrame(() => {
+                this._tocSpyFrame = 0;
+                if (this._tocPinnedId) return;
+                const id = this._tocSectionAtReadingLine();
+                if (id && id !== this._currentTOCActiveId) this._updateTOCActive(id);
             });
+        };
 
-            // Highlight the topmost section that has any part in the viewport
-            let activeId = null;
-            let minTop = Infinity;
-            for (const id of this._tocVisibleSections) {
-                const el = document.querySelector(`[data-section-id="${id}"]`);
-                if (el) {
-                    const top = el.getBoundingClientRect().top;
-                    if (top < minTop) { minTop = top; activeId = id; }
-                }
-            }
-            this._updateTOCActive(activeId);
-        }, { threshold: 0 });
+        // The navigator has its own wheel nav, so a gesture inside it is not the
+        // reader moving the page and must not clear what it just chose.
+        this._tocGestureHandler = (e) => {
+            if (e.target && e.target.closest && e.target.closest('#notebookTOC')) return;
+            this._tocPinnedId = null;
+        };
 
-        document.querySelectorAll('.notebook-section').forEach(el => {
-            this._tocObserver.observe(el);
-        });
+        window.addEventListener('scroll', this._tocScrollHandler, { passive: true });
+        window.addEventListener('resize', this._tocScrollHandler, { passive: true });
+        window.addEventListener('wheel', this._tocGestureHandler, { passive: true });
+        window.addEventListener('touchmove', this._tocGestureHandler, { passive: true });
+        window.addEventListener('keydown', this._tocGestureHandler);
+
+        this._tocScrollHandler();
+    },
+
+    _stopTOCSpy() {
+        if (this._tocScrollHandler) {
+            window.removeEventListener('scroll', this._tocScrollHandler);
+            window.removeEventListener('resize', this._tocScrollHandler);
+            this._tocScrollHandler = null;
+        }
+        if (this._tocGestureHandler) {
+            window.removeEventListener('wheel', this._tocGestureHandler);
+            window.removeEventListener('touchmove', this._tocGestureHandler);
+            window.removeEventListener('keydown', this._tocGestureHandler);
+            this._tocGestureHandler = null;
+        }
+        if (this._tocSpyFrame) {
+            cancelAnimationFrame(this._tocSpyFrame);
+            this._tocSpyFrame = 0;
+        }
+        this._tocPinnedId = null;
     },
 
     _updateTOCActive(sectionId) {
@@ -4576,7 +4885,20 @@ const Notebooks = {
         const menu = document.getElementById(`kebab-menu-${sectionId}`);
         const isOpen = menu.classList.contains('open');
         document.querySelectorAll('.section-kebab-menu.open').forEach(m => m.classList.remove('open'));
-        if (!isOpen) menu.classList.add('open');
+        if (isOpen) return;
+
+        const btn = event.target.closest('button');
+        menu.classList.add('open');
+        menu.style.visibility = 'hidden';
+        requestAnimationFrame(() => {
+            const rect = btn.getBoundingClientRect();
+            const height = menu.offsetHeight;
+            const room = window.innerHeight - rect.bottom - 8;
+            // Open upward when the menu would run off the bottom of the window.
+            menu.style.top = (height <= room ? rect.bottom + 4 : Math.max(8, rect.top - height - 4)) + 'px';
+            menu.style.left = Math.max(8, rect.right - menu.offsetWidth) + 'px';
+            menu.style.visibility = '';
+        });
     },
 
     /**
@@ -4800,7 +5122,7 @@ const Notebooks = {
         for (const s of this.currentNotebook.sections) {
             if (s.section_type !== 'query' || !s.last_executed_at) continue;
             s.modified_since_execution = true;
-            const info = document.querySelector(`[data-section-id="${s.id}"] .query-info`);
+            const info = document.querySelector(`#notebookSections [data-section-id="${s.id}"] .query-info`);
             if (info && !info.textContent.includes('Modified')) {
                 const span = document.createElement('span');
                 span.style.cssText = 'color: var(--warning); font-size: 0.8rem; margin-left: 8px;';

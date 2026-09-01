@@ -826,7 +826,9 @@
 .btn-primary {
     background: var(--accent-primary);
     color: white;
-    border: none;
+    /* Transparent, not none: .btn-secondary has a 1px border and a borderless
+       primary sits 2px shorter beside it. */
+    border: 1px solid transparent;
     padding: 0.5rem 1rem;
     border-radius: 4px;
     cursor: pointer;

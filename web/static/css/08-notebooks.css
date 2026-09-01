@@ -210,11 +210,11 @@
     padding: 10px 20px 20px;
 }
 
-/* Notebook Body: flex row containing content + TOC panel */
+/* Notebook Body: flex row containing the TOC panel + content */
 .notebook-body {
     display: flex;
     align-items: flex-start;
-    gap: 2px;
+    gap: 16px;
 }
 
 .notebook-content {
@@ -362,21 +362,173 @@
     text-align: center;
 }
 
+/* Document or chronology. Mirrors the search rail's order toggle. */
+.notebook-toc-modes {
+    display: flex;
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.notebook-toc-mode {
+    flex: 1;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 500;
+    background: var(--bg-sunken);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.notebook-toc-mode:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+
+.notebook-toc-mode.active {
+    background: var(--bg-tertiary);
+    color: var(--accent-secondary);
+    border-color: var(--accent-primary);
+}
+
+.notebook-toc-mode:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* --- Timeline mode --- */
+
+.notebook-toc-list.toc-timeline {
+    padding: 4px 10px 10px;
+}
+
+.toc-daymark {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 6px;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.toc-daymark::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-color);
+}
+
+.notebook-toc-list.toc-timeline .notebook-toc-item {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 3px 6px;
+    border-left: none;
+    border-radius: 4px;
+}
+
+.notebook-toc-list.toc-timeline .notebook-toc-item.active {
+    border-left: none;
+    background: var(--bg-tertiary);
+}
+
+.toc-node-marker {
+    display: flex;
+    justify-content: center;
+    width: 12px;
+    flex-shrink: 0;
+    padding-top: 6px;
+}
+
+/* Punches the panel background out around the connector rule. */
+.toc-node-marker .toc-type-dot {
+    box-shadow: 0 0 0 3px var(--bg-secondary);
+}
+
+.notebook-toc-item.active .toc-node-marker .toc-type-dot {
+    box-shadow: 0 0 0 3px var(--bg-tertiary);
+}
+
+.toc-node-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.toc-node-when {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    line-height: 1.3;
+}
+
+.toc-node .toc-item-label {
+    flex: none;
+    line-height: 1.35;
+}
+
+.toc-gap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 6px;
+}
+
+.toc-gap-rule {
+    width: 12px;
+    flex-shrink: 0;
+    align-self: stretch;
+    background:
+        linear-gradient(var(--border-strong), var(--border-strong)) center / 1px 100% no-repeat;
+}
+
+.toc-gap.long .toc-gap-rule {
+    background: repeating-linear-gradient(
+        to bottom, var(--border-strong) 0 3px, transparent 3px 6px) center / 1px 100% no-repeat;
+}
+
+.toc-gap-label {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+}
+
+.toc-gap.long .toc-gap-label {
+    color: var(--warning);
+}
+
+.toc-undated {
+    margin: 14px 0 6px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border-strong);
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
 .notebook-toc-toggle-btn {
     padding: 5px 7px;
 }
 
-/* TOC quick-access FAB — fixed tab on right edge, visible when mid-notebook */
+/* TOC quick-access FAB — fixed tab on left edge, visible when mid-notebook */
 .notebook-toc-fab {
     position: fixed;
-    right: 0;
+    left: 0;
     top: 50%;
     transform: translateY(-50%);
     z-index: 200;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
-    border-right: none;
-    border-radius: 6px 0 0 6px;
+    border-left: none;
+    border-radius: 0 6px 6px 0;
     padding: 10px 5px;
     cursor: pointer;
     color: var(--text-muted);
@@ -552,11 +704,12 @@
 .notebook-sections {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 12px;
 }
 
 /* Section Container */
 .notebook-section {
+    position: relative;
     background: var(--bg-secondary);
     border-radius: 8px;
     border: 1px solid var(--border-color);
@@ -576,12 +729,18 @@
 }
 
 .notebook-section .section-drag-handle {
+    position: absolute;
+    left: 2px;
+    top: 12px;
+    display: flex;
+    align-items: center;
+    height: 1.4rem;
+    font-size: 0.75rem;
     cursor: grab;
     user-select: none;
     color: var(--text-muted);
     opacity: 0;
-    padding: 0 4px;
-    flex-shrink: 0;
+    padding: 0 2px;
     transition: var(--transition);
 }
 
@@ -601,15 +760,21 @@
     pointer-events: none;
 }
 
-/* Section Header */
+/* A line inside the card, not a band on top of it: its own background and
+   bottom border made every section read as two stacked boxes. */
 .section-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
-    background: var(--bg-tertiary);
-    border-bottom: 1px solid var(--border-color);
+    padding: 12px 16px 8px;
     gap: 0.5rem;
+}
+
+.section-kind-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
 }
 
 .section-type {
@@ -668,11 +833,11 @@
     border-color: var(--accent-primary);
 }
 
+/* Fixed, not absolute: .notebook-section clips its overflow, which cut the
+   bottom off a menu tall enough to reach past the card. */
 .section-kebab-menu {
     display: none;
-    position: absolute;
-    right: 0;
-    top: calc(100% + 4px);
+    position: fixed;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -735,18 +900,19 @@
 
 /* Section Content */
 .section-content {
-    padding: 2px 16px 12px;
+    padding: 0 16px 12px;
 }
 
-/* Markdown Section */
+/* No box of its own: the card is already the container, and a second one left
+   prose sitting in a well darker than the card holding it. */
 .markdown-preview {
     flex: 1;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-sunken);
-    padding: 12px;
     line-height: 1.6;
 }
+
+/* Block margins belong between blocks, not stacked on the card's padding. */
+.markdown-preview > :first-child { margin-top: 0; }
+.markdown-preview > :last-child { margin-bottom: 0; }
 
 .markdown-preview h1,
 .markdown-preview h2,
@@ -944,6 +1110,35 @@
     margin-bottom: 8px;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* No note yet: no gap where one would go. */
+.comment-context-body:empty { margin: 0; }
+
+/* The detail panel's field grid, embedded. Bounded so a large event scrolls
+   inside the card instead of running it off the page. */
+.log-fields-embedded {
+    margin-top: 4px;
+    max-height: 420px;
+    overflow-y: auto;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.comment-context-editor {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg-sunken);
+    border: 1px solid var(--accent-primary);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: var(--font-main);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    padding: 6px 8px;
+    outline: none;
+    resize: vertical;
 }
 
 .comment-context-query {
@@ -1454,30 +1649,31 @@
 
 /* Timeline gutter: how far into the notebook this section sits, as one aligned
    column down the left of every header. Editable in place. */
-.notebook-sections { --nb-gutter: 78px; }
-
+/* Beside the controls, not leading the header: the navigator's timeline reads a
+   notebook chronologically, and an offset from an arbitrary origin was
+   outranking the section's own name. */
 .section-event-time {
-    flex: 0 0 var(--nb-gutter);
+    flex: 0 0 auto;
     box-sizing: border-box;
-    text-align: right;
     background: transparent;
     border: none;
-    border-right: 1px solid var(--border-color);
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: 0.68rem;
-    padding: 0.1rem 0.6rem 0.1rem 0;
+    padding: 0.1rem 0.4rem;
     cursor: pointer;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     transition: var(--transition);
 }
 
 .section-event-time:hover { color: var(--accent-primary); }
 
-.section-event-time.unset { opacity: 0.45; }
-.notebook-section:hover .section-event-time.unset { opacity: 1; }
+/* Hidden until the section is hovered, like the drag handle. Ordered by rising
+   specificity so the cascade resolves cleanly. */
+.section-event-time { opacity: 0; pointer-events: none; }
+.notebook-section:hover .section-event-time { opacity: 1; pointer-events: auto; }
+.notebook-section:hover .section-event-time.unset { opacity: 0.55; }
+.notebook-section:hover .section-event-time.unset:hover { opacity: 1; }
 
 .section-event-time-input {
     flex: 0 0 auto;
@@ -1518,11 +1714,11 @@
     opacity: 0.8;
 }
 
+/* Same box as every other button in the header; its padding override was 4px short. */
 .nb-lock-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 10px;
 }
 
 .notebook-editor.notebook-locked #runAllSectionsBtn,

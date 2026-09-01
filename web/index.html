@@ -206,6 +206,18 @@
                                     <canvas id="perfCpuChart"></canvas>
                                 </div>
                             </div>
+
+                            <div class="perf-section" style="margin-top: 1rem;">
+                                <div class="perf-section-header">
+                                    <h3>Background operations</h3>
+                                    <span class="perf-section-hint">merges, mutations, replication</span>
+                                    <span class="filters-spacer"></span>
+                                    <span class="perf-section-hint" id="actBgSummary"></span>
+                                </div>
+                                <div id="actBackground" class="perf-table-container">
+                                    <div class="empty-state" style="min-height: 80px;"><p>Nothing running</p></div>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Storage & Ingest Sub-Tab -->
@@ -258,43 +270,70 @@
 
                         <!-- Activity Sub-Tab -->
                         <div id="perfPaneActivity" class="perf-pane" style="display:none;">
-                            <div class="perf-charts-row">
-                                <div class="perf-chart-card">
-                                    <h3>Query Duration</h3>
-                                    <canvas id="perfQueryDurationChart"></canvas>
+                            <div class="perf-metrics-grid act-tiles">
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Running</div>
+                                    <div class="perf-metric-value" id="actTileRunning">--</div>
+                                    <div class="perf-metric-sub" id="actTileRunningSub"></div>
                                 </div>
-                                <div class="perf-chart-card">
-                                    <h3>Memory per Query</h3>
-                                    <canvas id="perfMemoryChart"></canvas>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Search p95</div>
+                                    <div class="perf-metric-value" id="actTileP95">--</div>
+                                    <div class="perf-metric-sub" id="actTileP95Sub"></div>
                                 </div>
-                            </div>
-
-                            <!-- Running Queries Table -->
-                            <div class="perf-section">
-                                <div class="perf-section-header">
-                                    <h3>Running Queries</h3>
-                                    <span id="perfProcessCount" class="perf-count">0</span>
-                                    <input type="text" id="perfProcessSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
+                                <div class="perf-metric-card" id="actTileFailCard">
+                                    <div class="perf-metric-label">Failed queries</div>
+                                    <div class="perf-metric-value" id="actTileFailed">--</div>
+                                    <div class="perf-metric-sub" id="actTileFailedSub"></div>
                                 </div>
-                                <div id="perfProcessesTable" class="perf-table-container">
-                                    <div class="empty-state" style="min-height: 120px;">
-                                        <p>No active queries</p>
-                                    </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Read volume</div>
+                                    <div class="perf-metric-value" id="actTileRead">--</div>
+                                    <div class="perf-metric-sub" id="actTileReadSub"></div>
                                 </div>
                             </div>
 
-                            <!-- Recent Query Log -->
+                            <div class="perf-charts-row act-charts">
+                                <div class="perf-chart-card act-chart-card">
+                                    <h3>Search latency</h3>
+                                    <div class="act-chart-body" id="actLatencyWrap">
+                                        <div class="perf-chart-placeholder" id="actLatencyPlaceholder">Waiting for samples...</div>
+                                    </div>
+                                    <div class="act-legend" id="actLatencyLegend"></div>
+                                </div>
+                                <div class="perf-chart-card act-chart-card">
+                                    <h3>Query rate by source</h3>
+                                    <div class="act-smalls" id="actSmalls"></div>
+                                </div>
+                            </div>
+
                             <div class="perf-section">
                                 <div class="perf-section-header">
-                                    <h3>Recent Queries</h3>
-                                    <span id="perfRecentCount" class="perf-count">0</span>
-                                    <label class="perf-toggle-label"><input type="checkbox" id="perfHideInserts"> Hide inserts</label>
-                                    <input type="text" id="perfRecentSearch" class="perf-search-input" placeholder="Search..." autocomplete="off" spellcheck="false">
-                                </div>
-                                <div id="perfRecentTable" class="perf-table-container">
-                                    <div class="empty-state" style="min-height: 120px;">
-                                        <p>No recent queries</p>
+                                    <div class="act-modes" id="actModes">
+                                        <button type="button" class="act-mode active" data-mode="live">Live stream</button>
+                                        <button type="button" class="act-mode" data-mode="patterns">Cost patterns</button>
                                     </div>
+                                    <span class="perf-count" id="actStreamCount">0</span>
+                                    <span class="act-live" id="actLive"><span class="act-live-dot"></span><span id="actLiveText">Live</span></span>
+                                    <span class="perf-section-hint" id="actModeHint"></span>
+                                    <span class="filters-spacer"></span>
+                                    <input type="text" id="actSearch" class="perf-search-input" placeholder="Filter query, user, fractal..." autocomplete="off" spellcheck="false">
+                                    <select id="actNode" class="setting-select perf-refresh-select" style="display:none"></select>
+                                </div>
+                                <div class="act-chips" id="actChips">
+                                    <button type="button" class="act-chip active" data-filter="state" data-value="">All</button>
+                                    <button type="button" class="act-chip" data-filter="state" data-value="running">Running</button>
+                                    <button type="button" class="act-chip" data-filter="state" data-value="slow">Slow &gt; 5s</button>
+                                    <button type="button" class="act-chip" data-filter="state" data-value="error">Errors</button>
+                                    <span class="act-chip-divider"></span>
+                                    <button type="button" class="act-chip" data-filter="class" data-value="search"><i class="act-dot act-c-search"></i>Search</button>
+                                    <button type="button" class="act-chip" data-filter="class" data-value="alert"><i class="act-dot act-c-alert"></i>Alerts</button>
+                                    <button type="button" class="act-chip" data-filter="class" data-value="ingest"><i class="act-dot act-c-ingest"></i>Ingest</button>
+                                    <button type="button" class="act-chip" data-filter="class" data-value="system"><i class="act-dot act-c-system"></i>System</button>
+                                </div>
+                                <div class="act-failstrip" id="actFailStrip" style="display:none"></div>
+                                <div id="actStreamTable" class="perf-table-container act-stream-container">
+                                    <div class="empty-state" style="min-height: 120px;"><p>Loading activity...</p></div>
                                 </div>
                             </div>
                         </div>
@@ -595,21 +634,29 @@
                     </section>
 
                     <!-- Query Detail Drawer -->
-                    <div id="perfQueryDrawer" class="perf-query-drawer">
-                        <div class="perf-query-drawer-header">
-                            <div class="perf-query-drawer-meta" id="perfDrawerMeta"></div>
-                            <div class="perf-query-drawer-actions">
-                                <button class="perf-drawer-copy-btn" id="perfDrawerCopy" onclick="Performance.copyDrawerQuery()">
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                                    Copy
-                                </button>
-                                <button class="perf-drawer-close-btn" onclick="Performance.closeDrawer()" title="Close (Esc)">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                                </button>
-                            </div>
+                    <div id="actTip" class="act-tip" role="tooltip" aria-hidden="true"></div>
+                    <div id="actDrawerScrim" class="act-drawer-scrim"></div>
+                    <aside id="actDrawer" class="act-drawer" aria-label="Query detail">
+                        <div class="act-drawer-head">
+                            <h3>Query detail</h3>
+                            <span class="filters-spacer"></span>
+                            <button type="button" class="btn-ghost btn-sm" id="actDrawerKill">Kill</button>
+                            <button type="button" class="btn-ghost btn-sm" id="actDrawerCopy">Copy query</button>
+                            <button type="button" class="btn-ghost btn-sm act-drawer-close" id="actDrawerClose" title="Close (Esc)" aria-label="Close">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            </button>
                         </div>
-                        <pre id="perfDrawerQuery" class="perf-query-drawer-pre"></pre>
-                    </div>
+                        <div class="act-drawer-body">
+                            <div class="act-drawer-meta" id="actDrawerMeta"></div>
+                            <div id="actDrawerBqlBlock" style="display:none">
+                                <p class="act-drawer-sub">BQL</p>
+                                <pre class="act-drawer-pre query-display" id="actDrawerBql"></pre>
+                            </div>
+                            <p class="act-drawer-sub" id="actDrawerSqlLabel" style="display:none">Translated SQL</p>
+                            <pre class="act-drawer-pre" id="actDrawerQuery"></pre>
+                            <div id="actDrawerDetail"></div>
+                        </div>
+                    </aside>
                 </div>
             </div>
 
@@ -2019,13 +2066,6 @@
 
                             <!-- Notebook Body: sections + TOC panel -->
                             <div class="notebook-body">
-                                <div class="notebook-content">
-                                    <div id="notebookSections" class="notebook-sections"></div>
-                                    <div class="add-section-container">
-                                        <button id="addSectionBtn" class="btn-add-section">+ Add Section</button>
-                                    </div>
-                                </div>
-
                                 <!-- Section Navigator TOC -->
                                 <div id="notebookTOC" class="notebook-toc collapsed">
                                     <div class="notebook-toc-inner">
@@ -2033,10 +2073,21 @@
                                             <span class="notebook-toc-title">Sections</span>
                                             <button class="notebook-toc-close" id="notebookTOCClose" title="Close navigator">✕</button>
                                         </div>
+                                        <div class="notebook-toc-modes" role="group" aria-label="Section order">
+                                            <button type="button" class="notebook-toc-mode active" id="notebookTOCModeStructure" aria-pressed="true">Structure</button>
+                                            <button type="button" class="notebook-toc-mode" id="notebookTOCModeTimeline" aria-pressed="false">Timeline</button>
+                                        </div>
                                         <div class="notebook-toc-search-wrap">
                                             <input type="text" id="notebookTOCSearch" class="notebook-toc-search" placeholder="Search sections…" autocomplete="off">
                                         </div>
                                         <div id="notebookTOCList" class="notebook-toc-list"></div>
+                                    </div>
+                                </div>
+
+                                <div class="notebook-content">
+                                    <div id="notebookSections" class="notebook-sections"></div>
+                                    <div class="add-section-container">
+                                        <button id="addSectionBtn" class="btn-add-section">+ Add Section</button>
                                     </div>
                                 </div>
                             </div>
@@ -4242,6 +4293,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/settingsView.js"></script>
     <script src="/static/groupsView.js"></script>
     <script src="/static/performance.js"></script>
+    <script src="/static/activity.js"></script>
     <script src="/static/alertDetail.js"></script>
     <script src="/static/alertList.js"></script>
     <script src="/static/alerts.js"></script>
