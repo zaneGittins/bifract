@@ -19,6 +19,9 @@ const AlertTests = {
     _loaded: false,
     _selected: new Set(),
     _index: null,
+    // Full events resolved for a projected row, keyed by log_id. Keeps the gutter's
+    // synchronous state lookup in step with what capture actually stored.
+    _fullEvents: new Map(),
     _composerError: '',
     _sessionId: null,
     _alertId: null,
@@ -35,6 +38,7 @@ const AlertTests = {
         this._lastError = '';
         this._selected = new Set();
         this._index = null;
+        this._fullEvents = new Map();
         this._sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
         if (alertId) {
@@ -69,6 +73,7 @@ const AlertTests = {
         this._outcomes = null;
         this._selected = new Set();
         this._index = null;
+        this._fullEvents = new Map();
         this._sessionId = null;
         this._alertId = null;
         this.updateChip();
@@ -212,7 +217,7 @@ const AlertTests = {
     // log_id, so the mapping survives a reload with nothing extra persisted, and a
     // pasted event that happens to be identical reads as the same test.
     stateForRow(row) {
-        const event = this.toNormalizedEvent(row);
+        const event = (row?.log_id && this._fullEvents.get(row.log_id)) || this.toNormalizedEvent(row);
         if (!event) return null;
 
         const entry = this.eventIndex().get(this.eventKey(event));
@@ -257,8 +262,8 @@ const AlertTests = {
     // Cycles a row through the three states. A row marked from here becomes a
     // single-event test; several rows are combined into one scenario from the Tests
     // tab, which is where the whole corpus is visible.
-    cycleRow(row) {
-        const event = this.toNormalizedEvent(row);
+    async cycleRow(row) {
+        const event = await this.resolveEvent(row);
         if (!event) {
             Toast.error('Could not capture this event', 'This row carries no fields to test against.');
             return;
@@ -278,6 +283,62 @@ const AlertTests = {
         }
 
         this.repaintGutter();
+    },
+
+    // A projected row holds only the columns the query asked for, so the field a rule
+    // filters on may not be present at all: marking one and testing against it would
+    // assert about a fragment. The row still identifies its log, so the whole event is
+    // fetched before it becomes a test.
+    async resolveEvent(row) {
+        const cached = row?.log_id && this._fullEvents.get(row.log_id);
+        if (cached) return cached;
+
+        let event;
+        if (this.isProjected(row)) {
+            event = await this.fetchFullEvent(row);
+            if (!event) {
+                Toast.error('Could not capture this event',
+                    'This row is a projection and the full event could not be loaded.');
+                return null;
+            }
+        } else {
+            event = this.toNormalizedEvent(row);
+        }
+
+        if (row?.log_id && event) this._fullEvents.set(row.log_id, event);
+        return event;
+    },
+
+    // A row is a projection when it carries neither the normalized blob nor a loaded
+    // field set: table() and groupby() return their named columns and nothing else.
+    isProjected(row) {
+        if (!row) return false;
+        const hasFields = row.fields && typeof row.fields === 'object' && !Array.isArray(row.fields);
+        return !row.norm_log && !hasFields;
+    },
+
+    // The same lookup the log detail panel uses to fill its Fields tab.
+    async fetchFullEvent(row) {
+        if (!row.log_id || !row.fractal_id || !row.timestamp) return null;
+
+        const params = new URLSearchParams({
+            log_id: row.log_id,
+            fractal_id: row.fractal_id,
+            timestamp: row.timestamp
+        });
+        if (row._shard_num !== undefined && row._shard_num !== null) {
+            params.set('shard_num', row._shard_num);
+        }
+
+        try {
+            const res = await fetch(`/api/v1/logs/fields?${params}`, { credentials: 'include' });
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (!data.success || !data.fields) return null;
+            return this.stripBookkeeping(data.fields, row.timestamp);
+        } catch (e) {
+            return null;
+        }
     },
 
     findEvent(key) {
