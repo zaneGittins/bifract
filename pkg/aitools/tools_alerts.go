@@ -56,6 +56,10 @@ func registerAlertTools(d *set) {
 			"  event      the query must not aggregate. Use a plain filter.\n" +
 			"  scheduled  needs schedule_cron and query_window_seconds.\n" +
 			"  compound   needs window_duration.\n\n" +
+			"A fractal may enforce policy rules on a definition, and a save that breaks a " +
+			"blocking rule is refused with the rule's message: fix what it names and retry.\n\n" +
+			"A fractal may also review changes before they go live. That refusal says to " +
+			"open a proposal instead, which is propose_alert_change.\n\n" +
 			"Returns the created alert.",
 	}, createAlert,
 		enumFor[alerts.AlertType]("alert_type"),
@@ -67,6 +71,8 @@ func registerAlertTools(d *set) {
 		Description: "Update an alert. Only the fields you supply change; the rest keep their values.\n\n" +
 			"The API replaces the whole alert, so this reads it first and sends the current " +
 			"values back for everything you did not name.\n\n" +
+			"Refused if the fractal has a blocking policy rule the result would break, or " +
+			"if the fractal reviews changes, in which case use propose_alert_change.\n\n" +
 			"Returns the updated alert.",
 	}, updateAlert,
 		enumFor[alerts.AlertType]("alert_type"),
@@ -75,7 +81,9 @@ func registerAlertTools(d *set) {
 	add(d, &mcp.Tool{
 		Name:        "delete_alert",
 		Annotations: destroys(),
-		Description: "Delete an alert.",
+		Description: "Delete an alert.\n\n" +
+			"Refused where the fractal reviews changes: propose_alert_change with kind " +
+			"delete instead, saying why it should go.",
 	}, deleteAlert)
 
 	add(d, &mcp.Tool{

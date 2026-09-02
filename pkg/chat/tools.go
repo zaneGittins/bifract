@@ -176,6 +176,66 @@ type PendingToolCall struct {
 	Arguments  json.RawMessage `json:"arguments"`
 }
 
+// OfferedToolCall is a proposed write and what became of it. Reopening a
+// conversation rebuilds the approval card from this record, so the arguments
+// are the ones that were offered rather than the ones the model asked for.
+type OfferedToolCall struct {
+	ID         string          `json:"id"`
+	ToolCallID string          `json:"tool_call_id"`
+	ToolName   string          `json:"tool_name"`
+	Arguments  json.RawMessage `json:"arguments"`
+	// Status is "open", "approve", "deny", "superseded" or "expired". Only an
+	// open call is still answerable, and claimToolCall enforces that again.
+	Status string `json:"status"`
+}
+
+// ListOfferedToolCalls returns every call this conversation put to the user, in
+// the order they were offered.
+func (m *Manager) ListOfferedToolCalls(ctx context.Context, conversationID string) ([]*OfferedToolCall, error) {
+	rows, err := m.pg.Query(ctx, `
+		SELECT id, tool_call_id, tool_name, arguments,
+		       CASE
+		           WHEN resolved_at IS NOT NULL THEN COALESCE(decision, 'superseded')
+		           WHEN expires_at <= NOW() THEN 'expired'
+		           ELSE 'open'
+		       END
+		FROM chat_pending_tool_calls
+		WHERE conversation_id = $1
+		ORDER BY created_at ASC`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var offers []*OfferedToolCall
+	for rows.Next() {
+		offer := &OfferedToolCall{}
+		var arguments []byte
+		if err := rows.Scan(&offer.ID, &offer.ToolCallID, &offer.ToolName, &arguments, &offer.Status); err != nil {
+			return nil, err
+		}
+		// Re-encode so the browser sees the same bytes the live stream sends:
+		// JSONB does not give the object's keys back in the order they went in.
+		offer.Arguments = normalizeJSON(arguments)
+		offers = append(offers, offer)
+	}
+	return offers, rows.Err()
+}
+
+// normalizeJSON re-encodes a value so its object keys are ordered the way Go
+// writes them, which is what every other path serving these arguments does.
+func normalizeJSON(raw []byte) json.RawMessage {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return json.RawMessage(raw)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(raw)
+	}
+	return encoded
+}
+
 // offerToolCall records a call for the user to approve.
 func (m *Manager) offerToolCall(ctx context.Context, conversationID, toolCallID, toolName string, args json.RawMessage, requestedBy string) (*PendingToolCall, error) {
 	if len(args) == 0 {

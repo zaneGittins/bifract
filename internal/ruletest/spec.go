@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"bifract/pkg/ruleeval"
 )
 
 // SpecSuffix is the canonical rule test file suffix, used in help and error text.
@@ -32,12 +34,13 @@ func IsSpecFile(name string) bool {
 	return false
 }
 
-// Expectation is what a case asserts about the rule's verdict.
-type Expectation string
+// Expectation is what a case asserts about the rule's verdict. Aliased to the shared
+// engine's type so a spec file and an in-app test mean the same thing by "match".
+type Expectation = ruleeval.Expectation
 
 const (
-	ExpectMatch   Expectation = "match"
-	ExpectNoMatch Expectation = "no_match"
+	ExpectMatch   = ruleeval.ExpectMatch
+	ExpectNoMatch = ruleeval.ExpectNoMatch
 )
 
 // Spec is one test file: a rule, the normalizer to interpret it with, and the

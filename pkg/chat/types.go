@@ -35,6 +35,10 @@ type StreamEvent struct {
 	ToolName   string      `json:"tool_name,omitempty"`
 	ToolArgs   interface{} `json:"tool_args,omitempty"`
 	ToolResult interface{} `json:"tool_result,omitempty"`
+	// ToolCallID ties a result to the call it answers. The model may batch
+	// several calls in one round and they are not dispatched in the order they
+	// were announced, so position is not enough to pair them up.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 	// PendingID identifies a tool call waiting on the user, for the request that
 	// answers it. It is the only thing the browser sends back: the arguments stay
 	// on the server so what was shown is what runs.

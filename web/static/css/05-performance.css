@@ -1061,29 +1061,6 @@
     z-index: 1;
 }
 
-.perf-elapsed {
-    font-family: var(--font-mono);
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.perf-time {
-    font-family: var(--font-mono);
-    font-size: 0.6875rem;
-    color: var(--text-secondary);
-    white-space: nowrap;
-}
-
-.perf-query-cell {
-    max-width: 400px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 0.6875rem;
-    color: var(--text-secondary);
-}
-
 /* Warning/Danger rows */
 tr.perf-warning td {
     color: var(--warning);
@@ -1091,48 +1068,6 @@ tr.perf-warning td {
 
 tr.perf-danger td {
     color: var(--error);
-}
-
-/* Status indicators */
-.perf-status-ok {
-    color: var(--success);
-    font-weight: 500;
-    font-size: 0.6875rem;
-}
-
-.perf-status-error {
-    color: var(--error);
-    font-weight: 500;
-    font-size: 0.6875rem;
-}
-
-/* Kill button */
-.btn-kill-query {
-    padding: 0.25rem 0.5rem;
-    background: transparent;
-    border: 1px solid rgba(248, 113, 113, 0.4);
-    border-radius: 3px;
-    color: var(--error);
-    font-size: 0.6875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: var(--transition);
-    white-space: nowrap;
-}
-
-.btn-kill-query:hover {
-    background: rgba(248, 113, 113, 0.15);
-    border-color: var(--error);
-}
-
-/* Already cancelled: waiting on the server to reach an interruptible point */
-.perf-kill-pending {
-    display: inline-block;
-    padding: 0.25rem 0.5rem;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    white-space: nowrap;
 }
 
 /* Search input */
@@ -1159,148 +1094,6 @@ tr.perf-danger td {
     color: var(--text-muted);
 }
 
-.perf-toggle-label {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    cursor: pointer;
-    user-select: none;
-    white-space: nowrap;
-}
-
-.perf-toggle-label input[type="checkbox"] {
-    accent-color: var(--accent-primary);
-    cursor: pointer;
-}
-
-/* Clickable rows */
-.perf-row-clickable {
-    cursor: pointer;
-    transition: background 0.1s;
-}
-
-.perf-row-clickable:hover td {
-    background: var(--bg-hover);
-}
-
-/* Query Detail Drawer */
-.perf-query-drawer {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: var(--bg-secondary);
-    border-top: 2px solid var(--accent-primary);
-    transform: translateY(100%);
-    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    z-index: 1000;
-    max-height: 38vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.4);
-}
-
-.perf-query-drawer.open {
-    transform: translateY(0);
-}
-
-.perf-query-drawer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0;
-    gap: 1rem;
-    min-height: 40px;
-}
-
-.perf-query-drawer-meta {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    overflow: hidden;
-}
-
-.perf-query-drawer-meta span {
-    white-space: nowrap;
-}
-
-.perf-query-drawer-meta span + span::before {
-    content: '·';
-    margin-right: 1rem;
-    color: var(--border-color);
-}
-
-.perf-query-drawer-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-shrink: 0;
-}
-
-.perf-drawer-copy-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    padding: 0.25rem 0.75rem;
-    background: var(--accent-glow);
-    color: var(--accent-secondary);
-    border: 1px solid var(--accent-primary);
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-family: inherit;
-    cursor: pointer;
-    transition: var(--transition);
-    white-space: nowrap;
-}
-
-.perf-drawer-copy-btn:hover {
-    background: var(--accent-primary);
-    color: #fff;
-}
-
-.perf-drawer-close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: var(--transition);
-    flex-shrink: 0;
-}
-
-.perf-drawer-close-btn:hover {
-    border-color: var(--text-secondary);
-    color: var(--text-primary);
-}
-
-.perf-query-drawer-pre {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: auto;
-    margin: 0;
-    padding: 0.75rem 1rem;
-    font-family: var(--font-mono);
-    font-size: 0.8125rem;
-    line-height: 1.6;
-    color: var(--text-primary);
-    background: transparent;
-    white-space: pre;
-    tab-size: 4;
-}
-
 /* Responsive */
 @media (max-width: 768px) {
     .perf-metrics-grid {
@@ -1313,10 +1106,6 @@ tr.perf-danger td {
 
     .perf-search-input {
         width: 120px;
-    }
-
-    .perf-query-drawer {
-        max-height: 55vh;
     }
 }
 
@@ -1767,29 +1556,12 @@ text.act-q99 { fill: var(--act-q99); stroke: none; }
     background: var(--accent-primary);
 }
 
-.act-bar-danger {
-    background: var(--error);
-}
-
 .act-bar-label {
     margin-left: 0.4375rem;
     font-size: 0.6875rem;
 }
 
-.act-split {
-    display: grid;
-    grid-template-columns: 1.25fr 1fr;
-    gap: 0.75rem;
-}
-
-.act-split .perf-section {
-    margin-bottom: 1rem;
-}
-
 @media (max-width: 1100px) {
-    .act-split {
-        grid-template-columns: 1fr;
-    }
 
     .act-smalls {
         grid-template-columns: 1fr 1fr;
@@ -2067,4 +1839,112 @@ text.act-q99 { fill: var(--act-q99); stroke: none; }
 
 .act-drawer-sub + .act-drawer-pre {
     margin-top: 0;
+}
+
+/* ============================================================
+   System > Alerts (engine health)
+   Reuses the Activity primitives; only what differs lives here.
+   ============================================================ */
+
+.ae-sev-critical { background: var(--sev-critical); }
+.ae-sev-high { background: var(--sev-high); }
+.ae-sev-medium { background: var(--sev-medium); }
+.ae-sev-low { background: var(--sev-low); }
+
+rect.ae-sev-critical { fill: var(--sev-critical); background: none; }
+rect.ae-sev-high { fill: var(--sev-high); background: none; }
+rect.ae-sev-medium { fill: var(--sev-medium); background: none; }
+rect.ae-sev-low { fill: var(--sev-low); background: none; }
+
+.ae-line {
+    fill: none;
+    stroke: var(--accent-primary);
+    stroke-width: 2;
+    stroke-linejoin: round;
+}
+
+.ae-area {
+    fill: var(--accent-primary);
+    opacity: 0.13;
+    stroke: none;
+}
+
+.ae-endpoint {
+    fill: var(--accent-primary);
+    stroke: var(--bg-secondary);
+    stroke-width: 2;
+}
+
+text.ae-endlabel {
+    fill: var(--accent-primary);
+}
+
+/* A disabled alert is still listed, because its reason is the reason to look. */
+.ae-row-off td {
+    opacity: 0.62;
+}
+
+.ae-badge {
+    font-size: 0.625rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 0.25rem;
+    display: inline-block;
+}
+
+.ae-badge-off {
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+    color: var(--error);
+}
+
+.ae-badge-thr {
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+    color: var(--warning);
+}
+
+.ae-act {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.6875rem;
+}
+
+.ae-act i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: currentColor;
+}
+
+.ae-act-ok { color: var(--text-muted); }
+.ae-act-ok i { background: var(--success); }
+.ae-act-bad { color: var(--error); }
+.ae-act-thr { color: var(--warning); }
+.ae-act-none { color: var(--text-muted); }
+
+.ae-pill-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.ae-pill-why {
+    color: var(--error);
+}
+
+/* .perf-section-hint lowercases its text, which is right for prose labels and
+   wrong for values: it turns "1.4 TB" into "1.4 tb". */
+.perf-hint-value {
+    text-transform: none;
+}
+
+/* A section whose header is the whole content. */
+.perf-section-slim {
+    padding-bottom: 0;
+}
+
+.perf-section-slim .perf-section-header {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: 0;
 }

@@ -15,6 +15,42 @@ const AlertDetail = {
 
     // ---- Content ----
 
+    // Details and History share the drawer rather than stacking a second panel over
+    // it: history is about the alert this drawer is already scoped to.
+    //
+    // Tabs are rebuilt on every open, so moving between alerts always lands on Details.
+    installTabs(panel, alert, detailsHtml) {
+        const content = panel?.querySelector('.alert-details-content');
+        if (!content) return;
+
+        content.innerHTML = `
+            <div class="ad-tabs">
+                <button type="button" class="ad-tab active" data-tab="details">Details</button>
+                <button type="button" class="ad-tab" data-tab="history">History</button>
+            </div>
+            <div class="ad-pane" data-pane="details">${detailsHtml}</div>
+            <div class="ad-pane" data-pane="history" hidden></div>
+        `;
+
+        const panes = content.querySelectorAll('.ad-pane');
+        content.querySelectorAll('.ad-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                content.querySelectorAll('.ad-tab').forEach(t => t.classList.toggle('active', t === tab));
+                panes.forEach(p => { p.hidden = p.dataset.pane !== tab.dataset.tab; });
+                content.scrollTop = 0;
+
+                // Loaded on first view so opening a drawer stays one request.
+                if (tab.dataset.tab === 'history') {
+                    const pane = content.querySelector('.ad-pane[data-pane="history"]');
+                    if (pane && !pane.dataset.loaded) {
+                        pane.dataset.loaded = '1';
+                        window.AlertHistory?.renderInto(pane, alert.id, alert.name);
+                    }
+                }
+            });
+        });
+    },
+
     // opts: { metaExtra: [{label, html}], blocks: [{label, html}], labels: [],
     //         renderLabel: (label) => html }
     renderBody(alert, opts = {}) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,8 @@ type Manager struct {
 	pg                *storage.PostgresClient
 	engine            *Engine
 	normalizerManager *normalizers.Manager
+	// testRunner evaluates alert tests for policies that read their outcome.
+	testRunner *TestRunner
 }
 
 // nullableID returns nil for empty strings so the DB stores NULL, and the
@@ -58,11 +61,13 @@ func scopedCountQuery(table string, ids []string, fractalID, prismID string) (st
 
 // YAMLAlert represents the YAML format for alert definitions
 type YAMLAlert struct {
-	Name                string   `yaml:"name"`
-	Description         string   `yaml:"description"`
-	QueryString         string   `yaml:"queryString"`
-	AlertType           string   `yaml:"alertType"`
-	Severity            string   `yaml:"severity,omitempty"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	QueryString string `yaml:"queryString"`
+	AlertType   string `yaml:"alertType"`
+	Severity    string `yaml:"severity,omitempty"`
+	// Every action this alert runs, of any kind, named the way the editor lists
+	// them. Names resolve across all four action tables on import.
 	ActionNames         []string `yaml:"actionNames"`
 	Labels              []string `yaml:"labels"`
 	References          []string `yaml:"references,omitempty"`
@@ -93,6 +98,10 @@ type AlertCreateRequest struct {
 	WindowDuration      *int      `json:"window_duration,omitempty"`
 	ScheduleCron        *string   `json:"schedule_cron,omitempty"`
 	QueryWindowSeconds  *int      `json:"query_window_seconds,omitempty"`
+
+	// Tests replaces the alert's test corpus. Nil leaves it untouched, so a client
+	// that knows nothing about tests cannot wipe them with an ordinary update.
+	Tests *[]AlertTest `json:"tests,omitempty"`
 }
 
 // AlertUpdateRequest represents a request to update an existing alert
@@ -114,6 +123,10 @@ type AlertUpdateRequest struct {
 	WindowDuration      *int      `json:"window_duration,omitempty"`
 	ScheduleCron        *string   `json:"schedule_cron,omitempty"`
 	QueryWindowSeconds  *int      `json:"query_window_seconds,omitempty"`
+
+	// Tests replaces the alert's test corpus. Nil leaves it untouched, so a client
+	// that knows nothing about tests cannot wipe them with an ordinary update.
+	Tests *[]AlertTest `json:"tests,omitempty"`
 }
 
 // EmailActionCreateRequest represents a request to create a new email action
@@ -223,10 +236,11 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
 
-	// Resolve webhook actions by name within the import's scope
-	webhookIDs, err := m.resolveWebhookActionsByName(ctx, yamlAlert.ActionNames, fractalID, prismID)
+	// Resolve every action name before any write, so a bad name fails the import
+	// instead of leaving the alert half-wired.
+	actions, err := m.resolveActionNames(ctx, yamlAlert.ActionNames, fractalID, prismID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve webhook actions: %w", err)
+		return nil, err
 	}
 
 	// Check if alert already exists (update vs create)
@@ -239,7 +253,10 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 			QueryString:         yamlAlert.QueryString,
 			AlertType:           AlertType(yamlAlert.AlertType),
 			Severity:            Severity(yamlAlert.Severity),
-			WebhookActionIDs:    webhookIDs,
+			WebhookActionIDs:    actions.Webhook,
+			FractalActionIDs:    actions.Fractal,
+			DictionaryActionIDs: actions.Dictionary,
+			EmailActionIDs:      actions.Email,
 			Labels:              yamlAlert.Labels,
 			References:          yamlAlert.References,
 			Enabled:             yamlAlert.Enabled,
@@ -259,7 +276,10 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 		QueryString:         yamlAlert.QueryString,
 		AlertType:           AlertType(yamlAlert.AlertType),
 		Severity:            Severity(yamlAlert.Severity),
-		WebhookActionIDs:    webhookIDs,
+		WebhookActionIDs:    actions.Webhook,
+		FractalActionIDs:    actions.Fractal,
+		DictionaryActionIDs: actions.Dictionary,
+		EmailActionIDs:      actions.Email,
 		Labels:              yamlAlert.Labels,
 		References:          yamlAlert.References,
 		Enabled:             yamlAlert.Enabled,
@@ -385,6 +405,28 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 		return nil, fmt.Errorf("invalid email actions: %w", err)
 	}
 
+	alertType := req.AlertType
+	if alertType == "" {
+		alertType = "event"
+	}
+	severity := req.Severity
+	if severity == "" {
+		severity = "medium"
+	}
+
+	var proposedTests []AlertTest
+	if req.Tests != nil {
+		proposedTests = *req.Tests
+	}
+	if err := m.requireGate(ctx, fractalID, prismID, ChangeCreate, false); err != nil {
+		return nil, err
+	}
+	if err := m.enforcePolicies(ctx, fractalID, prismID, NewPolicySubject(
+		revisionContentFromRequest(AlertUpdateRequest(req), string(alertType), string(severity)), proposedTests,
+	)); err != nil {
+		return nil, err
+	}
+
 	// Start transaction
 	tx, err := m.pg.Begin(ctx)
 	if err != nil {
@@ -400,11 +442,6 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 	} else {
 		fractalIDPtr = fractalID
 	}
-	alertType := req.AlertType
-	if alertType == "" {
-		alertType = "event"
-	}
-
 	// Validate compound alert requirements
 	if alertType == "compound" {
 		if req.WindowDuration == nil || *req.WindowDuration <= 0 {
@@ -431,11 +468,6 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 		}
 	}
 
-	severity := req.Severity
-	if severity == "" {
-		severity = "medium"
-	}
-
 	query := `
 		INSERT INTO alerts (name, description, query_string, alert_type, enabled, throttle_time_seconds, throttle_field, labels, "references", severity, created_by, fractal_id, prism_id, window_duration, schedule_cron, query_window_seconds)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
@@ -448,6 +480,23 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 	).Scan(&alertID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert alert: %w", err)
+	}
+
+	// Record the created definition as revision 1. The head revision always mirrors
+	// the alert's current definition.
+	created := revisionContentFromRequest(AlertUpdateRequest(req), string(alertType), string(severity))
+	createdHash, err := created.Hash()
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash alert definition: %w", err)
+	}
+	if err := insertRevision(ctx, tx, alertID, 1, created, createdHash, "created", createdBy, createdBy, revisionRetention()); err != nil {
+		return nil, err
+	}
+
+	if req.Tests != nil {
+		if err := m.replaceTests(ctx, tx, alertID, *req.Tests, createdBy); err != nil {
+			return nil, err
+		}
 	}
 
 	// Insert webhook action associations
@@ -511,10 +560,11 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 
 	// Look up the alert's existing scope so action validation stays scoped.
 	var existingFractalID, existingPrismID string
+	var isFeedAlert bool
 	if err := m.pg.QueryRow(ctx,
-		`SELECT COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '') FROM alerts WHERE id = $1`,
+		`SELECT COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), feed_id IS NOT NULL FROM alerts WHERE id = $1`,
 		alertID,
-	).Scan(&existingFractalID, &existingPrismID); err != nil {
+	).Scan(&existingFractalID, &existingPrismID, &isFeedAlert); err != nil {
 		return nil, fmt.Errorf("failed to load alert scope: %w", err)
 	}
 
@@ -538,12 +588,49 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		return nil, fmt.Errorf("invalid email actions: %w", err)
 	}
 
+	updateType := req.AlertType
+	if updateType == "" {
+		updateType = "event"
+	}
+	updateSeverity := req.Severity
+	if updateSeverity == "" {
+		updateSeverity = "medium"
+	}
+
+	// Feed-managed alerts are exempt: their definition comes from upstream, so a rule
+	// an analyst cannot satisfy would only make the feed unusable.
+	if err := m.requireGate(ctx, existingFractalID, existingPrismID, ChangeUpdate, isFeedAlert); err != nil {
+		return nil, err
+	}
+
+	if !isFeedAlert {
+		proposedTests, err := m.testsForPolicy(ctx, alertID, req.Tests)
+		if err != nil {
+			return nil, err
+		}
+		if err := m.enforcePolicies(ctx, existingFractalID, existingPrismID, NewPolicySubject(
+			revisionContentFromRequest(req, string(updateType), string(updateSeverity)), proposedTests,
+		)); err != nil {
+			return nil, err
+		}
+	}
+
 	// Start transaction
 	tx, err := m.pg.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Lock the alert for the rest of the transaction. Revision numbering needs a
+	// serialization point, and without it two concurrent edits can also lose one.
+	var lockedID string
+	if err := tx.QueryRow(ctx, `SELECT id::text FROM alerts WHERE id = $1 FOR UPDATE`, alertID).Scan(&lockedID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrAlertNotFound
+		}
+		return nil, fmt.Errorf("failed to lock alert: %w", err)
+	}
 
 	// Determine alert type (preserve existing if not specified)
 	alertType := req.AlertType
@@ -580,6 +667,18 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 	severity := req.Severity
 	if severity == "" {
 		severity = "medium"
+	}
+
+	// Record the new definition before anything is written, so the pre-edit state is
+	// still readable for the seed revision on alerts that predate history.
+	if err := writeRevision(ctx, tx, alertID, revisionContentFromRequest(req, string(alertType), string(severity)), username, username, revisionRetention()); err != nil {
+		return nil, err
+	}
+
+	if req.Tests != nil {
+		if err := m.replaceTests(ctx, tx, alertID, *req.Tests, username); err != nil {
+			return nil, err
+		}
 	}
 
 	// Update alert (clear disabled_reason when re-enabling). Re-enabling also
@@ -688,17 +787,11 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 	return alert, nil
 }
 
-// GetAlert retrieves an alert by ID
-func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) {
-	query := `
-		SELECT a.id, a.name, COALESCE(a.description, ''), a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
-		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels, a."references",
-		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
-		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''),
-		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
-		       COALESCE(a.disabled_reason, ''), COALESCE(a.window_duration, 0),
-		       COALESCE(a.schedule_cron, ''), COALESCE(a.query_window_seconds, 0),
-		       COALESCE(json_agg(
+// Per-alert action aggregates. These are correlated subqueries rather than joins
+// on purpose: joining all four child tables multiplies the rows, and each json_agg
+// then repeats every entry once per row contributed by the other kinds.
+const (
+	alertWebhookActionsJSON = `(SELECT COALESCE(json_agg(
 		           json_build_object(
 		               'id', wa.id,
 		               'name', wa.name,
@@ -709,10 +802,14 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		               'auth_config', wa.auth_config,
 		               'timeout_seconds', wa.timeout_seconds,
 		               'retry_count', wa.retry_count,
+		               'include_alert_link', wa.include_alert_link,
 		               'enabled', wa.enabled
-		           ) ORDER BY wa.name
-		       ) FILTER (WHERE wa.id IS NOT NULL), '[]'::json) as webhook_actions,
-		       COALESCE(json_agg(
+		           ) ORDER BY wa.name), '[]'::json)
+		   FROM alert_webhook_actions awa
+		   JOIN webhook_actions wa ON awa.webhook_id = wa.id AND wa.enabled = true
+		  WHERE awa.alert_id = a.id) as webhook_actions`
+
+	alertFractalActionsJSON = `(SELECT COALESCE(json_agg(
 		           json_build_object(
 		               'id', fa.id,
 		               'name', fa.name,
@@ -723,9 +820,18 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		               'field_mappings', fa.field_mappings,
 		               'max_logs_per_trigger', fa.max_logs_per_trigger,
 		               'enabled', fa.enabled
-		           ) ORDER BY fa.name
-		       ) FILTER (WHERE fa.id IS NOT NULL), '[]'::json) as fractal_actions,
-		       COALESCE(json_agg(
+		           ) ORDER BY fa.name), '[]'::json)
+		   FROM alert_fractal_actions afa
+		   JOIN fractal_actions fa ON afa.fractal_action_id = fa.id AND fa.enabled = true
+		  WHERE afa.alert_id = a.id) as fractal_actions`
+
+	alertDictionaryActionsJSON = `(SELECT COALESCE(json_agg(
+		           json_build_object('id', da.id, 'name', da.name) ORDER BY da.name), '[]'::json)
+		   FROM alert_dictionary_actions ada
+		   JOIN dictionary_actions da ON ada.dictionary_action_id = da.id AND da.enabled = true
+		  WHERE ada.alert_id = a.id) as dictionary_actions`
+
+	alertEmailActionsJSON = `(SELECT COALESCE(json_agg(
 		           json_build_object(
 		               'id', ea.id,
 		               'name', ea.name,
@@ -733,26 +839,40 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		               'subject_template', ea.subject_template,
 		               'body_template', ea.body_template,
 		               'enabled', ea.enabled
-		           ) ORDER BY ea.name
-		       ) FILTER (WHERE ea.id IS NOT NULL), '[]'::json) as email_actions
+		           ) ORDER BY ea.name), '[]'::json)
+		   FROM alert_email_actions aea
+		   JOIN email_actions ea ON aea.email_action_id = ea.id AND ea.enabled = true
+		  WHERE aea.alert_id = a.id) as email_actions`
+
+	alertEmailActionRefsJSON = `(SELECT COALESCE(json_agg(
+		           json_build_object('id', ea.id, 'name', ea.name) ORDER BY ea.name), '[]'::json)
+		   FROM alert_email_actions aea
+		   JOIN email_actions ea ON aea.email_action_id = ea.id AND ea.enabled = true
+		  WHERE aea.alert_id = a.id) as email_actions`
+)
+
+// GetAlert retrieves an alert by ID
+func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) {
+	query := `
+		SELECT a.id, a.name, COALESCE(a.description, ''), a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
+		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels, a."references",
+		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
+		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''),
+		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
+		       COALESCE(a.disabled_reason, ''), COALESCE(a.window_duration, 0),
+		       COALESCE(a.schedule_cron, ''), COALESCE(a.query_window_seconds, 0),
+		       ` + alertWebhookActionsJSON + `,
+		       ` + alertFractalActionsJSON + `,
+		       ` + alertDictionaryActionsJSON + `,
+		       ` + alertEmailActionsJSON + `
 		FROM alerts a
-		LEFT JOIN alert_webhook_actions awa ON a.id = awa.alert_id
-		LEFT JOIN webhook_actions wa ON awa.webhook_id = wa.id AND wa.enabled = true
-		LEFT JOIN alert_fractal_actions afa ON a.id = afa.alert_id
-		LEFT JOIN fractal_actions fa ON afa.fractal_action_id = fa.id AND fa.enabled = true
-		LEFT JOIN alert_email_actions aea ON a.id = aea.alert_id
-		LEFT JOIN email_actions ea ON aea.email_action_id = ea.id AND ea.enabled = true
 		WHERE a.id = $1
-		GROUP BY a.id, a.name, a.description, a.query_string, a.alert_type, a.enabled,
-		         a.throttle_time_seconds, a.throttle_field, a.labels, a."references", a.severity, a.fractal_id,
-		         a.prism_id, a.feed_id, a.feed_rule_path,
-		         a.created_by, a.updated_by, a.created_at, a.updated_at, a.last_triggered,
-		         a.disabled_reason, a.window_duration, a.schedule_cron, a.query_window_seconds
 	`
 
 	var alert Alert
 	var webhookActionsJSON []byte
 	var fractalActionsJSON []byte
+	var dictionaryActionsJSON []byte
 	var emailActionsJSON []byte
 
 	err := m.pg.QueryRow(ctx, query, alertID).Scan(
@@ -763,7 +883,7 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 		&alert.CreatedAt, &alert.UpdatedAt,
 		&alert.LastTriggered, &alert.DisabledReason, &alert.WindowDuration,
 		&alert.ScheduleCron, &alert.QueryWindowSeconds,
-		&webhookActionsJSON, &fractalActionsJSON, &emailActionsJSON,
+		&webhookActionsJSON, &fractalActionsJSON, &dictionaryActionsJSON, &emailActionsJSON,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -780,6 +900,11 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 	// Parse fractal actions from JSON
 	if err := json.Unmarshal(fractalActionsJSON, &alert.FractalActions); err != nil {
 		return nil, fmt.Errorf("failed to parse fractal actions: %w", err)
+	}
+
+	// Parse dictionary action refs from JSON
+	if err := json.Unmarshal(dictionaryActionsJSON, &alert.DictionaryActionRefs); err != nil {
+		return nil, fmt.Errorf("failed to parse dictionary actions: %w", err)
 	}
 
 	// Parse email actions from JSON
@@ -819,54 +944,11 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 		       a.last_execution_time_ms,
 		       a.window_duration,
 		       COALESCE(a.schedule_cron, ''), COALESCE(a.query_window_seconds, 0),
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', wa.id,
-		               'name', wa.name,
-		               'url', wa.url,
-		               'method', wa.method,
-		               'headers', wa.headers,
-		               'auth_type', wa.auth_type,
-		               'auth_config', wa.auth_config,
-		               'timeout_seconds', wa.timeout_seconds,
-		               'retry_count', wa.retry_count,
-		               'enabled', wa.enabled
-		           ) ORDER BY wa.name
-		       ) FILTER (WHERE wa.id IS NOT NULL), '[]'::json) as webhook_actions,
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', fa.id,
-		               'name', fa.name,
-		               'description', fa.description,
-		               'target_fractal_id', fa.target_fractal_id,
-		               'preserve_timestamp', fa.preserve_timestamp,
-		               'add_alert_context', fa.add_alert_context,
-		               'field_mappings', fa.field_mappings,
-		               'max_logs_per_trigger', fa.max_logs_per_trigger,
-		               'enabled', fa.enabled
-		           ) ORDER BY fa.name
-		       ) FILTER (WHERE fa.id IS NOT NULL), '[]'::json) as fractal_actions,
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', da.id,
-		               'name', da.name
-		           ) ORDER BY da.name
-		       ) FILTER (WHERE da.id IS NOT NULL), '[]'::json) as dictionary_actions,
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', ea.id,
-		               'name', ea.name
-		           ) ORDER BY ea.name
-		       ) FILTER (WHERE ea.id IS NOT NULL), '[]'::json) as email_actions
+		       ` + alertWebhookActionsJSON + `,
+		       ` + alertFractalActionsJSON + `,
+		       ` + alertDictionaryActionsJSON + `,
+		       ` + alertEmailActionRefsJSON + `
 		FROM alerts a
-		LEFT JOIN alert_webhook_actions awa ON a.id = awa.alert_id
-		LEFT JOIN webhook_actions wa ON awa.webhook_id = wa.id AND wa.enabled = true
-		LEFT JOIN alert_fractal_actions afa ON a.id = afa.alert_id
-		LEFT JOIN fractal_actions fa ON afa.fractal_action_id = fa.id AND fa.enabled = true
-		LEFT JOIN alert_dictionary_actions ada ON a.id = ada.alert_id
-		LEFT JOIN dictionary_actions da ON ada.dictionary_action_id = da.id AND da.enabled = true
-		LEFT JOIN alert_email_actions aea ON a.id = aea.alert_id
-		LEFT JOIN email_actions ea ON aea.email_action_id = ea.id AND ea.enabled = true
 	`
 
 	// No scope means no alerts, not every alert: without this the query below
@@ -903,10 +985,6 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 	}
 
 	query := baseQuery + whereClause + `
-		GROUP BY a.id, a.name, a.description, a.query_string, a.alert_type, a.enabled,
-		         a.throttle_time_seconds, a.throttle_field, a.labels, a."references", a.severity, a.fractal_id, a.prism_id,
-		         a.created_by, a.updated_by, a.created_at, a.updated_at, a.last_triggered,
-		         a.disabled_reason, a.window_duration, a.schedule_cron, a.query_window_seconds
 		ORDER BY a.name
 	`
 
@@ -1009,6 +1087,23 @@ func (m *Manager) ListCoverageRows(ctx context.Context, fractalID, prismID strin
 
 // DeleteAlert removes an alert and its associations
 func (m *Manager) DeleteAlert(ctx context.Context, alertID string) error {
+	// Deleting a detection is the change nobody reviews and everybody regrets, so it
+	// is gated like any other. Feed-managed alerts stay exempt.
+	var fractalID, prismID string
+	var isFeedAlert bool
+	if err := m.pg.QueryRow(ctx,
+		`SELECT COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), feed_id IS NOT NULL FROM alerts WHERE id = $1`,
+		alertID,
+	).Scan(&fractalID, &prismID, &isFeedAlert); err != nil {
+		if err == sql.ErrNoRows {
+			return ErrAlertNotFound
+		}
+		return fmt.Errorf("failed to load alert scope: %w", err)
+	}
+	if err := m.requireGate(ctx, fractalID, prismID, ChangeDelete, isFeedAlert); err != nil {
+		return err
+	}
+
 	result, err := m.pg.Exec(ctx, "DELETE FROM alerts WHERE id = $1", alertID)
 	if err != nil {
 		return fmt.Errorf("failed to delete alert: %w", err)
@@ -1030,10 +1125,49 @@ func (m *Manager) DeleteAlert(ctx context.Context, alertID string) error {
 	return nil
 }
 
-// resolveWebhookActionsByName converts webhook action names to IDs within a scope.
-func (m *Manager) resolveWebhookActionsByName(ctx context.Context, actionNames []string, fractalID, prismID string) ([]string, error) {
+// actionKind names one alert action type and its scoped lookup table. All four
+// share the id/name/enabled/fractal_id/prism_id shape, so one lookup covers them.
+type actionKind struct {
+	label string
+	table string
+}
+
+var alertActionKinds = []actionKind{
+	{"webhook", "webhook_actions"},
+	{"fractal", "fractal_actions"},
+	{"dictionary", "dictionary_actions"},
+	{"email", "email_actions"},
+}
+
+// resolvedActions holds action IDs grouped by kind, ready for a create or update request.
+type resolvedActions struct {
+	Webhook    []string
+	Fractal    []string
+	Dictionary []string
+	Email      []string
+}
+
+func (r *resolvedActions) add(kind string, id string) {
+	switch kind {
+	case "webhook":
+		r.Webhook = append(r.Webhook, id)
+	case "fractal":
+		r.Fractal = append(r.Fractal, id)
+	case "dictionary":
+		r.Dictionary = append(r.Dictionary, id)
+	case "email":
+		r.Email = append(r.Email, id)
+	}
+}
+
+// resolveActionNames maps action names to IDs across every action kind, matching
+// how the editor presents them as one list. A name that matches nothing, or that
+// matches more than one kind, is an error: silently guessing would wire an alert
+// to an action the file did not ask for.
+func (m *Manager) resolveActionNames(ctx context.Context, actionNames []string, fractalID, prismID string) (resolvedActions, error) {
+	resolved := resolvedActions{Webhook: []string{}, Fractal: []string{}, Dictionary: []string{}, Email: []string{}}
 	if len(actionNames) == 0 {
-		return []string{}, nil
+		return resolved, nil
 	}
 
 	args := []interface{}{pq.Array(actionNames)}
@@ -1045,38 +1179,56 @@ func (m *Manager) resolveWebhookActionsByName(ctx context.Context, actionNames [
 		args = append(args, fractalID)
 		scope = "fractal_id = $2"
 	}
-	query := fmt.Sprintf(`SELECT id, name FROM webhook_actions WHERE name = ANY($1) AND enabled = true AND %s`, scope)
-	rows, err := m.pg.Query(ctx, query, args...)
+	// Table and label are package constants, never caller input.
+	selects := make([]string, 0, len(alertActionKinds))
+	for _, kind := range alertActionKinds {
+		selects = append(selects, fmt.Sprintf(
+			`SELECT id::text, name, '%s' AS kind FROM %s WHERE name = ANY($1) AND enabled = true AND %s`,
+			kind.label, kind.table, scope))
+	}
+
+	rows, err := m.pg.Query(ctx, strings.Join(selects, " UNION ALL "), args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query webhook actions: %w", err)
+		return resolved, fmt.Errorf("failed to query actions: %w", err)
 	}
 	defer rows.Close()
 
-	nameToID := make(map[string]string)
+	type match struct{ id, kind string }
+	matches := make(map[string][]match, len(actionNames))
 	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return nil, fmt.Errorf("failed to scan webhook action: %w", err)
+		var id, name, kind string
+		if err := rows.Scan(&id, &name, &kind); err != nil {
+			return resolved, fmt.Errorf("failed to scan action: %w", err)
 		}
-		nameToID[name] = id
+		matches[name] = append(matches[name], match{id, kind})
+	}
+	if err := rows.Err(); err != nil {
+		return resolved, fmt.Errorf("failed to read actions: %w", err)
 	}
 
-	var webhookIDs []string
-	var missingNames []string
-
+	var missing []string
 	for _, name := range actionNames {
-		if id, exists := nameToID[name]; exists {
-			webhookIDs = append(webhookIDs, id)
-		} else {
-			missingNames = append(missingNames, name)
+		found := matches[name]
+		switch {
+		case len(found) == 0:
+			missing = append(missing, name)
+		case len(found) > 1:
+			kinds := make([]string, 0, len(found))
+			for _, f := range found {
+				kinds = append(kinds, f.kind)
+			}
+			sort.Strings(kinds)
+			return resolved, fmt.Errorf("action name %q is ambiguous: it matches %s actions, rename one of them", name, strings.Join(kinds, " and "))
+		default:
+			resolved.add(found[0].kind, found[0].id)
 		}
 	}
 
-	if len(missingNames) > 0 {
-		return nil, fmt.Errorf("webhook actions not found: %s", strings.Join(missingNames, ", "))
+	if len(missing) > 0 {
+		return resolved, fmt.Errorf("actions not found: %s", strings.Join(missing, ", "))
 	}
 
-	return webhookIDs, nil
+	return resolved, nil
 }
 
 // loadDictionaryActionIDs returns the dictionary action IDs linked to an alert.
@@ -1854,13 +2006,35 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 		VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id
 	`
+	tx, err := m.pg.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var alertID string
-	err = m.pg.QueryRow(ctx, query,
+	err = tx.QueryRow(ctx, query,
 		name, description, queryString, alertType, severity, pq.Array(labels), pq.Array(references),
 		storage.NullableUser(createdBy), fractalIDPtr, prismIDPtr, feedID, rulePath, ruleHash,
 	).Scan(&alertID)
 	if err != nil {
 		return nil, fmt.Errorf("create feed alert: %w", err)
+	}
+
+	content := feedRevisionFields{
+		name: name, description: description, queryString: queryString,
+		alertType: alertType, severity: string(severity), labels: labels, references: references,
+	}.applyTo(RevisionContent{})
+	hash, err := content.Hash()
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash alert definition: %w", err)
+	}
+	if err := insertRevision(ctx, tx, alertID, 1, content, hash, "created", createdBy, feedAuthorLabel, revisionRetention()); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	// Skip per-alert cache refresh and GetAlert for feed alerts (caller refreshes once at end)
@@ -1899,7 +2073,28 @@ func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, descriptio
 		prismIDPtr = prismID
 	}
 
-	_, err = m.pg.Exec(ctx, `
+	tx, err := m.pg.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Feed sync calls this for every rule on every cycle, so the revision is only
+	// recorded when the definition actually changed. Fields the feed does not own
+	// (throttle, window, action wiring) carry over from the live alert.
+	current, err := loadRevisionContentTx(ctx, tx, alertID)
+	if err != nil {
+		return err
+	}
+	content := feedRevisionFields{
+		name: name, description: description, queryString: queryString,
+		alertType: alertType, severity: string(severity), labels: labels, references: references,
+	}.applyTo(current)
+	if err := writeRevision(ctx, tx, alertID, content, updatedBy, feedAuthorLabel, revisionRetention()); err != nil {
+		return err
+	}
+
+	result, err := tx.Exec(ctx, `
 		UPDATE alerts
 		SET name = $2, description = $3, query_string = $4, alert_type = $5,
 		    severity = $6, labels = $7, "references" = $8, feed_rule_hash = $9, updated_by = $10,
@@ -1910,6 +2105,15 @@ func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, descriptio
 		fractalIDPtr, prismIDPtr)
 	if err != nil {
 		return fmt.Errorf("update feed alert: %w", err)
+	}
+	// A non-feed alert matches nothing here; roll back rather than leave a revision
+	// describing an update that did not happen.
+	if n, err := result.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("update feed alert: alert not found or not feed-managed")
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	if err := m.engine.RefreshAlerts(ctx); err != nil {

@@ -78,15 +78,33 @@ func TestLiveActivitySummary(t *testing.T) {
 		if err, bad := out["buckets_error"]; bad {
 			t.Fatalf("range %s: bucket query failed: %v", r, err)
 		}
-		for _, key := range []string{"buckets", "running", "patterns"} {
+		for _, key := range []string{"buckets", "running"} {
 			if _, ok := out[key]; !ok {
 				t.Errorf("range %s: summary is missing %q", r, key)
 			}
 		}
+		// The cost-by-pattern rollup aggregates the query text across the whole
+		// window and is the most expensive read on the page, so it must stay off
+		// until the mode that shows it asks for it.
+		if _, ok := out["patterns"]; ok {
+			t.Errorf("range %s: patterns computed without being asked for", r)
+		}
 		buckets, _ := out["buckets"].([]interface{})
-		patterns, _ := out["patterns"].([]interface{})
-		t.Logf("range %-4s -> %d buckets, %d patterns", r, len(buckets), len(patterns))
+		t.Logf("range %-4s -> %d buckets", r, len(buckets))
 	}
+}
+
+// Cost patterns is opt-in, so it has to actually arrive when opted in.
+func TestLiveActivityPatternsAreOptIn(t *testing.T) {
+	h := &PerformanceHandler{db: liveClient(t)}
+	rec := httptest.NewRecorder()
+	h.HandleActivitySummary(rec, httptest.NewRequest("GET", "/api/v1/admin/activity/summary?range=1h&patterns=1", nil))
+	out := decodeLive(t, rec)
+	if _, ok := out["patterns"]; !ok {
+		t.Fatal("patterns=1 did not produce the rollup")
+	}
+	patterns, _ := out["patterns"].([]interface{})
+	t.Logf("patterns=1 -> %d rows", len(patterns))
 }
 
 // Background operations live on their own endpoint, behind the Overview tab.

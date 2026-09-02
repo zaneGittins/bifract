@@ -1100,6 +1100,24 @@ func (c *ClickHouseClient) nodeConnOptions(addr string, pool ClickHousePoolConfi
 	}
 }
 
+// PinnedNodeClient opens a client bound to one node, for work that must stay on a
+// single host across several statements: creating a local table, writing to it, then
+// reading it back.
+//
+// The ordinary client is load balanced, so on a cluster those three statements can land
+// on three different nodes and the table appears to vanish between them. The returned
+// client is single-node, so it also never rewrites a table name to its distributed
+// counterpart. Callers must Close it.
+func (c *ClickHouseClient) PinnedNodeClient(addr string) (*ClickHouseClient, error) {
+	return NewClickHouseClient(ClientOptions{
+		Conn: c.nodeConnOptions(addr, adminNodePool),
+		Topo: Topology{Kind: DeploymentSingleNode},
+		// Never RoleControlPlane: a pinned client borrows an existing deployment and
+		// must not try to provision its database.
+		Role: RoleArchive,
+	})
+}
+
 // OpenNodeConn opens a short-lived direct connection to one node, so a reading
 // is attributable to that node rather than to whichever address the pool picked.
 // Only meaningful when Topology().PerNodeAdmin. Callers must Close().
@@ -1682,6 +1700,14 @@ func (c *ClickHouseClient) QueryLowPriority(ctx context.Context, query string) (
 // overflow detection) that must be safe to run under any server memory condition.
 // An execution ceiling attached with QueryBudgetContext is honored too, so a sweep
 // that stalls dies server-side rather than only on the client.
+//
+// Execution is single-threaded. A memory cap without a thread cap is not a bound:
+// the scan allocates per reading thread (one read buffer per JSON substream) and
+// aggregation holds one state per group per thread, so peak memory is core count
+// times schema width against a fixed ceiling, and the sweep starts failing on 241
+// exactly on the wide-schema installs it exists to describe. Parallelism buys
+// nothing at these sample sizes (measured flat wall-clock from 1 to 8 threads),
+// and extra threads also over-read: each pulls its own granules past the LIMIT.
 func (c *ClickHouseClient) QueryLowPriorityBounded(ctx context.Context, query string, maxMemoryBytes int64) ([]map[string]interface{}, error) {
 	settings := c.applyQuerySettings(ctx, clickhouse.Settings{
 		"priority":       5,
@@ -1691,6 +1717,7 @@ func (c *ClickHouseClient) QueryLowPriorityBounded(ctx context.Context, query st
 	// and must win over any workload-derived ceiling.
 	settings["max_memory_usage"] = maxMemoryBytes
 	settings["memory_overcommit_ratio_denominator"] = 0
+	settings["max_threads"] = 1
 	return c.query(ctx, query, settings)
 }
 

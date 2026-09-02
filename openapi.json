@@ -294,6 +294,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "patterns",
+            "in": "query",
+            "description": "Set to 1 to include the cost-by-pattern rollup, which is the page's most expensive read.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
@@ -345,7 +353,7 @@
     "/api/v1/admin/alert-stats": {
       "get": {
         "operationId": "get_api_v1_admin_alert_stats",
-        "summary": "Return alert engine evaluation statistics.",
+        "summary": "Return alert engine health: evaluation lag, fires, actions and auto-disabled alerts.",
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
@@ -405,10 +413,148 @@
         "x-bifract-access": "tenant_admin"
       }
     },
+    "/api/v1/admin/alert-stats/rows": {
+      "get": {
+        "operationId": "get_api_v1_admin_alert_stats_rows",
+        "summary": "Return per-alert engine state, or the recent trigger log.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "name": "range",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fractal",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "description": "Any JSON value."
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
     "/api/v1/admin/background": {
       "get": {
         "operationId": "get_api_v1_admin_background",
         "summary": "Return running merges, mutations and the replication backlog.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "admin"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "description": "Any JSON value."
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
+    "/api/v1/admin/hot-table": {
+      "get": {
+        "operationId": "get_api_v1_admin_hot_table",
+        "summary": "Return logs_hot partition, row, size and coverage stats.",
         "description": "Requires instance-wide administration.",
         "tags": [
           "admin"
@@ -1462,6 +1608,1373 @@
         "x-bifract-access": "tenant_admin"
       }
     },
+    "/api/v1/alert-changes": {
+      "get": {
+        "operationId": "get_api_v1_alert_changes",
+        "summary": "List proposed alert changes in scope.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "open",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.ChangeRequest"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      },
+      "post": {
+        "operationId": "post_api_v1_alert_changes",
+        "summary": "Propose an alert change.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.ChangeRequestInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alert-changes/{id}": {
+      "get": {
+        "operationId": "get_api_v1_alert_changes_byId",
+        "summary": "Read a proposal with its diff, tests and policy checks.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_tests",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequestDetail"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      },
+      "put": {
+        "operationId": "put_api_v1_alert_changes_byId",
+        "summary": "Revise and resubmit a proposal.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.ChangeRequestInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      },
+      "delete": {
+        "operationId": "delete_api_v1_alert_changes_byId",
+        "summary": "Delete a proposal permanently.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "boolean"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
+      }
+    },
+    "/api/v1/alert-changes/{id}/discard": {
+      "post": {
+        "operationId": "post_api_v1_alert_changes_byId_discard",
+        "summary": "Withdraw a proposal without deleting it.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "boolean"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alert-changes/{id}/merge": {
+      "post": {
+        "operationId": "post_api_v1_alert_changes_byId_merge",
+        "summary": "Apply an approved proposal.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alert-changes/{id}/review": {
+      "post": {
+        "operationId": "post_api_v1_alert_changes_byId_review",
+        "summary": "Approve a proposal, or send it back for changes.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.ReviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alert-gate": {
+      "get": {
+        "operationId": "get_api_v1_alert_gate",
+        "summary": "Read the scope's alert review settings.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-gate"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.GateConfig"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      },
+      "put": {
+        "operationId": "put_api_v1_alert_gate",
+        "summary": "Update the scope's alert review settings.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "alert-gate"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.GateConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.GateConfig"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
+      }
+    },
+    "/api/v1/alert-policies": {
+      "get": {
+        "operationId": "get_api_v1_alert_policies",
+        "summary": "List the fractal's alert policy rules.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.Policy"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      },
+      "put": {
+        "operationId": "put_api_v1_alert_policies",
+        "summary": "Replace the fractal's alert policy rules.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.SavePoliciesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.Policy"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
+      }
+    },
+    "/api/v1/alert-policies/catalog": {
+      "get": {
+        "operationId": "get_api_v1_alert_policies_catalog",
+        "summary": "List the fields and operators a policy rule can use.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.PolicyCatalog"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alert-policies/compliance": {
+      "get": {
+        "operationId": "get_api_v1_alert_policies_compliance",
+        "summary": "List alerts that violate the current rule set.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.ComplianceRow"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alert-policies/evaluate": {
+      "post": {
+        "operationId": "post_api_v1_alert_policies_evaluate",
+        "summary": "Check a definition against the rule set without saving it.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.EvaluatePolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.PolicyResult"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alert-policies/export": {
+      "get": {
+        "operationId": "get_api_v1_alert_policies_export",
+        "summary": "Render the fractal's policy rules as a document.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alert-policies/import": {
+      "post": {
+        "operationId": "post_api_v1_alert_policies_import",
+        "summary": "Import policy rules from a policy document.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "alert-policies"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.ImportPoliciesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.Policy"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
+      }
+    },
     "/api/v1/alerts": {
       "get": {
         "operationId": "get_api_v1_alerts",
@@ -1962,6 +3475,171 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/alerts/tests/run": {
+      "post": {
+        "operationId": "post_api_v1_alerts_tests_run",
+        "summary": "Run sample events against a query without saving either.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.RunTestsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.TestRunResult"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alerts/tests/session/{sessionId}": {
+      "delete": {
+        "operationId": "delete_api_v1_alerts_tests_session_bySessionId",
+        "summary": "Release an editor's loaded test events.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "boolean"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/alerts/{id}": {
       "get": {
         "operationId": "get_api_v1_alerts_byId",
@@ -2420,6 +4098,362 @@
                   "required": [
                     "success",
                     "data"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alerts/{id}/revisions": {
+      "get": {
+        "operationId": "get_api_v1_alerts_byId_revisions",
+        "summary": "List an alert's definition history, newest first.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.Revision"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alerts/{id}/revisions/{revision}": {
+      "get": {
+        "operationId": "get_api_v1_alerts_byId_revisions_byRevision",
+        "summary": "Read one stored revision of an alert.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.Revision"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/alerts/{id}/revisions/{revision}/restore": {
+      "post": {
+        "operationId": "post_api_v1_alerts_byId_revisions_byRevision_restore",
+        "summary": "Re-apply a stored revision as a new revision at the head.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.RestoreRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.Alert"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alerts/{id}/tests": {
+      "get": {
+        "operationId": "get_api_v1_alerts_byId_tests",
+        "summary": "List an alert's saved tests.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/alerts.AlertTest"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
                   ]
                 }
               }
@@ -5194,6 +7228,85 @@
             "description": "An open server-sent event stream; the response does not complete.",
             "content": {
               "text/event-stream": {}
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/chat/conversations/{id}/tool-calls": {
+      "get": {
+        "operationId": "get_api_v1_chat_conversations_byId_tool_calls",
+        "summary": "Read the actions a conversation put to the user for approval.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "chat"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/chat.OfferedToolCall"
+                      }
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/api.Page"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
             }
           },
           "401": {
@@ -27016,6 +29129,12 @@
               "informational"
             ]
           },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
+          },
           "throttle_field": {
             "type": "string"
           },
@@ -27047,6 +29166,38 @@
           "enabled",
           "throttle_time_seconds",
           "throttle_field"
+        ]
+      },
+      "alerts.AlertTest": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {
+                "description": "Any JSON value."
+              }
+            }
+          },
+          "expectation": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "expectation",
+          "events",
+          "position"
         ]
       },
       "alerts.AlertUpdateRequest": {
@@ -27117,6 +29268,12 @@
               "low",
               "informational"
             ]
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
           },
           "throttle_field": {
             "type": "string"
@@ -27259,6 +29416,243 @@
           "skip_reason"
         ]
       },
+      "alerts.ChangeRequest": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "alert_name": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "author_label": {
+            "type": "string"
+          },
+          "base_hash": {
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/alerts.RevisionContent"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "merged_at": {
+            "type": "string"
+          },
+          "merged_by": {
+            "type": "string"
+          },
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.Review"
+            }
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "title",
+          "summary",
+          "content_hash",
+          "author",
+          "author_label",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "alerts.ChangeRequestDetail": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "alert_name": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "author_label": {
+            "type": "string"
+          },
+          "base_hash": {
+            "type": "string"
+          },
+          "can_merge": {
+            "type": "boolean"
+          },
+          "can_review": {
+            "type": "boolean"
+          },
+          "content": {
+            "$ref": "#/components/schemas/alerts.RevisionContent"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/alerts.RevisionContent"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_author": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "merged_at": {
+            "type": "string"
+          },
+          "merged_by": {
+            "type": "string"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/alerts.MergeReadiness"
+          },
+          "reviews": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.Review"
+            }
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "title",
+          "summary",
+          "content_hash",
+          "author",
+          "author_label",
+          "created_at",
+          "updated_at",
+          "can_merge",
+          "can_review",
+          "is_author"
+        ]
+      },
+      "alerts.ChangeRequestInput": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/alerts.RevisionContent"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "summary"
+        ]
+      },
+      "alerts.ComplianceRow": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.Violation"
+            }
+          },
+          "warnings": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alert_id",
+          "name",
+          "enabled",
+          "blocking",
+          "warnings",
+          "violations"
+        ]
+      },
       "alerts.DictionaryActionRef": {
         "type": "object",
         "properties": {
@@ -27372,6 +29766,107 @@
           "subject_template",
           "body_template",
           "enabled"
+        ]
+      },
+      "alerts.EvaluatePolicyRequest": {
+        "type": "object",
+        "properties": {
+          "alert_type": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "dictionary_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "email_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fractal_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "query_string": {
+            "type": "string"
+          },
+          "query_window_seconds": {
+            "type": "integer"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "schedule_cron": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
+          },
+          "tests_passing": {
+            "type": "boolean"
+          },
+          "tests_run": {
+            "type": "boolean"
+          },
+          "throttle_field": {
+            "type": "string"
+          },
+          "throttle_time_seconds": {
+            "type": "integer"
+          },
+          "webhook_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "window_duration": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "query_string",
+          "alert_type",
+          "severity",
+          "throttle_time_seconds",
+          "throttle_field",
+          "labels",
+          "references",
+          "webhook_action_ids",
+          "fractal_action_ids",
+          "dictionary_action_ids",
+          "email_action_ids",
+          "tests",
+          "tests_run",
+          "tests_passing"
         ]
       },
       "alerts.FeedAlertFacets": {
@@ -27700,6 +30195,40 @@
           "score"
         ]
       },
+      "alerts.GateConfig": {
+        "type": "object",
+        "properties": {
+          "allow_self_approval": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "min_approvals": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "min_approvals",
+          "allow_self_approval"
+        ]
+      },
+      "alerts.ImportPoliciesRequest": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "replace": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "replace"
+        ]
+      },
       "alerts.ImportYAMLRequest": {
         "type": "object",
         "properties": {
@@ -27713,6 +30242,377 @@
         "required": [
           "yaml_content",
           "normalizer_id"
+        ]
+      },
+      "alerts.MergeReadiness": {
+        "type": "object",
+        "properties": {
+          "approvals": {
+            "type": "integer"
+          },
+          "blocker": {
+            "type": "string"
+          },
+          "head_hash": {
+            "type": "string"
+          },
+          "min_approvals": {
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/alerts.PolicyResult"
+          },
+          "tests": {
+            "$ref": "#/components/schemas/alerts.TestRunResult"
+          }
+        },
+        "required": [
+          "approvals",
+          "min_approvals"
+        ]
+      },
+      "alerts.Policy": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "field": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "operator",
+          "value",
+          "message",
+          "severity",
+          "enabled",
+          "position"
+        ]
+      },
+      "alerts.PolicyCatalog": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.PolicyField"
+            }
+          },
+          "operator_labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "operator_needs_value": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "operators": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "fields",
+          "operators",
+          "operator_labels",
+          "operator_needs_value"
+        ]
+      },
+      "alerts.PolicyField": {
+        "type": "object",
+        "properties": {
+          "help": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "runs_tests": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "label"
+        ]
+      },
+      "alerts.PolicyResult": {
+        "type": "object",
+        "properties": {
+          "blocking": {
+            "type": "integer"
+          },
+          "deferred": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.Violation"
+            }
+          },
+          "warnings": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "violations",
+          "blocking",
+          "warnings"
+        ]
+      },
+      "alerts.RestoreRevisionRequest": {
+        "type": "object",
+        "properties": {
+          "drop_missing_actions": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "drop_missing_actions"
+        ]
+      },
+      "alerts.Review": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "reviewer": {
+            "type": "string"
+          },
+          "reviewer_label": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "reviewer",
+          "reviewer_label",
+          "decision",
+          "comment",
+          "content_hash",
+          "created_at",
+          "stale"
+        ]
+      },
+      "alerts.ReviewRequest": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "comment"
+        ]
+      },
+      "alerts.Revision": {
+        "type": "object",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "author_label": {
+            "type": "string"
+          },
+          "content": {
+            "$ref": "#/components/schemas/alerts.RevisionContent"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "is_head": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "summary",
+          "author",
+          "author_label",
+          "content_hash",
+          "created_at",
+          "is_head"
+        ]
+      },
+      "alerts.RevisionContent": {
+        "type": "object",
+        "properties": {
+          "alert_type": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "dictionary_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "email_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fractal_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "query_string": {
+            "type": "string"
+          },
+          "query_window_seconds": {
+            "type": "integer"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "schedule_cron": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "throttle_field": {
+            "type": "string"
+          },
+          "throttle_time_seconds": {
+            "type": "integer"
+          },
+          "webhook_action_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "window_duration": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "query_string",
+          "alert_type",
+          "severity",
+          "throttle_time_seconds",
+          "throttle_field",
+          "labels",
+          "references",
+          "window_duration",
+          "schedule_cron",
+          "query_window_seconds",
+          "webhook_action_ids",
+          "fractal_action_ids",
+          "dictionary_action_ids",
+          "email_action_ids"
+        ]
+      },
+      "alerts.RunTestsRequest": {
+        "type": "object",
+        "properties": {
+          "query_string": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.AlertTest"
+            }
+          }
+        },
+        "required": [
+          "session_id",
+          "query_string",
+          "tests"
         ]
       },
       "alerts.SMTPConfig": {
@@ -27744,6 +30644,20 @@
           "password",
           "from_address",
           "tls_mode"
+        ]
+      },
+      "alerts.SavePoliciesRequest": {
+        "type": "object",
+        "properties": {
+          "policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.Policy"
+            }
+          }
+        },
+        "required": [
+          "policies"
         ]
       },
       "alerts.TechniqueRules": {
@@ -27786,6 +30700,69 @@
           "count"
         ]
       },
+      "alerts.TestOutcome": {
+        "type": "object",
+        "properties": {
+          "duration_ms": {
+            "type": "integer"
+          },
+          "expectation": {
+            "type": "string"
+          },
+          "matched": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "expectation",
+          "passed",
+          "matched",
+          "rows",
+          "duration_ms"
+        ]
+      },
+      "alerts.TestRunResult": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "outcomes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.TestOutcome"
+            }
+          },
+          "passed": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "outcomes",
+          "passed",
+          "failed"
+        ]
+      },
       "alerts.ToggleFeedAlertRequest": {
         "type": "object",
         "properties": {
@@ -27795,6 +30772,31 @@
         },
         "required": [
           "enabled"
+        ]
+      },
+      "alerts.Violation": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "policy_id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "severity",
+          "message"
         ]
       },
       "alerts.WebhookAction": {
@@ -28937,6 +31939,33 @@
           "role",
           "content",
           "created_at"
+        ]
+      },
+      "chat.OfferedToolCall": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "description": "Arbitrary JSON."
+          },
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "tool_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tool_call_id",
+          "tool_name",
+          "arguments",
+          "status"
         ]
       },
       "chat.RenameConversationRequest": {
@@ -33822,6 +36851,9 @@
           "alert_eval_interval_seconds": {
             "type": "integer"
           },
+          "alert_revision_retention": {
+            "type": "integer"
+          },
           "alert_timeout_seconds": {
             "type": "integer"
           },
@@ -33873,6 +36905,7 @@
           "alert_timeout_seconds",
           "query_timeout_seconds",
           "alert_eval_interval_seconds",
+          "alert_revision_retention",
           "recall_timeout_seconds",
           "recall_max_bytes_read",
           "recall_concurrency",

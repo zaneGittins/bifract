@@ -190,6 +190,28 @@ func (h *Handler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 	api.WriteList(w, msgs)
 }
 
+// HandleListToolCalls returns the approvals this conversation asked for, so
+// reopening it shows the cards the user answered and leaves an unanswered one
+// still answerable.
+func (h *Handler) HandleListToolCalls(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	if h.verifyConversationOwner(w, r, id) == nil {
+		return
+	}
+
+	offers, err := h.manager.ListOfferedToolCalls(r.Context(), id)
+	if err != nil {
+		log.Printf("[Chat] Failed to list tool calls for %s: %v", id, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to load tool calls")
+		return
+	}
+	if offers == nil {
+		offers = []*OfferedToolCall{}
+	}
+	api.WriteList(w, offers)
+}
+
 func (h *Handler) HandleClearMessages(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 

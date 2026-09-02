@@ -319,7 +319,11 @@
 }
 
 .chat-msg-text { white-space: pre-wrap; }
-.chat-streaming-text { white-space: pre-wrap; }
+/* Markdown brings its own block structure. Under pre-wrap the newlines between
+   its tags render as extra blank lines, which is what made a rendered answer
+   sit looser than the text it was streamed as. */
+.chat-message-assistant .chat-msg-content,
+.chat-msg-text.chat-markdown { white-space: normal; }
 
 /* ---- In-bubble loading ---- */
 
@@ -752,7 +756,7 @@
 /* ---- Presentation block (present_results) ---- */
 
 .chat-presentation { font-size: 0.9rem; line-height: 1.55; }
-.chat-present-summary { color: var(--text-primary); }
+.chat-present-summary { color: var(--text-primary); white-space: pre-wrap; }
 
 .chat-severity-bubble {
     display: inline-block;
@@ -836,7 +840,7 @@
 
 /* ---- Error / retry ---- */
 
-.chat-error { color: var(--error); font-size: 0.85rem; }
+.chat-error { color: var(--error); font-size: 0.85rem; white-space: pre-wrap; }
 
 .chat-retry-btn {
     display: inline-block;

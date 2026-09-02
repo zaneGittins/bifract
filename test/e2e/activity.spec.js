@@ -190,6 +190,87 @@ test.describe('Activity: latency chart', () => {
   });
 });
 
+test.describe('Storage & Ingest', () => {
+  test('leads with the ingest chart and four tiles, not a wall of stats', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await page.locator('#mainPerformanceTabBtn').click();
+    await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
+    await expect(page.locator('#perfPaneStorage')).toBeVisible();
+
+    await expect(page.locator('#perfPaneStorage .perf-metric-card')).toHaveCount(4);
+    await expect(page.locator('#metricLogStorage')).not.toHaveText('--');
+    await expect(page.locator('#perfIngestChart')).toBeVisible();
+    // The hot table is one line, not four cards.
+    await expect(page.locator('#hotStrip')).toBeVisible();
+  });
+
+  // .perf-section-hint lowercases its text, which is right for prose and wrong
+  // for values: it rendered "1.4 TB" as "1.4 tb".
+  test('unit suffixes keep their case', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await page.locator('#mainPerformanceTabBtn').click();
+    await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
+    const summary = page.locator('#ingestSummary');
+    await expect(summary).not.toHaveText('');
+    await expect(summary).toHaveCSS('text-transform', 'none');
+    expect(await summary.textContent(), 'unit suffix was lowercased').not.toMatch(/\d\s?(tb|gb|mb|kb)\b/);
+  });
+
+  // Two regressions guarded here. The axis and stacked tooltip formatters were
+  // hard-coded to bytes, so the Rows measure rendered counts as byte sizes; and
+  // the chart's _metric marker was compared but never stored, so the instance was
+  // destroyed and rebuilt on every poll instead of updating in place.
+  test('the chart formats the selected measure and reuses its instance', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await page.locator('#mainPerformanceTabBtn').click();
+    await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
+    await expect(page.locator('#perfIngestChart')).toBeVisible();
+
+    await page.locator('#ingestModes .act-mode[data-metric="rows"]').click();
+    const rows = await page.evaluate(() => {
+      const c = window.Performance.ingestChart;
+      const tip = c.options.plugins.tooltip.callbacks;
+      return {
+        metric: c._metric,
+        tick: c.options.scales.y.ticks.callback(1400000),
+        label: tip.label ? tip.label({ dataset: { label: 'x' }, parsed: { y: 1400000 } }) : null,
+      };
+    });
+    expect(rows.metric, '_metric was never stored').toBe('rows');
+    expect(rows.tick, 'row counts rendered as byte sizes').not.toMatch(/\b[KMGT]?B\b/);
+    if (rows.label) expect(rows.label).not.toMatch(/\b[KMGT]?B\b/);
+
+    // A re-render with nothing changed must update in place.
+    const before = await page.evaluate(() => window.Performance.ingestChart.id);
+    await page.evaluate(() => window.Performance.renderIngestChart());
+    const after = await page.evaluate(() => window.Performance.ingestChart.id);
+    expect(after, 'the chart was rebuilt instead of updated').toBe(before);
+
+    // Bytes still format as bytes.
+    await page.locator('#ingestModes .act-mode[data-metric="raw"]').click();
+    const raw = await page.evaluate(() =>
+      window.Performance.ingestChart.options.scales.y.ticks.callback(1400000000));
+    expect(raw).toMatch(/\b[KMGT]?B\b/);
+  });
+
+  test('the ingest chart can switch measure', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await page.locator('#mainPerformanceTabBtn').click();
+    await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
+    await expect(page.locator('#perfIngestChart')).toBeVisible();
+
+    const before = await page.locator('#ingestSummary').textContent();
+    await page.locator('#ingestModes .act-mode[data-metric="rows"]').click();
+    await expect(page.locator('#ingestModes .act-mode[data-metric="rows"]')).toHaveClass(/active/);
+    await expect.poll(async () => page.locator('#ingestSummary').textContent(),
+      { message: 'switching measure did not change the summary' }).not.toBe(before);
+  });
+});
+
 test.describe('Overview: background operations', () => {
   test('merges and mutations render on the Overview tab', async ({ page }) => {
     await login(page);

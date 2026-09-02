@@ -421,6 +421,14 @@ type FieldSampleParams struct {
 	ValueLen   int
 }
 
+// fieldSampleTopKReserve is approx_top_k's counter capacity per field. It is a
+// per-group, per-thread allocation of that many values (each up to ValueLen
+// bytes), so it multiplies by the number of fields sampled: at 2048 a wide
+// schema exceeded the sweep's memory budget on its own. 256 still counts the
+// low-cardinality fields exactly, and anything wider is reported as approximate
+// via the error bound rather than being worth the state.
+const fieldSampleTopKReserve = 256
+
 // BuildFieldSampleSQL builds the schema sweep's per-field distribution query.
 //
 // It answers the same question as BuildFieldStatsSQL but under different
@@ -464,12 +472,12 @@ func BuildFieldSampleSQL(p FieldSampleParams) string {
 	if strings.TrimSpace(where) == "" {
 		where = "1 = 1"
 	}
-	// approx_top_k's reserved counter size is raised well above TopN so the
-	// returned counts are exact for the low-cardinality fields whose value
-	// distribution is worth showing at all; its third tuple member is the error
-	// bound, which the caller uses to mark a count as approximate rather than
-	// present it as fact. The tuples are split into parallel arrays here so the
-	// result scans as plain typed slices.
+	// approx_top_k's reserved counter size is raised above TopN so the returned
+	// counts are exact for the low-cardinality fields whose value distribution is
+	// worth showing at all; its third tuple member is the error bound, which the
+	// caller uses to mark a count as approximate rather than present it as fact.
+	// The tuples are split into parallel arrays here so the result scans as plain
+	// typed slices.
 	return fmt.Sprintf(`SELECT
     key,
     present,
@@ -482,7 +490,7 @@ FROM (
         kv.1 AS key,
         count() AS present,
         uniq(kv.2) AS cardinality,
-        approx_top_k(%d, 2048)(substringUTF8(kv.2, 1, %d)) AS top
+        approx_top_k(%d, %d)(substringUTF8(kv.2, 1, %d)) AS top
     FROM (
         SELECT norm_log FROM %s WHERE %s LIMIT %d
     )
@@ -491,7 +499,7 @@ FROM (
     GROUP BY key
     ORDER BY present DESC
     LIMIT %d
-)`, p.TopN, p.ValueLen, p.Table, where, p.SampleSize, p.MaxFields)
+)`, p.TopN, fieldSampleTopKReserve, p.ValueLen, p.Table, where, p.SampleSize, p.MaxFields)
 }
 
 // BuildFieldStatsSQL builds a bounded, sampled aggregation reporting per-field

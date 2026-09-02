@@ -193,6 +193,25 @@ func (r *Resolver) ResolveRole(ctx context.Context, user *storage.User, fractalI
 // real grant is put in the request context by the auth middleware when the key is
 // validated. It is trusted only for the one fractal the key is bound to, so a key
 // cannot carry its role into a fractal it was never issued for.
+// apiKeyPrismRole mirrors apiKeyRole for prism scope. A machine principal has no
+// prism_permissions row, so without this every prism-scoped key resolves to RoleNone and
+// is refused on endpoints that check a prism role.
+func apiKeyPrismRole(ctx context.Context, prismID string) Role {
+	scoped, _ := ctx.Value("selected_prism").(string)
+	if scoped == "" || scoped != prismID {
+		return RoleNone
+	}
+	if authType, _ := ctx.Value("auth_type").(string); authType != "api_key" {
+		return RoleNone
+	}
+	role, _ := ctx.Value("prism_role").(string)
+	switch Role(role) {
+	case RoleViewer, RoleAnalyst, RoleAdmin:
+		return Role(role)
+	}
+	return RoleNone
+}
+
 func apiKeyRole(ctx context.Context, fractalID string) Role {
 	scoped, _ := ctx.Value("selected_fractal").(string)
 	if scoped == "" || scoped != fractalID {
@@ -304,6 +323,9 @@ func (r *Resolver) ResolvePrismRoleWithAdmin(ctx context.Context, user *storage.
 	}
 	if prismID == "" {
 		return RoleNone
+	}
+	if role := apiKeyPrismRole(ctx, prismID); role != RoleNone {
+		return role
 	}
 	role, err := r.ResolvePrismRole(ctx, user.Username, prismID)
 	if err != nil {

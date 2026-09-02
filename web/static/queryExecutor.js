@@ -1271,7 +1271,7 @@ const QueryExecutor = {
             sizingKey: { fractalId, sig: sizingSig },
             features: { resize: true, reorder: true, sort: true },
             // Aggregated rows are not events, so there is nothing to star.
-            gutter: !this.isAggregated,
+            gutter: this.isAggregated ? null : true,
             sortColumn: this.sortColumn,
             sortDirection: this.sortDirection,
             rowClass: (row) => (window.Comments && Comments.hasComments(row)) ? 'has-comments' : '',
@@ -1395,8 +1395,12 @@ const QueryExecutor = {
         const seq = ++this._tableSeq;
 
         // The gutter is a caller opt-in, and only appears once the scope has
-        // something to capture into.
-        const gutter = !!opts.gutter && window.StarGutter && StarGutter.enabled();
+        // something to capture into. `true` means the star gutter; a provider object
+        // implementing the same shape (enabled, colHtml, headerHtml, cellHtml, rowClass,
+        // onClick) lets another surface own the channel, as the alert editor does for
+        // test marking.
+        const gutterImpl = opts.gutter === true ? window.StarGutter : (opts.gutter || null);
+        const gutter = !!(gutterImpl && gutterImpl.enabled());
         const logIdOf = (row) => (gutter && row ? String(row.log_id || '') : '');
 
         let tableClass = 'results-table is-fixed';
@@ -1410,8 +1414,8 @@ const QueryExecutor = {
             : '';
 
         let html = `<table class="${tableClass}" data-table-id="${seq}"${sizeAttrs}>`
-            + ColumnSizing.buildColgroup(fields, sizing, gutter ? StarGutter.colHtml() : '')
-            + '<thead><tr>' + (gutter ? StarGutter.headerHtml() : '');
+            + ColumnSizing.buildColgroup(fields, sizing, gutter ? gutterImpl.colHtml() : '')
+            + '<thead><tr>' + (gutter ? gutterImpl.headerHtml() : '');
         fields.forEach(field => {
             const sortable = features.sort ? ' sortable' : '';
             const sortIcon = (features.sort && opts.sortColumn === field)
@@ -1425,11 +1429,11 @@ const QueryExecutor = {
         rows.forEach((result, index) => {
             const logID = logIdOf(result);
             const classes = [opts.rowClass ? (opts.rowClass(result, index) || '') : ''];
-            if (gutter) classes.push(StarGutter.rowClass(logID));
+            if (gutter) classes.push(gutterImpl.rowClass(logID, result));
             const extra = classes.filter(Boolean).join(' ');
             const rowStyle = opts.rowStyle ? (opts.rowStyle(result, index) || '') : '';
             html += `<tr class="result-row${extra ? ' ' + extra : ''}" data-index="${index}"${rowStyle ? ` style="${rowStyle}"` : ''}>`;
-            if (gutter) html += StarGutter.cellHtml(logID);
+            if (gutter) html += gutterImpl.cellHtml(logID, result);
             fields.forEach(field => {
                 const value = result[field];
                 let cellHtml, cellClass;
@@ -1482,12 +1486,13 @@ const QueryExecutor = {
             if (gutter) {
                 const tbody = table.querySelector('tbody');
                 if (tbody) tbody.addEventListener('click', (e) => {
-                    const btn = e.target.closest('.sg-star');
+                    const btn = e.target.closest(gutterImpl.BUTTON_SELECTOR || '.sg-star');
                     if (!btn) return;
                     e.stopPropagation();
                     const rowEl = btn.closest('.result-row');
                     const index = rowEl ? parseInt(rowEl.dataset.index) : -1;
-                    StarGutter.toggle(btn.dataset.logId, rows[index]);
+                    if (gutterImpl.onClick) gutterImpl.onClick(btn, rows[index]);
+                    else gutterImpl.toggle(btn.dataset.logId, rows[index]);
                 });
             }
 
@@ -1495,7 +1500,7 @@ const QueryExecutor = {
                 const tbody = table.querySelector('tbody');
                 if (tbody) tbody.addEventListener('click', (e) => {
                     if (e.target.classList.contains('column-resizer')) return;
-                    if (e.target.closest('.sg-star')) return;
+                    if (e.target.closest('.sg-star, .tg-mark')) return;
                     const rowEl = e.target.closest('.result-row');
                     if (!rowEl) return;
                     const index = parseInt(rowEl.dataset.index);
@@ -1856,7 +1861,23 @@ const QueryExecutor = {
         const built = this.buildResultsTable(fields, results, {
             sizingKey: { fractalId: embedFractalId, sig: ColumnSizing.signature(fields) },
             features: { resize: true, reorder: false, sort: false },
-            rowClass: (row) => (window.Comments && Comments.hasComments(row)) ? 'has-comments' : '',
+            // Forwarded, not invented here: a caller that owns a gutter (the alert
+            // editor owns the test-marking one) has to be able to reach the table.
+            gutter: options.gutter,
+            // Comment marks are triage context. A caller can opt out where they would
+            // only be noise, as the alert editor does: authoring a detection has
+            // nothing to do with who annotated an event.
+            rowClass: (row) => {
+                const classes = [];
+                if (options.comments !== false && window.Comments && Comments.hasComments(row)) {
+                    classes.push('has-comments');
+                }
+                if (options.rowClass) {
+                    const extra = options.rowClass(row);
+                    if (extra) classes.push(extra);
+                }
+                return classes.join(' ');
+            },
             onRowClick: options.disableDetailView ? null : (row, index, rowEl) => {
                 if (!window.LogDetail) return;
                 let detailData = row;

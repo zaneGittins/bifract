@@ -27,6 +27,14 @@ type TimestampField struct {
 // hammers ClickHouse with every enabled alert's query every few seconds.
 const minAlertEvalIntervalSeconds = 60
 
+// Alert definition history. The cap is per alert and covers the current definition
+// plus its predecessors, so 10 means the head plus nine earlier versions.
+const (
+	defaultAlertRevisionRetention = 10
+	minAlertRevisionRetention     = 2
+	maxAlertRevisionRetention     = 100
+)
+
 // Recall (archive search) knobs. Defaults live here and in pkg/archive
 // (settings.go), which reads the same keys directly from the settings table so
 // the workers stay decoupled from this package; keep the two in sync.
@@ -63,6 +71,8 @@ type Settings struct {
 	AlertTimeoutSeconds      int              `json:"alert_timeout_seconds"`
 	QueryTimeoutSeconds      int              `json:"query_timeout_seconds"`
 	AlertEvalIntervalSeconds int              `json:"alert_eval_interval_seconds"`
+	// AlertRevisionRetention is how many definition revisions each alert keeps.
+	AlertRevisionRetention int `json:"alert_revision_retention"`
 	// Recall (archive search) knobs, live-editable from the admin settings page.
 	RecallTimeoutSeconds int   `json:"recall_timeout_seconds"` // per-search wall clock; >= minRecallTimeoutSeconds
 	RecallMaxBytesRead   int64 `json:"recall_max_bytes_read"`  // ClickHouse max_bytes_to_read guard; 0 = unlimited
@@ -156,6 +166,7 @@ func Init(pg *storage.PostgresClient) error {
 		AlertTimeoutSeconds:        5,  // 5s default for alert queries
 		QueryTimeoutSeconds:        60, // 60s default for search queries
 		AlertEvalIntervalSeconds:   60, // 60s default between alert engine ticks
+		AlertRevisionRetention:     defaultAlertRevisionRetention,
 		RecallTimeoutSeconds:       defaultRecallTimeoutSeconds,
 		RecallMaxBytesRead:         0, // unlimited by default (admin opts into a cap)
 		RecallConcurrency:          defaultRecallConcurrency,
@@ -223,6 +234,13 @@ func Init(pg *storage.PostgresClient) error {
 	if v, err := pg.GetSetting(ctx, "recall_concurrency"); err == nil && v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			globalSettings.RecallConcurrency = clampRecallConcurrency(n)
+		}
+	}
+
+	// Load alert_revision_retention
+	if v, err := pg.GetSetting(ctx, "alert_revision_retention"); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			globalSettings.AlertRevisionRetention = clampAlertRevisionRetention(n)
 		}
 	}
 
@@ -296,6 +314,18 @@ func ClampPgrSensitivity(f float64) float64 {
 	return f
 }
 
+// clampAlertRevisionRetention bounds how much alert history is kept. The floor keeps
+// a rollback target available; the ceiling bounds unbounded growth across every alert.
+func clampAlertRevisionRetention(n int) int {
+	if n < minAlertRevisionRetention {
+		return minAlertRevisionRetention
+	}
+	if n > maxAlertRevisionRetention {
+		return maxAlertRevisionRetention
+	}
+	return n
+}
+
 // clampRecallConcurrency bounds the recall concurrency setting to [1, ceiling].
 func clampRecallConcurrency(n int) int {
 	if n < 1 {
@@ -319,6 +349,7 @@ func Get() Settings {
 			AlertTimeoutSeconds:        5,
 			QueryTimeoutSeconds:        60,
 			AlertEvalIntervalSeconds:   60,
+			AlertRevisionRetention:     defaultAlertRevisionRetention,
 			RecallTimeoutSeconds:       defaultRecallTimeoutSeconds,
 			RecallMaxBytesRead:         0,
 			APIKeyRateLimit:            defaultAPIKeyRateLimit,
@@ -341,6 +372,7 @@ func Get() Settings {
 		AlertTimeoutSeconds:        globalSettings.AlertTimeoutSeconds,
 		QueryTimeoutSeconds:        globalSettings.QueryTimeoutSeconds,
 		AlertEvalIntervalSeconds:   globalSettings.AlertEvalIntervalSeconds,
+		AlertRevisionRetention:     globalSettings.AlertRevisionRetention,
 		RecallTimeoutSeconds:       globalSettings.RecallTimeoutSeconds,
 		RecallMaxBytesRead:         globalSettings.RecallMaxBytesRead,
 		RecallConcurrency:          globalSettings.RecallConcurrency,
@@ -380,6 +412,7 @@ func Update(s *Settings) error {
 		return validationErrorf("Schema measurement interval must be at least %d minutes", minSchemaSweepIntervalMinutes)
 	}
 	s.RecallConcurrency = clampRecallConcurrency(s.RecallConcurrency)
+	s.AlertRevisionRetention = clampAlertRevisionRetention(s.AlertRevisionRetention)
 	s.PgrSensitivityPercent = ClampPgrSensitivity(s.PgrSensitivityPercent)
 	s.QueryCPUPercent = storage.ClampQueryLimitPercent(s.QueryCPUPercent)
 	s.QueryMemoryPercent = storage.ClampQueryLimitPercent(s.QueryMemoryPercent)
@@ -402,6 +435,7 @@ func Update(s *Settings) error {
 	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
 	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
 	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
+	globalSettings.AlertRevisionRetention = s.AlertRevisionRetention
 	globalSettings.APIKeyRateLimit = s.APIKeyRateLimit
 	globalSettings.PgrSensitivityPercent = s.PgrSensitivityPercent
 	globalSettings.RequireMFA = s.RequireMFA
@@ -448,6 +482,9 @@ func Update(s *Settings) error {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "recall_concurrency", fmt.Sprintf("%d", s.RecallConcurrency)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "alert_revision_retention", fmt.Sprintf("%d", s.AlertRevisionRetention)); err != nil {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "pgr_sensitivity_percent", strconv.FormatFloat(s.PgrSensitivityPercent, 'f', -1, 64)); err != nil {

@@ -151,6 +151,22 @@ add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 | `delete_alert` | Remove an alert |
 | `get_alert_executions` | View when an alert fired and what it matched |
 
+### Alert governance
+
+A fractal or prism can keep a history of every alert definition, enforce policy rules on
+what a definition must contain, and review changes before they go live. Where review is
+on, `create_alert`, `update_alert` and `delete_alert` are refused and the work is
+submitted with `propose_alert_change` instead.
+
+Approving and merging a proposal are not exposed as tools. A model that could approve its
+own proposal would make the gate meaningless, so those stay with a reviewer.
+
+| Tool | Description |
+|------|-------------|
+| `get_alert_history` | Show how an alert's definition changed, and who changed it |
+| `list_alert_changes` | List proposed alert changes awaiting review |
+| `propose_alert_change` | Propose a create, update or delete for review |
+
 ### Dictionaries
 
 Watchlists and lookup tables detections join against, rather than hard-coding values in a query.

@@ -706,6 +706,10 @@ func main() {
 	dashboardHandler.SetExecutor(dashboardExecutor)
 	dashboardExecutor.Start()
 	alertHandler := alerts.NewHandlerWithFractals(alertManager, fractalManager)
+	alertTestRunner := alerts.NewTestRunner(db)
+	defer alertTestRunner.Close()
+	alertHandler.SetTestRunner(alertTestRunner)
+	alertManager.SetTestRunner(alertTestRunner)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())
 
 	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, config.LiteLLMURL, config.LiteLLMMasterKey)

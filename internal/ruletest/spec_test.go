@@ -283,7 +283,7 @@ func TestBuildUnitsGrouping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batched) != 1 || len(batched[0].entries) != 3 {
+	if len(batched) != 1 || len(batched[0].Entries) != 3 {
 		t.Fatalf("together grouping = %d units; want 1 unit of 3 entries", len(batched))
 	}
 
@@ -297,16 +297,16 @@ func TestBuildUnitsGrouping(t *testing.T) {
 
 	seen := map[string]bool{}
 	for i, u := range split {
-		if len(u.entries) != 1 {
-			t.Errorf("unit %d has %d entries; want 1", i, len(u.entries))
+		if len(u.Entries) != 1 {
+			t.Errorf("unit %d has %d entries; want 1", i, len(u.Entries))
 		}
-		if u.fractalID == "" || seen[u.fractalID] {
+		if u.FractalID == "" || seen[u.FractalID] {
 			t.Errorf("unit %d has a missing or duplicate fractal id", i)
 		}
-		seen[u.fractalID] = true
-		if u.entries[0].FractalID != u.fractalID {
+		seen[u.FractalID] = true
+		if u.Entries[0].FractalID != u.FractalID {
 			t.Errorf("unit %d entry fractal %q does not match unit fractal %q",
-				i, u.entries[0].FractalID, u.fractalID)
+				i, u.Entries[0].FractalID, u.FractalID)
 		}
 	}
 }

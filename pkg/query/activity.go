@@ -233,9 +233,11 @@ LIMIT %d`, activityProcClassSQL, procSource, where, activityRunningCap))
 	toInt64(exception_code) AS exception_code,
 	substring(exception, 1, 300) AS exception
 FROM (
-	SELECT * FROM %s
+	SELECT event_date, event_time, query_id, user, query_duration_ms, read_rows, read_bytes,
+	       memory_usage, query, query_kind, log_comment, exception_code, exception, type
+	FROM %s
 	WHERE %s
-	ORDER BY event_time DESC
+	ORDER BY event_date DESC, event_time DESC
 	LIMIT %d
 )`, activityClassSQL, logSource, where, limit))
 	}
@@ -346,7 +348,11 @@ WHERE is_initial_query = 1 AND Settings['log_comment'] != '%s'`,
 	// Cost by pattern, not by instance. normalized_query_hash collapses literal
 	// differences, so this finds the query shape that is expensive because it runs
 	// constantly, which no per-instance list can show.
-	if patterns, perr := h.db.Query(ctx, fmt.Sprintf(`SELECT
+	//
+	// Opt-in: it aggregates the query text over the whole window and is the most
+	// expensive read on the page, while only one of the two table modes shows it.
+	if r.URL.Query().Get("patterns") == "1" {
+		if patterns, perr := h.db.Query(ctx, fmt.Sprintf(`SELECT
 	toString(normalized_query_hash) AS hash,
 	any(substring(query, 1, 200)) AS sample,
 	argMax(log_comment, event_time) AS tag,
@@ -359,7 +365,8 @@ WHERE %s
 GROUP BY hash
 ORDER BY bytes DESC, runs DESC
 LIMIT 8`, activityClassSQL, logSource, logWhere)); perr == nil {
-		out["patterns"] = patterns
+			out["patterns"] = patterns
+		}
 	}
 
 	if failures, ferr := h.db.Query(ctx, fmt.Sprintf(`SELECT

@@ -114,6 +114,13 @@
     --act-q95: #9c6ade;
     --act-q99: #cba6f5;
 
+    /* Alert severity is an ordinal status, not a category, so it reuses the
+       semantic ramp rather than the categorical workload colours. */
+    --sev-critical: var(--error);
+    --sev-high: var(--severity-high);
+    --sev-medium: var(--warning);
+    --sev-low: var(--info);
+
     /* Scrollbar */
     --scrollbar-track: var(--bg-secondary);
     --scrollbar-thumb: var(--bg-hover);
@@ -222,6 +229,12 @@
     --act-q50: #9878c6;
     --act-q95: #7a4fb5;
     --act-q99: #45217a;
+
+    /* Severity (see the dark block) */
+    --sev-critical: var(--error);
+    --sev-high: var(--severity-high);
+    --sev-medium: var(--warning);
+    --sev-low: var(--info);
 
     /* Scrollbar */
     --scrollbar-track: var(--bg-sunken);

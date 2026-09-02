@@ -1021,57 +1021,10 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 		       a.last_evaluated_at, COALESCE(a.disabled_reason, ''), a.window_duration,
 		       COALESCE(a.schedule_cron, ''), a.query_window_seconds,
 		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''), COALESCE(a.feed_rule_hash, ''),
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', wa.id,
-		               'name', wa.name,
-		               'url', wa.url,
-		               'method', wa.method,
-		               'headers', wa.headers,
-		               'auth_type', wa.auth_type,
-		               'auth_config', wa.auth_config,
-		               'timeout_seconds', wa.timeout_seconds,
-		               'retry_count', wa.retry_count,
-		               'include_alert_link', wa.include_alert_link,
-		               'enabled', wa.enabled
-		           ) ORDER BY wa.name
-		       ) FILTER (WHERE wa.id IS NOT NULL), '[]'::json) as webhook_actions,
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', fa.id,
-		               'name', fa.name,
-		               'description', fa.description,
-		               'target_fractal_id', fa.target_fractal_id,
-		               'preserve_timestamp', fa.preserve_timestamp,
-		               'add_alert_context', fa.add_alert_context,
-		               'field_mappings', fa.field_mappings,
-		               'max_logs_per_trigger', fa.max_logs_per_trigger,
-		               'enabled', fa.enabled
-		           ) ORDER BY fa.name
-		       ) FILTER (WHERE fa.id IS NOT NULL), '[]'::json) as fractal_actions,
-		       COALESCE(json_agg(
-		           json_build_object(
-		               'id', ea.id,
-		               'name', ea.name,
-		               'recipients', ea.recipients,
-		               'subject_template', ea.subject_template,
-		               'body_template', ea.body_template,
-		               'enabled', ea.enabled
-		           ) ORDER BY ea.name
-		       ) FILTER (WHERE ea.id IS NOT NULL), '[]'::json) as email_actions
+		       ` + alertWebhookActionsJSON + `,
+		       ` + alertFractalActionsJSON + `,
+		       ` + alertEmailActionsJSON + `
 		FROM alerts a
-		LEFT JOIN alert_webhook_actions awa ON a.id = awa.alert_id
-		LEFT JOIN webhook_actions wa ON awa.webhook_id = wa.id AND wa.enabled = true
-		LEFT JOIN alert_fractal_actions afa ON a.id = afa.alert_id
-		LEFT JOIN fractal_actions fa ON afa.fractal_action_id = fa.id AND fa.enabled = true
-		LEFT JOIN alert_email_actions aea ON a.id = aea.alert_id
-		LEFT JOIN email_actions ea ON aea.email_action_id = ea.id AND ea.enabled = true
-		GROUP BY a.id, a.name, a.description, a.query_string, a.alert_type, a.enabled,
-		         a.throttle_time_seconds, a.throttle_field, a.labels, a.severity, a.fractal_id, a.prism_id,
-		         a.created_by, a.created_at, a.updated_at, a.last_triggered,
-		         a.last_evaluated_at, a.disabled_reason, a.window_duration,
-		         a.schedule_cron, a.query_window_seconds,
-		         a.feed_id, a.feed_rule_path, a.feed_rule_hash
 		ORDER BY a.name
 	`
 

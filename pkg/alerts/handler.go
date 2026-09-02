@@ -23,6 +23,7 @@ type Handler struct {
 	manager        *Manager
 	fractalManager *fractals.Manager
 	rbacResolver   *rbac.Resolver
+	testRunner     *TestRunner
 }
 
 // APIResponse is the shared API envelope. The alias keeps the package-local
@@ -121,6 +122,9 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 
 	alert, err := h.manager.CreateAlert(ctx, req, h.attributionUser(r), fractalID, prismID)
 	if err != nil {
+		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
+			return
+		}
 		if errors.Is(err, ErrInvalidAlert) ||
 			strings.Contains(err.Error(), "invalid query syntax") || strings.Contains(err.Error(), "cannot use aggregate") {
 			h.respondError(w, http.StatusBadRequest, err.Error())
@@ -223,6 +227,9 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	// Update alert
 	alert, err := h.manager.UpdateAlert(ctx, alertID, req, h.attributionUser(r))
 	if err != nil {
+		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.respondError(w, http.StatusNotFound, "Alert not found")
 		} else if strings.Contains(err.Error(), "invalid query syntax") || strings.Contains(err.Error(), "cannot use aggregate") {
@@ -270,6 +277,9 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.DeleteAlert(ctx, alertID); err != nil {
+		if h.gateRequiredResponse(w, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			h.respondError(w, http.StatusNotFound, "Alert not found")
 		} else {
@@ -344,6 +354,9 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 
 	alert, err := h.manager.ImportFromYAML(ctx, yamlContent, h.attributionUser(r), fractalID, prismID, normalizerID)
 	if err != nil {
+		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
+			return
+		}
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "failed to parse YAML") ||
 			strings.Contains(errMsg, "invalid query syntax") ||
@@ -899,10 +912,19 @@ func (h *Handler) requireRoleOnFractal(w http.ResponseWriter, r *http.Request, f
 	if user.IsAdmin {
 		return true
 	}
-	// API key users have their role pre-resolved by the auth middleware;
-	// querying fractal_permissions would fail because the synthetic
-	// "apikey_<id>" username has no DB entries.
+	// API key users have their role pre-resolved by the auth middleware, because the
+	// synthetic "apikey_<id>" username has no fractal_permissions rows to query.
+	//
+	// That pre-resolved role is a role on the key's *own* scope, so it may only be
+	// applied to a resource in that scope. Handlers here pass the fractal of the
+	// resource being touched, and without this check a key scoped to one fractal would
+	// satisfy the role check for an alert in every other one.
 	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
+		scoped, _ := r.Context().Value("selected_fractal").(string)
+		if fractalID != "" && scoped != fractalID {
+			h.respondError(w, http.StatusForbidden, "Insufficient permissions")
+			return false
+		}
 		fractalRole := rbac.RoleFromContext(r.Context())
 		if !rbac.HasAccess(user, fractalRole, required) {
 			h.respondError(w, http.StatusForbidden, "Insufficient permissions")

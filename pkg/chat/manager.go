@@ -179,9 +179,23 @@ func (m *Manager) DeleteConversation(ctx context.Context, id string) error {
 	return err
 }
 
+// ClearMessages empties a conversation. The approvals it asked for go with the
+// messages: an offer that outlives the turn it belonged to is answerable
+// against a conversation that no longer records why it was proposed.
 func (m *Manager) ClearMessages(ctx context.Context, conversationID string) error {
-	_, err := m.pg.Exec(ctx, `DELETE FROM chat_messages WHERE conversation_id = $1`, conversationID)
-	return err
+	tx, err := m.pg.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM chat_pending_tool_calls WHERE conversation_id = $1`, conversationID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM chat_messages WHERE conversation_id = $1`, conversationID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (m *Manager) DeleteAllConversations(ctx context.Context, fractalID, prismID, username string) error {
@@ -358,12 +372,16 @@ func (m *Manager) saveMessage(ctx context.Context, conversationID, role, content
 // what that user could do in the UI.
 func (m *Manager) StreamResponse(origin *http.Request, w io.Writer, flusher http.Flusher, conv *Conversation, fractal *fractals.Fractal, userContent string, timeRange string) error {
 	ctx := origin.Context()
+	// Writes outlive the connection. Stopping the reply, or navigating away
+	// mid-answer, cancelled the request and with it every save the turn had
+	// left to make, so the conversation came back missing what was on screen.
+	store := context.WithoutCancel(ctx)
 	// Whatever the assistant was waiting to be told about belongs to the turn
 	// this message replaces.
-	if err := m.supersedePendingToolCalls(ctx, conv.ID); err != nil {
+	if err := m.supersedePendingToolCalls(store, conv.ID); err != nil {
 		log.Printf("[Chat] failed to close outstanding tool calls: %v", err)
 	}
-	if _, err := m.saveMessage(ctx, conv.ID, "user", userContent, nil, nil); err != nil {
+	if _, err := m.saveMessage(store, conv.ID, "user", userContent, nil, nil); err != nil {
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
@@ -373,7 +391,7 @@ func (m *Manager) StreamResponse(origin *http.Request, w io.Writer, flusher http
 		if len(title) > 60 {
 			title = title[:60] + "..."
 		}
-		m.RenameConversation(ctx, conv.ID, title)
+		m.RenameConversation(store, conv.ID, title)
 		// Emit a title event so frontend can update sidebar
 		sendSSEEvent(w, flusher, StreamEvent{Type: "title", Content: title})
 	}
@@ -385,6 +403,7 @@ func (m *Manager) StreamResponse(origin *http.Request, w io.Writer, flusher http
 // run resumed after a confirmation picks up exactly where the last one stopped.
 func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.Flusher, conv *Conversation, fractal *fractals.Fractal, timeRange string) error {
 	ctx := origin.Context()
+	store := context.WithoutCancel(ctx)
 
 	history, err := m.GetMessages(ctx, conv.ID)
 	if err != nil {
@@ -420,6 +439,14 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 		// Call LiteLLM with streaming
 		assistantContent, toolCallsRaw, err := m.streamFromLiteLLM(ctx, w, flusher, messages, tools)
 		if err != nil {
+			// Whatever arrived before the failure is on screen, so it belongs in
+			// the conversation too: the turn is reread from the database when it
+			// is reopened or resumed.
+			if assistantContent != "" {
+				if _, saveErr := m.saveMessage(store, conv.ID, "assistant", assistantContent, nil, nil); saveErr != nil {
+					log.Printf("[Chat] failed to save the partial reply: %v", saveErr)
+				}
+			}
 			sendSSEEvent(w, flusher, StreamEvent{Type: "error", Content: err.Error()})
 			return err
 		}
@@ -430,10 +457,11 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 				log.Printf("[Chat] WARNING: assistant content appears to contain XML tool calls instead of proper function calls. Content length: %d. This is likely a LiteLLM streaming translation issue.", len(assistantContent))
 			}
 			// No tool calls - done
-			if _, err := m.saveMessage(ctx, conv.ID, "assistant", assistantContent, nil, nil); err != nil {
+			if _, err := m.saveMessage(store, conv.ID, "assistant", assistantContent, nil, nil); err != nil {
 				log.Printf("[Chat] failed to save assistant message: %v", err)
 			}
-			break
+			sendSSEEvent(w, flusher, StreamEvent{Type: "done"})
+			return nil
 		}
 
 		toolCallsJSON, _ := json.Marshal(toolCallsRaw)
@@ -447,9 +475,10 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 				}
 				json.Unmarshal([]byte(tc.Function.Arguments), &args)
 				sendSSEEvent(w, flusher, StreamEvent{
-					Type:     "think",
-					ToolName: "think",
-					ToolArgs: args,
+					Type:       "think",
+					ToolName:   "think",
+					ToolArgs:   args,
+					ToolCallID: tc.ID,
 				})
 			}
 			if tc.Function.Name == "render_chart" {
@@ -471,18 +500,19 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 					ToolArgs: args,
 				})
 				// Save with tool calls so history preserves both chart and severity styling
-				if _, err := m.saveMessage(ctx, conv.ID, "assistant", args.Summary, json.RawMessage(toolCallsJSON), nil); err != nil {
+				if _, err := m.saveMessage(store, conv.ID, "assistant", args.Summary, json.RawMessage(toolCallsJSON), nil); err != nil {
 					log.Printf("[Chat] failed to save present_results message: %v", err)
 				}
 				break
 			}
 		}
 		if isPresentCall {
-			break
+			sendSSEEvent(w, flusher, StreamEvent{Type: "done"})
+			return nil
 		}
 
 		// Persist assistant message with tool calls
-		if _, err := m.saveMessage(ctx, conv.ID, "assistant", assistantContent, json.RawMessage(toolCallsJSON), nil); err != nil {
+		if _, err := m.saveMessage(store, conv.ID, "assistant", assistantContent, json.RawMessage(toolCallsJSON), nil); err != nil {
 			log.Printf("[Chat] failed to save assistant message with tool calls: %v", err)
 		}
 
@@ -503,13 +533,13 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 			// answered: a turn the user resumes is rebuilt from history, and a
 			// provider rejects an assistant turn with an unanswered tool_call.
 			if tc.Function.Name == "render_chart" || tc.Function.Name == "think" {
-				m.recordToolResult(ctx, w, flusher, conv.ID, &messages, tc, map[string]interface{}{"ok": true})
+				m.recordToolResult(store, w, flusher, conv.ID, &messages, tc, map[string]interface{}{"ok": true})
 				continue
 			}
 
 			tool, known := m.tools.lookup(tc.Function.Name)
 			if !known {
-				m.recordToolResult(ctx, w, flusher, conv.ID, &messages, tc,
+				m.recordToolResult(store, w, flusher, conv.ID, &messages, tc,
 					toolError("%s is not a tool this assistant can call", tc.Function.Name))
 				continue
 			}
@@ -519,10 +549,10 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 			args := withUserWindow(tool, json.RawMessage(tc.Function.Arguments), timeRange)
 
 			if tool.NeedsConfirmation() {
-				pending, err := m.offerToolCall(ctx, conv.ID, tc.ID, tc.Function.Name, args, conv.CreatedBy)
+				pending, err := m.offerToolCall(store, conv.ID, tc.ID, tc.Function.Name, args, conv.CreatedBy)
 				if err != nil {
 					log.Printf("[Chat] failed to offer %s for confirmation: %v", tc.Function.Name, err)
-					m.recordToolResult(ctx, w, flusher, conv.ID, &messages, tc,
+					m.recordToolResult(store, w, flusher, conv.ID, &messages, tc,
 						toolError("this action could not be put to the user for approval"))
 					continue
 				}
@@ -542,7 +572,7 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 			if toolErr != nil {
 				result = toolError("%s", toolErr.Error())
 			}
-			m.recordToolResult(ctx, w, flusher, conv.ID, &messages, tc, result)
+			m.recordToolResult(store, w, flusher, conv.ID, &messages, tc, result)
 		}
 		if awaiting {
 			sendSSEEvent(w, flusher, StreamEvent{Type: "done"})
@@ -551,8 +581,14 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 		// Continue loop to get next LLM response after tool results
 	}
 
-	// If we exhausted all rounds without present_results, emit a fallback
-	// so the user doesn't see a blank response
+	// Falling out of the loop means the round budget ran out mid-investigation.
+	// Say so rather than ending the turn on an empty bubble, and store it so the
+	// conversation reads the same way when it is opened again.
+	const exhausted = "I ran out of steps before I could finish this. Ask me to continue, or narrow the question."
+	if _, err := m.saveMessage(store, conv.ID, "assistant", exhausted, nil, nil); err != nil {
+		log.Printf("[Chat] failed to save the round-limit message: %v", err)
+	}
+	sendSSEEvent(w, flusher, StreamEvent{Type: "token", Content: exhausted})
 	sendSSEEvent(w, flusher, StreamEvent{Type: "done"})
 	return nil
 }
@@ -673,9 +709,10 @@ func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher ht
 		var args interface{}
 		json.Unmarshal([]byte(tc.Function.Arguments), &args)
 		sendSSEEvent(w, flusher, StreamEvent{
-			Type:     "tool_call",
-			ToolName: tc.Function.Name,
-			ToolArgs: args,
+			Type:       "tool_call",
+			ToolName:   tc.Function.Name,
+			ToolArgs:   args,
+			ToolCallID: tc.ID,
 		})
 	}
 
@@ -689,6 +726,7 @@ func (m *Manager) recordToolResult(ctx context.Context, w io.Writer, flusher htt
 		Type:       "tool_result",
 		ToolName:   tc.Function.Name,
 		ToolResult: result,
+		ToolCallID: tc.ID,
 	})
 
 	resultJSON, _ := json.Marshal(result)
@@ -889,65 +927,193 @@ func (m *Manager) getNormalizerHints(ctx context.Context) string {
 	return b.String()
 }
 
-// trimHistory limits conversation history to avoid exceeding the LLM context window.
+// History budget. One turn can write dozens of rows: the agent loop runs up to
+// maxToolRounds tool calls, and each is an assistant row plus a tool row. The
+// budget is therefore counted in turns, not rows. Counting rows let a single
+// tool-heavy answer evict every earlier question in the conversation.
+const (
+	maxHistoryTurns   = 12    // turns kept at all
+	verbatimTurns     = 3     // most recent turns kept with their tool traffic
+	maxHistoryChars   = 60000 // backstop on total history size
+	maxToolContentLen = 500
+)
+
+// trimHistory limits conversation history to avoid exceeding the LLM context
+// window. Older turns keep their question and answer and lose the tool traffic
+// that produced them; recent turns are kept whole so the model can still refer
+// to what a tool actually returned.
 func (m *Manager) trimHistory(history []*Message) []*Message {
-	const maxMessages = 20
-	const maxToolContentLen = 500
-
-	// Cap message count, ensuring we start at a 'user' boundary
-	// to avoid orphaned tool results that reference a trimmed assistant message.
-	if len(history) > maxMessages {
-		history = history[len(history)-maxMessages:]
-		for i, msg := range history {
-			if msg.Role == "user" {
-				history = history[i:]
-				break
-			}
-		}
+	turns := splitTurns(history)
+	if len(turns) > maxHistoryTurns {
+		turns = turns[len(turns)-maxHistoryTurns:]
 	}
 
+	kept := renderTurns(turns)
+	for historyChars(kept) > maxHistoryChars && len(turns) > 1 {
+		turns = turns[1:]
+		kept = renderTurns(turns)
+	}
+
+	dropUnansweredToolCalls(kept)
+	kept = dropSilentAssistantTurns(kept)
+	return dropOrphanedToolResults(kept)
+}
+
+// dropSilentAssistantTurns removes assistant messages left with neither text nor
+// a tool call. Anthropic rejects an assistant message whose content is empty,
+// and this is the state an offer the user never answered leaves behind: the
+// round produced no prose, and its one call is stripped as unanswered.
+func dropSilentAssistantTurns(history []*Message) []*Message {
+	kept := make([]*Message, 0, len(history))
 	for _, msg := range history {
-		// Trim large tool result content to just metadata
-		if msg.Role == "tool" && len(msg.Content) > maxToolContentLen {
-			var result map[string]interface{}
-			if err := json.Unmarshal([]byte(msg.Content), &result); err == nil {
-				summary := map[string]interface{}{
-					"count":        result["count"],
-					"field_order":  result["field_order"],
-					"is_truncated": result["is_truncated"],
-					"note":         "Row data omitted from history.",
-				}
-				if b, err := json.Marshal(summary); err == nil {
-					msg.Content = string(b)
-				}
-			}
+		if msg.Role == "assistant" && msg.ToolCalls == nil && strings.TrimSpace(msg.Content) == "" {
+			continue
 		}
-
+		kept = append(kept, msg)
 	}
+	return kept
+}
 
-	// An assistant turn is only valid if every tool_call it makes is answered.
-	// Drop the ones that are not, rather than the whole set: a confirmation the
-	// user never gave leaves one call open while its siblings are answered, and
-	// sending that turn as-is has the provider reject all of it.
+// splitTurns groups messages into turns, each beginning at a user message.
+func splitTurns(history []*Message) [][]*Message {
+	var turns [][]*Message
+	for _, msg := range history {
+		if msg.Role == "user" || len(turns) == 0 {
+			turns = append(turns, []*Message{msg})
+			continue
+		}
+		turns[len(turns)-1] = append(turns[len(turns)-1], msg)
+	}
+	return turns
+}
+
+// summarizeTurn reduces an older turn to what was asked and what was concluded.
+// The intermediate calls are dropped, and with them the tool results that only
+// mattered while the answer was being assembled.
+func summarizeTurn(turn []*Message) []*Message {
+	kept := make([]*Message, 0, 2)
+	for _, msg := range turn {
+		switch {
+		case msg.Role == "user":
+			kept = append(kept, msg)
+		case msg.Role == "assistant" && strings.TrimSpace(msg.Content) != "":
+			stripped := *msg
+			stripped.ToolCalls = nil
+			kept = append(kept, &stripped)
+		}
+	}
+	return kept
+}
+
+// capToolContent replaces oversized tool results with their metadata.
+func capToolContent(turn []*Message) []*Message {
+	for _, msg := range turn {
+		if msg.Role != "tool" || len(msg.Content) <= maxToolContentLen {
+			continue
+		}
+		var result map[string]interface{}
+		if json.Unmarshal([]byte(msg.Content), &result) != nil {
+			continue
+		}
+		summary := map[string]interface{}{
+			"count":        result["count"],
+			"field_order":  result["field_order"],
+			"is_truncated": result["is_truncated"],
+			"note":         "Row data omitted from history.",
+		}
+		if b, err := json.Marshal(summary); err == nil {
+			msg.Content = string(b)
+		}
+	}
+	return turn
+}
+
+// renderTurns keeps the most recent turns whole and reduces the older ones to
+// their question and answer.
+func renderTurns(turns [][]*Message) []*Message {
+	var kept []*Message
+	for i, turn := range turns {
+		if i >= len(turns)-verbatimTurns {
+			kept = append(kept, capToolContent(turn)...)
+			continue
+		}
+		kept = append(kept, summarizeTurn(turn)...)
+	}
+	return kept
+}
+
+// historyChars is the size the kept history contributes to the context window.
+func historyChars(msgs []*Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += len(msg.Content) + len(msg.ToolCalls)
+	}
+	return total
+}
+
+// dropUnansweredToolCalls keeps an assistant turn valid: a provider rejects the
+// whole turn if any tool_call it makes has no result. The unanswered calls are
+// dropped rather than the message, so a confirmation the user never gave does
+// not take the assistant's answered work with it.
+func dropUnansweredToolCalls(history []*Message) {
 	for i, msg := range history {
 		if msg.Role != "assistant" || msg.ToolCalls == nil {
 			continue
 		}
 		answered := map[string]bool{}
 		for j := i + 1; j < len(history) && history[j].Role == "tool"; j++ {
-			var results []struct {
-				ToolCallID string `json:"tool_call_id"`
-			}
-			if json.Unmarshal(history[j].ToolResults, &results) == nil {
-				for _, result := range results {
-					answered[result.ToolCallID] = true
-				}
+			for _, id := range toolResultIDs(history[j].ToolResults) {
+				answered[id] = true
 			}
 		}
 		msg.ToolCalls = keepAnswered(msg.ToolCalls, answered)
 	}
+}
 
-	return history
+// dropOrphanedToolResults removes tool results whose assistant turn did not
+// survive the trim. A tool message with no call to answer is rejected the same
+// way an unanswered call is.
+func dropOrphanedToolResults(history []*Message) []*Message {
+	answered := map[string]bool{}
+	for _, msg := range history {
+		if msg.Role != "assistant" || msg.ToolCalls == nil {
+			continue
+		}
+		var calls []llmToolCall
+		if json.Unmarshal(msg.ToolCalls, &calls) != nil {
+			continue
+		}
+		for _, call := range calls {
+			answered[call.ID] = true
+		}
+	}
+
+	kept := make([]*Message, 0, len(history))
+	for _, msg := range history {
+		if msg.Role == "tool" {
+			ids := toolResultIDs(msg.ToolResults)
+			if len(ids) == 0 || !answered[ids[0]] {
+				continue
+			}
+		}
+		kept = append(kept, msg)
+	}
+	return kept
+}
+
+// toolResultIDs returns the tool_call_ids a tool message answers.
+func toolResultIDs(toolResults json.RawMessage) []string {
+	var results []struct {
+		ToolCallID string `json:"tool_call_id"`
+	}
+	if json.Unmarshal(toolResults, &results) != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(results))
+	for _, r := range results {
+		ids = append(ids, r.ToolCallID)
+	}
+	return ids
 }
 
 // keepAnswered returns the tool calls that have a result, or nil if none do.
@@ -1035,6 +1201,15 @@ func (m *Manager) buildLLMMessages(systemPrompt string, history []*Message) []ll
 		{Role: "system", Content: systemPrompt},
 	}
 	for _, h := range history {
+		// A turn that concluded nothing contributes only its question, which
+		// puts two user messages together. Providers differ on whether they
+		// merge those, so the history never offers them the choice.
+		if h.Role == "user" && len(msgs) > 0 && msgs[len(msgs)-1].Role == "user" {
+			if prev, ok := msgs[len(msgs)-1].Content.(string); ok {
+				msgs[len(msgs)-1].Content = prev + "\n\n" + h.Content
+				continue
+			}
+		}
 		msg := llmMessage{
 			Role:    h.Role,
 			Content: h.Content,
@@ -1176,8 +1351,9 @@ func sendSSEEvent(w io.Writer, flusher http.Flusher, event StreamEvent) {
 // record, never from the request, so what the user was shown is what runs.
 func (m *Manager) ResolveToolCall(origin *http.Request, w io.Writer, flusher http.Flusher, conv *Conversation, fractal *fractals.Fractal, pendingID, decision, timeRange string) error {
 	ctx := origin.Context()
+	store := context.WithoutCancel(ctx)
 
-	pending, err := m.claimToolCall(ctx, conv.ID, pendingID, conv.CreatedBy, decision)
+	pending, err := m.claimToolCall(store, conv.ID, pendingID, conv.CreatedBy, decision)
 	if err != nil {
 		sendSSEEvent(w, flusher, StreamEvent{
 			Type:    "error",
@@ -1213,7 +1389,7 @@ func (m *Manager) ResolveToolCall(origin *http.Request, w io.Writer, flusher htt
 	// Only the persisted copy matters here: the loop below reads the
 	// conversation back from the database rather than from this slice.
 	var messages []llmMessage
-	m.recordToolResult(ctx, w, flusher, conv.ID, &messages, tc, result)
+	m.recordToolResult(store, w, flusher, conv.ID, &messages, tc, result)
 
 	open, err := m.openToolCalls(ctx, conv.ID)
 	if err != nil {

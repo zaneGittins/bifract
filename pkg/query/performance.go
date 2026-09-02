@@ -478,14 +478,21 @@ func (h *PerformanceHandler) HandleMetrics(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Disk usage
+	// free_bytes comes back raw as well as formatted: the storage view divides it
+	// by the observed ingest rate to estimate how long the disk lasts, and cannot
+	// do arithmetic on "12.30 GiB".
 	diskSQL := `SELECT
 		round((total_space - free_space) / total_space * 100, 1) as used_pct,
-		formatReadableSize(free_space) as free_space_readable
+		formatReadableSize(free_space) as free_space_readable,
+		toUInt64(free_space) as free_bytes,
+		toUInt64(total_space) as total_bytes
 		FROM system.disks WHERE name = 'default' LIMIT 1`
 	if diskRows, err := h.db.Query(r.Context(), diskSQL); err == nil && len(diskRows) > 0 {
 		result["disk"] = map[string]interface{}{
-			"used_pct":   diskRows[0]["used_pct"],
-			"free_space": diskRows[0]["free_space_readable"],
+			"used_pct":    diskRows[0]["used_pct"],
+			"free_space":  diskRows[0]["free_space_readable"],
+			"free_bytes":  diskRows[0]["free_bytes"],
+			"total_bytes": diskRows[0]["total_bytes"],
 		}
 	}
 
@@ -745,114 +752,13 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 	respondJSON(w, http.StatusOK, resp)
 }
 
-// HandleAlertStats returns alert engine evaluation stats derived from alert_executions.
-// Accepts optional ?range= param: 1h (default), 8h, 24h.
-func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Request) {
-
-	if h.pg == nil {
-		respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"success": false,
-			"error":   "Postgres not available",
-		})
-		return
-	}
-
+// HandleHotTableStats reports on logs_hot: partition count, rows, size, and the
+// window it covers. It lived on the Alerts tab because logs_hot exists to serve
+// alert evaluation, which is an implementation reason rather than a reader's one.
+// Coverage should stay near the alert lookback; a growing window means parts are
+// not ageing out.
+func (h *PerformanceHandler) HandleHotTableStats(w http.ResponseWriter, r *http.Request) {
 	result := map[string]interface{}{"success": true}
-
-	// All stats sourced from alerts.last_execution_time_ms — updated on every
-	// evaluation cycle regardless of whether the alert triggered.
-	summaryRow := h.pg.QueryRow(r.Context(),
-		`SELECT
-			COUNT(*)                                                                                 AS total_active,
-			COUNT(*) FILTER (WHERE disabled_reason IS NOT NULL AND disabled_reason != '')            AS disabled,
-			COALESCE(AVG(last_execution_time_ms), 0)                                                 AS avg_ms,
-			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY last_execution_time_ms), 0)        AS p95_ms,
-			COALESCE(MAX(last_execution_time_ms), 0)                                                 AS max_ms
-		 FROM alerts
-		 WHERE enabled = true`)
-	var totalActive, disabled int64
-	var avgMs, p95Ms, maxMs float64
-	scanErr := summaryRow.Scan(&totalActive, &disabled, &avgMs, &p95Ms, &maxMs)
-	if scanErr != nil {
-		log.Printf("[AlertStats] summary: %v", scanErr)
-	}
-
-	result["summary"] = map[string]interface{}{
-		"total_active": totalActive,
-		"disabled":     disabled,
-		"avg_ms":       int64(math.Round(avgMs)),
-		"p95_ms":       int64(math.Round(p95Ms)),
-		"max_ms":       int64(math.Round(maxMs)),
-	}
-
-	// Alert evaluation latency trend from persisted samples (Postgres), so it
-	// survives restarts instead of being rebuilt in-memory only while the tab is
-	// open. The collector records avg(last_execution_time_ms) every 30s.
-	execSince, execBucket := MetricRange(r.URL.Query().Get("range"))
-	execHist := []map[string]interface{}{}
-	if points, err := h.pg.QueryMetricSeries(r.Context(), "alert_exec_ms", execSince, execBucket); err != nil {
-		log.Printf("[AlertStats] exec history query failed: %v", err)
-	} else {
-		for _, p := range points {
-			execHist = append(execHist, map[string]interface{}{
-				"time":   p.Bucket.Unix(),
-				"avg_ms": int64(math.Round(p.Value)),
-			})
-		}
-	}
-	result["exec_history"] = execHist
-
-	// Exec time distribution: count of enabled alerts in each latency bucket.
-	distRow := h.pg.QueryRow(r.Context(),
-		`SELECT
-			COUNT(*) FILTER (WHERE last_execution_time_ms < 100)                                    AS fast,
-			COUNT(*) FILTER (WHERE last_execution_time_ms >= 100 AND last_execution_time_ms < 250)  AS ok,
-			COUNT(*) FILTER (WHERE last_execution_time_ms >= 250 AND last_execution_time_ms < 500)  AS slow,
-			COUNT(*) FILTER (WHERE last_execution_time_ms >= 500 AND last_execution_time_ms < 1000) AS warn,
-			COUNT(*) FILTER (WHERE last_execution_time_ms >= 1000)                                  AS crit
-		 FROM alerts
-		 WHERE enabled = true AND last_execution_time_ms IS NOT NULL`)
-	var fast, ok_, slow, warn, crit int64
-	if err := distRow.Scan(&fast, &ok_, &slow, &warn, &crit); err != nil {
-		log.Printf("[AlertStats] distribution: %v", err)
-	} else {
-		result["distribution"] = []map[string]interface{}{
-			{"label": "<100ms", "count": fast},
-			{"label": "100–250ms", "count": ok_},
-			{"label": "250–500ms", "count": slow},
-			{"label": "500ms–1s", "count": warn},
-			{"label": ">1s", "count": crit},
-		}
-	}
-
-	// Top 10 slowest alerts by last_execution_time_ms.
-	slowRows, err := h.pg.Query(r.Context(),
-		`SELECT name, COALESCE(last_execution_time_ms, 0) AS exec_ms
-		 FROM alerts
-		 WHERE enabled = true AND last_execution_time_ms IS NOT NULL
-		 ORDER BY exec_ms DESC
-		 LIMIT 10`)
-	if err != nil {
-		log.Printf("[AlertStats] slowest: %v", err)
-	} else {
-		defer slowRows.Close()
-		var slowest []map[string]interface{}
-		for slowRows.Next() {
-			var name string
-			var execMs int64
-			if err := slowRows.Scan(&name, &execMs); err != nil {
-				continue
-			}
-			slowest = append(slowest, map[string]interface{}{
-				"name":    name,
-				"exec_ms": execMs,
-			})
-		}
-		result["slowest"] = slowest
-	}
-
-	// logs_hot table health: partition count, row count, size, and coverage window.
-	// Coverage window = max_time - min_time across all active parts; should stay ~2h.
 	hotRows, err := h.db.Query(r.Context(), `
 		SELECT
 			count()            AS partition_count,
@@ -863,7 +769,7 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		FROM system.parts
 		WHERE database = currentDatabase() AND table = 'logs_hot' AND active = 1`)
 	if err != nil {
-		log.Printf("[AlertStats] logs_hot stats: %v", err)
+		log.Printf("[HotTable] stats: %v", err)
 	} else if len(hotRows) > 0 {
 		row := hotRows[0]
 		hotStats := map[string]interface{}{
@@ -871,10 +777,9 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 			"row_count":       toFloat64(row["row_count"]),
 			"disk_bytes":      toFloat64(row["disk_bytes"]),
 		}
-		// Compute coverage window in minutes from oldest/newest part timestamps.
-		// min_time/max_time in system.parts are Nullable(DateTime); the driver
-		// may return time.Time, *time.Time, or a formatted string depending on
-		// ClickHouse version. Handle all three.
+		// min_time/max_time are Nullable(DateTime); the driver may hand back
+		// time.Time, *time.Time, or a formatted string depending on the
+		// ClickHouse version, so all three are handled.
 		parsePartTime := func(v interface{}) (time.Time, bool) {
 			switch t := v.(type) {
 			case time.Time:
@@ -899,7 +804,6 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		}
 		result["hot_table"] = hotStats
 	}
-
 	respondJSON(w, http.StatusOK, result)
 }
 

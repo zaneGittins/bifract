@@ -38,3 +38,26 @@ func TestAPIKeyRoleIsHonouredOnlyForItsOwnFractal(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIKeyPrismRole(t *testing.T) {
+	prism := "p-1"
+	ctx := func(scoped, authType, role string) context.Context {
+		c := context.WithValue(context.Background(), "selected_prism", scoped)
+		c = context.WithValue(c, "auth_type", authType)
+		return context.WithValue(c, "prism_role", role)
+	}
+
+	if got := apiKeyPrismRole(ctx(prism, "api_key", "admin"), prism); got != RoleAdmin {
+		t.Errorf("a prism-scoped key must carry its role, got %q", got)
+	}
+	// A key scoped to another prism must not borrow authority here.
+	if got := apiKeyPrismRole(ctx("other", "api_key", "admin"), prism); got != RoleNone {
+		t.Errorf("a key scoped elsewhere must not resolve, got %q", got)
+	}
+	if got := apiKeyPrismRole(ctx(prism, "session", "admin"), prism); got != RoleNone {
+		t.Errorf("only an api_key principal resolves this way, got %q", got)
+	}
+	if got := apiKeyPrismRole(ctx(prism, "api_key", "superuser"), prism); got != RoleNone {
+		t.Errorf("an unknown role must not resolve, got %q", got)
+	}
+}

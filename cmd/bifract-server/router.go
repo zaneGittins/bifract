@@ -1457,6 +1457,205 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler: d.alertHandler.HandleDeleteAlert,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alerts/{id}/revisions",
+					Access:   api.AccessViewer,
+					Response: api.Response[[]alerts.Revision]{},
+					Summary:  "List an alert's definition history, newest first.",
+					Handler:  d.alertHandler.HandleListRevisions,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alerts/{id}/revisions/{revision}",
+					Access:   api.AccessViewer,
+					Response: api.Response[*alerts.Revision]{},
+					Summary:  "Read one stored revision of an alert.",
+					Handler:  d.alertHandler.HandleGetRevision,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alert-gate",
+					Access:   api.AccessViewer,
+					Response: api.Response[alerts.GateConfig]{},
+					Summary:  "Read the scope's alert review settings.",
+					Handler:  d.alertHandler.HandleGetGateConfig,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/alert-gate",
+					Access:   api.AccessFractalAdmin,
+					Request:  alerts.GateConfig{},
+					Response: api.Response[alerts.GateConfig]{},
+					Summary:  "Update the scope's alert review settings.",
+					Handler:  d.alertHandler.HandleSaveGateConfig,
+				})
+				r.Register(api.Route{
+					Method: http.MethodGet,
+					Path:   "/alert-changes",
+					Query: []api.QueryParam{
+						{Name: "open", Type: "boolean"},
+					},
+					Access:   api.AccessViewer,
+					Response: api.Response[[]*alerts.ChangeRequest]{},
+					Summary:  "List proposed alert changes in scope.",
+					Handler:  d.alertHandler.HandleListChangeRequests,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-changes",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.ChangeRequestInput{},
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Propose an alert change.",
+					Handler:  d.alertHandler.HandleSubmitChangeRequest,
+				})
+				r.Register(api.Route{
+					Method: http.MethodGet,
+					Path:   "/alert-changes/{id}",
+					Query: []api.QueryParam{
+						{Name: "run_tests", Type: "boolean"},
+					},
+					Access:   api.AccessViewer,
+					Response: api.Response[alerts.ChangeRequestDetail]{},
+					Summary:  "Read a proposal with its diff, tests and policy checks.",
+					Handler:  d.alertHandler.HandleGetChangeRequest,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/alert-changes/{id}",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.ChangeRequestInput{},
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Revise and resubmit a proposal.",
+					Handler:  d.alertHandler.HandleSubmitChangeRequest,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-changes/{id}/review",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.ReviewRequest{},
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Approve a proposal, or send it back for changes.",
+					Handler:  d.alertHandler.HandleReviewChangeRequest,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-changes/{id}/merge",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Apply an approved proposal.",
+					Handler:  d.alertHandler.HandleMergeChangeRequest,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-changes/{id}/discard",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Withdraw a proposal without deleting it.",
+					Handler:  d.alertHandler.HandleDiscardChangeRequest,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodDelete,
+					Path:     "/alert-changes/{id}",
+					Access:   api.AccessFractalAdmin,
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Delete a proposal permanently.",
+					Handler:  d.alertHandler.HandleDeleteChangeRequest,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alert-policies",
+					Access:   api.AccessViewer,
+					Response: api.Response[[]alerts.Policy]{},
+					Summary:  "List the fractal's alert policy rules.",
+					Handler:  d.alertHandler.HandleListPolicies,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/alert-policies",
+					Access:   api.AccessFractalAdmin,
+					Request:  alerts.SavePoliciesRequest{},
+					Response: api.Response[[]alerts.Policy]{},
+					Summary:  "Replace the fractal's alert policy rules.",
+					Handler:  d.alertHandler.HandleSavePolicies,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alert-policies/catalog",
+					Access:   api.AccessViewer,
+					Response: api.Response[alerts.PolicyCatalog]{},
+					Summary:  "List the fields and operators a policy rule can use.",
+					Handler:  d.alertHandler.HandlePolicyCatalog,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-policies/evaluate",
+					Access:   api.AccessViewer,
+					Request:  alerts.EvaluatePolicyRequest{},
+					Response: api.Response[alerts.PolicyResult]{},
+					Summary:  "Check a definition against the rule set without saving it.",
+					Handler:  d.alertHandler.HandleEvaluatePolicies,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-policies/import",
+					Access:   api.AccessFractalAdmin,
+					Request:  alerts.ImportPoliciesRequest{},
+					Response: api.Response[[]alerts.Policy]{},
+					Summary:  "Import policy rules from a policy document.",
+					Handler:  d.alertHandler.HandleImportPolicies,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alert-policies/export",
+					Access:   api.AccessViewer,
+					Response: api.Response[map[string]string]{},
+					Summary:  "Render the fractal's policy rules as a document.",
+					Handler:  d.alertHandler.HandleExportPolicies,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alert-policies/compliance",
+					Access:   api.AccessViewer,
+					Response: api.Response[[]alerts.ComplianceRow]{},
+					Summary:  "List alerts that violate the current rule set.",
+					Handler:  d.alertHandler.HandlePolicyCompliance,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alerts/{id}/tests",
+					Access:   api.AccessViewer,
+					Response: api.Response[[]alerts.AlertTest]{},
+					Summary:  "List an alert's saved tests.",
+					Handler:  d.alertHandler.HandleListTests,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alerts/tests/run",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.RunTestsRequest{},
+					Response: api.Response[*alerts.TestRunResult]{},
+					Summary:  "Run sample events against a query without saving either.",
+					Handler:  d.alertHandler.HandleRunTests,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodDelete,
+					Path:     "/alerts/tests/session/{sessionId}",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Release an editor's loaded test events.",
+					Handler:  d.alertHandler.HandleReleaseTestSession,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alerts/{id}/revisions/{revision}/restore",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.RestoreRevisionRequest{},
+					Response: api.Response[*alerts.Alert]{},
+					Summary:  "Re-apply a stored revision as a new revision at the head.",
+					Handler:  d.alertHandler.HandleRestoreRevision,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPost,
 					Path:     "/alerts/import",
 					Access:   api.AccessAnalyst,
@@ -2715,6 +2914,14 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.chatHandler.HandleClearMessages,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/chat/conversations/{id}/tool-calls",
+					Access:   api.AccessViewer,
+					Response: api.ListResponse[*chat.OfferedToolCall]{},
+					Summary:  "Read the actions a conversation put to the user for approval.",
+					Handler:  d.chatHandler.HandleListToolCalls,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPost,
 					Path:     "/chat/conversations/{id}/stream",
 					Produces: "text/event-stream",
@@ -3461,6 +3668,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Path:   "/admin/activity/summary",
 				Query: []api.QueryParam{
 					{Name: "range"},
+					{Name: "patterns", Description: "Set to 1 to include the cost-by-pattern rollup, which is the page's most expensive read."},
 				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
@@ -3498,8 +3706,30 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
-				Summary:  "Return alert engine evaluation statistics.",
+				Summary:  "Return alert engine health: evaluation lag, fires, actions and auto-disabled alerts.",
 				Handler:  d.performanceHandler.HandleAlertStats,
+			})
+			r.Register(api.Route{
+				Method: http.MethodGet,
+				Path:   "/admin/alert-stats/rows",
+				Query: []api.QueryParam{
+					{Name: "range"},
+					{Name: "mode"},
+					{Name: "q"},
+					{Name: "fractal"},
+				},
+				Access:   api.AccessTenantAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Return per-alert engine state, or the recent trigger log.",
+				Handler:  d.performanceHandler.HandleAlertRows,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/admin/hot-table",
+				Access:   api.AccessTenantAdmin,
+				Response: map[string]interface{}{},
+				Summary:  "Return logs_hot partition, row, size and coverage stats.",
+				Handler:  d.performanceHandler.HandleHotTableStats,
 			})
 		})
 	})

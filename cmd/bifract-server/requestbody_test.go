@@ -14,6 +14,8 @@ var bodylessRoutes = []string{
 	"POST /api/v1/admin/kill-query",
 	"POST /api/v1/admin/schema-fields/ignore/{name}",
 	"POST /api/v1/admin/schema-fields/refresh",
+	"POST /api/v1/alert-changes/{id}/discard",
+	"POST /api/v1/alert-changes/{id}/merge",
 	"POST /api/v1/alerts/{id}/duplicate",
 	"POST /api/v1/api-keys/{keyId}/toggle",
 	"POST /api/v1/auth/logout",

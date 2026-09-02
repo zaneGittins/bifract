@@ -1,0 +1,71 @@
+name: SOC baseline
+description: >-
+  A starting rule set for a detection team moving CI checks into Bifract. Every rule is
+  field/operator/value against the alert definition, so it costs nothing to run and is
+  evaluated as an analyst types rather than minutes later in a pipeline.
+
+  Import from Alerts -> Policies. Severities here are deliberately conservative: only
+  the rules that catch a genuinely broken detection block, and the rest advise. Tighten
+  them once the compliance view shows the backlog is clear.
+
+rules:
+  # ATT&CK coverage. The regex accepts attack.t1059 and attack.t1059.001 alike, which is
+  # what the Coverage grid reads.
+  - field: labels
+    operator: any_matches
+    value: '^attack\.t\d{4}'
+    message: Add an ATT&CK technique label, for example attack.t1059, so this rule appears on the coverage map.
+    severity: block
+
+  # A detection nobody can interpret at 3am is a detection that gets ignored.
+  - field: description
+    operator: min_length
+    value: '40'
+    message: Describe what this detects and what an analyst should do about it.
+    severity: warn
+
+  - field: references
+    operator: not_empty
+    message: Link the research, ticket or runbook behind this rule.
+    severity: warn
+
+  # A bare wildcard matches every event in the fractal on every evaluation.
+  - field: query_string
+    operator: not_matches
+    value: '^\s*\*\s*$'
+    message: A bare * matches everything. Narrow the query before saving.
+    severity: block
+
+  # Severity drives triage order, so leaving it at the default hides real work.
+  - field: severity
+    operator: one_of
+    value: 'low, medium, high, critical'
+    message: Set a severity so this lands in the right place in the queue.
+    severity: warn
+
+  # Naming: keep the list scannable.
+  - field: name
+    operator: min_length
+    value: '8'
+    message: Give the alert a name that says what it detects.
+    severity: warn
+
+  # Tests. A rule with an example of what it catches and an example of what it must
+  # ignore is a rule someone can safely edit later.
+  - field: tests.match_count
+    operator: gte
+    value: '1'
+    message: Add at least one event this alert should match. Mark it from the results gutter.
+    severity: warn
+
+  - field: tests.no_match_count
+    operator: gte
+    value: '1'
+    message: Add at least one event this alert should ignore, so a future edit cannot widen it silently.
+    severity: warn
+
+  # Checked when the alert is saved, since it needs the tests to actually run.
+  - field: tests.all_passing
+    operator: is_true
+    message: Tests are failing. Fix the query or the expectations before saving.
+    severity: block

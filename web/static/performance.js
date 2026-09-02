@@ -8,14 +8,13 @@ const Performance = {
     timeRange: '1h',
     cpuChart: null,
     ingestChart: null,
-    alertChart: null,
     distQueueChart: null,
     ddlQueueChart: null,
-    alertTrendChart: null,
     prevCpuTimes: null,
     subTab: 'overview',
     ingestFractal: '',
     ingestDays: 30,
+    ingestMetric: 'raw',
     fractalNames: {},
     _ingestData: [],
     _ingestSeries: null,
@@ -31,6 +30,7 @@ const Performance = {
             refreshSelect.addEventListener('change', (e) => {
                 this.refreshRate = parseInt(e.target.value, 10);
                 window.Activity?.setRefreshRate(this.refreshRate);
+                window.AlertEngine?.setRefreshRate(this.refreshRate);
                 if (this.isActive) {
                     this.stopUpdates();
                     this.startUpdates();
@@ -44,11 +44,13 @@ const Performance = {
                 this.destroyCharts();
                 this.prevCpuTimes = null;
                 window.Activity?.setRange(this.timeRange);
+                window.AlertEngine?.setRange(this.timeRange);
                 this.refresh();
             });
         }
 
         window.Activity?.init();
+        window.AlertEngine?.init();
 
         // Ingest-per-day filters (Storage & Ingest sub-tab)
         const ingestFractalSel = document.getElementById('perfIngestFractal');
@@ -58,6 +60,20 @@ const Performance = {
                 this.loadIngest();
             });
         }
+        const ingestModes = document.getElementById('ingestModes');
+        if (ingestModes) {
+            ingestModes.addEventListener('click', (e) => {
+                const btn = e.target.closest('.act-mode');
+                if (!btn || btn.dataset.metric === this.ingestMetric) return;
+                this.ingestMetric = btn.dataset.metric;
+                ingestModes.querySelectorAll('.act-mode').forEach(b =>
+                    b.classList.toggle('active', b.dataset.metric === this.ingestMetric));
+                // The axis formatter and dataset both change, so rebuild.
+                if (this.ingestChart) { this.ingestChart.destroy(); this.ingestChart = null; }
+                this.renderIngestChart();
+            });
+        }
+
         const ingestDaysSel = document.getElementById('perfIngestDays');
         if (ingestDaysSel) {
             ingestDaysSel.addEventListener('change', (e) => {
@@ -125,16 +141,25 @@ const Performance = {
         this.stopUpdates();
         this.destroyCharts();
         window.Activity?.stop();
+        window.AlertEngine?.stop();
     },
 
     // The Activity tab polls its own endpoints, so it runs only while it is the
     // visible sub-tab.
     syncActivity() {
-        if (!window.Activity) return;
-        if (this.isActive && this.subTab === 'activity') {
-            if (!Activity.isActive) Activity.start(this.timeRange, this.refreshRate);
-        } else if (Activity.isActive) {
-            Activity.stop();
+        if (window.Activity) {
+            if (this.isActive && this.subTab === 'activity') {
+                if (!Activity.isActive) Activity.start(this.timeRange, this.refreshRate);
+            } else if (Activity.isActive) {
+                Activity.stop();
+            }
+        }
+        if (window.AlertEngine) {
+            if (this.isActive && this.subTab === 'alerts') {
+                if (!AlertEngine.isActive) AlertEngine.start(this.timeRange, this.refreshRate);
+            } else if (AlertEngine.isActive) {
+                AlertEngine.stop();
+            }
         }
     },
 
@@ -156,13 +181,11 @@ const Performance = {
         const tab = this.subTab;
         try {
             // Metrics (server + storage cards, CPU) and pressure are always
-            // fetched; ingest only for Storage; alert stats only for Alerts. The
-            // Activity tab polls its own endpoints on its own cadence.
+            // fetched; everything else is scoped to the sub-tab that shows it.
+            // The Activity and Alerts tabs poll their own endpoints on their own
+            // cadence.
             const metPromise = fetch(`/api/v1/admin/metrics?range=${this.timeRange}`, { credentials: 'include' });
             const pressurePromise = fetch(`/api/v1/system/pressure?range=${this.timeRange}`, { credentials: 'include' });
-            const alertStatsPromise = tab === 'alerts'
-                ? fetch(`/api/v1/admin/alert-stats?range=${this.timeRange}`, { credentials: 'include' })
-                : null;
 
             const metData = await (await metPromise).json();
             const pressureData = await (await pressurePromise).json();
@@ -192,19 +215,13 @@ const Performance = {
 
             if (tab === 'storage') {
                 this.loadIngest();
+                this.loadHotTable();
             }
 
             if (tab === 'archive') {
                 this.loadArchive();
             }
 
-            if (alertStatsPromise) {
-                const alertData = await (await alertStatsPromise).json();
-                if (alertData.success) {
-                    this.renderAlertStats(alertData);
-                    this.renderAlertTrendChart(alertData.exec_history || []);
-                }
-            }
         } catch (err) {
             console.error('[Performance] refresh error:', err);
         }
@@ -298,6 +315,18 @@ const Performance = {
         host.innerHTML = html + '</tbody></table>';
     },
 
+    // logs_hot backs alert evaluation but is storage health, so it lives here
+    // rather than on the Alerts tab.
+    async loadHotTable() {
+        try {
+            const res = await fetch('/api/v1/admin/hot-table', { credentials: 'include' });
+            const data = await res.json();
+            if (data.success) this.renderHotTableStats(data.hot_table || null);
+        } catch (err) {
+            console.error('[Performance] hot table error:', err);
+        }
+    },
+
     async loadIngest() {
         try {
             const url = `/api/v1/admin/ingest-daily?days=${this.ingestDays}&fractal=${encodeURIComponent(this.ingestFractal)}`;
@@ -308,6 +337,7 @@ const Performance = {
                 this._ingestSeries = (data.series && data.series.length) ? data.series : null;
                 this.clampIngestBuckets();
                 this.renderIngestChart();
+                this.renderIngestTiles();
             }
         } catch (err) {
             console.error('[Performance] ingest load error:', err);
@@ -1120,6 +1150,17 @@ const Performance = {
         const self = this;
         const labels = days.map(d => this.formatDay(d.day));
         const stacked = Array.isArray(this._ingestSeries) && this._ingestSeries.length > 0;
+        const metric = this.ingestMetric || 'raw';
+        const seriesKey = metric === 'rows' ? 'rows' : metric === 'disk' ? 'disk_bytes' : 'raw_bytes';
+        const isRows = metric === 'rows';
+        const fmt = (v) => isRows ? this.formatCount(v) : this.formatBytes(v);
+
+        // The header states the window's totals, which no individual bar does.
+        const total = days.reduce((a, d) => a + Number(d[seriesKey] || 0), 0);
+        const totalRows = days.reduce((a, d) => a + Number(d.rows || 0), 0);
+        this.setText('ingestSummary', total
+            ? `${days.length} days \u00b7 ${fmt(total)}${isRows ? '' : ' \u00b7 ' + this.formatCount(totalRows) + ' rows'}`
+            : '');
 
         let datasets;
         if (stacked) {
@@ -1129,7 +1170,7 @@ const Performance = {
                     : this.nodeColors[i % this.nodeColors.length];
                 return {
                     label: this.fractalLabel(s.fractal_id),
-                    data: s.raw_bytes || [],
+                    data: s[seriesKey] || [],
                     backgroundColor: color + 'cc',
                     hoverBackgroundColor: color,
                     borderRadius: 2,
@@ -1140,8 +1181,8 @@ const Performance = {
             });
         } else {
             datasets = [{
-                label: 'Uncompressed',
-                data: days.map(d => d.raw_bytes),
+                label: isRows ? 'Rows' : metric === 'disk' ? 'On disk' : 'Uncompressed',
+                data: days.map(d => d[seriesKey]),
                 backgroundColor: accent + 'cc',
                 hoverBackgroundColor: accent,
                 borderRadius: 3,
@@ -1151,7 +1192,7 @@ const Performance = {
 
         // Toggling between stacked and single changes the dataset shape and axis
         // config; rebuild the chart in that case rather than patching it.
-        if (this.ingestChart && this.ingestChart._stacked !== stacked) {
+        if (this.ingestChart && (this.ingestChart._stacked !== stacked || this.ingestChart._metric !== metric)) {
             this.ingestChart.destroy();
             this.ingestChart = null;
         }
@@ -1192,10 +1233,10 @@ const Performance = {
                         filter: (item) => !stacked || item.parsed.y > 0,
                         callbacks: stacked ? {
                             title: (items) => items.length ? (self._ingestData[items[0].dataIndex] || {}).day || '' : '',
-                            label: (ctx) => ctx.dataset.label + ': ' + self.formatBytes(ctx.parsed.y || 0),
+                            label: (ctx) => ctx.dataset.label + ': ' + fmt(ctx.parsed.y || 0),
                             footer: (items) => {
                                 const total = items.reduce((sum, it) => sum + (it.parsed.y || 0), 0);
-                                return 'Total: ' + self.formatBytes(total);
+                                return 'Total: ' + fmt(total);
                             }
                         } : {
                             title: (items) => {
@@ -1207,7 +1248,7 @@ const Performance = {
                                 return [
                                     'Uncompressed: ' + self.formatBytes(row.raw_bytes || 0),
                                     'On disk: ' + self.formatBytes(row.disk_bytes || 0),
-                                    'Rows: ' + self.formatNumber(row.rows || 0)
+                                    'Rows: ' + self.formatCount(row.rows || 0)
                                 ];
                             }
                         }
@@ -1232,13 +1273,17 @@ const Performance = {
                         ticks: {
                             color: chartText,
                             font: { family: 'Inter', size: 10 },
-                            callback: (value) => self.formatBytes(value)
+                            callback: (value) => fmt(value)
                         }
                     }
                 }
             }
         });
+        // BUG 2: _metric was compared but never stored, so the guard above was
+        // always true and the chart was destroyed and rebuilt on every poll
+        // instead of updating in place.
         this.ingestChart._stacked = stacked;
+        this.ingestChart._metric = metric;
     },
 
     renderPressureBanner(data) {
@@ -1334,34 +1379,80 @@ const Performance = {
     renderMetrics(metrics, asyncMetrics, logStorage, disk, cluster) {
         this.renderServerCards(metrics, asyncMetrics, cluster);
 
-        // Log-specific storage metrics
+        // Rows and compression ride the storage tile's sub-line rather than taking
+        // a card each: they qualify the number above them, they are not separate
+        // questions.
         const logRows = logStorage['log_rows'] || 0;
         const compressedBytes = logStorage['compressed_bytes'] || 0;
         const uncompressedBytes = logStorage['uncompressed_bytes'] || 0;
 
-        this.setText('metricLogRows', this.formatNumber(logRows));
         this.setText('metricLogStorage', this.formatBytes(compressedBytes));
+        const parts = [];
+        if (logRows) parts.push(this.formatCount(logRows) + ' rows');
+        if (compressedBytes > 0 && uncompressedBytes > 0) {
+            parts.push(((1 - compressedBytes / uncompressedBytes) * 100).toFixed(0) + '% compressed');
+        }
+        this.setText('metricLogStorageSub', parts.join(' \u00b7 '));
 
-        // Disk usage with color coding
         const diskPct = typeof disk['used_pct'] === 'number' ? disk['used_pct'] : 0;
-        const diskFree = disk['free_space'] || '';
         const diskEl = document.getElementById('metricDiskUsage');
         if (diskEl) {
             diskEl.textContent = diskPct + '%';
             diskEl.className = 'perf-metric-value' +
                 (diskPct > 85 ? ' perf-metric-danger' : diskPct > 70 ? ' perf-metric-warning' : '');
         }
-        this.setText('metricDiskFree', diskFree ? diskFree + ' free' : '');
+        this.setText('metricDiskFree', disk['free_space'] ? disk['free_space'] + ' free' : '');
+        document.getElementById('metricDiskCard')?.classList.toggle('act-tile-attn', diskPct > 85);
 
-        // Compression: space saved as a percentage
-        if (compressedBytes > 0 && uncompressedBytes > 0) {
-            const saved = (1 - compressedBytes / uncompressedBytes) * 100;
-            this.setText('metricCompression', saved.toFixed(1) + '% saved');
-            this.setText('metricUncompressed', this.formatBytes(uncompressedBytes) + ' raw');
-        } else {
-            this.setText('metricCompression', '--');
-            this.setText('metricUncompressed', '');
+        this._diskFreeBytes = Number(disk['free_bytes'] || 0);
+        this.renderIngestTiles();
+    },
+
+    // Ingest rate and disk runway are derived from the ingest series, so they are
+    // recomputed whenever either the series or the disk reading changes.
+    renderIngestTiles() {
+        const days = this._ingestData || [];
+        // The newest day is still filling, so it would drag any average down.
+        const complete = days.length > 1 ? days.slice(0, -1) : days;
+        const sample = complete.slice(-7);
+        if (!sample.length) {
+            this.setText('metricIngestRate', '--');
+            this.setText('metricIngestRateSub', 'no ingest in window');
+            this.setText('metricRunway', '--');
+            this.setText('metricRunwaySub', '');
+            return;
         }
+
+        const avgRaw = sample.reduce((a, d) => a + Number(d.raw_bytes || 0), 0) / sample.length;
+        const avgDisk = sample.reduce((a, d) => a + Number(d.disk_bytes || 0), 0) / sample.length;
+        const avgRows = sample.reduce((a, d) => a + Number(d.rows || 0), 0) / sample.length;
+        this.setText('metricIngestRate', this.formatBytes(avgRaw));
+        this.setText('metricIngestRateSub',
+            `${this.formatCount(avgRows)} rows/day \u00b7 ${sample.length}d average`);
+
+        // Runway is deliberately conservative: it divides free space by what is
+        // being written and ignores retention and tiering, both of which give
+        // space back. A number that errs early is the useful direction for a
+        // disk warning.
+        const free = Number(this._diskFreeBytes || 0);
+        const runwayEl = document.getElementById('metricRunway');
+        if (!free || avgDisk <= 0) {
+            this.setText('metricRunway', '--');
+            this.setText('metricRunwaySub', avgDisk > 0 ? 'disk size unavailable' : 'nothing being written');
+            document.getElementById('metricRunwayCard')?.classList.remove('act-tile-attn');
+            if (runwayEl) runwayEl.className = 'perf-metric-value';
+            return;
+        }
+        const days_ = free / avgDisk;
+        if (runwayEl) {
+            runwayEl.textContent = days_ >= 365 ? '> 1y'
+                : days_ >= 1 ? Math.round(days_) + 'd'
+                : '< 1d';
+            runwayEl.className = 'perf-metric-value' +
+                (days_ < 14 ? ' perf-metric-danger' : days_ < 45 ? ' perf-metric-warning' : '');
+        }
+        this.setText('metricRunwaySub', `at ${this.formatBytes(avgDisk)}/day on disk, before retention`);
+        document.getElementById('metricRunwayCard')?.classList.toggle('act-tile-attn', days_ < 14);
     },
 
     // Per-node color palette for multi-node CPU charts.
@@ -1579,187 +1670,35 @@ const Performance = {
         });
     },
 
-    renderAlertStats(data) {
-        const summary = data.summary || {};
-        this.setText('alertMetricActive', summary.total_active ?? '--');
-        this.setText('alertMetricAvgMs', summary.avg_ms != null ? summary.avg_ms + 'ms' : '--');
-        this.setText('alertMetricP95Ms', summary.p95_ms != null ? summary.p95_ms + 'ms' : '--');
-
-        const maxEl = document.getElementById('alertMetricMaxMs');
-        if (maxEl) {
-            const ms = summary.max_ms || 0;
-            maxEl.textContent = ms != null ? ms + 'ms' : '--';
-            maxEl.className = 'perf-metric-value' + (ms > 1000 ? ' perf-metric-danger' : ms > 300 ? ' perf-metric-warning' : '');
-        }
-
-        const disabledEl = document.getElementById('alertMetricDisabled');
-        if (disabledEl) {
-            const d = summary.disabled || 0;
-            disabledEl.textContent = d;
-            disabledEl.className = 'perf-metric-value' + (d > 0 ? ' perf-metric-danger' : '');
-        }
-
-        this.renderAlertChart(data.distribution || []);
-        this.renderSlowestTable(data.slowest || []);
-        this.renderHotTableStats(data.hot_table || null);
-    },
-
+    // logs_hot only needs attention when its coverage window drifts, so it is one
+    // line rather than four cards.
     renderHotTableStats(hot) {
+        const el = document.getElementById('hotStrip');
+        if (!el) return;
         if (!hot) {
-            this.setText('hotMetricPartitions', '--');
-            this.setText('hotMetricRows', '--');
-            this.setText('hotMetricSize', '--');
-            this.setText('hotMetricCoverage', '--');
-            this.setText('hotMetricCoverageSub', '');
+            el.textContent = 'unavailable';
+            el.className = 'perf-section-hint perf-hint-value';
             return;
         }
-
-        this.setText('hotMetricPartitions', this.formatNumber(hot.partition_count || 0));
-        this.setText('hotMetricRows', this.formatNumber(hot.row_count || 0));
-        this.setText('hotMetricSize', this.formatBytes(hot.disk_bytes || 0));
-
-        const coverageEl = document.getElementById('hotMetricCoverage');
-        const coverageSub = document.getElementById('hotMetricCoverageSub');
+        const bits = [
+            this.formatCount(hot.partition_count || 0) + ' partitions',
+            this.formatCount(hot.row_count || 0) + ' rows',
+            this.formatBytes(hot.disk_bytes || 0)
+        ];
         const mins = hot.coverage_minutes;
+        let drifted = false;
         if (mins != null) {
             const h = Math.floor(mins / 60);
             const m = Math.floor(mins % 60);
-            const label = h > 0 ? `${h}h ${m}m` : `${m}m`;
-            if (coverageEl) {
-                coverageEl.textContent = label;
-                // Warn if coverage exceeds 2.5 hours — cleaner may not be running.
-                coverageEl.className = 'perf-metric-value' + (mins > 150 ? ' perf-metric-warning' : '');
-            }
-            if (coverageSub && hot.oldest) {
-                const oldestTime = String(hot.oldest).split(' ')[1] || hot.oldest;
-                const newestTime = String(hot.newest || '').split(' ')[1] || '';
-                coverageSub.textContent = newestTime ? `${oldestTime} – ${newestTime}` : oldestTime;
-            }
-        } else {
-            if (coverageEl) { coverageEl.textContent = '--'; coverageEl.className = 'perf-metric-value'; }
-            if (coverageSub) coverageSub.textContent = '';
+            bits.push('covering ' + (h > 0 ? `${h}h ${m}m` : `${m}m`));
+            // Coverage should stay near the alert lookback; well past it means
+            // parts are not ageing out.
+            drifted = mins > 150;
         }
+        el.textContent = bits.join(' \u00b7 ');
+        el.className = 'perf-section-hint perf-hint-value' + (drifted ? ' perf-metric-warning' : '');
     },
 
-    renderAlertChart(distribution) {
-        const canvas = document.getElementById('perfAlertChart');
-        if (!canvas) return;
-        const placeholder = document.getElementById('perfAlertChartPlaceholder');
-
-        const hasData = distribution && distribution.some(b => b.count > 0);
-        if (!distribution || distribution.length === 0 || !hasData) {
-            if (this.alertChart) { this.alertChart.destroy(); this.alertChart = null; }
-            if (placeholder) placeholder.style.display = '';
-            canvas.style.display = 'none';
-            return;
-        }
-        if (placeholder) placeholder.style.display = 'none';
-        canvas.style.display = '';
-
-        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-        const chartText   = cv('--chart-text')   || '#e8eaed';
-        const chartGrid   = cv('--chart-grid')   || '#24243e';
-        const chartBg     = cv('--chart-bg')     || '#1a1a2e';
-        const chartBorder = cv('--chart-border') || '#24243e';
-
-        const bucketColors = ['#6bcb77cc', '#4ecdc4cc', '#ffd93dcc', '#ff9f43cc', '#ff6b6bcc'];
-        const bucketHover  = ['#6bcb77',   '#4ecdc4',   '#ffd93d',   '#ff9f43',   '#ff6b6b'];
-
-        const labels = distribution.map(b => b.label);
-        const counts = distribution.map(b => b.count || 0);
-        const colors = distribution.map((_, i) => bucketColors[i] || '#9c6adecc');
-        const hovers = distribution.map((_, i) => bucketHover[i]  || '#9c6ade');
-
-        if (this.alertChart) {
-            this.alertChart.data.labels = labels;
-            this.alertChart.data.datasets[0].data = counts;
-            this.alertChart.data.datasets[0].backgroundColor = colors;
-            this.alertChart.data.datasets[0].hoverBackgroundColor = hovers;
-            this.alertChart.update('none');
-            return;
-        }
-
-        const ctx = canvas.getContext('2d');
-        this.alertChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels,
-                datasets: [{
-                    label: 'Alerts',
-                    data: counts,
-                    backgroundColor: colors,
-                    hoverBackgroundColor: hovers,
-                    borderRadius: 3,
-                    maxBarThickness: 60
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                interaction: { intersect: false, mode: 'index' },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        backgroundColor: chartBg,
-                        titleColor: chartText,
-                        bodyColor: chartText,
-                        borderColor: chartBorder,
-                        borderWidth: 1,
-                        callbacks: {
-                            label: (ctx) => ctx.parsed.y + ' alert' + (ctx.parsed.y !== 1 ? 's' : '')
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        grid: { display: false, drawBorder: false },
-                        ticks: { color: chartText, font: { family: 'Inter', size: 11 }, maxRotation: 0 }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: chartGrid, drawBorder: false },
-                        ticks: {
-                            color: chartText,
-                            font: { family: 'Inter', size: 10 },
-                            precision: 0,
-                            stepSize: 1
-                        }
-                    }
-                }
-            }
-        });
-    },
-
-    renderSlowestTable(slowest) {
-        const container = document.getElementById('perfAlertSlowestTable');
-        if (!container) return;
-
-        if (!slowest || slowest.length === 0) {
-            container.innerHTML = '<div class="empty-state" style="min-height: 80px;"><p>No exec time data yet</p></div>';
-            return;
-        }
-
-        let html = '<table class="results-table perf-table"><thead><tr>';
-        html += '<th>Alert</th><th>Last Exec</th>';
-        html += '</tr></thead><tbody>';
-
-        slowest.forEach(row => {
-            const ms = row.exec_ms || 0;
-            const cls = ms > 1000 ? 'perf-danger' : ms > 300 ? 'perf-warning' : '';
-            html += `<tr class="${cls}">`;
-            html += `<td>${this.escapeHtml(row.name || '--')}</td>`;
-            html += `<td>${this.formatDuration(ms)}</td>`;
-            html += '</tr>';
-        });
-
-        html += '</tbody></table>';
-        container.innerHTML = html;
-    },
-
-    // epochLabel formats a Unix timestamp (seconds) as a local-time axis label,
-    // adding a "Mon D" date prefix for ranges longer than 1h so points across
-    // days stay unambiguous. Shared by the dist-queue and alert-trend charts.
     epochLabel(unixSec) {
         const d = new Date(Number(unixSec) * 1000);
         if (isNaN(d.getTime())) return '';
@@ -1936,89 +1875,6 @@ const Performance = {
         });
     },
 
-    renderAlertTrendChart(history) {
-        const canvas = document.getElementById('perfAlertTrendChart');
-        const placeholder = document.getElementById('perfAlertTrendPlaceholder');
-        if (!canvas) return;
-
-        if (!history || history.length < 2) {
-            if (this.alertTrendChart) { this.alertTrendChart.destroy(); this.alertTrendChart = null; }
-            if (placeholder) placeholder.style.display = '';
-            canvas.style.display = 'none';
-            return;
-        }
-        if (placeholder) placeholder.style.display = 'none';
-        canvas.style.display = '';
-
-        const cv = window.ThemeManager ? ThemeManager.getCSSVar : (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-        const chartText   = cv('--chart-text')   || '#e8eaed';
-        const chartGrid   = cv('--chart-grid')   || '#24243e';
-        const chartBg     = cv('--chart-bg')     || '#1a1a2e';
-        const chartBorder = cv('--chart-border') || '#24243e';
-        const color = cv('--info') || '#60a5fa';
-
-        const labels = history.map(s => this.epochLabel(s.time));
-        const values = history.map(s => s.avg_ms);
-
-        if (this.alertTrendChart) {
-            this.alertTrendChart.data.labels = labels;
-            this.alertTrendChart.data.datasets[0].data = values;
-            this.alertTrendChart.update('none');
-            return;
-        }
-
-        const ctx = canvas.getContext('2d');
-        this.alertTrendChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels,
-                datasets: [{
-                    label: 'Avg ms',
-                    data: values,
-                    borderColor: color,
-                    backgroundColor: color + '22',
-                    borderWidth: 2,
-                    pointRadius: 2,
-                    pointHoverRadius: 4,
-                    fill: true,
-                    tension: 0.3
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                interaction: { intersect: false, mode: 'index' },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        backgroundColor: chartBg,
-                        titleColor: chartText,
-                        bodyColor: chartText,
-                        borderColor: chartBorder,
-                        borderWidth: 1,
-                        callbacks: { label: (ctx) => ctx.parsed.y + 'ms' }
-                    }
-                },
-                scales: {
-                    x: {
-                        grid: { color: chartGrid, drawBorder: false },
-                        ticks: { color: chartText, font: { family: 'Inter', size: 10 }, maxTicksLimit: 8 }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: chartGrid, drawBorder: false },
-                        ticks: {
-                            color: chartText,
-                            font: { family: 'Inter', size: 10 },
-                            callback: (v) => v + 'ms'
-                        }
-                    }
-                }
-            }
-        });
-    },
-
     destroyCharts() {
         if (this.cpuChart) {
             this.cpuChart.destroy();
@@ -2028,10 +1884,6 @@ const Performance = {
             this.ingestChart.destroy();
             this.ingestChart = null;
         }
-        if (this.alertChart) {
-            this.alertChart.destroy();
-            this.alertChart = null;
-        }
         if (this.distQueueChart) {
             this.distQueueChart.destroy();
             this.distQueueChart = null;
@@ -2039,10 +1891,6 @@ const Performance = {
         if (this.ddlQueueChart) {
             this.ddlQueueChart.destroy();
             this.ddlQueueChart = null;
-        }
-        if (this.alertTrendChart) {
-            this.alertTrendChart.destroy();
-            this.alertTrendChart = null;
         }
     },
 
@@ -2090,6 +1938,17 @@ const Performance = {
         return Number(n).toLocaleString();
     },
 
+    // Compact form for counts that run to billions, where every digit is noise.
+    // formatNumber stays exact for the tables that want it.
+    formatCount(n) {
+        const v = Number(n || 0);
+        if (v >= 1e12) return (v / 1e12).toFixed(1) + 'T';
+        if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+        if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+        if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+        return String(Math.round(v));
+    },
+
     formatUptime(seconds) {
         if (!seconds) return '--';
         seconds = Math.floor(seconds);
@@ -2123,16 +1982,6 @@ const Performance = {
         const date = new Date(Date.UTC(+parts[0], +parts[1] - 1, +parts[2]));
         if (isNaN(date.getTime())) return d;
         return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-    },
-
-    formatEventTime(t) {
-        if (!t) return '--';
-        return TZ.format(t, 'time') || '--';
-    },
-
-    truncateQuery(q, maxLen) {
-        if (q.length <= maxLen) return q;
-        return q.substring(0, maxLen) + '...';
     },
 
     escapeHtml(str) {

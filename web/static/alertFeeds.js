@@ -45,7 +45,7 @@ const AlertFeeds = {
 
     // Every sub-tab view is listed here so adding one cannot leave a stale panel
     // visible behind another tab.
-    SUB_TAB_VIEWS: ['alertsView', 'feedAlertsView', 'alertEditorView', 'actionsManageView', 'attackCoverageView'],
+    SUB_TAB_VIEWS: ['alertsView', 'feedAlertsView', 'alertEditorView', 'actionsManageView', 'attackCoverageView', 'alertPoliciesView', 'alertChangesView'],
 
     activateSubTab(name, visibleViewId) {
         document.querySelectorAll('.alerts-sub-tab').forEach(b => b.classList.remove('active'));
@@ -107,6 +107,34 @@ const AlertFeeds = {
         }
 
         window.AttackCoverage?.show();
+    },
+
+    showPoliciesTab() {
+        window.App?.pushSubPath('policies');
+        this.closeDetailsPanel(true);
+        this.activateSubTab('policies', 'alertPoliciesView');
+
+        if (window.Alerts) {
+            Alerts.closeActionDrawer?.();
+            Alerts.closeAlertPanel();
+            Alerts.editingFeedAlert = false;
+        }
+
+        window.AlertPolicyAdmin?.show();
+    },
+
+    showChangesTab() {
+        window.App?.pushSubPath('changes');
+        this.closeDetailsPanel(true);
+        this.activateSubTab('changes', 'alertChangesView');
+
+        if (window.Alerts) {
+            Alerts.closeActionDrawer?.();
+            Alerts.closeAlertPanel();
+            Alerts.editingFeedAlert = false;
+        }
+
+        window.AlertChanges?.show();
     },
 
     setupEventListeners() {
@@ -553,7 +581,7 @@ const AlertFeeds = {
         for (const f of this.feeds) feedNames[f.id] = f.name;
         const feedName = feedNames[alert.feed_id] || 'Unknown';
 
-        content.innerHTML = AlertDetail.renderBody(alert, {
+        AlertDetail.installTabs(panel, alert, AlertDetail.renderBody(alert, {
             metaExtra: [{
                 label: 'Feed',
                 html: `<span class="feed-badge-sm">${Utils.escapeHtml(feedName)}</span>`
@@ -564,7 +592,7 @@ const AlertFeeds = {
                 label: 'Rule Path',
                 html: `<div class="feed-rule-path">${Utils.escapeHtml(alert.feed_rule_path)}</div>`
             }] : []
-        });
+        }));
         content.scrollTop = 0;
 
         if (footer) {

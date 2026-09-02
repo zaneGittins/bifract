@@ -140,7 +140,6 @@
                                 <button class="alerts-sub-tab" data-subtab="archive" onclick="Performance.switchSubTab('archive')">Archive</button>
                             </div>
                             <div class="performance-controls">
-                                <span id="perfLiveBadge" class="live-badge">LIVE</span>
                                 <select id="perfTimeRange" class="setting-select perf-refresh-select">
                                     <option value="1h" selected>Last 1 hour</option>
                                     <option value="8h">Last 8 hours</option>
@@ -222,34 +221,38 @@
 
                         <!-- Storage & Ingest Sub-Tab -->
                         <div id="perfPaneStorage" class="perf-pane" style="display:none;">
-                            <!-- Storage Overview Cards -->
-                            <div class="perf-metrics-group-label">Storage</div>
-                            <div class="perf-metrics-grid">
+                            <div class="perf-metrics-grid act-tiles">
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Log Rows</div>
-                                    <div class="perf-metric-value" id="metricLogRows">--</div>
-                                </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Log Storage</div>
+                                    <div class="perf-metric-label">Log storage</div>
                                     <div class="perf-metric-value" id="metricLogStorage">--</div>
+                                    <div class="perf-metric-sub" id="metricLogStorageSub"></div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Disk Usage</div>
+                                    <div class="perf-metric-label">Ingest per day</div>
+                                    <div class="perf-metric-value" id="metricIngestRate">--</div>
+                                    <div class="perf-metric-sub" id="metricIngestRateSub"></div>
+                                </div>
+                                <div class="perf-metric-card" id="metricDiskCard">
+                                    <div class="perf-metric-label">Disk usage</div>
                                     <div class="perf-metric-value" id="metricDiskUsage">--</div>
                                     <div class="perf-metric-sub" id="metricDiskFree"></div>
                                 </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Compression</div>
-                                    <div class="perf-metric-value" id="metricCompression">--</div>
-                                    <div class="perf-metric-sub" id="metricUncompressed"></div>
+                                <div class="perf-metric-card" id="metricRunwayCard">
+                                    <div class="perf-metric-label">Disk runway</div>
+                                    <div class="perf-metric-value" id="metricRunway">--</div>
+                                    <div class="perf-metric-sub" id="metricRunwaySub"></div>
                                 </div>
                             </div>
 
-                            <!-- Ingest per Day -->
                             <div class="perf-section">
                                 <div class="perf-section-header">
-                                    <h3>Ingest per Day</h3>
-                                    <span class="perf-section-hint">uncompressed</span>
+                                    <div class="act-modes" id="ingestModes">
+                                        <button type="button" class="act-mode active" data-metric="raw">Uncompressed</button>
+                                        <button type="button" class="act-mode" data-metric="disk">On disk</button>
+                                        <button type="button" class="act-mode" data-metric="rows">Rows</button>
+                                    </div>
+                                    <span class="perf-section-hint perf-hint-value" id="ingestSummary"></span>
+                                    <span class="filters-spacer"></span>
                                     <div class="perf-ingest-controls">
                                         <select id="perfIngestFractal" class="setting-select perf-refresh-select">
                                             <option value="">All fractals</option>
@@ -264,6 +267,15 @@
                                 <div class="perf-ingest-chart-wrap">
                                     <div id="perfIngestPlaceholder" class="perf-chart-placeholder">Loading...</div>
                                     <canvas id="perfIngestChart"></canvas>
+                                </div>
+                            </div>
+
+                            <div class="perf-section perf-section-slim">
+                                <div class="perf-section-header">
+                                    <h3>Hot table</h3>
+                                    <span class="perf-section-hint">the recent window alert evaluation reads</span>
+                                    <span class="filters-spacer"></span>
+                                    <span class="perf-section-hint perf-hint-value" id="hotStrip"></span>
                                 </div>
                             </div>
                         </div>
@@ -297,7 +309,7 @@
                                 <div class="perf-chart-card act-chart-card">
                                     <h3>Search latency</h3>
                                     <div class="act-chart-body" id="actLatencyWrap">
-                                        <div class="perf-chart-placeholder" id="actLatencyPlaceholder">Waiting for samples...</div>
+                                        <div class="perf-chart-placeholder">Waiting for samples...</div>
                                     </div>
                                     <div class="act-legend" id="actLatencyLegend"></div>
                                 </div>
@@ -340,74 +352,68 @@
 
                         <!-- Alerts Sub-Tab -->
                         <div id="perfPaneAlerts" class="perf-pane" style="display:none;">
-                            <div class="perf-metrics-group-label">Alert Engine</div>
-                            <div class="perf-metrics-grid">
+                            <div class="perf-metrics-grid act-tiles">
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Active Alerts</div>
-                                    <div class="perf-metric-value" id="alertMetricActive">--</div>
+                                    <div class="perf-metric-label">Evaluating</div>
+                                    <div class="perf-metric-value" id="aeTileEvaluating">--</div>
+                                    <div class="perf-metric-sub" id="aeTileEvaluatingSub"></div>
+                                </div>
+                                <div class="perf-metric-card" id="aeTileLagCard">
+                                    <div class="perf-metric-label">Eval lag p95</div>
+                                    <div class="perf-metric-value" id="aeTileLag">--</div>
+                                    <div class="perf-metric-sub" id="aeTileLagSub"></div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Avg Exec Time</div>
-                                    <div class="perf-metric-value" id="alertMetricAvgMs">--</div>
+                                    <div class="perf-metric-label">Firing</div>
+                                    <div class="perf-metric-value" id="aeTileFires">--</div>
+                                    <div class="perf-metric-sub" id="aeTileFiresSub"></div>
                                 </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">P95 Exec Time</div>
-                                    <div class="perf-metric-value" id="alertMetricP95Ms">--</div>
+                                <div class="perf-metric-card" id="aeTileDisabledCard">
+                                    <div class="perf-metric-label">Auto-disabled</div>
+                                    <div class="perf-metric-value" id="aeTileDisabled">--</div>
+                                    <div class="perf-metric-sub" id="aeTileDisabledSub"></div>
                                 </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Max Exec Time</div>
-                                    <div class="perf-metric-value" id="alertMetricMaxMs">--</div>
-                                </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Disabled Alerts</div>
-                                    <div class="perf-metric-value" id="alertMetricDisabled">--</div>
+                                <div class="perf-metric-card" id="aeTileActionsCard">
+                                    <div class="perf-metric-label">Action failures</div>
+                                    <div class="perf-metric-value" id="aeTileActions">--</div>
+                                    <div class="perf-metric-sub" id="aeTileActionsSub"></div>
                                 </div>
                             </div>
 
-                            <div class="perf-metrics-group-label">Hot Table (logs_hot)</div>
-                            <div class="perf-metrics-grid">
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Partitions</div>
-                                    <div class="perf-metric-value" id="hotMetricPartitions">--</div>
+                            <div class="perf-charts-row act-charts">
+                                <div class="perf-chart-card act-chart-card">
+                                    <h3>Evaluation latency</h3>
+                                    <div class="act-chart-body" id="aeLatencyWrap">
+                                        <div class="perf-chart-placeholder">Waiting for samples...</div>
+                                    </div>
                                 </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Rows</div>
-                                    <div class="perf-metric-value" id="hotMetricRows">--</div>
-                                </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Size on Disk</div>
-                                    <div class="perf-metric-value" id="hotMetricSize">--</div>
-                                </div>
-                                <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Coverage Window</div>
-                                    <div class="perf-metric-value" id="hotMetricCoverage">--</div>
-                                    <div class="perf-metric-sub" id="hotMetricCoverageSub"></div>
-                                </div>
-                            </div>
-
-                            <div class="perf-charts-row">
-                                <div class="perf-chart-card perf-chart-card-wide">
-                                    <h3>Exec Time Distribution</h3>
-                                    <div id="perfAlertChartPlaceholder" class="perf-chart-placeholder">No eval data yet</div>
-                                    <canvas id="perfAlertChart"></canvas>
-                                </div>
-                            </div>
-
-                            <div class="perf-charts-row">
-                                <div class="perf-chart-card perf-chart-card-wide">
-                                    <h3>Avg Exec Time</h3>
-                                    <div id="perfAlertTrendPlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
-                                    <canvas id="perfAlertTrendChart" style="display:none"></canvas>
+                                <div class="perf-chart-card act-chart-card">
+                                    <h3>Fires by severity</h3>
+                                    <div class="act-chart-body" id="aeFiresWrap">
+                                        <div class="perf-chart-placeholder">No fires in range</div>
+                                    </div>
+                                    <div class="act-legend" id="aeFiresLegend"></div>
                                 </div>
                             </div>
 
                             <div class="perf-section">
                                 <div class="perf-section-header">
-                                    <h3>Slowest Alerts</h3>
-                                    <span class="perf-section-hint">by last eval exec time</span>
+                                    <div class="act-modes" id="aeModes">
+                                        <button type="button" class="act-mode active" data-mode="alerts">Alerts</button>
+                                        <button type="button" class="act-mode" data-mode="fires">Recent fires</button>
+                                    </div>
+                                    <span class="perf-count" id="aeRowCount">0</span>
+                                    <span class="perf-section-hint" id="aeModeHint"></span>
+                                    <span class="perf-count" id="aeModeWindow" title="The alert window is capped so this page cannot become the load it is watching"></span>
+                                    <span class="filters-spacer"></span>
+                                    <input type="text" id="aeSearch" class="perf-search-input" placeholder="Filter alert name..." autocomplete="off" spellcheck="false">
+                                    <select id="aeFractal" class="setting-select perf-refresh-select">
+                                        <option value="">All fractals</option>
+                                    </select>
                                 </div>
-                                <div id="perfAlertSlowestTable" class="perf-table-container">
-                                    <div class="empty-state" style="min-height: 80px;"><p>No alert fires in range</p></div>
+                                <div class="act-failstrip" id="aeDisabledStrip" style="display:none"></div>
+                                <div id="aeRowsTable" class="perf-table-container act-stream-container">
+                                    <div class="empty-state" style="min-height: 120px;"><p>Loading alert engine...</p></div>
                                 </div>
                             </div>
                         </div>
@@ -831,6 +837,22 @@
                                             <option value="180">3 minutes</option>
                                             <option value="300">5 minutes</option>
                                             <option value="600">10 minutes</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="alertRevisionRetentionSettings" class="sp-row-label">Alert history depth</label>
+                                        <p class="sp-row-desc">How many definition revisions each alert keeps for diffing and rollback, including the current one.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="alertRevisionRetentionSettings" class="setting-select">
+                                            <option value="5">5 revisions</option>
+                                            <option value="10">10 revisions</option>
+                                            <option value="25">25 revisions</option>
+                                            <option value="50">50 revisions</option>
+                                            <option value="100">100 revisions</option>
                                         </select>
                                     </div>
                                 </div>
@@ -2355,10 +2377,18 @@
             <button class="alerts-sub-tab" data-subtab="feeds" onclick="AlertFeeds.showFeedAlertsTab()">Feeds</button>
             <button class="alerts-sub-tab" data-subtab="actions" onclick="AlertFeeds.showActionsTab()">Actions</button>
             <button class="alerts-sub-tab" data-subtab="coverage" onclick="AlertFeeds.showCoverageTab()">Coverage</button>
+            <button class="alerts-sub-tab" data-subtab="policies" onclick="AlertFeeds.showPoliciesTab()">Policies</button>
+            <button class="alerts-sub-tab" data-subtab="changes" onclick="AlertFeeds.showChangesTab()">Changes<span id="alertChangesBadge" class="alerts-sub-badge" hidden></span></button>
         </div>
 
         <!-- MITRE ATT&CK Coverage View (rendered by attackCoverage.js) -->
         <div id="attackCoverageView" class="auth-required" style="display: none;"></div>
+
+        <!-- Alert Policies View (rendered by alertPolicyAdmin.js) -->
+        <div id="alertPoliciesView" class="auth-required" style="display: none;"></div>
+
+        <!-- Proposed Changes View (rendered by alertChanges.js) -->
+        <div id="alertChangesView" class="auth-required" style="display: none;"></div>
 
         <!-- Manual Alerts View (existing) -->
         <div id="alertsView" class="auth-required" style="display: none;">
@@ -3110,8 +3140,12 @@
                     <div class="search-results-split">
                     <section class="results-section">
                         <div class="results-header">
-                            <h2>Results</h2>
-                            <div class="results-controls">
+                            <div class="editor-result-tabs" id="alertResultTabs">
+                                <button type="button" class="ert-tab active" data-pane="results">Results</button>
+                                <button type="button" class="ert-tab" data-pane="tests">Tests<span id="alertTestsChip" class="ert-chip" hidden></span></button>
+                                <button type="button" class="ert-tab" data-pane="checks" hidden>Checks<span id="alertChecksChip" class="ert-chip" hidden></span></button>
+                            </div>
+                            <div class="results-controls" id="alertResultsControls">
                                 <span id="alertResultsCount" class="result-count">-</span>
                                 <span id="alertExecutionTime" class="execution-time"></span>
                                 <button id="alertExportCsvBtn" class="export-btn" style="display: none;" onclick="Alerts.exportToCsv()">csv</button>
@@ -3127,6 +3161,7 @@
                             </div>
                         </div>
 
+                        <div id="alertResultsPane">
                         <div id="alertError" class="error-message" style="display: none;"></div>
                         <div class="sql-preview">
                             <div class="sql-header">
@@ -3142,6 +3177,10 @@
                                 <div class="empty-text">Run a query to see results that would trigger this alert</div>
                             </div>
                         </div>
+                        </div><!-- end alertResultsPane -->
+
+                        <div id="alertTestsPane" class="alert-tests-pane" hidden></div>
+                        <div id="alertChecksPane" class="alert-checks-pane" hidden></div>
                     </section>
 
                     <!-- Log Detail Panel (push layout, scoped to the alert editor) -->
@@ -3722,6 +3761,7 @@ queryString: |-
   | table(timestamp, message, host)
 actionNames:
 - My Webhook Action
+- My Fractal Action
 labels:
 - Production
 - Error Alerts
@@ -4294,7 +4334,13 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/groupsView.js"></script>
     <script src="/static/performance.js"></script>
     <script src="/static/activity.js"></script>
+    <script src="/static/alertEngine.js"></script>
     <script src="/static/alertDetail.js"></script>
+    <script src="/static/alertHistory.js"></script>
+    <script src="/static/alertTests.js"></script>
+    <script src="/static/alertPolicy.js"></script>
+    <script src="/static/alertPolicyAdmin.js"></script>
+    <script src="/static/alertChanges.js"></script>
     <script src="/static/alertList.js"></script>
     <script src="/static/alerts.js"></script>
     <script src="/static/alertFeeds.js"></script>

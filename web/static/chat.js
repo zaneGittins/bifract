@@ -61,6 +61,19 @@ const CONFIRM_TITLES = {
     search_archive: 'Search the archive (slow, and it costs storage reads)',
 };
 
+// What became of a proposed action, in the card's own words. The keys are the
+// statuses the server records for an offered call.
+const CONFIRM_OUTCOMES = {
+    approve: 'Approved',
+    deny: 'Declined',
+    superseded: 'Superseded',
+    expired: 'Expired',
+};
+
+// How often the streaming answer repaints. Every token would reparse the whole
+// reply; this is short enough to read as continuous.
+const STREAM_PAINT_MS = 50;
+
 const Chat = {
     currentConversationId: null,
     conversations: [],
@@ -71,6 +84,8 @@ const Chat = {
     initialized: false,
     chatCharts: [],
     autoScroll: true,
+    scrollPending: false,
+    statusLabel: null,
     lastUserMessage: null,
     conversationFilter: '',
 
@@ -139,7 +154,7 @@ const Chat = {
             scrollEl.addEventListener('scroll', () => {
                 const atBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 40;
                 this.autoScroll = atBottom;
-            });
+            }, { passive: true });
         }
     },
 
@@ -338,11 +353,14 @@ const Chat = {
         msgs.innerHTML = '';
 
         try {
-            const res = await HttpUtils.safeFetch(`/api/v1/chat/conversations/${conversationId}/messages`, {
-                credentials: 'include',
-            });
-            const messages = HttpUtils.list(res);
-            messages.forEach(msg => this.renderMessage(msg));
+            const [res, offers] = await Promise.all([
+                HttpUtils.safeFetch(`/api/v1/chat/conversations/${conversationId}/messages`, { credentials: 'include' }),
+                // A conversation that never proposed a write has nothing here,
+                // and a failure to read it must not blank the thread.
+                HttpUtils.safeFetch(`/api/v1/chat/conversations/${conversationId}/tool-calls`, { credentials: 'include' })
+                    .catch(() => null),
+            ]);
+            this.renderHistory(HttpUtils.list(res), HttpUtils.list(offers));
             this.scrollToBottom();
         } catch (err) {
             console.error('[Chat] Failed to load messages:', err);
@@ -405,14 +423,8 @@ const Chat = {
     async _streamToAssistant(content, displayText) {
         // The server closes anything still waiting when a new message arrives,
         // so the cards for those actions stop being answerable here too.
-        document.querySelectorAll('.chat-confirm:not(.is-answered)').forEach(card => {
-            card.classList.add('is-answered', 'is-declined');
-            card.querySelector('.chat-confirm-actions')?.remove();
-            const outcome = document.createElement('div');
-            outcome.className = 'chat-confirm-outcome';
-            outcome.textContent = 'Superseded';
-            card.appendChild(outcome);
-        });
+        document.querySelectorAll('.chat-confirm:not(.is-answered)')
+            .forEach(card => this._markConfirmAnswered(card, 'superseded'));
 
         const assistantBubble = this.createAssistantBubble();
         const msgs = document.getElementById('chatMessages');
@@ -482,18 +494,20 @@ const Chat = {
                 console.error('[Chat] Stream error:', err);
                 this.hideStatusIndicator();
                 hadError = true;
-                if (contentEl) {
-                    this.clearBubbleLoading(contentEl);
-                    contentEl.innerHTML = `<span class="chat-error">Connection error: ${Utils.escapeHtml(err.message)}</span>`;
-                }
+                this.clearBubbleLoading(contentEl);
+                this._finalizeStreamingText(contentEl);
+                this.appendError(contentEl, `Connection error: ${err.message}`);
             }
         } finally {
             this.isStreaming = false;
             this.currentReader = null;
             this.hideStatusIndicator();
             this.updateInputState(false);
-            // Finalize markdown on streaming text
             this._finalizeStreamingText(contentEl);
+            this.clearBubbleLoading(contentEl);
+            if (contentEl && !contentEl.childNodes.length) {
+                contentEl.innerHTML = '<span class="chat-tool-empty">The assistant returned nothing.</span>';
+            }
             this.scrollToBottom();
             if (hadError) this._appendRetryButton(contentEl);
         }
@@ -508,14 +522,21 @@ const Chat = {
                 this.appendToken(contentEl, event.content);
                 break;
             case 'tool_call':
-                this.setStatus(this._toolStatus(event.tool_name));
-                if (event.tool_name === 'present_results' || event.tool_name === 'render_chart' || event.tool_name === 'think') break;
+                // present_results and render_chart draw below the trace, from
+                // their own events, once the steps that fed them are in.
+                if (event.tool_name === 'present_results' || event.tool_name === 'render_chart') break;
                 if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
-                this.renderToolCall(contentEl, event.tool_name, event.tool_args);
+                if (event.tool_name === 'think') {
+                    this.setStatus('Thinking');
+                    this.renderThinkBlock(contentEl, event.tool_args, event.tool_call_id);
+                    break;
+                }
+                this.setStatus(this._toolStatus(event.tool_name));
+                this.renderToolCall(contentEl, event.tool_name, event.tool_args, event.tool_call_id);
                 break;
             case 'tool_result':
                 if (event.tool_name === 'render_chart' || event.tool_name === 'think') break;
-                this.renderToolResult(contentEl, event.tool_name, event.tool_result);
+                this.renderToolResult(contentEl, event.tool_name, event.tool_result, event.tool_call_id);
                 break;
             case 'tool_confirm':
                 if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
@@ -525,25 +546,23 @@ const Chat = {
                 break;
             case 'think':
                 this.setStatus('Thinking');
-                if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
-                this.renderThinkBlock(contentEl, event.tool_args);
                 break;
             case 'chart':
                 if (!hasContent) { this.clearBubbleLoading(contentEl); contentEl.innerHTML = ''; hasContent = true; }
-                { const ts = contentEl.querySelector('.chat-streaming-text'); if (ts) ts.remove(); }
+                this.discardStreamingText(contentEl);
                 this.renderChart(contentEl, event.tool_args);
                 break;
             case 'present':
-                { const ts2 = contentEl.querySelector('.chat-streaming-text'); if (ts2) ts2.remove(); }
+                this.discardStreamingText(contentEl);
                 this.clearBubbleLoading(contentEl);
-                this._finalizeStreamingText(contentEl);
                 this.renderPresentation(contentEl, event.tool_args);
                 hasContent = true;
                 break;
             case 'error':
                 this.hideStatusIndicator();
                 this.clearBubbleLoading(contentEl);
-                contentEl.innerHTML = `<span class="chat-error">${Utils.escapeHtml(event.content || 'Unknown error')}</span>`;
+                this._finalizeStreamingText(contentEl);
+                this.appendError(contentEl, event.content || 'Unknown error');
                 hasContent = true;
                 break;
             case 'title':
@@ -563,6 +582,17 @@ const Chat = {
         return hasContent;
     },
 
+    // The steps and results already on screen are in the stored conversation
+    // either way, so replacing the bubble with the error made the live view
+    // disagree with the one you come back to.
+    appendError(contentEl, message) {
+        if (!contentEl) return;
+        const el = document.createElement('div');
+        el.className = 'chat-error';
+        el.textContent = message;
+        contentEl.appendChild(el);
+    },
+
     _appendRetryButton(contentEl) {
         if (!contentEl) return;
         const btn = document.createElement('button');
@@ -572,17 +602,33 @@ const Chat = {
         contentEl.appendChild(btn);
     },
 
-    // Convert streaming text span to rendered markdown
+    // Settle the streamed answer: cancel the pending repaint, render what
+    // arrived, and stop treating the element as the live buffer. The element
+    // stays where it is, so nothing moves as the stream ends.
     _finalizeStreamingText(contentEl) {
-        if (!contentEl) return;
-        const textSpan = contentEl.querySelector('.chat-streaming-text');
-        if (!textSpan || !textSpan.textContent.trim()) return;
-        const raw = textSpan.textContent;
-        textSpan.remove();
-        const rendered = document.createElement('div');
-        rendered.className = 'chat-msg-text chat-markdown';
-        rendered.innerHTML = this._renderMarkdown(raw);
-        contentEl.appendChild(rendered);
+        const el = contentEl?.querySelector('.chat-streaming-text');
+        if (!el) return;
+        clearTimeout(el.paintTimer);
+        el.paintTimer = null;
+        const raw = (el.raw || '').replace(/\s+$/, '');
+        if (!raw) {
+            el.remove();
+            return;
+        }
+        el.raw = raw;
+        el.innerHTML = this._renderMarkdown(raw);
+        el.classList.remove('chat-streaming-text');
+    },
+
+    // A chart or a presentation supersedes the prose the model streamed ahead
+    // of it. Replaying stored messages drops the same text at the same point,
+    // so a reloaded turn reads exactly as it did live.
+    discardStreamingText(contentEl) {
+        const el = contentEl?.querySelector('.chat-streaming-text');
+        if (el) {
+            clearTimeout(el.paintTimer);
+            el.remove();
+        }
     },
 
     stopStreaming() {
@@ -604,42 +650,106 @@ const Chat = {
 
     // ---- Rendering ----
 
-    renderMessage(msg) {
-        const msgs = document.getElementById('chatMessages');
-        if (!msgs) return;
-
-        if (msg.role === 'tool') return; // Tool results rendered inline
-
-        if (msg.role === 'user') {
-            this.appendUserMessage(msg.content, true);
-        } else if (msg.role === 'assistant') {
-            // Add separator before assistant reply
-            if (msgs.children.length > 0) {
-                msgs.appendChild(this.createSeparator());
+    // Stored rows are replayed through the same primitives the live stream uses,
+    // so a conversation looks the same coming back to it as it did while it ran.
+    // The unit is the turn, not the row: the stream writes a turn's think steps,
+    // tool calls, results and answer into one bubble, while the turn is stored as
+    // an assistant row per tool round.
+    renderHistory(messages, offers = []) {
+        if (!document.getElementById('chatMessages')) return;
+        const offered = new Map((offers || []).map((o) => [o.tool_call_id, o]));
+        let turn = null;
+        for (const msg of messages) {
+            if (msg.role === 'user') {
+                this.flushTurnText(turn);
+                turn = null;
+                this.appendUserMessage(msg.content, true);
+                continue;
             }
-            const bubble = this.createAssistantBubble();
-            const contentEl = bubble.querySelector('.chat-msg-content');
-
-            // Check if this message has present_results or render_chart display calls
-            const hasPresentation = this.renderPresentFromHistory(contentEl, msg.tool_calls);
-
-            if (!hasPresentation) {
-                contentEl.innerHTML = this.formatAssistantContent(msg.content);
-
-                // Render any tool calls that were part of this message
-                if (msg.tool_calls && msg.tool_calls.length > 0) {
-                    msg.tool_calls.forEach(tc => {
-                        const name = tc.function?.name;
-                        if (name === 'render_chart' || name === 'present_results' || name === 'think') return;
-                        let args = {};
-                        try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}
-                        this.renderToolCall(contentEl, name, args);
-                    });
-                }
+            if (msg.role === 'assistant') {
+                if (!turn) turn = this.openAssistantTurn();
+                this.replayAssistantMessage(turn, msg, offered);
+            } else if (msg.role === 'tool' && turn) {
+                this.replayToolResult(turn, msg);
             }
-
-            msgs.appendChild(bubble);
         }
+        this.flushTurnText(turn);
+    },
+
+    // A turn buffers its answer text because the stream does: tokens accumulate
+    // in one span that a chart or a presentation replaces, so the text is only
+    // known to have survived once the turn is over.
+    openAssistantTurn() {
+        const msgs = document.getElementById('chatMessages');
+        if (!msgs) return null;
+        if (msgs.children.length > 0) msgs.appendChild(this.createSeparator());
+        const bubble = this.createAssistantBubble();
+        msgs.appendChild(bubble);
+        const contentEl = bubble.querySelector('.chat-msg-content');
+        this.clearBubbleLoading(contentEl);
+        return { contentEl, text: '' };
+    },
+
+    // Mirrors _finalizeStreamingText: trailing blank goes, and nothing is
+    // written for an answer that turned out to be only whitespace.
+    flushTurnText(turn) {
+        if (!turn) return;
+        const raw = turn.text.replace(/\s+$/, '');
+        turn.text = '';
+        if (!raw) return;
+        const rendered = document.createElement('div');
+        rendered.className = 'chat-msg-text chat-markdown';
+        rendered.innerHTML = this._renderMarkdown(raw);
+        turn.contentEl.appendChild(rendered);
+    },
+
+    replayAssistantMessage(turn, msg, offered) {
+        // Text precedes the round's tool calls in the stream, and a chart or a
+        // presentation supersedes it.
+        if (msg.content) turn.text += msg.content;
+
+        for (const tc of msg.tool_calls || []) {
+            const name = tc.function?.name;
+            if (!name) continue;
+            let args = {};
+            try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
+            // A step goes in above the answer text, and the live path trims the
+            // buffer as it does so.
+            turn.text = turn.text.replace(/\s+$/, '');
+            switch (name) {
+                case 'think':
+                    this.renderThinkBlock(turn.contentEl, args, tc.id);
+                    break;
+                case 'render_chart':
+                    turn.text = '';
+                    this.renderChart(turn.contentEl, args);
+                    break;
+                case 'present_results':
+                    turn.text = '';
+                    this.renderPresentation(turn.contentEl, args);
+                    break;
+                default:
+                    this.renderToolCall(turn.contentEl, name, args, tc.id);
+            }
+        }
+
+        // The stream offers a card once the round's steps and text are in, so
+        // the replay flushes the text before putting one back.
+        for (const tc of msg.tool_calls || []) {
+            const offer = offered?.get(tc.id);
+            if (!offer) continue;
+            this.flushTurnText(turn);
+            const card = this.renderToolConfirm(turn.contentEl, offer.tool_name, offer.arguments, offer.id);
+            if (offer.status !== 'open') this._markConfirmAnswered(card, offer.status);
+        }
+    },
+
+    replayToolResult(turn, msg) {
+        const stored = msg.tool_results?.[0];
+        if (!stored) return;
+        // Display-only calls carry no result worth showing, as in the live stream.
+        if (stored.tool_name === 'think' || stored.tool_name === 'render_chart') return;
+        this.renderToolResult(turn.contentEl, stored.tool_name, stored.result, stored.tool_call_id);
     },
 
     createSeparator() {
@@ -670,19 +780,24 @@ const Chat = {
         return div;
     },
 
+    // Tokens accumulate on the element and it repaints on a timer. Appending to
+    // textContent rebuilt the whole answer per token, and formatting only once
+    // the stream ended made the finished reply jump as it reflowed.
     appendToken(contentEl, token) {
-        let textSpan = contentEl.querySelector('.chat-streaming-text');
-        if (!textSpan) {
-            textSpan = document.createElement('span');
-            textSpan.className = 'chat-streaming-text chat-msg-text';
-            contentEl.appendChild(textSpan);
+        let el = contentEl.querySelector('.chat-streaming-text');
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'chat-streaming-text chat-msg-text chat-markdown';
+            el.raw = '';
+            contentEl.appendChild(el);
         }
-        textSpan.textContent += token;
-    },
-
-    formatAssistantContent(text) {
-        if (!text) return '';
-        return '<div class="chat-msg-text chat-markdown">' + this._renderMarkdown(text) + '</div>';
+        el.raw += token;
+        if (el.paintTimer) return;
+        el.paintTimer = setTimeout(() => {
+            el.paintTimer = null;
+            el.innerHTML = this._renderMarkdown(el.raw);
+            if (this.autoScroll) this.scrollToBottom();
+        }, STREAM_PAINT_MS);
     },
 
     _renderMarkdown(text) {
@@ -700,11 +815,12 @@ const Chat = {
             .replace(/\n/g, '<br>');
     },
 
+    // A trace step goes in above the answer text, so drop the blank the tokens
+    // left behind. Only the pending buffer is touched: rewriting the rendered
+    // element's textContent would flatten its markup.
     trimTrailingWhitespace(contentEl) {
-        const textSpan = contentEl.querySelector('.chat-streaming-text, .chat-msg-text');
-        if (textSpan) {
-            textSpan.textContent = textSpan.textContent.replace(/\s+$/, '');
-        }
+        const el = contentEl?.querySelector('.chat-streaming-text');
+        if (el && typeof el.raw === 'string') el.raw = el.raw.replace(/\s+$/, '');
     },
 
     // Find or create the unified investigation trace for an assistant turn.
@@ -721,10 +837,11 @@ const Chat = {
         return trace;
     },
 
-    _traceStep(label, type) {
+    _traceStep(label, type, callId) {
         const step = document.createElement('div');
         step.className = 'chat-trace-step collapsed';
         if (type) step.dataset.type = type;
+        if (callId) step.dataset.callId = callId;
         step.innerHTML = `
             <div class="chat-trace-step-header">
                 <span class="chat-trace-node"></span>
@@ -739,11 +856,11 @@ const Chat = {
         return step;
     },
 
-    renderThinkBlock(contentEl, args) {
+    renderThinkBlock(contentEl, args, callId) {
         this.trimTrailingWhitespace(contentEl);
         const trace = this._traceEl(contentEl);
         const reasoning = args?.reasoning || '';
-        const step = this._traceStep('Thinking', 'think');
+        const step = this._traceStep('Thinking', 'think', callId);
         step.querySelector('.chat-trace-summary').textContent = reasoning.length > 90 ? reasoning.slice(0, 90) + '…' : reasoning;
         const think = document.createElement('div');
         think.className = 'chat-trace-think';
@@ -752,7 +869,7 @@ const Chat = {
         trace.appendChild(step);
     },
 
-    renderToolCall(contentEl, toolName, args) {
+    renderToolCall(contentEl, toolName, args, callId) {
         this.trimTrailingWhitespace(contentEl);
         const trace = this._traceEl(contentEl);
 
@@ -762,7 +879,7 @@ const Chat = {
         const summary = query || args?.search || args?.name || args?.image || args?.host
             || args?.value || args?.page_name || args?.process_guid || '';
 
-        const step = this._traceStep(label, toolName);
+        const step = this._traceStep(label, toolName, callId);
         step.querySelector('.chat-trace-summary').textContent = summary;
         const header = step.querySelector('.chat-trace-step-header');
         const body = step.querySelector('.chat-trace-step-body');
@@ -825,15 +942,7 @@ const Chat = {
 
         const answer = (decision) => {
             if (this.isStreaming) return;
-            card.classList.add('is-answered');
-            approve.disabled = true;
-            decline.disabled = true;
-            actions.remove();
-            const outcome = document.createElement('div');
-            outcome.className = 'chat-confirm-outcome';
-            outcome.textContent = decision === 'approve' ? 'Approved' : 'Declined';
-            card.appendChild(outcome);
-            card.classList.add(decision === 'approve' ? 'is-approved' : 'is-declined');
+            this._markConfirmAnswered(card, decision);
             this._resolveToolCall(pendingId, decision, contentEl);
         };
         approve.addEventListener('click', () => answer('approve'));
@@ -844,6 +953,20 @@ const Chat = {
         card.appendChild(actions);
         contentEl.appendChild(card);
         this.scrollToBottom();
+        return card;
+    },
+
+    // The answered state of a card, applied whether the user just clicked, the
+    // turn was superseded, or a stored decision is being replayed. One place
+    // decides what it looks like so the three cannot drift apart.
+    _markConfirmAnswered(card, status) {
+        if (!card || card.classList.contains('is-answered')) return;
+        card.classList.add('is-answered', status === 'approve' ? 'is-approved' : 'is-declined');
+        card.querySelector('.chat-confirm-actions')?.remove();
+        const outcome = document.createElement('div');
+        outcome.className = 'chat-confirm-outcome';
+        outcome.textContent = CONFIRM_OUTCOMES[status] || 'Answered';
+        card.appendChild(outcome);
     },
 
     // Answers a proposed action and reads the rest of the reply into the same
@@ -857,11 +980,15 @@ const Chat = {
         );
     },
 
-    renderToolResult(contentEl, toolName, result) {
-        // Attach the result to the most recent trace step.
+    // The result goes under the step for its own call. A round that batches a
+    // think with a real call announces them in one order and dispatches them in
+    // another, so "the step that went in last" was regularly the wrong one.
+    renderToolResult(contentEl, toolName, result, callId) {
         const trace = contentEl.querySelector(':scope > .chat-trace');
         const steps = trace ? trace.querySelectorAll('.chat-trace-step') : [];
-        const targetCall = steps.length ? steps[steps.length - 1].querySelector('.chat-trace-step-body') : contentEl;
+        const own = callId && trace ? trace.querySelector(`.chat-trace-step[data-call-id="${CSS.escape(callId)}"]`) : null;
+        const step = own || (steps.length ? steps[steps.length - 1] : null);
+        const targetCall = step ? step.querySelector('.chat-trace-step-body') : contentEl;
 
         const resultDiv = document.createElement('div');
         resultDiv.className = 'chat-trace-result';
@@ -1021,31 +1148,6 @@ const Chat = {
         if (chart) this.chatCharts.push(chart);
     },
 
-    // Render display-only tool calls (think, render_chart, present_results) from history
-    renderPresentFromHistory(contentEl, toolCalls) {
-        if (!toolCalls || toolCalls.length === 0) return false;
-        let hasPresent = false;
-        for (const tc of toolCalls) {
-            if (tc.function?.name === 'think') {
-                let args = {};
-                try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
-                this.renderThinkBlock(contentEl, args);
-            }
-            if (tc.function?.name === 'render_chart') {
-                let args = {};
-                try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
-                this.renderChart(contentEl, args);
-            }
-            if (tc.function?.name === 'present_results') {
-                let args = {};
-                try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
-                this.renderPresentation(contentEl, args);
-                hasPresent = true;
-            }
-        }
-        return hasPresent;
-    },
-
     // ---- Loading / status indicator ----
 
     startLoadingAnimation(contentEl) {
@@ -1092,6 +1194,8 @@ const Chat = {
 
     // Show the status line with the actual current step (no random phrases).
     setStatus(text) {
+        if (this.statusLabel === text) return;
+        this.statusLabel = text;
         const indicator = document.getElementById('chatStatusIndicator');
         const statusText = document.getElementById('chatStatusText');
         if (indicator) indicator.style.display = 'flex';
@@ -1102,6 +1206,7 @@ const Chat = {
     showStatusIndicator() { this.setStatus('Working'); },
 
     hideStatusIndicator() {
+        this.statusLabel = null;
         const indicator = document.getElementById('chatStatusIndicator');
         if (indicator) indicator.style.display = 'none';
     },
@@ -1140,9 +1245,16 @@ const Chat = {
             .forEach(btn => { btn.disabled = streaming; });
     },
 
+    // Coalesced to one write per frame: reading scrollHeight forces layout, and
+    // a fast reply asked for it on every token.
     scrollToBottom() {
-        const scrollEl = document.querySelector('.chat-thread-scroll');
-        if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        if (this.scrollPending) return;
+        this.scrollPending = true;
+        requestAnimationFrame(() => {
+            this.scrollPending = false;
+            const scrollEl = document.querySelector('.chat-thread-scroll');
+            if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        });
     },
 
     async analyzeLog(logData) {

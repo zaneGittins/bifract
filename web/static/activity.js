@@ -189,7 +189,9 @@ const Activity = {
     },
 
     async loadStream() {
-        if (!this.canPoll() || this.hovering) return;
+        // Cost patterns shows a different table, so the stream is not just
+        // unrendered there, it should not be asked for.
+        if (!this.canPoll() || this.hovering || this.mode !== 'live') return;
         this.streamAbort?.abort();
         const abort = new AbortController();
         this.streamAbort = abort;
@@ -220,7 +222,9 @@ const Activity = {
         const abort = new AbortController();
         this.summaryAbort = abort;
         try {
-            const res = await fetch('/api/v1/admin/activity/summary?range=' + encodeURIComponent(this.range),
+            const params = new URLSearchParams({ range: this.range });
+            if (this.mode === 'patterns') params.set('patterns', '1');
+            const res = await fetch('/api/v1/admin/activity/summary?' + params.toString(),
                 { credentials: 'include', signal: abort.signal });
             const data = await res.json();
             if (!data.success || abort.signal.aborted) return;
@@ -378,6 +382,9 @@ const Activity = {
         const node = document.getElementById('actNode');
         if (node) node.style.display = (live && node.dataset.signature) ? '' : 'none';
         this.renderTable();
+        if (!this.isActive) return;
+        if (live) this.loadStream();
+        else this.loadSummary(true);
     },
 
     toggle(id, on) {
@@ -589,7 +596,9 @@ const Activity = {
         const count = document.getElementById('actStreamCount');
         if (count) count.textContent = patterns.length;
         if (!patterns.length) {
-            host.innerHTML = '<div class="empty-state" style="min-height: 80px;"><p>No queries in range</p></div>';
+            const pending = !(this.summary && 'patterns' in this.summary);
+            host.innerHTML = `<div class="empty-state" style="min-height: 80px;"><p>${
+                pending ? 'Reading the query log...' : 'No queries in range'}</p></div>`;
             return;
         }
         let html = '<table class="results-table perf-table"><thead><tr>' +

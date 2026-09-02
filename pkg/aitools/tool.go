@@ -253,6 +253,7 @@ func All() []Tool {
 	d := &set{seen: map[string]bool{}}
 	registerQueryTools(d)
 	registerAlertTools(d)
+	registerGovernanceTools(d)
 	registerCatalogTools(d)
 	registerDictionaryTools(d)
 	registerCommentTools(d)

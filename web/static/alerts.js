@@ -670,7 +670,7 @@ const Alerts = {
         }
         title.textContent = alert.name;
         title.title = alert.name;
-        content.innerHTML = AlertDetail.renderBody(alert);
+        AlertDetail.installTabs(panel, alert, AlertDetail.renderBody(alert));
         if (footer) footer.innerHTML = this.renderDetailFooter(alert);
         content.scrollTop = 0;
 
@@ -1566,31 +1566,69 @@ const Alerts = {
         }
     },
 
+    // Emits `key: value` with a literal block scalar when the value spans lines,
+    // otherwise a double-quoted scalar. Quoting is unconditional so values that
+    // look like YAML syntax (leading '*', ': ', '#', pure digits) round-trip.
+    yamlField(key, value) {
+        const text = (value == null ? '' : String(value)).replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+        if (text === '') return `${key}: ""`;
+        if (!text.includes('\n')) return `${key}: ${this.yamlQuote(text)}`;
+        const body = text.split('\n').map(line => line ? `  ${line}` : '').join('\n');
+        // `|2-` pins the indent explicitly so a first line that itself starts with
+        // whitespace cannot shift the block's detected indentation; `-` chomps the
+        // trailing newline the join would otherwise imply.
+        return `${key}: |2-\n${body}`;
+    },
+
+    yamlList(key, values) {
+        const items = values || [];
+        if (items.length === 0) return `${key}: []`;
+        return `${key}:\n${items.map(v => `- ${this.yamlQuote(v)}`).join('\n')}`;
+    },
+
+    // Double-quoted scalar. Control characters are escaped rather than emitted raw,
+    // so a stray newline in a label or action name cannot break out of the scalar.
+    yamlQuote(value) {
+        const escapes = { '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+        const text = (value == null ? '' : String(value))
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/[\x00-\x1f\x7f]/g, ch => escapes[ch] || `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
+        return `"${text}"`;
+    },
+
+    // Every action the alert runs, of any kind, as one list of names. Import
+    // resolves each name back to its kind, so the export does not carry storage
+    // layout the way the editor's own action list does not.
+    alertActionNames(alert) {
+        return [
+            alert.webhook_actions,
+            alert.fractal_actions,
+            alert.dictionary_actions,
+            alert.email_actions,
+        ].flatMap(list => (list || []).map(a => a && a.name).filter(Boolean));
+    },
+
     alertToYAML(alert) {
-        const webhookNames = alert.webhook_actions ? alert.webhook_actions.map(wh => wh.name) : [];
+        const actionNames = this.alertActionNames(alert);
 
         const alertType = alert.alert_type || 'event';
-        let yaml = `name: ${alert.name}
-description: |-
-  ${alert.description || ''}
-queryString: |-
-  ${alert.query_string}
+        let yaml = `${this.yamlField('name', alert.name)}
+${this.yamlField('description', alert.description)}
+${this.yamlField('queryString', alert.query_string)}
 alertType: ${alertType}
 severity: ${alert.severity || 'medium'}
-actionNames:
-${webhookNames.map(name => `- ${name}`).join('\n')}
-labels:
-${(alert.labels || []).map(label => `- ${label}`).join('\n')}${(alert.references && alert.references.length > 0) ? `
-references:
-${alert.references.map(ref => `- ${ref}`).join('\n')}` : ''}
+${this.yamlList('actionNames', actionNames)}
+${this.yamlList('labels', alert.labels)}${(alert.references && alert.references.length > 0) ? `
+${this.yamlList('references', alert.references)}` : ''}
 enabled: ${alert.enabled}
 throttleTimeSeconds: ${alert.throttle_time_seconds || 0}${alert.throttle_field ? `
-throttleField: ${alert.throttle_field}` : ''}`;
+${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         if (alertType === 'compound' && alert.window_duration) {
             yaml += `\nwindowDuration: ${alert.window_duration}`;
         }
         if (alertType === 'scheduled') {
-            if (alert.schedule_cron) yaml += `\nscheduleCron: "${alert.schedule_cron}"`;
+            if (alert.schedule_cron) yaml += `\n${this.yamlField('scheduleCron', alert.schedule_cron)}`;
             if (alert.query_window_seconds) yaml += `\nqueryWindowSeconds: ${alert.query_window_seconds}`;
         }
         return yaml;
@@ -2154,8 +2192,14 @@ throttleField: ${alert.throttle_field}` : ''}`;
             this.clearAlertEditor();
         }
 
+        this.setupResultTabs();
+        window.AlertTests?.load(alertId);
+        window.AlertPolicy?.load();
+        this.loadGateMode(alertId);
+
         // Set up query input with debounced testing FIRST
         this.setupQueryTesting();
+        this.autosizeDescription();
 
         // Set up alert editor pagination
         this.setupAlertPagination();
@@ -2186,6 +2230,9 @@ throttleField: ${alert.throttle_field}` : ''}`;
 
         this.editingFeedAlert = false;
         this.feedAlertOriginalId = null;
+        window.AlertTests?.release();
+        window.AlertPolicy?.reset();
+        this.cancelPropose();
         document.getElementById('feedAlertBanner')?.remove();
         alertEditorView.style.display = 'none';
 
@@ -2214,6 +2261,24 @@ throttleField: ${alert.throttle_field}` : ''}`;
         }
     },
 
+    // Grows the description textarea to fit its content, up to the CSS max-height.
+    // A height we did not set ourselves means the user dragged the resize handle,
+    // and from then on their height wins until the editor is cleared.
+    autosizeDescription() {
+        const el = document.getElementById('editorAlertDescription');
+        if (!el) return;
+        if (!el.dataset.autosizeBound) {
+            el.dataset.autosizeBound = '1';
+            el.addEventListener('input', () => this.autosizeDescription());
+        }
+        if (el.style.height !== (el.dataset.autoHeight || '')) return;
+        el.style.height = 'auto';
+        const contentHeight = el.scrollHeight;
+        // Zero means the field is not laid out yet; leave the CSS height alone.
+        el.style.height = contentHeight > 0 ? `${contentHeight}px` : '';
+        el.dataset.autoHeight = el.style.height;
+    },
+
     clearAlertEditor() {
         // Clear all form fields
         const nameField = document.getElementById('editorAlertName');
@@ -2226,7 +2291,11 @@ throttleField: ${alert.throttle_field}` : ''}`;
         const enabledField = document.getElementById('editorAlertEnabled');
 
         if (nameField) nameField.value = '';
-        if (descField) descField.value = '';
+        if (descField) {
+            descField.value = '';
+            descField.style.height = '';
+            descField.dataset.autoHeight = '';
+        }
         if (queryField) queryField.value = '';
         if (labelsField) labelsField.value = '';
         this.setLabelsFromArray([]);
@@ -2332,6 +2401,11 @@ throttleField: ${alert.throttle_field}` : ''}`;
             if (countDiv) countDiv.textContent = '';
             return;
         }
+
+        // Tests evaluate alongside the query rather than behind their own button: the
+        // corpus is already loaded server-side, so this is one small query per test.
+        window.AlertTests?.run(query);
+        window.AlertPolicy?.evaluate();
 
         // Cancel any in-flight request before starting a new one
         if (this.currentTestRequest) {
@@ -2448,6 +2522,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
                             if (window.QueryExecutor) {
                                 QueryExecutor.renderResultsToElement(rows, resultsDiv, fieldOrder, {
                                     allResults: rows, isAggregated, detailHost: 'alert',
+                                    gutter: isAggregated ? null : (window.AlertTests && AlertTests.gutter), comments: false,
                                 });
                             }
                             break;
@@ -2507,6 +2582,7 @@ throttleField: ${alert.throttle_field}` : ''}`;
             if (window.QueryExecutor) {
                 QueryExecutor.renderResultsToElement(pageResults, resultsDiv, fieldOrder, {
                     allResults: results, isAggregated, detailHost: 'alert',
+                    gutter: isAggregated ? null : (window.AlertTests && AlertTests.gutter), comments: false,
                 });
             }
             if (exportBtn && results.length > 0) exportBtn.style.display = 'inline-block';
@@ -2863,6 +2939,38 @@ throttleField: ${alert.throttle_field}` : ''}`;
         }
     },
 
+    // Results | Tests over the editor's result area. The pagination and export
+    // controls belong to results only, so they hide with that pane.
+    setupResultTabs() {
+        const tabs = document.getElementById('alertResultTabs');
+        if (!tabs) return;
+
+        // Every open starts on Results. The listeners are wired once, but the active
+        // pane is not: an editor opened after a visit to Tests would otherwise render
+        // its query results into a hidden div.
+        tabs.querySelector('.ert-tab[data-pane="results"]')?.click();
+
+        if (tabs.dataset.wired) return;
+        tabs.dataset.wired = '1';
+
+        tabs.querySelectorAll('.ert-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                tabs.querySelectorAll('.ert-tab').forEach(t => t.classList.toggle('active', t === tab));
+                const pane = tab.dataset.pane;
+                const panes = {
+                    results: document.getElementById('alertResultsPane'),
+                    tests: document.getElementById('alertTestsPane'),
+                    checks: document.getElementById('alertChecksPane')
+                };
+                for (const [name, el] of Object.entries(panes)) {
+                    if (el) el.hidden = name !== pane;
+                }
+                const controls = document.getElementById('alertResultsControls');
+                if (controls) controls.style.visibility = pane === 'results' ? '' : 'hidden';
+            });
+        });
+    },
+
     setupAlertSqlToggle() {
         const toggleSqlBtn = document.getElementById('alertToggleSqlBtn');
         const sqlOutput = document.getElementById('alertSqlOutput');
@@ -2967,7 +3075,10 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const enabledField = document.getElementById('editorAlertEnabled');
 
             if (nameField) nameField.value = alert.name || '';
-            if (descField) descField.value = alert.description || '';
+            if (descField) {
+                descField.value = alert.description || '';
+                this.autosizeDescription();
+            }
             if (queryField) {
                 queryField.value = alert.query_string || '';
                 queryField.dispatchEvent(new Event('input'));
@@ -3352,6 +3463,11 @@ throttleField: ${alert.throttle_field}` : ''}`;
             return;
         }
 
+        if (this.gateEnabled && !this.editingFeedAlert) {
+            this.openProposeComposer(formData);
+            return;
+        }
+
         try {
             // Feed alert: always create a new manual alert (POST)
             const isFeedSave = this.editingFeedAlert;
@@ -3370,6 +3486,15 @@ throttleField: ${alert.throttle_field}` : ''}`;
                 credentials: 'include',
                 body: JSON.stringify(formData)
             });
+
+            // A policy block is not a failure to report and forget: the reasons go to
+            // the Checks tab and onto the fields, where they can be acted on.
+            if (response.status === 422) {
+                const payload = await response.json().catch(() => ({}));
+                window.AlertPolicy?.showBlocked(payload.data || []);
+                Toast.error('Blocked by policy', payload.error || '');
+                return;
+            }
 
             if (!response.ok) {
                 const errorData = await Utils.errorMessage(response);
@@ -3400,6 +3525,161 @@ throttleField: ${alert.throttle_field}` : ''}`;
             console.error('Save alert error:', error);
             Toast.show('Network error: ' + error.message, 'error');
         }
+    },
+
+    // A gated scope takes proposals, not direct writes, so the editor relabels its save
+    // and routes it elsewhere. Loaded per editor open: the gate is per scope, and the
+    // scope can change between alerts.
+    async loadGateMode(alertId) {
+        this.gateEnabled = false;
+        this.applyGateMode(alertId);
+
+        try {
+            const res = await fetch('/api/v1/alert-gate', { credentials: 'include' });
+            if (!res.ok) return;
+            const payload = await res.json();
+            this.gateEnabled = !!payload.data?.enabled;
+        } catch (e) {
+            this.gateEnabled = false;
+        }
+        this.applyGateMode(alertId);
+    },
+
+    applyGateMode(alertId) {
+        const saveBtn = document.getElementById('saveAlertBtn');
+        if (saveBtn && !this.editingFeedAlert) {
+            if (this.gateEnabled) saveBtn.textContent = 'Propose change';
+            else saveBtn.textContent = alertId ? 'Update Alert' : 'Create Alert';
+        }
+
+    },
+
+    // Proposing needs a sentence for the reviewer. It is composed in the editor's own
+    // action bar rather than a browser dialog: the author is describing work that is
+    // still on screen, and a dialog both hides it and loses the text on a stray Escape.
+    openProposeComposer(formData) {
+        this._pendingProposal = formData;
+
+        const actions = document.querySelector('#alertConfigPanel .alert-panel-buttons');
+        if (!actions) return;
+
+        actions.insertAdjacentHTML('beforebegin', `
+            <div id="alertProposeComposer" class="alert-propose">
+                <label class="alert-propose-label" for="alertProposeSummary">Describe this change for the reviewer</label>
+                <textarea id="alertProposeSummary" class="alert-propose-input" spellcheck="false"
+                          placeholder="What changed, and why"></textarea>
+                <div class="alert-propose-actions">
+                    <button type="button" class="alert-btn alert-btn-ghost" onclick="Alerts.cancelPropose()">Cancel</button>
+                    <button type="button" class="alert-btn alert-btn-primary" onclick="Alerts.submitProposal()">Open proposal</button>
+                </div>
+            </div>
+        `);
+        actions.style.display = 'none';
+        document.getElementById('alertProposeSummary')?.focus();
+    },
+
+    cancelPropose() {
+        this._pendingProposal = null;
+        document.getElementById('alertProposeComposer')?.remove();
+        const actions = document.querySelector('#alertConfigPanel .alert-panel-buttons');
+        if (actions) actions.style.display = '';
+    },
+
+    async submitProposal() {
+        const summaryEl = document.getElementById('alertProposeSummary');
+        const summary = (summaryEl?.value || '').trim();
+        if (!summary) {
+            summaryEl?.focus();
+            return;
+        }
+
+        const formData = this._pendingProposal;
+        if (!formData) return;
+
+        const content = {
+            name: formData.name,
+            description: formData.description,
+            query_string: formData.query_string,
+            alert_type: formData.alert_type,
+            severity: formData.severity,
+            throttle_time_seconds: formData.throttle_time_seconds,
+            throttle_field: formData.throttle_field,
+            labels: formData.labels,
+            references: formData.references,
+            window_duration: formData.window_duration,
+            schedule_cron: formData.schedule_cron,
+            query_window_seconds: formData.query_window_seconds,
+            webhook_action_ids: formData.webhook_action_ids,
+            fractal_action_ids: formData.fractal_action_ids,
+            dictionary_action_ids: formData.dictionary_action_ids,
+            email_action_ids: formData.email_action_ids
+        };
+
+        try {
+            const res = await fetch('/api/v1/alert-changes', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: this.currentAlert ? 'update' : 'create',
+                    alert_id: this.currentAlert ? this.currentAlert.id : '',
+                    title: formData.name,
+                    summary,
+                    content,
+                    tests: formData.tests || []
+                })
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+            this.cancelPropose();
+            Toast.success('Proposal opened', 'It appears under Changes for review.');
+            this.backToAlerts();
+        } catch (e) {
+            Toast.error('Could not open proposal', e.message);
+        }
+    },
+
+    // The definition as it stands in the editor, for a policy check that must judge the
+    // edit in progress rather than the last saved version. Deliberately not
+    // getAlertEditorFormData: that one validates and toasts, and a check running on a
+    // keystroke must do neither.
+    getPolicySubject() {
+        const value = (id) => document.getElementById(id)?.value || '';
+        const listFrom = (id, sep) => {
+            const raw = document.getElementById(id)?.value || '';
+            return raw ? raw.split(sep).map(s => s.trim()).filter(Boolean) : [];
+        };
+
+        this.syncLabelsToHidden();
+        this.syncReferencesToTextarea();
+
+        const actionIds = { webhook: [], 'fractal-action': [], 'dictionary-action': [], 'email-action': [] };
+        document.querySelectorAll('#editorSelectedActions .selected-action-item').forEach(item => {
+            if (actionIds[item.dataset.type]) actionIds[item.dataset.type].push(item.dataset.id);
+        });
+
+        const tests = window.AlertTests?.payload() || [];
+        const run = window.AlertTests?.lastRun?.() || null;
+
+        return {
+            name: value('editorAlertName').trim(),
+            description: value('editorAlertDescription').trim(),
+            query_string: value('editorQueryInput').trim(),
+            alert_type: document.getElementById('alertTypeSelect')?.value || 'event',
+            severity: value('editorAlertSeverity') || 'medium',
+            throttle_time_seconds: parseInt(value('editorThrottleTime'), 10) || 0,
+            throttle_field: value('editorThrottleField').trim(),
+            labels: listFrom('editorAlertLabels', ','),
+            references: listFrom('editorAlertReferences', '\n'),
+            webhook_action_ids: actionIds.webhook,
+            fractal_action_ids: actionIds['fractal-action'],
+            dictionary_action_ids: actionIds['dictionary-action'],
+            email_action_ids: actionIds['email-action'],
+            tests,
+            tests_run: !!run,
+            tests_passing: run ? run.failed === 0 : false
+        };
     },
 
     getAlertEditorFormData() {
@@ -3479,8 +3759,13 @@ throttleField: ${alert.throttle_field}` : ''}`;
             webhook_action_ids: webhookActionIDs,
             fractal_action_ids: fractalActionIDs,
             dictionary_action_ids: dictActionIDs,
-            email_action_ids: emailActionIDs
+            email_action_ids: emailActionIDs,
         };
+
+        // Omitted, not sent as [], when the editor never loaded the saved corpus: the
+        // server reads a missing key as "unchanged" and an empty array as "delete them".
+        const tests = window.AlertTests?.payload();
+        if (tests !== undefined) formData.tests = tests;
 
         // Add window duration for compound alerts
         if (alertType === 'compound') {
@@ -3577,7 +3862,8 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const pageResults = this.getCurrentAlertPageResults();
             if (window.QueryExecutor) {
                 QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
-                    allResults: this.currentResults, detailHost: 'alert'
+                    allResults: this.currentResults, detailHost: 'alert',
+                    gutter: window.AlertTests && AlertTests.gutter, comments: false,
                 });
             }
         }
@@ -3594,7 +3880,8 @@ throttleField: ${alert.throttle_field}` : ''}`;
             const pageResults = this.getCurrentAlertPageResults();
             if (window.QueryExecutor) {
                 QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
-                    allResults: this.currentResults, detailHost: 'alert'
+                    allResults: this.currentResults, detailHost: 'alert',
+                    gutter: window.AlertTests && AlertTests.gutter, comments: false,
                 });
             }
         }
@@ -3611,7 +3898,8 @@ throttleField: ${alert.throttle_field}` : ''}`;
         if (window.QueryExecutor) {
             QueryExecutor.renderResultsToElement(pageResults, targetElement, this.fieldOrder, {
                 allResults: this.currentResults,
-                isAggregated: this.isAggregated, detailHost: 'alert'
+                isAggregated: this.isAggregated, detailHost: 'alert',
+                gutter: this.isAggregated ? null : (window.AlertTests && AlertTests.gutter), comments: false,
             });
         }
     },

@@ -56,7 +56,7 @@ const SettingsView = {
         ['alertTimeoutSettings', 'queryTimeoutSettings', 'queryCPUPercentSettings', 'queryMemoryPercentSettings', 'alertEvalIntervalSettings',
          'recallTimeoutSettings', 'recallMaxBytesSettings', 'recallConcurrencySettings',
          'recallCPUPercentSettings', 'recallMemoryPercentSettings', 'schemaSweepIntervalSettings',
-         'pgrSensitivitySettings'].forEach(id => {
+         'pgrSensitivitySettings', 'alertRevisionRetentionSettings'].forEach(id => {
             const select = document.getElementById(id);
             if (select) select.addEventListener('change', () => this.saveSettings(select));
         });
@@ -719,6 +719,10 @@ const SettingsView = {
                 if (alertEvalIntervalSelect) {
                     alertEvalIntervalSelect.value = String(data.settings.alert_eval_interval_seconds || 60);
                 }
+                const alertRevisionRetentionSelect = document.getElementById('alertRevisionRetentionSettings');
+                if (alertRevisionRetentionSelect) {
+                    alertRevisionRetentionSelect.value = String(data.settings.alert_revision_retention || 10);
+                }
                 const recallTimeoutSelect = document.getElementById('recallTimeoutSettings');
                 if (recallTimeoutSelect) {
                     recallTimeoutSelect.value = String(data.settings.recall_timeout_seconds || 900);
@@ -783,6 +787,7 @@ const SettingsView = {
                     query_cpu_percent: parseInt(document.getElementById('queryCPUPercentSettings')?.value || '50', 10),
                     query_memory_percent: parseInt(document.getElementById('queryMemoryPercentSettings')?.value || '50', 10),
                     alert_eval_interval_seconds: parseInt(document.getElementById('alertEvalIntervalSettings')?.value || '60', 10),
+                    alert_revision_retention: parseInt(document.getElementById('alertRevisionRetentionSettings')?.value || '10', 10),
                     recall_timeout_seconds: parseInt(document.getElementById('recallTimeoutSettings')?.value || '900', 10),
                     recall_max_bytes_read: parseInt(document.getElementById('recallMaxBytesSettings')?.value || '0', 10),
                     recall_concurrency: parseInt(document.getElementById('recallConcurrencySettings')?.value || '5', 10),

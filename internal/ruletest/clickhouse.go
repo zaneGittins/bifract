@@ -2,8 +2,6 @@ package ruletest
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os/exec"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	dbsql "bifract/db"
+	"bifract/pkg/ruleeval"
 	"bifract/pkg/storage"
 )
 
@@ -64,7 +63,7 @@ func ParseTarget(s, user, password string) (Target, error) {
 // Backend is a connected ClickHouse plus the scratch table the tester writes to.
 type Backend struct {
 	Client  *storage.ClickHouseClient
-	Scratch string
+	Scratch *ruleeval.Scratch
 
 	container string // docker container id, when the tester started one
 	verbose   bool
@@ -114,9 +113,14 @@ func Connect(ctx context.Context, target *Target, verbose bool) (*Backend, error
 		b.Close(ctx)
 		return nil, err
 	}
-	if err := b.createScratch(ctx); err != nil {
+	scratch, err := ruleeval.NewScratch(ctx, client)
+	if err != nil {
 		b.Close(ctx)
 		return nil, err
+	}
+	b.Scratch = scratch
+	if verbose {
+		fmt.Println(dim("  scratch table " + scratch.Qualified()))
 	}
 
 	return b, nil
@@ -159,44 +163,15 @@ func (b *Backend) ensureSchema(ctx context.Context) error {
 	return nil
 }
 
-// createScratch clones the logs table for this run. The TTL is removed because sample
-// logs are routinely older than the retention window and must not be eligible for
-// deletion while the run is in flight.
-func (b *Backend) createScratch(ctx context.Context) error {
-	suffix := make([]byte, 8)
-	if _, err := rand.Read(suffix); err != nil {
-		return fmt.Errorf("generating scratch table name: %w", err)
-	}
-	b.Scratch = "ruletest_" + hex.EncodeToString(suffix)
-
-	stmt := fmt.Sprintf("CREATE TABLE %s.%s AS %s.logs", logsDatabase, b.Scratch, logsDatabase)
-	if err := b.Client.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("creating scratch table: %w", err)
-	}
-
-	// Sample logs are routinely older than the retention window, so drop the inherited
-	// TTL. A logs table configured without one rejects this, which is not a problem.
-	if err := b.Client.Exec(ctx, fmt.Sprintf("ALTER TABLE %s.%s REMOVE TTL", logsDatabase, b.Scratch)); err != nil {
-		if b.verbose && !strings.Contains(err.Error(), "doesn't have any table TTL") {
-			fmt.Println(dim("  note: could not remove scratch TTL: " + err.Error()))
-		}
-	}
-
-	if b.verbose {
-		fmt.Println(dim("  scratch table " + logsDatabase + "." + b.Scratch))
-	}
-	return nil
-}
-
 // Close drops the scratch table, closes the connection and removes the container if
 // the tester started one. Safe to call on a partially constructed Backend.
 func (b *Backend) Close(ctx context.Context) {
 	if b.Client != nil {
-		if b.Scratch != "" {
-			stmt := fmt.Sprintf("DROP TABLE IF EXISTS %s.%s", logsDatabase, b.Scratch)
-			if err := b.Client.Exec(ctx, stmt); err != nil {
-				fmt.Println(warn("warning: failed to drop scratch table " + b.Scratch + ": " + err.Error()))
+		if b.Scratch != nil {
+			if err := b.Scratch.Drop(ctx); err != nil {
+				fmt.Println(warn("warning: " + err.Error()))
 			}
+			b.Scratch = nil
 		}
 		b.Client.Close()
 		b.Client = nil
