@@ -21,6 +21,26 @@ const AlertChanges = {
 
     // ---- Entry ----
 
+    // The sub-tab badge is the only signal that work is waiting for a reviewer, so it
+    // is refreshed whenever the alerts area is entered, not just when this tab is open.
+    async refreshBadge() {
+        const badge = document.getElementById('alertChangesBadge');
+        if (!badge) return;
+
+        try {
+            const gate = await this.gateConfig();
+            if (!gate?.enabled) {
+                badge.hidden = true;
+                return;
+            }
+            const open = (await this.api('/api/v1/alert-changes?open=true')) || [];
+            badge.hidden = open.length === 0;
+            badge.textContent = String(open.length);
+        } catch (e) {
+            badge.hidden = true;
+        }
+    },
+
     async show() {
         const view = document.getElementById('alertChangesView');
         if (!view) return;
@@ -33,6 +53,7 @@ const AlertChanges = {
             return;
         }
         this.render();
+        this.refreshBadge();
     },
 
     async gateConfig() {
@@ -410,6 +431,7 @@ const AlertChanges = {
             this.render();
             if (this._list.some(cr => cr.id === id)) await this.open(id);
             else this.close();
+            this.refreshBadge();
             if (window.Alerts?.loadAlerts) Alerts.loadAlerts();
         } catch (e) {
             Toast.error('Could not complete', e.message);

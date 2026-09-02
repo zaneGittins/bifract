@@ -229,10 +229,29 @@ const AlertHistory = {
                 body: JSON.stringify({ drop_missing_actions: !!dropMissingActions })
             });
 
-            if (res.status === 409) {
-                const payload = await res.json();
-                this.promptDropMissing(revision, payload.data || []);
-                return;
+            const payload409 = res.status === 409 || res.status === 422
+                ? await res.json().catch(() => ({}))
+                : null;
+
+            // Restore is an update, so it meets the gate and the policy rules too. Only
+            // a 409 carrying an array is the missing-actions case; the others were being
+            // fed to promptDropMissing, which then called .map on an object.
+            if (payload409) {
+                const refusal = window.Alerts?.classifyRefusal(res, payload409);
+                if (refusal === 'gate') {
+                    this.proposeRestore(revision);
+                    return;
+                }
+                if (refusal === 'policy') {
+                    Toast.error('Blocked by policy',
+                        (payload409.data || []).map(v => v.message).filter(Boolean).join(' ') || payload409.error || '');
+                    return;
+                }
+                if (res.status === 409 && Array.isArray(payload409.data)) {
+                    this.promptDropMissing(revision, payload409.data);
+                    return;
+                }
+                throw new Error(payload409.error || `HTTP ${res.status}`);
             }
             if (!res.ok) {
                 const payload = await res.json().catch(() => ({}));
@@ -244,6 +263,33 @@ const AlertHistory = {
             if (window.Alerts?.loadAlerts) Alerts.loadAlerts();
         } catch (e) {
             Toast.error('Restore failed', e.message);
+        }
+    },
+
+    // Under review, restoring is a change like any other, so it goes to the queue with
+    // a summary that says what it is.
+    async proposeRestore(revision) {
+        const rev = this._revisions.find(r => r.revision === revision);
+        if (!rev?.content) return;
+
+        try {
+            const res = await fetch('/api/v1/alert-changes', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: 'update',
+                    alert_id: this._alertId,
+                    title: `Restore revision ${revision}`,
+                    summary: `Restore the definition from revision ${revision}.`,
+                    content: rev.content
+                })
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+            Toast.success('Restore proposed', 'It appears under Changes for review.');
+        } catch (e) {
+            Toast.error('Could not propose the restore', e.message);
         }
     },
 

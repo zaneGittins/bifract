@@ -8,6 +8,7 @@ const AlertPolicy = {
     _running: false,
     _hasPolicies: false,
     _pending: null,
+    _timer: null,
 
     // ---- Editor ----
 
@@ -27,9 +28,14 @@ const AlertPolicy = {
 
         this.render();
         this.updateChip();
+        this.watch();
+        // The saved tests arrive on their own fetch, so a first pass before they land
+        // would count zero of them.
+        this.schedule();
     },
 
     reset() {
+        clearTimeout(this._timer);
         this._result = null;
         this._hasPolicies = false;
         this.updateChip();
@@ -39,6 +45,29 @@ const AlertPolicy = {
     // never turns this on.
     active() {
         return this._hasPolicies;
+    },
+
+    // Checks assert about the whole definition, not just the query, so they re-run on
+    // any edit that could change a verdict. Evaluating only when the query ran left a
+    // description or a test added afterwards showing a stale violation forever.
+    schedule() {
+        if (!this._hasPolicies) return;
+        clearTimeout(this._timer);
+        this._timer = setTimeout(() => this.evaluate(), 250);
+    },
+
+    // Re-evaluates on any change to the fields a rule can read. Bound once per editor.
+    watch() {
+        const panel = document.getElementById('alertEditorView');
+        if (!panel || panel.dataset.policyWatched) return;
+        panel.dataset.policyWatched = '1';
+
+        panel.addEventListener('input', (e) => {
+            if (e.target.closest('.alert-panel, #alertQueryHighlight, .query-input-row')) this.schedule();
+        });
+        panel.addEventListener('change', (e) => {
+            if (e.target.closest('.alert-panel')) this.schedule();
+        });
     },
 
     // Evaluated from whatever is on screen, so violations track the edit rather than

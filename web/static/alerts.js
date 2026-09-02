@@ -1520,6 +1520,19 @@ const Alerts = {
 
             const data = await response.json();
 
+            // Import creates or updates alerts, so it meets the same refusals a save
+            // does. Reporting them as "Import failed" hides what to do about it.
+            const refusal = this.classifyRefusal(response, data);
+            if (refusal === 'gate') {
+                this.showError(errorDiv, 'This scope reviews alert changes. Open the alert in the editor and propose it instead.');
+                return;
+            }
+            if (refusal === 'policy') {
+                const messages = (data.data || []).map(v => v.message).filter(Boolean);
+                this.showError(errorDiv, messages.length ? messages.join(' ') : (data.error || 'Blocked by policy'));
+                return;
+            }
+
             if (data.success) {
                 this.closeModal('importYamlModal');
                 this.loadAlerts();
@@ -1712,6 +1725,15 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             });
 
             const data = await response.json();
+
+            // A reviewed scope refuses the direct delete and expects a proposal. The
+            // deletion still has to be reachable, so ask for the reason here rather
+            // than leaving the button dead.
+            if (response.status === 409 && data.data?.gate === 'required') {
+                this.openDeleteProposal(alertId);
+                return;
+            }
+
             if (data.success) {
                 this.loadAlerts();
                 Toast.show('Alert deleted successfully', 'success');
@@ -1720,7 +1742,60 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             }
         } catch (error) {
             console.error('Delete alert error:', error);
-            Toast.show('Failed to delete alert', 'error');
+            Toast.show('Failed to delete alert', error.message);
+        }
+    },
+
+    // Deleting a detection is gated like any other change, and the reason is the part a
+    // reviewer needs most.
+    openDeleteProposal(alertId) {
+        document.getElementById('alertDeleteProposal')?.remove();
+
+        const alert = (this.alerts || []).find(a => a.id === alertId);
+        document.body.insertAdjacentHTML('beforeend', `
+            <div id="alertDeleteProposal" class="ac-modal">
+                <div class="ac-modal-card">
+                    <div class="ac-modal-head">Propose deleting ${Utils.escapeHtml(alert?.name || 'this alert')}</div>
+                    <textarea id="alertDeleteReason" class="ac-compose-input" spellcheck="false"
+                              placeholder="Why should it go?"></textarea>
+                    <div class="ac-compose-actions">
+                        <button class="btn-secondary btn-sm" onclick="document.getElementById('alertDeleteProposal').remove()">Cancel</button>
+                        <button class="btn-primary btn-sm" onclick="Alerts.submitDeleteProposal('${Utils.escapeAttr(alertId)}')">Propose deletion</button>
+                    </div>
+                </div>
+            </div>
+        `);
+        document.getElementById('alertDeleteReason')?.focus();
+    },
+
+    async submitDeleteProposal(alertId) {
+        const reasonEl = document.getElementById('alertDeleteReason');
+        const summary = (reasonEl?.value || '').trim();
+        if (!summary) {
+            reasonEl?.focus();
+            return;
+        }
+
+        const alert = (this.alerts || []).find(a => a.id === alertId);
+        try {
+            const res = await fetch('/api/v1/alert-changes', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: 'delete',
+                    alert_id: alertId,
+                    title: `Delete ${alert?.name || 'alert'}`,
+                    summary
+                })
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+            document.getElementById('alertDeleteProposal')?.remove();
+            Toast.success('Deletion proposed', 'It appears under Changes for review.');
+        } catch (e) {
+            Toast.error('Could not propose deletion', e.message);
         }
     },
 

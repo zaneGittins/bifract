@@ -4616,3 +4616,38 @@ body.alert-panel-resizing .alert-details-panel {
     justify-content: flex-end;
     gap: 8px;
 }
+
+/* Deleting under review needs a reason, asked for over the list it was clicked from. */
+.ac-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.ac-modal-card {
+    width: min(460px, 92vw);
+    padding: 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-lg);
+}
+
+.ac-modal-head {
+    margin-bottom: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.ac-modal .ac-compose-input {
+    min-height: 88px;
+}
+
+.ac-modal .ac-compose-actions {
+    margin-top: 10px;
+}

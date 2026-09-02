@@ -59,6 +59,7 @@ const AlertFeeds = {
     },
 
     showManualAlerts() {
+        window.AlertChanges?.refreshBadge();
         window.App?.pushSubPath('');
         this.closeDetailsPanel(true);
         this.activateSubTab('manual', 'alertsView');

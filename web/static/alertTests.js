@@ -58,6 +58,8 @@ const AlertTests = {
         this.invalidateIndex();
         this.render();
         this.updateChip();
+        // tests.match_count and tests.no_match_count read this corpus.
+        window.AlertPolicy?.schedule();
     },
 
     // Called when the editor closes, so the server can drop the loaded events early.
@@ -148,6 +150,7 @@ const AlertTests = {
             this.updateChip();
             this.render();
             this.repaintGutter();
+            window.AlertPolicy?.schedule();
         }
     },
 
@@ -359,6 +362,7 @@ const AlertTests = {
         this.render();
         this.updateChip();
         this.repaintGutter();
+        window.AlertPolicy?.schedule();
         if (rerun) this.rerun();
     },
 

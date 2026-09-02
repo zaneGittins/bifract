@@ -142,11 +142,9 @@ func (h *Handler) HandleSubmitChangeRequest(w http.ResponseWriter, r *http.Reque
 
 	cr, err := h.manager.SubmitChangeRequest(r.Context(), chi.URLParam(r, "id"), fractalID, prismID, in, h.attributionUser(r))
 	if err != nil {
-		if errors.Is(err, ErrChangeRequestNotFound) {
-			h.respondError(w, http.StatusNotFound, "Proposal not found")
-			return
-		}
-		h.respondError(w, http.StatusBadRequest, err.Error())
+		// Shared with the other proposal handlers, so one underlying failure cannot
+		// answer 400 here and 409 there.
+		h.changeRequestError(w, err)
 		return
 	}
 	h.respondSuccess(w, cr)
@@ -281,13 +279,22 @@ func (h *Handler) changeRequestError(w http.ResponseWriter, err error) {
 		h.respondError(w, http.StatusNotFound, "Proposal not found")
 	case errors.Is(err, ErrAlertNotFound):
 		h.respondError(w, http.StatusNotFound, "Alert not found")
-	case strings.Contains(err.Error(), "only the author"),
+	case strings.Contains(err.Error(), "only the author or an admin"),
+		strings.Contains(err.Error(), "only the author"),
 		strings.Contains(err.Error(), "cannot be approved by its author"),
 		strings.Contains(err.Error(), "self approval is turned off"):
 		h.respondError(w, http.StatusForbidden, err.Error())
 	case strings.Contains(err.Error(), "is merged"), strings.Contains(err.Error(), "is discarded"),
 		strings.Contains(err.Error(), "no longer be edited"):
 		h.respondError(w, http.StatusConflict, err.Error())
+	// Bad input is the caller's mistake, not the server's. Falling through to the
+	// default told a client its request had crashed something when it was simply
+	// rejected, and buried the reason in a log line.
+	case strings.Contains(err.Error(), "must be"), strings.Contains(err.Error(), "needs a"),
+		strings.Contains(err.Error(), "needs an"), strings.Contains(err.Error(), "is required"),
+		strings.Contains(err.Error(), "has no alert yet"), strings.Contains(err.Error(), "say why"),
+		strings.Contains(err.Error(), "at most"), strings.Contains(err.Error(), "duplicate"):
+		h.respondError(w, http.StatusBadRequest, err.Error())
 	default:
 		log.Printf("[Alerts] Proposal operation failed: %v", err)
 		h.respondError(w, http.StatusInternalServerError, err.Error())
