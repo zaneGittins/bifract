@@ -53,7 +53,7 @@ jobs:
       #
       # Keep in sync with: grep -rho '//go:build .*' --include='*.go' .
       - name: Vet tagged tests
-        run: go vet -tags archiveminio,chcluster,chupgrade,normlogesc,ruletestch ./...
+        run: go vet -tags alertsdb,archiveminio,chcluster,chlive,chupgrade,integration,normlogesc,pglive,ruletestch ./...
 
       # The shipped example detections are what users copy. Linting them needs no
       # database and catches a rule that stops translating.

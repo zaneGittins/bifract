@@ -143,7 +143,7 @@ func TestScratchTableIsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scratch := b.Scratch
+	scratch := b.Scratch.Table()
 	probe := b.Client
 
 	rows, err := probe.Query(ctx, "SELECT count() AS c FROM system.tables WHERE database='logs' AND name='"+scratch+"'")
