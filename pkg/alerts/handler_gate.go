@@ -315,3 +315,43 @@ func (h *Handler) gateRequiredResponse(w http.ResponseWriter, err error) bool {
 	})
 	return true
 }
+
+// ProposeFromYAMLRequest imports a document into the review queue rather than applying it.
+type ProposeFromYAMLRequest struct {
+	Content      string `json:"content"`
+	Summary      string `json:"summary"`
+	NormalizerID string `json:"normalizer_id,omitempty"`
+}
+
+// HandleProposeFromYAML opens a proposal from an alert or Sigma document.
+//
+// A gated scope refuses a direct import, and telling an analyst to retype the rule in
+// the editor would make the gate a wall rather than a queue.
+func (h *Handler) HandleProposeFromYAML(w http.ResponseWriter, r *http.Request) {
+	fractalID, prismID, ok := h.policyScopeAccess(w, r, rbac.RoleAnalyst)
+	if !ok {
+		return
+	}
+
+	var req ProposeFromYAMLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		h.respondError(w, http.StatusBadRequest, "A document is required")
+		return
+	}
+	if strings.TrimSpace(req.Summary) == "" {
+		h.respondError(w, http.StatusBadRequest, "Describe the change for the reviewer")
+		return
+	}
+
+	cr, err := h.manager.ProposeFromYAML(r.Context(), req.Content, req.Summary,
+		h.attributionUser(r), fractalID, prismID, req.NormalizerID)
+	if err != nil {
+		h.changeRequestError(w, err)
+		return
+	}
+	h.respondSuccess(w, cr)
+}

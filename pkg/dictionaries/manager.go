@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strings"
 
@@ -267,8 +268,8 @@ func (m *Manager) AddColumn(ctx context.Context, id, colName string) (*Dictionar
 			return nil, err
 		}
 
-		alterSQL := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
-			escCH(dict.CHTableName), escCH(colName))
+		alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
+			escCH(dict.CHTableName), escCH(colName)))
 		if err := m.ch.Exec(ctx, alterSQL); err != nil {
 			return nil, fmt.Errorf("failed to alter ClickHouse table: %w", err)
 		}
@@ -693,6 +694,64 @@ func (m *Manager) ReloadDictionary(ctx context.Context, id string) error {
 
 // ---- ClickHouse object lifecycle ----
 
+// ReconcileDictionaries rebuilds every dictionary's ClickHouse objects from the
+// Postgres definitions, which are the source of truth. A lookup_* dictionary that a
+// restore, a half-applied DDL, or a node added after the fact left missing or stale
+// surfaces only when a query runs, as a BAD_ARGUMENTS (code 36) from dictGet; this
+// converges that state at startup instead. Every statement is idempotent.
+func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
+	rows, err := m.pg.Query(ctx, `SELECT id, COALESCE(key_column, ''), columns FROM dictionaries`)
+	if err != nil {
+		return 0, err
+	}
+	var dicts []*Dictionary
+	for rows.Next() {
+		d := &Dictionary{}
+		var colsJSON []byte
+		if err := rows.Scan(&d.ID, &d.KeyColumn, &colsJSON); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if err := json.Unmarshal(colsJSON, &d.Columns); err != nil {
+			continue
+		}
+		// A dictionary with no key column has no ClickHouse objects yet: the first
+		// column added creates them.
+		if d.KeyColumn == "" || len(d.Columns) == 0 {
+			continue
+		}
+		d.CHTableName = chTableName(d.ID)
+		d.CHDictName = chDictName(d.ID)
+		dicts = append(dicts, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	reconciled := 0
+	for _, dict := range dicts {
+		if err := m.createCHTable(ctx, dict); err != nil {
+			log.Printf("[Dictionaries] reconcile %s: backing table: %v", dict.ID, err)
+			continue
+		}
+		// The table may predate a column that was added while this node was down.
+		for _, c := range dict.Columns {
+			alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
+				escCH(dict.CHTableName), escCH(c.Name)))
+			if err := m.ch.Exec(ctx, alterSQL); err != nil {
+				log.Printf("[Dictionaries] reconcile %s: column %q: %v", dict.ID, c.Name, err)
+			}
+		}
+		if err := m.recreateAllCHDictionaries(ctx, dict, dict.Columns); err != nil {
+			log.Printf("[Dictionaries] reconcile %s: %v", dict.ID, err)
+			continue
+		}
+		reconciled++
+	}
+	return reconciled, nil
+}
+
 func (m *Manager) createCHObjects(ctx context.Context, dict *Dictionary) error {
 	if err := m.createCHTable(ctx, dict); err != nil {
 		return err
@@ -709,6 +768,13 @@ func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
 	}
 	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName))))
 	return nil
+}
+
+// dictSourceWhere restricts a dictionary's source to rows with a non-empty key.
+// A blank key otherwise matches every log whose lookup field is absent, enriching
+// unrelated events with whichever blank-keyed row happened to load.
+func dictSourceWhere(keyCol string) string {
+	return fmt.Sprintf(" WHERE '%s'", escCHStr(fmt.Sprintf("notEmpty(`%s`)", escCH(keyCol))))
 }
 
 func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
@@ -738,7 +804,7 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 	}
 
 	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
+		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'%s))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
 		escCH(dict.CHDictName),
 		escCH(dict.KeyColumn),
 		attrsStr,
@@ -747,6 +813,7 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 		m.chDB,
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
+		dictSourceWhere(dict.KeyColumn),
 	)
 	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
 }
@@ -787,7 +854,7 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 
 	dictName := chColDictName(dict.ID, colName)
 	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
+		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'%s))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
 		escCH(dictName),
 		escCH(colName),
 		attrsStr,
@@ -796,6 +863,7 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 		m.chDB,
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
+		dictSourceWhere(colName),
 	)
 	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
 }

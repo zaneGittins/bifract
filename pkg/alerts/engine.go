@@ -577,6 +577,14 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	// auto-projection includes them even if they aren't in the WHERE clause.
 	opts.AlertExtraFields = collectAlertExtraFields(alert)
 
+	// Dictionary mappings for match(). Resolved against the alert's own scope, so a
+	// prism-scoped alert sees the prism's dictionaries and the global ones.
+	if e.dictManager != nil {
+		if mappings, derr := e.dictManager.ListDictionaryMappings(ctx, alert.FractalID, alert.PrismID); derr == nil {
+			opts.Dictionaries = mappings
+		}
+	}
+
 	// Load analytics model infos for model_lookup() BQL support. A prism-scoped
 	// alert has no owning fractal of its own, so resolve models across every
 	// member fractal instead (mirrors the query handler's prism handling).

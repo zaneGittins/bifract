@@ -1770,6 +1770,87 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/alert-changes/from-yaml": {
+      "post": {
+        "operationId": "post_api_v1_alert_changes_from_yaml",
+        "summary": "Propose an alert imported from a YAML or Sigma document.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-changes"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.ProposeFromYAMLRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/alert-changes/{id}": {
       "get": {
         "operationId": "get_api_v1_alert_changes_byId",
@@ -30398,6 +30479,24 @@
           "violations",
           "blocking",
           "warnings"
+        ]
+      },
+      "alerts.ProposeFromYAMLRequest": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "normalizer_id": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "summary"
         ]
       },
       "alerts.RestoreRevisionRequest": {

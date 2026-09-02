@@ -1521,6 +1521,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleGetChangeRequest,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-changes/from-yaml",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.ProposeFromYAMLRequest{},
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Propose an alert imported from a YAML or Sigma document.",
+					Handler:  d.alertHandler.HandleProposeFromYAML,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPut,
 					Path:     "/alert-changes/{id}",
 					Access:   api.AccessAnalyst,

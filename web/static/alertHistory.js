@@ -216,7 +216,11 @@ const AlertHistory = {
     },
 
     async restore(revision, dropMissingActions) {
-        if (!dropMissingActions && !confirm(`Restore revision ${revision}? This is recorded as a new revision; nothing is overwritten.`)) {
+        // The wording has to cover both outcomes: where the scope reviews changes this
+        // opens a proposal rather than restoring, and promising a restore would be a lie.
+        if (!dropMissingActions && !confirm(
+            `Restore revision ${revision}? This is recorded as a new revision; nothing is overwritten. ` +
+            `Where changes are reviewed, it opens a proposal instead.`)) {
             return;
         }
 

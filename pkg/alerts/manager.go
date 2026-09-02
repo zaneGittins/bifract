@@ -211,43 +211,72 @@ func NewManager(pg *storage.PostgresClient, engine *Engine, normalizerMgr *norma
 // ImportFromYAML parses YAML content and creates/updates an alert.
 // If the YAML is a Sigma rule, it is automatically translated to BQL.
 // normalizerID optionally specifies a normalizer to map Sigma field names.
-func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, createdBy string, fractalID, prismID string, normalizerID string) (*Alert, error) {
-	// Auto-detect Sigma rules
+// yamlImport is a parsed import: the definition the document describes, and the alert
+// it would replace when one of that name already exists.
+type yamlImport struct {
+	Request    AlertUpdateRequest
+	ExistingID string
+}
+
+// resolveYAMLImport turns an alert document into a definition without writing anything.
+//
+// Import and propose need the same answer and must not drift: one writes it, the other
+// puts it in the review queue.
+func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID, prismID, normalizerID string) (yamlImport, error) {
+	var req AlertUpdateRequest
+
 	if sigma.IsSigmaRule(yamlContent) {
-		return m.importSigmaRule(ctx, yamlContent, createdBy, fractalID, prismID, normalizerID)
-	}
+		rule, err := sigma.ParseSigmaRule(yamlContent)
+		if err != nil {
+			return yamlImport{}, fmt.Errorf("failed to parse Sigma rule: %w", err)
+		}
 
-	var yamlAlert YAMLAlert
-	if err := yaml.Unmarshal([]byte(yamlContent), &yamlAlert); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML: %w", err)
-	}
+		var fieldMapper func(string) string
+		if normalizerID != "" && m.normalizerManager != nil {
+			fieldMapper = sigma.BuildFieldMapper(m.normalizerManager.CompileByID(ctx, normalizerID))
+		}
 
-	// Validate required fields
-	if strings.TrimSpace(yamlAlert.Name) == "" {
-		return nil, fmt.Errorf("alert name is required")
-	}
-	if strings.TrimSpace(yamlAlert.QueryString) == "" {
-		return nil, fmt.Errorf("query string is required")
-	}
+		queryString, err := sigma.Translate(rule, fieldMapper)
+		if err != nil {
+			return yamlImport{}, fmt.Errorf("failed to translate Sigma rule: %w", err)
+		}
+		if _, err := parser.ParseQuery(queryString); err != nil {
+			return yamlImport{}, fmt.Errorf("generated BQL query is invalid: %w (query: %s)", err, queryString)
+		}
 
-	// Validate query syntax using existing parser
-	_, err := parser.ParseQuery(yamlAlert.QueryString)
-	if err != nil {
-		return nil, fmt.Errorf("invalid query syntax: %w", err)
-	}
+		req = AlertUpdateRequest{
+			Name:        rule.Title,
+			Description: sigmaDescription(rule),
+			QueryString: queryString,
+			AlertType:   "event",
+			Severity:    SeverityFromLevel(rule.Level),
+			Labels:      sigma.BuildLabels(rule),
+			References:  rule.References,
+			Enabled:     false, // Disabled by default for review
+		}
+	} else {
+		var yamlAlert YAMLAlert
+		if err := yaml.Unmarshal([]byte(yamlContent), &yamlAlert); err != nil {
+			return yamlImport{}, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+		if strings.TrimSpace(yamlAlert.Name) == "" {
+			return yamlImport{}, fmt.Errorf("alert name is required")
+		}
+		if strings.TrimSpace(yamlAlert.QueryString) == "" {
+			return yamlImport{}, fmt.Errorf("query string is required")
+		}
+		if _, err := parser.ParseQuery(yamlAlert.QueryString); err != nil {
+			return yamlImport{}, fmt.Errorf("invalid query syntax: %w", err)
+		}
 
-	// Resolve every action name before any write, so a bad name fails the import
-	// instead of leaving the alert half-wired.
-	actions, err := m.resolveActionNames(ctx, yamlAlert.ActionNames, fractalID, prismID)
-	if err != nil {
-		return nil, err
-	}
+		// Resolved before any write, so a bad action name fails the import rather than
+		// leaving the alert half-wired.
+		actions, err := m.resolveActionNames(ctx, yamlAlert.ActionNames, fractalID, prismID)
+		if err != nil {
+			return yamlImport{}, err
+		}
 
-	// Check if alert already exists (update vs create)
-	existingAlert, err := m.GetAlertByName(ctx, yamlAlert.Name)
-	if err == nil {
-		// Alert exists - update it
-		updateReq := AlertUpdateRequest{
+		req = AlertUpdateRequest{
 			Name:                yamlAlert.Name,
 			Description:         yamlAlert.Description,
 			QueryString:         yamlAlert.QueryString,
@@ -266,93 +295,17 @@ func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, create
 			ScheduleCron:        yamlAlert.ScheduleCron,
 			QueryWindowSeconds:  yamlAlert.QueryWindowSeconds,
 		}
-		return m.UpdateAlert(ctx, existingAlert.ID, updateReq, createdBy)
 	}
 
-	// Alert doesn't exist - create new one
-	createReq := AlertCreateRequest{
-		Name:                yamlAlert.Name,
-		Description:         yamlAlert.Description,
-		QueryString:         yamlAlert.QueryString,
-		AlertType:           AlertType(yamlAlert.AlertType),
-		Severity:            Severity(yamlAlert.Severity),
-		WebhookActionIDs:    actions.Webhook,
-		FractalActionIDs:    actions.Fractal,
-		DictionaryActionIDs: actions.Dictionary,
-		EmailActionIDs:      actions.Email,
-		Labels:              yamlAlert.Labels,
-		References:          yamlAlert.References,
-		Enabled:             yamlAlert.Enabled,
-		ThrottleTimeSeconds: yamlAlert.ThrottleTimeSeconds,
-		ThrottleField:       yamlAlert.ThrottleField,
-		WindowDuration:      yamlAlert.WindowDuration,
-		ScheduleCron:        yamlAlert.ScheduleCron,
-		QueryWindowSeconds:  yamlAlert.QueryWindowSeconds,
+	out := yamlImport{Request: req}
+	if existing, err := m.GetAlertByName(ctx, req.Name); err == nil && existing != nil {
+		out.ExistingID = existing.ID
 	}
-
-	return m.CreateAlert(ctx, createReq, createdBy, fractalID, prismID)
+	return out, nil
 }
 
-// importSigmaRule translates a Sigma YAML rule into a BQL-based alert.
-func (m *Manager) importSigmaRule(ctx context.Context, yamlContent string, createdBy string, fractalID, prismID string, normalizerID string) (*Alert, error) {
-	rule, err := sigma.ParseSigmaRule(yamlContent)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse Sigma rule: %w", err)
-	}
-
-	// Build field mapper from normalizer if specified
-	var fieldMapper func(string) string
-	if normalizerID != "" && m.normalizerManager != nil {
-		compiled := m.normalizerManager.CompileByID(ctx, normalizerID)
-		fieldMapper = sigma.BuildFieldMapper(compiled)
-	}
-
-	// Translate detection to BQL
-	queryString, err := sigma.Translate(rule, fieldMapper)
-	if err != nil {
-		return nil, fmt.Errorf("failed to translate Sigma rule: %w", err)
-	}
-
-	// Validate the generated query parses correctly
-	_, err = parser.ParseQuery(queryString)
-	if err != nil {
-		return nil, fmt.Errorf("generated BQL query is invalid: %w (query: %s)", err, queryString)
-	}
-
-	// Map Sigma metadata to alert fields
-	labels := sigma.BuildLabels(rule)
-	description := sigmaDescription(rule)
-
-	// Check if alert with same title already exists
-	existingAlert, err := m.GetAlertByName(ctx, rule.Title)
-	if err == nil {
-		updateReq := AlertUpdateRequest{
-			Name:        rule.Title,
-			Description: description,
-			QueryString: queryString,
-			AlertType:   "event",
-			Severity:    SeverityFromLevel(rule.Level),
-			Labels:      labels,
-			References:  rule.References,
-			Enabled:     false,
-		}
-		return m.UpdateAlert(ctx, existingAlert.ID, updateReq, createdBy)
-	}
-
-	createReq := AlertCreateRequest{
-		Name:        rule.Title,
-		Description: description,
-		QueryString: queryString,
-		AlertType:   "event",
-		Severity:    SeverityFromLevel(rule.Level),
-		Labels:      labels,
-		References:  rule.References,
-		Enabled:     false, // Disabled by default for review
-	}
-
-	return m.CreateAlert(ctx, createReq, createdBy, fractalID, prismID)
-}
-
+// sigmaDescription folds the Sigma metadata that has no alert field of its own into the
+// description, so provenance survives the import.
 func sigmaDescription(rule *sigma.SigmaRule) string {
 	var parts []string
 	if rule.Description != "" {
@@ -368,6 +321,49 @@ func sigmaDescription(rule *sigma.SigmaRule) string {
 		parts = append(parts, "False positives: "+strings.Join(rule.FalsePositives, ", "))
 	}
 	return strings.Join(parts, "\n")
+}
+
+// ImportFromYAML creates or replaces an alert from an alert or Sigma document.
+func (m *Manager) ImportFromYAML(ctx context.Context, yamlContent string, createdBy string, fractalID, prismID string, normalizerID string) (*Alert, error) {
+	parsed, err := m.resolveYAMLImport(ctx, yamlContent, fractalID, prismID, normalizerID)
+	if err != nil {
+		return nil, err
+	}
+
+	if parsed.ExistingID != "" {
+		return m.UpdateAlert(ctx, parsed.ExistingID, parsed.Request, createdBy)
+	}
+	return m.CreateAlert(ctx, AlertCreateRequest(parsed.Request), createdBy, fractalID, prismID)
+}
+
+// ProposeFromYAML puts an imported document into the review queue instead of applying
+// it, for a scope that reviews changes.
+func (m *Manager) ProposeFromYAML(ctx context.Context, yamlContent, summary, username, fractalID, prismID, normalizerID string) (*ChangeRequest, error) {
+	parsed, err := m.resolveYAMLImport(ctx, yamlContent, fractalID, prismID, normalizerID)
+	if err != nil {
+		return nil, err
+	}
+
+	content := revisionContentFromRequest(parsed.Request, string(parsed.Request.AlertType), string(parsed.Request.Severity))
+	if content.AlertType == "" {
+		content.AlertType = "event"
+	}
+	if content.Severity == "" {
+		content.Severity = "medium"
+	}
+
+	in := ChangeRequestInput{
+		Kind:    ChangeCreate,
+		Title:   parsed.Request.Name,
+		Summary: summary,
+		Content: &content,
+	}
+	if parsed.ExistingID != "" {
+		in.Kind = ChangeUpdate
+		in.AlertID = parsed.ExistingID
+	}
+
+	return m.SubmitChangeRequest(ctx, "", fractalID, prismID, in, username)
 }
 
 // CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).

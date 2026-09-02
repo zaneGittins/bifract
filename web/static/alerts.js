@@ -1524,7 +1524,7 @@ const Alerts = {
             // does. Reporting them as "Import failed" hides what to do about it.
             const refusal = this.classifyRefusal(response, data);
             if (refusal === 'gate') {
-                this.showError(errorDiv, 'This scope reviews alert changes. Open the alert in the editor and propose it instead.');
+                this.openImportProposal(errorDiv);
                 return;
             }
             if (refusal === 'policy') {
@@ -1711,6 +1711,85 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             console.error('Toggle alert error:', error);
             Toast.show('Failed to toggle alert: ' + error.message, 'error');
         }
+    },
+
+    // The server has three ways to refuse a write, and a client that cannot tell them
+    // apart shows "failed" over an instruction the user could have acted on.
+    //
+    //   gate    409 with {gate:"required"} - the scope reviews changes, so propose
+    //   policy  422 with a violation array - a blocking rule, so fix what it names
+    //   null    anything else
+    // Reads the import modal the same way importYAML does, so a proposal carries the
+    // document and normalizer the user actually chose.
+    importYamlPayload() {
+        const normalizerGroup = document.getElementById('importNormalizerGroup');
+        const normalizerSelect = document.getElementById('importNormalizerSelect');
+        const isSigmaVisible = normalizerGroup && normalizerGroup.style.display !== 'none';
+
+        return {
+            content: document.getElementById('yamlContent')?.value.trim() || '',
+            normalizerID: isSigmaVisible && normalizerSelect ? normalizerSelect.value : '',
+            errorDiv: document.getElementById('importError')
+        };
+    },
+
+    // A gated scope refuses the import, so the document goes to the review queue
+    // instead. The modal keeps the YAML on screen and asks only for the one thing the
+    // reviewer needs that the document cannot supply.
+    openImportProposal(errorDiv) {
+        if (errorDiv) errorDiv.style.display = 'none';
+        document.getElementById('importProposalBlock')?.remove();
+
+        const anchor = document.getElementById('importYamlModal')?.querySelector('.modal-body') || errorDiv?.parentElement;
+        if (!anchor) return;
+
+        anchor.insertAdjacentHTML('beforeend', `
+            <div id="importProposalBlock" class="alert-propose">
+                <label class="alert-propose-label" for="importProposalSummary">This scope reviews changes, so this import becomes a proposal</label>
+                <textarea id="importProposalSummary" class="alert-propose-input" spellcheck="false"
+                          placeholder="What is this rule, and why import it"></textarea>
+                <div class="alert-propose-actions">
+                    <button type="button" class="alert-btn alert-btn-ghost" onclick="document.getElementById('importProposalBlock').remove()">Cancel</button>
+                    <button type="button" class="alert-btn alert-btn-primary" onclick="Alerts.submitImportProposal()">Open proposal</button>
+                </div>
+            </div>
+        `);
+        document.getElementById('importProposalSummary')?.focus();
+    },
+
+    async submitImportProposal() {
+        const summaryEl = document.getElementById('importProposalSummary');
+        const summary = (summaryEl?.value || '').trim();
+        if (!summary) {
+            summaryEl?.focus();
+            return;
+        }
+
+        const { content, normalizerID, errorDiv } = this.importYamlPayload();
+        if (!content) return;
+
+        try {
+            const res = await fetch('/api/v1/alert-changes/from-yaml', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content, summary, normalizer_id: normalizerID })
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+            document.getElementById('importProposalBlock')?.remove();
+            this.closeModal('importYamlModal');
+            Toast.success('Import proposed', 'It appears under Changes for review.');
+        } catch (e) {
+            this.showError(errorDiv, e.message);
+        }
+    },
+
+    classifyRefusal(response, payload) {
+        if (response.status === 409 && payload?.data?.gate === 'required') return 'gate';
+        if (response.status === 422 && Array.isArray(payload?.data)) return 'policy';
+        return null;
     },
 
     async deleteAlert(alertId) {
@@ -3564,11 +3643,22 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
             // A policy block is not a failure to report and forget: the reasons go to
             // the Checks tab and onto the fields, where they can be acted on.
-            if (response.status === 422) {
+            // Neither refusal is a failure to report and forget. A policy block goes to
+            // the Checks tab and onto the fields; a gate refusal means the scope started
+            // reviewing changes since the editor opened, so switch to proposing.
+            if (!response.ok) {
                 const payload = await response.json().catch(() => ({}));
-                window.AlertPolicy?.showBlocked(payload.data || []);
-                Toast.error('Blocked by policy', payload.error || '');
-                return;
+                switch (this.classifyRefusal(response, payload)) {
+                    case 'policy':
+                        window.AlertPolicy?.showBlocked(payload.data || []);
+                        Toast.error('Blocked by policy', payload.error || '');
+                        return;
+                    case 'gate':
+                        this.gateEnabled = true;
+                        this.applyGateMode(this.currentAlert ? this.currentAlert.id : null);
+                        this.openProposeComposer(formData);
+                        return;
+                }
             }
 
             if (!response.ok) {

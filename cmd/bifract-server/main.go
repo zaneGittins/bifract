@@ -407,6 +407,21 @@ func main() {
 	dictionaryHandler := dictionaries.NewHandler(dictionaryManager, fractalManager)
 	log.Println("Dictionary manager initialized")
 
+	// Converge each dictionary's ClickHouse objects with its Postgres definition.
+	// Runs in the background: it is metadata-only but issues cluster DDL.
+	go func() {
+		ctx := context.Background()
+		db.WaitForSchemaReady(ctx)
+		n, err := dictionaryManager.ReconcileDictionaries(ctx)
+		if err != nil {
+			log.Printf("Warning: Dictionary reconciliation failed: %v", err)
+			return
+		}
+		if n > 0 {
+			log.Printf("Dictionaries reconciled (%d)", n)
+		}
+	}()
+
 	// Initialize analytics model manager
 	log.Println("Initializing analytics model manager...")
 	modelManager := models.NewManager(pg, db)

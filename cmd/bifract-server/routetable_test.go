@@ -38,6 +38,7 @@ var routeTable = []string{
 	"DELETE /api/v1/admin/schema-fields/{name} 9 auth resp tenant_admin",
 	"GET /api/v1/alert-changes 9 auth resp viewer",
 	"POST /api/v1/alert-changes 9 auth body resp analyst",
+	"POST /api/v1/alert-changes/from-yaml 9 auth body resp analyst",
 	"DELETE /api/v1/alert-changes/{id} 9 auth resp fractal_admin",
 	"GET /api/v1/alert-changes/{id} 9 auth resp viewer",
 	"PUT /api/v1/alert-changes/{id} 9 auth body resp analyst",
