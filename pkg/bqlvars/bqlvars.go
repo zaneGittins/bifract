@@ -18,8 +18,8 @@
 //
 // Trust boundary: a value is substituted as a raw BQL fragment, not as an
 // escaped value literal, so a value may legitimately carry operators or pipe
-// stages (matching LogScale-style variables). The substituted query is still
-// parsed and fractal-scoped server-side afterward, so a value can only express
+// stages. The substituted query is still parsed and fractal-scoped
+// server-side afterward, so a value can only express
 // BQL the substituting user could already run in their own scope; it cannot
 // widen access. Callers persisting shared defaults (e.g. saved queries) should
 // be aware the stored value is author-controlled BQL executed by viewers.
