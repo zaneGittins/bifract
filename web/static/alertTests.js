@@ -609,10 +609,18 @@ const AlertTests = {
 
         const objects = (Array.isArray(parsed) ? parsed : [parsed])
             .filter(e => e && typeof e === 'object' && !Array.isArray(e));
-        const events = objects.map(e => this.stripBookkeeping(e, e.timestamp)).filter(Boolean);
+        // Same conversion the gutter uses: a pasted result row carries its fields in
+        // norm_log, and stripping bookkeeping alone would leave nothing to match on.
+        const events = objects.map(e => this.toNormalizedEvent(e)).filter(Boolean);
 
         if (events.length === 0) {
             this._composerError = 'Expected an object with fields, or an array of them.';
+            this.render();
+            return;
+        }
+        const empty = events.filter(e => Object.keys(e).filter(k => k !== 'timestamp').length === 0);
+        if (empty.length) {
+            this._composerError = `${empty.length} of ${events.length} events carry no fields to match on.`;
             this.render();
             return;
         }

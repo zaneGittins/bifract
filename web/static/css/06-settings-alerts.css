@@ -5048,7 +5048,9 @@ body.alert-editor-active {
     flex: 0 0 auto;
 }
 
-.ae-bench #alertResultsPane {
+/* :not([hidden]) matters: an id selector setting display would otherwise beat the
+   browser's [hidden] rule and leave the results showing under the other tabs. */
+.ae-bench #alertResultsPane:not([hidden]) {
     display: flex;
     flex-direction: column;
     flex: 1;
