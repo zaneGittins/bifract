@@ -40,17 +40,17 @@ type DictionaryRow struct {
 // The target dictionary is identified by name and auto-created if it doesn't exist.
 // All log fields become columns; the first field of each log is used as the key.
 type DictionaryAction struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Description       string `json:"description"`
-	DictionaryName    string `json:"dictionary_name"`
-	MaxLogsPerTrigger int    `json:"max_logs_per_trigger"`
-	Enabled           bool   `json:"enabled"`
-	CreatedBy         string `json:"created_by"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	DictionaryName    string    `json:"dictionary_name"`
+	MaxLogsPerTrigger int       `json:"max_logs_per_trigger"`
+	Enabled           bool      `json:"enabled"`
+	CreatedBy         string    `json:"created_by"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
-	FractalID         string `json:"fractal_id,omitempty"`
-	PrismID           string `json:"prism_id,omitempty"`
+	FractalID         string    `json:"fractal_id,omitempty"`
+	PrismID           string    `json:"prism_id,omitempty"`
 
 	// DictionaryID is resolved at execution time from DictionaryName.
 	// Kept for internal use and backwards compat with existing rows.

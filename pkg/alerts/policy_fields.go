@@ -77,6 +77,33 @@ func operatorNeedsValue(op string) bool {
 	return true
 }
 
+// operatorPhrases render a rule as a sentence, with {v} standing in for its value.
+//
+// Separate from operatorLabels because the two read differently: a picker needs a
+// standalone phrase with a placeholder ("is at least N characters"), while a rendered
+// rule needs the value in its natural place ("is at least 40 characters").
+var operatorPhrases = map[string]string{
+	"min_length":  "is at least {v} characters",
+	"max_length":  "is at most {v} characters",
+	"min_count":   "has at least {v}",
+	"max_count":   "has at most {v}",
+	"any_matches": "has an entry matching {v}",
+	"all_match":   "has every entry matching {v}",
+	"none_match":  "has no entry matching {v}",
+	"matches":     "matches {v}",
+	"not_matches": "does not match {v}",
+	"equals":      "is {v}",
+	"not_equals":  "is not {v}",
+	"one_of":      "is one of {v}",
+	"gte":         "is at least {v}",
+	"lte":         "is at most {v}",
+	"gt":          "is more than {v}",
+	"lt":          "is less than {v}",
+	"not_empty":   "is set",
+	"is_true":     "is true",
+	"is_false":    "is false",
+}
+
 // operatorLabels render an operator in the policy editor.
 var operatorLabels = map[string]string{
 	"not_empty":   "is set",

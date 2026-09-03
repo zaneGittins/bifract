@@ -107,7 +107,7 @@ nav:
     - Provenance Graph: features/provenance-graph.md
     - Dashboards & Notebooks: features/dashboards.md
     - Deep Links: features/deep-links.md
-    - Dictionaries: features/dictionaries.md
+    - Context: features/dictionaries.md
     - Normalizers: features/normalizers.md
     - AI Chat: features/ai-chat.md
     - MCP Server: features/mcp-server.md

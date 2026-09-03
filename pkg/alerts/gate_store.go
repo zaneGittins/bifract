@@ -273,6 +273,10 @@ func (m *Manager) ListChangeRequests(ctx context.Context, fractalID, prismID str
 		 WHERE cr.` + column + ` = $1`
 	if openOnly {
 		query += " AND cr.status IN ('open', 'changes_requested')"
+	} else {
+		// Drafts are private work in progress, not proposals: they are listed by their
+		// author through ListDrafts and never appear in the queue.
+		query += " AND cr.status <> 'draft'"
 	}
 	query += " ORDER BY cr.updated_at DESC LIMIT 500"
 

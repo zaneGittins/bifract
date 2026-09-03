@@ -219,21 +219,6 @@ const Alerts = {
             });
         }
 
-        // Collapsible section headers
-        document.querySelectorAll('.alert-section-header[data-toggle]').forEach(header => {
-            header.addEventListener('click', () => {
-                const targetId = header.dataset.toggle;
-                const body = document.getElementById(targetId);
-                if (!body) return;
-                const isCollapsed = header.classList.toggle('collapsed');
-                if (isCollapsed) {
-                    body.classList.add('collapsed');
-                } else {
-                    body.classList.remove('collapsed');
-                }
-            });
-        });
-
         // Schedule preset dropdown (custom cron toggle)
         const schedulePreset = document.getElementById('editorSchedulePreset');
         if (schedulePreset) {
@@ -2361,18 +2346,23 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         // Set up SQL toggle functionality
         this.setupAlertSqlToggle();
 
-        if (alertId) {
-            // Load alert data (which also loads actions with pre-selected state)
-            this.loadAlertIntoEditor(alertId);
-        } else {
-            // Load available actions for new alert
-            this.loadActionsIntoEditor();
-        }
+        // Loading an existing alert also loads its actions, pre-selected.
+        this._editorReady = alertId ? this.loadAlertIntoEditor(alertId) : this.loadActionsIntoEditor();
 
-        // Automatically open the configuration panel for immediate access
-        setTimeout(() => {
-            this.openAlertPanel();
-        }, 100);
+        // History and drafts both need a saved alert to hang off.
+        const historyTab = document.querySelector('#alertResultTabs .ert-tab[data-pane="history"]');
+        if (historyTab) historyTab.hidden = !alertId;
+        this._typeInferred = false;
+        this.updateTypeBadge();
+        this.renderEditorFacts();
+        this.watchEditorEdits();
+
+        // Drafting starts once the form is filled, so the load is not taken for an edit.
+        this.sizeNameInput();
+        Promise.resolve(this._editorReady).finally(() => {
+            this.sizeNameInput();
+            window.AlertDrafts?.start(alertId);
+        });
     },
 
     // Editor teardown, shared by the post-save return and by tab navigation away
@@ -2386,7 +2376,11 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         this.feedAlertOriginalId = null;
         window.AlertTests?.release();
         window.AlertPolicy?.reset();
+        window.AlertDrafts?.stop();
+        document.querySelector('#alertEditorView .ae-body')?.classList.remove('ae-inspecting');
         this.cancelPropose();
+        this.cancelTestQuery();
+        this._queryChrome().clear();
         document.getElementById('feedAlertBanner')?.remove();
         alertEditorView.style.display = 'none';
 
@@ -2508,17 +2502,90 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         this.currentAlert = null;
     },
 
+    // Same deferral policy as the search page, with the editor's own appearance.
+    _queryChrome() {
+        if (!this._chromeCtl) {
+            this._chromeCtl = LoadingChrome.create({
+                show: (mode, ctx) => {
+                    this._chromeCtx = ctx;
+                    this._setTestRunButtonState(true);
+                    // Nothing to preserve on a first run, and on a streaming run the
+                    // rows replace this the moment they arrive.
+                    if (!this._chromeCtl.gotRows && ctx && ctx.resultsDiv) {
+                        ctx.resultsDiv.innerHTML =
+                            '<div class="loading-spinner"><span class="spinner"></span>' +
+                            '<button class="cancel-query-btn" onclick="Alerts.cancelTestQuery()">Cancel</button></div>';
+                    }
+                },
+                hide: () => {},
+                // A cancelled query returns on AbortError without touching the results,
+                // so anything still showing the spinner would keep it forever. Results,
+                // an error or an empty state have all already replaced it by here.
+                finish: () => {
+                    const el = this._chromeCtx && this._chromeCtx.resultsDiv;
+                    if (el && el.querySelector('.loading-spinner')) {
+                        el.innerHTML = '<div class="no-results"><p>Query cancelled</p></div>';
+                        const count = document.getElementById('alertResultsCount');
+                        if (count) count.textContent = '';
+                    }
+                }
+            });
+        }
+        return this._chromeCtl;
+    },
+
+    // Paints one histogram frame. Frames are cumulative, so the latest is the most
+    // complete and simply replaces what is drawn.
+    _paintAlertHistogram(frame, histTimeRange) {
+        if (!window.Timeline || !frame || !Array.isArray(frame.buckets) || !frame.buckets.length) return;
+        this._alertHistPainted = true;
+
+        // The frame's own bounds win over the requested range: the server snaps the
+        // histogram window out to whole buckets, so stretching the bucket array across
+        // the unsnapped request shifts every bar by up to one bucket.
+        const range = (frame.bucket_start && frame.bucket_seconds)
+            ? {
+                start: frame.bucket_start,
+                end: new Date(new Date(frame.bucket_start).getTime()
+                    + frame.buckets.length * frame.bucket_seconds * 1000).toISOString()
+              }
+            : histTimeRange;
+        if (!range) return;
+
+        // covered_from marks how far the newest-first scan has reached. Without it the
+        // unscanned span draws as real zeros, and an analyst reads "no matches" from a
+        // window that was never counted.
+        Timeline.renderBucketsToEl(frame.buckets, range,
+            document.getElementById('alertTimeline'),
+            document.getElementById('alertTimelineSection'),
+            { coveredFrom: frame.covered_from || 0, pendingLabel: 'not scanned', select: false });
+    },
+
+    // Keyed off what the button is actually showing, not off whether a request exists.
+    // Keying off the request meant a run started by the typing debounce put the button
+    // into Cancel, so the next click cancelled that run instead of starting one.
     runOrCancelQuery() {
+        if (this._alertQueryRunning) this.cancelTestQuery();
+        else this.testQuery();
+    },
+
+    cancelTestQuery() {
         if (this.currentTestRequest) {
             this.currentTestRequest.abort();
             this.currentTestRequest = null;
-            this._setTestRunButtonState(false);
-        } else {
-            this.testQuery();
         }
+        this._endQueryChrome();
+    },
+
+    // The chrome controller owns the deferral, so the button and the spinner appear
+    // together or not at all.
+    _endQueryChrome() {
+        this._queryChrome().end();
+        this._setTestRunButtonState(false);
     },
 
     _setTestRunButtonState(running) {
+        this._alertQueryRunning = running;
         const btn = document.getElementById('testQueryBtn');
         if (!btn) return;
         const text = btn.querySelector('.btn-text');
@@ -2568,14 +2635,17 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
         const controller = new AbortController();
         this.currentTestRequest = controller;
-        this._setTestRunButtonState(true);
+        this._alertHistPainted = false;
 
-        resultsDiv.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
+        // Deferred, like the search page: replacing the results immediately means every
+        // debounced run wipes what you were reading and flashes a spinner, even when the
+        // query takes 30ms.
+        this._queryChrome().begin({ resultsDiv });
         if (countDiv) countDiv.textContent = '—';
         if (execTimeEl) execTimeEl.textContent = '';
 
-        const alertExportBtn = document.getElementById('alertExportCsvBtn');
-        if (alertExportBtn) alertExportBtn.style.display = 'none';
+        const alertExportWrap = document.getElementById('alertExportMenuWrap');
+        if (alertExportWrap) alertExportWrap.style.display = 'none';
         this.hideAlertPagination();
 
         const timeRange = this.getTimeRange();
@@ -2604,21 +2674,21 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                 const data = await res.json().catch(() => ({}));
                 if (!data.success) throw new Error(data.error || 'Query failed');
                 this._applyAlertQueryResult({ results: data.results || [], fieldOrder: data.field_order || null,
-                    isAggregated: data.is_aggregated || false, sql: data.sql }, resultsDiv, countDiv, execTimeEl, alertExportBtn);
+                    isAggregated: data.is_aggregated || false, sql: data.sql }, resultsDiv, countDiv, execTimeEl, alertExportWrap);
                 return;
             }
 
-            await this._consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, alertExportBtn, controller);
+            await this._consumeAlertStream(res, resultsDiv, countDiv, execTimeEl, alertExportWrap, controller);
 
         } catch (error) {
             if (error.name === 'AbortError') return;
             resultsDiv.innerHTML = `<div class="query-error"><p>Query Error: ${Utils.escapeHtml(error.message)}</p></div>`;
             if (countDiv) countDiv.textContent = 'Error';
-            if (alertExportBtn) alertExportBtn.style.display = 'none';
+            if (alertExportWrap) alertExportWrap.style.display = 'none';
         } finally {
             if (this.currentTestRequest === controller) {
                 this.currentTestRequest = null;
-                this._setTestRunButtonState(false);
+                this._endQueryChrome();
             }
         }
     },
@@ -2633,6 +2703,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         let firstRows = true;
         let histogram = null;
         let histTimeRange = null;
+        let histFrames = 0;
 
         try {
             while (true) {
@@ -2661,12 +2732,27 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                             };
                             break;
                         case 'histogram':
+                            // The server scans the histogram newest-first and keeps
+                            // sending frames after 'done'. Painting only at 'done' left
+                            // the timeline showing whichever chunks happened to arrive
+                            // first, permanently partial on a wide range.
                             histogram = frame.buckets || null;
+                            histFrames++;
+                            this._paintAlertHistogram(frame, histTimeRange);
+                            break;
+                        case 'histogram_end':
+                            // The scan stopped without covering the range. Keep what was
+                            // counted rather than implying more is coming.
+                            if (histFrames === 0) {
+                                const emptySection = document.getElementById('alertTimelineSection');
+                                if (emptySection) emptySection.style.display = 'none';
+                            }
                             break;
                         case 'rows': {
                             const incoming = frame.data || [];
                             if (!incoming.length) break;
                             rows = rows.concat(incoming);
+                            this._queryChrome().markRows();
                             if (firstRows) {
                                 firstRows = false;
                                 resultsDiv.innerHTML = '';
@@ -2684,6 +2770,10 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                         case 'error':
                             throw new Error(frame.error || 'Query error');
                         case 'done':
+                            // The stream stays open past this to drain histogram
+                            // chunks, so the deferred indicator has to be stood down
+                            // here rather than in the finally.
+                            this._queryChrome().settle();
                             this._applyAlertQueryResult(
                                 { results: rows, fieldOrder, isAggregated, sql: frame.sql, executionMs: frame.execution_ms,
                                   histogram, histTimeRange },
@@ -2702,6 +2792,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         this.currentResults = results;
         this.fieldOrder = fieldOrder;
         this.isAggregated = isAggregated;
+        this.inferAlertType(isAggregated);
 
         if (countDiv) countDiv.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
         if (execTimeEl && executionMs) execTimeEl.textContent = `${executionMs}ms`;
@@ -2715,12 +2806,11 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             }
         }
 
-        // Render histogram if available
-        if (window.Timeline && histogram && histTimeRange) {
-            const canvasEl = document.getElementById('alertTimeline');
-            const sectionEl = document.getElementById('alertTimelineSection');
-            Timeline.renderBucketsToEl(histogram, histTimeRange, canvasEl, sectionEl);
-        } else {
+        // The timeline belongs to _paintAlertHistogram, which draws each frame as it
+        // lands and knows how far the scan has reached. Repainting here would drop
+        // covered_from and redraw the unscanned span as real zeros. All that is left to
+        // decide is whether there is a timeline at all.
+        if (!this._alertHistPainted) {
             const sectionEl = document.getElementById('alertTimelineSection');
             if (sectionEl) sectionEl.style.display = 'none';
         }
@@ -3114,10 +3204,14 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                 const panes = {
                     results: document.getElementById('alertResultsPane'),
                     tests: document.getElementById('alertTestsPane'),
-                    checks: document.getElementById('alertChecksPane')
+                    checks: document.getElementById('alertChecksPane'),
+                    history: document.getElementById('alertHistoryPane')
                 };
                 for (const [name, el] of Object.entries(panes)) {
                     if (el) el.hidden = name !== pane;
+                }
+                if (pane === 'history' && panes.history && this.currentAlert && window.AlertHistory) {
+                    AlertHistory.renderInto(panes.history, this.currentAlert.id, this.currentAlert.name);
                 }
                 const controls = document.getElementById('alertResultsControls');
                 if (controls) controls.style.visibility = pane === 'results' ? '' : 'hidden';
@@ -3139,58 +3233,11 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
     },
 
     // Panel controls
-    toggleAlertPanel() {
-        const panel = document.getElementById('alertConfigPanel');
-        if (!panel) return;
-        const isOpen = panel.classList.contains('open');
-        if (isOpen) {
-            this.closeAlertPanel();
-        } else {
-            this.openAlertPanel();
-        }
-    },
-
-    closeAlertPanel() {
-        const panel = document.getElementById('alertConfigPanel');
-        const toggleBtn = document.getElementById('toggleAlertPanelBtn');
-
-        if (panel) {
-            panel.classList.remove('open');
-            panel.style.width = '';
-        }
-
-        // Scope to the alert editor container to avoid affecting other views
-        const editorView = document.getElementById('alertEditorView');
-        const mainContent = editorView ? editorView.querySelector('.main-content') : document.querySelector('.main-content');
-        if (mainContent) {
-            mainContent.classList.remove('panel-open');
-            mainContent.style.marginRight = '';
-        }
-
-        if (toggleBtn) toggleBtn.classList.remove('panel-active');
-    },
-
-    openAlertPanel() {
-        // Only open if the alert editor is actually visible
-        const editorView = document.getElementById('alertEditorView');
-        if (!editorView || editorView.style.display === 'none') return;
-
-        const panel = document.getElementById('alertConfigPanel');
-        const mainContent = editorView.querySelector('.main-content');
-        const toggleBtn = document.getElementById('toggleAlertPanelBtn');
-
-        if (panel && mainContent) {
-            // Align panel top with the bottom of the header
-            const header = document.querySelector('.header');
-            if (header) {
-                const rect = header.getBoundingClientRect();
-                panel.style.top = (rect.bottom) + 'px';
-            }
-            panel.classList.add('open');
-            mainContent.classList.add('panel-open');
-            if (toggleBtn) toggleBtn.classList.add('panel-active');
-        }
-    },
+    // The definition is a rail in the layout now, not a slide-out. These stay as
+    // no-ops so the many callers that closed the panel on navigation keep working.
+    toggleAlertPanel() {},
+    closeAlertPanel() {},
+    openAlertPanel() {},
 
     async loadAlertIntoEditor(alertId) {
         try {
@@ -3582,14 +3629,6 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
     },
 
     async saveAlertFromEditor() {
-        // Ensure alert panel is open so form fields are accessible
-        const panel = document.getElementById('alertConfigPanel');
-        if (panel && !panel.classList.contains('open')) {
-            Toast.show('Please open the alert configuration panel to save your alert', 'warning');
-            this.openAlertPanel();
-            return;
-        }
-
         const formData = this.getAlertEditorFormData();
         if (!formData) return;
 
@@ -3682,6 +3721,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                     }
                 }
                 Toast.show(isFeedSave ? 'Manual alert created, feed version disabled' : `Alert ${this.currentAlert ? 'updated' : 'created'} successfully`, 'success');
+                await window.AlertDrafts?.finished();
                 this.backToAlerts();
             } else {
                 Toast.show(data.error || 'Failed to save alert', 'error');
@@ -3711,6 +3751,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
     },
 
     applyGateMode(alertId) {
+        this.renderEditorFacts();
         const saveBtn = document.getElementById('saveAlertBtn');
         if (saveBtn && !this.editingFeedAlert) {
             if (this.gateEnabled) saveBtn.textContent = 'Propose change';
@@ -3725,10 +3766,11 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
     openProposeComposer(formData) {
         this._pendingProposal = formData;
 
-        const actions = document.querySelector('#alertConfigPanel .alert-panel-buttons');
-        if (!actions) return;
+        const head = document.querySelector('#alertEditorView .ae-head');
+        if (!head) return;
+        document.getElementById('alertProposeComposer')?.remove();
 
-        actions.insertAdjacentHTML('beforebegin', `
+        head.insertAdjacentHTML('afterend', `
             <div id="alertProposeComposer" class="alert-propose">
                 <label class="alert-propose-label" for="alertProposeSummary">Describe this change for the reviewer</label>
                 <textarea id="alertProposeSummary" class="alert-propose-input" spellcheck="false"
@@ -3739,15 +3781,16 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                 </div>
             </div>
         `);
-        actions.style.display = 'none';
+        const saveBtn = document.getElementById('saveAlertBtn');
+        if (saveBtn) saveBtn.style.display = 'none';
         document.getElementById('alertProposeSummary')?.focus();
     },
 
     cancelPropose() {
         this._pendingProposal = null;
         document.getElementById('alertProposeComposer')?.remove();
-        const actions = document.querySelector('#alertConfigPanel .alert-panel-buttons');
-        if (actions) actions.style.display = '';
+        const saveBtn = document.getElementById('saveAlertBtn');
+        if (saveBtn) saveBtn.style.display = '';
     },
 
     async submitProposal() {
@@ -3798,11 +3841,150 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
             this.cancelPropose();
+            await window.AlertDrafts?.finished();
             Toast.success('Proposal opened', 'It appears under Changes for review.');
             this.backToAlerts();
         } catch (e) {
             Toast.error('Could not open proposal', e.message);
         }
+    },
+
+    // Asks the model for ATT&CK labels for the rule as it stands and adds the ones
+    // the embedded matrix confirms. Existing labels are left alone.
+    async suggestLabels() {
+        const btn = document.getElementById('alertLabelsAiBtn');
+        if (!btn || btn.classList.contains('busy')) return;
+
+        const subject = this.getPolicySubject();
+        if (!subject.name && !subject.query_string && !subject.description) {
+            Toast.show('Give the rule a name or a query first', 'warning');
+            return;
+        }
+
+        btn.classList.add('busy');
+        try {
+            const res = await fetch('/api/v1/alerts/suggest-labels', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: subject.name, description: subject.description,
+                    query_string: subject.query_string, labels: subject.labels || []
+                })
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+            const labels = payload.data?.labels || [];
+            if (!labels.length) {
+                Toast.show('No ATT&CK mapping found for this rule', 'info');
+                return;
+            }
+            labels.forEach(l => this.addLabelChip(l.label));
+            this.syncLabelsToHidden();
+            window.AlertDrafts?.touch();
+            Toast.show(labels.map(l => `${l.label} (${l.name})`).join(', '), 'success');
+        } catch (e) {
+            Toast.show(e.message || 'Could not suggest labels', 'error');
+        } finally {
+            btn.classList.remove('busy');
+        }
+    },
+
+    // Event versus compound is a property of the query, not a separate choice: an
+    // aggregation means compound. Inference applies to a query the user has changed;
+    // a saved alert's own type, and a type picked by hand in the rail, are left alone.
+    inferAlertType(aggregated) {
+        const select = document.getElementById('alertTypeSelect');
+        if (!select) return;
+        const current = select.value;
+        const query = document.getElementById('editorQueryInput')?.value || '';
+        const untouched = this.currentAlert && query === (this.currentAlert.query_string || '');
+
+        if (aggregated && current === 'event' && !untouched) {
+            select.value = 'compound';
+            select.dispatchEvent(new Event('change'));
+            this.setAlertTypeCard('compound');
+            this._typeInferred = true;
+        } else if (!aggregated && current === 'compound' && this._typeInferred) {
+            select.value = 'event';
+            select.dispatchEvent(new Event('change'));
+            this.setAlertTypeCard('event');
+            this._typeInferred = false;
+        }
+        this.updateTypeBadge();
+    },
+
+    updateTypeBadge() {
+        const select = document.getElementById('alertTypeSelect');
+        const value = document.getElementById('alertTypeBadgeValue');
+        const hint = document.getElementById('alertTypeBadgeHint');
+        if (!select || !value) return;
+        const type = select.value || 'event';
+        value.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+        if (hint) hint.textContent = this._typeInferred ? 'from the query' : '';
+    },
+
+    // The name field is as wide as its text, so the status pill reads as part of it.
+    sizeNameInput() {
+        const input = document.getElementById('editorAlertName');
+        if (!input) return;
+        let probe = document.getElementById('aeNameProbe');
+        if (!probe) {
+            probe = document.createElement('span');
+            probe.id = 'aeNameProbe';
+            probe.className = 'ae-name-probe';
+            input.parentElement.appendChild(probe);
+        }
+        probe.textContent = input.value || input.placeholder || '';
+        const width = Math.min(Math.max(probe.offsetWidth + 20, 140), 640);
+        input.style.width = width + 'px';
+    },
+
+    // The facts a rule carries that the form never said.
+    renderEditorFacts() {
+        const el = document.getElementById('alertEditorFacts');
+        if (!el) return;
+        el.textContent = this.gateEnabled ? 'Reviewed scope' : '';
+    },
+
+    // One listener for everything the draft and the type badge react to.
+    watchEditorEdits() {
+        const view = document.getElementById('alertEditorView');
+        if (!view || view.dataset.editsWatched) return;
+        view.dataset.editsWatched = '1';
+
+        const onEdit = (e) => {
+            if (e.target.id === 'editorAlertName') this.sizeNameInput();
+            // Only the definition counts: preview range and paging are not edits.
+            if (!e.target.closest('.ae-rail, .ae-name-input, #editorQueryInput')) return;
+            window.AlertDrafts?.touch();
+        };
+        view.addEventListener('input', onEdit);
+        view.addEventListener('change', onEdit);
+
+        // Inspecting a log wants the width the search page has, so the rail folds
+        // away while the detail panel is open and returns when it closes.
+        const detail = document.getElementById('alertLogDetailPanel');
+        const body = view.querySelector('.ae-body');
+        if (detail && body) {
+            const sync = () => body.classList.toggle('ae-inspecting', detail.classList.contains('open'));
+            new MutationObserver(sync).observe(detail, { attributes: true, attributeFilter: ['class'] });
+            sync();
+        }
+
+        document.getElementById('alertTypeSelect')?.addEventListener('change', () => this.updateTypeBadge());
+        document.querySelectorAll('.alert-type-card').forEach(card => {
+            card.addEventListener('click', () => { this._typeInferred = false; this.updateTypeBadge(); });
+        });
+    },
+
+    // Opens the editor onto a draft from the drafts list.
+    async openDraft(draft) {
+        if (window.AlertFeeds?.showManualAlerts) AlertFeeds.showManualAlerts();
+        this.showAlertEditor(draft.alert_id || null);
+        try { await this._editorReady; } catch (e) { /* the editor reported it */ }
+        window.AlertDrafts?.open(draft);
     },
 
     // The definition as it stands in the editor, for a policy check that must judge the
@@ -4720,31 +4902,60 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                 csvContent += values.join(',') + '\n';
             });
 
-            // Create and download file
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const link = document.createElement('a');
-            const timestamp = new Date().toISOString().slice(0, 19).replace(/[:]/g, '-');
-            const filename = `bifract-alert-results-${timestamp}.csv`;
-
-            if (link.download !== undefined) {
-                const url = URL.createObjectURL(blob);
-                link.setAttribute('href', url);
-                link.setAttribute('download', filename);
-                link.style.visibility = 'hidden';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                URL.revokeObjectURL(url);
-
-                Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
-            } else {
-                Toast.show('CSV export not supported in this browser', 'error');
-            }
-
+            const filename = this._downloadResults(blob, 'csv');
+            if (filename) Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
         } catch (error) {
             console.error('Export error:', error);
             Toast.show('Failed to export CSV: ' + error.message, 'error');
         }
+    },
+
+    exportToJsonl() {
+        if (!this.currentResults || this.currentResults.length === 0) {
+            Toast.show('No results to export', 'warning');
+            return;
+        }
+        try {
+            const order = this.fieldOrder || [];
+            const lines = this.currentResults.map(row => {
+                let flat = row;
+                if (row._all_fields && typeof row._all_fields === 'object') {
+                    const { _all_fields, ...projected } = row;
+                    flat = { ..._all_fields, ...projected };
+                }
+                // Lead with the columns on screen, then everything else.
+                const out = {};
+                for (const f of order) if (f in flat) out[f] = flat[f];
+                for (const k of Object.keys(flat)) if (!(k in out)) out[k] = flat[k];
+                return JSON.stringify(out);
+            });
+            const blob = new Blob([lines.join('\n') + '\n'], { type: 'application/x-ndjson;charset=utf-8;' });
+            const filename = this._downloadResults(blob, 'jsonl');
+            if (filename) Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
+        } catch (error) {
+            console.error('Export error:', error);
+            Toast.show('Failed to export JSON Lines: ' + error.message, 'error');
+        }
+    },
+
+    _downloadResults(blob, ext) {
+        const link = document.createElement('a');
+        if (link.download === undefined) {
+            Toast.show('Downloads are not supported in this browser', 'error');
+            return null;
+        }
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/[:]/g, '-');
+        const filename = `bifract-alert-results-${timestamp}.${ext}`;
+        const url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = filename;
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        return filename;
     },
     // ============================
     // Unified Actions View

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,33 @@ type Manager struct {
 // NewManager creates a new dictionary manager.
 func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manager {
 	return &Manager{pg: pg, ch: ch, chDB: "logs"}
+}
+
+// invalidInput marks a failure the caller can fix. The handler turns it into a 400
+// carrying the reason, instead of a generic 500 the editor can only render as
+// "something failed".
+type invalidInput struct{ msg string }
+
+func (e invalidInput) Error() string { return e.msg }
+
+func badInput(format string, a ...interface{}) error {
+	return invalidInput{fmt.Sprintf(format, a...)}
+}
+
+// IsInvalidInput reports whether err is a caller-fixable validation failure.
+func IsInvalidInput(err error) bool {
+	var e invalidInput
+	return errors.As(err, &e)
+}
+
+// seqColumn holds each row's position in the editor. The backing table is a
+// ReplacingMergeTree sorted by the key column, so without an explicit ordinal a new
+// row lands wherever its key happens to sort rather than where the user added it.
+const seqColumn = "_bf_seq"
+
+// reservedColumn reports whether a name belongs to Bifract's own bookkeeping.
+func reservedColumn(name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), "_bf_")
 }
 
 // chTableName returns the ClickHouse backing table name for a dictionary ID.
@@ -238,12 +266,12 @@ func (m *Manager) AddColumn(ctx context.Context, id, colName string) (*Dictionar
 	}
 	for _, c := range dict.Columns {
 		if c.Name == colName {
-			return nil, fmt.Errorf("column %q already exists", colName)
+			return nil, badInput("column %q already exists", colName)
 		}
 	}
 
-	if !isValidIdentifier(colName) {
-		return nil, fmt.Errorf("invalid column name %q: must start with a letter or underscore and contain only alphanumeric, underscore, or hyphen characters", colName)
+	if !isValidIdentifier(colName) || reservedColumn(colName) {
+		return nil, badInput("invalid column name %q: must start with a letter or underscore, contain only alphanumeric, underscore, or hyphen characters, and not begin with _bf_", colName)
 	}
 
 	isFirstColumn := len(dict.Columns) == 0
@@ -288,10 +316,10 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 		return nil, err
 	}
 	if colName == dict.KeyColumn {
-		return nil, fmt.Errorf("cannot remove the key column")
+		return nil, badInput("cannot remove the key column")
 	}
 	if !isValidIdentifier(colName) {
-		return nil, fmt.Errorf("invalid column name %q", colName)
+		return nil, badInput("invalid column name %q", colName)
 	}
 
 	newCols := make([]DictionaryColumn, 0, len(dict.Columns))
@@ -306,7 +334,7 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 		newCols = append(newCols, c)
 	}
 	if !found {
-		return nil, fmt.Errorf("column %q not found", colName)
+		return nil, badInput("column %q not found", colName)
 	}
 
 	// Drop secondary key dict before altering the table
@@ -355,7 +383,7 @@ func (m *Manager) SetColumnKey(ctx context.Context, id, colName string) (*Dictio
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("column %q not found", colName)
+		return nil, badInput("column %q not found", colName)
 	}
 
 	colsJSON, _ := json.Marshal(dict.Columns)
@@ -377,7 +405,7 @@ func (m *Manager) UnsetColumnKey(ctx context.Context, id, colName string) (*Dict
 		return nil, err
 	}
 	if colName == dict.KeyColumn {
-		return nil, fmt.Errorf("cannot unset the primary key column")
+		return nil, badInput("cannot unset the primary key column")
 	}
 
 	found := false
@@ -392,7 +420,7 @@ func (m *Manager) UnsetColumnKey(ctx context.Context, id, colName string) (*Dict
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("column %q not found", colName)
+		return nil, badInput("column %q not found", colName)
 	}
 
 	colsJSON, _ := json.Marshal(dict.Columns)
@@ -431,7 +459,7 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 		where = "WHERE (" + strings.Join(searchClauses, " OR ") + ")"
 	}
 
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s` %s", escCH(dict.CHTableName), where)
+	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", escCH(dict.CHTableName), where)
 	countRows, err := m.ch.Query(ctx, countSQL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count rows: %w", err)
@@ -449,8 +477,11 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 		}
 	}
 
-	querySQL := fmt.Sprintf("SELECT %s FROM `%s` %s ORDER BY `%s` ASC LIMIT %d OFFSET %d",
-		strings.Join(colRefs, ", "), escCH(dict.CHTableName), where, escCH(dict.KeyColumn), limit, offset)
+	// FINAL collapses the superseded copies an edit leaves behind: without it the
+	// editor shows both versions of a row until the parts happen to merge.
+	querySQL := fmt.Sprintf("SELECT %s, `%s` FROM `%s` FINAL %s ORDER BY `%s` ASC, `%s` ASC LIMIT %d OFFSET %d",
+		strings.Join(colRefs, ", "), seqColumn, escCH(dict.CHTableName), where,
+		seqColumn, escCH(dict.KeyColumn), limit, offset)
 
 	dataRows, err := m.ch.Query(ctx, querySQL)
 	if err != nil {
@@ -461,6 +492,9 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 	for _, row := range dataRows {
 		dr := DictionaryRow{Fields: make(map[string]string)}
 		for k, v := range row {
+			if k == seqColumn {
+				continue
+			}
 			s := fmt.Sprintf("%v", v)
 			dr.Fields[k] = s
 			if k == dict.KeyColumn {
@@ -482,46 +516,173 @@ func (m *Manager) UpsertRows(ctx context.Context, id string, rows []DictionaryRo
 		return nil
 	}
 
-	var colNames []string
-	for _, c := range dict.Columns {
-		colNames = append(colNames, fmt.Sprintf("`%s`", escCH(c.Name)))
-	}
-
-	// Build parameterized INSERT with placeholders.
-	placeholders := make([]string, len(dict.Columns))
-	for i := range placeholders {
-		placeholders[i] = "?"
-	}
-	insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)",
-		escCH(dict.CHTableName), strings.Join(colNames, ", "), strings.Join(placeholders, ", "))
-
+	// A blank key is not addressable: it cannot be looked up (the dictionary source
+	// drops it) or deleted, so it would only ever be a junk row in the editor.
 	for _, row := range rows {
-		args := make([]interface{}, len(dict.Columns))
-		for i, c := range dict.Columns {
-			args[i] = row.Fields[c.Name]
-		}
-		if err := m.ch.ExecArgs(ctx, insertSQL, args...); err != nil {
-			return fmt.Errorf("failed to upsert row: %w", err)
+		if row.Fields[dict.KeyColumn] == "" {
+			return badInput("column %q is the key and cannot be empty", dict.KeyColumn)
 		}
 	}
 
+	seqs, err := m.assignSeq(ctx, dict, rows)
+	if err != nil {
+		return err
+	}
+	if err := m.batchInsertRows(ctx, dict, rows, seqs); err != nil {
+		return err
+	}
+
+	// A row whose key column was edited is a rename, not a second row: the caller
+	// sends the key the row had, so drop the copy it left behind.
+	for _, row := range rows {
+		if row.Key != "" && row.Key != row.Fields[dict.KeyColumn] {
+			if err := m.deleteRowByKey(ctx, dict, row.Key); err != nil {
+				return err
+			}
+		}
+	}
+
+	m.reloadDictionaries(ctx, dict)
 	m.updateRowCount(ctx, dict)
 	return nil
 }
 
+// maxSeqLookup bounds the key set assignSeq will look up in one statement. A bulk
+// load past it is ordered by its own sequence, which is what a re-import means.
+const maxSeqLookup = 1000
+
+// assignSeq returns each row's ordinal: a key already in the table keeps the position
+// it has, so editing a row never moves it; anything new is appended in the order given.
+func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []DictionaryRow) ([]uint64, error) {
+	var next uint64
+	maxRows, err := m.ch.Query(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(dict.CHTableName)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read dictionary row order: %w", err)
+	}
+	if len(maxRows) > 0 {
+		for _, v := range maxRows[0] {
+			next = toUint64(v)
+			break
+		}
+	}
+
+	existing := map[string]uint64{}
+	if len(rows) <= maxSeqLookup {
+		keys := make([]string, 0, len(rows))
+		for _, row := range rows {
+			for _, k := range []string{row.Key, row.Fields[dict.KeyColumn]} {
+				if k != "" {
+					keys = append(keys, "'"+escCHStr(k)+"'")
+				}
+			}
+		}
+		if len(keys) > 0 {
+			q := fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
+				escCH(dict.KeyColumn), seqColumn, escCH(dict.CHTableName),
+				escCH(dict.KeyColumn), strings.Join(keys, ", "))
+			found, err := m.ch.Query(ctx, q)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read dictionary row order: %w", err)
+			}
+			for _, r := range found {
+				k, _ := r[dict.KeyColumn].(string)
+				existing[k] = toUint64(r[seqColumn])
+			}
+		}
+	}
+
+	seqs := make([]uint64, len(rows))
+	for i, row := range rows {
+		// A rename keeps the position of the row it replaces.
+		seq := existing[row.Fields[dict.KeyColumn]]
+		if seq == 0 && row.Key != "" {
+			seq = existing[row.Key]
+		}
+		if seq == 0 {
+			next++
+			seq = next
+		}
+		seqs[i] = seq
+	}
+	return seqs, nil
+}
+
+func toUint64(v interface{}) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case int64:
+		if n > 0 {
+			return uint64(n)
+		}
+	case uint32:
+		return uint64(n)
+	}
+	return 0
+}
+
 // DeleteRow deletes a row by key from the ClickHouse backing table.
 func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
+	if key == "" {
+		return badInput("row key is required")
+	}
 	dict, err := m.GetDictionary(ctx, id)
 	if err != nil {
 		return err
 	}
-	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE `%s` = '%s'",
-		escCH(dict.CHTableName), escCH(dict.KeyColumn), escCHStr(key))
-	if err := m.ch.Exec(ctx, deleteSQL); err != nil {
-		return fmt.Errorf("failed to delete row: %w", err)
+	found, err := m.ch.Query(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
+		escCH(dict.CHTableName), escCH(dict.KeyColumn), escCHStr(key)))
+	if err != nil {
+		return fmt.Errorf("failed to look up row: %w", err)
 	}
+	if len(found) > 0 {
+		for _, v := range found[0] {
+			if toUint64(v) == 0 {
+				return badInput("no row with key %q", key)
+			}
+			break
+		}
+	}
+
+	if err := m.deleteRowByKey(ctx, dict, key); err != nil {
+		return err
+	}
+	m.reloadDictionaries(ctx, dict)
 	m.updateRowCount(ctx, dict)
 	return nil
+}
+
+// deleteRowByKey removes one row and waits for the mutation. ALTER DELETE is
+// asynchronous by default, so without the wait the caller's next read still returns
+// the row it just deleted.
+func (m *Manager) deleteRowByKey(ctx context.Context, dict *Dictionary, key string) error {
+	sync := 1
+	if m.ch.Topology().ReplicatedEngines {
+		sync = 2
+	}
+	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE `%s` = '%s' SETTINGS mutations_sync = %d",
+		escCH(dict.CHTableName), escCH(dict.KeyColumn), escCHStr(key), sync)
+	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(deleteSQL)); err != nil {
+		return fmt.Errorf("failed to delete row: %w", err)
+	}
+	return nil
+}
+
+// reloadDictionaries pushes a row change into the live dictionary objects. Their
+// LIFETIME would pick it up within five minutes; a query run right after an edit
+// should not have to wait that long. Best effort: the data is already committed.
+func (m *Manager) reloadDictionaries(ctx context.Context, dict *Dictionary) {
+	names := []string{dict.CHDictName}
+	for _, c := range dict.Columns {
+		if c.IsKey && c.Name != dict.KeyColumn {
+			names = append(names, chColDictName(dict.ID, c.Name))
+		}
+	}
+	for _, n := range names {
+		if err := m.ch.Exec(ctx, m.reloadSQL(n)); err != nil {
+			log.Printf("[Dictionaries] reload %s: %v", n, err)
+		}
+	}
 }
 
 const csvImportBatchSize = 1000
@@ -588,15 +749,22 @@ func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader) (int, e
 		return 0, nil
 	}
 
-	if err := m.batchInsertRows(ctx, dict, rows); err != nil {
+	// A CSV defines its own order, so number the rows as the file lists them.
+	seqs := make([]uint64, len(rows))
+	for i := range rows {
+		seqs[i] = uint64(i + 1)
+	}
+	if err := m.batchInsertRows(ctx, dict, rows, seqs); err != nil {
 		return 0, err
 	}
+	m.reloadDictionaries(ctx, dict)
 	m.updateRowCount(ctx, dict)
 	return len(rows), nil
 }
 
-// batchInsertRows inserts rows in batches of csvImportBatchSize using multi-row INSERT statements.
-func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []DictionaryRow) error {
+// batchInsertRows inserts rows in batches of csvImportBatchSize using multi-row INSERT
+// statements. seqs carries each row's editor ordinal, parallel to rows.
+func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []DictionaryRow, seqs []uint64) error {
 	if len(dict.Columns) == 0 {
 		return nil
 	}
@@ -605,8 +773,9 @@ func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []
 	for _, c := range dict.Columns {
 		colNames = append(colNames, fmt.Sprintf("`%s`", escCH(c.Name)))
 	}
+	colNames = append(colNames, fmt.Sprintf("`%s`", seqColumn))
 
-	placeholders := make([]string, len(dict.Columns))
+	placeholders := make([]string, len(dict.Columns)+1)
 	for i := range placeholders {
 		placeholders[i] = "?"
 	}
@@ -627,11 +796,12 @@ func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []
 		insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES %s",
 			escCH(dict.CHTableName), strings.Join(colNames, ", "), strings.Join(batchPlaceholders, ", "))
 
-		args := make([]interface{}, 0, len(batch)*len(dict.Columns))
-		for _, row := range batch {
+		args := make([]interface{}, 0, len(batch)*(len(dict.Columns)+1))
+		for j, row := range batch {
 			for _, c := range dict.Columns {
 				args = append(args, row.Fields[c.Name])
 			}
+			args = append(args, seqs[i+j])
 		}
 
 		if err := m.ch.ExecArgs(ctx, insertSQL, args...); err != nil {
@@ -658,8 +828,8 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 		colNames = append(colNames, c.Name)
 	}
 
-	querySQL := fmt.Sprintf("SELECT %s FROM `%s` ORDER BY `%s` ASC",
-		strings.Join(colRefs, ", "), escCH(dict.CHTableName), escCH(dict.KeyColumn))
+	querySQL := fmt.Sprintf("SELECT %s FROM `%s` FINAL ORDER BY `%s` ASC, `%s` ASC",
+		strings.Join(colRefs, ", "), escCH(dict.CHTableName), seqColumn, escCH(dict.KeyColumn))
 
 	dataRows, err := m.ch.Query(ctx, querySQL)
 	if err != nil {
@@ -683,13 +853,20 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 	return writer.Error()
 }
 
+// reloadSQL renders a cluster-aware SYSTEM RELOAD DICTIONARY. Every node keeps its
+// own copy, so reloading only the one this connection landed on leaves the rest stale.
+func (m *Manager) reloadSQL(name string) string {
+	return fmt.Sprintf("SYSTEM RELOAD DICTIONARY%s `%s`.`%s`", m.ch.OnClusterSQL(), escCH(m.chDB), escCH(name))
+}
+
 // ReloadDictionary forces ClickHouse to reload the dictionary from its source table.
 func (m *Manager) ReloadDictionary(ctx context.Context, id string) error {
 	dict, err := m.GetDictionary(ctx, id)
 	if err != nil {
 		return err
 	}
-	return m.ch.Exec(ctx, fmt.Sprintf("SYSTEM RELOAD DICTIONARY `%s`", escCH(dict.CHDictName)))
+	m.reloadDictionaries(ctx, dict)
+	return nil
 }
 
 // ---- ClickHouse object lifecycle ----
@@ -736,6 +913,11 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 			continue
 		}
 		// The table may predate a column that was added while this node was down.
+		alterSeq := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` UInt64 DEFAULT 0",
+			escCH(dict.CHTableName), seqColumn))
+		if err := m.ch.Exec(ctx, alterSeq); err != nil {
+			log.Printf("[Dictionaries] reconcile %s: row order column: %v", dict.ID, err)
+		}
 		for _, c := range dict.Columns {
 			alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
 				escCH(dict.CHTableName), escCH(c.Name)))
@@ -770,11 +952,29 @@ func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
 	return nil
 }
 
-// dictSourceWhere restricts a dictionary's source to rows with a non-empty key.
-// A blank key otherwise matches every log whose lookup field is absent, enriching
-// unrelated events with whichever blank-keyed row happened to load.
-func dictSourceWhere(keyCol string) string {
-	return fmt.Sprintf(" WHERE '%s'", escCHStr(fmt.Sprintf("notEmpty(`%s`)", escCH(keyCol))))
+// dictSourceQuery is what a dictionary reads from its backing table.
+//
+// FINAL is required: an edit is an insert of a superseding row, so until the parts
+// merge the table holds both copies and a HASHED layout would load whichever came
+// last. notEmpty drops blank keys, which would otherwise match every log whose
+// lookup field is absent.
+func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []DictionaryColumn) string {
+	// ClickHouse maps a source query's columns onto the dictionary's structure by
+	// position, not by name, so this list must mirror the declaration exactly: the
+	// key first, then the attributes in the order they were declared. Selecting the
+	// same columns in any other order silently loads the values into the wrong
+	// attributes, and every lookup misses.
+	refs := make([]string, 0, len(cols)+1)
+	refs = append(refs, fmt.Sprintf("`%s`", escCH(keyCol)))
+	for _, c := range cols {
+		if c.Name == keyCol {
+			continue
+		}
+		refs = append(refs, fmt.Sprintf("`%s`", escCH(c.Name)))
+	}
+	q := fmt.Sprintf("SELECT %s FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`)",
+		strings.Join(refs, ", "), escCH(m.chDB), escCH(dict.CHTableName), escCH(keyCol))
+	return escCHStr(q)
 }
 
 func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
@@ -782,6 +982,7 @@ func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
 	for _, c := range dict.Columns {
 		colDefs = append(colDefs, fmt.Sprintf("`%s` String DEFAULT ''", escCH(c.Name)))
 	}
+	colDefs = append(colDefs, fmt.Sprintf("`%s` UInt64 DEFAULT 0", seqColumn))
 	createSQL := fmt.Sprintf(
 		"CREATE TABLE IF NOT EXISTS `%s` (%s) ENGINE = ReplacingMergeTree() ORDER BY (`%s`)",
 		escCH(dict.CHTableName), strings.Join(colDefs, ", "), escCH(dict.KeyColumn))
@@ -804,16 +1005,14 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 	}
 
 	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'%s))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
+		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
 		escCH(dict.CHDictName),
 		escCH(dict.KeyColumn),
 		attrsStr,
 		escCH(dict.KeyColumn),
-		escCH(dict.CHTableName),
-		m.chDB,
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
-		dictSourceWhere(dict.KeyColumn),
+		m.dictSourceQuery(dict, dict.KeyColumn, cols),
 	)
 	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
 }
@@ -854,22 +1053,20 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 
 	dictName := chColDictName(dict.ID, colName)
 	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'%s))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
+		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
 		escCH(dictName),
 		escCH(colName),
 		attrsStr,
 		escCH(colName),
-		escCH(dict.CHTableName),
-		m.chDB,
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
-		dictSourceWhere(colName),
+		m.dictSourceQuery(dict, colName, cols),
 	)
 	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s`", escCH(dict.CHTableName))
+	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(dict.CHTableName))
 	rows, err := m.ch.Query(ctx, countSQL)
 	if err != nil || len(rows) == 0 {
 		return

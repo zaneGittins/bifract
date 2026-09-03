@@ -5,6 +5,7 @@
 const AlertChanges = {
     KIND_LABEL: { create: 'New', update: 'Edit', delete: 'Delete' },
     STATUS_LABEL: {
+        draft: 'Draft',
         open: 'In review',
         changes_requested: 'Changes requested',
         merged: 'Merged',
@@ -14,6 +15,7 @@ const AlertChanges = {
     _config: null,
     _list: [],
     _openOnly: true,
+    _showDrafts: false,
     _selected: null,
     _detail: null,
     _busy: false,
@@ -65,6 +67,7 @@ const AlertChanges = {
     },
 
     async fetchList() {
+        if (this._showDrafts) return (await this.api('/api/v1/alert-drafts')) || [];
         return (await this.api(`/api/v1/alert-changes${this._openOnly ? '?open=true' : ''}`)) || [];
     },
 
@@ -91,27 +94,36 @@ const AlertChanges = {
                     <h2 class="ac-title">Changes${this._list.length ? `<span class="ac-count">${this._list.length}</span>` : ''}</h2>
                     <div class="ac-head-actions">
                         <div class="ac-filter">
-                            <button type="button" class="ac-filter-btn${this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter(true)">Open</button>
-                            <button type="button" class="ac-filter-btn${this._openOnly ? '' : ' active'}" onclick="AlertChanges.setFilter(false)">All</button>
+                            <button type="button" class="ac-filter-btn${!this._showDrafts && this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('open')">Open</button>
+                            <button type="button" class="ac-filter-btn${!this._showDrafts && !this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('all')">All</button>
+                            <button type="button" class="ac-filter-btn${this._showDrafts ? ' active' : ''}" onclick="AlertChanges.setFilter('drafts')">My drafts</button>
                         </div>
                         ${this._config?.enabled ? '' : '<span class="ac-off">Review is off for this scope</span>'}
                     </div>
                 </div>
                 ${this._list.length === 0
-                    ? `<div class="ac-empty">${this._openOnly ? 'Nothing awaiting review.' : 'No proposals.'}</div>`
+                    ? `<div class="ac-empty">${this._showDrafts ? 'No drafts.' : (this._openOnly ? 'Nothing awaiting review.' : 'No proposals.')}</div>`
                     : `<div class="ac-rows">${this._list.map(cr => this.renderRow(cr)).join('')}</div>`}
             </section>
             <div id="alertChangeDrawer" class="ac-drawer"></div>
         `;
 
         view.querySelectorAll('.ac-row').forEach(el => {
-            el.addEventListener('click', () => this.open(el.dataset.id));
+            el.addEventListener('click', () => {
+                if (this._showDrafts) {
+                    const draft = this._list.find(cr => cr.id === el.dataset.id);
+                    if (draft && window.Alerts?.openDraft) Alerts.openDraft(draft);
+                    return;
+                }
+                this.open(el.dataset.id);
+            });
         });
         if (this._selected) this.renderDrawer();
     },
 
-    setFilter(openOnly) {
-        this._openOnly = openOnly;
+    setFilter(which) {
+        this._showDrafts = which === 'drafts';
+        this._openOnly = which === 'open';
         this.show();
     },
 
@@ -238,17 +250,23 @@ const AlertChanges = {
         const min = rd.min_approvals || 1;
         const cards = [card('Approvals', `${approvals}/${min}`, approvals >= min ? 'pass' : 'pending')];
 
-        if (rd.policy) {
-            const blocking = rd.policy.blocking || 0;
-            const warnings = rd.policy.warnings || 0;
-            cards.push(card('Checks',
-                blocking ? String(blocking) : (warnings ? String(warnings) : 'ok'),
-                blocking ? 'fail' : (warnings ? 'warn' : 'pass')));
+        // Checks and tests always appear, so a missing card cannot be read as "nothing
+        // to check here".
+        const policy = rd.policy;
+        if (policy && (policy.checks || []).length) {
+            const blocking = policy.blocking || 0;
+            cards.push(card('Checks', `${policy.passed || 0}/${policy.checks.length}`,
+                blocking ? 'fail' : ((policy.warnings || 0) ? 'warn' : 'pass')));
+        } else {
+            cards.push(card('Checks', 'none', 'pending'));
         }
+
         if (rd.tests) {
             const failed = rd.tests.failed || 0;
             const total = (rd.tests.passed || 0) + failed;
             cards.push(card('Tests', total ? `${rd.tests.passed || 0}/${total}` : 'none', failed ? 'fail' : (total ? 'pass' : 'pending')));
+        } else {
+            cards.push(card('Tests', 'not run', 'pending'));
         }
 
         return `
@@ -300,19 +318,36 @@ const AlertChanges = {
 
     renderPolicy(cr) {
         const policy = cr.readiness?.policy;
-        if (!policy || !(policy.violations || []).length) return '';
+        const checks = policy?.checks || [];
+        if (!checks.length) return '';
+
+        // Same ordering as the editor: what needs fixing first, what is satisfied after.
+        const order = { fail: 0, deferred: 1, pass: 2 };
+        const stateOf = c => (c.deferred ? 'deferred' : (c.passed ? 'pass' : 'fail'));
+        const sorted = [...checks].sort((a, b) => order[stateOf(a)] - order[stateOf(b)]);
+        const badge = { pass: 'Pass', fail: 'Fail', deferred: 'On merge' };
 
         return `
             <div class="ac-section">
-                <div class="ac-section-head">Policy</div>
+                <div class="ac-section-head">
+                    Checks
+                    <span class="ac-section-note">${policy.passed || 0}/${checks.length} passing</span>
+                </div>
                 <div class="ac-policy">
-                    ${policy.violations.map(v => `
-                        <div class="ac-violation ac-${v.severity}">
-                            <span class="ap-badge${v.severity === 'block' ? ' ap-block' : ' ap-warn'}">${v.severity === 'block' ? 'Blocking' : 'Suggested'}</span>
-                            <span class="ac-violation-text">${Utils.escapeHtml(v.message)}</span>
-                            ${v.detail ? `<span class="ac-violation-detail">${Utils.escapeHtml(v.detail)}</span>` : ''}
-                        </div>
-                    `).join('')}
+                    ${sorted.map(c => {
+                        const state = stateOf(c);
+                        return `
+                        <div class="ac-check ac-check-${state}">
+                            <span class="ac-check-mark"></span>
+                            <span class="ac-check-body">
+                                <span class="ac-check-label">${Utils.escapeHtml(c.label || c.field)}</span>
+                                ${state === 'pass' ? '' : `
+                                    <span class="ac-violation-text">${Utils.escapeHtml(c.message || '')}</span>
+                                    ${c.detail ? `<span class="ac-violation-detail">${Utils.escapeHtml(c.detail)}</span>` : ''}`}
+                            </span>
+                            <span class="ap-badge ap-badge-${state}">${badge[state]}</span>
+                        </div>`;
+                    }).join('')}
                 </div>
             </div>
         `;
@@ -417,7 +452,10 @@ const AlertChanges = {
 
     async discard() {
         if (this._busy || !this._selected) return;
-        if (!confirm('Withdraw this proposal? It stays readable and can be deleted later by an admin.')) return;
+        // Kept deliberately, unlike approve and merge. Withdrawing is terminal: a
+        // discarded proposal is closed to review, revision and merge, and nothing
+        // reopens it. The button also sits inches from Approve.
+        if (!confirm('Withdraw this proposal? It cannot be reopened.')) return;
         await this.act(() => this.api(`/api/v1/alert-changes/${this._selected}/discard`, { method: 'POST' }), 'Withdrawn');
     },
 

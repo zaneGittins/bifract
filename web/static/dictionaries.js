@@ -1,4 +1,4 @@
-// Dictionaries module for Bifract
+// Context lists module for Bifract
 const Dictionaries = {
     currentDictionary: null,
     allDictionaries: [],
@@ -95,7 +95,7 @@ const Dictionaries = {
             }
         } catch (e) {
             if (window.FractalContext?.isScopeStale?.(token)) return;
-            console.error('Failed to load dictionaries:', e);
+            console.error('Failed to load context lists:', e);
         }
     },
 
@@ -127,7 +127,7 @@ const Dictionaries = {
                 const msg = emptyEl.querySelector('p');
                 if (msg) {
                     msg.textContent = this.filteredDictionaries.length === 0
-                        ? 'No dicts yet'
+                        ? 'No context lists yet'
                         : 'No results match your search';
                 }
             }
@@ -213,7 +213,7 @@ const Dictionaries = {
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
             this.hideCreateForm();
-            this.showToast('Dictionary created', 'success');
+            this.showToast('Context list created', 'success');
             this.allDictionaries.unshift(data.data);
             this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
             this.openDictionary(data.data.id);
@@ -236,7 +236,7 @@ const Dictionaries = {
             this._csvFile = null;
             this.showDetailView();
         } catch (e) {
-            this.showToast('Failed to load dictionary: ' + e.message, 'error');
+            this.showToast('Failed to load context list: ' + e.message, 'error');
         }
     },
 
@@ -310,7 +310,8 @@ const Dictionaries = {
         document.getElementById('dictRowSearch')?.addEventListener('input', (e) => {
             this.rowSearch = e.target.value;
             this.rowPage = 0;
-            this.loadRows();
+            clearTimeout(this._rowSearchTimer);
+            this._rowSearchTimer = setTimeout(() => this.loadRows(), 200);
         });
         document.getElementById('dictRowPrevBtn')?.addEventListener('click', () => {
             if (this.rowPage > 0) { this.rowPage--; this.loadRows(); }
@@ -364,17 +365,31 @@ const Dictionaries = {
         const d = this.currentDictionary;
         if (!d) return;
 
+        // Responses can land out of order (typing in the row search, an edit saved
+        // while a page load is in flight). Only the newest request may paint.
+        const req = (this._rowsReq = (this._rowsReq || 0) + 1);
+
         const params = new URLSearchParams({ limit: this.rowPageSize, offset: this.rowPage * this.rowPageSize });
         if (this.rowSearch) params.set('search', this.rowSearch);
 
         try {
             const resp = await fetch(`/api/v1/dictionaries/${d.id}/data?${params}`, { credentials: 'include' });
             const result = await resp.json();
+            if (req !== this._rowsReq) return;
             if (!result.success) throw new Error(result.error);
             this.totalRows = result.page?.total || 0;
+
+            // Deleting the last row of the last page leaves the view past the end.
+            const lastPage = Math.max(0, Math.ceil(this.totalRows / this.rowPageSize) - 1);
+            if (this.rowPage > lastPage) {
+                this.rowPage = lastPage;
+                return this.loadRows();
+            }
+
             this.renderRowTable(d, result.data || []);
             this.updateRowPagination();
         } catch (e) {
+            if (req !== this._rowsReq) return;
             const wrap = document.getElementById('dictDataTable');
             if (wrap) wrap.innerHTML = `<div class="dict-error">Failed to load rows: ${this.esc(e.message)}</div>`;
         }
@@ -565,6 +580,16 @@ const Dictionaries = {
                 if (e.key === 'Escape') tr.remove();
             });
         });
+
+        // Clicking away commits what was typed, or discards an untouched draft.
+        // Without this the draft row stays on screen looking like a saved row.
+        tr.addEventListener('focusout', () => {
+            setTimeout(() => {
+                if (!tr.isConnected || tr.contains(document.activeElement)) return;
+                if (inputEls.every(i => !i.value.trim())) { tr.remove(); return; }
+                this._saveNewRow(tr, d, inputEls);
+            }, 0);
+        });
     },
 
     async _saveNewRow(tr, dict, inputEls) {
@@ -592,6 +617,8 @@ const Dictionaries = {
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
             tr.remove();
+            // New rows are appended, so follow it to the page it landed on.
+            this.rowPage = Math.floor(this.totalRows / this.rowPageSize);
             this.loadRows();
         } catch (e) {
             this.showToast('Failed to save row: ' + e.message, 'error');
@@ -616,19 +643,38 @@ const Dictionaries = {
         const commit = async () => {
             const newVal = input.value;
             cell.textContent = newVal;
+            if (newVal === current) return;
+
+            const renamedKey = col === dict.key_column;
+            if (renamedKey && !newVal.trim()) {
+                cell.textContent = current;
+                this.showToast('Key column cannot be empty', 'error');
+                return;
+            }
+
+            // key is the row's identity before this edit: the server treats a changed
+            // key column as a rename rather than leaving a second copy behind.
+            const row = { key, fields: {} };
+            cell.closest('tr').querySelectorAll('.dict-td-editable').forEach(c => {
+                row.fields[c.dataset.col] = c.textContent;
+            });
+            row.fields[col] = newVal;
+
             try {
-                const row = { key, fields: {} };
-                cell.closest('tr').querySelectorAll('.dict-td-editable').forEach(c => {
-                    row.fields[c.dataset.col] = c.textContent;
-                });
-                row.fields[col] = newVal;
-                await fetch(`/api/v1/dictionaries/${dict.id}/data`, {
+                const resp = await fetch(`/api/v1/dictionaries/${dict.id}/data`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
                     body: JSON.stringify({ rows: [row] }),
                 });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.error || 'save failed');
+                // A rename changes the row's identity, so the table has to be re-read.
+                // Any other edit is already on screen; reloading would only fight the
+                // cursor as it tabs along the row.
+                if (renamedKey) this.loadRows();
             } catch (e) {
+                cell.textContent = current;
                 this.showToast('Failed to save cell: ' + e.message, 'error');
             }
         };
@@ -651,12 +697,12 @@ const Dictionaries = {
         const d = this.currentDictionary;
         if (!d || !key) return;
         try {
-            const resp = await fetch(`/api/v1/dictionaries/${d.id}/data/${encodeURIComponent(key)}`, {
+            const resp = await fetch(`/api/v1/dictionaries/${d.id}/data?key=${encodeURIComponent(key)}`, {
                 method: 'DELETE', credentials: 'include',
             });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Row deleted', 'success');
+            document.querySelector(`tr.dict-row[data-key="${CSS.escape(key)}"]`)?.remove();
             this.loadRows();
         } catch (e) {
             this.showToast('Failed to delete row: ' + e.message, 'error');
@@ -670,6 +716,11 @@ const Dictionaries = {
         if (!info) return;
         const totalPages = Math.max(1, Math.ceil(this.totalRows / this.rowPageSize));
         info.textContent = `Page ${this.rowPage + 1} of ${totalPages} (${this.totalRows.toLocaleString()} rows)`;
+        const meta = document.getElementById('dictMetaRows');
+        if (meta && !this.rowSearch) {
+            meta.textContent = this.totalRows.toLocaleString() + ' rows';
+            if (this.currentDictionary) this.currentDictionary.row_count = this.totalRows;
+        }
         if (prev) prev.disabled = this.rowPage === 0;
         if (next) next.disabled = this.rowPage >= totalPages - 1;
     },
@@ -792,7 +843,7 @@ const Dictionaries = {
             const resp = await fetch(`/api/v1/dictionaries/${d.id}`, { method: 'DELETE', credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Dictionary deleted', 'success');
+            this.showToast('Context list deleted', 'success');
             this.allDictionaries = this.allDictionaries.filter(x => x.id !== d.id);
             window.App?.pushSubPath('');
             this.showListing();
@@ -803,12 +854,12 @@ const Dictionaries = {
 
     async deleteDictionaryById(id) {
         const dict = this.allDictionaries.find(d => d.id === id);
-        if (!confirm(`Delete "${dict ? dict.name : 'this dictionary'}"? This drops all data and cannot be undone.`)) return;
+        if (!confirm(`Delete "${dict ? dict.name : 'this context list'}"? This drops all data and cannot be undone.`)) return;
         try {
             const resp = await fetch(`/api/v1/dictionaries/${id}`, { method: 'DELETE', credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Dictionary deleted', 'success');
+            this.showToast('Context list deleted', 'success');
             this.allDictionaries = this.allDictionaries.filter(d => d.id !== id);
             this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
         } catch (e) {
@@ -823,7 +874,7 @@ const Dictionaries = {
             const resp = await fetch(`/api/v1/dictionaries/${d.id}/reload`, { method: 'POST', credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Dictionary reloaded', 'success');
+            this.showToast('Context list reloaded', 'success');
         } catch (e) {
             this.showToast('Reload failed: ' + e.message, 'error');
         }

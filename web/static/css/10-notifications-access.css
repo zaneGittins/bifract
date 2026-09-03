@@ -1322,7 +1322,14 @@
     white-space: nowrap;
 }
 
+/* The cell stays an ordinary table cell so it lines up with its siblings; a flex <td>
+   establishes its own box and drifts out of the row's vertical alignment. The pills are
+   laid out by an inner wrapper instead. */
 .alert-labels-cell {
+    vertical-align: middle;
+}
+
+.alert-labels-wrap {
     display: flex;
     flex-wrap: wrap;
     gap: 0.2rem;
@@ -1342,7 +1349,7 @@
     .feed-alert-path {
         max-width: 120px;
     }
-    .alert-labels-cell {
+    .alert-labels-wrap {
         max-width: 100px;
     }
 }

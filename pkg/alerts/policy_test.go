@@ -170,3 +170,71 @@ func TestUnknownFieldStopsBeingEnforced(t *testing.T) {
 		t.Error("a rule on an unknown field should be ignored, not fatal")
 	}
 }
+
+func TestEveryCheckIsReportedNotOnlyFailures(t *testing.T) {
+	policies := []Policy{
+		mustPolicy(t, Policy{Field: "labels", Operator: "any_matches", Value: `^attack\.t\d{4}`}),
+		mustPolicy(t, Policy{Field: "description", Operator: "min_length", Value: "40", Severity: PolicyWarn}),
+	}
+
+	subject := subjectWith(RevisionContent{
+		Labels:      []string{"attack.t1059"},
+		Description: "Detects certutil downloading a remote payload, a common LOLBin technique.",
+	})
+
+	result := EvaluatePolicies(policies, subject)
+	if result.Total() != 2 {
+		t.Fatalf("expected both rules reported, got %d", result.Total())
+	}
+	if result.Passed != 2 || len(result.Violations) != 0 {
+		t.Errorf("expected 2 passing and no violations, got passed=%d violations=%d", result.Passed, len(result.Violations))
+	}
+	for _, c := range result.Checks {
+		if !c.Passed {
+			t.Errorf("check on %s should pass", c.Field)
+		}
+		// A passing check has no failure detail, so the label is all a reader gets.
+		if c.Label == "" {
+			t.Errorf("check on %s has no readable label", c.Field)
+		}
+	}
+}
+
+func TestCheckLabelsReadAsTheRule(t *testing.T) {
+	cases := []struct {
+		policy Policy
+		want   string
+	}{
+		{Policy{Field: "labels", Operator: "any_matches", Value: `^attack\.t\d{4}`}, `Labels has an entry matching ^attack\.t\d{4}`},
+		{Policy{Field: "description", Operator: "min_length", Value: "40"}, "Description is at least 40 characters"},
+		{Policy{Field: "references", Operator: "not_empty"}, "References is set"},
+		{Policy{Field: "tests.all_passing", Operator: "is_true"}, "All tests pass is true"},
+		{Policy{Field: "severity", Operator: "one_of", Value: "high, critical"}, "Severity is one of high, critical"},
+		{Policy{Field: "tests.match_count", Operator: "gte", Value: "1"}, "Should-match tests is at least 1"},
+	}
+
+	for _, tc := range cases {
+		field, ok := LookupField(tc.policy.Field)
+		if !ok {
+			t.Fatalf("unknown field %s", tc.policy.Field)
+		}
+		if got := describePolicy(tc.policy, field); got != tc.want {
+			t.Errorf("describePolicy = %q, want %q", got, tc.want)
+		}
+	}
+}
+
+func TestDeferredCheckIsReportedAsNeitherPassNorFail(t *testing.T) {
+	policies := []Policy{mustPolicy(t, Policy{Field: "tests.all_passing", Operator: "is_true"})}
+	result := EvaluatePolicies(policies, subjectWith(RevisionContent{}))
+
+	if result.Total() != 1 {
+		t.Fatalf("the rule should still be listed, got %d", result.Total())
+	}
+	if !result.Checks[0].Deferred {
+		t.Error("a rule awaiting a test run must be marked deferred")
+	}
+	if result.Checks[0].Passed || len(result.Violations) != 0 || result.Passed != 0 {
+		t.Error("a deferred rule is neither passing nor failing")
+	}
+}

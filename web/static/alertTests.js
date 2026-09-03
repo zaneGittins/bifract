@@ -19,6 +19,9 @@ const AlertTests = {
     _loaded: false,
     _selected: new Set(),
     _index: null,
+    // Which test is expanded to show its events in full. Names, not indexes: the list
+    // splices when tests are removed or combined.
+    _open: null,
     // Full events resolved for a projected row, keyed by log_id. Keeps the gutter's
     // synchronous state lookup in step with what capture actually stored.
     _fullEvents: new Map(),
@@ -100,6 +103,15 @@ const AlertTests = {
 
     count() {
         return this._tests.length;
+    },
+
+    // Takes a corpus from a draft. Marked loaded, since it is the author's own work
+    // and replacing the stored corpus with it on save is the intent.
+    adopt(tests) {
+        this._tests = (tests || []).map(t => ({ name: t.name, expectation: t.expectation, events: t.events || [] }));
+        this._loaded = true;
+        this._selected = new Set();
+        this.afterCorpusChange({ rerun: false });
     },
 
     // The last run, for a policy check that reads whether the tests pass.
@@ -424,6 +436,7 @@ const AlertTests = {
         this.updateChip();
         this.repaintGutter();
         window.AlertPolicy?.schedule();
+        window.AlertDrafts?.touch();
         if (rerun) this.rerun();
     },
 
@@ -738,14 +751,24 @@ const AlertTests = {
         `;
     },
 
+    toggleOpen(name) {
+        this._open = this._open === name ? null : name;
+        this.render();
+    },
+
     renderTest(test, index) {
         const outcome = this.outcomeFor(test.name);
         let state = 'pending';
         if (outcome) state = outcome.passed ? 'pass' : 'fail';
+        const open = this._open === test.name;
 
         return `
-            <div class="at-test at-test-${state}">
+            <div class="at-test at-test-${state}${open ? ' open' : ''}">
                 <div class="at-test-head">
+                    <button type="button" class="at-test-toggle" title="${open ? 'Hide events' : 'Show events'}"
+                            onclick="AlertTests.toggleOpen(${JSON.stringify(test.name).replace(/"/g, '&quot;')})">
+                        <svg class="at-caret" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,3 11,8 6,13"/></svg>
+                    </button>
                     <input type="checkbox" class="at-test-pick" title="Select to combine with another test"
                            ${this._selected.has(test.name) ? 'checked' : ''}
                            onchange="AlertTests.toggleSelection(${index})" />
@@ -762,23 +785,33 @@ const AlertTests = {
                 ${outcome && !outcome.passed && outcome.reason
                     ? `<div class="at-test-reason">${Utils.escapeHtml(outcome.reason)}</div>` : ''}
                 <div class="at-events">
-                    ${test.events.map((event, i) => this.renderEvent(event, index, i)).join('')}
+                    ${test.events.map((event, i) => this.renderEvent(event, index, i, open)).join('')}
                 </div>
             </div>
         `;
     },
 
-    renderEvent(event, testIndex, eventIndex) {
-        const summary = Object.entries(event)
-            .slice(0, 6)
-            .map(([k, v]) => `${k}=${v}`)
-            .join('  ');
+    renderEvent(event, testIndex, eventIndex, expanded) {
+        const entries = Object.entries(event);
+        const summary = entries.slice(0, 6).map(([k, v]) => `${k}=${v}`).join('  ');
 
         return `
-            <div class="at-event">
-                <code class="at-event-summary" title="${Utils.escapeHtml(JSON.stringify(event, null, 2))}">${Utils.escapeHtml(summary)}</code>
-                <button type="button" class="at-event-remove" title="Remove event"
-                        onclick="AlertTests.removeEvent(${testIndex}, ${eventIndex})">&times;</button>
+            <div class="at-event${expanded ? ' at-event-open' : ''}">
+                <div class="at-event-row">
+                    <code class="at-event-summary">${Utils.escapeHtml(summary)}</code>
+                    <span class="at-event-count">${entries.length} field${entries.length === 1 ? '' : 's'}</span>
+                    <button type="button" class="at-event-remove" title="Remove event"
+                            onclick="AlertTests.removeEvent(${testIndex}, ${eventIndex})">&times;</button>
+                </div>
+                ${expanded ? `
+                    <div class="at-event-fields">
+                        ${entries.map(([k, v]) => `
+                            <div class="at-field">
+                                <span class="at-field-key">${Utils.escapeHtml(k)}</span>
+                                <span class="at-field-value">${Utils.escapeHtml(v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v))}</span>
+                            </div>
+                        `).join('')}
+                    </div>` : ''}
             </div>
         `;
     }

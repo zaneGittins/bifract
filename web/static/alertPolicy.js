@@ -112,19 +112,15 @@ const AlertPolicy = {
             return;
         }
 
-        const { blocking = 0, warnings = 0 } = this._result;
-        chip.hidden = false;
+        const { blocking = 0, warnings = 0, passed = 0, checks = [] } = this._result;
+        const total = checks.length;
+
+        chip.hidden = total === 0;
         chip.className = 'ert-chip';
-        if (blocking > 0) {
-            chip.textContent = String(blocking);
-            chip.classList.add('fail');
-        } else if (warnings > 0) {
-            chip.textContent = String(warnings);
-            chip.classList.add('warn');
-        } else {
-            chip.textContent = 'ok';
-            chip.classList.add('pass');
-        }
+        chip.textContent = `${passed}/${total}`;
+        if (blocking > 0) chip.classList.add('fail');
+        else if (warnings > 0) chip.classList.add('warn');
+        else chip.classList.add('pass');
     },
 
     // A violation is shown against the field it concerns as well as in the tab, since
@@ -169,28 +165,57 @@ const AlertPolicy = {
             return;
         }
 
-        const { violations = [], blocking = 0, warnings = 0, deferred = [] } = this._result;
+        const { checks = [], blocking = 0, warnings = 0, passed = 0 } = this._result;
+        if (checks.length === 0) {
+            pane.innerHTML = '<div class="ap-empty">No rules apply here.</div>';
+            return;
+        }
+
+        // Failures first: the reader is looking for what to fix, and the passing rules
+        // are reassurance rather than work.
+        const order = { fail: 0, deferred: 1, pass: 2 };
+        const sorted = [...checks].sort((a, b) => order[this.stateOf(a)] - order[this.stateOf(b)]);
 
         pane.innerHTML = `
-            <div class="ap-head">${this.renderSummary(blocking, warnings)}</div>
-            ${violations.length === 0 ? '' : `
-                <div class="ap-list">
-                    ${violations.map(v => this.renderViolation(v)).join('')}
-                </div>`}
-            ${deferred.length > 0
-                ? `<div class="ap-deferred">${deferred.length} check${deferred.length === 1 ? '' : 's'} run on save</div>`
-                : ''}
+            <div class="ap-head">${this.renderSummary(blocking, warnings, passed, checks.length)}</div>
+            <div class="ap-list">${sorted.map(c => this.renderCheck(c)).join('')}</div>
         `;
     },
 
-    renderSummary(blocking, warnings) {
+    stateOf(check) {
+        if (check.deferred) return 'deferred';
+        return check.passed ? 'pass' : 'fail';
+    },
+
+    renderSummary(blocking, warnings, passed, total) {
+        const counts = `<span class="ap-count">${passed}/${total} passing</span>`;
         if (blocking > 0) {
-            return `<span class="ap-status ap-status-block">${blocking} blocking</span>`;
+            return `<span class="ap-status ap-status-block">${blocking} blocking</span>${counts}`;
         }
         if (warnings > 0) {
-            return `<span class="ap-status ap-status-warn">${warnings} suggested</span>`;
+            return `<span class="ap-status ap-status-warn">${warnings} suggested</span>${counts}`;
         }
-        return '<span class="ap-status ap-status-pass">All checks pass</span>';
+        return `<span class="ap-status ap-status-pass">All checks pass</span>${counts}`;
+    },
+
+    // One row per rule. A passing rule shows what it asserts; a failing one shows what
+    // to do about it and what was actually found.
+    renderCheck(check) {
+        const state = this.stateOf(check);
+        const badge = { pass: 'Pass', fail: check.severity === 'block' ? 'Blocking' : 'Suggested', deferred: 'On save' };
+
+        return `
+            <div class="ap-check ap-check-${state}">
+                <span class="ap-check-mark"></span>
+                <div class="ap-check-body">
+                    <div class="ap-check-label">${Utils.escapeHtml(check.label || check.field)}</div>
+                    ${state === 'pass' ? '' : `
+                        <div class="ap-message">${Utils.escapeHtml(check.message || '')}</div>
+                        ${check.detail ? `<div class="ap-detail">${Utils.escapeHtml(check.detail)}</div>` : ''}`}
+                </div>
+                <span class="ap-badge ap-badge-${state}">${badge[state]}</span>
+            </div>
+        `;
     },
 
     renderViolation(violation) {

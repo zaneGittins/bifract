@@ -374,8 +374,8 @@ const QueryExecutor = {
             if (elements.resultsTable) {
                 elements.resultsTable.innerHTML = '<div class="loading-spinner"><span class="spinner"></span><button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
             }
-            this._loadingMode = 'spinner';
-            this._loadingShown = true;
+            this._chrome().setMode('spinner');
+            this._chrome().shown = true;
             this._setRunButtonState(true);
         } else {
             // Streaming path: defer the bar + Cancel flip so fast (sub-threshold)
@@ -484,62 +484,55 @@ const QueryExecutor = {
         }
     },
 
-    // Delay (ms) before the streaming loading chrome (bar + Cancel flip + searching
-    // line) appears. Searches that finish faster show no chrome at all, avoiding a
-    // flicker. Raise toward 1000 to keep sub-second searches fully silent.
-    LOADING_INDICATOR_DELAY_MS: 500,
-
-    // Schedule the streaming loading chrome. If the query finishes before the delay
-    // (_endLoadingIndicator clears the timer), nothing is shown.
-    _beginLoadingIndicator(elements) {
-        this._clearLoadingTimer();
-        this._loadingBar('hide'); // clear any leftover bar from a superseded run
-        this._loadingShown = false;
-        this._loadingMode = 'spinner'; // until the meta frame says it streams
-        this._loadingGotRows = false;
-        this._loadingTimer = setTimeout(() => {
-            this._loadingTimer = null;
-            this._loadingShown = true;
-            this._queryHadError = false;
-            this._outputTypeStatus('loading');
-            this._setRunButtonState(true);
-            if (this._loadingMode === 'bar') {
-                this._loadingBar('show');
-                if (!this._loadingGotRows && elements.resultsTable) {
-                    elements.resultsTable.innerHTML =
-                        '<div class="stream-searching"><span>Searching, newest first…</span>' +
-                        '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+    // The deferral policy lives in LoadingChrome, shared with the alert editor. Only
+    // the appearance is decided here.
+    _chrome() {
+        if (!this._loadingChrome) {
+            this._loadingChrome = LoadingChrome.create({
+                show: (mode, elements) => {
+                    this._queryHadError = false;
+                    this._outputTypeStatus('loading');
+                    this._setRunButtonState(true);
+                    if (mode === 'bar') {
+                        this._loadingBar('show');
+                        if (!this._loadingChrome.gotRows && elements && elements.resultsTable) {
+                            elements.resultsTable.innerHTML =
+                                '<div class="stream-searching"><span>Searching, newest first…</span>' +
+                                '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+                        }
+                    } else if (elements && elements.resultsTable) {
+                        elements.resultsTable.innerHTML =
+                            '<div class="loading-spinner"><span class="spinner"></span>' +
+                            '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
+                    }
+                },
+                hide: () => this._loadingBar('hide'),
+                finish: (mode) => {
+                    if (mode === 'bar') this._loadingBar('done');
+                    else this._loadingBar('hide');
                 }
-            } else if (elements.resultsTable) {
-                elements.resultsTable.innerHTML =
-                    '<div class="loading-spinner"><span class="spinner"></span>' +
-                    '<button class="cancel-query-btn" onclick="QueryExecutor.cancelQuery()">Cancel</button></div>';
-            }
-        }, this.LOADING_INDICATOR_DELAY_MS);
+            });
+        }
+        return this._loadingChrome;
+    },
+
+    _beginLoadingIndicator(elements) {
+        this._chrome().begin(elements);
     },
 
     // Tear down the loading chrome: cancel a pending show, finish the bar, reset the button.
     _endLoadingIndicator() {
-        this._clearLoadingTimer();
-        if (this._loadingShown && this._loadingMode === 'bar') {
-            this._loadingBar('done');
-        } else {
-            this._loadingBar('hide');
-        }
-        if (this._loadingShown) {
+        const wasShown = this._chrome().end();
+        if (wasShown) {
             if (!this._queryHadError) this._outputTypeStatus('done');
         } else {
             this._outputTypeStatus('reset');
         }
-        this._loadingShown = false;
         this._setRunButtonState(false);
     },
 
     _clearLoadingTimer() {
-        if (this._loadingTimer) {
-            clearTimeout(this._loadingTimer);
-            this._loadingTimer = null;
-        }
+        this._chrome().clear();
     },
 
     // Consume an NDJSON stream of query result frames, rendering rows newest-first
@@ -599,8 +592,8 @@ const QueryExecutor = {
                     this.currentResults = [];
                     // Tell the deferred indicator which style this query uses: the
                     // thin progress bar for a real stream, a spinner otherwise.
-                    this._loadingMode = frame.streaming ? 'bar' : 'spinner';
-                    this._loadingGotRows = false;
+                    this._chrome().setMode(frame.streaming ? 'bar' : 'spinner');
+                    this._chrome().gotRows = false;
                     // New query starts at page 1; subsequent streamed batches
                     // preserve whatever page the user is viewing.
                     if (window.Pagination) {
@@ -653,14 +646,14 @@ const QueryExecutor = {
                     break;
                 case 'rows':
                     if (frame.data && frame.data.length) {
-                        this._loadingGotRows = true;
+                        this._chrome().markRows();
                         for (const row of frame.data) this.currentResults.push(row);
                         scheduleRender();
                     }
                     break;
                 case 'progress':
                     // Only drive the bar once the deferred indicator has shown it.
-                    if (this._loadingShown && this._loadingMode === 'bar') {
+                    if (this._chrome().shown && this._chrome().mode === 'bar') {
                         this._loadingBar('set', typeof frame.ratio === 'number' ? frame.ratio : 0);
                     }
                     break;

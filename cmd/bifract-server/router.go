@@ -1521,6 +1521,47 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleGetChangeRequest,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alert-drafts",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[[]*alerts.ChangeRequest]{},
+					Summary:  "List the caller's alert drafts in scope.",
+					Handler:  d.alertHandler.HandleListDrafts,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/alert-drafts",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.SaveDraftRequest{},
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Create or update the caller's draft of an alert.",
+					Handler:  d.alertHandler.HandleSaveDraft,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alerts/{id}/draft",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "The caller's draft of this alert, if any.",
+					Handler:  d.alertHandler.HandleDraftForAlert,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-drafts/{id}/submit",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Submit a draft for review.",
+					Handler:  d.alertHandler.HandleSubmitDraft,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodDelete,
+					Path:     "/alert-drafts/{id}",
+					Access:   api.AccessAnalyst,
+					Response: api.Response[map[string]bool]{},
+					Summary:  "Delete the caller's draft.",
+					Handler:  d.alertHandler.HandleDeleteDraft,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPost,
 					Path:     "/alert-changes/from-yaml",
 					Access:   api.AccessAnalyst,
@@ -2495,8 +2536,22 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.dictionaryHandler.HandleUpsertRows,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodDelete,
-				Path:     "/dictionaries/{id}/data/{key}",
+				Method: http.MethodDelete,
+				Path:   "/dictionaries/{id}/data",
+				Query: []api.QueryParam{
+					{Name: "key"},
+				},
+				Access:   api.AccessAnalyst,
+				Response: api.Response[map[string]bool]{},
+				Summary:  "Delete one dictionary row by key.",
+				Handler:  d.dictionaryHandler.HandleDeleteRow,
+			})
+			r.Register(api.Route{
+				Method: http.MethodDelete,
+				Path:   "/dictionaries/{id}/data/{key}",
+				Query: []api.QueryParam{
+					{Name: "key"},
+				},
 				Access:   api.AccessAnalyst,
 				Response: api.Response[map[string]bool]{},
 				Summary:  "Delete one dictionary row.",
@@ -2872,6 +2927,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			// config and stay open to keys.
 			r.Group(func(r api.Router) {
 				r.Use(auth.DenyAPIKey("chat"))
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alerts/suggest-labels",
+					Access:   api.AccessAnalyst,
+					Request:  chat.SuggestLabelsRequest{},
+					Response: api.Response[chat.SuggestLabelsResponse]{},
+					Summary:  "Suggest MITRE ATT&CK labels for a rule from its name, description and query.",
+					Handler:  d.chatHandler.HandleSuggestLabels,
+				})
 				r.Register(api.Route{
 					Method:   http.MethodGet,
 					Path:     "/chat/conversations",

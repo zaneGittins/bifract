@@ -2811,15 +2811,18 @@ body.alert-panel-resizing .alert-details-panel {
     background: var(--bg-tertiary);
 }
 
-/* Delete sits apart and reads quiet until hovered: destructive, not primary. */
+/* Delete sits apart and carries the theme's destructive colour. Muted grey read as
+   disabled, which is the one thing a delete button must never look like. */
 .alert-details-actions .btn-detail-delete {
     margin-left: auto;
-    background: none;
-    color: var(--text-muted);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--error) 32%, transparent);
+    color: var(--error);
 }
 
 .alert-details-actions .btn-detail-delete:hover {
-    background: color-mix(in srgb, var(--error) 14%, transparent);
+    background: color-mix(in srgb, var(--error) 22%, transparent);
+    border-color: var(--error);
     color: var(--error);
 }
 
@@ -2963,7 +2966,7 @@ body.alert-panel-resizing .alert-details-panel {
     z-index: 2;
     display: flex;
     gap: 2px;
-    margin: -16px -16px 14px;
+    margin: -16px -16px 20px;
     padding: 0 16px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
@@ -4650,4 +4653,604 @@ body.alert-panel-resizing .alert-details-panel {
 
 .ac-modal .ac-compose-actions {
     margin-top: 10px;
+}
+
+/* ---- Check rows: every rule with its verdict, not only the failures ---- */
+
+.ap-count {
+    margin-left: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.ap-check,
+.ac-check {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.ap-check:last-child,
+.ac-check:last-child {
+    border-bottom: none;
+}
+
+.ap-check-mark,
+.ac-check-mark {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin-top: 5px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.ap-check-pass .ap-check-mark,
+.ac-check-pass .ac-check-mark {
+    background: var(--success);
+}
+
+.ap-check-fail .ap-check-mark,
+.ac-check-fail .ac-check-mark {
+    background: var(--error);
+}
+
+.ap-check-body,
+.ac-check-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.ap-check-label,
+.ac-check-label {
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+/* A passing rule is reassurance, not work: it recedes. */
+.ap-check-pass .ap-check-label,
+.ac-check-pass .ac-check-label {
+    color: var(--text-secondary);
+}
+
+.ap-badge-pass {
+    background: rgba(74, 222, 128, 0.14);
+    color: var(--success);
+}
+
+.ap-badge-fail {
+    background: rgba(248, 113, 113, 0.14);
+    color: var(--error);
+}
+
+.ap-badge-deferred {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+}
+
+.ac-section-note {
+    margin-left: 8px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-muted);
+}
+
+/* ---- Expanding a test to read its events in full ---- */
+
+.at-test-toggle {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.at-test-toggle:hover {
+    color: var(--text-primary);
+}
+
+.at-caret {
+    transition: transform 0.15s ease;
+}
+
+.at-test.open .at-caret {
+    transform: rotate(90deg);
+}
+
+.at-event-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.at-event-count {
+    flex: 0 0 auto;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+.at-event-fields {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) 1fr;
+    gap: 2px 12px;
+    margin: 6px 0 4px;
+    padding: 8px 9px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+}
+
+.at-field {
+    display: contents;
+}
+
+.at-field-key {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.at-field-value {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+    word-break: break-word;
+}
+
+/* ============================================
+   Alert editor: header, bench, rail
+   ============================================ */
+
+.alert-editor-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.ae-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.ae-name {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.ae-name-input {
+    flex: 0 1 auto;
+    width: 240px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 5px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.ae-name-input:hover {
+    border-color: var(--border-color);
+}
+
+.ae-name-input:focus {
+    outline: none;
+    background: var(--bg-primary);
+    border-color: var(--accent-primary);
+}
+
+.ae-name-input.ap-field-bad {
+    border-color: var(--warning);
+}
+
+.ae-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    white-space: nowrap;
+}
+
+.ae-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.ae-status-dirty {
+    color: var(--warning);
+    border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.ae-status-dirty .ae-status-dot {
+    background: var(--warning);
+}
+
+.ae-status-saved {
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 35%, transparent);
+}
+
+.ae-status-saved .ae-status-dot {
+    background: var(--success);
+}
+
+/* Off-screen twin of the name input, used to size it to its text. */
+.ae-name-probe {
+    position: absolute;
+    visibility: hidden;
+    white-space: pre;
+    pointer-events: none;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.ae-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ae-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--ae-rail-w, 340px);
+    min-height: 0;
+    align-items: stretch;
+    transition: grid-template-columns 0.25s ease;
+}
+
+/* While a log is open for inspection the rail folds away, as on the search page. */
+.ae-body.ae-inspecting {
+    grid-template-columns: minmax(0, 1fr) 0;
+}
+
+.ae-body.ae-inspecting .alert-panel.ae-rail {
+    overflow: hidden;
+    border-left: none;
+    min-width: 0;
+}
+
+/* The detail panel keeps its own height: closed it is nothing, open it is a viewport-tall
+   sticky column that scrolls inside, so neither state stretches the bench or the rail. */
+.ae-bench .search-results-split {
+    align-items: flex-start;
+}
+
+.ae-bench .log-detail-panel {
+    position: sticky;
+    top: 60px;
+    max-height: calc(100vh - 72px);
+}
+
+.ae-bench .log-detail-panel:not(.open) {
+    max-height: 0;
+    border-width: 0;
+}
+
+/* The header wraps rather than spilling into the gap beside the detail panel. */
+.ae-bench .results-header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+
+/* A quiet tool at the right edge of a section label, such as the label suggester. */
+.ae-sec-tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin-left: auto;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.ae-sec-tool:hover {
+    color: var(--accent-primary);
+    border-color: var(--border-color);
+    background: var(--bg-hover);
+}
+
+.ae-sec-tool.busy {
+    color: var(--accent-primary);
+    pointer-events: none;
+}
+
+.ae-sec-tool.busy svg {
+    animation: ae-tool-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes ae-tool-pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.05); }
+}
+
+/* The results bar: one quiet row, everything 28px tall, tight gaps. */
+.ae-bench .results-controls {
+    gap: 0.5rem;
+}
+
+.ae-bench .result-count {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.ae-bench .export-btn {
+    height: 28px;
+    padding: 0 0.5rem;
+    font-size: 0.75rem;
+}
+
+.ae-bench .page-size-select {
+    height: 28px;
+    padding: 0 0.5rem;
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-secondary);
+}
+
+.ae-bench .page-size-select:hover {
+    border-color: var(--border-color);
+    background: var(--bg-hover);
+}
+
+.ae-bench .pagination-controls {
+    gap: 0.25rem;
+}
+
+.ae-bench .page-info-compact {
+    padding: 0 0.25rem;
+}
+
+/* An expanded test event stacks its fields under the summary row and scrolls when
+   the event is large, instead of laying the grid beside the row. */
+.at-event.at-event-open {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.at-event-row {
+    width: 100%;
+    min-width: 0;
+}
+
+.at-event-fields {
+    min-width: 0;
+    max-height: 360px;
+    overflow: auto;
+}
+
+.at-event-fields .at-field-value {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.ae-bench {
+    min-width: 0;
+}
+
+/* The rail is a column of the layout now, not a fixed overlay. */
+.alert-panel.ae-rail {
+    position: static;
+    right: auto;
+    width: auto;
+    top: auto;
+    bottom: auto;
+    box-shadow: none;
+    border-left: 1px solid var(--border-color);
+    transition: none;
+}
+
+.ae-rail .alert-panel-content {
+    padding: 0;
+}
+
+.ae-sec {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.ae-sec-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 7px;
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.ae-sec-count {
+    padding: 0 5px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.ae-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 0;
+}
+
+.ae-row-key {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.ae-row-val,
+.ae-row .alert-form-input.ae-row-val {
+    width: 150px;
+}
+
+.ae-rail .alert-type-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+
+.ae-rail-foot {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.ae-enabled {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.ae-enabled input {
+    accent-color: var(--accent-primary);
+}
+
+.ae-facts {
+    text-align: right;
+}
+
+.ae-type {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.ae-type b {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.ae-type-hint {
+    font-size: 10px;
+    color: var(--accent-secondary);
+}
+
+.ae-type-hint:not(:empty)::before {
+    content: '·';
+    margin-right: 6px;
+    color: var(--text-muted);
+}
+
+/* Resume-a-draft strip, above the query */
+.ae-resume {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.ae-resume-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warning);
+}
+
+.ae-resume-btn {
+    padding: 2px 6px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--accent-primary);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.ae-resume-btn:hover {
+    background: var(--bg-hover);
+}
+
+.ae-resume-discard {
+    color: var(--text-muted);
+}
+
+.alert-history-pane {
+    padding: 4px 0 16px;
+}
+
+@media (max-width: 960px) {
+    .ae-body {
+        grid-template-columns: 1fr;
+    }
+    .alert-panel.ae-rail {
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+    }
+}
+
+/* The propose composer sits as a strip under the editor head, above the bench. */
+.ae-head + .alert-propose {
+    margin: 0;
+    padding: 10px 20px;
+    border-width: 0 0 1px;
+    border-radius: 0;
+    background: var(--bg-secondary);
+}
+
+.ae-head + .alert-propose .alert-propose-input {
+    min-height: 56px;
+}
+
+.ert-tab[hidden] {
+    display: none;
 }

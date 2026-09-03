@@ -69,7 +69,7 @@ const AlertList = {
     // cannot blow out the row height.
     labelsCell(labels, onFilter, truncate = 24) {
         if (!labels || labels.length === 0) {
-            return '<td class="alert-labels-cell"><span class="text-muted">-</span></td>';
+            return '<td class="alert-labels-cell"><span class="alert-labels-wrap"><span class="text-muted">-</span></span></td>';
         }
         const max = 3;
         const short = l => l.length > truncate ? l.substring(0, truncate - 2) + '..' : l;
@@ -79,7 +79,7 @@ const AlertList = {
         if (labels.length > max) {
             html += `<span class="label-pill label-pill-more" title="${Utils.escapeHtml(labels.slice(max).join(', '))}">+${labels.length - max}</span>`;
         }
-        return `<td class="alert-labels-cell">${html}</td>`;
+        return `<td class="alert-labels-cell"><span class="alert-labels-wrap">${html}</span></td>`;
     },
 
     execTimeCell(alert) {

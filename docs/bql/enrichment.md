@@ -12,7 +12,7 @@ Enrich log events with data from a dictionary. Each matching log row gets additi
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `dict`    | Yes      | Name of the dictionary (created in the Dictionaries page) |
+| `dict`    | Yes      | Name of the context list (created in the Context tab) |
 | `field`   | Yes      | Log field to use as the lookup key |
 | `column`  | Yes      | Dictionary column to match against |
 | `include` | Yes      | Dictionary columns to add to results: `include=[col1,col2]` |

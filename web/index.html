@@ -63,7 +63,7 @@
                         <span id="commentedCountBadge" class="badge" style="display: none;"></span>
                     </button>
                     <button id="fractalDashboardsTabBtn" class="nav-tab">Dashboards</button>
-                    <button id="fractalDictionariesTabBtn" class="nav-tab">Dicts</button>
+                    <button id="fractalDictionariesTabBtn" class="nav-tab">Context</button>
                     <button id="fractalModelsTabBtn" class="nav-tab">Models</button>
                     <button id="fractalLibraryTabBtn" class="nav-tab">Library</button>
                     <button id="fractalChatTabBtn" class="nav-tab">Chat</button>
@@ -2190,23 +2190,23 @@
                 </div>
             </div>
 
-            <!-- Dictionaries Tab Content -->
+            <!-- Context Tab Content -->
             <div id="fractalDictionariesTabContent" style="display: none;">
                 <div id="dictionariesView" class="auth-required" style="display: none;">
                     <section class="dashboards-view-section">
 
-                        <!-- Dict Listing -->
+                        <!-- Context List Listing -->
                         <div id="dictListing" class="dashboards-listing">
                             <div class="dashboards-filters">
-                                <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search dicts...">
+                                <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search context lists...">
                                 <span class="filters-spacer"></span>
-                                <button id="dictCreateBtn" class="btn-primary">+ New Dict</button>
+                                <button id="dictCreateBtn" class="btn-primary">+ New List</button>
                             </div>
 
                             <!-- Empty State -->
                             <div id="dictsEmptyState" class="listing-empty-state" style="display: none;">
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-                                <p>No dicts yet</p>
+                                <p>No context lists yet</p>
                             </div>
 
                             <div class="dashboards-table-container" style="display: none;">
@@ -3079,9 +3079,22 @@
             <!-- Alert Editor View (standalone, accessed from alerts) -->
             <div id="alertEditorView" class="auth-required" style="display: none;">
                 <div class="alert-editor-container">
-                <!-- Main Content Area -->
-                <div class="main-content">
-                    <!-- Search Section -->
+
+                <!-- Header: the name and the primary action never leave the screen -->
+                <div class="ae-head">
+                    <div class="ae-name">
+                        <input type="text" id="editorAlertName" class="ae-name-input" placeholder="Name this alert" required
+                               title="Use {{field_name}} to include log field values in the name">
+                        <span id="alertEditorStatus" class="ae-status"><span class="ae-status-dot"></span><span class="ae-status-text">New</span></span>
+                    </div>
+                    <div class="ae-actions">
+                        <button id="saveAlertBtn" class="alert-btn alert-btn-primary">Create Alert</button>
+                    </div>
+                </div>
+
+                <div class="ae-body">
+                <!-- The bench: query, timeline, results. Never covered. -->
+                <div class="main-content ae-bench">
                     <section class="search-section">
                         <div class="search-toolbar">
                             <select id="alertTimeRange" class="time-range-select">
@@ -3101,11 +3114,12 @@
 
                             <div class="toolbar-spacer"></div>
 
+                            <span class="ae-type" id="alertTypeBadge" title="Set from the query: an aggregation means compound. Change it in the definition rail.">
+                                Type <b id="alertTypeBadgeValue">Event</b><span id="alertTypeBadgeHint" class="ae-type-hint"></span>
+                            </span>
+
                             <button id="testQueryBtn" class="search-btn" onclick="Alerts.runOrCancelQuery()">
                                 <span class="btn-text">Run</span>
-                            </button>
-                            <button id="toggleAlertPanelBtn" class="alert-editor-config-btn" onclick="Alerts.toggleAlertPanel()" title="Toggle configuration panel">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
                             </button>
                         </div>
 
@@ -3127,36 +3141,45 @@
                         <div class="query-resize-handle" data-target="editorQueryInput"></div>
                     </section>
 
-                    <!-- Timeline Section -->
-                    <section class="timeline-section" id="alertTimelineSection" style="display: none;">
-                        <div class="timeline-header">
-                            <h3>Timeline</h3>
-                            <div class="timeline-stats" id="alertTimelineStats">-</div>
-                        </div>
-                        <canvas id="alertTimeline"></canvas>
-                    </section>
-
-                    <!-- Results Section (push layout shared with search) -->
                     <div class="search-results-split">
                     <section class="results-section">
+                        <div class="timeline-inline" id="alertTimelineSection" style="display: none;">
+                            <canvas id="alertTimeline"></canvas>
+                        </div>
                         <div class="results-header">
                             <div class="editor-result-tabs" id="alertResultTabs">
                                 <button type="button" class="ert-tab active" data-pane="results">Results</button>
                                 <button type="button" class="ert-tab" data-pane="tests">Tests<span id="alertTestsChip" class="ert-chip" hidden></span></button>
                                 <button type="button" class="ert-tab" data-pane="checks" hidden>Checks<span id="alertChecksChip" class="ert-chip" hidden></span></button>
+                                <button type="button" class="ert-tab" data-pane="history" hidden>History</button>
                             </div>
                             <div class="results-controls" id="alertResultsControls">
                                 <span id="alertResultsCount" class="result-count">-</span>
                                 <span id="alertExecutionTime" class="execution-time"></span>
-                                <button id="alertExportCsvBtn" class="export-btn" style="display: none;" onclick="Alerts.exportToCsv()">csv</button>
+                                <div class="toolbar-menu-wrap" id="alertExportMenuWrap" style="display: none;">
+                                    <button id="alertExportMenuBtn" class="export-btn" title="Export results">
+                                        export
+                                        <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div id="alertExportMenu" class="toolbar-dropdown-menu toolbar-dropdown-right" style="display:none">
+                                        <button class="toolbar-menu-item" onclick="Alerts.exportToCsv()">
+                                            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 6.5h13M6 6.5v7M10.5 6.5v7" stroke="currentColor" stroke-width="1.3"/></svg>
+                                            CSV
+                                        </button>
+                                        <button class="toolbar-menu-item" onclick="Alerts.exportToJsonl()">
+                                            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M6 2.5H5A1.5 1.5 0 0 0 3.5 4v2.5A1.5 1.5 0 0 1 2 8a1.5 1.5 0 0 1 1.5 1.5V12A1.5 1.5 0 0 0 5 13.5h1M10 2.5h1A1.5 1.5 0 0 1 12.5 4v2.5A1.5 1.5 0 0 0 14 8a1.5 1.5 0 0 0-1.5 1.5V12a1.5 1.5 0 0 1-1.5 1.5h-1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                            JSON Lines
+                                        </button>
+                                    </div>
+                                </div>
                                 <select id="alertPageSizeSelect" class="page-size-select">
                                     <option value="50">50 per page</option>
                                     <option value="100">100 per page</option>
                                 </select>
                                 <div class="pagination-controls" id="alertPaginationControls" style="display: none;">
-                                    <button id="alertPrevPageBtn" class="page-btn" disabled>← Prev</button>
-                                    <span id="alertPageInfo" class="page-info">Page 1</span>
-                                    <button id="alertNextPageBtn" class="page-btn" disabled>Next →</button>
+                                    <button id="alertPrevPageBtn" class="page-btn-compact" title="Previous page" disabled>&#8249;</button>
+                                    <span id="alertPageInfo" class="page-info-compact">Page 1</span>
+                                    <button id="alertNextPageBtn" class="page-btn-compact" title="Next page" disabled>&#8250;</button>
                                 </div>
                             </div>
                         </div>
@@ -3173,7 +3196,7 @@
 
                         <div id="queryResults" class="results-container">
                             <div class="empty-state">
-                                <div class="empty-icon">🔍</div>
+                                <div class="empty-icon">&#128269;</div>
                                 <div class="empty-text">Run a query to see results that would trigger this alert</div>
                             </div>
                         </div>
@@ -3181,9 +3204,9 @@
 
                         <div id="alertTestsPane" class="alert-tests-pane" hidden></div>
                         <div id="alertChecksPane" class="alert-checks-pane" hidden></div>
+                        <div id="alertHistoryPane" class="alert-history-pane" hidden></div>
                     </section>
 
-                    <!-- Log Detail Panel (push layout, scoped to the alert editor) -->
                     <div id="alertLogDetailPanel" class="log-detail-panel">
                         <div class="panel-resize-handle"></div>
                         <div class="panel-header">
@@ -3209,33 +3232,28 @@
                     </div><!-- end search-results-split -->
                 </div>
 
-                <!-- Right Side Panel for Alert Configuration -->
-                <div id="alertConfigPanel" class="alert-panel">
+                <!-- The definition rail: always visible, nothing collapsed -->
+                <div id="alertConfigPanel" class="alert-panel ae-rail">
                     <div class="alert-panel-resize-handle" id="alertPanelResizeHandle"></div>
-                    <div class="alert-panel-header">
-                        <h3 class="alert-panel-title">Alert Configuration</h3>
-                        <button id="closeAlertPanelBtn" class="alert-panel-close" onclick="Alerts.closeAlertPanel()">&times;</button>
-                    </div>
-
                     <div class="alert-panel-content">
-                        <!-- Alert Type Selector -->
-                        <div class="alert-section alert-type-section">
+
+                        <div class="ae-sec">
+                            <div class="ae-sec-label">Type</div>
                             <div class="alert-type-cards" id="alertTypeCards">
-                                <button type="button" class="alert-type-card active" data-type="event">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                <button type="button" class="alert-type-card active" data-type="event" title="Matches individual events as they arrive">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                                     <span class="alert-type-card-label">Event</span>
                                 </button>
-                                <button type="button" class="alert-type-card" data-type="compound">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                                <button type="button" class="alert-type-card" data-type="compound" title="Correlates several events over a window">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                                     <span class="alert-type-card-label">Compound</span>
                                 </button>
-                                <button type="button" class="alert-type-card" data-type="scheduled">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                <button type="button" class="alert-type-card" data-type="scheduled" title="Re-runs the query on a schedule">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                                     <span class="alert-type-card-label">Scheduled</span>
                                 </button>
                             </div>
                             <p class="alert-form-help" id="alertTypeHelp">Event alerts match individual logs in real-time.</p>
-                            <!-- Hidden select to keep existing JS compatibility -->
                             <select id="alertTypeSelect" style="display:none;">
                                 <option value="event">Event</option>
                                 <option value="compound">Compound</option>
@@ -3243,9 +3261,8 @@
                             </select>
                         </div>
 
-                        <!-- Type-specific config (compound window / scheduled cron) -->
-                        <div id="windowDurationGroup" class="alert-section" style="display: none;">
-                            <label class="alert-form-label" for="editorWindowDuration">Window Duration</label>
+                        <div id="windowDurationGroup" class="ae-sec" style="display: none;">
+                            <label class="ae-sec-label" for="editorWindowDuration">Window</label>
                             <div class="window-duration-input">
                                 <input type="number" id="editorWindowDuration" class="alert-form-input" value="15" min="1" max="10080">
                                 <select id="editorWindowUnit" class="alert-form-input">
@@ -3254,11 +3271,11 @@
                                     <option value="86400">Days</option>
                                 </select>
                             </div>
-                            <p class="alert-form-help">How much data each evaluation window covers</p>
+                            <p class="alert-form-help">How much data each evaluation covers</p>
                         </div>
 
-                        <div id="scheduledConfigGroup" class="alert-section" style="display: none;">
-                            <label class="alert-form-label" for="editorSchedulePreset">Schedule Frequency</label>
+                        <div id="scheduledConfigGroup" class="ae-sec" style="display: none;">
+                            <label class="ae-sec-label" for="editorSchedulePreset">Schedule</label>
                             <select id="editorSchedulePreset" class="alert-form-input">
                                 <option value="0 * * * *">Hourly</option>
                                 <option value="0 0 * * *" selected>Daily (midnight)</option>
@@ -3268,10 +3285,9 @@
                             </select>
                             <div id="customCronGroup" style="display: none; margin-top: 0.5rem;">
                                 <input type="text" id="editorScheduleCron" class="alert-form-input" placeholder="0 */6 * * *" autocomplete="off">
-                                <p class="alert-form-help">Standard 5-field cron: minute hour day-of-month month day-of-week</p>
+                                <p class="alert-form-help">Five fields: minute hour day-of-month month day-of-week</p>
                             </div>
-
-                            <label class="alert-form-label" style="margin-top: 0.75rem;" for="editorQueryWindowValue">Query Window</label>
+                            <label class="ae-sec-label" style="margin-top: 0.75rem;" for="editorQueryWindowValue">Query window</label>
                             <div class="window-duration-input">
                                 <input type="number" id="editorQueryWindowValue" class="alert-form-input" value="1" min="1" max="365">
                                 <select id="editorQueryWindowUnit" class="alert-form-input">
@@ -3280,155 +3296,86 @@
                                     <option value="604800">Weeks</option>
                                 </select>
                             </div>
-                            <p class="alert-form-help">How far back the query looks each time it runs</p>
                         </div>
 
-                        <!-- Details Section -->
-                        <div class="alert-section">
-                            <div class="alert-section-header" data-toggle="alertDetailsSection">
-                                <span class="alert-section-title">Details</span>
-                                <svg class="alert-section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        <div class="ae-sec">
+                            <div class="ae-sec-label">Severity</div>
+                            <div class="severity-dropdown" id="severityDropdown">
+                                <button type="button" class="severity-dropdown-trigger" id="severityDropdownTrigger">
+                                    <span class="severity-dot severity-dot-medium"></span>
+                                    <span class="severity-dropdown-label">Medium</span>
+                                    <svg class="severity-dropdown-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                </button>
+                                <div class="severity-dropdown-menu" id="severityDropdownMenu">
+                                    <button type="button" class="severity-dropdown-item" data-severity="critical"><span class="severity-dot severity-dot-critical"></span>Critical</button>
+                                    <button type="button" class="severity-dropdown-item" data-severity="high"><span class="severity-dot severity-dot-high"></span>High</button>
+                                    <button type="button" class="severity-dropdown-item" data-severity="medium"><span class="severity-dot severity-dot-medium"></span>Medium</button>
+                                    <button type="button" class="severity-dropdown-item" data-severity="low"><span class="severity-dot severity-dot-low"></span>Low</button>
+                                    <button type="button" class="severity-dropdown-item" data-severity="info"><span class="severity-dot severity-dot-info"></span>Info</button>
+                                </div>
                             </div>
-                            <div class="alert-section-body" id="alertDetailsSection">
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label" for="editorAlertName">Name *
-                                        <span class="alert-name-template-hint" data-tooltip="Use {{field_name}} to include log field values in the alert name. Example: SSH Brute Force from {{src_ip}}">
-                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                                <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
-                                                <path d="M8 7v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                                                <circle cx="8" cy="5" r="0.75" fill="currentColor"/>
-                                            </svg>
-                                        </span>
-                                    </label>
-                                    <input type="text" id="editorAlertName" class="alert-form-input" placeholder="Enter alert name" required>
-                                </div>
+                            <input type="hidden" id="editorAlertSeverity" value="medium">
+                        </div>
 
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label" for="editorAlertDescription">Description</label>
-                                    <textarea id="editorAlertDescription" class="alert-form-textarea" rows="2" placeholder="Optional description"></textarea>
-                                </div>
+                        <div class="ae-sec">
+                            <div class="ae-sec-label">Labels
+                                <button type="button" class="ae-sec-tool" id="alertLabelsAiBtn" onclick="Alerts.suggestLabels()" title="Suggest ATT&amp;CK labels">
+                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 0C4.2 1.6 4.8 2.8 5.6 3.6 6.4 4.4 7.6 5 9 5.2 7.6 5.4 6.4 6 5.6 6.8 4.8 7.6 4.2 8.8 4 10.4 3.8 8.8 3.2 7.6 2.4 6.8 1.6 6 .4 5.4 0 5.2 .4 5 1.6 4.4 2.4 3.6 3.2 2.8 3.8 1.6 4 0z"/><path d="M11 6c.12 1 .48 1.72 1 2.24.52.52 1.24.88 2.24 1-1 .12-1.72.48-2.24 1-.52.52-.88 1.24-1 2.24-.12-1-.48-1.72-1-2.24-.52-.52-1.24-.88-2.24-1 1-.12 1.72-.48 2.24-1 .52-.52.88-1.24 1-2.24z"/><path d="M6 11c.08.68.32 1.16.68 1.52.36.36.84.6 1.52.68-.68.08-1.16.32-1.52.68-.36.36-.6.84-.68 1.52-.08-.68-.32-1.16-.68-1.52-.36-.36-.84-.6-1.52-.68.68-.08 1.16-.32 1.52-.68.36-.36.6-.84.68-1.52z"/></svg>
+                                </button>
+                            </div>
+                            <div class="alert-labels-chips" id="editorLabelsChips">
+                                <input type="text" class="alert-label-input" id="editorLabelInput" placeholder="Add label..." />
+                            </div>
+                            <input type="hidden" id="editorAlertLabels" />
+                        </div>
 
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label">Severity</label>
-                                    <div class="severity-dropdown" id="severityDropdown">
-                                        <button type="button" class="severity-dropdown-trigger" id="severityDropdownTrigger">
-                                            <span class="severity-dot severity-dot-medium"></span>
-                                            <span class="severity-dropdown-label">Medium</span>
-                                            <svg class="severity-dropdown-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                                        </button>
-                                        <div class="severity-dropdown-menu" id="severityDropdownMenu">
-                                            <button type="button" class="severity-dropdown-item" data-severity="critical">
-                                                <span class="severity-dot severity-dot-critical"></span>Critical
-                                            </button>
-                                            <button type="button" class="severity-dropdown-item" data-severity="high">
-                                                <span class="severity-dot severity-dot-high"></span>High
-                                            </button>
-                                            <button type="button" class="severity-dropdown-item" data-severity="medium">
-                                                <span class="severity-dot severity-dot-medium"></span>Medium
-                                            </button>
-                                            <button type="button" class="severity-dropdown-item" data-severity="low">
-                                                <span class="severity-dot severity-dot-low"></span>Low
-                                            </button>
-                                            <button type="button" class="severity-dropdown-item" data-severity="info">
-                                                <span class="severity-dot severity-dot-info"></span>Info
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <input type="hidden" id="editorAlertSeverity" value="medium">
+                        <div class="ae-sec" id="alertThrottleSection">
+                            <div class="ae-sec-label">Throttle</div>
+                            <div class="ae-row">
+                                <label class="ae-row-key" for="editorThrottleTime">Suppress repeats for</label>
+                                <div class="window-duration-input ae-row-val">
+                                    <input type="number" id="editorThrottleTime" class="alert-form-input" value="0" min="0" max="86400">
+                                    <span class="throttle-unit-label">s</span>
                                 </div>
-
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label">Labels</label>
-                                    <div class="alert-labels-chips" id="editorLabelsChips">
-                                        <input type="text" class="alert-label-input" id="editorLabelInput" placeholder="Add label..." />
-                                    </div>
-                                    <!-- Hidden field for backward compat -->
-                                    <input type="hidden" id="editorAlertLabels" />
-                                </div>
-
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label">
-                                        <input type="checkbox" id="editorAlertEnabled" checked>
-                                        Enabled
-                                    </label>
-                                </div>
+                            </div>
+                            <div class="ae-row">
+                                <label class="ae-row-key" for="editorThrottleField">Per</label>
+                                <input type="text" id="editorThrottleField" class="alert-form-input ae-row-val" placeholder="field, e.g. host">
                             </div>
                         </div>
 
-                        <!-- Throttling Section -->
-                        <div class="alert-section">
-                            <div class="alert-section-header" data-toggle="alertThrottleSection">
-                                <span class="alert-section-title">Throttling</span>
-                                <svg class="alert-section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                            </div>
-                            <div class="alert-section-body" id="alertThrottleSection">
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label" for="editorThrottleTime">Suppress duplicates for</label>
-                                    <div class="window-duration-input">
-                                        <input type="number" id="editorThrottleTime" class="alert-form-input" value="0" min="0" max="86400">
-                                        <span class="throttle-unit-label">seconds</span>
-                                    </div>
-                                    <p class="alert-form-help">0 = no throttling, max 86400 (24h)</p>
-                                </div>
-
-                                <div class="alert-form-group">
-                                    <label class="alert-form-label" for="editorThrottleField">Throttle Field</label>
-                                    <input type="text" id="editorThrottleField" class="alert-form-input" placeholder="host, user, etc.">
-                                    <p class="alert-form-help">Suppress per unique value of this field (optional)</p>
-                                </div>
-                            </div>
+                        <div class="ae-sec" id="alertActionsSection">
+                            <div class="ae-sec-label">Actions <span class="ae-sec-count" id="actionCountBadge" style="display:none;">0</span></div>
+                            <select id="editorActionsSelect" class="alert-form-input">
+                                <option value="">Add action...</option>
+                            </select>
+                            <div id="editorSelectedActions" class="selected-actions-list"></div>
                         </div>
 
-                        <!-- Actions Section -->
-                        <div class="alert-section">
-                            <div class="alert-section-header" data-toggle="alertActionsSection">
-                                <span class="alert-section-title">Actions</span>
-                                <span class="alert-section-badge" id="actionCountBadge" style="display:none;">0</span>
-                                <svg class="alert-section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                            </div>
-                            <div class="alert-section-body" id="alertActionsSection">
-                                <div class="alert-form-group">
-                                    <select id="editorActionsSelect" class="alert-form-input">
-                                        <option value="">Add action...</option>
-                                    </select>
-                                    <div id="editorSelectedActions" class="selected-actions-list"></div>
-                                </div>
-                            </div>
+                        <div class="ae-sec" id="alertReferencesSection">
+                            <div class="ae-sec-label">References</div>
+                            <div id="editorReferencesContainer" class="alert-references-container"></div>
+                            <button type="button" class="alert-add-reference-btn" onclick="Alerts.addReferenceField()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                Add reference
+                            </button>
+                            <textarea id="editorAlertReferences" style="display:none;"></textarea>
                         </div>
 
-                        <!-- References Section -->
-                        <div class="alert-section">
-                            <div class="alert-section-header" data-toggle="alertReferencesSection">
-                                <span class="alert-section-title">References</span>
-                                <svg class="alert-section-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                            </div>
-                            <div class="alert-section-body" id="alertReferencesSection">
-                                <div class="alert-form-group">
-                                    <div id="editorReferencesContainer" class="alert-references-container"></div>
-                                    <button type="button" class="alert-add-reference-btn" onclick="Alerts.addReferenceField()">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                        Add reference
-                                    </button>
-                                    <!-- Hidden textarea for backward compatibility -->
-                                    <textarea id="editorAlertReferences" style="display:none;"></textarea>
-                                </div>
-                            </div>
+                        <div class="ae-sec" id="alertDetailsSection">
+                            <label class="ae-sec-label" for="editorAlertDescription">Description</label>
+                            <textarea id="editorAlertDescription" class="alert-form-textarea" rows="4" placeholder="What this detects and what to do about it"></textarea>
                         </div>
                     </div>
 
-                    <div class="alert-panel-actions">
-                        <div class="alert-panel-buttons">
-                            <button type="button" class="alert-btn alert-btn-ghost" onclick="Alerts.closeAlertPanel()">
-                                Cancel
-                            </button>
-                            <button id="saveAlertBtn" class="alert-btn alert-btn-primary">
-                                Create Alert
-                            </button>
-                        </div>
+                    <div class="ae-rail-foot">
+                        <label class="ae-enabled"><input type="checkbox" id="editorAlertEnabled" checked> Enabled</label>
+                        <span id="alertEditorFacts" class="ae-facts"></span>
                     </div>
                 </div>
+                </div><!-- end ae-body -->
+                </div>
             </div>
-        </div>
         <!-- End Alert Editor View -->
 
         </div><!-- End fractalView -->
@@ -3815,17 +3762,17 @@ throttleTimeSeconds: 3600"></textarea>
     </div>
 
 
-    <!-- Create Dictionary Modal -->
+    <!-- Create Context List Modal -->
     <div id="createDictModal" class="modal" onclick="if(event.target===this)Dictionaries.hideCreateForm()">
         <div class="modal-content" style="max-width:480px;">
             <div class="modal-header">
-                <h2>New Dictionary</h2>
+                <h2>New Context List</h2>
                 <button class="close-btn" onclick="Dictionaries.hideCreateForm()">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
                     <label for="dictNewName">Name</label>
-                    <input type="text" id="dictNewName" class="form-input" placeholder="Dictionary name" required>
+                    <input type="text" id="dictNewName" class="form-input" placeholder="List name" required>
                 </div>
                 <div class="form-group">
                     <label for="dictNewDesc">Description (optional)</label>
@@ -4335,10 +4282,12 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/performance.js"></script>
     <script src="/static/activity.js"></script>
     <script src="/static/alertEngine.js"></script>
+    <script src="/static/loadingChrome.js"></script>
     <script src="/static/alertDetail.js"></script>
     <script src="/static/alertHistory.js"></script>
     <script src="/static/alertTests.js"></script>
     <script src="/static/alertPolicy.js"></script>
+    <script src="/static/alertDrafts.js"></script>
     <script src="/static/alertPolicyAdmin.js"></script>
     <script src="/static/alertChanges.js"></script>
     <script src="/static/alertList.js"></script>

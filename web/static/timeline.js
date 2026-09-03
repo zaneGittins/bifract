@@ -11,9 +11,14 @@ const Timeline = {
 
     // Render pre-bucketed histogram data to explicit elements (alert/model editors).
     // Does not set up drag-to-filter interaction — purely informational.
-    renderBucketsToEl(buckets, timeRange, canvasEl, sectionEl) {
+    // opts.coveredFrom is the first bucket index the scan has reached. Buckets left of
+    // it are unscanned, not empty, and must not be drawn as real zeros: a partially
+    // scanned window would otherwise read as "nothing happened here".
+    renderBucketsToEl(buckets, timeRange, canvasEl, sectionEl, opts = {}) {
+        const coveredFrom = Math.max(0, Math.min(opts.coveredFrom || 0, (buckets || []).length));
+        const pending = coveredFrom > 0;
         const total = (buckets || []).reduce((a, b) => a + b, 0);
-        if (!buckets || !buckets.length || total === 0) {
+        if (!buckets || !buckets.length || (total === 0 && !pending)) {
             if (sectionEl) sectionEl.style.display = 'none';
             return;
         }
@@ -22,13 +27,18 @@ const Timeline = {
         this._currentTotal = total;
         this._currentPeak = Math.max(...buckets);
         this._currentBuckets = buckets;
-        this._pendingBefore = 0;
+        this._pendingBefore = coveredFrom;
+        this._pendingLabel = opts.pendingLabel || 'not scanned';
         setTimeout(() => {
             if (!canvasEl) return;
             canvasEl.style.width = '100%';
             canvasEl.style.display = 'block';
             if (canvasEl.offsetWidth === 0 || canvasEl.offsetHeight === 0) return;
             this._drawBars(canvasEl, buckets);
+            const start = new Date(timeRange.start);
+            const duration = new Date(timeRange.end) - start;
+            this.setupInteraction(canvasEl, buckets, canvasEl.offsetWidth / buckets.length, start,
+                duration / buckets.length, duration, { select: opts.select !== false });
             this._setupResizeObserver(canvasEl);
         }, 100);
     },
@@ -479,15 +489,20 @@ const Timeline = {
         return `${p2(p.month)}/${p2(p.day)} ${p2(p.hour)}:${p2(p.minute)}`;
     },
 
-    setupInteraction(canvas, buckets, barWidth, startDate, bucketSize, duration) {
-        if (this.mouseDownHandler) {
-            canvas.removeEventListener('mousedown', this.mouseDownHandler);
-            canvas.removeEventListener('mousemove', this.mouseMoveHandler);
-            canvas.removeEventListener('mouseup', this.mouseUpHandler);
-            canvas.removeEventListener('mouseleave', this.leaveHandler);
+    // Handlers are kept on the canvas: the search page and the alert editor each have
+    // one, and unbinding by the last-bound set would leave the other's stacking up.
+    // select=false gives hover tooltips only; drag-to-zoom drives the search time picker.
+    setupInteraction(canvas, buckets, barWidth, startDate, bucketSize, duration, { select = true } = {}) {
+        const prev = canvas._timelineHandlers;
+        if (prev) {
+            canvas.removeEventListener('mousedown', prev.down);
+            canvas.removeEventListener('mousemove', prev.move);
+            canvas.removeEventListener('mouseup', prev.up);
+            canvas.removeEventListener('mouseleave', prev.leave);
         }
 
         this.mouseDownHandler = (e) => {
+            if (!select) return;
             if (e.button !== 0) return;
             e.preventDefault();
             const rect = canvas.getBoundingClientRect();
@@ -539,6 +554,10 @@ const Timeline = {
             this.hideTooltip();
         };
 
+        canvas._timelineHandlers = {
+            down: this.mouseDownHandler, move: this.mouseMoveHandler,
+            up: this.mouseUpHandler, leave: this.leaveHandler
+        };
         canvas.addEventListener('mousedown', this.mouseDownHandler);
         canvas.addEventListener('mousemove', this.mouseMoveHandler);
         canvas.addEventListener('mouseup', this.mouseUpHandler);

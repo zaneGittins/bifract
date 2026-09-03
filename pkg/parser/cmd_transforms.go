@@ -952,7 +952,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 	if chLookupName == "" {
-		return fmt.Errorf("dictionary %q with key column %q not found - use the key toggle in the Dicts UI to enable it", dictName, keyColumn)
+		return fmt.Errorf("dictionary %q with key column %q not found - use the key toggle in the Context tab to enable it", dictName, keyColumn)
 	}
 
 	var fieldRef string

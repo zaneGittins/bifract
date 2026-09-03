@@ -44,15 +44,38 @@ type Violation struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// CheckOutcome is one rule's verdict, passing or not.
+//
+// Reporting only violations meant a surface could show what was wrong but never what
+// was right, so an author could not tell "no rules apply" from "every rule passes".
+type CheckOutcome struct {
+	PolicyID string `json:"policy_id,omitempty"`
+	Field    string `json:"field"`
+	// Label states the rule in the reader's terms, for a check that passed and so has
+	// no message to show.
+	Label    string `json:"label"`
+	Message  string `json:"message"`
+	Severity string `json:"severity"`
+	Passed   bool   `json:"passed"`
+	Deferred bool   `json:"deferred,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
 // PolicyResult is a whole evaluation.
 type PolicyResult struct {
-	Violations []Violation `json:"violations"`
-	Blocking   int         `json:"blocking"`
-	Warnings   int         `json:"warnings"`
+	// Checks is every enabled rule with its verdict, in author order.
+	Checks     []CheckOutcome `json:"checks"`
+	Violations []Violation    `json:"violations"`
+	Passed     int            `json:"passed"`
+	Blocking   int            `json:"blocking"`
+	Warnings   int            `json:"warnings"`
 	// Deferred names rules that could not run in this pass because they need the
 	// alert's tests evaluated. They resolve on save.
 	Deferred []string `json:"deferred,omitempty"`
 }
+
+// Total is how many rules were evaluated, deferred ones included.
+func (r *PolicyResult) Total() int { return len(r.Checks) }
 
 // OK reports whether a save may proceed.
 func (r *PolicyResult) OK() bool { return r.Blocking == 0 }
@@ -132,7 +155,7 @@ func NewPolicySubject(content RevisionContent, tests []AlertTest) PolicySubject 
 // tests have not been run, so the editor's live pass does not accuse an author of
 // failing a check it never evaluated.
 func EvaluatePolicies(policies []Policy, subject PolicySubject) PolicyResult {
-	result := PolicyResult{Violations: []Violation{}}
+	result := PolicyResult{Checks: []CheckOutcome{}, Violations: []Violation{}}
 
 	for i := range policies {
 		policy := policies[i]
@@ -144,13 +167,29 @@ func EvaluatePolicies(policies []Policy, subject PolicySubject) PolicyResult {
 		if !ok {
 			continue // a field removed from the catalog stops being enforced, not fatal
 		}
+
+		outcome := CheckOutcome{
+			PolicyID: policy.ID,
+			Field:    policy.Field,
+			Label:    describePolicy(policy, field),
+			Message:  policy.Message,
+			Severity: policy.Severity,
+		}
+
 		if field.RunsTests && !subject.TestsRun {
+			outcome.Deferred = true
 			result.Deferred = append(result.Deferred, policy.Field)
+			result.Checks = append(result.Checks, outcome)
 			continue
 		}
 
 		passed, detail := evaluatePolicy(policy, field, subject)
+		outcome.Passed = passed
+		outcome.Detail = detail
+		result.Checks = append(result.Checks, outcome)
+
 		if passed {
+			result.Passed++
 			continue
 		}
 
@@ -169,6 +208,21 @@ func EvaluatePolicies(policies []Policy, subject PolicySubject) PolicyResult {
 	}
 
 	return result
+}
+
+// describePolicy states a rule the way its author would read it back, for a check that
+// passed and so has no failure detail to show.
+func describePolicy(policy Policy, field PolicyField) string {
+	label := field.Label
+	if label == "" {
+		label = policy.Field
+	}
+
+	phrase, ok := operatorPhrases[policy.Operator]
+	if !ok {
+		phrase = policy.Operator + " {v}"
+	}
+	return label + " " + strings.ReplaceAll(phrase, "{v}", policy.Value)
 }
 
 // evaluatePolicy returns whether the rule holds, and what was found when it does not.

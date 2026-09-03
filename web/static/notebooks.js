@@ -101,8 +101,6 @@ const Notebooks = {
             createBtn.addEventListener('click', () => {
                 this.showCreateNotebookModal();
             });
-        } else {
-            // console.warn('[Notebooks] Create notebook button not found');
         }
 
         const searchInput = document.getElementById('notebookSearchInput');
@@ -2605,7 +2603,7 @@ const Notebooks = {
      */
     async updateSectionResults(sectionId, lastExecutedAt, lastResults) {
         try {
-            const response = await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}/results`, {
+            await fetch(`/api/v1/notebooks/${this.currentNotebook.id}/sections/${sectionId}/results`, {
                 method: 'PUT',
                 headers: this.sseHeaders(),
                 credentials: 'include',
@@ -2614,12 +2612,8 @@ const Notebooks = {
                     last_results: lastResults
                 })
             });
-
-            if (!response.ok) {
-                // console.warn('[Notebooks] Failed to update section results in backend:', response.status);
-            }
-        } catch (error) {
-            // console.warn('[Notebooks] Error updating section results:', error);
+        } catch {
+            // Caching results is best effort and never blocks the section run.
         }
     },
 
@@ -3575,7 +3569,6 @@ const Notebooks = {
         const contentContainer = document.getElementById(`section-content-${sectionId}`);
 
         if (!sectionContainer || !contentContainer) {
-            // console.warn('[Notebooks] Section container not found during exit edit mode');
             return;
         }
 
@@ -4951,7 +4944,6 @@ const Notebooks = {
         const queryHighlight = document.getElementById(highlightId);
 
         if (!queryInput || !queryHighlight) {
-            // console.warn('[Notebooks] Could not find elements for syntax highlighting:', {inputId, highlightId});
             return;
         }
 

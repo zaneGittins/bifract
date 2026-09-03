@@ -15,6 +15,9 @@ const (
 	ChangeUpdate = "update"
 	ChangeDelete = "delete"
 
+	// ChangeDraft is unsubmitted work, private to its author. Same row as a proposal,
+	// so finishing it is a status change rather than a copy.
+	ChangeDraft = "draft"
 	// ChangeOpen is awaiting review.
 	ChangeOpen = "open"
 	// ChangeRejected is a reviewer asking for changes. The proposal survives: the
@@ -91,11 +94,17 @@ type ChangeRequest struct {
 	Reviews []Review `json:"reviews,omitempty"`
 }
 
-// Open reports whether the proposal is still live: awaiting review, or sent back for
-// changes. Both are editable by their author.
+// Open reports whether the proposal is live for review: awaiting it, or sent back for
+// changes. A draft is not: nobody but its author can see it, so it cannot be reviewed.
 func (c *ChangeRequest) Open() bool {
 	return c.Status == ChangeOpen || c.Status == ChangeRejected
 }
+
+// Draft reports unsubmitted work.
+func (c *ChangeRequest) Draft() bool { return c.Status == ChangeDraft }
+
+// Editable reports whether the author may still revise the content.
+func (c *ChangeRequest) Editable() bool { return c.Open() || c.Draft() }
 
 // currentDecisions maps each reviewer to their latest decision on the current content.
 //

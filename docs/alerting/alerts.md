@@ -27,7 +27,7 @@ An alert has no single "webhook URL" field. Actions are defined once and attache
 | **Webhook** | POSTs the alert payload to an HTTP endpoint. See [Webhooks](../api/webhooks.md) for the payload schema and configuration |
 | **Email** | Sends an email via the configured SMTP settings |
 | **Fractal** | Writes the alert result back into a fractal as new log events, so detections are themselves searchable and can feed other alerts |
-| **Dictionary** | Upserts matched values into a [dictionary](../features/dictionaries.md), building a live watchlist (e.g. accumulating suspicious IPs for later enrichment) |
+| **Dictionary** | Upserts matched values into a [context list](../features/dictionaries.md), building a live watchlist (e.g. accumulating suspicious IPs for later enrichment) |
 
 Actions are managed from the fractal's **Alerts** tab and can be attached to multiple alerts.
 

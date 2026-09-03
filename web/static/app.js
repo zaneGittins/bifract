@@ -1563,6 +1563,7 @@ const App = {
         const defs = [
             { btnId: 'shareMenuBtn',   menuId: 'shareMenu',   wrapId: 'shareMenuWrap'   },
             { btnId: 'exportMenuBtn',  menuId: 'exportMenu',  wrapId: 'exportMenuWrap'  },
+            { btnId: 'alertExportMenuBtn', menuId: 'alertExportMenu', wrapId: 'alertExportMenuWrap' },
         ];
 
         const closeAll = () => {

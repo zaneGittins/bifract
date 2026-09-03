@@ -49,6 +49,12 @@ func (h *Handler) changeRequestAccess(w http.ResponseWriter, r *http.Request, re
 		h.changeRequestError(w, err)
 		return nil, false
 	}
+	// A draft exists only for its author. Anyone else is told it does not exist,
+	// which is both the truth of the matter and the answer that leaks nothing.
+	if cr.Draft() && cr.Author != h.attributionUser(r) {
+		h.respondError(w, http.StatusNotFound, "Proposal not found")
+		return nil, false
+	}
 
 	fractalID, prismID, err := h.manager.changeRequestScope(r.Context(), crID)
 	if err != nil {

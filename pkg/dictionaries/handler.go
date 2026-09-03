@@ -159,6 +159,16 @@ type AddColumnRequest struct {
 	Name string `json:"name"`
 }
 
+// respondManagerError reports a caller-fixable failure with its reason and anything
+// else as a generic 500, so the editor can show why an action was refused.
+func (h *Handler) respondManagerError(w http.ResponseWriter, fallback string, err error) {
+	if IsInvalidInput(err) {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.respondError(w, http.StatusInternalServerError, fallback)
+}
+
 func (h *Handler) HandleAddColumn(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -182,7 +192,7 @@ func (h *Handler) HandleAddColumn(w http.ResponseWriter, r *http.Request) {
 	dict, err := h.manager.AddColumn(r.Context(), id, req.Name)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to add column to dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to add column")
+		h.respondManagerError(w, "Failed to add column", err)
 		return
 	}
 	h.respondSuccess(w, dict)
@@ -202,7 +212,7 @@ func (h *Handler) HandleRemoveColumn(w http.ResponseWriter, r *http.Request) {
 	dict, err := h.manager.RemoveColumn(r.Context(), id, colName)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to remove column from dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to remove column")
+		h.respondManagerError(w, "Failed to remove column", err)
 		return
 	}
 	h.respondSuccess(w, dict)
@@ -222,7 +232,7 @@ func (h *Handler) HandleSetColumnKey(w http.ResponseWriter, r *http.Request) {
 	dict, err := h.manager.SetColumnKey(r.Context(), id, colName)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to set column key on dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to set column key")
+		h.respondManagerError(w, "Failed to set column key", err)
 		return
 	}
 	h.respondSuccess(w, dict)
@@ -242,7 +252,7 @@ func (h *Handler) HandleUnsetColumnKey(w http.ResponseWriter, r *http.Request) {
 	dict, err := h.manager.UnsetColumnKey(r.Context(), id, colName)
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to unset column key on dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to unset column key")
+		h.respondManagerError(w, "Failed to unset column key", err)
 		return
 	}
 	h.respondSuccess(w, dict)
@@ -306,7 +316,7 @@ func (h *Handler) HandleUpsertRows(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.manager.UpsertRows(r.Context(), id, req.Rows); err != nil {
 		log.Printf("[Dictionaries] Failed to upsert rows in dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to save rows")
+		h.respondManagerError(w, "Failed to save rows", err)
 		return
 	}
 	h.respondSuccess(w, map[string]int{"upserted": len(req.Rows)})
@@ -321,11 +331,16 @@ func (h *Handler) HandleDeleteRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := existing.ID
-	key := chi.URLParam(r, "key")
+	// A key can contain anything, "/" included, which no path segment survives:
+	// prefer the query string and keep the path form for older callers.
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		key = chi.URLParam(r, "key")
+	}
 
 	if err := h.manager.DeleteRow(r.Context(), id, key); err != nil {
 		log.Printf("[Dictionaries] Failed to delete row from dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to delete row")
+		h.respondManagerError(w, "Failed to delete row", err)
 		return
 	}
 	h.respondSuccess(w, map[string]bool{"deleted": true})
