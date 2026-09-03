@@ -4997,19 +4997,96 @@ body.alert-panel-resizing .alert-details-panel {
 
 /* The detail panel keeps its own height: closed it is nothing, open it is a viewport-tall
    sticky column that scrolls inside, so neither state stretches the bench or the rail. */
-.ae-bench .search-results-split {
-    align-items: flex-start;
+/* The editor fills the window, as the search page does. Each column scrolls inside
+   itself, so the two always reach the status bar together. */
+body.alert-editor-active {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
 }
 
-.ae-bench .log-detail-panel {
-    position: sticky;
-    top: 60px;
-    max-height: calc(100vh - 72px);
+#alertEditorView {
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+}
+
+.alert-editor-container {
+    flex: 1;
+}
+
+.ae-body {
+    flex: 1;
+}
+
+.ae-bench {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.ae-bench .search-section {
+    flex: 0 0 auto;
+}
+
+.ae-bench .search-results-split {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+}
+
+.ae-bench .results-section {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.ae-bench .results-header,
+.ae-bench .timeline-inline {
+    flex: 0 0 auto;
+}
+
+.ae-bench #alertResultsPane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.ae-bench #alertResultsPane > .sql-preview,
+.ae-bench #alertResultsPane > .error-message {
+    flex: 0 0 auto;
+}
+
+.ae-bench #queryResults {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.ae-bench .alert-tests-pane,
+.ae-bench .alert-checks-pane,
+.ae-bench .alert-history-pane {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
 }
 
 .ae-bench .log-detail-panel:not(.open) {
-    max-height: 0;
     border-width: 0;
+}
+
+.alert-panel.ae-rail {
+    min-height: 0;
+    overflow-y: auto;
+}
+
+@media (min-width: 1800px) {
+    .ae-body {
+        --ae-rail-w: 380px;
+    }
 }
 
 /* The header wraps rather than spilling into the gap beside the detail panel. */

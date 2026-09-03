@@ -327,7 +327,7 @@ const Alerts = {
         // Ensure alert editor and actions views are hidden when showing alerts list
         const alertEditorView = document.getElementById('alertEditorView');
         const actionsManageView = document.getElementById('actionsManageView');
-        if (alertEditorView) alertEditorView.style.display = 'none';
+        if (alertEditorView) this.setEditorVisible(false);
         if (actionsManageView) actionsManageView.style.display = 'none';
         this.closeAlertPanel();
 
@@ -1453,7 +1453,7 @@ const Alerts = {
         const actionsView = document.getElementById('actionsManageView');
 
         if (alertsView) alertsView.style.display = 'none';
-        if (alertEditorView) alertEditorView.style.display = 'none';
+        if (alertEditorView) this.setEditorVisible(false);
         if (actionsView) actionsView.style.display = 'block';
 
         // Close the alert editor panel if open
@@ -2316,7 +2316,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         const alertEditorView = document.getElementById('alertEditorView');
 
         if (alertsTabContent) alertsTabContent.style.display = 'none';
-        if (alertEditorView) alertEditorView.style.display = 'block';
+        if (alertEditorView) this.setEditorVisible(true);
 
         // Set up editor for create vs edit mode
         const saveBtn = document.getElementById('saveAlertBtn');
@@ -2385,7 +2385,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         this.cancelTestQuery();
         this._queryChrome().clear();
         document.getElementById('feedAlertBanner')?.remove();
-        alertEditorView.style.display = 'none';
+        this.setEditorVisible(false);
 
         this.closeAlertPanel();
         if (window.LogDetail) LogDetail.close();
@@ -3236,6 +3236,14 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
     },
 
     // Panel controls
+    // The editor is a viewport-height workspace like the search page: the body locks
+    // to the window and the bench and rail scroll inside themselves.
+    setEditorVisible(on) {
+        const view = document.getElementById('alertEditorView');
+        if (view) view.style.display = on ? 'flex' : 'none';
+        document.body.classList.toggle('alert-editor-active', on);
+    },
+
     // The definition is a rail in the layout now, not a slide-out. These stay as
     // no-ops so the many callers that closed the panel on navigation keep working.
     toggleAlertPanel() {},
