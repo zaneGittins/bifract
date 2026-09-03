@@ -6,7 +6,7 @@ const AlertHistory = {
     FIELDS: [
         { key: 'name', label: 'Name' },
         { key: 'description', label: 'Description' },
-        { key: 'query_string', label: 'Query', multiline: true },
+        { key: 'query_string', label: 'Query', multiline: true, code: true },
         { key: 'alert_type', label: 'Type' },
         { key: 'severity', label: 'Severity' },
         { key: 'throttle_time_seconds', label: 'Throttle (seconds)' },
@@ -134,7 +134,7 @@ const AlertHistory = {
         return `<div class="ahd-changes">${rows.map(({ f, value }) => `
             <div class="ahd-change">
                 <div class="ahd-change-field">${Utils.escapeHtml(f.label)}</div>
-                <div class="ahd-value">${f.multiline ? this.renderLines(value) : Utils.escapeHtml(value)}</div>
+                <div class="ahd-value${f.code ? ' ahd-code' : ''}">${f.multiline ? this.renderLines(value, f) : Utils.escapeHtml(value)}</div>
             </div>
         `).join('')}</div>`;
     },
@@ -144,7 +144,7 @@ const AlertHistory = {
             return `
                 <div class="ahd-change">
                     <div class="ahd-change-field">${Utils.escapeHtml(field.label)}</div>
-                    <div class="ahd-linediff">${this.renderLineDiff(before, after)}</div>
+                    <div class="ahd-linediff${field.code ? ' ahd-code' : ''}">${this.renderLineDiff(before, after, field)}</div>
                 </div>
             `;
         }
@@ -159,13 +159,22 @@ const AlertHistory = {
         `;
     },
 
-    renderLines(text) {
-        return String(text).split('\n').map(l => `<div class="ahd-line">${Utils.escapeHtml(l)}</div>`).join('');
+    renderLines(text, field) {
+        return String(text).split('\n')
+            .map(l => `<div class="ahd-line"><span class="ahd-line-text">${this.renderCell(l, field)}</span></div>`)
+            .join('');
+    },
+
+    // A query reads as a query here, exactly as it does in the alert's own panel.
+    // Everything else is plain text and is escaped.
+    renderCell(line, field) {
+        if (field?.code && window.SyntaxHighlight) return SyntaxHighlight.highlight(line);
+        return Utils.escapeHtml(line);
     },
 
     // Longest common subsequence over lines, so an edit inside a long query shows the
     // changed lines rather than repainting the whole block.
-    renderLineDiff(before, after) {
+    renderLineDiff(before, after, field) {
         const a = String(before || '').split('\n');
         const b = String(after || '').split('\n');
         const n = a.length, m = b.length;
@@ -194,7 +203,8 @@ const AlertHistory = {
 
         const marker = { same: ' ', del: '-', add: '+' };
         return out.map(l =>
-            `<div class="ahd-line ahd-line-${l.kind}"><span class="ahd-line-marker">${marker[l.kind]}</span>${Utils.escapeHtml(l.text)}</div>`
+            `<div class="ahd-line ahd-line-${l.kind}"><span class="ahd-line-marker">${marker[l.kind]}</span>` +
+            `<span class="ahd-line-text">${this.renderCell(l.text, field)}</span></div>`
         ).join('');
     },
 

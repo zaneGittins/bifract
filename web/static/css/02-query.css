@@ -2005,36 +2005,52 @@ body.recall-active {
 
 /* BQL highlighting inside static previews (query palette, alert detail). */
 .palette-query .hl-default,
+.ahd-code .hl-default,
 .alert-query-highlight .hl-default   { color: var(--text-primary); }
 .palette-query .hl-function,
+.ahd-code .hl-function,
 .alert-query-highlight .hl-function  { color: var(--syntax-function); font-weight: 500; }
 .palette-query .hl-operator,
+.ahd-code .hl-operator,
 .alert-query-highlight .hl-operator  { color: var(--syntax-operator); }
 .palette-query .hl-keyword,
+.ahd-code .hl-keyword,
 .alert-query-highlight .hl-keyword   { color: var(--syntax-keyword); font-weight: 500; }
 .palette-query .hl-string,
+.ahd-code .hl-string,
 .alert-query-highlight .hl-string    { color: var(--syntax-string); }
 .palette-query .hl-pipe,
+.ahd-code .hl-pipe,
 .alert-query-highlight .hl-pipe      { color: var(--syntax-operator); font-weight: 600; }
 .palette-query .hl-field,
+.ahd-code .hl-field,
 .alert-query-highlight .hl-field     { color: var(--info); }
 .palette-query .hl-value,
+.ahd-code .hl-value,
 .alert-query-highlight .hl-value     { color: var(--syntax-string); }
 .palette-query .hl-regex,
+.ahd-code .hl-regex,
 .alert-query-highlight .hl-regex     { color: var(--syntax-regex); font-weight: 500; }
 .palette-query .hl-assignment,
+.ahd-code .hl-assignment,
 .alert-query-highlight .hl-assignment{ color: var(--syntax-operator); font-weight: 600; }
 .palette-query .hl-number,
+.ahd-code .hl-number,
 .alert-query-highlight .hl-number    { color: var(--syntax-number); }
 .palette-query .hl-bracket,
+.ahd-code .hl-bracket,
 .alert-query-highlight .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
 .palette-query .hl-boolean,
+.ahd-code .hl-boolean,
 .alert-query-highlight .hl-boolean   { color: var(--syntax-keyword); font-weight: 500; }
 .palette-query .hl-wildcard,
+.ahd-code .hl-wildcard,
 .alert-query-highlight .hl-wildcard  { color: var(--warning); font-weight: 600; }
 .palette-query .hl-variable,
+.ahd-code .hl-variable,
 .alert-query-highlight .hl-variable  { color: var(--syntax-variable); font-weight: 600; }
 .palette-query .hl-comment,
+.ahd-code .hl-comment,
 .alert-query-highlight .hl-comment   { color: var(--syntax-comment); font-style: italic; }
 
 /* Syntax highlighting for display mode (notebooks) */
