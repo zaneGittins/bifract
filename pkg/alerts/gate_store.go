@@ -181,18 +181,38 @@ func marshalProposal(in ChangeRequestInput) (contentJSON, testsJSON []byte, err 
 const changeRequestColumns = `cr.id::text, COALESCE(cr.alert_id::text, ''), COALESCE(a.name, ''), cr.kind, cr.status,
 	cr.title, cr.summary, cr.content, cr.tests, cr.content_hash, cr.base_hash,
 	COALESCE(cr.created_by, ''), cr.author_label, cr.created_at, cr.updated_at,
-	cr.merged_at, COALESCE(cr.merged_by, '')`
+	cr.merged_at, COALESCE(cr.merged_by, ''), cr.test_result, cr.test_result_hash`
+
+// saveTestResult keeps a proposal's last run beside it. A failure here only costs a
+// re-run later, so the caller logs rather than fails.
+func (m *Manager) saveTestResult(ctx context.Context, cr *ChangeRequest, run *TestRunResult) error {
+	raw, err := json.Marshal(run)
+	if err != nil {
+		return err
+	}
+	_, err = m.pg.DB().ExecContext(ctx,
+		`UPDATE alert_change_requests SET test_result = $2, test_result_hash = $3 WHERE id = $1`,
+		cr.ID, raw, cr.testsHash())
+	return err
+}
 
 func scanChangeRequest(scan func(...interface{}) error) (*ChangeRequest, error) {
 	var cr ChangeRequest
-	var contentRaw, testsRaw []byte
+	var contentRaw, testsRaw, testResultRaw []byte
 	var createdAt, updatedAt time.Time
 	var mergedAt sql.NullTime
 
 	if err := scan(&cr.ID, &cr.AlertID, &cr.AlertName, &cr.Kind, &cr.Status,
 		&cr.Title, &cr.Summary, &contentRaw, &testsRaw, &cr.ContentHash, &cr.BaseHash,
-		&cr.Author, &cr.AuthorLabel, &createdAt, &updatedAt, &mergedAt, &cr.MergedBy); err != nil {
+		&cr.Author, &cr.AuthorLabel, &createdAt, &updatedAt, &mergedAt, &cr.MergedBy,
+		&testResultRaw, &cr.testResultHash); err != nil {
 		return nil, err
+	}
+	if len(testResultRaw) > 0 {
+		var run TestRunResult
+		if err := json.Unmarshal(testResultRaw, &run); err == nil {
+			cr.testResult = &run
+		}
 	}
 
 	if len(contentRaw) > 0 {
@@ -200,6 +220,7 @@ func scanChangeRequest(scan func(...interface{}) error) (*ChangeRequest, error) 
 		if err := json.Unmarshal(contentRaw, &content); err != nil {
 			return nil, fmt.Errorf("decode proposal %s: %w", cr.ID, err)
 		}
+		content.canonicalize()
 		cr.Content = &content
 	}
 	if len(testsRaw) > 0 {

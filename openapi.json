@@ -31503,6 +31503,9 @@
           "passed": {
             "type": "integer"
           },
+          "ran_at": {
+            "type": "string"
+          },
           "session_id": {
             "type": "string"
           }

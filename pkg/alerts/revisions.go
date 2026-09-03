@@ -62,6 +62,17 @@ type Revision struct {
 // ID sets sorted since their order carries no meaning. Labels and references keep the
 // order the author gave them, so reordering them is a real change.
 func (c *RevisionContent) canonicalize() {
+	// A window of 0 and no window are the same definition: the alerts row stores
+	// unset as 0, a request carries it as null, and a diff must not see a change.
+	if c.WindowDuration != nil && *c.WindowDuration == 0 {
+		c.WindowDuration = nil
+	}
+	if c.QueryWindowSeconds != nil && *c.QueryWindowSeconds == 0 {
+		c.QueryWindowSeconds = nil
+	}
+	if c.ScheduleCron != nil && *c.ScheduleCron == "" {
+		c.ScheduleCron = nil
+	}
 	c.Labels = normalizeList(c.Labels, false)
 	c.References = normalizeList(c.References, false)
 	c.WebhookActionIDs = normalizeList(c.WebhookActionIDs, true)
@@ -225,6 +236,7 @@ func headRevision(ctx context.Context, tx storage.Tx, alertID string) (num int, 
 	if err := json.Unmarshal(raw, &content); err != nil {
 		return 0, "", RevisionContent{}, false, fmt.Errorf("decode revision %d: %w", num, err)
 	}
+	content.canonicalize()
 	return num, hash, content, true, nil
 }
 
@@ -509,6 +521,7 @@ func (m *Manager) ListRevisions(ctx context.Context, alertID string) ([]Revision
 		if err := json.Unmarshal(raw, &content); err != nil {
 			return nil, fmt.Errorf("decode revision %d: %w", rev.Revision, err)
 		}
+		content.canonicalize()
 		rev.Content = &content
 		revisions = append(revisions, rev)
 	}
@@ -540,6 +553,7 @@ func (m *Manager) GetRevision(ctx context.Context, alertID string, revision int)
 	if err := json.Unmarshal(raw, &content); err != nil {
 		return nil, fmt.Errorf("decode revision %d: %w", revision, err)
 	}
+	content.canonicalize()
 	rev.Content = &content
 	return &rev, nil
 }

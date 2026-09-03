@@ -2960,13 +2960,19 @@ body.alert-panel-resizing .alert-details-panel {
    Alert detail tabs and history
    ============================================ */
 
+/* Sticky inside the scrolling body, so it starts at the body's top edge rather than
+   pulling up through the padding (a negative margin is neutralised by stickiness). */
+.alert-details-content:has(> .ad-tabs) {
+    padding-top: 0;
+}
+
 .ad-tabs {
     position: sticky;
     top: 0;
     z-index: 2;
     display: flex;
     gap: 2px;
-    margin: -16px -16px 20px;
+    margin: 0 -16px 16px;
     padding: 0 16px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
@@ -3670,25 +3676,38 @@ body.alert-panel-resizing .alert-details-panel {
 }
 
 /* Inline markers on the field a rule concerns */
-.ap-field-bad {
+.ap-field-bad,
+.ap-field-warn {
     border-color: var(--warning) !important;
 }
 
-.ap-field-note {
-    margin-top: 4px;
-    font-size: 11px;
-    line-height: 1.45;
-    color: var(--warning);
-}
-
-.ap-field-note.ap-block {
-    color: var(--error);
+.ap-field-block {
+    border-color: var(--error) !important;
 }
 
 /* ---- Policies admin tab ---- */
 
 .ap-admin {
+    max-width: 1080px;
+    margin: 0 auto;
     padding: 4px 0 24px;
+}
+
+.ap-link-btn {
+    margin-left: 6px;
+    padding: 2px 6px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 400;
+    cursor: pointer;
+}
+
+.ap-link-btn:hover {
+    color: var(--accent-primary);
+    background: var(--bg-hover);
 }
 
 .ap-admin-head {
@@ -3770,7 +3789,7 @@ body.alert-panel-resizing .alert-details-panel {
 }
 
 .ap-value {
-    flex: 1;
+    flex: 0 1 200px;
     min-width: 90px;
     font-family: var(--font-mono);
     font-size: 11.5px;
@@ -3780,19 +3799,28 @@ body.alert-panel-resizing .alert-details-panel {
     flex: 0 0 auto;
 }
 
+/* The message reads as the rule's second line: plain text until it is edited. */
 .ap-message {
-    width: 100%;
-    margin-top: 7px;
+    width: calc(100% - 22px);
+    margin: 3px 0 0 22px;
+    padding: 3px 7px;
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-secondary);
 }
 
-.ap-rule-help {
-    margin-top: 5px;
-    font-size: 10.5px;
-    color: var(--text-muted);
+.ap-message:hover {
+    border-color: var(--border-color);
+}
+
+.ap-message:focus {
+    background: var(--bg-primary);
+    color: var(--text-primary);
 }
 
 .ap-rule-remove {
     flex: 0 0 auto;
+    margin-left: auto;
     width: 22px;
     height: 22px;
     padding: 0;
@@ -3946,18 +3974,30 @@ body.alert-panel-resizing .alert-details-panel {
    Alert review gate
    ============================================ */
 
+/* Review is the frame the rules sit in, so it leads the page as one slim bar. */
 .ap-gate {
-    margin-top: 18px;
-    padding: 12px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    margin-bottom: 16px;
+    padding: 8px 12px;
     border: 1px solid var(--border-color);
     border-radius: 5px;
     background: var(--bg-secondary);
 }
 
+.ap-gate-on {
+    border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-color));
+}
+
 .ap-gate-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 12px;
+}
+
+.ap-gate-title {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.07em;
@@ -3967,15 +4007,26 @@ body.alert-panel-resizing .alert-details-panel {
 .ap-gate-switch {
     display: flex;
     align-items: center;
-    gap: 6px;
-    text-transform: none;
-    letter-spacing: 0;
+    gap: 8px;
     font-size: 11.5px;
     color: var(--text-secondary);
     cursor: pointer;
 }
 
-.ap-gate-switch input,
+.ap-gate-switch .toggle-switch {
+    width: 34px;
+    height: 18px;
+}
+
+.ap-gate-switch .toggle-slider:before {
+    width: 12px;
+    height: 12px;
+}
+
+.ap-gate-switch .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+}
+
 .ap-gate-check input {
     accent-color: var(--accent-primary);
     cursor: pointer;
@@ -3985,7 +4036,8 @@ body.alert-panel-resizing .alert-details-panel {
     display: flex;
     align-items: center;
     gap: 20px;
-    margin-top: 10px;
+    padding-left: 24px;
+    border-left: 1px solid var(--border-color);
 }
 
 .ap-gate-field {
@@ -4836,7 +4888,7 @@ body.alert-panel-resizing .alert-details-panel {
 .ae-name {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
 }
 
@@ -5134,33 +5186,30 @@ body.alert-panel-resizing .alert-details-panel {
     gap: 6px;
 }
 
-.ae-rail-foot {
-    margin-top: auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 10px 14px;
-    border-top: 1px solid var(--border-color);
-    background: var(--bg-tertiary);
-    font-size: 11px;
-    color: var(--text-muted);
-}
-
+/* Live state sits with the actions: it is not part of the reviewed definition. */
 .ae-enabled {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    margin-right: 6px;
+    font-size: 12px;
     color: var(--text-secondary);
     cursor: pointer;
+    user-select: none;
 }
 
-.ae-enabled input {
-    accent-color: var(--accent-primary);
+.ae-enabled .toggle-switch {
+    width: 34px;
+    height: 18px;
 }
 
-.ae-facts {
-    text-align: right;
+.ae-enabled .toggle-slider:before {
+    width: 12px;
+    height: 12px;
+}
+
+.ae-enabled .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
 }
 
 .ae-type {
@@ -5253,4 +5302,21 @@ body.alert-panel-resizing .alert-details-panel {
 
 .ert-tab[hidden] {
     display: none;
+}
+
+/* Query and results join into one card, on the search page and in the alert editor.
+   Recall keeps its own section and is not included. */
+#searchView > .search-section,
+.ae-bench .search-section {
+    margin-bottom: 0;
+    border-bottom: none;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    box-shadow: none;
+}
+
+#searchView > .search-results-split .results-section,
+.ae-bench .search-results-split .results-section {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
 }

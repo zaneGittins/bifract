@@ -314,6 +314,8 @@ ALTER TABLE alert_change_requests ADD CONSTRAINT alert_change_requests_status_ch
     CHECK (status IN ('draft', 'open', 'changes_requested', 'merged', 'discarded'));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_cr_draft_per_alert
     ON alert_change_requests(created_by, alert_id) WHERE status = 'draft' AND alert_id IS NOT NULL;
+ALTER TABLE alert_change_requests ADD COLUMN IF NOT EXISTS test_result JSONB;
+ALTER TABLE alert_change_requests ADD COLUMN IF NOT EXISTS test_result_hash CHAR(64) NOT NULL DEFAULT '';
 
 -- Reviews, approvals and rejections alike. content_hash records what was actually
 -- reviewed: an approval stops counting the moment the proposal is edited, which is the

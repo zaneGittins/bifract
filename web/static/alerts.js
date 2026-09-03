@@ -1765,7 +1765,8 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
             document.getElementById('importProposalBlock')?.remove();
             this.closeModal('importYamlModal');
-            Toast.success('Import proposed', 'It appears under Changes for review.');
+            Toast.success('Import proposed', 'Ready for review.');
+            this.showProposal(payload.data?.id);
         } catch (e) {
             this.showError(errorDiv, e.message);
         }
@@ -1857,7 +1858,8 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
             document.getElementById('alertDeleteProposal')?.remove();
-            Toast.success('Deletion proposed', 'It appears under Changes for review.');
+            Toast.success('Deletion proposed', 'Ready for review.');
+            this.showProposal(payload.data?.id);
         } catch (e) {
             Toast.error('Could not propose deletion', e.message);
         }
@@ -2354,13 +2356,14 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         if (historyTab) historyTab.hidden = !alertId;
         this._typeInferred = false;
         this.updateTypeBadge();
-        this.renderEditorFacts();
         this.watchEditorEdits();
 
         // Drafting starts once the form is filled, so the load is not taken for an edit.
         this.sizeNameInput();
+        this.syncEnabledLabel();
         Promise.resolve(this._editorReady).finally(() => {
             this.sizeNameInput();
+            this.syncEnabledLabel();
             window.AlertDrafts?.start(alertId);
         });
     },
@@ -3751,7 +3754,6 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
     },
 
     applyGateMode(alertId) {
-        this.renderEditorFacts();
         const saveBtn = document.getElementById('saveAlertBtn');
         if (saveBtn && !this.editingFeedAlert) {
             if (this.gateEnabled) saveBtn.textContent = 'Propose change';
@@ -3842,8 +3844,9 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
             this.cancelPropose();
             await window.AlertDrafts?.finished();
-            Toast.success('Proposal opened', 'It appears under Changes for review.');
-            this.backToAlerts();
+            Toast.success('Proposal opened', 'Ready for review.');
+            if (payload.data?.id) this.showProposal(payload.data.id);
+            else this.backToAlerts();
         } catch (e) {
             Toast.error('Could not open proposal', e.message);
         }
@@ -3937,15 +3940,14 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             input.parentElement.appendChild(probe);
         }
         probe.textContent = input.value || input.placeholder || '';
-        const width = Math.min(Math.max(probe.offsetWidth + 20, 140), 640);
+        const width = Math.min(Math.max(probe.offsetWidth + 22, 60), 640);
         input.style.width = width + 'px';
     },
 
-    // The facts a rule carries that the form never said.
-    renderEditorFacts() {
-        const el = document.getElementById('alertEditorFacts');
-        if (!el) return;
-        el.textContent = this.gateEnabled ? 'Reviewed scope' : '';
+    syncEnabledLabel() {
+        const box = document.getElementById('editorAlertEnabled');
+        const text = document.getElementById('alertEnabledText');
+        if (box && text) text.textContent = box.checked ? 'Enabled' : 'Disabled';
     },
 
     // One listener for everything the draft and the type badge react to.
@@ -3974,9 +3976,23 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         }
 
         document.getElementById('alertTypeSelect')?.addEventListener('change', () => this.updateTypeBadge());
+        document.getElementById('editorAlertEnabled')?.addEventListener('change', () => this.syncEnabledLabel());
         document.querySelectorAll('.alert-type-card').forEach(card => {
             card.addEventListener('click', () => { this._typeInferred = false; this.updateTypeBadge(); });
         });
+    },
+
+    // Lands on the Changes tab with the given proposal open in its drawer. Leaves the
+    // editor directly rather than through backToAlerts, whose list reload would reopen
+    // the alert on top of the Changes tab.
+    async showProposal(id) {
+        if (!id || !window.AlertFeeds?.showChangesTab || !window.AlertChanges) return;
+        this.closeAlertEditor();
+        const tab = document.getElementById('fractalAlertsTabContent');
+        if (tab) tab.style.display = 'block';
+        AlertFeeds.showChangesTab();
+        await AlertChanges.show();
+        AlertChanges.open(id);
     },
 
     // Opens the editor onto a draft from the drafts list.

@@ -1794,3 +1794,15 @@
 }
 
 .nbr-row-go:hover { color: var(--accent-primary); }
+
+/* Open, the rail joins the results card instead of floating beside it. */
+#searchView .fields-rail.open {
+    margin-right: 0;
+    border-right: none;
+    border-radius: 0 0 0 6px;
+}
+
+#searchView .fields-rail.open + .results-section {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}

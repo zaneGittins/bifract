@@ -3,6 +3,8 @@ package alerts
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
@@ -23,12 +25,21 @@ type MergeReadiness struct {
 // OK reports whether the proposal may merge.
 func (r *MergeReadiness) OK() bool { return r.Blocker == "" }
 
+// TestRunMode says whether an evaluation runs the proposal's tests.
+type TestRunMode int
+
+const (
+	TestsNever    TestRunMode = iota
+	TestsIfNeeded             // only when an enabled policy reads the outcome
+	TestsAlways
+)
+
 // EvaluateChangeRequest measures a proposal against everything that gates it: the
 // review policy, the fractal's alert policies, and its own tests.
 //
 // The same call backs the review screen and the merge itself, so a reviewer sees
 // exactly what merge will check rather than a summary recorded when it was opened.
-func (m *Manager) EvaluateChangeRequest(ctx context.Context, cr *ChangeRequest, runTests bool) (*MergeReadiness, error) {
+func (m *Manager) EvaluateChangeRequest(ctx context.Context, cr *ChangeRequest, tests TestRunMode) (*MergeReadiness, error) {
 	fractalID, prismID, err := m.changeRequestScope(ctx, cr.ID)
 	if err != nil {
 		return nil, err
@@ -62,17 +73,27 @@ func (m *Manager) EvaluateChangeRequest(ctx context.Context, cr *ChangeRequest, 
 		return nil, err
 	}
 
-	// Running the corpus means DDL, an insert and a query per test. Merge always pays
-	// it, but a reviewer merely opening the proposal only should when a rule actually
-	// reads the outcome, or when they asked for it.
-	if runTests && len(cr.Tests) > 0 && m.testRunner.Available() && policiesNeedTests(policies) {
-		run, err := m.testRunner.RunOnce(ctx, cr.Content.QueryString, cr.Tests)
+	// Running the corpus means DDL, an insert and a query per test, so it happens when
+	// a reviewer asks for it, or at merge when a rule actually reads the outcome.
+	// A stored run still describing this content and these tests counts as evidence
+	// on every view, so approving or reloading does not forget it.
+	run := tests == TestsAlways || (tests == TestsIfNeeded && policiesNeedTests(policies))
+	if stored := cr.storedTestResult(); stored != nil && !run {
+		readiness.Tests = stored
+		subject.TestsRun = true
+		subject.TestsPassing = stored.OK()
+	} else if run && len(cr.Tests) > 0 && m.testRunner.Available() {
+		result, err := m.testRunner.RunOnce(ctx, cr.Content.QueryString, cr.Tests)
 		if err != nil {
 			readiness.Tests = &TestRunResult{Error: err.Error()}
 		} else {
-			readiness.Tests = run
+			result.RanAt = time.Now().UTC().Format(time.RFC3339)
+			readiness.Tests = result
 			subject.TestsRun = true
-			subject.TestsPassing = run.OK()
+			subject.TestsPassing = result.OK()
+			if err := m.saveTestResult(ctx, cr, result); err != nil {
+				log.Printf("[Gate] Could not store test run for %s: %v", cr.ID, err)
+			}
 		}
 	}
 
@@ -99,7 +120,7 @@ func (m *Manager) MergeChangeRequest(ctx context.Context, crID, username string)
 		return nil, err
 	}
 
-	readiness, err := m.EvaluateChangeRequest(ctx, cr, true)
+	readiness, err := m.EvaluateChangeRequest(ctx, cr, TestsIfNeeded)
 	if err != nil {
 		return nil, err
 	}

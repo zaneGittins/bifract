@@ -272,7 +272,7 @@ const AlertChanges = {
         return `
             <div class="ac-stats">${cards.join('')}</div>
             ${rd.blocker ? `<div class="ac-blocker">${Utils.escapeHtml(rd.blocker)}</div>` : ''}
-            ${rd.tests ? '' : '<button type="button" class="btn-secondary btn-sm ac-run-tests" onclick="AlertChanges.runTests()">Run tests</button>'}
+            ${cr.tests?.length ? `<button type="button" class="btn-secondary btn-sm ac-run-tests" onclick="AlertChanges.runTests()">${rd.tests ? 'Run tests again' : 'Run tests'}</button>` : ''}
         `;
     },
 

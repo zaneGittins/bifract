@@ -178,7 +178,11 @@ func (h *Handler) HandleGetChangeRequest(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Tests run on request, so opening a proposal to read it stays cheap.
-	readiness, err := h.manager.EvaluateChangeRequest(ctx, cr, r.URL.Query().Get("run_tests") == "true")
+	tests := TestsNever
+	if r.URL.Query().Get("run_tests") == "true" {
+		tests = TestsAlways
+	}
+	readiness, err := h.manager.EvaluateChangeRequest(ctx, cr, tests)
 	if err != nil {
 		log.Printf("[Alerts] Failed to evaluate proposal: %v", err)
 	} else {

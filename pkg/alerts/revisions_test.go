@@ -140,3 +140,19 @@ func TestFeedFieldsPreserveLocalConfiguration(t *testing.T) {
 		t.Error("feed sync did not apply the upstream definition")
 	}
 }
+
+// An event alert seeded from its row carries window 0; the same alert saved from the
+// editor carries null. They are one definition, so they hash alike.
+func TestHashTreatsZeroAndUnsetWindowsAlike(t *testing.T) {
+	zero, empty := 0, ""
+	seeded := RevisionContent{Name: "a", QueryString: "x", AlertType: "event", WindowDuration: &zero, QueryWindowSeconds: &zero, ScheduleCron: &empty}
+	saved := RevisionContent{Name: "a", QueryString: "x", AlertType: "event"}
+	h1, err := seeded.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, _ := saved.Hash()
+	if h1 != h2 {
+		t.Fatalf("zero and unset windows hashed differently")
+	}
+}

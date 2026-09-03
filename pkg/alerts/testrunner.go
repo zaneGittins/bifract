@@ -43,6 +43,7 @@ type TestRunResult struct {
 	Passed    int           `json:"passed"`
 	Failed    int           `json:"failed"`
 	Error     string        `json:"error,omitempty"`
+	RanAt     string        `json:"ran_at,omitempty"`
 }
 
 // OK reports whether every test passed.

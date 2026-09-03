@@ -1,6 +1,9 @@
 package alerts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -92,6 +95,26 @@ type ChangeRequest struct {
 	MergedBy    string           `json:"merged_by,omitempty"`
 
 	Reviews []Review `json:"reviews,omitempty"`
+
+	// The last test run and what it ran against; surfaced through readiness, not here.
+	testResult     *TestRunResult
+	testResultHash string
+}
+
+// testsHash identifies the content and tests together: a run is only evidence for
+// exactly what it executed, and either can change without the other.
+func (c *ChangeRequest) testsHash() string {
+	raw, _ := json.Marshal(c.Tests)
+	sum := sha256.Sum256(append([]byte(c.ContentHash+"\n"), raw...))
+	return hex.EncodeToString(sum[:])
+}
+
+// storedTestResult returns the persisted run if it still describes this proposal.
+func (c *ChangeRequest) storedTestResult() *TestRunResult {
+	if c.testResult == nil || c.testResultHash == "" || c.testResultHash != c.testsHash() {
+		return nil
+	}
+	return c.testResult
 }
 
 // Open reports whether the proposal is live for review: awaiting it, or sent back for

@@ -3088,6 +3088,13 @@
                         <span id="alertEditorStatus" class="ae-status"><span class="ae-status-dot"></span><span class="ae-status-text">New</span></span>
                     </div>
                     <div class="ae-actions">
+                        <label class="ae-enabled" for="editorAlertEnabled" title="Whether this alert runs">
+                            <span id="alertEnabledText">Enabled</span>
+                            <span class="toggle-switch">
+                                <input type="checkbox" id="editorAlertEnabled" checked>
+                                <span class="toggle-slider"></span>
+                            </span>
+                        </label>
                         <button id="saveAlertBtn" class="alert-btn alert-btn-primary">Create Alert</button>
                     </div>
                 </div>
@@ -3368,10 +3375,6 @@
                         </div>
                     </div>
 
-                    <div class="ae-rail-foot">
-                        <label class="ae-enabled"><input type="checkbox" id="editorAlertEnabled" checked> Enabled</label>
-                        <span id="alertEditorFacts" class="ae-facts"></span>
-                    </div>
                 </div>
                 </div><!-- end ae-body -->
                 </div>

@@ -123,22 +123,25 @@ const AlertPolicy = {
         else chip.classList.add('pass');
     },
 
-    // A violation is shown against the field it concerns as well as in the tab, since
-    // that is where the author is already looking.
+    // A violation outlines the field it concerns, amber for a warning and red for a
+    // block, with the message as its tooltip. The text itself lives in the Checks tab.
     paintFields() {
-        document.querySelectorAll('.ap-field-note').forEach(el => el.remove());
-        document.querySelectorAll('.ap-field-bad').forEach(el => el.classList.remove('ap-field-bad'));
+        document.querySelectorAll('.ap-field-bad').forEach(el => {
+            el.classList.remove('ap-field-bad', 'ap-field-warn', 'ap-field-block');
+            if (el.dataset.apTitle !== undefined) {
+                el.title = el.dataset.apTitle;
+                delete el.dataset.apTitle;
+            }
+        });
 
         const violations = this._result?.violations || [];
         for (const violation of violations) {
             const input = this.inputFor(violation.field);
             if (!input) continue;
 
-            input.classList.add('ap-field-bad');
-            const note = document.createElement('div');
-            note.className = `ap-field-note ap-${violation.severity}`;
-            note.textContent = violation.message;
-            input.insertAdjacentElement('afterend', note);
+            if (!input.classList.contains('ap-field-bad')) input.dataset.apTitle = input.title || '';
+            input.classList.add('ap-field-bad', violation.severity === 'block' ? 'ap-field-block' : 'ap-field-warn');
+            input.title = violation.message;
         }
     },
 

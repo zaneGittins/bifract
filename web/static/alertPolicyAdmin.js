@@ -49,13 +49,16 @@ const AlertPolicyAdmin = {
 
         view.innerHTML = `
             <section class="ap-admin">
+                ${this.renderGate()}
+
                 <div class="ap-admin-head">
-                    <h2 class="ap-admin-title">Policies${this._policies.length ? `<span class="ap-admin-count">${this._policies.length}</span>` : ''}</h2>
+                    <h2 class="ap-admin-title">Rules${this._policies.length ? `<span class="ap-admin-count">${this._policies.length}</span>` : ''}
+                        ${this._policies.length ? '<button class="ap-link-btn" onclick="AlertPolicyAdmin.runCompliance()">Check existing alerts</button>' : ''}
+                    </h2>
                     <div class="ap-admin-actions">
-                        <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.runCompliance()">Check existing alerts</button>
-                        <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.exportPolicies()">Export</button>
-                        <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.openImport()">Import</button>
-                        <button class="btn-primary btn-sm" onclick="AlertPolicyAdmin.addRule()">Add rule</button>
+                        <button class="alert-btn alert-btn-ghost" onclick="AlertPolicyAdmin.exportPolicies()">Export</button>
+                        <button class="alert-btn alert-btn-ghost" onclick="AlertPolicyAdmin.openImport()">Import</button>
+                        <button class="alert-btn alert-btn-primary" onclick="AlertPolicyAdmin.addRule()">Add rule</button>
                     </div>
                 </div>
 
@@ -71,7 +74,6 @@ const AlertPolicyAdmin = {
                         <button class="btn-primary btn-sm" onclick="AlertPolicyAdmin.save()">Save rules</button>
                     </div>` : ''}
 
-                ${this.renderGate()}
                 ${this.renderCompliance()}
             </section>
         `;
@@ -80,11 +82,14 @@ const AlertPolicyAdmin = {
     renderGate() {
         const g = this._gate || {};
         return `
-            <div class="ap-gate">
+            <div class="ap-gate${g.enabled ? ' ap-gate-on' : ''}">
                 <div class="ap-gate-head">
-                    <span>Review</span>
-                    <label class="ap-gate-switch">
-                        <input type="checkbox" ${g.enabled ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('enabled', this.checked)" />
+                    <span class="ap-gate-title">Review</span>
+                    <label class="ap-gate-switch" title="${g.enabled ? 'Changes to alerts are proposed and reviewed before they apply' : 'Changes to alerts apply directly'}">
+                        <span class="toggle-switch">
+                            <input type="checkbox" ${g.enabled ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('enabled', this.checked)" />
+                            <span class="toggle-slider"></span>
+                        </span>
                         <span>${g.enabled ? 'On' : 'Off'}</span>
                     </label>
                 </div>
@@ -149,7 +154,8 @@ const AlertPolicyAdmin = {
                         `).join('')}
                     </select>
 
-                    <input type="text" class="ap-input ap-value" placeholder="value"
+                    <input type="text" class="ap-input ap-value" placeholder="${Utils.escapeAttr(field?.help || 'value')}"
+                           title="${Utils.escapeAttr(field?.help || '')}"
                            value="${Utils.escapeAttr(policy.value || '')}" ${needsValue ? '' : 'disabled'}
                            onchange="AlertPolicyAdmin.update(${index}, 'value', this.value)" />
 
@@ -164,8 +170,6 @@ const AlertPolicyAdmin = {
                 <input type="text" class="ap-input ap-message" placeholder="What should the analyst do about it?"
                        value="${Utils.escapeAttr(policy.message || '')}"
                        onchange="AlertPolicyAdmin.update(${index}, 'message', this.value)" />
-
-                ${field?.help ? `<div class="ap-rule-help">${Utils.escapeHtml(field.help)}</div>` : ''}
             </div>
         `;
     },
