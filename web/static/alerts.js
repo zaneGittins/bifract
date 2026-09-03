@@ -4941,25 +4941,36 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             return;
         }
         try {
-            const order = this.fieldOrder || [];
-            const lines = this.currentResults.map(row => {
-                let flat = row;
-                if (row._all_fields && typeof row._all_fields === 'object') {
-                    const { _all_fields, ...projected } = row;
-                    flat = { ..._all_fields, ...projected };
-                }
-                // Lead with the columns on screen, then everything else.
-                const out = {};
-                for (const f of order) if (f in flat) out[f] = flat[f];
-                for (const k of Object.keys(flat)) if (!(k in out)) out[k] = flat[k];
-                return JSON.stringify(out);
-            });
+            const lines = Utils.resultsToObjects(this.currentResults, this.fieldOrder).map(o => JSON.stringify(o));
             const blob = new Blob([lines.join('\n') + '\n'], { type: 'application/x-ndjson;charset=utf-8;' });
             const filename = this._downloadResults(blob, 'jsonl');
             if (filename) Toast.show(`Exported ${this.currentResults.length} results to ${filename}`, 'success');
         } catch (error) {
             console.error('Export error:', error);
             Toast.show('Failed to export JSON Lines: ' + error.message, 'error');
+        }
+    },
+
+    // A JSON array of the preview results, copied so it can be pasted straight into a
+    // test. This is how a correlation scenario gets built from real events.
+    async exportToJsonArray() {
+        if (!this.currentResults || this.currentResults.length === 0) {
+            Toast.show('No results to export', 'warning');
+            return;
+        }
+        try {
+            const text = JSON.stringify(Utils.resultsToObjects(this.currentResults, this.fieldOrder, { expandNormLog: true }), null, 2);
+            const count = this.currentResults.length;
+            if (await Utils.copyText(text)) {
+                Toast.show(`Copied ${count} result${count === 1 ? '' : 's'} as a JSON array`, 'Paste it into a test to build a scenario.');
+                return;
+            }
+            const blob = new Blob([text], { type: 'application/json;charset=utf-8;' });
+            const filename = this._downloadResults(blob, 'json');
+            if (filename) Toast.show(`Exported ${count} results to ${filename}`, 'success');
+        } catch (error) {
+            console.error('Export error:', error);
+            Toast.show('Failed to export JSON: ' + error.message, 'error');
         }
     },
 

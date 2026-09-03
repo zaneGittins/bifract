@@ -114,6 +114,32 @@ func TestBasicQueries(t *testing.T) {
 			},
 		},
 		{
+			name:  "Multi-value list survives a boolean pipeline stage",
+			query: `event_id=1 | image=~cmd.exe,mshta.exe,wmic.exe OR (trusted=~untrusted AND NOT subject=~"CN=Microsoft Corporation")`,
+			wantContain: []string{
+				"multiSearchAnyCaseInsensitive(fields.`image`::String, ['cmd.exe', 'mshta.exe', 'wmic.exe'])",
+				"NOT (multiSearchAnyCaseInsensitive(fields.`subject`::String, ['CN=Microsoft Corporation']))",
+			},
+			wantNotContain: []string{
+				"multiSearchAnyCaseInsensitive(fields.`image`::String, ['cmd.exe'])",
+			},
+		},
+		{
+			name:  "Equality list survives a boolean pipeline stage",
+			query: `* | image="a","b","c" OR t="x"`,
+			wantContain: []string{
+				"fields.`image`::String IN ('a', 'b', 'c')",
+			},
+		},
+		{
+			name:  "Starts/ends-with lists survive a boolean pipeline stage",
+			query: `* | image=^a,b OR t=$c,d`,
+			wantContain: []string{
+				"startsWith(lower(fields.`image`::String), 'b')",
+				"endsWith(lower(fields.`t`::String), 'd')",
+			},
+		},
+		{
 			name:  "Count only",
 			query: "* | count()",
 			wantContain: []string{

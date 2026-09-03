@@ -1095,13 +1095,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			if err != nil {
 				return nil, err
 			}
-			having := HavingCondition{
-				Command:  cond.Command,
-				Field:    cond.Field,
-				Operator: cond.Operator,
-				Value:    cond.Value,
-				IsRegex:  cond.IsRegex,
-			}
+			having := havingFromCondition(*cond)
 			if negate {
 				negateHavingCondition(&having)
 			}
@@ -1149,6 +1143,21 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 	}
 
 	return conditions, nil
+}
+
+// havingFromCondition converts a parsed filter leaf into its pipeline-stage
+// equivalent. Every value-carrying field must be copied: dropping Values
+// silently truncates a comma list to its first term.
+func havingFromCondition(cond ConditionNode) HavingCondition {
+	return HavingCondition{
+		Command:     cond.Command,
+		Field:       cond.Field,
+		Operator:    cond.Operator,
+		Value:       cond.Value,
+		Values:      cond.Values,
+		IsRegex:     cond.IsRegex,
+		LiteralTerm: cond.LiteralTerm,
+	}
 }
 
 func (p *Parser) parseHavingCondition() (*HavingCondition, error) {

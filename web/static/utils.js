@@ -292,6 +292,50 @@ const Utils = {
     },
 
     // Machine-readable classification of a failed response, or '' when the
+    // Result rows as plain objects, columns on screen first and everything else after.
+    // A projected row carries the rest of its event in _all_fields; the projection wins,
+    // since that is what the query asked for.
+    //
+    // expandNormLog unpacks the normalized event that an unprojected row carries as a
+    // JSON string, so the output is the event's own fields rather than one escaped blob.
+    resultsToObjects(results, fieldOrder, { expandNormLog = false } = {}) {
+        const order = fieldOrder || [];
+        return (results || []).map(row => {
+            let flat = row;
+            if (row._all_fields && typeof row._all_fields === 'object') {
+                const { _all_fields, ...projected } = row;
+                flat = { ..._all_fields, ...projected };
+            }
+            if (expandNormLog && typeof flat.norm_log === 'string' && flat.norm_log.trim()) {
+                try {
+                    const parsed = JSON.parse(flat.norm_log);
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        const { norm_log, ...rest } = flat;
+                        flat = { ...parsed, ...rest };
+                    }
+                } catch (_) {
+                    // Not JSON after all; the column stays as it is.
+                }
+            }
+            const out = {};
+            for (const f of order) if (f in flat) out[f] = flat[f];
+            for (const k of Object.keys(flat)) if (!(k in out)) out[k] = flat[k];
+            return out;
+        });
+    },
+
+    // Copies text, reporting whether it worked. The clipboard needs a secure context,
+    // so an install served over plain HTTP falls back to whatever the caller offers.
+    async copyText(text) {
+        try {
+            if (!navigator.clipboard) return false;
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    },
+
     // endpoint predates the error contract.
     async errorCode(response) {
         try {
