@@ -3,9 +3,7 @@ package aitools
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,7 +11,7 @@ import (
 
 const (
 	maxTechniques = 60
-	maxGaps       = 40
+	maxClosable   = 20
 )
 
 func registerAttackTools(d *set) {
@@ -24,20 +22,11 @@ func registerAttackTools(d *set) {
 			"Coverage is derived from the attack.* labels on the alerts that exist, so it " +
 			"describes what is configured, not what has fired. Use it to answer \"are we " +
 			"watching for this technique\" before writing a detection that already exists.\n\n" +
-			"Returns the coverage summary, and the covered techniques with the number of " +
-			"rules behind each.",
+			"Returns the coverage summary, the covered techniques with the number of " +
+			"rules behind each, and the uncovered techniques a synced feed already has " +
+			"rules for, which are the gaps that can be closed without writing anything new.",
 	}, getAttackCoverage)
 
-	add(d, &mcp.Tool{
-		Name:        "get_attack_gaps",
-		Annotations: readOnly(),
-		Description: "List uncovered ATT&CK techniques, ranked by what could be covered today.\n\n" +
-			"The ranking accounts for whether rules exist that would detect the technique " +
-			"against the fields this fractal actually ingests, so the top entries are the " +
-			"ones worth acting on rather than the ones needing new telemetry.\n\n" +
-			"Returns the uncovered techniques with candidate rule counts, and the total " +
-			"number of gaps so a short list is not mistaken for the whole picture.",
-	}, getAttackGaps)
 }
 
 type attackCoverageArgs struct {
@@ -120,9 +109,53 @@ func getAttackCoverage(ctx context.Context, c Client, in attackCoverageArgs) (an
 		"covered_techniques": len(covered),
 		"showing":            len(shown),
 		"techniques":         shown,
+		"closable_gaps":      closableGaps(object["candidates"], names, tactics, wanted),
 		"note": "Coverage counts configured detections, not detections that have fired. " +
-			"'direct' is a rule on the technique itself; 'inherited' is one on a sub-technique.",
+			"'direct' is a rule on the technique itself; 'inherited' is one on a sub-technique. " +
+			"'closable_gaps' are uncovered techniques a configured feed already carries rules " +
+			"for, so they can be covered by lowering that feed's threshold rather than by " +
+			"writing a new detection.",
 	}, nil
+}
+
+// closable is one uncovered technique a feed could close, and by how many rules.
+type closable struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name,omitempty"`
+	Tactics   []string `json:"tactics,omitempty"`
+	Available int      `json:"available"`
+}
+
+// closableGaps ranks the uncovered techniques a synced feed already has rules for.
+// An uncovered technique with nothing waiting for it is left out: the model can
+// read the totals off the summary, and listing 500 of them is noise.
+func closableGaps(candidates any, names map[string]string, tactics map[string][]string, wanted string) []closable {
+	counts, ok := candidates.(map[string]any)
+	if !ok {
+		return []closable{}
+	}
+
+	out := make([]closable, 0, len(counts))
+	for id, n := range counts {
+		available, ok := n.(float64)
+		if !ok || available <= 0 {
+			continue
+		}
+		if wanted != "" && !contains(tactics[id], wanted) {
+			continue
+		}
+		out = append(out, closable{ID: id, Name: names[id], Tactics: tactics[id], Available: int(available)})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Available != out[j].Available {
+			return out[i].Available > out[j].Available
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(out) > maxClosable {
+		out = out[:maxClosable]
+	}
+	return out
 }
 
 // summaryFor narrows the headline strip to the tactic that was asked about. The
@@ -196,34 +229,4 @@ func resolveTactic(ctx context.Context, c Client, named string) (string, error) 
 	}
 	sort.Strings(known)
 	return "", fmt.Errorf("unknown tactic %q. Valid tactics: %s", named, strings.Join(known, ", "))
-}
-
-type attackGapsArgs struct {
-	Limit int `json:"limit,omitempty" jsonschema:"How many gaps to return, capped at 40. Default 20."`
-}
-
-func getAttackGaps(ctx context.Context, c Client, in attackGapsArgs) (any, error) {
-	limit := clamp(in.Limit, 20, 1, maxGaps)
-	payload, err := c.Get(ctx, "/attack/gaps", url.Values{"limit": {strconv.Itoa(limit)}})
-	if err != nil {
-		return nil, err
-	}
-	object, ok := payload.(map[string]any)
-	if !ok {
-		return payload, nil
-	}
-	// Without a catalog the ranking has nothing to rank, and an empty list would
-	// otherwise read as "no gaps".
-	if !Field[bool](payload, "catalog_populated") {
-		return map[string]any{
-			"gaps": []any{},
-			"note": "No rule catalog is loaded, so candidate rules cannot be ranked. " +
-				"Sync a detection feed first; get_attack_coverage still works.",
-		}, nil
-	}
-	return map[string]any{
-		"uncovered_total": object["uncovered_total"],
-		"returned":        object["returned"],
-		"gaps":            object["gaps"],
-	}, nil
 }

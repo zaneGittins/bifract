@@ -56,7 +56,7 @@ Reading tools run as the assistant needs them:
 | Area | Tools |
 |------|-------|
 | Query | `query_logs`, `validate_bql`, `get_fields`, `get_field_stats`, `get_recent_logs`, `get_bql_reference` |
-| Detections | `list_alerts`, `get_alert`, `get_alert_executions`, `get_attack_coverage`, `get_attack_gaps` |
+| Detections | `list_alerts`, `get_alert`, `get_alert_executions`, `get_attack_coverage` |
 | Investigation | `find_processes`, `get_provenance_graph` |
 | Enrichment | `list_dictionaries`, `get_dictionary`, `search_dictionary`, `list_models`, `get_model`, `get_model_data` |
 | Collaboration | `list_comments`, `get_log_comments`, `list_comment_tags`, `list_notebooks`, `get_notebook`, `list_saved_queries`, `list_dashboards`, `get_dashboard` |

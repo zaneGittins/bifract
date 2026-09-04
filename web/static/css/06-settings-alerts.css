@@ -5112,9 +5112,11 @@ body.alert-editor-active {
     border-width: 0;
 }
 
+/* The rail itself does not scroll: .alert-panel-content does. The drag handle is
+   absolutely positioned inside the rail, and a scrolling rail carries it out of view. */
 .alert-panel.ae-rail {
     min-height: 0;
-    overflow-y: auto;
+    overflow: hidden;
 }
 
 @media (min-width: 1800px) {
@@ -5625,9 +5627,11 @@ body.alert-editor-active {
     min-width: 0;
 }
 
-/* The rail is a column of the layout now, not a fixed overlay. */
+/* The rail is a column of the layout now, not a fixed overlay. Relative, not
+   static: the resize handle inside it is absolutely positioned, and a static rail
+   sends it to the page's left edge instead of the rail's own. */
 .alert-panel.ae-rail {
-    position: static;
+    position: relative;
     right: auto;
     width: auto;
     top: auto;
@@ -5639,6 +5643,7 @@ body.alert-editor-active {
 
 .ae-rail .alert-panel-content {
     padding: 0;
+    min-height: 0;
 }
 
 .ae-sec {
@@ -5824,4 +5829,105 @@ body.alert-editor-active {
 .ae-bench .search-results-split .results-section {
     border-top-left-radius: 0;
     border-top-right-radius: 0;
+}
+
+/* Webhook body template editor and test output */
+.webhook-template-presets {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.375rem;
+}
+
+.webhook-template-presets span {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.actions-form-group textarea.webhook-template-input {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    resize: vertical;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+    tab-size: 2;
+}
+
+.webhook-template-help {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    line-height: 1.6;
+    margin-top: 0.375rem;
+}
+
+.webhook-template-help code {
+    font-family: var(--font-mono);
+    font-size: 0.7188rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    padding: 0.0625rem 0.25rem;
+    color: var(--text-secondary);
+}
+
+.webhook-test-output {
+    margin-top: 0.75rem;
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.75rem;
+}
+
+.webhook-test-status {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 0.4375rem 0.625rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+.webhook-test-status.ok {
+    border-color: color-mix(in srgb, var(--success) 40%, transparent);
+    color: var(--success);
+}
+
+.webhook-test-status.failed {
+    border-color: color-mix(in srgb, var(--error) 40%, transparent);
+    color: var(--error);
+}
+
+.webhook-test-label {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin: 0.625rem 0 0.25rem;
+}
+
+.webhook-test-meta {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.webhook-test-body,
+.webhook-test-error {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 0.625rem;
+    margin: 0;
+    max-height: 18rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+}
+
+.webhook-test-error {
+    color: var(--error);
 }

@@ -7,6 +7,11 @@
 //
 // The grid is built once from the matrix and then only recoloured. Rebuilding
 // ~700 cells on every filter keystroke is what makes coverage maps feel sluggish.
+//
+// Cells are coloured by status by default: covered and live, covered but every
+// rule disabled, uncovered with rules waiting in a synced feed, or uncovered.
+// That last distinction is what a ranked gap list used to say in prose, and it
+// reads better on the map, where the operator is already looking.
 
 const AttackCoverage = {
     matrix: null,
@@ -25,8 +30,9 @@ const AttackCoverage = {
         feedId: '',
         platform: '',
         // Client-side only.
-        colorBy: 'count',
+        colorBy: 'status',
         coverage: 'all',
+        only: '',            // '', 'close' or 'off', set by the attention chips
         showSubs: false,
         search: '',
     },
@@ -47,8 +53,6 @@ const AttackCoverage = {
         this.closeDrawer();
         const grid = document.getElementById('atkMatrix');
         if (grid) grid.innerHTML = '';
-        const gaps = document.getElementById('atkGaps');
-        if (gaps) gaps.innerHTML = '';
         if (FractalContext.shouldReload('attackCoverageView')) this.show();
     },
 
@@ -93,15 +97,12 @@ const AttackCoverage = {
             this.coverage = res.data;
 
             if (!this.built) this.buildGrid();
-            this.paint();
             this.renderSummary();
+            this.paint();
             this.setStatus('');
-
-            // Gaps are a second, heavier query. Loading them after the grid is
-            // painted keeps the matrix from waiting on them.
-            const gapRes = await HttpUtils.safeFetch('/api/v1/attack/gaps?' + this.queryString());
-            if (stale()) return;
-            if (gapRes.success) this.renderGaps(gapRes.data);
+            // The summary strip above the grid is only final now, and it decides
+            // where the grid starts.
+            this.fitGrid();
         } catch (err) {
             if (!stale()) this.setStatus(err.message || 'Failed to load coverage');
         }
@@ -138,24 +139,26 @@ const AttackCoverage = {
 
                 <div class="atk-controls">
                     <input type="text" id="atkSearch" class="atk-search" placeholder="Search technique or ID..." />
-                    <select id="atkCoverage" class="atk-select" title="Show everything, only what is covered, or only the gaps">
-                        <option value="all">All techniques</option>
-                        <option value="gaps">Gaps only</option>
-                        <option value="covered">Covered only</option>
-                    </select>
-                    <select id="atkColorBy" class="atk-select" title="What the cell colour encodes">
-                        <option value="count">Rule count</option>
-                        <option value="enabled">Enabled rules</option>
-                        <option value="severity">Highest severity</option>
+                    <select id="atkColorBy" class="atk-select" title="What the cell color encodes">
+                        <option value="status">Color: status</option>
+                        <option value="count">Color: rule count</option>
+                        <option value="severity">Color: highest severity</option>
                     </select>
 
                     <!-- Scope filters are occasional, so they fold into one control
-                         rather than spending four slots in the toolbar. -->
+                         rather than spending five slots in the toolbar. -->
                     <div class="atk-filters">
                         <button type="button" class="atk-select atk-filters-btn" id="atkFiltersBtn" aria-expanded="false">
                             Filters<span class="atk-filters-count" id="atkFiltersCount"></span>
                         </button>
                         <div class="atk-filters-menu" id="atkFiltersMenu">
+                            <label class="atk-field">Show
+                                <select id="atkCoverage" class="atk-select">
+                                    <option value="all">All techniques</option>
+                                    <option value="gaps">Gaps only</option>
+                                    <option value="covered">Covered only</option>
+                                </select>
+                            </label>
                             <label class="atk-field">Severity
                                 <select id="atkSeverity" class="atk-select">
                                     <option value="">All severities</option>
@@ -191,8 +194,6 @@ const AttackCoverage = {
 
                 <div class="atk-empty" id="atkStatus"></div>
                 <div class="atk-matrix-wrap"><div class="atk-matrix" id="atkMatrix"></div></div>
-
-                <div class="atk-gaps" id="atkGaps"></div>
             </section>
 
             <div class="atk-drawer-scrim" id="atkDrawerScrim"></div>
@@ -209,6 +210,10 @@ const AttackCoverage = {
                     </button>
                 </div>
                 <div class="atk-drawer-body" id="atkDrawerBody"></div>
+                <div class="atk-drawer-actions">
+                    <button class="btn-primary btn-sm" id="atkDrawerWrite">Write a detection</button>
+                    <a class="btn-secondary btn-sm" id="atkDrawerMitre" target="_blank" rel="noopener noreferrer">attack.mitre.org</a>
+                </div>
             </aside>
             <div class="atk-tip" id="atkTip"></div>
         `;
@@ -222,6 +227,18 @@ const AttackCoverage = {
     renderLegend() {
         const el = document.getElementById('atkLegend');
         if (!el) return;
+
+        if (this.filters.colorBy === 'status') {
+            const states = [
+                ['live', 'Live', 'At least one enabled rule maps here'],
+                ['off', 'Disabled only', 'Every rule mapped here is switched off'],
+                ['close', 'Feed can close', 'No rule here, but a synced feed carries one that was not imported'],
+                ['none', 'No coverage', 'Nothing here, and nothing waiting in a feed'],
+            ];
+            el.innerHTML = states.map(([key, label, tip]) =>
+                `<span class="atk-legend-key" title="${Utils.escapeHtml(tip)}"><i class="atk-legend-swatch" data-state="${key}"></i>${Utils.escapeHtml(label)}</span>`).join('');
+            return;
+        }
 
         if (this.filters.colorBy === 'severity') {
             const levels = [
@@ -256,6 +273,7 @@ const AttackCoverage = {
         });
         on('atkCoverage', 'change', (e) => {
             this.filters.coverage = e.target.value;
+            this.updateFilterCount();
             this.applyClientFilters();
         });
         on('atkSeverity', 'change', (e) => {
@@ -283,6 +301,7 @@ const AttackCoverage = {
             this.toggleAllSubs(e.target.checked);
         });
         on('atkExportBtn', 'click', () => this.exportLayer());
+        on('atkDrawerWrite', 'click', () => this.writeDetection());
         on('atkDrawerClose', 'click', () => this.closeDrawer());
         on('atkDrawerScrim', 'click', () => this.closeDrawer());
 
@@ -292,12 +311,14 @@ const AttackCoverage = {
         });
         on('atkFiltersMenu', 'click', (e) => e.stopPropagation());
         on('atkFiltersClear', 'click', () => {
-            Object.assign(this.filters, { severity: '', platform: '', feedId: '', enabledOnly: false });
+            Object.assign(this.filters, { severity: '', platform: '', feedId: '', enabledOnly: false, coverage: 'all' });
             document.getElementById('atkSeverity').value = '';
             document.getElementById('atkPlatform').value = '';
             document.getElementById('atkFeed').value = '';
+            document.getElementById('atkCoverage').value = 'all';
             document.getElementById('atkEnabledOnly').checked = false;
             this.updateFilterCount();
+            this.applyClientFilters();
             this.scheduleReload();
         });
         document.addEventListener('click', () => this.toggleFilters(false));
@@ -328,7 +349,8 @@ const AttackCoverage = {
     // must never be out of step with the actual state.
     updateFilterCount() {
         const n = ['severity', 'platform', 'feedId'].filter(k => this.filters[k]).length
-            + (this.filters.enabledOnly ? 1 : 0);
+            + (this.filters.enabledOnly ? 1 : 0)
+            + (this.filters.coverage !== 'all' ? 1 : 0);
         const badge = document.getElementById('atkFiltersCount');
         if (badge) badge.textContent = n ? String(n) : '';
         document.getElementById('atkFiltersBtn')?.classList.toggle('atk-filtered', n > 0);
@@ -406,8 +428,10 @@ const AttackCoverage = {
             head.innerHTML = `
                 <div class="atk-col-name">${Utils.escapeHtml(tactic.name)}</div>
                 <div class="atk-col-count" data-tactic-count="${Utils.escapeHtml(tactic.short)}">-</div>
-                <div class="atk-col-sub" data-tactic-tech="${Utils.escapeHtml(tactic.short)}"></div>
-                <div class="atk-meter"><div class="atk-meter-fill" data-tactic-meter="${Utils.escapeHtml(tactic.short)}" style="width:0%"></div></div>
+                <div class="atk-meter atk-meter-stacked">
+                    <div class="atk-meter-fill" data-tactic-meter="${Utils.escapeHtml(tactic.short)}" style="width:0%"></div>
+                    <div class="atk-meter-close" data-tactic-close="${Utils.escapeHtml(tactic.short)}" style="width:0%"></div>
+                </div>
             `;
             column.appendChild(head);
 
@@ -432,27 +456,41 @@ const AttackCoverage = {
         grid.appendChild(frag);
         this.built = true;
 
-        this.fitColumns();
+        this.fitGrid();
         if (!this.resizeObserver) {
-            this.resizeObserver = new ResizeObserver(() => this.fitColumns());
+            this.resizeObserver = new ResizeObserver(() => this.fitGrid());
             const wrap = document.querySelector('.atk-matrix-wrap');
             if (wrap) this.resizeObserver.observe(wrap);
+            // A window resized only vertically leaves the grid's own box alone, so
+            // the observer never fires and the height would stay stale.
+            window.addEventListener('resize', () => this.fitGrid());
         }
     },
 
-    // Sizes columns so the whole kill chain fits the available width, down to a
-    // floor where the names stop being readable. Below that the matrix scrolls
-    // rather than shrinking into unreadability.
+    // Both axes: columns spread across the width, and the grid runs down to the
+    // bottom bar instead of stopping wherever a fixed viewport budget guessed.
+    fitGrid() {
+        this.fitColumns();
+        Utils.fitBelow(document.querySelector('.atk-matrix-wrap'), 260);
+    },
+
+    // Columns get a width names can live in and the matrix scrolls sideways past
+    // it. Dividing the viewport by fifteen tactics is what used to break
+    // "Administration Command" mid-word, and an unreadable column that fits is
+    // worse than a readable one that scrolls.
+    COL_WIDTH: 162,
+
     fitColumns() {
         const wrap = document.querySelector('.atk-matrix-wrap');
         const grid = document.getElementById('atkMatrix');
         const columns = this.matrix?.tactics?.length;
         if (!wrap || !grid || !columns || !wrap.clientWidth) return;
 
-        const gaps = columns - 1;          // 1px grid gap between columns
-        const available = wrap.clientWidth - gaps - 2;
-        const min = Math.max(90, Math.floor(available / columns));
-        grid.style.setProperty('--atk-col-min', min + 'px');
+        // Only widen: a viewport with room to spare spends it on the columns
+        // rather than on empty gutter, but nothing ever shrinks below the floor.
+        const available = wrap.clientWidth - (columns - 1) - 2;
+        const width = Math.max(this.COL_WIDTH, Math.floor(available / columns));
+        grid.style.setProperty('--atk-col-min', width + 'px');
     },
 
     // A technique can sit in more than one tactic column, so cells are tracked as
@@ -529,34 +567,55 @@ const AttackCoverage = {
         return 5;
     },
 
+    // A cell's status is the question the page exists to answer, so it is what the
+    // colour says unless the operator asks for depth (count) or weight (severity).
+    cellState(id) {
+        const cell = this.coverage?.techniques?.[id];
+        const total = cell?.total || 0;
+        const available = this.coverage?.candidates?.[id] || 0;
+        if (total === 0) return available > 0 ? 'close' : 'none';
+        return (cell.enabled || 0) === 0 ? 'off' : 'live';
+    },
+
     paint() {
         if (!this.coverage) return;
         const byId = this.coverage.techniques || {};
+        const candidates = this.coverage.candidates || {};
         const mode = this.filters.colorBy;
 
         for (const [id, els] of this.cells) {
             const cell = byId[id];
-            const count = !cell ? 0 : (mode === 'enabled' ? cell.enabled : cell.total || 0);
+            const state = this.cellState(id);
+            const count = cell?.total || 0;
             const heat = this.heatLevel(count);
             const sev = mode === 'severity' && cell && cell.total > 0 ? (cell.max_severity || '') : '';
 
             for (const el of els) {
+                delete el.dataset.heat;
+                delete el.dataset.sev;
+                el.classList.remove('atk-off', 'atk-close');
+
+                let badge = count > 0 ? String(count) : '';
                 if (sev) {
                     el.dataset.sev = sev;
-                    delete el.dataset.heat;
-                } else {
-                    delete el.dataset.sev;
-                    if (heat > 0) el.dataset.heat = String(heat);
-                    else delete el.dataset.heat;
+                } else if (mode === 'status') {
+                    if (state === 'live') el.dataset.heat = String(heat);
+                    else if (state === 'off') el.classList.add('atk-off');
+                    else if (state === 'close') {
+                        el.classList.add('atk-close');
+                        badge = String(candidates[id] || 0);
+                    }
+                } else if (heat > 0) {
+                    el.dataset.heat = String(heat);
                 }
 
-                const badge = el.querySelector('[data-badge]');
-                if (badge) badge.textContent = count > 0 ? String(count) : '';
+                const badgeEl = el.querySelector('[data-badge]');
+                if (badgeEl) badgeEl.textContent = badge;
 
                 const meta = el.querySelector('[data-meta]');
                 if (meta) {
-                    meta.textContent = cell && cell.subs_total > 0
-                        ? ` (${cell.subs_covered || 0}/${cell.subs_total})` : '';
+                    meta.textContent = cell && cell.subs_covered > 0
+                        ? ` (${cell.subs_covered}/${cell.subs_total})` : '';
                 }
             }
         }
@@ -565,34 +624,61 @@ const AttackCoverage = {
         this.applyClientFilters();
     },
 
-    // The header leads with leaf coverage (every sub-technique, plus every
-    // technique that has none). The top-level count is shown underneath because
-    // it credits a whole technique for a single covered child, which reads far
-    // higher than the detections actually written.
+    // The header leads with leaf coverage: every sub-technique, plus every technique
+    // that has none. The generous top-level count, which credits a whole technique
+    // for one covered child, stays in the tooltip where it cannot mislead a glance.
     paintTacticHeaders() {
         const per = this.coverage?.summary?.per_tactic || {};
+        const closable = this.closableByTactic();
+
         for (const tactic of this.matrix.tactics) {
             const s = per[tactic.short] || { total: 0, covered: 0, leaf_total: 0, leaf_covered: 0 };
             const leafPct = s.leaf_total ? Math.round((s.leaf_covered / s.leaf_total) * 100) : 0;
             const techPct = s.total ? Math.round((s.covered / s.total) * 100) : 0;
+            const close = closable[tactic.short] || 0;
+            const closePct = s.leaf_total ? Math.round((close / s.leaf_total) * 100) : 0;
 
             const label = document.querySelector(`[data-tactic-count="${tactic.short}"]`);
             if (label) label.textContent = `${s.leaf_covered}/${s.leaf_total} · ${leafPct}%`;
 
-            const sub = document.querySelector(`[data-tactic-tech="${tactic.short}"]`);
-            if (sub) sub.textContent = `${s.covered}/${s.total} techniques`;
-
             const meter = document.querySelector(`[data-tactic-meter="${tactic.short}"]`);
             if (meter) meter.style.width = leafPct + '%';
+
+            const closeMeter = document.querySelector(`[data-tactic-close="${tactic.short}"]`);
+            if (closeMeter) closeMeter.style.width = Math.min(closePct, 100 - leafPct) + '%';
 
             const head = label?.closest('.atk-col-head');
             if (head) {
                 head.title =
                     `${tactic.name}\n` +
                     `${s.leaf_covered}/${s.leaf_total} (${leafPct}%) detectable units covered — every sub-technique, plus techniques that have none. Nothing is inherited.\n` +
-                    `${s.covered}/${s.total} (${techPct}%) top-level techniques have at least one rule somewhere under them.`;
+                    `${s.covered}/${s.total} (${techPct}%) top-level techniques have at least one rule somewhere under them.` +
+                    (close ? `\n${close} uncovered unit(s) have rules waiting in a synced feed.` : '');
             }
         }
+    },
+
+    // Counts the leaf techniques per tactic that no rule covers but a synced feed
+    // could. Leaves only: a parent lit by one covered child would double-count.
+    closableByTactic() {
+        const candidates = this.coverage?.candidates || {};
+        const out = {};
+        for (const tech of this.matrix.techniques || []) {
+            if (tech.deprecated || !candidates[tech.id]) continue;
+            if (!tech.sub && this.hasSubs(tech.id)) continue;
+            for (const short of tech.tactics || []) out[short] = (out[short] || 0) + 1;
+        }
+        return out;
+    },
+
+    hasSubs(id) {
+        if (!this._subParents) {
+            this._subParents = new Set();
+            for (const tech of this.matrix.techniques || []) {
+                if (tech.sub && tech.parent) this._subParents.add(tech.parent);
+            }
+        }
+        return this._subParents.has(id);
     },
 
     // Non-matching cells are dimmed rather than removed, so the column geometry
@@ -613,6 +699,7 @@ const AttackCoverage = {
                 (els[0]?.dataset.name || '').includes(term);
             if (match && mode === 'gaps' && covered) match = false;
             if (match && mode === 'covered' && !covered) match = false;
+            if (match && this.filters.only) match = this.cellState(id) === this.filters.only;
 
             for (const el of els) {
                 el.classList.toggle('atk-dim', !match);
@@ -625,7 +712,7 @@ const AttackCoverage = {
 
         // Only groups this function opened are closed again when the filter clears.
         // Collapsing everything would undo whatever the operator expanded by hand.
-        const narrowing = Boolean(term) || mode !== 'all';
+        const narrowing = Boolean(term) || mode !== 'all' || Boolean(this.filters.only);
         for (const wrap of this.autoExpanded) {
             if (narrowing && expand.has(wrap)) continue;
             wrap.classList.remove('atk-open');
@@ -643,155 +730,108 @@ const AttackCoverage = {
     // Summary
     // ============================
 
+    // One headline number, the weakest tactic, and a chip per thing that needs
+    // doing. A chip only exists when its count does, so a chip on screen always
+    // means work: an operator never has to read five stats to find the zeroes.
     renderSummary() {
         const el = document.getElementById('atkSummary');
         const s = this.coverage?.summary;
         if (!el || !s) return;
 
-        const pct = s.techniques_total ? Math.round((s.techniques_covered / s.techniques_total) * 100) : 0;
-        const leafPct = s.leaf_total ? Math.round((s.leaf_covered / s.leaf_total) * 100) : 0;
-        const tacticName = (short) => this.matrix.tactics.find(t => t.short === short)?.name || short;
-        const weak = (s.weakest_tactics || []).map(tacticName);
-        const weakStats = s.per_tactic?.[(s.weakest_tactics || [])[0]];
-        const weakRatio = weakStats ? `${weakStats.leaf_covered}/${weakStats.leaf_total}` : '';
-        const weakSub = weak.length > 1 ? 'then ' + weak.slice(1).join(', ') : 'No tactic data';
+        const leafPct = s.leaf_total ? (s.leaf_covered / s.leaf_total) * 100 : 0;
+        const techPct = s.techniques_total ? Math.round((s.techniques_covered / s.techniques_total) * 100) : 0;
+        const weakShort = (s.weakest_tactics || [])[0];
+        const weakName = this.matrix.tactics.find(t => t.short === weakShort)?.name;
+        const weakStats = s.per_tactic?.[weakShort];
 
-        const broken = s.rules_retired_tag || 0;
-        const brokenSub = broken > 0
-            ? (s.retired_tags || []).slice(0, 4).join(', ')
-            : 'Every ATT&CK tag resolves';
+        const coverTip =
+            `Detectable units covered: every sub-technique, plus every technique that has none. ` +
+            `Nothing is inherited, so a rule on a parent does not credit its sub-techniques.\n` +
+            `${s.techniques_covered}/${s.techniques_total} (${techPct}%) top-level techniques have a rule somewhere under them.`;
 
-        // One compact row rather than five cards: the matrix is what the page is
-        // for, and the strip was spending 130px of vertical on numbers that read
-        // fine at a glance.
         el.innerHTML = `
-            ${this.stat('Coverage', `${s.leaf_covered}/${s.leaf_total}`, `${leafPct}%`,
-                'Detectable units covered: every sub-technique, plus every technique that has none. Nothing is inherited, so a rule on a parent does not credit its sub-techniques. This is the number that does not flatter.',
-                leafPct)}
-            ${this.stat('Touched', `${s.techniques_covered}/${s.techniques_total}`, `${pct}%`,
-                'Top-level techniques with at least one rule mapped to them OR to any one of their sub-techniques. Reads far higher than Coverage because a technique with 14 sub-techniques and 1 covered still scores a full point. Useful for breadth, not depth.')}
-            ${this.stat('Weakest', weak[0] || '-', weakRatio,
-                weakStats ? `Lowest share of detectable units covered. Then ${weakSub.replace(/^then /, '')}.`
-                          : 'The tactic with the lowest share of its detectable units covered.')}
-            ${this.stat('Rules mapped', `${s.rules_mapped}/${s.rules_total}`,
-                s.rules_unmapped ? `${s.rules_unmapped} untagged` : '',
-                'Rules carrying at least one attack.tNNNN tag. The rest are invisible to this map: they either have no ATT&CK tag at all, or name only a tactic, which does not say which technique they detect.',
-                null, s.rules_unmapped > 0)}
-            ${this.stat('Broken tags', String(broken), broken ? brokenSub : '',
-                'Rules tagged with a technique ID that does not exist in this ATT&CK version and has no replacement, usually a typo or a technique MITRE removed outright. Retired IDs that DO have a replacement are resolved automatically and are not counted here.',
-                null, broken > 0)}
+            <span class="atk-headline" title="${Utils.escapeAttr(coverTip)}">
+                <span class="atk-stat-label">Coverage</span>
+                <span class="atk-headline-value">${s.leaf_covered}</span>
+                <span class="atk-headline-of">/${s.leaf_total}</span>
+                <span class="atk-meter atk-headline-meter"><span class="atk-meter-fill" style="width:${leafPct > 0 ? Math.max(leafPct, 1) : 0}%"></span></span>
+                <span class="atk-headline-pct">${leafPct > 0 && leafPct < 10 ? leafPct.toFixed(1) : Math.round(leafPct)}%</span>
+            </span>
+            ${weakName ? `<span class="atk-weakest" title="Lowest share of its detectable units covered.">Weakest
+                <b>${Utils.escapeHtml(weakName)}</b>
+                ${weakStats ? `${weakStats.leaf_covered}/${weakStats.leaf_total}` : ''}</span>` : ''}
+            <span class="atk-attn" id="atkAttn"></span>
             <span class="atk-stat-version" title="Embedded ATT&CK Enterprise matrix version">ATT&CK v${Utils.escapeHtml(s.matrix_version || '')}</span>
         `;
+        this.renderAttention();
     },
 
-    stat(label, value, note, tip = '', meterPct = null, warn = false) {
-        const meter = meterPct === null ? '' :
-            `<span class="atk-meter"><span class="atk-meter-fill" style="width:${meterPct}%"></span></span>`;
-        return `
-            <span class="atk-stat" title="${Utils.escapeHtml(tip)}">
-                <span class="atk-stat-label">${Utils.escapeHtml(label)}</span>
-                <span class="atk-stat-value${warn ? ' atk-warn' : ''}">${Utils.escapeHtml(value)}</span>
-                ${note ? `<span class="atk-stat-note">${Utils.escapeHtml(note)}</span>` : ''}
-                ${meter}
-            </span>
-        `;
+    // The chips are filters, not decoration: clicking one narrows the map to the
+    // cells it counted, which is the only reason to put a number on screen.
+    renderAttention() {
+        const el = document.getElementById('atkAttn');
+        const s = this.coverage?.summary;
+        if (!el || !s) return;
+
+        const techniques = this.coverage.techniques || {};
+        const candidates = this.coverage.candidates || {};
+        const closable = Object.keys(candidates).length;
+        const disabled = Object.values(techniques).filter(c => c.total > 0 && !c.enabled).length;
+        const broken = s.rules_retired_tag || 0;
+
+        const chips = [];
+        if (closable) {
+            chips.push({ only: 'close', kind: 'close', label: `<b>${closable}</b> gaps your feeds can close`,
+                tip: "Uncovered techniques a synced feed already carries rules for. Lower that feed's severity or maturity threshold to pull them in." });
+        }
+        if (disabled) {
+            chips.push({ only: 'off', kind: 'off', label: `<b>${disabled}</b> covered but disabled`,
+                tip: 'Techniques whose every mapped rule is switched off. They count as covered on paper and detect nothing.' });
+        }
+        if (s.rules_unmapped) {
+            chips.push({ kind: 'muted', label: `<b>${s.rules_unmapped}</b> rules untagged`,
+                tip: 'Rules with no attack.tNNNN tag, or with only a tactic tag. They are invisible to this map.' });
+        }
+        if (broken) {
+            chips.push({ kind: 'broken', label: `<b>${broken}</b> broken tags`,
+                tip: `Rules tagged with a technique ID this ATT&CK version does not know and has no replacement for: ${(s.retired_tags || []).slice(0, 4).join(', ')}` });
+        }
+
+        // A chip whose count went to zero takes its filter with it, or the map stays
+        // narrowed by something the operator can no longer see, let alone clear.
+        const stale = this.filters.only && !chips.some(c => c.only === this.filters.only);
+        if (stale) this.filters.only = '';
+
+        el.innerHTML = chips.map(c => this.chip(c)).join('');
+        el.querySelectorAll('.atk-chip-btn[data-only]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.filters.only = this.filters.only === btn.dataset.only ? '' : btn.dataset.only;
+                this.renderAttention();
+                this.applyClientFilters();
+            });
+        });
+
+        if (stale) this.applyClientFilters();
     },
 
-    // ============================
-    // Gaps
-    // ============================
+    // A chip with a filter behind it is a button; one that only reports a number
+    // stays a span, so nothing looks clickable that is not.
+    chip({ only, kind, label, tip }) {
+        const on = Boolean(only) && this.filters.only === only;
+        const tag = only ? 'button' : 'span';
+        const attrs = only ? `type="button" data-only="${only}" aria-pressed="${on}"` : '';
+        return `<${tag} class="atk-chip-btn atk-chip-${kind}${on ? ' atk-chip-on' : ''}" ${attrs}
+            title="${Utils.escapeAttr(tip)}"><i class="atk-chip-dot"></i>${label}</${tag}>`;
+    },
 
+    // Why a rule a feed carries is not running. The drawer names the reason so an
+    // operator can tell a threshold they set from a translation Bifract cannot do.
     SKIP_REASONS: {
         min_level: 'below the feed severity threshold',
         min_status: 'below the feed maturity threshold',
         translate_error: 'cannot be translated to BQL',
         parse_error: 'cannot be parsed',
         create_error: 'failed to import',
-    },
-
-    GAPS_OPEN_KEY: 'bifract-attack-gaps-open',
-
-    gapsOpen() {
-        return localStorage.getItem(this.GAPS_OPEN_KEY) === 'true';
-    },
-
-    // Ranks uncovered techniques by what can actually be done about them today.
-    // "No coverage" is a fact; "SigmaHQ has 12 rules for this, all filtered out by
-    // min_level" is a decision.
-    //
-    // Collapsed by default: the matrix is the view, and a 25-row list under it
-    // pushes the grid off screen for a question most visits are not asking.
-    renderGaps(data) {
-        const el = document.getElementById('atkGaps');
-        if (!el) return;
-
-        const gaps = data.gaps || [];
-        if (!gaps.length) {
-            el.innerHTML = '';
-            return;
-        }
-
-        const actionable = gaps.filter(g => g.available > 0).length;
-        const summary = data.catalog_populated
-            ? `${data.uncovered_total} uncovered · ${actionable} closable with rules already in your feeds`
-            : `${data.uncovered_total} uncovered · sync a feed to see which of its rules could close them`;
-
-        const open = this.gapsOpen();
-        el.innerHTML = `
-            <button class="atk-gaps-toggle${open ? ' atk-open' : ''}" id="atkGapsToggle" aria-expanded="${open}">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M9 6l6 6-6 6"/></svg>
-                <span class="atk-gaps-title">Top gaps</span>
-                <span class="atk-gaps-hint">${Utils.escapeHtml(summary)}</span>
-            </button>
-            <div class="atk-gaps-list${open ? ' atk-open' : ''}" id="atkGapsList">
-                ${gaps.map(g => this.gapRow(g)).join('')}
-            </div>
-        `;
-
-        document.getElementById('atkGapsToggle')?.addEventListener('click', (e) => {
-            const list = document.getElementById('atkGapsList');
-            const next = !list.classList.contains('atk-open');
-            list.classList.toggle('atk-open', next);
-            e.currentTarget.classList.toggle('atk-open', next);
-            e.currentTarget.setAttribute('aria-expanded', String(next));
-            localStorage.setItem(this.GAPS_OPEN_KEY, String(next));
-        });
-
-        el.querySelectorAll('.atk-gap').forEach(row => {
-            row.addEventListener('click', () => this.openDrawer(row.dataset.tid));
-        });
-    },
-
-    gapRow(gap) {
-        const tacticNames = (gap.tactics || [])
-            .map(short => this.matrix.tactics.find(t => t.short === short)?.name || short)
-            .join(' · ');
-
-        // With no feed synced every row would otherwise repeat "Needs a new rule".
-        // The badge is shown only when there is something to act on; its absence is
-        // the same information without 25 copies of it.
-        const action = gap.available > 0
-            ? `<span class="atk-gap-action">${gap.available} available</span>`
-            : '';
-
-        const detail = gap.available > 0
-            ? Object.entries(gap.by_reason || {})
-                .map(([reason, n]) => `${n} ${this.SKIP_REASONS[reason] || reason}`).join(' · ')
-            : ((gap.log_sources || []).slice(0, 3).join(' · ') || 'No telemetry guidance from MITRE');
-
-        return `
-            <button class="atk-gap" data-tid="${Utils.escapeHtml(gap.technique_id)}">
-                <span class="atk-gap-main">
-                    <span class="atk-gap-name">${Utils.escapeHtml(gap.name)}</span>
-                    <span class="atk-gap-detail">${Utils.escapeHtml(detail)}</span>
-                </span>
-                <span class="atk-gap-side">
-                    ${action}
-                    <span class="atk-gap-id">${Utils.escapeHtml(gap.technique_id)}</span>
-                    <span class="atk-gap-tactics">${Utils.escapeHtml(tacticNames)}</span>
-                </span>
-            </button>
-        `;
     },
 
     // ============================
@@ -852,7 +892,12 @@ const AttackCoverage = {
         if (!drawer || !body) return;
 
         this.hideTip();
+        this._drawerTechnique = null;
         this.setSelected(techniqueId);
+        const mitre = document.getElementById('atkDrawerMitre');
+        if (mitre) mitre.href = 'https://attack.mitre.org/techniques/' + techniqueId.replaceAll('.', '/') + '/';
+        const write = document.getElementById('atkDrawerWrite');
+        if (write) write.disabled = true;
         drawer.classList.add('open');
         scrim?.classList.add('open');
         document.body.classList.add('atk-drawer-open');
@@ -922,12 +967,16 @@ const AttackCoverage = {
                 <h4>Expected telemetry</h4>
                 ${chips(data.log_sources)}
             </div>
-            <div class="atk-drawer-section">
-                <a class="atk-link" href="${Utils.escapeHtml(data.url || '#')}" target="_blank" rel="noopener noreferrer">
-                    View ${Utils.escapeHtml(tech.id || '')} on attack.mitre.org
-                </a>
-            </div>
         `;
+
+        this._drawerTechnique = { id: tech.id, name: tech.name, logSources: data.log_sources || [] };
+        const write = document.getElementById('atkDrawerWrite');
+        if (write) {
+            write.textContent = rules.length ? 'Write another detection' : 'Write a detection';
+            write.disabled = false;
+        }
+        const mitre = document.getElementById('atkDrawerMitre');
+        if (mitre) mitre.href = data.url || `https://attack.mitre.org/techniques/${encodeURIComponent(tech.id || '')}/`;
 
         document.querySelectorAll('#atkDrawerBody .atk-rule').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -962,13 +1011,31 @@ const AttackCoverage = {
         return `
             <div class="atk-drawer-section">
                 <h4>Available in your feeds (${gap.available})</h4>
-                <div class="atk-note">These rules exist in a configured feed but were not imported.
+                <div class="atk-note">These rules exist in a synced feed but were not imported.
                     Lower the feed's severity or maturity threshold to pull them in, or fix the
                     translation for the ones Bifract cannot express.</div>
                 ${rows}
                 ${more}
             </div>
         `;
+    },
+
+    // Starts a rule from the technique in the drawer, prefilled with the label the
+    // map reads back, so closing a gap does not depend on remembering to tag it.
+    writeDetection() {
+        const tech = this._drawerTechnique;
+        if (!tech || !window.Alerts) return;
+
+        const telemetry = (tech.logSources || []).slice(0, 4).join(', ');
+        this.closeDrawer();
+        Alerts.showAlertEditor(null, {
+            prefill: {
+                name: tech.name,
+                description: `Detects ${tech.name} (${tech.id}).` +
+                    (telemetry ? ` MITRE expects this in: ${telemetry}.` : ''),
+                labels: [`attack.${tech.id.toLowerCase()}`],
+            },
+        });
     },
 
     setSelected(techniqueId) {
@@ -980,6 +1047,7 @@ const AttackCoverage = {
     },
 
     closeDrawer() {
+        this._drawerTechnique = null;
         document.getElementById('atkDrawer')?.classList.remove('open');
         document.getElementById('atkDrawerScrim')?.classList.remove('open');
         document.body.classList.remove('atk-drawer-open');

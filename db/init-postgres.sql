@@ -344,12 +344,19 @@ CREATE TABLE IF NOT EXISTS webhook_actions (
     timeout_seconds INTEGER DEFAULT 30,
     retry_count INTEGER DEFAULT 3,
     include_alert_link BOOLEAN DEFAULT true,
+    -- body_mode 'envelope' sends the built-in payload; 'template' renders body_template.
+    body_mode VARCHAR(20) NOT NULL DEFAULT 'envelope' CHECK (body_mode IN ('envelope', 'template')),
+    body_template TEXT NOT NULL DEFAULT '',
+    content_type VARCHAR(100) NOT NULL DEFAULT '',
     enabled BOOLEAN DEFAULT true,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ALTER TABLE webhook_actions ADD COLUMN IF NOT EXISTS include_alert_link BOOLEAN DEFAULT true;
+ALTER TABLE webhook_actions ADD COLUMN IF NOT EXISTS body_mode VARCHAR(20) NOT NULL DEFAULT 'envelope';
+ALTER TABLE webhook_actions ADD COLUMN IF NOT EXISTS body_template TEXT NOT NULL DEFAULT '';
+ALTER TABLE webhook_actions ADD COLUMN IF NOT EXISTS content_type VARCHAR(100) NOT NULL DEFAULT '';
 
 -- Alert-to-webhook mapping
 CREATE TABLE IF NOT EXISTS alert_webhook_actions (

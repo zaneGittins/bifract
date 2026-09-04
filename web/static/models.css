@@ -32,13 +32,25 @@
 
 .models-search {
     flex: 1;
-    max-width: 300px;
-    padding: 6px 10px;
+    min-width: 200px;
+    max-width: 400px;
+    padding: 0.5rem 0.875rem;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 4px;
     color: var(--text-primary);
-    font-size: 13px;
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
+    transition: var(--transition);
+}
+
+/* A row of controls is one row: the search box and the buttons beside it settle
+   on the same height, as they do on every other listing. */
+.models-filters input[type="text"],
+.models-filters select,
+.models-filters button {
+    height: 34px;
+    box-sizing: border-box;
 }
 
 .models-search:focus {
@@ -106,7 +118,9 @@
 
 /* Status & alert mode badges */
 .model-badge {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     padding: 2px 8px;
     border-radius: 10px;
     font-size: 11px;
@@ -124,6 +138,15 @@
 .badge-alert-active { background: rgba(52,199,89,0.15); color: #34c759; cursor: pointer; }
 .badge-alert-active:hover { background: rgba(52,199,89,0.3); }
 .badge-paused:hover { background: rgba(255,204,0,0.3); cursor: pointer; }
+
+/* Marks a live state on a badge, in the badge's own colour. */
+.model-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+}
 
 /* Backfill (seed historical data) bar in the data viewer */
 .model-backfill-bar { margin: 0 0 12px; }
@@ -161,142 +184,6 @@
 .backfill-count { font-size: 12px; color: var(--text-muted, #888); }
 .spinner-inline { width: 13px; height: 13px; border-width: 2px; display: inline-block; vertical-align: middle; }
 
-/* Wizard */
-.models-wizard {
-    max-width: 780px;
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-}
-
-.wizard-header {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-}
-
-.wizard-header h2 {
-    font-size: 18px;
-    font-weight: 600;
-    margin: 0;
-    flex: 1;
-}
-
-.wizard-steps {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-}
-
-.wizard-step-dot {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    border: 2px solid var(--border-color);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-muted, #888);
-    flex-shrink: 0;
-}
-
-.wizard-step-dot.active {
-    border-color: var(--accent-primary);
-    color: var(--accent-primary);
-}
-
-.wizard-step-dot.done {
-    border-color: #34c759;
-    background: #34c759;
-    color: #fff;
-}
-
-.wizard-step-line {
-    flex: 1;
-    height: 1px;
-    background: var(--border-color);
-    min-width: 24px;
-}
-
-.wizard-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 20px;
-}
-
-.wizard-card h3 {
-    margin: 0 0 16px 0;
-    font-size: 15px;
-    font-weight: 600;
-}
-
-/* Model type selector */
-.model-type-cards {
-    display: flex;
-    gap: 12px;
-}
-
-.model-type-card {
-    flex: 1;
-    border: 2px solid var(--border-color);
-    border-radius: 6px;
-    padding: 14px;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
-}
-
-.model-type-card:hover {
-    border-color: var(--accent-primary);
-    background: rgba(156, 106, 222, 0.07);
-}
-
-.model-type-card.selected {
-    border-color: var(--accent-primary);
-    background: rgba(156, 106, 222, 0.12);
-}
-
-.model-type-card .card-title {
-    font-weight: 600;
-    font-size: 14px;
-    margin-bottom: 4px;
-}
-
-.model-type-card .card-desc {
-    font-size: 12px;
-    color: var(--text-muted, #888);
-    line-height: 1.5;
-}
-
-/* Filter builder */
-.filter-rows, .extraction-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-bottom: 8px;
-}
-
-.filter-row {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-}
-
-.filter-row input, .filter-row select {
-    padding: 5px 8px;
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 13px;
-}
-
-.filter-row input { flex: 1; }
-.filter-row select { min-width: 60px; }
-
 .btn-remove-row {
     padding: 4px 8px;
     background: transparent;
@@ -323,46 +210,17 @@
 
 .btn-add-row:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
 
-/* Extraction cards */
-.extraction-card {
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    background: var(--bg-primary, #0f0f1a);
-}
-
-.extraction-card-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 500;
-}
-
-.extraction-card-header .ext-num {
-    color: var(--text-muted, #888);
-}
-
-.extraction-fields {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-}
-
 .field-group {
     display: flex;
     flex-direction: column;
     gap: 4px;
 }
 
+/* Section labels carry the uppercase treatment; field labels read as prose so a
+   rail of them does not shout. */
 .field-group label {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-muted, #888);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
 }
 
 .field-group input, .field-group select {
@@ -378,12 +236,6 @@
 .field-group input:focus, .field-group select:focus {
     outline: none;
     border-color: var(--accent-primary);
-}
-
-.extraction-toggles {
-    display: flex;
-    gap: 12px;
-    align-items: center;
 }
 
 .toggle-label {
@@ -432,110 +284,166 @@
     box-shadow: 0 0 0 2px rgba(156, 106, 222, 0.3);
 }
 
-/* Free-text field input matching field-group select style */
-.field-group-input {
-    padding: 5px 8px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 13px;
-    width: 100%;
-    box-sizing: border-box;
-}
-
-.field-group-input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-}
-
-.extraction-test-result {
-    font-size: 12px;
-    padding: 6px 10px;
-    border-radius: 4px;
-    background: rgba(52,199,89,0.08);
-    border: 1px solid rgba(52,199,89,0.2);
-    color: var(--text-primary);
-    max-height: 120px;
-    overflow-y: auto;
-}
-
-/* Shape step */
-.shape-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-}
-
-.preview-table-wrap {
-    margin-top: 12px;
-    overflow-x: auto;
-    max-height: 200px;
-    overflow-y: auto;
-}
-
-.preview-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 12px;
-}
-
-.preview-table th, .preview-table td {
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border-color);
-    text-align: left;
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-}
-
+/* The detection controls are part of the rail, not a card inside it. */
 .alert-config-section {
-    margin-top: 12px;
-    padding: 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-primary, #0f0f1a);
     display: flex;
     flex-direction: column;
     gap: 10px;
 }
 
-/* Wizard nav buttons */
-.wizard-nav {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-}
-
-/* Data Viewer */
+/* Data Viewer. Same silhouette as the editor: a fixed head, a scrolling middle
+   and a definition rail, so the two views read as one page in two modes. */
 .model-data-viewer {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    height: 100%;
-}
-
-.model-data-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.model-data-title {
-    font-size: 16px;
-    font-weight: 600;
     flex: 1;
+    min-height: 0;
 }
 
-.model-data-controls {
-    display: flex;
-    gap: 8px;
+.mv-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
+    gap: 14px;
+    padding: 8px 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.mv-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.mv-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mv-type-tag {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 11px;
+    color: var(--accent-secondary);
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, transparent);
+    white-space: nowrap;
+}
+
+.mv-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mv-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--mv-rail-w, 300px);
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
+    transition: grid-template-columns 0.25s ease;
+}
+
+/* Inspecting a row adds the drawer as a third column and folds the rail away,
+   as the editor does: the definition is static context, the row is the task. */
+.mv-body.mv-inspecting { grid-template-columns: minmax(0, 1fr) 340px 0; }
+
+.mv-body.mv-inspecting .mv-rail {
+    overflow: hidden;
+    border-left: none;
+    min-width: 0;
+}
+
+.mv-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    padding: 12px 14px 0;
+    gap: 10px;
+}
+
+/* Summary strip */
+.mv-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.mv-stats:empty { display: none; }
+
+.mv-stat {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 7px 13px;
+    min-width: 104px;
+}
+
+.mv-stat-k {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.mv-stat-v {
+    margin-top: 2px;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+}
+
+.mv-stat-flag .mv-stat-v { color: var(--severity-high, #f9944e); }
+.mv-stat-crit .mv-stat-v { color: var(--error, #f87171); }
+
+/* Results panel: only the table body scrolls, so the toolbar and the pager stay put. */
+.mv-results {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px 8px 0 0;
+    border-bottom: none;
+    overflow: hidden;
+}
+
+.mv-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.mv-toolbar-spacer { flex: 1; }
+
+.mv-range {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .model-data-table-wrap {
     overflow-x: auto;
     overflow-y: auto;
     flex: 1;
+    min-height: 0;
 }
 
 .model-data-table {
@@ -546,130 +454,120 @@
 }
 
 .model-data-table th {
-    padding: 8px 12px;
+    padding: 7px 12px;
     border-bottom: 1px solid var(--border-color);
     text-align: left;
-    color: var(--text-muted, #888);
+    vertical-align: bottom;
     font-weight: 500;
     white-space: nowrap;
-    cursor: pointer;
     user-select: none;
+    font-family: var(--font-main);
+    position: sticky;
+    top: 0;
+    background: var(--bg-secondary);
+    z-index: 1;
 }
 
-.model-data-table th:hover { color: var(--text-primary); }
+/* The stored column name stays under the label, so a sort, an export or a BQL
+   query written against these results still lines up with what is on screen. */
+.model-data-table th .mv-h {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.model-data-table th .mv-h-src {
+    display: block;
+    margin-top: 1px;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-muted, #888);
+}
+
+.model-data-table th.sortable { cursor: pointer; }
+.model-data-table th.sortable:hover .mv-h { color: var(--text-primary); }
+.model-data-table th.sort-asc .mv-h,
+.model-data-table th.sort-desc .mv-h { color: var(--accent-secondary); }
 .model-data-table th .sort-icon { opacity: 0.5; }
-.model-data-table th.sort-asc .sort-icon::after  { content: ' ▲'; }
-.model-data-table th.sort-desc .sort-icon::after { content: ' ▼'; }
+.model-data-table th.sort-asc .sort-icon::after  { content: ' ▲'; font-size: 8px; }
+.model-data-table th.sort-desc .sort-icon::after { content: ' ▼'; font-size: 8px; }
+
+.model-data-table th.num, .model-data-table td.num { text-align: right; }
 
 .model-data-table td {
-    padding: 7px 12px;
+    padding: 6px 12px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
-    word-break: break-all;
-}
-
-.model-data-table tr:hover td {
-    background: var(--bg-hover, rgba(255,255,255,0.03));
-}
-
-/* Pivot-to-search column */
-.pivot-col-header {
-    width: 42px;
-    min-width: 42px;
-    text-align: center;
-    color: var(--text-muted, #888);
-    font-size: 13px;
-    cursor: default;
-    user-select: none;
-}
-
-.pivot-cell {
-    width: 42px;
-    min-width: 42px;
-    text-align: center;
-    padding: 4px 6px !important;
-}
-
-.row-pivot-btn {
-    display: inline-block;
-    padding: 2px 7px;
-    font-size: 11px;
-    font-weight: 600;
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    background: transparent;
-    border: 1px solid var(--accent-primary, #9c6ade);
-    border-radius: 4px;
-    color: var(--accent-primary, #9c6ade);
-    cursor: pointer;
-    opacity: 0.55;
-    transition: opacity 0.12s, background 0.12s;
     white-space: nowrap;
-}
-
-.model-data-table tr.has-pivot:hover .row-pivot-btn {
-    opacity: 1;
-}
-
-.row-pivot-btn:hover {
-    background: rgba(156, 106, 222, 0.15);
-    opacity: 1;
-}
-
-/* Form helpers */
-.form-row {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-}
-
-.form-row .field-group { flex: 1; }
-
-.full-input {
-    width: 100%;
-    padding: 7px 10px;
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-size: 14px;
-    box-sizing: border-box;
-}
-
-.full-input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-}
-
-textarea.full-input {
-    resize: vertical;
-    min-height: 60px;
-    font-family: inherit;
-}
-
-.models-empty {
-    text-align: center;
-    padding: 40px 20px;
-    color: var(--text-muted, #888);
-    font-size: 14px;
-}
-
-/* Progress bar (used by backfill) */
-.stat-bar-track {
-    flex: 1;
-    height: 6px;
-    background: var(--bg-primary, #0f0f1a);
-    border-radius: 3px;
+    font-variant-numeric: tabular-nums;
+    max-width: 320px;
     overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.stat-bar-fill {
-    height: 100%;
-    background: var(--accent-primary, #9c6ade);
-    border-radius: 3px;
-    transition: width 0.3s ease;
+.model-data-table tbody tr { cursor: pointer; }
+.model-data-table tbody tr:hover td { background: var(--bg-hover, rgba(255,255,255,0.03)); }
+.model-data-table tbody tr.selected td { background: color-mix(in srgb, var(--accent-primary) 16%, transparent); }
+
+.mv-none { color: var(--text-muted, #888); }
+
+/* Severity is relative to the model's own threshold: the stripe marks the rows
+   that crossed what the model is configured to alert on. */
+.model-data-table td.mv-score {
+    position: relative;
+    padding-left: 17px;
+    font-weight: 500;
 }
+
+.model-data-table td.mv-score::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: transparent;
+}
+
+.model-data-table tr.sev-crit td.mv-score::before { background: var(--error, #f87171); }
+.model-data-table tr.sev-high td.mv-score::before { background: var(--severity-high, #f9944e); }
+.model-data-table tr.sev-med  td.mv-score::before { background: var(--warning, #fbbf24); }
+.model-data-table tr.sev-low  td.mv-score::before { background: var(--border-strong, #3d3d60); }
+
+.model-data-table tr.sev-crit td.mv-score { color: var(--error, #f87171); }
+.model-data-table tr.sev-high td.mv-score { color: var(--severity-high, #f9944e); }
+.model-data-table tr.sev-med  td.mv-score { color: var(--warning, #fbbf24); }
+.model-data-table tr.sev-low  td.mv-score { color: var(--text-muted, #888); }
+
+.mv-meter {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    justify-content: flex-end;
+}
+
+.mv-meter-track {
+    display: block;
+    width: 44px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--bg-hover, #2d2d4a);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.mv-meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent-primary);
+}
+
+.mv-meter-fill.hot { background: var(--severity-high, #f9944e); }
 
 /* Score distribution histogram */
-.model-histogram-panel { margin: 0 0 12px; flex-shrink: 0; }
+.model-histogram-panel { margin: 0; flex-shrink: 0; }
 .model-histogram-panel:empty { display: none; }
 
 .histogram-head { margin-bottom: 6px; }
@@ -694,12 +592,14 @@ textarea.full-input {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
-    padding: 10px 12px 8px;
+    padding: 24px 12px 8px;
     position: relative;
 }
+/* The caption gets its own band above the bucket counts, or it lands on top of
+   whichever count sits at the threshold. */
 .histogram-threshold-line {
     position: absolute;
-    top: 10px;
+    top: 20px;
     bottom: 8px;
     width: 0;
     border-left: 2px dashed var(--accent-warning, #e8a838);
@@ -708,9 +608,9 @@ textarea.full-input {
 }
 .histogram-threshold-label {
     position: absolute;
-    top: -4px;
-    left: 4px;
-    font-size: 9px;
+    top: -15px;
+    left: -3px;
+    font-size: 10px;
     color: var(--accent-warning, #e8a838);
     white-space: nowrap;
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
@@ -792,100 +692,175 @@ textarea.full-input {
 .model-menu-item.danger { color: #ff6b6b; }
 .model-menu-item.danger:hover { background: rgba(255,59,48,0.14); }
 
-/* Data viewer toolbar (search) */
-.model-data-toolbar {
+/* Definition rail. Same machinery as the editor rail: a grid column resized by
+   moving the track, with the drag handle inside a rail that does not itself
+   scroll (a scrolling rail carries the handle up out of view). */
+.mv-rail {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
+}
+
+.mv-rail-content {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.mv-rail-handle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    cursor: col-resize;
+    z-index: 2;
+}
+
+.mv-rail-handle:hover,
+.mv-rail-handle.dragging { background: color-mix(in srgb, var(--accent-primary) 55%, transparent); }
+
+.mv-rail-foot {
+    padding: 10px 14px;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+}
+
+.mv-kv {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 4px 12px;
+    margin: 0;
+    font-size: 12px;
+}
+
+.mv-kv dt { color: var(--text-muted, #888); }
+
+.mv-kv dd {
+    margin: 0;
+    text-align: right;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+/* The drawer lists every column, including long ones, so its values wrap under
+   their label instead of fighting for the same row. */
+.mv-kv-wide {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+}
+
+.mv-kv-wide dt {
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 10px;
+    margin-top: 8px;
+}
+
+.mv-kv-wide dd { text-align: left; }
+.mv-kv-wide dt:first-child { margin-top: 0; }
+
+.mv-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.mv-chip {
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.mv-code {
+    margin: 0;
+    padding: 7px 9px;
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.mv-desc {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+/* Row drawer: a third column between the results and the rail, so opening a row
+   narrows the table instead of covering it. */
+.mv-drawer {
+    display: flex;
+    flex-direction: column;
+    width: 340px;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
+}
+
+.mv-drawer[hidden] { display: none; }
+
+.mv-drawer-head {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 10px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
 }
-.model-data-toolbar .models-search { margin-left: auto; }
 
-.config-section {
-    margin-bottom: 20px;
-}
-
-.config-section-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted, #888);
-    font-weight: 600;
-    margin-bottom: 8px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.config-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 0;
-    font-size: 13px;
-    flex-wrap: wrap;
-}
-
-.config-row code {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    padding: 1px 6px;
+.mv-drawer-title {
+    flex: 1;
+    min-width: 0;
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
     font-size: 12px;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
 }
 
-.config-row code.config-pattern {
-    color: #b794f6;
-}
-
-.config-op {
+.mv-drawer-close {
+    background: none;
+    border: 0;
     color: var(--text-muted, #888);
-    font-size: 12px;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 4px;
+    cursor: pointer;
 }
 
-.config-key {
-    color: var(--text-muted, #888);
-    font-size: 12px;
-    min-width: 90px;
+.mv-drawer-close:hover { color: var(--text-primary); }
+
+.mv-drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }
 
-.config-num {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
+.mv-drawer-foot {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border-color);
     font-size: 11px;
-    color: var(--text-muted, #888);
+    line-height: 1.5;
     flex-shrink: 0;
 }
 
-.config-tag {
-    background: rgba(156,106,222,0.15);
-    border: 1px solid rgba(156,106,222,0.3);
-    border-radius: 10px;
-    padding: 1px 7px;
-    font-size: 11px;
-    color: var(--accent-primary, #9c6ade);
-}
-
-.config-empty {
-    color: var(--text-muted, #888);
-    font-style: italic;
-    font-size: 12px;
-}
-
-/* Locked model type card (edit mode) */
-.model-type-card-locked {
-    opacity: 0.6;
-    cursor: not-allowed;
-    pointer-events: none;
-}
+.mv-drawer-foot .btn-primary { width: 100%; }
 
 /* Pagination — reuse page-num-btn from style.css, override layout */
 .model-data-pagination {
@@ -896,8 +871,11 @@ textarea.full-input {
     color: var(--text-muted, #888);
     flex-shrink: 0;
     flex-wrap: wrap;
-    padding: 4px 0;
+    padding: 7px 12px;
+    border-top: 1px solid var(--border-color);
 }
+
+.model-data-pagination:empty { display: none; }
 
 .model-data-pagination .pagination-info {
     margin-right: 4px;
@@ -919,133 +897,6 @@ textarea.full-input {
     font-size: 11px;
     color: var(--text-muted, #888);
     margin-right: 2px;
-}
-
-/* ============================================================
-   BQL-first split-panel model editor
-   ============================================================ */
-.model-editor {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-}
-.model-editor-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding-bottom: 14px;
-    margin-bottom: 14px;
-    border-bottom: 1px solid var(--border-color);
-}
-.model-editor-header h2 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-.model-editor-body {
-    display: flex;
-    gap: 20px;
-    align-items: stretch;
-    min-height: 0;
-}
-.model-editor-left {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-.model-editor-right {
-    flex: 0 0 340px;
-    width: 340px;
-    border-left: 1px solid var(--border-color);
-    padding-left: 20px;
-    overflow-y: auto;
-}
-
-.model-editor-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-.model-time-select {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    color: var(--text-primary);
-    padding: 6px 10px;
-    font-size: 13px;
-}
-.model-results-count {
-    font-size: 12px;
-    color: var(--text-muted, #888);
-}
-
-.model-query-wrap {
-    position: relative;
-    isolation: isolate;
-}
-.model-query-input {
-    display: block;
-    width: 100%;
-    min-height: 90px;
-    resize: vertical;
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    color: transparent;
-    caret-color: var(--text-primary);
-    padding: 12px 14px;
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    font-size: 13px;
-    line-height: 1.6;
-    box-sizing: border-box;
-    position: relative;
-    z-index: 0;
-}
-.model-query-input:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-}
-.model-query-input::placeholder {
-    color: var(--text-muted, #888);
-}
-
-/* Syntax-highlight overlay rendered beneath the transparent textarea text. */
-.model-query-highlight {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    padding: 12px 14px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    font-size: 13px;
-    line-height: 1.6;
-    color: var(--text-primary);
-    background: transparent;
-    white-space: pre-wrap;
-    overflow: hidden;
-    pointer-events: none;
-    box-sizing: border-box;
-    margin: 0;
-    z-index: 1;
-}
-
-.model-sql-output {
-    margin: 0;
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 11px;
-    color: var(--text-muted, #888);
-    white-space: pre-wrap;
-    max-height: 140px;
-    overflow: auto;
 }
 
 /* Translation feedback strip */
@@ -1119,36 +970,6 @@ textarea.full-input {
     padding: 1px 6px;
 }
 
-/* Results + log detail push layout (shared .search-results-split pattern) */
-.model-results-split {
-    flex: 1 1 auto;
-    min-height: 0;
-}
-.model-results-main {
-    flex: 1 1 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-}
-
-.model-query-results {
-    flex: 1 1 auto;
-    min-height: 160px;
-    overflow: auto;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-}
-.model-query-results .results-table { width: 100%; }
-
-.model-type-cards-compact {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.model-type-cards-compact .model-type-card {
-    padding: 10px 12px;
-}
-
 .model-num-input {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -1174,45 +995,6 @@ textarea.full-input {
 }
 .key-field-row select { flex: 1; }
 
-@media (max-width: 1100px) {
-    .model-editor-body { flex-direction: column; }
-    .model-editor-right {
-        flex-basis: auto;
-        width: 100%;
-        border-left: none;
-        border-top: 1px solid var(--border-color);
-        padding-left: 0;
-        padding-top: 16px;
-    }
-}
-
-/* ---- Score preview (model editor) ---- */
-.model-result-tabs {
-    display: inline-flex;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 2px;
-    gap: 2px;
-}
-.model-result-tabs button {
-    background: transparent;
-    border: none;
-    color: var(--text-muted, #888);
-    font-size: 12px;
-    font-weight: 500;
-    padding: 5px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-}
-.model-result-tabs button:hover { color: var(--text-secondary); }
-.model-result-tabs button.active {
-    background: var(--bg-hover);
-    color: var(--text-primary);
-}
-
-.model-score-preview { margin-top: 12px; }
 .score-preview { display: flex; flex-direction: column; gap: 14px; }
 
 .score-preview-head {
@@ -1308,3 +1090,366 @@ textarea.full-input {
 .score-top-table tbody tr:last-child td { border-bottom: none; }
 .score-top-table tbody tr:hover td { background: var(--bg-hover); }
 .score-cell-val { display: inline-block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+
+/* =====================================================================
+   Model editor
+   The same workspace as the search page and the alert editor: a head that
+   never scrolls away, a bench, and a definition rail. Each column scrolls
+   inside itself, so both reach the status bar together.
+   ===================================================================== */
+.model-editor-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+body.models-workspace #fractalModelsTabContent,
+body.models-workspace #modelsView {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+/* Head: the name and the primary action never leave the screen. */
+.me-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 14px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.me-name {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.me-name-input {
+    flex: 0 1 auto;
+    width: 240px;
+    max-width: 100%;
+    min-width: 0;
+    padding: 5px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.me-name-input:hover { border-color: var(--border-color); }
+
+.me-name-input:focus {
+    outline: none;
+    background: var(--bg-primary);
+    border-color: var(--accent-primary);
+}
+
+/* Off-screen twin of the name input, used to size it to its text. */
+.me-name-probe {
+    position: absolute;
+    visibility: hidden;
+    white-space: pre;
+    pointer-events: none;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.me-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    white-space: nowrap;
+}
+
+.me-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.me-status-dirty {
+    color: var(--warning);
+    border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+}
+
+.me-status-dirty .me-status-dot { background: var(--warning); }
+
+.me-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.me-type-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted, #888);
+}
+
+.me-type-tag b {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.me-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--me-rail-w, 340px);
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
+    transition: grid-template-columns 0.25s ease;
+}
+
+/* Inspecting a log wants the width the search page has, so the rail folds away
+   while the detail panel is open and returns when it closes. */
+.me-body.me-inspecting { grid-template-columns: minmax(0, 1fr) 0; }
+
+.me-body.me-inspecting .me-rail {
+    overflow: hidden;
+    border-left: none;
+    min-width: 0;
+}
+
+.me-bench {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* The query box and the results below it read as one surface. */
+.me-bench .search-section {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+    border-bottom: none;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    box-shadow: none;
+}
+
+.me-bench .search-results-split {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+}
+
+.me-bench .results-section {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+.me-bench .results-header,
+.me-bench .timeline-inline { flex: 0 0 auto; }
+
+/* .search-btn sets its own display, which outranks the browser's [hidden] rule.
+   The toolbar states it again so switching tabs actually hides the control. */
+.me-bench .search-toolbar > [hidden] { display: none; }
+
+/* The header wraps rather than spilling into the gap beside the detail panel. */
+.me-bench .results-header {
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+
+/* :not([hidden]) matters: an id selector setting display would otherwise beat the
+   browser's [hidden] rule and leave the results showing under the other tab. */
+.me-bench #modelResultsPane:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.me-bench #modelResultsPane > .sql-preview,
+.me-bench #modelResultsPane > .model-translation { flex: 0 0 auto; }
+
+.me-bench #modelQueryResults {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+}
+
+.me-bench #modelScorePreview:not([hidden]) {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding-top: 10px;
+}
+
+.me-bench .log-detail-panel:not(.open) { border-width: 0; }
+
+.me-bench .model-translation { margin-top: 8px; }
+
+/* The rail is a column of the layout, not an overlay. */
+/* The rail itself does not scroll: its content does. The drag handle is absolutely
+   positioned inside the rail, and a scrolling rail carries it up out of view. */
+.me-rail {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border-color);
+}
+
+.me-rail-content {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.me-rail-handle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    cursor: col-resize;
+    z-index: 2;
+}
+
+.me-rail-handle:hover,
+.me-rail-handle.dragging { background: color-mix(in srgb, var(--accent-primary) 55%, transparent); }
+
+/* Section chrome, shared by the editor rail, the viewer rail and the row drawer. */
+.me-sec {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.me-sec-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 7px;
+    font-size: 10px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.me-hint {
+    margin: 8px 0 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-muted, #888);
+}
+
+/* Type picker: icon and label, with the chosen type explained underneath, so five
+   choices cost one line of the rail rather than five paragraphs. */
+/* Two per row with the odd one out spanning: a fixed shape at any rail width,
+   rather than a last row that reflows as the rail is dragged. */
+.me-type-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.me-type-cards > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+.me-type-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 6px;
+    background: var(--bg-tertiary);
+    border: 1.5px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-family: inherit;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.me-type-card:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+    background: var(--bg-hover);
+}
+
+.me-type-card.active {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-tertiary));
+}
+
+.me-type-card-label {
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.25;
+    text-align: center;
+}
+
+.me-type-card:disabled { cursor: default; }
+.me-type-card-locked:not(.active) { opacity: 0.4; }
+
+.me-rail .full-input,
+.me-rail textarea.full-input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* The editor and viewer own the viewport only where there is room for two columns. */
+@media (min-width: 1000px) {
+    body.models-workspace {
+        height: 100vh;
+        height: 100dvh;
+        overflow: hidden;
+    }
+}
+
+@media (max-width: 999px) {
+    .me-body,
+    .mv-body {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .me-bench { overflow: visible; }
+
+    .me-rail,
+    .mv-rail,
+    .mv-drawer {
+        width: auto;
+        border-left: none;
+        border-top: 1px solid var(--border-color);
+        overflow: visible;
+    }
+
+    .me-rail-handle,
+    .mv-rail-handle { display: none; }
+
+    .mv-main { padding-bottom: 12px; }
+    .mv-results { border-radius: 8px; border-bottom: 1px solid var(--border-color); }
+}

@@ -38,8 +38,8 @@ retention, search_archive runs the same BQL over the archive; it is minutes-slow
 returns a job to poll, so reach for it only once query_logs cannot answer.
 
 Detections. list_alerts shows what is already watched and is the best guide to this
-fractal's real query patterns. get_attack_coverage and get_attack_gaps say which
-ATT&CK techniques are covered and which are worth covering next. Validate a query
+fractal's real query patterns. get_attack_coverage says which ATT&CK
+techniques are covered and which uncovered ones a synced feed could close today. Validate a query
 before creating an alert on it.
 
 Recording. Findings belong in the product, not only in your reply. There is one way

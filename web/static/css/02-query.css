@@ -2624,16 +2624,15 @@ body {
 
 
 /* Open, the detail panel joins the results card on its right, as the rail does on
-   the left. Applies on the search page and in the alert editor. */
-#searchView .log-detail-panel.open,
-.ae-bench .log-detail-panel.open {
+   the left. Keyed on the split wrapper rather than a list of the views that use
+   one, so a new results-plus-detail view is flush without being named here. */
+.search-results-split .log-detail-panel.open {
     margin-left: 0;
     border-left: none;
     border-radius: 0 0 6px 0;
 }
 
-#searchView .results-section:has(+ .log-detail-panel.open),
-.ae-bench .results-section:has(+ .log-detail-panel.open) {
+.search-results-split .results-section:has(+ .log-detail-panel.open) {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -46,21 +45,46 @@ func (h *Handler) HandleAttackMatrix(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, matrix)
 }
 
+// AttackCoverage is the coverage map plus, per uncovered technique, how many
+// unimported feed rules could close it. The two travel together because the map
+// colours those cells: a gap a feed can close is a different thing to look at
+// than a gap that needs new telemetry.
+type AttackCoverage struct {
+	Techniques map[string]*attack.TechniqueCoverage `json:"techniques"`
+	Summary    attack.Summary                       `json:"summary"`
+	Candidates map[string]int                       `json:"candidates"`
+}
+
 // HandleAttackCoverage returns per-technique rule counts plus the summary strip
 // for the caller's current fractal or prism (viewer+).
 func (h *Handler) HandleAttackCoverage(w http.ResponseWriter, r *http.Request) {
-	rows, matrix, ok := h.attackRows(w, r)
+	scope, ok := h.attackRows(w, r)
 	if !ok {
 		return
 	}
 
-	filter, err := attackFilter(matrix, r)
+	filter, err := attackFilter(scope.Matrix, r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	coverage := scope.Matrix.Compute(scope.Rows, filter)
 
-	h.respondSuccess(w, matrix.Compute(rows, filter))
+	counts := map[string]int{}
+	candidates, err := h.manager.listCandidateRules(r.Context(), scope.FractalID, scope.PrismID)
+	if err != nil {
+		// A feed that has never synced simply has no catalog rows, and the map is
+		// still correct without the amber cells, so this is not fatal.
+		log.Printf("[Attack] Failed to load candidate rules: %v", err)
+	} else {
+		counts = candidateCounts(scope.Matrix, coverage, candidates, filter)
+	}
+
+	h.respondSuccess(w, AttackCoverage{
+		Techniques: coverage.Techniques,
+		Summary:    coverage.Summary,
+		Candidates: counts,
+	})
 }
 
 // TechniqueRules is one ATT&CK technique with the rules covering it, plus the
@@ -74,161 +98,66 @@ type TechniqueRules struct {
 	Count      int               `json:"count"`
 }
 
-// AttackGaps ranks uncovered techniques. CatalogPopulated distinguishes "no
-// candidate rules exist" from "the feed catalog was never synced", which look
-// the same from an empty candidate list.
-type AttackGaps struct {
-	Gaps             []Gap `json:"gaps"`
-	UncoveredTotal   int   `json:"uncovered_total"`
-	CandidateRules   int   `json:"candidate_rules"`
-	CatalogPopulated bool  `json:"catalog_populated"`
-	Returned         int   `json:"returned"`
-}
-
 // HandleAttackTechniqueRules returns the rules covering one technique (viewer+).
 // Kept separate from the coverage payload so the grid response stays small
 // regardless of how many rules a deployment has.
 func (h *Handler) HandleAttackTechniqueRules(w http.ResponseWriter, r *http.Request) {
-	rows, matrix, ok := h.attackRows(w, r)
+	scope, ok := h.attackRows(w, r)
 	if !ok {
 		return
 	}
 
 	id := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "id")))
-	technique := matrix.Technique(id)
+	technique := scope.Matrix.Technique(id)
 	if technique == nil {
 		h.respondError(w, http.StatusNotFound, "Unknown ATT&CK technique")
 		return
 	}
 
-	filter, err := attackFilter(matrix, r)
+	filter, err := attackFilter(scope.Matrix, r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	includeSub := r.URL.Query().Get("include_sub") == "true"
-	rules := matrix.RulesFor(rows, filter, technique.ID, includeSub)
+	rules := scope.Matrix.RulesFor(scope.Rows, filter, technique.ID, includeSub)
 	if rules == nil {
 		rules = []attack.RuleRow{}
 	}
 
 	h.respondSuccess(w, TechniqueRules{
 		Technique:  technique,
-		Platforms:  matrix.PlatformNames(technique),
-		LogSources: matrix.LogSourceNames(technique),
+		Platforms:  scope.Matrix.PlatformNames(technique),
+		LogSources: scope.Matrix.LogSourceNames(technique),
 		URL:        techniqueURL(technique.ID),
 		Rules:      rules,
 		Count:      len(rules),
 	})
 }
 
-// HandleAttackGaps ranks uncovered techniques by what can be done about them
-// today, cross-referencing the feed rule catalog (viewer+).
-//
-// Coverage shows where the holes are; this is what makes them actionable, since
-// "SigmaHQ has 12 rules for T1055, all filtered out by min_level" is a decision
-// and "no coverage" is not.
-func (h *Handler) HandleAttackGaps(w http.ResponseWriter, r *http.Request) {
-	rows, matrix, ok := h.attackRows(w, r)
+// HandleAttackTechniqueGap returns the candidate rules for one uncovered
+// technique, for the detail drawer (viewer+).
+func (h *Handler) HandleAttackTechniqueGap(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.attackRows(w, r)
 	if !ok {
 		return
 	}
 
-	filter, err := attackFilter(matrix, r)
-	if err != nil {
-		h.respondError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Attack] Failed to get scope for gaps: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
-		return
-	}
-
-	candidates, err := h.manager.listCandidateRules(r.Context(), fractalID, prismID)
-	if err != nil {
-		// A feed that has not synced since the catalog shipped simply has no rows.
-		// The gap list is still useful without candidates, so this is not fatal.
-		log.Printf("[Attack] Failed to load candidate rules: %v", err)
-		candidates = nil
-	}
-
-	limit := 25
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 500 {
-			limit = n
-		}
-	}
-
-	coverage := matrix.Compute(rows, filter)
-	gaps := computeGaps(matrix, coverage, candidates, filter, limit)
-	if gaps == nil {
-		gaps = []Gap{}
-	}
-
-	uncovered := coverage.Summary.TechniquesTotal - coverage.Summary.TechniquesCovered
-	h.respondSuccess(w, AttackGaps{
-		Gaps:             gaps,
-		UncoveredTotal:   uncovered,
-		CandidateRules:   len(candidates),
-		CatalogPopulated: len(candidates) > 0,
-		Returned:         len(gaps),
-	})
-}
-
-// HandleAttackTechniqueGap returns the candidate rules for one uncovered
-// technique, for the detail drawer (viewer+).
-func (h *Handler) HandleAttackTechniqueGap(w http.ResponseWriter, r *http.Request) {
-	if !h.requireRole(w, r, rbac.RoleViewer) {
-		return
-	}
-
-	matrix, err := attack.Get()
-	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, "ATT&CK matrix unavailable")
-		return
-	}
-
 	id := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "id")))
-	technique := matrix.Technique(id)
+	technique := scope.Matrix.Technique(id)
 	if technique == nil {
 		h.respondError(w, http.StatusNotFound, "Unknown ATT&CK technique")
 		return
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
-		return
-	}
-
-	candidates, err := h.manager.listCandidateRules(r.Context(), fractalID, prismID)
+	candidates, err := h.manager.listCandidateRules(r.Context(), scope.FractalID, scope.PrismID)
 	if err != nil {
 		log.Printf("[Attack] Failed to load candidate rules: %v", err)
 		candidates = nil
 	}
 
-	// An empty coverage set makes computeGaps treat every technique as a gap, which
-	// is what we want here: the caller has already decided this one is uncovered.
-	gaps := computeGaps(matrix, &attack.Coverage{Techniques: map[string]*attack.TechniqueCoverage{}},
-		candidates, attack.Filter{}, 0)
-	for _, g := range gaps {
-		if g.TechniqueID == id {
-			h.respondSuccess(w, g)
-			return
-		}
-	}
-
-	h.respondSuccess(w, Gap{
-		TechniqueID: technique.ID,
-		Name:        technique.Name,
-		Tactics:     technique.Tactics,
-		ByReason:    map[string]int{},
-		LogSources:  matrix.LogSourceNames(technique),
-	})
+	h.respondSuccess(w, techniqueGap(scope.Matrix, candidates, technique))
 }
 
 // navigatorLayer is the ATT&CK Navigator layer format (v4.5). Exporting one lets
@@ -255,17 +184,18 @@ type navigatorTechnique struct {
 
 // HandleAttackLayer downloads coverage as an ATT&CK Navigator layer (viewer+).
 func (h *Handler) HandleAttackLayer(w http.ResponseWriter, r *http.Request) {
-	rows, matrix, ok := h.attackRows(w, r)
+	scope, ok := h.attackRows(w, r)
 	if !ok {
 		return
 	}
 
-	filter, err := attackFilter(matrix, r)
+	filter, err := attackFilter(scope.Matrix, r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	coverage := matrix.Compute(rows, filter)
+	matrix := scope.Matrix
+	coverage := matrix.Compute(scope.Rows, filter)
 
 	scopeName := r.URL.Query().Get("scope_name")
 	if scopeName == "" {
@@ -316,33 +246,42 @@ func (h *Handler) HandleAttackLayer(w http.ResponseWriter, r *http.Request) {
 
 // attackRows resolves scope, checks RBAC, and loads the rules for the current
 // session. It writes the error response itself; ok is false when it did.
-func (h *Handler) attackRows(w http.ResponseWriter, r *http.Request) ([]attack.RuleRow, *attack.Matrix, bool) {
+func (h *Handler) attackRows(w http.ResponseWriter, r *http.Request) (attackScope, bool) {
 	if !h.requireRole(w, r, rbac.RoleViewer) {
-		return nil, nil, false
+		return attackScope{}, false
 	}
 
 	matrix, err := attack.Get()
 	if err != nil {
 		log.Printf("[Attack] Failed to load matrix: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "ATT&CK matrix unavailable")
-		return nil, nil, false
+		return attackScope{}, false
 	}
 
 	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		log.Printf("[Attack] Failed to get scope: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
-		return nil, nil, false
+		return attackScope{}, false
 	}
 
 	rows, err := h.manager.ListCoverageRows(r.Context(), fractalID, prismID)
 	if err != nil {
 		log.Printf("[Attack] Failed to load coverage rows: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to load rules")
-		return nil, nil, false
+		return attackScope{}, false
 	}
 
-	return rows, matrix, true
+	return attackScope{Matrix: matrix, Rows: rows, FractalID: fractalID, PrismID: prismID}, true
+}
+
+// attackScope is what every coverage endpoint needs: the matrix, the rules in the
+// caller's scope, and the scope itself, resolved once.
+type attackScope struct {
+	Matrix    *attack.Matrix
+	Rows      []attack.RuleRow
+	FractalID string
+	PrismID   string
 }
 
 // validSeverities is the enum, not a second list: it previously accepted "info",

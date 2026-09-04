@@ -68,6 +68,28 @@ The key shape depends on the model type:
 
 Enrichment columns can be filtered and aggregated like any other field.
 
+### Position in the pipeline
+
+Placement relative to an aggregation (`groupby`, stats functions, [`chain()`](chain.md)) decides what gets enriched:
+
+- `model_lookup()` before the aggregation enriches rows first. Model columns can then be group keys, aggregation inputs, row filters ahead of the aggregation, and step conditions inside `chain()`.
+- `model_lookup()` after the aggregation enriches the aggregated results instead, so the key fields must be among the group columns.
+
+Count events by whether the model has seen the user before:
+
+```
+* | model_lookup(model="known_users", key=[user]) | groupby(is_new)
+```
+
+Sequence a first-ever-seen user straight into process execution:
+
+```
+* | model_lookup(model="known_users", key=[user]) | chain(user, within=10m) {
+  is_new="1";
+  bifract_category="process_creation"
+}
+```
+
 ### strict
 
 By default a row the model never scored is dropped. The model's key set is pushed into the log scan, so the query reads only the logs that can match rather than every log in the range and discarding the rest after the join.

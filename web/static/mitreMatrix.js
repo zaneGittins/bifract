@@ -251,6 +251,9 @@ const BifractMitreMatrix = {
         this._paint(view);
         this._renderSummary(view);
         this._renderLegend(view);
+        // The summary and legend sit above the grid and decide where it starts, so
+        // the height it measured while building is only final once they are in.
+        this._fitGrid(view);
         host._mtrView = view;
         return view;
     },
@@ -260,6 +263,7 @@ const BifractMitreMatrix = {
         const prev = host && host._mtrView;
         if (!prev) return;
         prev.resizeObserver?.disconnect();
+        if (prev.onWindowResize) window.removeEventListener('resize', prev.onWindowResize);
         if (this._drawerView === prev) this._closeDrawer();
         host._mtrView = null;
     },
@@ -292,7 +296,7 @@ const BifractMitreMatrix = {
                         <option value="all"${view.observedOnly ? '' : ' selected'}>Full matrix</option>
                         <option value="observed"${view.observedOnly ? ' selected' : ''}>Observed only</option>
                     </select>
-                    ${byOption ? `<select class="atk-select" data-mtr-colorby title="What the cell colour encodes">
+                    ${byOption ? `<select class="atk-select" data-mtr-colorby title="What the cell color encodes">
                         <option value="events">Event count</option>
                         ${byOption}
                     </select>` : ''}
@@ -385,12 +389,25 @@ const BifractMitreMatrix = {
 
         grid.innerHTML = '';
         grid.appendChild(frag);
-        this._fitColumns(view);
+        this._fitGrid(view);
 
         if (view.resizeObserver) view.resizeObserver.disconnect();
-        view.resizeObserver = new ResizeObserver(() => this._fitColumns(view));
+        view.resizeObserver = new ResizeObserver(() => this._fitGrid(view));
         const wrap = view.host.querySelector('.atk-matrix-wrap');
         if (wrap) view.resizeObserver.observe(wrap);
+        if (!view.onWindowResize) {
+            // Resizing only the height leaves the grid's box alone, so the observer
+            // never fires and its height would stay stale.
+            view.onWindowResize = () => this._fitGrid(view);
+            window.addEventListener('resize', view.onWindowResize);
+        }
+    },
+
+    // Columns across, and down to the bottom bar. An embedded matrix is sized by
+    // the panel it sits in, so only the standalone view measures the viewport.
+    _fitGrid(view) {
+        this._fitColumns(view);
+        if (!view.embedded) Utils.fitBelow(view.host.querySelector('.atk-matrix-wrap'), 260);
     },
 
     // Fit the whole kill chain across the available width, down to a legibility
@@ -625,7 +642,7 @@ const BifractMitreMatrix = {
             ${stat('Top technique', top ? top.name : '-', top ? `${this._fmt(topCount)} events` : '',
                 top ? `${topId} accounts for the most events in this result set.` : 'No technique tags in this result set.')}
             ${tacticTags.length ? stat('Tactic tags', String(tacticTags.length), tacticNote,
-                'Tactic-level tags (attack.execution) seen on these events. A tactic does not say which technique fired, so it colours no cell; the same events usually carry a technique tag as well.') : ''}
+                'Tactic-level tags (attack.execution) seen on these events. A tactic does not say which technique fired, so it colors no cell; the same events usually carry a technique tag as well.') : ''}
             ${badTags.length ? stat('Unresolved', `${badTags.length} tag${badTags.length === 1 ? '' : 's'}`,
                 badTags.slice(0, 4).map(([tag]) => tag).join(', '),
                 'Tags naming a technique ID that does not exist in this ATT&CK version and has no replacement, usually a typo or a technique MITRE removed outright. Retired IDs that DO have a replacement are followed automatically and are not counted here.', true) : ''}

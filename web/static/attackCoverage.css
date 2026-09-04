@@ -83,12 +83,110 @@
 .atk-stat-value.atk-warn { color: var(--warning); }
 
 .atk-stat-version {
-    margin-left: auto;
     font-size: 0.66rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
     white-space: nowrap;
 }
+
+/* One number leads the page. The generous top-level count that used to sit beside
+   it measured the same thing more kindly, which is a tooltip's job, not a strip's. */
+.atk-headline {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.atk-headline-value {
+    font-family: var(--font-mono);
+    font-size: 1.35rem;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.atk-headline-of,
+.atk-headline-pct {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Specificity, not order: the base .atk-meter width is declared further down. */
+.atk-meter.atk-headline-meter {
+    width: 110px;
+    align-self: center;
+}
+
+.atk-weakest {
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.atk-weakest b {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* Chips count the work outstanding, so one that would read zero is not rendered
+   at all: anything on this row means there is something to do. */
+.atk-attn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin-left: auto;
+}
+
+.atk-chip-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    height: 26px;
+    padding: 0 0.6rem;
+    border-radius: 13px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-family: var(--font-main);
+    font-size: 0.73rem;
+    white-space: nowrap;
+}
+
+.atk-chip-btn b {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+button.atk-chip-btn { cursor: pointer; }
+
+button.atk-chip-btn:hover {
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+}
+
+.atk-chip-btn.atk-chip-on {
+    border-color: var(--accent-primary);
+    background: var(--accent-glow);
+    color: var(--text-primary);
+}
+
+.atk-chip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.atk-chip-close .atk-chip-dot { background: var(--warning); }
+.atk-chip-off .atk-chip-dot { background: transparent; border: 1.5px dashed var(--accent-secondary); }
+.atk-chip-muted .atk-chip-dot { background: var(--text-muted); }
+.atk-chip-broken .atk-chip-dot { background: var(--error); }
 
 /* Inline meter: the headline ratio keeps a visual read without a card to sit in. */
 .atk-meter {
@@ -106,6 +204,18 @@
     height: 100%;
     background: var(--accent-primary);
     border-radius: 2px;
+}
+
+/* A tactic reads as a position, not a score: purple is covered, amber is what a
+   synced feed could close on top of it. */
+.atk-meter-stacked {
+    display: flex;
+    width: 100%;
+}
+
+.atk-meter-close {
+    height: 100%;
+    background: color-mix(in srgb, var(--warning) 55%, transparent);
 }
 
 /* ---- Controls ---- */
@@ -306,6 +416,28 @@
     justify-content: center;
 }
 
+.atk-legend-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    white-space: nowrap;
+}
+
+.atk-legend-swatch[data-state] { width: 12px; height: 12px; }
+.atk-legend-swatch[data-state="live"] { background: var(--atk-heat-4); border-color: transparent; }
+.atk-legend-swatch[data-state="off"] {
+    background: transparent;
+    border: 1px dashed color-mix(in srgb, var(--accent-secondary) 60%, transparent);
+}
+.atk-legend-swatch[data-state="close"] {
+    background: color-mix(in srgb, var(--warning) 16%, transparent);
+    border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+.atk-legend-swatch[data-state="none"] {
+    background: transparent;
+    border-style: dashed;
+}
+
 .atk-legend-swatch[data-heat="0"] {
     background: var(--atk-gap-bg);
     border-style: dashed;
@@ -319,13 +451,14 @@
 /* ---- Matrix grid ---- */
 
 /* The grid scrolls inside its own box so a 15-column matrix never makes the page
-   itself scroll sideways. */
+   itself scroll sideways. The calc is only the first-paint value: Utils.fitBelow
+   publishes --fit-height, the space actually left above the bottom bar. */
 .atk-matrix-wrap {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     overflow: auto;
-    max-height: calc(100vh - 300px);
+    max-height: var(--fit-height, calc(100vh - 300px));
 }
 
 /* --atk-col-min is set by fitColumns() so all 15 tactic columns land on screen at
@@ -434,6 +567,26 @@
 .atk-cell[data-heat="4"] { background: var(--atk-heat-4); color: var(--atk-heat-ink-high); }
 .atk-cell[data-heat="5"] { background: var(--atk-heat-5); color: var(--atk-heat-ink-high); }
 
+/* Status mode. Covered-and-live keeps the heat ramp above; these two are the
+   states a rule count cannot express: everything mapped here is switched off, and
+   nothing is mapped here but a synced feed carries something that would. */
+.atk-cell.atk-off {
+    border: 1px dashed color-mix(in srgb, var(--accent-secondary) 60%, transparent);
+    background: transparent;
+    color: var(--text-secondary);
+}
+
+.atk-cell.atk-close {
+    border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+    background: color-mix(in srgb, var(--warning) 7%, transparent);
+    color: var(--text-primary);
+}
+
+.atk-cell.atk-close .atk-badge {
+    background: color-mix(in srgb, var(--warning) 18%, transparent);
+    color: var(--warning);
+}
+
 /* Severity mode: a status palette, not a magnitude ramp, so it gets its own
    tinted-fill treatment with a left accent bar rather than a solid wash. */
 .atk-cell[data-sev] {
@@ -532,145 +685,7 @@
 
 .atk-cell.atk-hidden { display: none; }
 
-/* ---- Gap list ---- */
-
-.atk-gaps:empty { display: none; }
-
-/* Collapsed by default: the matrix is the view, and an always-open list under it
-   pushes the grid off screen for a question most visits are not asking. */
-.atk-gaps-toggle {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    width: 100%;
-    text-align: left;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 0.6rem 0.75rem;
-    cursor: pointer;
-    color: var(--text-primary);
-    font-family: var(--font-main);
-    transition: var(--transition);
-}
-
-.atk-gaps-toggle:hover { background: var(--bg-hover); }
-.atk-gaps-toggle svg {
-    flex-shrink: 0;
-    color: var(--text-muted);
-    transition: transform 0.15s ease;
-}
-.atk-gaps-toggle.atk-open svg { transform: rotate(90deg); }
-.atk-gaps-toggle.atk-open { border-radius: 8px 8px 0 0; border-bottom-color: transparent; }
-
-.atk-gaps-title {
-    font-size: 0.85rem;
-    font-weight: 600;
-}
-
-.atk-gaps-hint {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.atk-gaps-list {
-    display: none;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 2px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-top: none;
-    border-radius: 0 0 8px 8px;
-    padding: 4px;
-}
-
-.atk-gaps-list.atk-open { display: grid; }
-
-.atk-gap {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    width: 100%;
-    min-width: 0;
-    text-align: left;
-    background: none;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    padding: 0.45rem 0.6rem;
-    cursor: pointer;
-    color: var(--text-primary);
-    font-family: var(--font-main);
-    transition: var(--transition);
-}
-
-.atk-gap:hover {
-    background: var(--bg-hover);
-    border-color: var(--accent-primary);
-}
-
-.atk-gap-main {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-}
-
-.atk-gap-name {
-    font-size: 0.8rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.atk-gap-detail {
-    font-size: 0.68rem;
-    color: var(--text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.atk-gap-side {
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 0.1rem;
-    max-width: 45%;
-}
-
-.atk-gap-id {
-    font-family: var(--font-mono);
-    font-size: 0.68rem;
-    color: var(--text-muted);
-}
-
-.atk-gap-tactics {
-    font-size: 0.66rem;
-    color: var(--text-muted);
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-/* Shown only when there is something to act on. With no feed synced every row
-   would otherwise repeat the same "needs a new rule" badge, which is noise;
-   its absence carries the same information. */
-.atk-gap-action {
-    font-size: 0.66rem;
-    font-weight: 600;
-    padding: 0.05rem 0.4rem;
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--success) 16%, transparent);
-    border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
-    color: var(--text-primary);
-    white-space: nowrap;
-}
+/* ---- Feed candidates (drawer) ---- */
 
 .atk-candidate {
     background: var(--bg-tertiary);
@@ -700,10 +715,6 @@
     margin-top: 0.2rem;
     font-size: 0.68rem;
     color: var(--text-muted);
-}
-
-@media (max-width: 900px) {
-    .atk-gap-tactics { display: none; }
 }
 
 /* ---- Tooltip ---- */
@@ -901,6 +912,24 @@
 
 .atk-link:hover { text-decoration: underline; }
 
+/* The drawer ends in the two things to do about a technique: write the rule, or
+   go read MITRE's page on it. */
+.atk-drawer-actions {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.65rem 1rem;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+}
+
+.atk-drawer-actions > * {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+}
+
 body.atk-drawer-open { overflow: hidden; }
 
 @media (max-width: 720px) {
@@ -908,12 +937,17 @@ body.atk-drawer-open { overflow: hidden; }
     .atk-matrix-wrap { max-height: none; }
 }
 
+/* The observed matrix has no attention chips to push the version stamp along, so
+   it claims the free space itself. */
+.mtr-view .atk-stat-version { margin-left: auto; }
+
 /* ---- Observed matrix (query results: `| mitre()`) ---- */
 
 /* The query page already spends vertical on the query bar and timeline, so the
-   grid claims what is left rather than the coverage page's budget. */
+   grid claims what is left rather than the coverage page's budget. Same as the
+   coverage grid, this is the first-paint value and Utils.fitBelow measures the rest. */
 .mtr-view { padding-top: 0.25rem; }
-.mtr-matrix-wrap { max-height: calc(100vh - 360px); }
+.mtr-matrix-wrap { max-height: var(--fit-height, calc(100vh - 360px)); }
 
 .mtr-hidden { display: none !important; }
 

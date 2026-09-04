@@ -71,15 +71,14 @@ const Autocomplete = {
         window.addEventListener('resize', () => { this._hideGhost(); this._hideMenu(); });
     },
 
-    // Identify query editors: main search, alert editor, notebook + dashboard
-    // query cells, and the analytics model builder. Markdown notebook cells share
-    // the edit-content- id prefix but are NOT inside .query-input-wrapper, so the
-    // wrapper check correctly excludes them.
+    // Identify query editors: main search, alert editor, model editor, notebook +
+    // dashboard query cells. Markdown notebook cells share the edit-content- id
+    // prefix but are NOT inside .query-input-wrapper, so the wrapper check
+    // correctly excludes them.
     _isQueryTextarea(el) {
         if (el.classList.contains('search-input')) return true;
         if (el.closest('.query-input-wrapper')) return true;
         if (el.id && el.id.startsWith('wie-q-')) return true;
-        if (el.id === 'modelQueryInput') return true;
         return false;
     },
 

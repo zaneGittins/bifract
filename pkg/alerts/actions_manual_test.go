@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"bifract/pkg/storage"
 )
@@ -242,5 +243,120 @@ throttleTimeSeconds: 0
 	}
 	if got.WebhookActions[0].Name != "ZZ hook A" {
 		t.Errorf("legacy webhook wiring lost: %q", got.WebhookActions[0].Name)
+	}
+}
+
+// TestWebhookBodyConfigRoundTrip covers the paths a template travels: the CRUD
+// writes, the per-alert JSON aggregation the engine reads, and validation.
+// The aggregation is the one that fails silently, delivering envelopes to an
+// action configured for a template.
+func TestWebhookBodyConfigRoundTrip(t *testing.T) {
+	m, fractalID, ctx := liveManager(t)
+	cleanup(t, m, ctx)
+	t.Cleanup(func() { cleanup(t, m, ctx) })
+
+	const hecTemplate = `{{- range .Results}}
+{"time":{{unixSeconds $.TriggeredAt}},"event":{{toJSON .}}}
+{{- end}}`
+
+	created, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{
+		Name:         "ZZ hook hec",
+		URL:          "http://splunk.invalid:8088/services/collector/event",
+		Enabled:      true,
+		BodyMode:     BodyModeTemplate,
+		BodyTemplate: hecTemplate,
+		ContentType:  "application/json",
+	}, probeUser(), fractalID, "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.BodyMode != BodyModeTemplate || created.BodyTemplate != hecTemplate {
+		t.Fatalf("create lost the body config: %+v", created)
+	}
+
+	// A stored template must survive the read the editor uses.
+	got, err := m.GetWebhookAction(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.BodyMode != BodyModeTemplate || got.BodyTemplate != hecTemplate || got.ContentType != "application/json" {
+		t.Fatalf("get lost the body config: %+v", got)
+	}
+
+	list, err := m.ListWebhookActions(ctx, true, fractalID, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for _, w := range list {
+		if w.ID == created.ID {
+			found = true
+			if w.BodyTemplate != hecTemplate {
+				t.Errorf("list lost the template: %q", w.BodyTemplate)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("created webhook missing from list")
+	}
+
+	// The engine reads actions through a json_build_object aggregation that is
+	// written out column by column, so a new column is easy to leave out of it.
+	mustExec(t, m, ctx, `INSERT INTO alerts (name, description, query_string, fractal_id, enabled) VALUES ('ZZ probe body', '', 'level=error', $1, true)`, fractalID)
+	var alertID string
+	if err := m.pg.QueryRow(ctx, `SELECT id::text FROM alerts WHERE name = 'ZZ probe body'`).Scan(&alertID); err != nil {
+		t.Fatalf("probe alert: %v", err)
+	}
+	mustExec(t, m, ctx, `INSERT INTO alert_webhook_actions (alert_id, webhook_id) VALUES ($1, $2)`, alertID, created.ID)
+
+	alerts, err := m.engine.refreshAlertsCache(ctx)
+	if err != nil {
+		t.Fatalf("refreshAlertsCache: %v", err)
+	}
+	var checked bool
+	for _, a := range alerts {
+		if a.ID != alertID {
+			continue
+		}
+		if len(a.WebhookActions) != 1 {
+			t.Fatalf("expected 1 webhook action, got %d", len(a.WebhookActions))
+		}
+		checked = true
+		wa := a.WebhookActions[0]
+		if wa.BodyMode != BodyModeTemplate || wa.BodyTemplate != hecTemplate {
+			t.Errorf("engine sees the wrong body config, delivery would fall back to the envelope: %+v", wa)
+		}
+		body, _, err := RenderWebhookBody(wa, WebhookPayload{
+			TriggeredAt: time.Unix(1700000000, 0),
+			Results:     []map[string]interface{}{{"user": "alice"}},
+		})
+		if err != nil {
+			t.Fatalf("render from engine-loaded config: %v", err)
+		}
+		if want := `{"time":1700000000,"event":{"user":"alice"}}`; strings.TrimSpace(string(body)) != want {
+			t.Errorf("rendered %q, want %q", strings.TrimSpace(string(body)), want)
+		}
+	}
+	if !checked {
+		t.Fatal("probe alert not returned by refreshAlertsCache")
+	}
+
+	// Updating back to envelope must clear the template's effect.
+	updated, err := m.UpdateWebhookAction(ctx, created.ID, WebhookUpdateRequest{
+		Name: "ZZ hook hec", URL: created.URL, Enabled: true, BodyMode: BodyModeEnvelope,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.BodyMode != BodyModeEnvelope {
+		t.Errorf("update did not switch mode: %+v", updated)
+	}
+
+	// A template that cannot compile must be refused at write time.
+	if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{
+		Name: "ZZ hook broken", URL: "http://x/1", Enabled: true,
+		BodyMode: BodyModeTemplate, BodyTemplate: `{{range .Results}}`,
+	}, probeUser(), fractalID, ""); err == nil {
+		t.Error("a broken template was accepted")
 	}
 }

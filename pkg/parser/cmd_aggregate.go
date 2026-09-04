@@ -798,6 +798,17 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if arg == "distinct=false" {
 			// Explicit non-distinct, ignore
 		} else {
+			// A join-output column only exists per-row under the scan-level model
+			// join, which feeds the FIRST aggregation stage only; grouping it
+			// anywhere else would reference a column that scope does not have
+			// (ClickHouse code 47). In a later stage the entry was dropped by
+			// ScopeToOutputs (a carried group key re-registers as Base), so ask
+			// ModelLookupFields directly.
+			if e := ctx.Registry.Get(arg); e != nil && e.Kind == FieldKindJoined && !ctx.Plan.ModelLookupAtScan {
+				return fmt.Errorf("groupby(): %q is produced by a join and is not available here; model_lookup() outputs can be grouped by placing model_lookup() before the aggregation", arg)
+			} else if e == nil && isMultiStage && contains(ctx.Plan.ModelLookupOutputs, arg) {
+				return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
+			}
 			var fieldRef string
 			if computedFields[arg] {
 				fieldRef = arg

@@ -196,6 +196,25 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		}
 	}
 
+	// model_lookup() placement: with an aggregation (groupby/chain/stats) AFTER it,
+	// the model join must attach to the row scan so the aggregation sees model
+	// columns per-row. With aggregation only before it (or none at all), the join
+	// stays outermost, where it touches only the final rows. Decided before Execute
+	// so chain/groupby handlers can route model-column references accordingly.
+	if mlIdx := commandIndex(pipeline.Commands, "model_lookup"); mlIdx >= 0 {
+		aggBefore, aggAfter := false, false
+		for i, cmd := range pipeline.Commands {
+			if aggregatingCommandNames[cmd.Name] || cmd.Name == "chain" {
+				if i < mlIdx {
+					aggBefore = true
+				} else if i > mlIdx {
+					aggAfter = true
+				}
+			}
+		}
+		plan.ModelLookupAtScan = aggAfter && !aggBefore
+	}
+
 	// Register assignment fields
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
@@ -921,7 +940,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		plan.Formatters = nil
 		fieldOrder = appendJoinedFields(fieldOrder, joinDisplayNames(plan), plan)
 	}
-	if plan.ModelLookupSQL != "" {
+	// Scan-level model_lookup is exempt: its columns are per-row inputs to the
+	// aggregation, not appended outputs, and the formatter path applies as normal.
+	if plan.ModelLookupSQL != "" && !plan.ModelLookupAtScan {
 		plan.Formatters = nil
 		fieldOrder = appendJoinedFields(fieldOrder, plan.ModelLookupFields, plan)
 	}
@@ -1340,7 +1361,10 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 // near-arbitrary subset that changes run to run whenever rows tie on timestamp (and
 // especially across a prism's member fractals).
 func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryStage) {
-	hasJoinWrap := plan.ModelLookupSQL != "" || (plan.IsJoin && plan.JoinSubSQL != "")
+	// A scan-level model join is not a wrap: its columns are per-row before the
+	// aggregation, so nothing needs relocating and the stage LIMIT already applies
+	// after the join.
+	hasJoinWrap := (plan.ModelLookupSQL != "" && !plan.ModelLookupAtScan) || (plan.IsJoin && plan.JoinSubSQL != "")
 	if plan.ModifiedZScoreExpr == "" && !hasJoinWrap {
 		return
 	}
@@ -1363,7 +1387,7 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	// MaxRows logs. The exception is an exact prefilter: the scan's own WHERE then
 	// rejects precisely the rows the join would, so the LIMIT is already counting
 	// only matches and can stay where read-in-order can use it.
-	strictInexactJoin := plan.ModelLookupSQL != "" && plan.ModelLookupStrict && !plan.ModelLookupPrefilterExact
+	strictInexactJoin := plan.ModelLookupSQL != "" && !plan.ModelLookupAtScan && plan.ModelLookupStrict && !plan.ModelLookupPrefilterExact
 	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0) || strictInexactJoin
 	if liftLimit && hasJoinWrap {
 		// The ordering must follow the filter, so it moves out with the LIMIT.

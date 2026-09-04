@@ -16,10 +16,27 @@ rules cover each technique. The page is scoped to the fractal or prism you are i
 
 ## Reading the map
 
-Each column is a tactic in kill-chain order. Each cell is a technique, filled in
-proportion to how many rules map to it and badged with the count. **Uncovered
-techniques are drawn with a dashed border and no fill**, so a gap never reads as
-merely low coverage.
+Each column is a tactic in kill-chain order and each cell is a technique. By default
+the color says what state the technique is in, which is the question the page exists
+to answer:
+
+| Cell | Meaning |
+|---|---|
+| Filled purple, badged with a count | At least one enabled rule maps here. The fill deepens with the rule count |
+| Dashed purple outline | Every rule mapped here is switched off. Covered on paper, detecting nothing |
+| Amber, badged with a count | No rule here, but a synced feed carries that many rules that were never imported. These are the gaps you can close today |
+| Flat, unbadged | No rule, and nothing waiting in a feed. This one needs a new detection |
+
+Switch **Color** to rule count or highest severity when you are tuning depth rather
+than looking for holes.
+
+The header carries one number, **Coverage**, and a chip for each thing outstanding:
+gaps a feed could close, techniques covered only by disabled rules, rules carrying no
+ATT&CK tag, and broken tags. A chip is rendered only when its count is not zero, and
+the first two are filters: click one and the grid narrows to the cells it counted.
+
+Each column header shows that tactic's coverage over a two-part meter: purple for what
+is covered, amber for the share a feed could close on top of it.
 
 Cells with a chevron have sub-techniques; expand them individually or turn on
 **Sub-techniques** to expand every group.
@@ -28,14 +45,17 @@ Cells with a chevron have sub-techniques; expand them individually or turn on
 
 Two numbers, and the difference between them matters.
 
-**Coverage** (the large number in each column header) counts **detectable units**:
+**Coverage** (the headline, and the number in each column header) counts
+**detectable units**:
 every sub-technique, plus every technique that has none. Nothing is inherited. A rule
 tagged `attack.t1547` covers the *parent* but zero of its 14 autostart sub-techniques,
 because the tag does not say which mechanism the rule catches.
 
-**Techniques touched** (the small line beneath) counts top-level techniques with at
-least one rule mapped to them **or to any of their sub-techniques**. A technique with
-14 sub-techniques and 1 covered scores a full point here.
+**Techniques touched** counts top-level techniques with at least one rule mapped to
+them **or to any of their sub-techniques**. A technique with 14 sub-techniques and 1
+covered scores a full point here. It lives in the tooltip on Coverage and on each
+column header rather than on the page, because it is the flattering number of the two
+and does not belong in a glance.
 
 The gap between them is usually large:
 
@@ -59,7 +79,8 @@ Three further counting rules:
 - A rule tagged with a **retired** technique ID resolves to its replacement where
   ATT&CK defines one (`attack.t1086` counts toward T1059.001). An ID with **no**
   replacement, usually a typo or a technique MITRE removed outright, is invisible to
-  the map; those are listed in the **Broken ATT&CK tags** card so you can fix the rule.
+  the map; they are counted by the **broken tags** chip in the header so you can fix
+  the rule.
 
 Deprecated techniques are excluded from every denominator.
 
@@ -68,9 +89,8 @@ Deprecated techniques are excluded from every denominator.
 | Control | Effect |
 |---|---|
 | Search | Dims non-matching cells and expands any sub-technique group holding a match. Matches technique IDs too, which are not printed on the cells |
-| All techniques / Gaps only / Covered only | Narrows the grid to what you are working on |
-| Colour | Rule count, enabled rules, or highest severity. "Enabled rules" is how you find coverage that exists but is switched off |
-| Filters | Severity, platform, source and enabled-only, folded into one control with a badge showing how many are active. The platform filter narrows the technique universe too, so the percentage stays honest |
+| Color | Status, rule count or highest severity |
+| Filters | Show (all / gaps only / covered only), severity, platform, source and enabled-only, folded into one control with a badge showing how many are active. The platform filter narrows the technique universe too, so the percentage stays honest |
 | Sub-techniques | Expands every sub-technique group at once |
 | Export layer | Downloads your coverage as an ATT&CK Navigator layer (see below) |
 
@@ -95,12 +115,11 @@ Clicking any cell opens a drawer with the technique's tactics, the rules coverin
 it (click one to open it in the alert editor), its platforms, the telemetry MITRE
 expects it to be detectable in, and a link to attack.mitre.org.
 
-## Top gaps
+## Closing a gap
 
-Below the grid, uncovered techniques are ranked by what you can do about them
-**today**. A gap is more actionable when a rule for it already exists in a feed you
-have configured but was never imported, so the list cross-references the feed rule
-catalog and states why each candidate is not running:
+An amber cell means a feed you have configured carries rules for that technique that
+were never imported. Open it and the drawer lists them, each with the reason it is not
+running:
 
 - `below the feed severity threshold`: the rule's `level` is under the feed's **Min Level**
 - `below the feed maturity threshold`: the rule's `status` is under the feed's **Min Status**
@@ -109,14 +128,16 @@ catalog and states why each candidate is not running:
 
 The first two are a threshold you chose: lower the feed's Min Level or Min Status to
 pull those rules in. The last two are translator work, and their counts are the
-clearest signal of which Sigma constructs to support next.
+clearest signal of which Sigma constructs to support next. Nothing is imported behind
+your back.
 
-Techniques with nothing available are shown as **Needs a new rule**, with MITRE's
-expected telemetry as the starting point.
+For a technique with nothing waiting, **Write a detection** opens the alert editor with
+the name, the `attack.tNNNN` label and MITRE's expected telemetry already filled in, so
+the rule that closes the gap is tagged for the map without you having to remember.
 
 ## The rule catalog
 
-The gap list is backed by `feed_rule_catalog`, which records every rule a feed's
+The amber cells are backed by `feed_rule_catalog`, which records every rule a feed's
 repository offers, imported or not. It is populated on **every feed sync**, so a
 freshly upgraded install shows no candidates until its feeds sync again. Trigger a
 sync from **Alerts > Feeds** to populate it immediately.

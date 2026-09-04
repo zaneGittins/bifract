@@ -1511,6 +1511,13 @@ func numericCast(fieldName, resolvedExpr string, registry *FieldRegistry) string
 	if registry != nil && registry.IsNumericComputed(fieldName) {
 		return fmt.Sprintf("toFloat64(%s)", resolvedExpr)
 	}
+	// Join-output columns are concretely typed (Float64 scores, String flags);
+	// toFloat64 handles both, while toFloat64OrNull rejects non-String input.
+	if registry != nil {
+		if e := registry.Get(fieldName); e != nil && e.Kind == FieldKindJoined {
+			return fmt.Sprintf("toFloat64(%s)", resolvedExpr)
+		}
+	}
 	return fmt.Sprintf("toFloat64OrNull(%s)", resolvedExpr)
 }
 
@@ -2005,6 +2012,17 @@ func splitTopLevelArgs(s string) []string {
 		parts = append(parts, strings.TrimSpace(s[start:]))
 	}
 	return parts
+}
+
+// commandIndex returns the index of the first top-level command with the given
+// name, or -1 when absent.
+func commandIndex(commands []CommandNode, name string) int {
+	for i, cmd := range commands {
+		if cmd.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // firstAggregatingCommandIndex returns the index of the first command that

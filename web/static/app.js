@@ -469,41 +469,10 @@ const App = {
         const executeBtn = document.getElementById('executeBtn');
 
         if (queryInput) {
-            queryInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    if (window.QueryExecutor) {
-                        QueryExecutor.execute();
-                    }
-                } else if (e.key === 'Enter' && e.shiftKey) {
-                    // Allow new line (default behavior)
-                } else if (e.key === 'Tab' && !e._autocompleteHandled) {
-                    e.preventDefault();
-                    const start = queryInput.selectionStart;
-                    const end = queryInput.selectionEnd;
-                    const value = queryInput.value;
-
-                    // Insert tab character at cursor position
-                    queryInput.value = value.substring(0, start) + '\t' + value.substring(end);
-
-                    // Move cursor after the inserted tab
-                    queryInput.selectionStart = queryInput.selectionEnd = start + 1;
-
-                    // Trigger input event to update syntax highlighting
-                    queryInput.dispatchEvent(new Event('input'));
-                } else if (e.code === 'KeyF' && e.altKey && e.shiftKey) {
-                    e.preventDefault();
-                    this.formatQuery(queryInput);
-                } else if (e.key === '/' && e.ctrlKey) {
-                    e.preventDefault();
-                    this.toggleLineComment(queryInput);
-                } else if (e.key === 'z' && e.ctrlKey && !e.shiftKey) {
-                    e.preventDefault();
-                    this.undo('main', queryInput);
-                } else if ((e.key === 'y' && e.ctrlKey) || (e.key === 'z' && e.ctrlKey && e.shiftKey)) {
-                    e.preventDefault();
-                    this.redo('main', queryInput);
-                }
+            this.bindQueryEditorKeys(queryInput, {
+                historyKey: 'main',
+                onRun: () => window.QueryExecutor && QueryExecutor.execute(),
+                onFormat: () => this.formatQuery(queryInput),
             });
 
             // Auto-resize textarea and sync highlighting
@@ -608,6 +577,95 @@ const App = {
         }
     },
 
+    // Wires an editor's definition rail: drag to resize, and fold away while a log
+    // is open for inspection. The rail is a column of a grid, so it resizes by
+    // moving the track rather than by setting a width the grid would ignore.
+    // opts: { body, cssVar, storageKey, detail, foldClass, min, maxFraction }
+    bindEditorRail(handle, { body, cssVar, storageKey, detail, foldClass, min = 280, maxFraction = 0.6 } = {}) {
+        if (!body) return;
+
+        if (detail && foldClass) {
+            const sync = () => body.classList.toggle(foldClass, detail.classList.contains('open'));
+            new MutationObserver(sync).observe(detail, { attributes: true, attributeFilter: ['class'] });
+            sync();
+        }
+
+        if (!handle || !cssVar || handle.dataset.railBound) return;
+        handle.dataset.railBound = '1';
+
+        const apply = (w) => body.style.setProperty(cssVar, Math.round(w) + 'px');
+        const saved = storageKey ? parseFloat(localStorage.getItem(storageKey)) : NaN;
+        if (Number.isFinite(saved)) apply(saved);
+
+        let startX = 0, startWidth = 0;
+        const onMove = (e) => apply(Math.max(min, Math.min(window.innerWidth * maxFraction, startWidth + (startX - e.clientX))));
+        const onUp = () => {
+            handle.classList.remove('dragging');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            const width = parseFloat(body.style.getPropertyValue(cssVar));
+            if (storageKey && Number.isFinite(width)) localStorage.setItem(storageKey, width);
+        };
+
+        handle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            startX = e.clientX;
+            startWidth = handle.parentElement ? handle.parentElement.offsetWidth : min;
+            handle.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    },
+
+    // The keyboard contract every BQL editor shares: Enter runs, Shift+Enter is a
+    // newline, Tab indents, Ctrl+/ comments and Ctrl+Z/Y walk that editor's own
+    // history. Editors differ only in what running means, so that is the option.
+    // seed restarts the history at that value, for an editor that is rebuilt around
+    // a different query each time it opens.
+    bindQueryEditorKeys(textarea, { historyKey, onRun, onFormat, seed } = {}) {
+        if (!textarea || textarea.dataset.queryKeysBound) return;
+        textarea.dataset.queryKeysBound = '1';
+        if (historyKey) textarea.dataset.historyKey = historyKey;
+        if (historyKey && (seed !== undefined || !this.queryHistory[historyKey])) {
+            this.queryHistory[historyKey] = { states: [seed || ''], currentIndex: 0, maxSize: 50 };
+            clearTimeout(this.historyTimers[historyKey]);
+            this.historyTimers[historyKey] = null;
+        }
+
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                if (onRun) onRun();
+            } else if (e.key === 'Enter' && e.shiftKey) {
+                // Allow new line (default behavior)
+            } else if (e.key === 'Tab' && !e._autocompleteHandled) {
+                e.preventDefault();
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                const value = textarea.value;
+                textarea.value = value.substring(0, start) + '\t' + value.substring(end);
+                textarea.selectionStart = textarea.selectionEnd = start + 1;
+                textarea.dispatchEvent(new Event('input'));
+            } else if (onFormat && e.code === 'KeyF' && e.altKey && e.shiftKey) {
+                e.preventDefault();
+                onFormat();
+            } else if (e.key === '/' && e.ctrlKey) {
+                e.preventDefault();
+                this.toggleLineComment(textarea);
+            } else if (historyKey && e.key === 'z' && e.ctrlKey && !e.shiftKey) {
+                e.preventDefault();
+                this.undo(historyKey, textarea);
+            } else if (historyKey && ((e.key === 'y' && e.ctrlKey) || (e.key === 'z' && e.ctrlKey && e.shiftKey))) {
+                e.preventDefault();
+                this.redo(historyKey, textarea);
+            }
+        });
+    },
+
     toggleLineComment(textarea) {
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
@@ -664,8 +722,7 @@ const App = {
         textarea.dispatchEvent(new Event('input'));
 
         // Force save to history after comment toggle
-        const inputType = textarea.id === 'queryInput' ? 'main' : 'alert';
-        this.saveToHistoryImmediate(inputType, textarea.value, true);
+        this.saveToHistoryImmediate(textarea.dataset.historyKey || 'main', textarea.value, true);
     },
 
     shouldSaveHistory(oldValue, newValue) {
@@ -876,7 +933,9 @@ const App = {
         // Hide fractal view
         const fractalView = document.getElementById('fractalView');
         if (fractalView) fractalView.style.display = 'none';
-        document.body.classList.remove('search-active');
+        // Every view that locks the body to the viewport unlocks it here: leaving for
+        // the main view is the one exit those views do not each get told about.
+        document.body.classList.remove('search-active', 'recall-active');
 
         // Show main view
         const mainView = document.getElementById('mainView');
@@ -908,6 +967,7 @@ const App = {
 
         // Close editor views when switching tabs
         if (window.Alerts) Alerts.closeAlertEditor();
+        if (window.AnalyticsModels) AnalyticsModels.teardown();
         const actionsManageView = document.getElementById('actionsManageView');
         if (actionsManageView) {
             actionsManageView.style.display = 'none';
@@ -1350,11 +1410,14 @@ const App = {
     },
 
 
+    // Safe to call again after a view renders its own query box: a handle that is
+    // already wired is skipped rather than given a second set of listeners.
     setupQueryResizeHandles() {
         document.querySelectorAll('.query-resize-handle').forEach(handle => {
             const targetId = handle.dataset.target;
             const textarea = document.getElementById(targetId);
-            if (!textarea) return;
+            if (!textarea || handle.dataset.bound) return;
+            handle.dataset.bound = '1';
 
             const wrapper = textarea.closest('.query-input-wrapper');
             const highlight = wrapper ? wrapper.querySelector('.query-highlight') : null;
@@ -1395,7 +1458,8 @@ const App = {
     setupQueryLineNumbers() {
         document.querySelectorAll('.query-input-wrapper').forEach(wrapper => {
             const textarea = wrapper.querySelector('.search-input');
-            if (!textarea) return;
+            if (!textarea || wrapper.dataset.gutterBound) return;
+            wrapper.dataset.gutterBound = '1';
 
             const gutter = document.createElement('div');
             gutter.className = 'query-line-numbers';
@@ -1404,13 +1468,18 @@ const App = {
 
             // Hidden mirror used to measure how many visual rows each logical line
             // occupies once wrapped, so the gutter numbers stay aligned with the
-            // text instead of drifting after the first wrapped line.
-            const mirror = document.createElement('div');
-            mirror.setAttribute('aria-hidden', 'true');
-            // pre-wrap with default (normal) overflow-wrap, matching the textarea:
-            // wraps at spaces; long unbroken tokens overflow on a single row.
-            mirror.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:0;white-space:pre-wrap;overflow-wrap:normal;word-break:normal;';
-            document.body.appendChild(mirror);
+            // text instead of drifting after the first wrapped line. One for the
+            // page: every measurement restyles it, and a per-editor copy would be
+            // left behind in the body each time a view rebuilt its query box.
+            const mirror = this._lineMirror || (this._lineMirror = (() => {
+                const el = document.createElement('div');
+                el.setAttribute('aria-hidden', 'true');
+                // pre-wrap with default (normal) overflow-wrap, matching the textarea:
+                // wraps at spaces; long unbroken tokens overflow on a single row.
+                el.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;top:0;white-space:pre-wrap;overflow-wrap:normal;word-break:normal;';
+                document.body.appendChild(el);
+                return el;
+            })());
 
             const rowsForLine = (line, cs, lineHeight) => {
                 const padL = parseFloat(cs.paddingLeft) || 0;
@@ -1465,8 +1534,11 @@ const App = {
             textarea.addEventListener('scroll', () => {
                 gutter.scrollTop = textarea.scrollTop;
             });
-            // Wrapping changes with the editor width.
-            window.addEventListener('resize', update);
+            // Wrapping changes with the editor's width, which a window resize is not
+            // the only cause of: dragging the definition rail resizes it too. An
+            // observer also stops on its own once a rebuilt editor drops this
+            // textarea, where a window listener would live on holding it forever.
+            new ResizeObserver(update).observe(textarea);
 
             update();
         });

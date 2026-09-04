@@ -344,6 +344,34 @@ const Utils = {
         } catch (_) {
             return '';
         }
+    },
+
+    // Measure the space actually left below a scroll box and publish it as
+    // --fit-height, which its stylesheet reads: `max-height: var(--fit-height, <fallback>)`.
+    //
+    // A fixed budget (calc(100vh - 300px)) has to guess how much chrome sits above
+    // the box, and wherever the guess runs high the box stops short of the bottom
+    // bar. The fixed time bar and the page's own bottom padding come off the total:
+    // sizing past them puts the box underneath them and gives the page a scrollbar
+    // it does not need. Publishing a variable rather than an inline max-height
+    // leaves the cascade intact, so a rule that opts out (a mobile breakpoint, an
+    // embedded panel) still wins.
+    fitBelow(el, minHeight = 240) {
+        if (!el) return 0;
+        const bar = document.querySelector('.time-bar');
+        const container = el.closest('.container');
+        const pad = container ? parseFloat(getComputedStyle(container).paddingBottom) || 0 : 0;
+        const barHeight = bar && getComputedStyle(bar).position === 'fixed' ? bar.offsetHeight : 0;
+        const available = window.innerHeight - el.getBoundingClientRect().top - barHeight - pad;
+        const height = Math.max(minHeight, Math.min(Math.round(available), window.innerHeight));
+
+        // Only write on a real change: these run from a ResizeObserver watching the
+        // same element, and rewriting the value it just read restarts the cycle.
+        const current = parseFloat(el.style.getPropertyValue('--fit-height'));
+        if (!Number.isFinite(current) || Math.abs(current - height) > 1) {
+            el.style.setProperty('--fit-height', height + 'px');
+        }
+        return height;
     }
 };
 

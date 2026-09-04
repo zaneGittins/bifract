@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"bifract/pkg/attack"
 	"bifract/pkg/normalizers"
@@ -159,6 +160,9 @@ type WebhookCreateRequest struct {
 	RetryCount       int               `json:"retry_count"`
 	IncludeAlertLink *bool             `json:"include_alert_link"`
 	Enabled          bool              `json:"enabled"`
+	BodyMode         string            `json:"body_mode"`
+	BodyTemplate     string            `json:"body_template"`
+	ContentType      string            `json:"content_type"`
 }
 
 // WebhookUpdateRequest represents a request to update an existing webhook action
@@ -173,6 +177,9 @@ type WebhookUpdateRequest struct {
 	RetryCount       int               `json:"retry_count"`
 	IncludeAlertLink *bool             `json:"include_alert_link"`
 	Enabled          bool              `json:"enabled"`
+	BodyMode         string            `json:"body_mode"`
+	BodyTemplate     string            `json:"body_template"`
+	ContentType      string            `json:"content_type"`
 }
 
 // FractalActionCreateRequest represents a request to create a new fractal action
@@ -799,6 +806,9 @@ const (
 		               'timeout_seconds', wa.timeout_seconds,
 		               'retry_count', wa.retry_count,
 		               'include_alert_link', wa.include_alert_link,
+		               'body_mode', wa.body_mode,
+		               'body_template', wa.body_template,
+		               'content_type', wa.content_type,
 		               'enabled', wa.enabled
 		           ) ORDER BY wa.name), '[]'::json)
 		   FROM alert_webhook_actions awa
@@ -1468,10 +1478,15 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 		includeAlertLink = *req.IncludeAlertLink
 	}
 
+	bodyMode := NormalizeBodyMode(req.BodyMode)
+	if err := ValidateWebhookBody(bodyMode, req.BodyTemplate); err != nil {
+		return nil, err
+	}
+
 	var webhookID string
 	query := `
-		INSERT INTO webhook_actions (name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled, created_by, fractal_id, prism_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		INSERT INTO webhook_actions (name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled, created_by, fractal_id, prism_id, body_mode, body_template, content_type)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id
 	`
 
@@ -1482,6 +1497,7 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 		req.Name, req.URL, req.Method, string(headersJSON), req.AuthType,
 		string(authConfigJSON), req.TimeoutSeconds, req.RetryCount, includeAlertLink, req.Enabled, storage.NullableUser(createdBy),
 		nullableID(fractalID), nullableID(prismID),
+		bodyMode, req.BodyTemplate, strings.TrimSpace(req.ContentType),
 	).Scan(&webhookID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create webhook action: %w", err)
@@ -1514,10 +1530,16 @@ func (m *Manager) UpdateWebhookAction(ctx context.Context, webhookID string, req
 		includeAlertLink = *req.IncludeAlertLink
 	}
 
+	bodyMode := NormalizeBodyMode(req.BodyMode)
+	if err := ValidateWebhookBody(bodyMode, req.BodyTemplate); err != nil {
+		return nil, err
+	}
+
 	query := `
 		UPDATE webhook_actions
 		SET name = $2, url = $3, method = $4, headers = $5, auth_type = $6,
-		    auth_config = $7, timeout_seconds = $8, retry_count = $9, include_alert_link = $10, enabled = $11, updated_at = NOW()
+		    auth_config = $7, timeout_seconds = $8, retry_count = $9, include_alert_link = $10, enabled = $11,
+		    body_mode = $12, body_template = $13, content_type = $14, updated_at = NOW()
 		WHERE id = $1
 	`
 
@@ -1527,6 +1549,7 @@ func (m *Manager) UpdateWebhookAction(ctx context.Context, webhookID string, req
 	result, err := m.pg.Exec(ctx, query,
 		webhookID, req.Name, req.URL, req.Method, string(headersJSON), req.AuthType,
 		string(authConfigJSON), req.TimeoutSeconds, req.RetryCount, includeAlertLink, req.Enabled,
+		bodyMode, req.BodyTemplate, strings.TrimSpace(req.ContentType),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update webhook action: %w", err)
@@ -1548,7 +1571,8 @@ func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*Webh
 	query := `
 		SELECT id, name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled,
 		       COALESCE(created_by, ''), created_at, updated_at,
-		       COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
+		       COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''),
+		       body_mode, body_template, content_type
 		FROM webhook_actions
 		WHERE id = $1
 	`
@@ -1564,6 +1588,7 @@ func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*Webh
 		&webhook.TimeoutSecs, &webhook.RetryCount, &webhook.IncludeAlertLink, &webhook.Enabled,
 		&createdBy, &createdAt, &updatedAt,
 		&webhook.FractalID, &webhook.PrismID,
+		&webhook.BodyMode, &webhook.BodyTemplate, &webhook.ContentType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhook action: %w", err)
@@ -1586,7 +1611,8 @@ func (m *Manager) ListWebhookActions(ctx context.Context, enabledOnly bool, frac
 	baseQuery := `
 		SELECT id, name, url, method, headers, auth_type, auth_config, timeout_seconds, retry_count, include_alert_link, enabled,
 		       COALESCE(created_by, ''), created_at, updated_at,
-		       COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
+		       COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''),
+		       body_mode, body_template, content_type
 		FROM webhook_actions
 	`
 
@@ -1629,6 +1655,7 @@ func (m *Manager) ListWebhookActions(ctx context.Context, enabledOnly bool, frac
 			&webhook.TimeoutSecs, &webhook.RetryCount, &webhook.IncludeAlertLink, &webhook.Enabled,
 			&createdBy, &createdAt, &updatedAt,
 			&webhook.FractalID, &webhook.PrismID,
+			&webhook.BodyMode, &webhook.BodyTemplate, &webhook.ContentType,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan webhook action: %w", err)
@@ -1677,35 +1704,120 @@ func (m *Manager) DeleteWebhookAction(ctx context.Context, webhookID string) err
 	return nil
 }
 
-// TestWebhookAction sends a test payload to a webhook action
-func (m *Manager) TestWebhookAction(ctx context.Context, webhookID string) (*WebhookResult, error) {
+// WebhookTestResult reports what a test render produced and, when sent, how the
+// destination replied. RenderedBody is returned even on a delivery failure so a
+// template can be debugged against what actually went over the wire.
+type WebhookTestResult struct {
+	RenderedBody string         `json:"rendered_body"`
+	ContentType  string         `json:"content_type"`
+	BodyBytes    int            `json:"body_bytes"`
+	Truncated    bool           `json:"truncated"`
+	RenderError  string         `json:"render_error,omitempty"`
+	Sent         bool           `json:"sent"`
+	Result       *WebhookResult `json:"result,omitempty"`
+}
+
+// maxPreviewBody bounds what the preview returns to the browser. The body that
+// would be delivered is unaffected; only the copy shown in the editor is cut.
+const maxPreviewBody = 64 << 10
+
+// maxTestTimeoutSecs matches the editor's timeout ceiling, bounding how long a
+// test can hold its request open.
+const maxTestTimeoutSecs = 300
+
+// sampleTestPayload is the alert and rows a test renders against.
+func sampleTestPayload() (*Alert, []map[string]interface{}) {
+	testAlert := &Alert{
+		ID:          "00000000-0000-0000-0000-000000000000",
+		Name:        "Test Alert",
+		Description: "Test alert used to verify webhook configuration",
+		Severity:    "medium",
+		QueryString: "test=true",
+		Labels:      []string{"test"},
+	}
+	now := time.Now().UTC()
+	results := []map[string]interface{}{
+		{
+			"timestamp": now.Format(time.RFC3339),
+			"message":   "Test log message for webhook verification",
+			"level":     "info",
+			"host.name": "test-host-01",
+		},
+		{
+			"timestamp": now.Add(-time.Minute).Format(time.RFC3339),
+			"message":   "Second test row, so a template loop renders more than once",
+			"level":     "warn",
+			"host.name": "test-host-02",
+		},
+	}
+	return testAlert, results
+}
+
+// TestWebhookConfig renders a test payload for an unsaved webhook configuration
+// and, when send is true, delivers it. Taking the config rather than an ID lets
+// the editor test edits before they are saved.
+func (m *Manager) TestWebhookConfig(ctx context.Context, webhook WebhookAction, send bool) *WebhookTestResult {
+	testAlert, testResults := sampleTestPayload()
+	// Borrow the action's own scope so a previewed alert link is a real one.
+	testAlert.FractalID = webhook.FractalID
+	testAlert.PrismID = webhook.PrismID
+
+	// Reuse the engine's client so a previewed alert link matches what delivery
+	// would actually build.
+	client := NewWebhookClient("")
+	if m.engine != nil && m.engine.webhookClient != nil {
+		client = m.engine.webhookClient
+	}
+	payload := client.BuildPayload(webhook, testAlert, testAlert.Name, testResults, time.Now())
+
+	out := &WebhookTestResult{}
+	body, contentType, err := RenderWebhookBody(webhook, payload)
+	out.ContentType = contentType
+	if err != nil {
+		out.RenderError = err.Error()
+		return out
+	}
+
+	out.BodyBytes = len(body)
+	if len(body) > maxPreviewBody {
+		// Back off to a rune boundary so the cut does not leave a partial
+		// character, which JSON encoding would replace with U+FFFD.
+		cut := body[:maxPreviewBody]
+		for len(cut) > 0 && !utf8.Valid(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		out.RenderedBody = string(cut)
+		out.Truncated = true
+	} else {
+		out.RenderedBody = string(body)
+	}
+
+	if !send {
+		return out
+	}
+
+	// A test should report the destination's answer, not retry past it. Timeout is
+	// bounded to the maximum the editor allows, so a value posted directly to the
+	// API cannot hold the request open indefinitely.
+	webhook.RetryCount = 1
+	if webhook.TimeoutSecs > maxTestTimeoutSecs {
+		webhook.TimeoutSecs = maxTestTimeoutSecs
+	}
+
+	// Sends the rendered bytes, so what the operator was shown is what went out.
+	result := client.SendRendered(ctx, webhook, body, contentType)
+	out.Sent = true
+	out.Result = &result
+	return out
+}
+
+// TestWebhookAction sends a test payload to a stored webhook action.
+func (m *Manager) TestWebhookAction(ctx context.Context, webhookID string) (*WebhookTestResult, error) {
 	webhook, err := m.GetWebhookAction(ctx, webhookID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhook action: %w", err)
 	}
-
-	// Create a test alert and results
-	testAlert := &Alert{
-		ID:          "test-alert",
-		Name:        "Test Alert",
-		Description: "This is a test alert to verify webhook configuration",
-		QueryString: "test=true",
-		Labels:      []string{"test"},
-	}
-
-	testResults := []map[string]interface{}{
-		{
-			"timestamp": time.Now().Format("2006-01-02 15:04:05"),
-			"message":   "Test log message for webhook verification",
-			"level":     "info",
-		},
-	}
-
-	// Use the webhook client to send test payload
-	webhookClient := NewWebhookClient("")
-	result := webhookClient.Send(ctx, *webhook, testAlert, testAlert.Name, testResults)
-
-	return &result, nil
+	return m.TestWebhookConfig(ctx, *webhook, true), nil
 }
 
 // ============================

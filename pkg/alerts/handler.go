@@ -692,6 +692,61 @@ func (h *Handler) HandleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	api.WriteMessage(w, "Webhook test completed", result)
 }
 
+// WebhookTestRequest tests a webhook configuration that may not be saved yet.
+// Send false renders the body only, which is how a template is checked without
+// reaching the destination.
+type WebhookTestRequest struct {
+	WebhookCreateRequest
+	Send bool `json:"send"`
+}
+
+// HandleTestWebhookConfig renders, and optionally delivers, a test payload for a
+// posted webhook configuration. It is what makes the editor's Test button usable
+// on unsaved edits: without it a template can only be checked by saving first.
+func (h *Handler) HandleTestWebhookConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	var req WebhookTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.Send && strings.TrimSpace(req.URL) == "" {
+		h.respondError(w, http.StatusBadRequest, "Webhook URL is required to send a test")
+		return
+	}
+
+	fractalID, prismID, ok := h.requireScope(w, r, "webhook test")
+	if !ok {
+		return
+	}
+
+	includeAlertLink := true
+	if req.IncludeAlertLink != nil {
+		includeAlertLink = *req.IncludeAlertLink
+	}
+
+	webhook := WebhookAction{
+		Name:             req.Name,
+		URL:              req.URL,
+		Method:           req.Method,
+		Headers:          req.Headers,
+		AuthType:         req.AuthType,
+		AuthConfig:       req.AuthConfig,
+		TimeoutSecs:      req.TimeoutSeconds,
+		RetryCount:       req.RetryCount,
+		IncludeAlertLink: includeAlertLink,
+		BodyMode:         NormalizeBodyMode(req.BodyMode),
+		BodyTemplate:     req.BodyTemplate,
+		ContentType:      req.ContentType,
+		FractalID:        fractalID,
+		PrismID:          prismID,
+	}
+
+	api.WriteMessage(w, "Webhook test completed", h.manager.TestWebhookConfig(ctx, webhook, req.Send))
+}
+
 // ============================
 // Fractal Action Management Endpoints
 // ============================

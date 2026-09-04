@@ -1778,8 +1778,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Method:   http.MethodGet,
 					Path:     "/attack/coverage",
 					Access:   api.AccessViewer,
-					Response: api.Response[*attack.Coverage]{},
-					Summary:  "Return per-technique rule counts and the coverage summary.",
+					Response: api.Response[alerts.AttackCoverage]{},
+					Summary:  "Return per-technique rule counts, candidate counts and the coverage summary.",
 					Handler:  d.alertHandler.HandleAttackCoverage,
 				})
 				r.Register(api.Route{
@@ -1800,17 +1800,6 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Response: api.Response[alerts.Gap]{},
 					Summary:  "List candidate rules for one uncovered technique.",
 					Handler:  d.alertHandler.HandleAttackTechniqueGap,
-				})
-				r.Register(api.Route{
-					Method: http.MethodGet,
-					Path:   "/attack/gaps",
-					Query: []api.QueryParam{
-						{Name: "limit", Type: "integer"},
-					},
-					Access:   api.AccessViewer,
-					Response: api.Response[alerts.AttackGaps]{},
-					Summary:  "Rank uncovered techniques by what can be covered today.",
-					Handler:  d.alertHandler.HandleAttackGaps,
 				})
 				r.Register(api.Route{
 					Method: http.MethodGet,
@@ -1877,9 +1866,18 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Method:   http.MethodPost,
 				Path:     "/webhooks/{id}/test",
 				Access:   api.AccessTenantAdmin,
-				Response: api.Response[*alerts.WebhookResult]{},
+				Response: api.Response[*alerts.WebhookTestResult]{},
 				Summary:  "Send a test payload to a webhook.",
 				Handler:  d.alertHandler.HandleTestWebhook,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/webhooks/test",
+				Access:   api.AccessTenantAdmin,
+				Request:  alerts.WebhookTestRequest{},
+				Response: api.Response[*alerts.WebhookTestResult]{},
+				Summary:  "Render, and optionally send, a test payload for a webhook configuration.",
+				Handler:  d.alertHandler.HandleTestWebhookConfig,
 			})
 
 			// Fractal action management

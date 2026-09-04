@@ -190,8 +190,7 @@ Watchlists and lookup tables detections join against, rather than hard-coding va
 
 | Tool | Description |
 |------|-------------|
-| `get_attack_coverage` | Which techniques the configured detections cover, optionally by tactic |
-| `get_attack_gaps` | Uncovered techniques, ranked by what could be covered with today's telemetry |
+| `get_attack_coverage` | Which techniques the configured detections cover, optionally by tactic, and which uncovered ones a synced feed already has rules for |
 
 Coverage is derived from the `attack.*` labels on the alerts that exist, so it reports what is configured rather than what has fired.
 

@@ -5694,7 +5694,7 @@
     "/api/v1/attack/coverage": {
       "get": {
         "operationId": "get_api_v1_attack_coverage",
-        "summary": "Return per-technique rule counts and the coverage summary.",
+        "summary": "Return per-technique rule counts, candidate counts and the coverage summary.",
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "attack"
@@ -5719,87 +5719,7 @@
                       "type": "string"
                     },
                     "data": {
-                      "$ref": "#/components/schemas/attack.Coverage"
-                    },
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "success": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "success"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Not authenticated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/api.Response_interface{}"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Authenticated, but not permitted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/api.Response_interface{}"
-                }
-              }
-            }
-          }
-        },
-        "x-bifract-access": "viewer"
-      }
-    },
-    "/api/v1/attack/gaps": {
-      "get": {
-        "operationId": "get_api_v1_attack_gaps",
-        "summary": "Rank uncovered techniques by what can be covered today.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
-        "tags": [
-          "attack"
-        ],
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "security": [
-          {
-            "apiKey": []
-          },
-          {
-            "session": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "data": {
-                      "$ref": "#/components/schemas/alerts.AttackGaps"
+                      "$ref": "#/components/schemas/alerts.AttackCoverage"
                     },
                     "error": {
                       "type": "string"
@@ -29229,6 +29149,87 @@
         "x-bifract-access": "tenant_admin"
       }
     },
+    "/api/v1/webhooks/test": {
+      "post": {
+        "operationId": "post_api_v1_webhooks_test",
+        "summary": "Render, and optionally send, a test payload for a webhook configuration.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "webhooks"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.WebhookTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.WebhookTestResult"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
     "/api/v1/webhooks/{id}": {
       "get": {
         "operationId": "get_api_v1_webhooks_byId",
@@ -29489,7 +29490,7 @@
                       "type": "string"
                     },
                     "data": {
-                      "$ref": "#/components/schemas/alerts.WebhookResult"
+                      "$ref": "#/components/schemas/alerts.WebhookTestResult"
                     },
                     "error": {
                       "type": "string"
@@ -30094,34 +30095,29 @@
           "throttle_field"
         ]
       },
-      "alerts.AttackGaps": {
+      "alerts.AttackCoverage": {
         "type": "object",
         "properties": {
-          "candidate_rules": {
-            "type": "integer"
-          },
-          "catalog_populated": {
-            "type": "boolean"
-          },
-          "gaps": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/alerts.Gap"
+          "candidates": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
             }
           },
-          "returned": {
-            "type": "integer"
+          "summary": {
+            "$ref": "#/components/schemas/attack.Summary"
           },
-          "uncovered_total": {
-            "type": "integer"
+          "techniques": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/attack.TechniqueCoverage"
+            }
           }
         },
         "required": [
-          "gaps",
-          "uncovered_total",
-          "candidate_rules",
-          "catalog_populated",
-          "returned"
+          "techniques",
+          "summary",
+          "candidates"
         ]
       },
       "alerts.BatchToggleAlertsRequest": {
@@ -31045,9 +31041,6 @@
           "name": {
             "type": "string"
           },
-          "score": {
-            "type": "integer"
-          },
           "tactics": {
             "type": "array",
             "items": {
@@ -31064,8 +31057,7 @@
           "tactics",
           "available",
           "by_reason",
-          "candidates",
-          "score"
+          "candidates"
         ]
       },
       "alerts.GateConfig": {
@@ -31745,6 +31737,15 @@
           "auth_type": {
             "type": "string"
           },
+          "body_mode": {
+            "type": "string"
+          },
+          "body_template": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -31793,7 +31794,10 @@
           "timeout_seconds",
           "retry_count",
           "include_alert_link",
-          "enabled"
+          "enabled",
+          "body_mode",
+          "body_template",
+          "content_type"
         ]
       },
       "alerts.WebhookCreateRequest": {
@@ -31806,6 +31810,15 @@
             }
           },
           "auth_type": {
+            "type": "string"
+          },
+          "body_mode": {
+            "type": "string"
+          },
+          "body_template": {
+            "type": "string"
+          },
+          "content_type": {
             "type": "string"
           },
           "enabled": {
@@ -31846,7 +31859,10 @@
           "timeout_seconds",
           "retry_count",
           "include_alert_link",
-          "enabled"
+          "enabled",
+          "body_mode",
+          "body_template",
+          "content_type"
         ]
       },
       "alerts.WebhookResult": {
@@ -31859,6 +31875,9 @@
             "type": "integer"
           },
           "error": {
+            "type": "string"
+          },
+          "response_body": {
             "type": "string"
           },
           "status_code": {
@@ -31888,6 +31907,108 @@
           "timestamp"
         ]
       },
+      "alerts.WebhookTestRequest": {
+        "type": "object",
+        "properties": {
+          "auth_config": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "auth_type": {
+            "type": "string"
+          },
+          "body_mode": {
+            "type": "string"
+          },
+          "body_template": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "include_alert_link": {
+            "type": "boolean"
+          },
+          "method": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retry_count": {
+            "type": "integer"
+          },
+          "send": {
+            "type": "boolean"
+          },
+          "timeout_seconds": {
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "url",
+          "method",
+          "headers",
+          "auth_type",
+          "auth_config",
+          "timeout_seconds",
+          "retry_count",
+          "include_alert_link",
+          "enabled",
+          "body_mode",
+          "body_template",
+          "content_type",
+          "send"
+        ]
+      },
+      "alerts.WebhookTestResult": {
+        "type": "object",
+        "properties": {
+          "body_bytes": {
+            "type": "integer"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "render_error": {
+            "type": "string"
+          },
+          "rendered_body": {
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/alerts.WebhookResult"
+          },
+          "sent": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "rendered_body",
+          "content_type",
+          "body_bytes",
+          "truncated",
+          "sent"
+        ]
+      },
       "alerts.WebhookUpdateRequest": {
         "type": "object",
         "properties": {
@@ -31898,6 +32019,15 @@
             }
           },
           "auth_type": {
+            "type": "string"
+          },
+          "body_mode": {
+            "type": "string"
+          },
+          "body_template": {
+            "type": "string"
+          },
+          "content_type": {
             "type": "string"
           },
           "enabled": {
@@ -31938,7 +32068,10 @@
           "timeout_seconds",
           "retry_count",
           "include_alert_link",
-          "enabled"
+          "enabled",
+          "body_mode",
+          "body_template",
+          "content_type"
         ]
       },
       "api.Page": {
@@ -32121,24 +32254,6 @@
             "type": "boolean"
           }
         }
-      },
-      "attack.Coverage": {
-        "type": "object",
-        "properties": {
-          "summary": {
-            "$ref": "#/components/schemas/attack.Summary"
-          },
-          "techniques": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/attack.TechniqueCoverage"
-            }
-          }
-        },
-        "required": [
-          "techniques",
-          "summary"
-        ]
       },
       "attack.Matrix": {
         "type": "object",

@@ -150,7 +150,23 @@ type QueryPlan struct {
 	// ModelLookupPrefilterExact is set when the prefilter selects exactly the key set
 	// the JOIN matches, so the scan-level LIMIT may stay below the join.
 	ModelLookupPrefilterExact bool
-	ModelLookupGlobal         bool // model table is Distributed: emit GLOBAL IN/JOIN
+	ModelLookupGlobal         bool     // model table is Distributed: emit GLOBAL IN/JOIN
+	ModelLookupRightCols      []string // model-side key columns, aligned with ModelLookupKeyExprs
+	// ModelLookupOutputs: the model's declared output column names. Set at Declare
+	// (unlike ModelLookupFields, set at Execute) so commands that run before
+	// model_lookup's Execute can still recognize a model column by name.
+	ModelLookupOutputs []string
+	// ModelLookupAtScan: an aggregation (groupby/chain/stats) follows model_lookup in
+	// the pipeline, so the model JOIN attaches to the row scan (flat, in the
+	// aggregating stage's FROM) instead of wrapping the whole query. Rows then carry
+	// model columns into GROUP BY / chain steps. Kept flat so a GLOBAL join still
+	// distributes: shards join their local scan against the broadcast model set and
+	// pre-aggregate, rather than shipping scan rows to the initiator.
+	ModelLookupAtScan bool
+	// PostJoinWhere: predicates on model columns (and chain step unions that reference
+	// them), applied in the aggregating SELECT's WHERE, after the scan-level join and
+	// before GROUP BY. Only used when ModelLookupAtScan.
+	PostJoinWhere []string
 
 	// Table command tracking
 	HasTableCmd             bool
@@ -309,14 +325,17 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// model_lookup() join keys derive from `fields.X`, which only exist in this
 	// direct `FROM logs` scan. Project them here as hidden `_mlk_k<i>` columns so
 	// the JOIN ON (in wrapWithModelLookup) can reference `_outer._mlk_k<i>`; the
-	// wrap strips them from the final output via EXCEPT.
-	if len(p.ModelLookupKeyExprs) > 0 {
+	// wrap strips them from the final output via EXCEPT. In scan-level mode the
+	// join sits in this stage's FROM instead and its ON references the key
+	// expressions directly, so nothing is projected and the keys need not survive
+	// aggregation.
+	if len(p.ModelLookupKeyExprs) > 0 && !p.ModelLookupAtScan {
 		if err := p.validateJoinKeysSurviveAggregation(source, "model_lookup() key", p.ModelLookupKeyExprs, p.ModelLookupKeyFields); err != nil {
 			return "", err
 		}
-	}
-	for i, keyExpr := range p.ModelLookupKeyExprs {
-		selectClause += fmt.Sprintf(", %s AS _mlk_k%d", keyExpr, i)
+		for i, keyExpr := range p.ModelLookupKeyExprs {
+			selectClause += fmt.Sprintf(", %s AS _mlk_k%d", keyExpr, i)
+		}
 	}
 
 	// join() resolves its key the same way: the outer key expression derives from
@@ -393,6 +412,28 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		outerWhere = ""
 	}
 
+	// Scan-level model join: the aggregating stage reads (scan JOIN model) so its
+	// rows carry the model columns. Predicates on those columns (PostJoinWhere) go
+	// in this stage's WHERE; scan-only predicates stay wherever they already are
+	// (the same WHERE, or inside a dedup wrap), where ClickHouse pushes them into
+	// the scan.
+	if p.ModelLookupSQL != "" && p.ModelLookupAtScan {
+		// A wrapped scan (e.g. the dedup subquery) must carry an alias to be
+		// joined against (ClickHouse code 206); a subquery source already has one.
+		if strings.HasPrefix(rowSource, "(") && strings.HasSuffix(rowSource, ")") {
+			rowSource += " AS _outer"
+		}
+		rowSource += p.scanModelJoin()
+		if len(p.PostJoinWhere) > 0 {
+			pj := strings.Join(p.PostJoinWhere, " AND ")
+			if outerWhere == "" {
+				outerWhere = " WHERE " + pj
+			} else {
+				outerWhere += " AND " + pj
+			}
+		}
+	}
+
 	var sql strings.Builder
 	sql.WriteString("SELECT ")
 	sql.WriteString(selectClause)
@@ -432,9 +473,23 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 
 	innerSQL := sql.String()
 
-	// Apply additional stages (chained aggregation, stage index > 0)
+	// Apply additional stages (chained aggregation, stage index > 0). An outer
+	// model join matches on the hidden _mlk_k<i> keys the source stage projected,
+	// so a projection stage with an explicit SELECT must carry them through or the
+	// wrap's ON cannot resolve. Aggregating stages are left alone: a bare carried
+	// key would be neither grouped nor aggregated there (that shape is
+	// unsupported and errors elsewhere).
+	carryKeys := p.ModelLookupSQL != "" && !p.ModelLookupAtScan && len(p.ModelLookupKeyExprs) > 0
 	for i := 1; i < len(p.Stages); i++ {
-		innerSQL = wrapWithLayer(innerSQL, p.Stages[i].Layer)
+		layer := p.Stages[i].Layer
+		if carryKeys && len(layer.Selects) > 0 && len(layer.GroupBy) == 0 {
+			selects := append([]SelectExpr(nil), layer.Selects...)
+			for k := range p.ModelLookupKeyExprs {
+				selects = append(selects, SelectExpr{Expr: fmt.Sprintf("_mlk_k%d", k)})
+			}
+			layer.Selects = selects
+		}
+		innerSQL = wrapWithLayer(innerSQL, layer)
 	}
 
 	// Apply join wrapping (subquery JOIN)
@@ -442,8 +497,8 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		innerSQL = p.wrapWithJoin(innerSQL)
 	}
 
-	// Apply model_lookup JOIN wrapping
-	if p.ModelLookupSQL != "" {
+	// Apply model_lookup JOIN wrapping (scan-level mode joined inside the FROM above)
+	if p.ModelLookupSQL != "" && !p.ModelLookupAtScan {
 		innerSQL = p.wrapWithModelLookup(innerSQL)
 	}
 
@@ -782,6 +837,42 @@ func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
 	b.WriteString(p.ModelLookupSQL)
 	b.WriteString(") AS _mlookup ON ")
 	b.WriteString(p.ModelLookupOn)
+	return b.String()
+}
+
+// scanModelJoin renders the scan-level model join appended to the row source:
+// ` [GLOBAL] INNER|LEFT JOIN (scoring subquery) AS _mlookup ON <keys>`. The ON
+// compares the raw key expressions (which resolve against the scan) to the model's
+// key columns, so no hidden key projection is needed and the join stays flat in
+// the aggregating stage's FROM (see ModelLookupAtScan).
+func (p *QueryPlan) scanModelJoin() string {
+	var b strings.Builder
+	if p.ModelLookupGlobal {
+		b.WriteString(" GLOBAL")
+	}
+	if p.ModelLookupStrict {
+		b.WriteString(" INNER JOIN (")
+	} else {
+		b.WriteString(" LEFT JOIN (")
+	}
+	b.WriteString(p.ModelLookupSQL)
+	b.WriteString(") AS _mlookup ON ")
+
+	right := make([]string, len(p.ModelLookupRightCols))
+	for i, c := range p.ModelLookupRightCols {
+		right[i] = "_mlookup." + c
+	}
+	// Mirrors setModelLookupJoin: plain equalities when the key fields align with
+	// the model key columns, the char(30) composite encoding otherwise.
+	if modelKeysAligned(p.ModelLookupKeyExprs, right) {
+		eq := make([]string, len(right))
+		for i := range right {
+			eq[i] = p.ModelLookupKeyExprs[i] + " = " + right[i]
+		}
+		b.WriteString(strings.Join(eq, " AND "))
+	} else {
+		b.WriteString(concatModelKeys(p.ModelLookupKeyExprs) + " = " + concatModelKeys(right))
+	}
 	return b.String()
 }
 

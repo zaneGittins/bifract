@@ -163,6 +163,23 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			// Produced by a JOIN wrapper (model_lookup/join), not the source scan.
 			// Skip it here (projecting fields.`x` would be wrong and would shadow the
 			// real join column); the wrapper adds it and it is carried in FieldOrder.
+			// Under the scan-level join there is no wrapper to add it: the column
+			// survives an aggregation only as a group key or aggregate, so anything
+			// else must error rather than silently drop the requested column.
+			if ctx.Plan.ModelLookupAtScan {
+				st := ctx.Plan.CurrentStage()
+				exposed := contains(st.Layer.GroupBy, field)
+				for _, sel := range st.Layer.Selects {
+					if exposed {
+						break
+					}
+					exposed = extractFieldAlias(sel.String()) == field
+				}
+				if !exposed {
+					return fmt.Errorf("table(): model column %q is not available after the aggregation; group by it or aggregate it", field)
+				}
+				continue
+			}
 			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, field)
 			continue
 		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
@@ -252,6 +269,17 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 		}
 		if prevOutputs[name] {
 			newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: name})
+			continue
+		}
+		// A model column the aggregation did not output: under the outer join
+		// wrap it is added after this stage (restrict display to it); under the
+		// scan-level join nothing re-adds it, so error rather than emit a bare
+		// reference this stage cannot resolve.
+		if contains(ctx.Plan.ModelLookupOutputs, name) {
+			if ctx.Plan.ModelLookupAtScan {
+				return fmt.Errorf("table(): model column %q is not available after the aggregation; group by it or aggregate it", name)
+			}
+			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, name)
 			continue
 		}
 		// Not produced by the aggregated stage. It may be produced by a later
@@ -489,6 +517,20 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("chain() requires at least 2 steps, got %d", len(steps))
 	}
 
+	// Steps referencing model_lookup() columns need those columns per-row, which
+	// only the scan-level join provides (model_lookup() before chain, no earlier
+	// aggregation).
+	stepsUseModel := ""
+	for _, f := range stepFields {
+		if e := ctx.Registry.Get(f); e != nil && e.Kind == FieldKindJoined {
+			stepsUseModel = f
+			break
+		}
+	}
+	if stepsUseModel != "" && !ctx.Plan.ModelLookupAtScan {
+		return fmt.Errorf("chain(): step field %q is a model_lookup() column and requires model_lookup() before chain() in the pipeline", stepsUseModel)
+	}
+
 	// Build sequenceMatch pattern. (?t<=N) uses the units of tsExpr (milliseconds).
 	var pattern strings.Builder
 	for i := range steps {
@@ -537,9 +579,15 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// is unchanged while GROUP BY state drops to just the matching entities.
 	// Only when chain() aggregates the scan itself: behind an earlier aggregation
 	// this WHERE would filter that stage's input and silently change its counts.
+	// A union referencing model columns can only run after the scan-level join
+	// (strict mode's key prefilter still narrows the scan itself).
 	if len(ctx.Plan.Stages) == 1 {
-		scan := &ctx.Plan.SourceStage().Layer
-		scan.Where = append(scan.Where, "("+stepUnion+")")
+		if stepsUseModel != "" {
+			ctx.Plan.PostJoinWhere = append(ctx.Plan.PostJoinWhere, "("+stepUnion+")")
+		} else {
+			scan := &ctx.Plan.SourceStage().Layer
+			scan.Where = append(scan.Where, "("+stepUnion+")")
+		}
 	}
 
 	meta := &ChainMeta{AnchorColumn: chainAnchorColumn, StepConditions: steps, StepFields: stepFields}
@@ -553,6 +601,10 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		for _, f := range chainFields {
 			if f == "timestamp" || f == normLogColumn || f == "log_id" || f == "normalizer" {
 				arrayElems = append(arrayElems, f)
+			} else if e := ctx.Registry.Get(f); e != nil && e.Kind == FieldKindJoined && ctx.Plan.ModelLookupAtScan {
+				// A model column is per-row after the scan-level join; stringify it
+				// for the identity array.
+				arrayElems = append(arrayElems, fmt.Sprintf("toString(%s)", f))
 			} else {
 				// Array element feeds arrayJoin -> _entity -> GROUP BY; a bare
 				// Dynamic subcolumn errors 44, so cast to ::String.
@@ -578,6 +630,9 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 		var fieldRef string
 		if chainField == "timestamp" || chainField == normLogColumn || chainField == "log_id" || chainField == "normalizer" {
+			fieldRef = chainField
+		} else if e := ctx.Registry.Get(chainField); e != nil && e.Kind == FieldKindJoined && ctx.Plan.ModelLookupAtScan {
+			// A model column is per-row after the scan-level join; group by it directly.
 			fieldRef = chainField
 		} else {
 			// chain() groups by this field; a bare Dynamic subcolumn errors 44.

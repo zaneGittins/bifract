@@ -27,6 +27,8 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("percent", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("confidence", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("model_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("model_total", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("event_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("first_seen", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("last_seen", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("is_new", FieldKindPerRow, "NULL", ctx.CmdIndex)
@@ -56,12 +58,13 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		for _, n := range names {
 			ctx.Registry.Register(n, FieldKindJoined, n, ctx.CmdIndex)
 		}
+		ctx.Plan.ModelLookupOutputs = append([]string(nil), names...)
 	}
 	switch info.ModelType {
 	case "rarity":
-		reg("percent", "confidence", "model_count")
+		reg("percent", "confidence", "model_count", "model_total")
 	case "first_seen":
-		reg("first_seen", "last_seen", "is_new")
+		reg("first_seen", "last_seen", "event_count", "is_new")
 	case "volume_baseline":
 		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets")
 	case "beacon":
@@ -206,6 +209,7 @@ func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
 	}
 	ctx.Plan.ModelLookupKeyExprs = keyExprs
 	ctx.Plan.ModelLookupKeyFields = append([]string(nil), keyFields...)
+	ctx.Plan.ModelLookupRightCols = append([]string(nil), rightCols...)
 
 	if modelKeysAligned(leftParts, rightParts) {
 		eq := make([]string, len(leftParts))

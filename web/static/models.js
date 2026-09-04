@@ -43,6 +43,8 @@ const AnalyticsModels = {
         sortDir: 'desc',
         search: '',
         tab: 'data',     // 'data' | 'config'
+        stats: null,     // aggregate summary from /models/:id/stats
+        selected: -1,    // index of the row open in the detail drawer
     },
 
     init() {
@@ -116,10 +118,12 @@ const AnalyticsModels = {
         this._render();
     },
 
-    // Stop all polling when the models tab is hidden (called from app.js).
+    // Stop all polling and hand the page height back when the models tab is
+    // hidden (called from app.js).
     teardown() {
         this._stopViewerPoll();
         this._stopListPoll();
+        this._setWorkspaceChrome(false);
     },
 
     _backfillPct(m) {
@@ -161,12 +165,14 @@ const AnalyticsModels = {
         // rather than rendering a listing whose load can only fail: onFractalChange
         // renders on every scope switch, including while this view is hidden.
         if (window.FractalContext && FractalContext.isPrism()) {
+            this._setWorkspaceChrome(false);
             container.innerHTML = `
 <div class="models-view-section">
     <div class="models-empty">Analytics models are scoped to a fractal. Select a fractal to manage them.</div>
 </div>`;
             return;
         }
+        this._setWorkspaceChrome(this.currentView === 'editor' || this.currentView === 'data');
         switch (this.currentView) {
             case 'editor': this._renderEditorView(container); break;
             case 'data':   this._renderDataViewerView(container); break;
@@ -253,22 +259,27 @@ const AnalyticsModels = {
         const updated = m.updated_at ? TZ.format(m.updated_at, 'date') : '—';
         const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
         const backfillBadge = m.backfill_status === 'running'
-            ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data">⟳ Backfilling ${this._backfillPct(m)}%</span>`
+            ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data"><span class="model-dot"></span>Backfilling ${this._backfillPct(m)}%</span>`
             : '';
         return `
 <tr>
     <td><button class="model-name-link" data-id="${m.id}" title="Open ${_esc(m.name)}">${_esc(m.name)}</button><div class="model-desc">${_esc(m.description)}</div></td>
     <td>${_esc(this._typeLabel(m.model_type))}</td>
-    <td><span class="model-badge ${statusClass}"${errorTitle}>${_esc(m.status)}</span>${backfillBadge}</td>
+    <td><span class="model-badge ${statusClass}"${errorTitle}><span class="model-dot"></span>${_esc(this._statusLabel(m.status))}</span>${backfillBadge}</td>
     <td>${alertBadge}</td>
     <td>${updated}</td>
 </tr>`;
     },
 
+    _statusLabel(status) {
+        const s = String(status || '');
+        return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown';
+    },
+
     _alertModeBadge(m) {
         switch (m.alert_mode) {
-            case 'active': return `<span class="model-badge badge-alert-active alert-mode-badge" data-id="${m.id}" data-mode="active" title="Click to pause">● Active</span>`;
-            case 'paused': return `<span class="model-badge badge-paused alert-mode-badge" data-id="${m.id}" data-mode="paused" title="Click to activate">⏸ Paused</span>`;
+            case 'active': return `<span class="model-badge badge-alert-active alert-mode-badge" data-id="${m.id}" data-mode="active" title="Click to pause"><span class="model-dot"></span>Active</span>`;
+            case 'paused': return `<span class="model-badge badge-paused alert-mode-badge" data-id="${m.id}" data-mode="paused" title="Click to activate"><span class="model-dot"></span>Paused</span>`;
             default:       return `<span class="model-badge badge-none">No Alert</span>`;
         }
     },
@@ -356,10 +367,13 @@ const AnalyticsModels = {
             fieldOrder: null,
             resultFields: [],
             results: [],
+            resultCount: '',
+            hasTimeline: false,
             ran: false,
             resultMode: 'logs',
             previewWindow: '7d',
             preview: null,
+            dirty: false,
         };
         this.currentView = 'editor';
         this._render();
@@ -368,17 +382,233 @@ const AnalyticsModels = {
     // ============================
     // Data viewer
     // ============================
+
+    // How each model type presents its results. One place decides the column
+    // order, the label a stored column carries, how its value is formatted, and
+    // whether the backend will actually sort on it. A label given as a function
+    // is resolved against the definition, so a column stored as partition_val
+    // reads as the field the model was built from. Columns the table omits are
+    // still shown in the row drawer.
+    VIEW_SPEC: {
+        rarity: {
+            sortDefault: 'confidence',
+            sortable: ['partition_val', 'value_val', 'model_count', 'percent', 'confidence'],
+            score: { col: 'confidence', threshold: d => d.alert?.confidence_threshold ?? 0.8 },
+            cols: [
+                { col: 'confidence', label: 'Confidence', fmt: 'meter', align: 'num' },
+                { col: 'partition_val', label: d => d.partition_key || 'Partition' },
+                { col: 'value_val', label: d => d.value_key || 'Value' },
+                { col: 'model_count', label: 'Seen', fmt: 'int', align: 'num' },
+                { col: 'percent', label: 'Share', fmt: 'pct100', align: 'num' },
+            ],
+        },
+        first_seen: {
+            sortDefault: 'first_seen',
+            sortable: ['entity_key', 'first_seen', 'last_seen', 'event_count'],
+            cols: [
+                { col: 'entity_key', keys: true },
+                { col: 'first_seen', label: 'First seen', fmt: 'ts' },
+                { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
+                { col: 'event_count', label: 'Events', fmt: 'int', align: 'num' },
+            ],
+        },
+        volume_baseline: {
+            sortDefault: 'z_score',
+            sortable: ['entity_val', 'latest_count', 'baseline_median', 'mad', 'z_score', 'n_buckets', 'latest_bucket'],
+            score: { col: 'z_score', threshold: d => d.alert?.z_threshold || 3.5, abs: true },
+            cols: [
+                { col: 'z_score', label: 'z-score', fmt: 'score', align: 'num' },
+                { col: 'entity_val', keys: true },
+                { col: 'latest_count', label: 'Latest', fmt: 'int', align: 'num' },
+                { col: 'baseline_median', label: 'Baseline', fmt: 'num', align: 'num' },
+                { col: 'mad', label: 'MAD', fmt: 'num', align: 'num' },
+                { col: 'n_buckets', label: 'Buckets', fmt: 'int', align: 'num' },
+                { col: 'latest_bucket', label: 'Latest bucket', fmt: 'ts' },
+            ],
+        },
+        beacon: {
+            sortDefault: 'final_score',
+            sortable: ['final_score', 'regularity_score', 'conn_count', 'total_duration', 'prevalence', 'last_seen'],
+            score: { col: 'final_score', threshold: d => d.beacon?.score_threshold || 0.8 },
+            cols: [
+                { col: 'final_score', label: 'Score', fmt: 'score', align: 'num' },
+                { col: 'src_ip', label: 'Source' },
+                { col: 'dst_ip', label: 'Destination' },
+                { col: 'dst_port', label: 'Port', align: 'num' },
+                { col: 'regularity_score', label: 'Regularity', fmt: 'score', align: 'num' },
+                { col: 'conn_count', label: 'Connections', fmt: 'int', align: 'num' },
+                { col: 'prevalence', label: 'Prevalence', fmt: 'pct1', align: 'num' },
+                { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
+            ],
+        },
+        long_connection: {
+            sortDefault: 'final_score',
+            sortable: ['final_score', 'regularity_score', 'conn_count', 'total_duration', 'prevalence', 'last_seen'],
+            score: { col: 'final_score', threshold: d => d.long_conn?.score_threshold || 0.5 },
+            cols: [
+                { col: 'final_score', label: 'Score', fmt: 'score', align: 'num' },
+                { col: 'src_ip', label: 'Source' },
+                { col: 'dst_ip', label: 'Destination' },
+                { col: 'dst_port', label: 'Port', align: 'num' },
+                { col: 'total_duration', label: 'Total duration', fmt: 'dur', align: 'num' },
+                { col: 'conn_count', label: 'Connections', fmt: 'int', align: 'num' },
+                { col: 'prevalence', label: 'Prevalence', fmt: 'pct1', align: 'num' },
+                { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
+            ],
+        },
+    },
+
+    // Summary cards, from the /stats endpoint. tone colours the value.
+    STAT_SPEC: {
+        rarity: [
+            { k: 'total_rows', label: 'Pairs', fmt: 'int' },
+            { k: 'distinct_partitions', label: d => 'Distinct ' + (d.partition_key || 'partitions'), fmt: 'int' },
+        ],
+        first_seen: [
+            { k: 'total_entities', label: 'Entities', fmt: 'int' },
+            { k: 'new_today', label: 'New today', fmt: 'int', tone: 'flag' },
+            { k: 'newest_seen', label: 'Newest', fmt: 'ago' },
+            { k: 'oldest_seen', label: 'Oldest', fmt: 'ago' },
+        ],
+        volume_baseline: [
+            { k: 'total_entities', label: 'Entities', fmt: 'int' },
+            { k: 'anomalous', label: 'Anomalous', fmt: 'int', tone: 'flag' },
+            { k: 'max_z', label: 'Max |z|', fmt: 'score' },
+        ],
+        network: [
+            { k: 'total_pairs', label: 'Scored pairs', fmt: 'int' },
+            { k: 'flagged', label: 'Flagged', fmt: 'int', tone: 'flag' },
+            { k: 'critical', label: 'Critical', fmt: 'int', tone: 'crit' },
+            { k: 'max_score', label: 'Max score', fmt: 'score' },
+        ],
+    },
+
+    _viewSpec(model) {
+        return this.VIEW_SPEC[model?.model_type] || this.VIEW_SPEC.rarity;
+    },
+
+    // Expands the type's column spec against this model's definition: a key
+    // column becomes one column per configured field (entity_key and entity_val
+    // pack them with a record separator), and labels resolve to field names.
+    _viewColumns(model) {
+        const spec = this._viewSpec(model);
+        const def = model?.definition || {};
+        const out = [];
+        for (const c of spec.cols) {
+            if (!c.keys) {
+                out.push({ ...c, label: typeof c.label === 'function' ? c.label(def) : c.label });
+                continue;
+            }
+            const fields = (Array.isArray(def.key_fields) && def.key_fields.length) ? def.key_fields : ['Entity'];
+            // Only the first part carries the sort: the backend orders by the
+            // packed key, which is ordering by the leading field.
+            const canSort = spec.sortable.includes(c.col);
+            fields.forEach((f, i) => out.push({ col: c.col, label: f, part: i, sortable: i === 0 && canSort }));
+        }
+        return out.map(c => ({ ...c, sortable: c.sortable ?? spec.sortable.includes(c.col) }));
+    },
+
+    // Seconds to a two-unit duration. Model durations are session totals, so
+    // days and hours are the useful scale, not raw seconds.
+    _fmtDuration(v) {
+        const s = Number(v);
+        if (!isFinite(s) || s <= 0) return '0s';
+        const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+        if (d) return `${d}d ${h}h`;
+        if (h) return `${h}h ${m}m`;
+        if (m) return `${m}m ${Math.floor(s % 60)}s`;
+        return `${Math.round(s)}s`;
+    },
+
+    // A zero DateTime means the value was never written; rendering the epoch as
+    // a date reads as real data.
+    _isEpochZero(v) {
+        const ms = window.TZ ? TZ.toEpoch(v) : Date.parse(v);
+        return !Number.isFinite(ms) || ms < 86400000;
+    },
+
+    _fmtTime(v, style) {
+        if (!v || this._isEpochZero(v)) return '<span class="mv-none">&mdash;</span>';
+        return `<span title="${_esc(Utils.timestampTitle(v))}">${_esc(Utils.formatTimestamp(v, style || 'friendly'))}</span>`;
+    },
+
+    // Severity is measured against the model's own alert threshold, so a colour
+    // means "this crossed what you configured" rather than a fixed cut.
+    _sevClass(value, threshold) {
+        const t = Number(threshold), v = Number(value);
+        if (!isFinite(t) || t <= 0 || !isFinite(v)) return '';
+        const r = v / t;
+        if (r >= 1.25) return 'sev-crit';
+        if (r >= 1) return 'sev-high';
+        if (r >= 0.75) return 'sev-med';
+        return 'sev-low';
+    },
+
+    _cellText(c, row) {
+        const v = row[c.col];
+        return c.part !== undefined ? (String(v ?? '').split('\x1e')[c.part] ?? '') : String(v ?? '');
+    },
+
+    // Renders one cell. Returns HTML, so every formatter escapes its own value.
+    _fmtCell(c, row, threshold) {
+        let v = row[c.col];
+        if (c.part !== undefined) {
+            v = String(v ?? '').split('\x1e')[c.part] ?? '';
+        }
+        if (v === null || v === undefined || v === '') return '<span class="mv-none">&mdash;</span>';
+        switch (c.fmt) {
+            case 'int':    return _esc(Number(v).toLocaleString());
+            case 'pct1':   return _esc((Number(v) * 100).toFixed(1) + '%');
+            case 'pct100': return _esc(Number(v).toFixed(1) + '%');
+            case 'score':  return _esc(Number(v).toFixed(3));
+            case 'num':    return _esc(Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+            case 'dur':    return _esc(this._fmtDuration(v));
+            case 'ts':     return this._fmtTime(v);
+            case 'meter': {
+                const n = Number(v);
+                const pct = Math.max(0, Math.min(100, n * 100));
+                const hot = isFinite(threshold) && n >= threshold ? ' hot' : '';
+                return `<span class="mv-meter"><span class="mv-meter-track"><span class="mv-meter-fill${hot}" style="width:${pct}%"></span></span>${_esc(n.toFixed(3))}</span>`;
+            }
+            default:       return _esc(String(v));
+        }
+    },
+
     async _openDataViewer(id) {
         const model = this.models.find(m => m.id === id);
         if (!model) return;
         window.App?.pushSubPath(id);
         this._stopListPoll();
-        this.viewer = { model, rows: [], total: 0, limit: 50, offset: 0, sortCol: '', sortDir: 'desc', search: '', tab: 'data', backfillWindow: '7d', histogram: null };
+        // Seed the sort from the type's server-side default so the header shows
+        // the order the first page actually comes back in.
+        this.viewer = {
+            model, rows: [], total: 0, limit: 50, offset: 0,
+            sortCol: this._viewSpec(model).sortDefault, sortDir: 'desc',
+            search: '', tab: 'data', backfillWindow: '7d', histogram: null, stats: null, selected: -1,
+        };
         this.currentView = 'data';
         this._render();
         await this._loadViewerData();
         this._loadHistogram();
+        this._loadStats();
         if (model.backfill_status === 'running') this._startViewerPoll();
+    },
+
+    // Aggregate summary. Best-effort: the table is the page, so a failed stats
+    // call leaves the strip out rather than blocking the results.
+    async _loadStats() {
+        const v = this.viewer;
+        if (!v.model) return;
+        const id = v.model.id;
+        try {
+            const data = await this._api('GET', `/models/${id}/stats`);
+            if (this.viewer.model?.id !== id) return;
+            this.viewer.stats = data?.data || null;
+        } catch (e) {
+            console.error('[Models] loadStats error:', e);
+            this.viewer.stats = null;
+        }
+        this._renderStats();
     },
 
     async _loadViewerData() {
@@ -391,6 +621,7 @@ const AnalyticsModels = {
             const data = await this._api('GET', `/models/${v.model.id}/data?${params}`);
             v.rows = data?.data || [];
             v.total = data?.page?.total || 0;
+            this._hideRowDrawer();
             this._renderViewerContent();
         } catch (e) {
             console.error('[Models] loadViewerData error:', e);
@@ -402,31 +633,53 @@ const AnalyticsModels = {
         const m = this.viewer.model;
 
         container.innerHTML = `
-<div class="models-view-section model-data-viewer">
-    <div class="model-data-header">
-        <div class="model-data-title">${_esc(m.name)}</div>
-        <span class="model-badge badge-${_esc(m.status || 'none')}">${_esc(m.status || 'unknown')}</span>
-        <span style="flex:1"></span>
-        <button class="btn-secondary" id="modelsBackfillBtn">Backfill</button>
-        <button class="btn-secondary" id="modelsExportFromViewer">Export</button>
-        <button class="btn-secondary" id="modelsEditFromViewer">Edit</button>
-        <div class="model-menu-wrap">
-            <button class="btn-secondary model-menu-btn" id="modelsMenuBtn" title="More actions" aria-haspopup="true" aria-label="More actions">&#x22EE;</button>
-            <div class="model-menu" id="modelsMenu" hidden>
-                <button class="model-menu-item danger" id="modelsDeleteItem">Delete model</button>
+<div class="model-data-viewer">
+    <div class="mv-head">
+        <div class="mv-title">
+            <span class="mv-name">${_esc(m.name)}</span>
+            <span class="mv-type-tag">${_esc(this._typeLabel(m.model_type))}</span>
+            <span class="model-badge badge-${_esc(m.status || 'none')}"><span class="model-dot"></span>${_esc(this._statusLabel(m.status))}</span>
+        </div>
+        <div class="mv-actions">
+            <button class="btn-secondary" id="modelsBackfillBtn">Backfill</button>
+            <button class="btn-secondary" id="modelsExportFromViewer">Export</button>
+            <button class="btn-secondary" id="modelsEditFromViewer">Edit</button>
+            <div class="model-menu-wrap">
+                <button class="btn-secondary model-menu-btn" id="modelsMenuBtn" title="More actions" aria-haspopup="true" aria-label="More actions">&#x22EE;</button>
+                <div class="model-menu" id="modelsMenu" hidden>
+                    <button class="model-menu-item danger" id="modelsDeleteItem">Delete model</button>
+                </div>
             </div>
         </div>
     </div>
-    <div id="modelsBackfillBar" class="model-backfill-bar"></div>
-    <div id="modelsHistogramPanel" class="model-histogram-panel"></div>
-    <div class="model-data-toolbar">
-        <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search..." value="${_esc(this.viewer.search)}">
+
+    <div class="mv-body">
+        <div class="mv-main">
+            <div id="modelsBackfillBar" class="model-backfill-bar"></div>
+            <div id="modelsStats" class="mv-stats"></div>
+            <div id="modelsHistogramPanel" class="model-histogram-panel"></div>
+            <div class="mv-results">
+                <div class="mv-toolbar">
+                    <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search results..." value="${_esc(this.viewer.search)}">
+                    <span class="mv-toolbar-spacer"></span>
+                    <span class="mv-range" id="modelsDataRange"></span>
+                </div>
+                <div class="model-data-table-wrap" id="modelsDataTableWrap">
+                    <div class="models-empty">Loading...</div>
+                </div>
+                <div class="model-data-pagination" id="modelsDataPagination"></div>
+            </div>
+        </div>
+        <div class="mv-drawer" id="modelsRowDrawer" hidden></div>
+        <aside class="mv-rail" id="modelsRail">
+            <div class="mv-rail-handle" id="modelsRailHandle" title="Drag to resize"></div>
+            <div class="mv-rail-content" id="modelsRailContent"></div>
+        </aside>
     </div>
-    <div class="model-data-table-wrap" id="modelsDataTableWrap">
-        <div class="models-empty">Loading...</div>
-    </div>
-    <div class="model-data-pagination" id="modelsDataPagination"></div>
 </div>`;
+
+        this._renderRail();
+        this._bindRailResize();
 
         this._renderBackfillBar();
         // Resume progress polling if a backfill is running (e.g. after returning
@@ -469,6 +722,204 @@ const AnalyticsModels = {
         });
     },
 
+    // ---- Summary strip ----
+    // The counts that answer "did this model find anything", from /stats. The
+    // strip stays out of the layout entirely until the call lands.
+    _renderStats() {
+        const el = document.getElementById('modelsStats');
+        if (!el) return;
+        const v = this.viewer;
+        const st = v.stats;
+        if (!st) { el.innerHTML = ''; return; }
+
+        const mt = v.model?.model_type;
+        const spec = this.STAT_SPEC[mt === 'beacon' || mt === 'long_connection' ? 'network' : mt] || [];
+        const def = v.model?.definition || {};
+
+        const cards = spec.map(c => {
+            const raw = st[c.k];
+            if (raw === null || raw === undefined) return '';
+            let val;
+            if (c.fmt === 'int') val = Number(raw).toLocaleString();
+            else if (c.fmt === 'score') val = Number(raw).toFixed(3);
+            else if (c.fmt === 'ago') val = this._isEpochZero(raw) ? '\u2014' : (Utils.timeAgo(raw) || '\u2014');
+            else val = String(raw);
+            const label = typeof c.label === 'function' ? c.label(def) : c.label;
+            const tone = c.tone && Number(raw) > 0 ? ' mv-stat-' + c.tone : '';
+            return `<div class="mv-stat${tone}"><div class="mv-stat-k">${_esc(label)}</div><div class="mv-stat-v">${_esc(val)}</div></div>`;
+        }).join('');
+
+        el.innerHTML = cards;
+    },
+
+    // ---- Definition rail ----
+    // Read-only. Answering "what does this model match" should not require
+    // opening the editor, which is a form that can be saved by accident.
+    _renderRail() {
+        const el = document.getElementById('modelsRailContent');
+        if (!el) return;
+        const m = this.viewer.model;
+        if (!m) { el.innerHTML = ''; return; }
+        const def = m.definition || {};
+        const mt = m.model_type;
+
+        const rows = [['Type', this._typeLabel(mt)]];
+        if (mt === 'rarity') {
+            rows.push(['Min sample', def.min_sample || 5]);
+            rows.push(['Confidence threshold', (def.alert?.confidence_threshold ?? 0.8).toFixed(2)]);
+            rows.push(['Percent threshold', (def.alert?.percent_threshold ?? 5) + '%']);
+        } else if (mt === 'volume_baseline') {
+            rows.push(['Bucket', def.time_bucket || 'day']);
+            rows.push(['z threshold', (def.alert?.z_threshold || 3.5).toFixed(1)]);
+        } else if (mt === 'beacon') {
+            rows.push(['Window', def.window || '1d']);
+            rows.push(['Min connections', def.beacon?.min_connections || 4]);
+            rows.push(['Score threshold', (def.beacon?.score_threshold || 0.8).toFixed(2)]);
+        } else if (mt === 'long_connection') {
+            rows.push(['Window', def.window || '1d']);
+            rows.push(['Score threshold', (def.long_conn?.score_threshold || 0.5).toFixed(2)]);
+        } else if (mt === 'first_seen') {
+            rows.push(['Alert on new', def.alert?.alert_on_new === false ? 'No' : 'Yes']);
+        }
+
+        let keyLabel = 'Keys', keys = [];
+        if (mt === 'rarity') {
+            keys = [def.partition_key, def.value_key].filter(Boolean);
+        } else if (mt === 'beacon' || mt === 'long_connection') {
+            keyLabel = 'Connection fields';
+            const n = def.network || {};
+            keys = [n.src_field || 'src_ip', n.dst_field || 'dst_ip', n.port_field || 'dst_port', n.duration_field || 'duration'];
+        } else {
+            keys = Array.isArray(def.key_fields) ? def.key_fields.filter(Boolean) : [];
+        }
+
+        const bql = this._buildSourceQuery(def);
+        const alertMode = m.alert_mode || 'paused';
+
+        el.innerHTML = `
+<div class="me-sec">
+    <div class="me-sec-label">Definition</div>
+    <dl class="mv-kv">${rows.map(([k, val]) =>
+        `<dt>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
+</div>
+${keys.length ? `<div class="me-sec">
+    <div class="me-sec-label">${_esc(keyLabel)}</div>
+    <div class="mv-chips">${keys.map(k => `<span class="mv-chip">${_esc(k)}</span>`).join('')}</div>
+</div>` : ''}
+${bql ? `<div class="me-sec">
+    <div class="me-sec-label">Matches</div>
+    <pre class="mv-code">${_esc(bql)}</pre>
+</div>` : ''}
+<div class="me-sec">
+    <div class="me-sec-label">Alerting</div>
+    <dl class="mv-kv">
+        <dt>Mode</dt><dd>${_esc(this._statusLabel(alertMode))}</dd>
+        <dt>Severity</dt><dd>${_esc(this._statusLabel(def.alert?.severity || 'medium'))}</dd>
+    </dl>
+</div>
+${m.description ? `<div class="me-sec">
+    <div class="me-sec-label">Description</div>
+    <div class="mv-desc">${_esc(m.description)}</div>
+</div>` : ''}
+<div class="mv-rail-foot">Updated ${_esc(Utils.timeAgo(m.updated_at) || 'recently')}</div>`;
+    },
+
+    _bindRailResize() {
+        window.App?.bindEditorRail?.(document.getElementById('modelsRailHandle'), {
+            body: document.querySelector('.mv-body'),
+            cssVar: '--mv-rail-w',
+            storageKey: 'bifract-model-viewer-rail-width',
+        });
+    },
+
+    // ---- Row drawer ----
+    // A row is an entity with a history, so it opens rather than dead-ending.
+    // It also carries the columns the table leaves out (beacon sub-scores, the
+    // prevalence totals) which is what makes trimming the table safe.
+    _openRowDrawer(idx) {
+        const v = this.viewer;
+        const row = v.rows[idx];
+        const el = document.getElementById('modelsRowDrawer');
+        if (!row || !el) return;
+        v.selected = idx;
+
+        const m = v.model;
+        const spec = this._viewSpec(m);
+        const thr = spec.score ? Number(spec.score.threshold(m.definition || {})) : NaN;
+        const days = Array.isArray(row.days) ? row.days : [];
+
+        // entity_key and entity_val pack the key fields with a record separator,
+        // which prints as a control character when dumped raw.
+        const packed = new Set(['entity_key', 'entity_val']);
+        const skip = new Set(['days', 'fractal_id']);
+        const fields = Object.keys(row).filter(k => !skip.has(k)).map(k => {
+            const val = packed.has(k)
+                ? _esc(String(row[k] ?? '').split('\x1e').join(' / '))
+                : this._fmtCell({ col: k, fmt: this._drawerFmt(k) }, row, thr);
+            return `<dt>${_esc(k)}</dt><dd>${val}</dd>`;
+        }).join('');
+
+        el.innerHTML = `
+<div class="mv-drawer-head">
+    <div class="mv-drawer-title">${_esc(this._rowTitle(row, m))}</div>
+    <button class="mv-drawer-close" id="modelsDrawerClose" title="Close" aria-label="Close">&times;</button>
+</div>
+<div class="mv-drawer-body">
+    <div class="me-sec">
+        <div class="me-sec-label">All columns</div>
+        <dl class="mv-kv mv-kv-wide">${fields}</dl>
+    </div>
+    ${days.length ? `<div class="me-sec">
+        <div class="me-sec-label">Active days (${days.length})</div>
+        <div class="mv-chips">${days.map(d => `<span class="mv-chip">${_esc(String(d).substring(0, 10))}</span>`).join('')}</div>
+    </div>` : ''}
+</div>
+<div class="mv-drawer-foot">
+    ${days.length
+        ? `<button class="btn-primary btn-sm" id="modelsDrawerPivot">Search these ${days.length} day${days.length === 1 ? '' : 's'} in logs</button>`
+        : `<span class="mv-none">No day history recorded for this row, so there is nothing to pivot to.</span>`}
+</div>`;
+        el.hidden = false;
+        document.querySelector('.mv-body')?.classList.add('mv-inspecting');
+        document.getElementById('modelsDrawerClose').addEventListener('click', () => this._closeRowDrawer());
+        document.getElementById('modelsDrawerPivot')?.addEventListener('click', () => this._pivotToSearch(row, m));
+        this._renderDataTable();
+    },
+
+    _closeRowDrawer() {
+        this._hideRowDrawer();
+        this._renderDataTable();
+    },
+
+    _hideRowDrawer() {
+        const el = document.getElementById('modelsRowDrawer');
+        if (el) { el.hidden = true; el.innerHTML = ''; }
+        document.querySelector('.mv-body')?.classList.remove('mv-inspecting');
+        this.viewer.selected = -1;
+    },
+
+    // Formatter for a column the table does not lay out, keyed by name so the
+    // drawer reads the same as the table for the columns they share.
+    _drawerFmt(k) {
+        if (k === 'total_duration') return 'dur';
+        if (k === 'prevalence') return 'pct1';
+        if (k === 'percent') return 'pct100';
+        if (/_seen$|_at$|_bucket$/.test(k)) return 'ts';
+        if (/_score$|^confidence$|^mad$/.test(k)) return 'score';
+        if (/_count$|_total$|^n_buckets$/.test(k)) return 'int';
+        return '';
+    },
+
+    _rowTitle(row, model) {
+        const mt = model?.model_type;
+        if (mt === 'beacon' || mt === 'long_connection') {
+            return `${row.src_ip} \u2192 ${row.dst_ip}:${row.dst_port}`;
+        }
+        if (mt === 'rarity') return `${row.partition_val} / ${row.value_val}`;
+        const raw = mt === 'first_seen' ? row.entity_key : row.entity_val;
+        return String(raw ?? '').split('\x1e').join(' / ');
+    },
+
     // ---- Score distribution histogram ----
     METRIC_LABELS: { confidence: 'Confidence', z_score: 'Anomaly score (|z|)', event_count: 'Event count', beacon_score: 'Beacon score', longconn_score: 'Long-connection score', final_score: 'Score' },
 
@@ -490,11 +941,13 @@ const AnalyticsModels = {
         if (!el) return;
         const h = this.viewer.histogram;
         const buckets = (h && Array.isArray(h.buckets)) ? h.buckets : [];
-        // Confidence models get an alert-threshold marker; other metrics don't.
+        // The marker is drawn wherever the metric and the threshold share a 0..1
+        // scale: confidence and the network final_score do, banded |z| does not.
         let thr = null;
-        if (h?.metric === 'confidence') {
-            const t = this.viewer.model?.definition?.alert?.confidence_threshold;
-            if (t != null && t >= 0 && t <= 1) thr = t;
+        const spec = this._viewSpec(this.viewer.model);
+        if (spec.score && (h?.metric === 'confidence' || h?.metric === 'final_score')) {
+            const t = Number(spec.score.threshold(this.viewer.model?.definition || {}));
+            if (isFinite(t) && t >= 0 && t <= 1) thr = t;
         }
         el.innerHTML = this._buildHistogramHTML(buckets, h?.metric, thr);
     },
@@ -524,6 +977,15 @@ const AnalyticsModels = {
         const st = m.backfill_status || 'none';
         btn.className = 'btn-secondary';
         btn.onclick = null;
+
+        // Scheduled types are seeded by the scorer's rolling window and the API
+        // rejects a backfill outright, so the button does not offer one.
+        if (m.model_type === 'beacon' || m.model_type === 'long_connection') {
+            btn.disabled = true;
+            btn.textContent = 'Backfill';
+            btn.title = 'Not applicable: this model type is seeded by its rolling window';
+            return;
+        }
 
         if (m.status !== 'active' && st !== 'running') {
             btn.disabled = true;
@@ -698,37 +1160,42 @@ const AnalyticsModels = {
         if (!v.rows.length) {
             const seeding = m.backfill_status === 'running';
             wrap.innerHTML = seeding
-                ? '<div class="models-empty">Backfilling historical data… rows will appear as each day completes.</div>'
-                : '<div class="models-empty">No data yet — use the Backfill button to seed historical data, or new matching logs will appear here as they are ingested.</div>';
+                ? EmptyState.render({ icon: 'list', title: 'Backfilling historical data', detail: 'Rows appear as each day completes.' })
+                : v.search
+                    ? EmptyState.render({ icon: 'list', title: 'No matching rows', detail: 'No result matches this search.' })
+                    : EmptyState.render({
+                        icon: 'list',
+                        title: 'No data yet',
+                        detail: 'Use Backfill to seed history, or new matching logs will appear here as they are ingested.',
+                    });
             this._renderPagination();
             return;
         }
-        const cols = m.model_type === 'rarity'
-            ? ['partition_val', 'value_val', 'model_count', 'percent', 'confidence']
-            : m.model_type === 'volume_baseline'
-                ? ['entity_val', 'latest_count', 'baseline_median', 'mad', 'z_score', 'n_buckets', 'latest_bucket']
-                : m.model_type === 'beacon'
-                    ? ['src_ip', 'dst_ip', 'dst_port', 'final_score', 'ts_score', 'ds_score', 'dur_score', 'hist_score', 'prevalence', 'conn_count', 'last_seen']
-                    : m.model_type === 'long_connection'
-                        ? ['src_ip', 'dst_ip', 'dst_port', 'final_score', 'total_duration', 'conn_count', 'prevalence', 'last_seen']
-                        : ['entity_key', 'first_seen', 'last_seen', 'event_count'];
 
-        const headers = cols.map(c => {
-            const active = v.sortCol === c ? (v.sortDir === 'asc' ? 'sort-asc' : 'sort-desc') : '';
-            return `<th class="${active}" data-col="${c}">${c} <span class="sort-icon"></span></th>`;
-        }).join('') + `<th class="pivot-col-header" title="Pivot to Search">↗</th>`;
+        const spec = this._viewSpec(m);
+        const cols = this._viewColumns(m);
+        const thr = spec.score ? Number(spec.score.threshold(m.definition || {})) : NaN;
+        const scoreCol = spec.score?.col;
+
+        const headers = cols.map((c, i) => {
+            const active = c.sortable && v.sortCol === c.col ? (v.sortDir === 'asc' ? ' sort-asc' : ' sort-desc') : '';
+            const cls = `${c.align === 'num' ? 'num ' : ''}${c.sortable ? 'sortable' : ''}${active}`.trim();
+            const attr = c.sortable ? ` data-col="${_esc(c.col)}"` : '';
+            const title = c.label !== c.col ? ` title="${_esc(c.col)}"` : '';
+            return `<th class="${cls}"${attr}${title}><span class="mv-h">${_esc(c.label)}</span>${
+                c.label !== c.col ? `<span class="mv-h-src">${_esc(c.col)}</span>` : ''
+            }${c.sortable ? '<span class="sort-icon"></span>' : ''}</th>`;
+        }).join('');
 
         const rows = v.rows.map((row, idx) => {
-            const days = Array.isArray(row.days) ? row.days : [];
+            const sev = scoreCol ? this._sevClass(spec.score.abs ? Math.abs(row[scoreCol]) : row[scoreCol], thr) : '';
             const cells = cols.map(c => {
-                let val = row[c] ?? '';
-                if (typeof val === 'number') val = val.toLocaleString(undefined, { maximumFractionDigits: 4 });
-                return `<td>${_esc(String(val))}</td>`;
+                const cls = [c.align === 'num' ? 'num' : '', c.col === scoreCol ? 'mv-score' : ''].filter(Boolean).join(' ');
+                const title = c.fmt ? '' : ` title="${_esc(this._cellText(c, row))}"`;
+                return `<td${cls ? ` class="${cls}"` : ''}${title}>${this._fmtCell(c, row, thr)}</td>`;
             }).join('');
-            const pivotCell = days.length
-                ? `<td class="pivot-cell"><button class="row-pivot-btn" data-row="${idx}" title="Search ${days.length} day${days.length === 1 ? '' : 's'} in logs">${days.length}d</button></td>`
-                : `<td class="pivot-cell"></td>`;
-            return `<tr class="${days.length ? 'has-pivot' : ''}">${cells}${pivotCell}</tr>`;
+            const cls = [sev, idx === v.selected ? 'selected' : ''].filter(Boolean).join(' ');
+            return `<tr${cls ? ` class="${cls}"` : ''} data-row="${idx}">${cells}</tr>`;
         }).join('');
 
         wrap.innerHTML = `
@@ -751,11 +1218,11 @@ const AnalyticsModels = {
             });
         });
 
-        wrap.querySelectorAll('.row-pivot-btn').forEach(btn => {
-            btn.addEventListener('click', e => {
-                e.stopPropagation();
-                const row = v.rows[parseInt(btn.dataset.row)];
-                if (row) this._pivotToSearch(row, m);
+        wrap.querySelectorAll('tbody tr').forEach(tr => {
+            tr.addEventListener('click', () => {
+                const idx = parseInt(tr.dataset.row, 10);
+                if (idx === v.selected) this._closeRowDrawer();
+                else this._openRowDrawer(idx);
             });
         });
 
@@ -851,8 +1318,13 @@ const AnalyticsModels = {
 
     _renderPagination() {
         const el = document.getElementById('modelsDataPagination');
-        if (!el) return;
         const v = this.viewer;
+        const range = document.getElementById('modelsDataRange');
+        if (range) {
+            range.textContent = v.total === 0 ? ''
+                : `${(v.offset + 1).toLocaleString()}\u2013${Math.min(v.offset + v.rows.length, v.total).toLocaleString()} of ${v.total.toLocaleString()}`;
+        }
+        if (!el) return;
         if (v.total === 0) { el.innerHTML = ''; return; }
 
         const page = Math.floor(v.offset / v.limit) + 1;
@@ -910,6 +1382,22 @@ const AnalyticsModels = {
     // ============================
     // Editor (split-panel, BQL-first)
     // ============================
+    MODEL_TYPES: [
+        { id: 'rarity', label: 'Rarity', desc: 'Scores how unusual a value is within its partition.' },
+        { id: 'first_seen', label: 'First / Last Seen', desc: 'Tracks when an entity was first and last observed.' },
+        { id: 'volume_baseline', label: 'Volume Baseline', desc: 'Flags entities whose volume deviates from their own history, by modified z-score.' },
+        { id: 'beacon', label: 'Beacon', desc: 'Finds regular, automated check-ins (C2 beaconing) in network connection logs.' },
+        { id: 'long_connection', label: 'Long Connection', desc: 'Surfaces unusually long-lived sessions (tunnels, exfil, persistent C2) by total duration.' },
+    ],
+
+    TYPE_ICONS: {
+        rarity: '<path d="M6 3h12l3 6-9 12L3 9z"/><path d="M3 9h18"/>',
+        first_seen: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>',
+        volume_baseline: '<polyline points="3 13 7 13 10 5 14 19 17 13 21 13"/>',
+        beacon: '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4"/><path d="M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.9 4.9a10 10 0 0 0 0 14.2"/><path d="M19.1 19.1a10 10 0 0 0 0-14.2"/>',
+        long_connection: '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.6.4l2.6-2.6a4.5 4.5 0 0 0-6.4-6.4l-1.5 1.5"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.6-.4l-2.6 2.6a4.5 4.5 0 0 0 6.4 6.4l1.5-1.5"/>',
+    },
+
     BASE_FIELDS: ['norm_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'],
 
     _startEditor() {
@@ -934,58 +1422,91 @@ const AnalyticsModels = {
             fieldOrder: null,
             resultFields: [],
             results: [],
+            resultCount: '',
+            hasTimeline: false,
             ran: false,
             resultMode: 'logs',     // 'logs' (matching logs) | 'scores' (score preview)
             previewWindow: '7d',    // lookback for the score preview
             preview: null,          // last PreviewResult
+            dirty: false,
         };
         this.currentView = 'editor';
         this._render();
     },
 
+    // The editor is a viewport-height workspace like the search page and the alert
+    // editor: the head and the rail stay put, and the bench scrolls inside itself.
     _renderEditorView(container) {
         const e = this.editor;
-        const title = e.editId ? 'Edit Analytics Model' : 'New Analytics Model';
-        const saveLabel = e.editId ? 'Update Model' : 'Create Model';
-        const ranges = [['1h', 'Last 1h'], ['6h', 'Last 6h'], ['24h', 'Last 24h'], ['7d', 'Last 7d'], ['30d', 'Last 30d']];
+        const scores = e.resultMode === 'scores';
+        const ranges = [['1h', 'Last 1 Hour'], ['6h', 'Last 6 Hours'], ['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        const previews = [['1d', 'Last 1 Day'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        const opts = (list, sel) => list.map(([v, l]) => `<option value="${v}" ${sel === v ? 'selected' : ''}>${l}</option>`).join('');
         container.innerHTML = `
-<div class="models-view-section model-editor">
-    <div class="model-editor-header">
-        <h2>${title}</h2>
-        <span style="flex:1"></span>
-        <button class="btn-primary" id="modelEditorSave">${saveLabel}</button>
+<div class="model-editor-container">
+    <div class="me-head">
+        <div class="me-name">
+            <input type="text" id="modelName" class="me-name-input" placeholder="Name this model"
+                   spellcheck="false" autocomplete="off" value="${_esc(e.name)}">
+            <span id="modelEditorStatus" class="me-status"><span class="me-status-dot"></span><span class="me-status-text">New</span></span>
+        </div>
+        <div class="me-actions">
+            <span class="me-type-tag">Type <b id="modelTypeTagValue">${_esc(this._typeLabel(e.modelType))}</b></span>
+            <button class="btn-primary" id="modelEditorSave">${e.editId ? 'Update Model' : 'Create Model'}</button>
+        </div>
     </div>
-    <div class="model-editor-body">
-        <div class="model-editor-left">
-            <div class="model-editor-toolbar">
-                <div class="model-result-tabs" id="modelResultTabs">
-                    <button data-mode="logs" class="${e.resultMode === 'scores' ? '' : 'active'}">Matching logs</button>
-                    <button data-mode="scores" class="${e.resultMode === 'scores' ? 'active' : ''}">Score preview</button>
+
+    <div class="me-body">
+        <div class="me-bench">
+            <section class="search-section">
+                <div class="search-toolbar">
+                    <select id="modelTimeRange" class="time-range-select" ${scores ? 'hidden' : ''}>${opts(ranges, e.timeRange)}</select>
+                    <select id="modelPreviewWindow" class="time-range-select" title="Lookback window for the score preview" ${scores ? '' : 'hidden'}>${opts(previews, e.previewWindow)}</select>
+                    <div class="toolbar-spacer"></div>
+                    <button class="search-btn" id="modelRunBtn" ${scores ? 'hidden' : ''}>
+                        <span class="btn-text">Run</span>
+                    </button>
                 </div>
-                <select id="modelTimeRange" class="model-time-select" style="display:${e.resultMode === 'scores' ? 'none' : ''}">
-                    ${ranges.map(([v, l]) => `<option value="${v}" ${e.timeRange === v ? 'selected' : ''}>${l}</option>`).join('')}
-                </select>
-                <select id="modelPreviewWindow" class="model-time-select" style="display:${e.resultMode === 'scores' ? '' : 'none'}" title="Lookback window for the score preview">
-                    ${[['1d', 'Last 1d'], ['7d', 'Last 7d'], ['30d', 'Last 30d']].map(([v, l]) => `<option value="${v}" ${e.previewWindow === v ? 'selected' : ''}>${l}</option>`).join('')}
-                </select>
-                <button class="search-btn" id="modelRunBtn" style="display:${e.resultMode === 'scores' ? 'none' : ''}">
-                    <span class="btn-text">Run</span>
-                </button>
-                <span style="flex:1"></span>
-                <span class="model-results-count" id="modelResultsCount"></span>
-            </div>
-            <div class="model-query-wrap">
-                <div id="modelQueryHighlight" class="model-query-highlight"></div>
-                <textarea id="modelQueryInput" class="model-query-input" spellcheck="false" placeholder='Filter logs in BQL, or leave empty to use all logs'>${_esc(e.query)}</textarea>
-            </div>
-            <pre id="modelSqlOutput" class="model-sql-output" style="display:${this._showSQL() ? 'block' : 'none'}"></pre>
-            <div id="modelTranslation" class="model-translation"></div>
-            <div id="modelTimelineWrap" class="timeline-inline" style="display:none;"><canvas id="modelTimeline"></canvas></div>
-            <div class="search-results-split model-results-split">
-                <div class="model-results-main">
-                    <div id="modelQueryResults" class="model-query-results" style="display:${e.resultMode === 'scores' ? 'none' : ''}"><div class="models-empty">Run the query to preview matching logs and extracted fields.</div></div>
-                    <div id="modelScorePreview" class="model-score-preview" style="display:${e.resultMode === 'scores' ? '' : 'none'}"></div>
+
+                <div class="query-input-row">
+                    <div class="query-input-wrapper">
+                        <div id="modelQueryHighlight" class="query-highlight"></div>
+                        <textarea id="modelQueryInput" class="search-input" rows="1" spellcheck="false" autocomplete="off"
+                                  placeholder="Filter logs in BQL, or leave empty to use every log">${_esc(e.query)}</textarea>
+                    </div>
                 </div>
+                <div class="query-resize-handle" data-target="modelQueryInput"></div>
+            </section>
+
+            <div class="search-results-split">
+                <section class="results-section">
+                    <div class="timeline-inline" id="modelTimelineWrap" style="display:none;"><canvas id="modelTimeline"></canvas></div>
+
+                    <div class="results-header">
+                        <div class="editor-result-tabs" id="modelResultTabs">
+                            <button type="button" class="ert-tab ${scores ? '' : 'active'}" data-mode="logs">Results</button>
+                            <button type="button" class="ert-tab ${scores ? 'active' : ''}" data-mode="scores">Scores<span id="modelFlagChip" class="ert-chip" hidden></span></button>
+                        </div>
+                        <div class="results-controls">
+                            <span class="result-count" id="modelResultsCount"></span>
+                        </div>
+                    </div>
+
+                    <div id="modelResultsPane" ${scores ? 'hidden' : ''}>
+                        <div class="sql-preview">
+                            <div class="sql-header">
+                                <strong>Generated SQL</strong>
+                                <button id="modelToggleSqlBtn" class="toggle-sql-btn">Show SQL</button>
+                            </div>
+                            <code id="modelSqlOutput" style="display:none;"></code>
+                        </div>
+                        <div id="modelTranslation" class="model-translation"></div>
+                        <div id="modelQueryResults" class="results-container">${this._benchEmpty()}</div>
+                    </div>
+
+                    <div id="modelScorePreview" class="model-score-pane" ${scores ? '' : 'hidden'}></div>
+                </section>
+
                 <div id="modelLogDetailPanel" class="log-detail-panel">
                     <div class="panel-resize-handle"></div>
                     <div class="panel-header">
@@ -1010,51 +1531,31 @@ const AnalyticsModels = {
                 </div>
             </div>
         </div>
-        <div class="model-editor-right">
-            <div class="config-section">
-                <div class="config-section-title">Model Type</div>
-                <div class="model-type-cards model-type-cards-compact" id="modelTypeCards">
-                    <div class="model-type-card ${e.modelType === 'rarity' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="rarity">
-                        <div class="card-title">Rarity</div>
-                        <div class="card-desc">Score how unusual a value is within its partition.</div>
-                    </div>
-                    <div class="model-type-card ${e.modelType === 'first_seen' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="first_seen">
-                        <div class="card-title">First / Last Seen</div>
-                        <div class="card-desc">Track when an entity was first and last observed.</div>
-                    </div>
-                    <div class="model-type-card ${e.modelType === 'volume_baseline' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="volume_baseline">
-                        <div class="card-title">Volume Baseline</div>
-                        <div class="card-desc">Flag entities whose volume deviates from their own history (modified z-score).</div>
-                    </div>
-                    <div class="model-type-card ${e.modelType === 'beacon' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="beacon">
-                        <div class="card-title">Beacon</div>
-                        <div class="card-desc">Detect regular, automated check-ins (C2 beaconing) in network connection logs.</div>
-                    </div>
-                    <div class="model-type-card ${e.modelType === 'long_connection' ? 'selected' : ''} ${e.editId ? 'model-type-card-locked' : ''}" data-type="long_connection">
-                        <div class="card-title">Long Connection</div>
-                        <div class="card-desc">Surface unusually long-lived sessions (tunnels, exfil, persistent C2) by total duration.</div>
-                    </div>
+
+        <div class="me-rail" id="modelRail">
+            <div class="me-rail-handle" id="modelRailHandle" title="Drag to resize"></div>
+            <div class="me-rail-content">
+                <div class="me-sec">
+                    <div class="me-sec-label">Type</div>
+                    <div class="me-type-cards" id="modelTypeCards">${this._typeCardsHTML()}</div>
+                    <p class="me-hint" id="modelTypeHelp">${_esc(this._typeDesc(e.modelType))}${e.editId ? ' The type of an existing model cannot be changed.' : ''}</p>
                 </div>
-            </div>
-            <div class="config-section">
-                <div class="config-section-title">Shape</div>
-                <div id="modelShapeConfig">${this._editorShapeHTML()}</div>
-            </div>
-            <div class="config-section">
-                <div class="config-section-title">Details</div>
-                <div class="field-group">
-                    <label>Model Name</label>
-                    <input type="text" id="modelName" class="full-input" placeholder="e.g. download_domain_rarity" value="${_esc(e.name)}">
+
+                <div class="me-sec">
+                    <div class="me-sec-label">Shape</div>
+                    <div id="modelShapeConfig">${this._editorShapeHTML()}</div>
                 </div>
-                <div class="field-group" style="margin-top:10px">
-                    <label>Description (optional)</label>
-                    <textarea id="modelDesc" class="full-input" rows="2">${_esc(e.description)}</textarea>
+
+                <div class="me-sec">
+                    <div class="me-sec-label">Detection</div>
+                    <div id="modelAlertConfig">${this._editorAlertConfigHTML()}</div>
+                    <p class="me-hint">A paused alert is created with these thresholds${e.editId ? '' : ' on save'}. Enable it and set actions, throttling and severity from the Alerts page.</p>
                 </div>
-            </div>
-            <div class="config-section">
-                <div class="config-section-title">Detection</div>
-                <p class="config-hint">Thresholds that decide when this model flags a result. A paused alert is created with these thresholds${e.editId ? '' : ' on save'} — enable it and configure actions, throttling, and severity from the Alerts page.</p>
-                <div id="modelAlertConfig">${this._editorAlertConfigHTML()}</div>
+
+                <div class="me-sec">
+                    <label class="me-sec-label" for="modelDesc">Description</label>
+                    <textarea id="modelDesc" class="full-input" rows="4" placeholder="What this model measures and why">${_esc(e.description)}</textarea>
+                </div>
             </div>
         </div>
     </div>
@@ -1065,11 +1566,14 @@ const AnalyticsModels = {
         const ta = document.getElementById('modelQueryInput');
         ta.addEventListener('input', ev => { e.query = ev.target.value; this._updateQueryHighlight(); this._schedulePreview(); });
         ta.addEventListener('scroll', () => this._syncQueryHighlightScroll());
-        ta.addEventListener('keydown', ev => {
-            if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
-                ev.preventDefault();
-                if (e.resultMode === 'scores') this._runScorePreview(); else this._runOrCancelModel();
-            }
+        // The same keyboard contract as the search page and the alert editor.
+        window.App?.bindQueryEditorKeys?.(ta, {
+            historyKey: 'model',
+            seed: e.query || '',
+            onRun: () => { if (e.resultMode === 'scores') this._runScorePreview(); else this._runOrCancelModel(); },
+        });
+        ta.addEventListener('input', ev => {
+            if (!window.App?.isUndoRedoing) window.App?.saveToHistory('model', ev.target.value);
         });
         this._updateQueryHighlight();
         // Live BQL validation: underline the offending span as the user types.
@@ -1081,25 +1585,22 @@ const AnalyticsModels = {
                 rerender: () => this._updateQueryHighlight(),
             });
         }
+        // The query box gets the gutter and the drag handle the search page has.
+        window.App?.setupQueryResizeHandles?.();
+        window.App?.setupQueryLineNumbers?.();
+
+        this._bindSqlToggle();
         document.getElementById('modelTimeRange').addEventListener('change', ev => { e.timeRange = ev.target.value; if (e.ran) this._runQuery(); });
-        document.querySelectorAll('#modelResultTabs button').forEach(b => {
+        document.querySelectorAll('#modelResultTabs .ert-tab').forEach(b => {
             b.addEventListener('click', () => this._setResultMode(b.dataset.mode));
         });
         document.getElementById('modelPreviewWindow').addEventListener('change', ev => { e.previewWindow = ev.target.value; this._runScorePreview(); });
-        if (!e.editId) {
-            document.querySelectorAll('#modelTypeCards .model-type-card').forEach(card => {
-                card.addEventListener('click', () => {
-                    e.modelType = card.dataset.type;
-                    document.querySelectorAll('#modelTypeCards .model-type-card').forEach(c => c.classList.toggle('selected', c === card));
-                    this._renderEditorShape();
-                    this._renderEditorAlertConfig();
-                    this._schedulePreview();
-                });
-            });
-        }
+        this._bindTypeCards();
         this._bindEditorDetails();
         this._bindEditorShape();
+        this._bindRail();
         this._renderTranslation();
+        this._renderEditorStatus();
 
         // The editor DOM is rebuilt on every render, so (re)register its log
         // detail panel with the shared controller against the fresh element.
@@ -1114,10 +1615,112 @@ const AnalyticsModels = {
         if (e.resultMode === 'scores') this._runScorePreview();
     },
 
-    // Whether to surface the translated ClickHouse SQL (driven by the user's
-    // "Show Query Debug" profile preference, shared with the main search view).
-    _showSQL() {
-        return !!(window.UserPrefs && UserPrefs.showSQL());
+    // The Results tab's count, remembered so leaving for the Scores tab and coming
+    // back restores what is actually on screen rather than a number from two runs ago.
+    _setResultCount(text) {
+        this.editor.resultCount = text;
+        if (this.editor.resultMode === 'scores') return;
+        const el = document.getElementById('modelResultsCount');
+        if (el) el.textContent = text;
+    },
+
+    _benchEmpty(title = 'Nothing run yet', detail = 'Run the query to preview matching logs and the fields you can build a shape from.') {
+        return EmptyState.render({ icon: 'list', title, detail });
+    },
+
+    // Icon-and-label cards, as in the alert editor's type picker. The description of
+    // whichever type is selected reads underneath, so five choices cost one line.
+    _typeCardsHTML() {
+        const e = this.editor;
+        return this.MODEL_TYPES.map(t => `
+<button type="button" class="me-type-card ${e.modelType === t.id ? 'active' : ''} ${e.editId ? 'me-type-card-locked' : ''}"
+        data-type="${t.id}" title="${_esc(t.desc)}" ${e.editId ? 'disabled' : ''}>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${this.TYPE_ICONS[t.id] || ''}</svg>
+    <span class="me-type-card-label">${_esc(t.label)}</span>
+</button>`).join('');
+    },
+
+    _bindTypeCards() {
+        if (this.editor.editId) return;
+        document.querySelectorAll('#modelTypeCards .me-type-card').forEach(card => {
+            card.addEventListener('click', () => {
+                const e = this.editor;
+                e.modelType = card.dataset.type;
+                document.querySelectorAll('#modelTypeCards .me-type-card').forEach(c => c.classList.toggle('active', c === card));
+                const help = document.getElementById('modelTypeHelp');
+                if (help) help.textContent = this._typeDesc(e.modelType);
+                const tag = document.getElementById('modelTypeTagValue');
+                if (tag) tag.textContent = this._typeLabel(e.modelType);
+                this._renderEditorShape();
+                this._renderEditorAlertConfig();
+                this._markDirty();
+                this._schedulePreview();
+            });
+        });
+    },
+
+    // The SQL block follows the "Show Query Debug" profile preference like every
+    // other one on the site; this button is the local override while it is shown.
+    _bindSqlToggle() {
+        const btn = document.getElementById('modelToggleSqlBtn');
+        const out = document.getElementById('modelSqlOutput');
+        if (!btn || !out) return;
+        btn.addEventListener('click', () => {
+            const hidden = out.style.display === 'none';
+            out.style.display = hidden ? 'block' : 'none';
+            btn.textContent = hidden ? 'Hide SQL' : 'Show SQL';
+        });
+        if (window.UserPrefs && !UserPrefs.showSQL()) {
+            const wrap = document.querySelector('#modelResultsPane .sql-preview');
+            if (wrap) wrap.style.display = 'none';
+        }
+    },
+
+    _bindRail() {
+        window.App?.bindEditorRail?.(document.getElementById('modelRailHandle'), {
+            body: document.querySelector('.me-body'),
+            cssVar: '--me-rail-w',
+            storageKey: 'bifract-model-rail-width',
+            detail: document.getElementById('modelLogDetailPanel'),
+            foldClass: 'me-inspecting',
+        });
+    },
+
+    // Locks the page to the viewport while the editor or the data viewer is open,
+    // as the search page and the alert editor do, and hands the height back on
+    // the way out.
+    // _render also runs while this tab is hidden (a scope switch renders every
+    // view), so the lock is conditional on actually being on screen: a body locked
+    // to the viewport with the tab hidden would freeze whatever tab is showing.
+    _setWorkspaceChrome(on) {
+        const tab = document.getElementById('fractalModelsTabContent');
+        const view = document.getElementById('modelsView');
+        const visible = !!tab && !!view && tab.style.display !== 'none' && view.style.display !== 'none';
+        const active = on && visible;
+        document.body.classList.toggle('models-workspace', active);
+        if (visible) {
+            tab.style.display = active ? 'flex' : 'block';
+            view.style.display = active ? 'flex' : 'block';
+        }
+    },
+
+    _markDirty() {
+        if (this.currentView !== 'editor' || this.editor.dirty) return;
+        this.editor.dirty = true;
+        this._renderEditorStatus();
+    },
+
+    _renderEditorStatus() {
+        const pill = document.getElementById('modelEditorStatus');
+        const text = pill?.querySelector('.me-status-text');
+        if (!pill || !text) return;
+        pill.className = 'me-status';
+        if (this.editor.dirty) {
+            text.textContent = 'Unsaved changes';
+            pill.classList.add('me-status-dirty');
+        } else {
+            text.textContent = this.editor.editId ? 'Saved' : 'New';
+        }
     },
 
     // ---- BQL syntax highlighting (overlay over the query textarea) ----
@@ -1179,7 +1782,11 @@ const AnalyticsModels = {
     _isNetworkType(mt) { return mt === 'beacon' || mt === 'long_connection'; },
 
     _typeLabel(mt) {
-        return { rarity: 'Rarity', first_seen: 'First / Last Seen', volume_baseline: 'Volume Baseline', beacon: 'Beacon', long_connection: 'Long Connection' }[mt] || mt;
+        return this.MODEL_TYPES.find(t => t.id === mt)?.label || mt;
+    },
+
+    _typeDesc(mt) {
+        return this.MODEL_TYPES.find(t => t.id === mt)?.desc || '';
     },
 
     // ---- Shape (right panel) ----
@@ -1383,9 +1990,38 @@ ${isBeacon ? `
 
     _bindEditorDetails() {
         const e = this.editor;
-        document.getElementById('modelName').addEventListener('input', ev => { e.name = ev.target.value; });
+        const name = document.getElementById('modelName');
+        name.addEventListener('input', ev => { e.name = ev.target.value; this._sizeNameInput(); });
+        this._sizeNameInput();
         document.getElementById('modelDesc').addEventListener('input', ev => { e.description = ev.target.value; });
         this._bindAlertConfigEvents();
+
+        // One listener for the whole definition. The preview range, the result tabs
+        // and paging sit outside it, because looking at something is not an edit.
+        const root = document.querySelector('.model-editor-container');
+        if (root) {
+            const onEdit = ev => {
+                if (!ev.target.closest('.me-rail, .me-name-input, #modelQueryInput')) return;
+                this._markDirty();
+            };
+            root.addEventListener('input', onEdit);
+            root.addEventListener('change', onEdit);
+        }
+    },
+
+    // The name field is as wide as its text, so the status pill reads as part of it.
+    _sizeNameInput() {
+        const input = document.getElementById('modelName');
+        if (!input) return;
+        let probe = document.getElementById('modelNameProbe');
+        if (!probe) {
+            probe = document.createElement('span');
+            probe.id = 'modelNameProbe';
+            probe.className = 'me-name-probe';
+            input.parentElement.appendChild(probe);
+        }
+        probe.textContent = input.value || input.placeholder || '';
+        input.style.width = Math.min(Math.max(probe.offsetWidth + 22, 60), 640) + 'px';
     },
 
     _bindAlertConfigEvents() {
@@ -1418,7 +2054,7 @@ ${isBeacon ? `
         const parts = [];
 
         if (p.errors && p.errors.length) {
-            parts.push(`<div class="model-trans-errors">${p.errors.map(x => `<div class="model-trans-error">⚠ ${_esc(x)}</div>`).join('')}</div>`);
+            parts.push(`<div class="model-trans-errors">${p.errors.map(x => `<div class="model-trans-error">${_esc(x)}</div>`).join('')}</div>`);
         }
         if (p.warnings && p.warnings.length) {
             parts.push(`<div class="model-trans-warnings">${p.warnings.map(x => `<div class="model-trans-warn">${_esc(x)}</div>`).join('')}</div>`);
@@ -1501,6 +2137,7 @@ ${isBeacon ? `
         const countEl = document.getElementById('modelResultsCount');
         if (resultsEl) resultsEl.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
         if (countEl) countEl.textContent = 'Running…';
+        const wasCount = e.resultCount;
         const timelineWrapEl = document.getElementById('modelTimelineWrap');
         if (timelineWrapEl) timelineWrapEl.style.display = 'none';
         this._setModelRunState(true);
@@ -1539,11 +2176,12 @@ ${isBeacon ? `
                 this._renderEditorShape();
             }
 
-            // Live results.
+            // Live results. The SQL block itself is governed by the profile's
+            // "Show Query Debug" preference, so only its content is set here.
             const sqlEl = document.getElementById('modelSqlOutput');
             if (sqlEl) {
-                if (queryData && queryData.sql && window.QueryExecutor) sqlEl.innerHTML = QueryExecutor.highlightSQL(queryData.sql);
-                sqlEl.style.display = (this._showSQL() && queryData && queryData.sql) ? 'block' : 'none';
+                sqlEl.innerHTML = (queryData && queryData.sql && window.QueryExecutor)
+                    ? QueryExecutor.highlightSQL(queryData.sql) : '';
             }
             // Histogram (present on both success and some error paths from the buffered endpoint)
             const timelineCanvasEl = document.getElementById('modelTimeline');
@@ -1554,16 +2192,18 @@ ${isBeacon ? `
                     { start: queryData.time_start, end: queryData.time_end },
                     timelineCanvasEl, timelineWrapEl
                 );
-            } else if (timelineWrapEl) {
-                timelineWrapEl.style.display = 'none';
+                e.hasTimeline = true;
+            } else {
+                e.hasTimeline = false;
+                if (timelineWrapEl) timelineWrapEl.style.display = 'none';
             }
 
             if (!e.query) {
-                if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No filter — the model will process all logs in this fractal.</div>';
-                if (countEl) countEl.textContent = '';
+                if (resultsEl) resultsEl.innerHTML = this._benchEmpty('No filter', 'This model will process every log in the fractal. Add a BQL filter to narrow it.');
+                this._setResultCount('');
             } else if (queryData && queryData.error) {
                 if (resultsEl) resultsEl.innerHTML = `<div class="query-error"><p>Query Error: ${_esc(queryData.error)}</p></div>`;
-                if (countEl) countEl.textContent = 'Error';
+                this._setResultCount('Error');
             } else if (queryData) {
                 const results = queryData.results || [];
                 e.results = results;
@@ -1572,9 +2212,9 @@ ${isBeacon ? `
                 // Refresh shape datalists so partition/value keys suggest the fields
                 // actually present in the freshly searched data.
                 this._renderEditorShape();
-                if (countEl) countEl.textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
+                this._setResultCount(`${results.length} result${results.length === 1 ? '' : 's'}`);
                 if (!results.length) {
-                    if (resultsEl) resultsEl.innerHTML = '<div class="models-empty">No matching logs in the selected time range.</div>';
+                    if (resultsEl) resultsEl.innerHTML = this._benchEmpty('No matching logs', 'Nothing matched this filter in the selected time range. Widen the range or loosen the query.');
                 } else if (window.QueryExecutor && resultsEl) {
                     QueryExecutor.renderResultsToElement(results.slice(0, 100), resultsEl, e.fieldOrder, {
                         allResults: results, isAggregated: queryData.is_aggregated || false, detailHost: 'model'
@@ -1582,10 +2222,20 @@ ${isBeacon ? `
                 }
             }
         } catch (err) {
-            if (err.name === 'AbortError') return;
+            // Cancelled: put back what the pane last said rather than leaving
+            // "Running…" over a spinner that is no longer running. A newer run
+            // aborts this one too and owns the pane, so only an untouched
+            // sequence means the user pressed Cancel.
+            if (err.name === 'AbortError') {
+                if (seq === this._runSeq) {
+                    this._setResultCount(wasCount || '');
+                    if (resultsEl) resultsEl.innerHTML = this._benchEmpty('Run cancelled', 'The query was cancelled before it returned.');
+                }
+                return;
+            }
             if (seq !== this._runSeq) return;
             if (resultsEl) resultsEl.innerHTML = `<div class="query-error"><p>Query Error: ${_esc(err.message)}</p></div>`;
-            if (countEl) countEl.textContent = 'Error';
+            this._setResultCount('Error');
         } finally {
             if (this._queryController === controller) {
                 this._queryController = null;
@@ -1652,6 +2302,7 @@ ${isBeacon ? `
                 });
                 Toast.success('Model created');
             }
+            e.dirty = false;
             window.App?.pushSubPath('');
             this.currentView = 'list';
             this._render();
@@ -1710,18 +2361,20 @@ ${isBeacon ? `
         const scores = mode === 'scores';
         // The detail panel only applies to the matching-logs view.
         if (window.LogDetail) LogDetail.close();
-        document.querySelectorAll('#modelResultTabs button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
-        const show = (id, vis) => { const el = document.getElementById(id); if (el) el.style.display = vis ? '' : 'none'; };
-        show('modelQueryResults', !scores);
+        document.querySelectorAll('#modelResultTabs .ert-tab').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+        const show = (id, vis) => { const el = document.getElementById(id); if (el) el.hidden = !vis; };
+        show('modelResultsPane', !scores);
         show('modelScorePreview', scores);
         show('modelTimeRange', !scores);
         show('modelPreviewWindow', scores);
         show('modelRunBtn', !scores);
-        if (scores) {
-            const tl = document.getElementById('modelTimelineWrap');
-            if (tl) tl.style.display = 'none';
-            this._runScorePreview();
-        }
+        // The count and the timeline describe the pane on screen, so they do not
+        // follow the tab out, and they come back with it.
+        const countEl = document.getElementById('modelResultsCount');
+        if (countEl) countEl.textContent = scores ? '' : (e.resultCount || '');
+        const tl = document.getElementById('modelTimelineWrap');
+        if (tl) tl.style.display = (!scores && e.hasTimeline) ? '' : 'none';
+        if (scores) this._runScorePreview();
     },
 
     // Debounced re-run so live threshold/shape tweaks update the preview without
@@ -1743,11 +2396,17 @@ ${isBeacon ? `
 
         const shapeErr = this._validateShape();
         if (shapeErr) {
-            panel.innerHTML = `<div class="models-empty">${_esc(shapeErr)} to preview scores.</div>`;
+            const chip = document.getElementById('modelFlagChip');
+            if (chip) chip.hidden = true;
+            const count = document.getElementById('modelResultsCount');
+            if (count) count.textContent = '';
+            panel.innerHTML = this._benchEmpty('Shape incomplete', _esc(shapeErr) + ' to preview scores.');
             return;
         }
 
         panel.innerHTML = '<div class="loading-spinner"><span class="spinner"></span></div>';
+        const countEl = document.getElementById('modelResultsCount');
+        if (countEl) countEl.textContent = '';
 
         // Resolve filter/extractions authoritatively from the current query.
         e.query = (document.getElementById('modelQueryInput')?.value || '').trim();
@@ -1780,7 +2439,12 @@ ${isBeacon ? `
         const panel = document.getElementById('modelScorePreview');
         if (!panel) return;
         const p = this.editor.preview;
-        if (!p) { panel.innerHTML = '<div class="models-empty">No preview available.</div>'; return; }
+        const chip = document.getElementById('modelFlagChip');
+        if (!p) {
+            if (chip) chip.hidden = true;
+            panel.innerHTML = this._benchEmpty('No preview available', 'The model produced no scores for this window.');
+            return;
+        }
 
         const s = p.stats || {};
         const num = v => this._fmtNum(Number(v || 0));
@@ -1813,6 +2477,12 @@ ${isBeacon ? `
 
         const scoredTotal = Number(s.scored_values || s.entities || s.entities_scored || s.pairs_scored || 0);
         const flags = Number(p.would_flag || 0);
+        // The tab carries the number that matters: how much this model would fire.
+        if (chip) {
+            chip.textContent = this._fmtNum(flags);
+            chip.classList.toggle('warn', flags > 0);
+            chip.hidden = false;
+        }
         const flagBadge = `<div class="score-flag-badge ${flags > 0 ? 'has-flags' : ''}">
     <span class="score-flag-count">${this._fmtNum(flags)}</span>
     <span class="score-flag-text">would flag</span>
@@ -1829,6 +2499,9 @@ ${isBeacon ? `
         } else if (scoredTotal === 0) {
             hint = `<div class="score-preview-hint">No matching results in the last ${_esc(p.window)}.</div>`;
         }
+
+        const countEl = document.getElementById('modelResultsCount');
+        if (countEl) countEl.textContent = `${this._fmtNum(scoredTotal)} scored`;
 
         const histHTML = this._buildHistogramHTML(p.histogram || [], p.metric, p.model_type === 'rarity' ? this.editor.alertConfig.confidence_threshold : null);
         const topHTML = this._previewTopTableHTML(p.top_columns || [], p.top || []);
@@ -1866,7 +2539,8 @@ ${isBeacon ? `
         }).join('');
         let thresholdLine = '';
         if (thresholdFrac != null && thresholdFrac >= 0 && thresholdFrac <= 1) {
-            thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})" title="Alert threshold: ${Math.round(thresholdFrac * 100)}%"><span class="histogram-threshold-label">${Math.round(thresholdFrac * 100)}%</span></div>`;
+            const label = _esc(Number(thresholdFrac).toFixed(2)) + ' alert';
+            thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})" title="Alert threshold: ${_esc(String(thresholdFrac))}"><span class="histogram-threshold-label">${label}</span></div>`;
         }
         return `<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
 <div class="histogram-chart">${cols}${thresholdLine}</div>`;

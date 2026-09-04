@@ -18,6 +18,7 @@ chain(field, ..., within=DURATION, order=BOOL) { step1; step2; step3 }
 
 - Steps are separated by `;`, conditions within a step by `|` (AND). At least two steps are required.
 - A step is a row condition, so it takes what a filter takes, `in()`, `cidr()` and `comment()` included. Anything that projects or aggregates (`regex()`, `groupby()`, `sort()`, `match()`) is rejected.
+- A step can test [`model_lookup()`](enrichment.md#position-in-the-pipeline) columns when `model_lookup()` comes before `chain()` in the pipeline.
 
 **Returns:** the identity field, named `_entity` when several were given, and `chain_count`, how many times the full sequence occurred.
 

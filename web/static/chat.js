@@ -16,7 +16,6 @@ const TOOL_LABELS = {
     get_alert: 'Read alert',
     get_alert_executions: 'Read alert history',
     get_attack_coverage: 'Checked ATT&CK coverage',
-    get_attack_gaps: 'Checked ATT&CK gaps',
     find_processes: 'Found processes',
     get_provenance_graph: 'Built process tree',
     list_dictionaries: 'Read watchlists',
@@ -1174,7 +1173,7 @@ const Chat = {
             case 'query_logs': return 'Running query';
             case 'list_alerts': case 'get_alert': return 'Reading alerts';
             case 'get_alert_executions': return 'Reading alert history';
-            case 'get_attack_coverage': case 'get_attack_gaps': return 'Checking ATT&CK coverage';
+            case 'get_attack_coverage': return 'Checking ATT&CK coverage';
             case 'find_processes': return 'Finding processes';
             case 'get_provenance_graph': return 'Building the process tree';
             case 'list_dictionaries': case 'get_dictionary': case 'search_dictionary': return 'Checking watchlists';

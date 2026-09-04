@@ -33,7 +33,6 @@ type Gap struct {
 	ByReason    map[string]int  `json:"by_reason"`
 	Candidates  []CandidateRule `json:"candidates"`
 	LogSources  []string        `json:"log_sources,omitempty"`
-	Score       int             `json:"score"`
 }
 
 // listCandidateRules loads every unimported feed rule in scope. The catalog is a
@@ -79,11 +78,11 @@ func (m *Manager) listCandidateRules(ctx context.Context, fractalID, prismID str
 // an inventory.
 const maxCandidatesPerGap = 12
 
-// computeGaps ranks uncovered techniques by what can actually be done about them
-// today: a technique with rules sitting unimported in a configured feed is
-// actionable now, one without is a build.
-func computeGaps(matrix *attack.Matrix, cov *attack.Coverage, candidates []CandidateRule, f attack.Filter, limit int) []Gap {
-	byTechnique := map[string][]CandidateRule{}
+// candidatesByTechnique buckets unimported feed rules by the technique each one
+// claims. A rule tagged with both a parent and its sub-technique lands under
+// both, so callers deduplicate when they roll a parent up.
+func candidatesByTechnique(matrix *attack.Matrix, candidates []CandidateRule) map[string][]CandidateRule {
+	out := map[string][]CandidateRule{}
 	for _, c := range candidates {
 		seen := map[string]bool{}
 		for _, label := range c.Labels {
@@ -92,11 +91,46 @@ func computeGaps(matrix *attack.Matrix, cov *attack.Coverage, candidates []Candi
 				continue
 			}
 			seen[id] = true
-			byTechnique[id] = append(byTechnique[id], c)
+			out[id] = append(out[id], c)
+		}
+	}
+	return out
+}
+
+// candidatesFor returns every unimported rule that could close one technique,
+// deduplicated. A parent's gap can be closed by a rule tagged with any of its
+// sub-techniques, so those count too.
+func candidatesFor(matrix *attack.Matrix, byTechnique map[string][]CandidateRule, tech *attack.Technique) []CandidateRule {
+	var pool []CandidateRule
+	pool = append(pool, byTechnique[tech.ID]...)
+	if !tech.Sub {
+		for _, sub := range matrix.SubTechniques(tech.ID) {
+			pool = append(pool, byTechnique[sub.ID]...)
 		}
 	}
 
-	var gaps []Gap
+	seen := make(map[string]bool, len(pool))
+	out := pool[:0:0]
+	for _, c := range pool {
+		key := c.FeedID + "\x00" + c.Path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, c)
+	}
+	return out
+}
+
+// candidateCounts is how many unimported feed rules could close each uncovered
+// technique. The coverage map colours those cells, which is what the ranked gap
+// list used to say in prose.
+//
+// The filter is the one the coverage beside it was computed with, so a technique
+// the caller filtered out of the denominators cannot come back as a closable gap.
+func candidateCounts(matrix *attack.Matrix, cov *attack.Coverage, candidates []CandidateRule, f attack.Filter) map[string]int {
+	byTechnique := candidatesByTechnique(matrix, candidates)
+	counts := map[string]int{}
 	for i := range matrix.Techniques {
 		tech := &matrix.Techniques[i]
 		if tech.Deprecated || !matrix.InScope(tech, f) {
@@ -105,57 +139,35 @@ func computeGaps(matrix *attack.Matrix, cov *attack.Coverage, candidates []Candi
 		if cell := cov.Techniques[tech.ID]; cell != nil && cell.Total > 0 {
 			continue
 		}
-
-		gap := Gap{
-			TechniqueID: tech.ID,
-			Name:        tech.Name,
-			Tactics:     tech.Tactics,
-			ByReason:    map[string]int{},
-			LogSources:  matrix.LogSourceNames(tech),
+		if n := len(candidatesFor(matrix, byTechnique, tech)); n > 0 {
+			counts[tech.ID] = n
 		}
+	}
+	return counts
+}
 
-		available := byTechnique[tech.ID]
-		// A parent technique's gap can be closed by a rule tagged with any of its
-		// sub-techniques, so those count as candidates too.
-		if !tech.Sub {
-			for _, sub := range matrix.SubTechniques(tech.ID) {
-				available = append(available, byTechnique[sub.ID]...)
-			}
-		}
-
-		seen := map[string]bool{}
-		for _, c := range available {
-			key := c.FeedID + "\x00" + c.Path
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			gap.Available++
-			gap.ByReason[c.SkipReason]++
-			gap.Candidates = append(gap.Candidates, c)
-		}
-
-		// Rules waiting in a feed dominate the ranking: those gaps can be closed
-		// today. MITRE's telemetry breadth only breaks ties, so it is bounded well
-		// below one available rule and can never reorder across that boundary.
-		gap.Score = gap.Available*1000 + min(len(gap.LogSources), 999)
-		sortCandidates(gap.Candidates)
-		if len(gap.Candidates) > maxCandidatesPerGap {
-			gap.Candidates = gap.Candidates[:maxCandidatesPerGap]
-		}
-		gaps = append(gaps, gap)
+// techniqueGap answers the drawer's question about one technique directly.
+func techniqueGap(matrix *attack.Matrix, candidates []CandidateRule, tech *attack.Technique) Gap {
+	gap := Gap{
+		TechniqueID: tech.ID,
+		Name:        tech.Name,
+		Tactics:     tech.Tactics,
+		ByReason:    map[string]int{},
+		LogSources:  matrix.LogSourceNames(tech),
 	}
 
-	sort.Slice(gaps, func(i, j int) bool {
-		if gaps[i].Score != gaps[j].Score {
-			return gaps[i].Score > gaps[j].Score
-		}
-		return gaps[i].TechniqueID < gaps[j].TechniqueID
-	})
-	if limit > 0 && len(gaps) > limit {
-		gaps = gaps[:limit]
+	available := candidatesFor(matrix, candidatesByTechnique(matrix, candidates), tech)
+	gap.Available = len(available)
+	for _, c := range available {
+		gap.ByReason[c.SkipReason]++
 	}
-	return gaps
+
+	sortCandidates(available)
+	if len(available) > maxCandidatesPerGap {
+		available = available[:maxCandidatesPerGap]
+	}
+	gap.Candidates = available
+	return gap
 }
 
 var levelRank = map[string]int{"informational": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}

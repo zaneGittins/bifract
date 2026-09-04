@@ -186,26 +186,32 @@ func TestModelLookup_SortOnModelFieldDefers(t *testing.T) {
 	}
 }
 
-// Aggregating after model_lookup() drops the join keys unless they are group
-// columns. That must be a clear BQL error, not a bare ClickHouse code 215.
-func TestModelLookup_AggregationWithoutKeysErrors(t *testing.T) {
-	cases := map[string][]string{
-		`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | groupby(dst_ip)`: {"src_ip", "dst_port"},
-		`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | count()`:         {"src_ip", "dst_ip", "dst_port"},
-	}
-	for query, wantNamed := range cases {
-		pipeline, err := ParseQuery(query)
-		if err != nil {
-			t.Fatalf("parse error: %v", err)
+// Aggregating after model_lookup() moves the join to the scan level: the
+// aggregation reads (scan JOIN model) so the keys need not survive it. The join
+// must sit in the aggregating stage's FROM, before GROUP BY, with no outer wrap.
+func TestModelLookup_AggregationAfterUsesScanLevelJoin(t *testing.T) {
+	for _, query := range []string{
+		`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | groupby(dst_ip)`,
+		`* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | count()`,
+	} {
+		sql := translateML(t, query)
+		joinIdx := strings.Index(sql, "INNER JOIN")
+		if joinIdx < 0 {
+			t.Fatalf("expected scan-level INNER JOIN, got:\n%s", sql)
 		}
-		_, err = TranslateToSQLWithOrder(pipeline, mlookupOpts())
-		if err == nil {
-			t.Fatalf("expected an error when aggregating away the model_lookup keys: %s", query)
+		if strings.Contains(sql, "_outer.*") || strings.Contains(sql, "_mlk_k0") {
+			t.Errorf("scan-level join must not use the outer wrap or hidden key projections, got:\n%s", sql)
 		}
-		for _, name := range wantNamed {
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("error should name the missing key %q, got: %v", name, err)
-			}
+		if gbIdx := strings.Index(sql, "GROUP BY"); gbIdx >= 0 && gbIdx < joinIdx {
+			t.Errorf("join must precede GROUP BY (rows enriched before aggregation), got:\n%s", sql)
+		}
+		// The ON compares the raw key expressions against the model key columns.
+		if !strings.Contains(sql, "= _mlookup.src_ip") {
+			t.Errorf("expected direct key expressions in ON, got:\n%s", sql)
+		}
+		// Strict mode's semi-join prefilter still narrows the scan.
+		if !strings.Contains(sql, "GLOBAL IN (SELECT") && !strings.Contains(sql, "IN (SELECT _mlk_src") && !strings.Contains(sql, "IN (SELECT "+modelPrefilterAlias) {
+			t.Errorf("expected strict key prefilter in the scan WHERE, got:\n%s", sql)
 		}
 	}
 }
@@ -697,6 +703,219 @@ func TestModelLookup_PrefilterMirrorsJoinOn(t *testing.T) {
 		}
 		if !strings.Contains(sql, want.prefilter) {
 			t.Errorf("%s: expected prefilter %q, got:\n%s", query, want.prefilter, sql)
+		}
+	}
+}
+
+// --- Scan-level join (aggregation after model_lookup) ---
+
+// Grouping BY a model output column: the column is per-row after the scan-level
+// join, so it can be a group key.
+func TestModelLookup_GroupByModelColumn(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="fs", key=[user]) | groupby(is_new)`)
+	if !strings.Contains(sql, "GROUP BY is_new") {
+		t.Errorf("expected GROUP BY is_new, got:\n%s", sql)
+	}
+	if strings.Contains(sql, "fields.`is_new`") {
+		t.Errorf("is_new must resolve to the join column, not a JSON field, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "AS _mlookup ON") {
+		t.Errorf("expected scan-level join, got:\n%s", sql)
+	}
+}
+
+// Aggregating a model output column: avg(percent) must read the typed join
+// column via toFloat64 (toFloat64OrNull rejects Float64 input).
+func TestModelLookup_AggregateModelColumn(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="rare", key=[user, image]) | groupby(user, function=avg(percent))`)
+	if !strings.Contains(sql, "avg(toFloat64(percent))") {
+		t.Errorf("expected avg(toFloat64(percent)), got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "GROUP BY") {
+		t.Errorf("expected aggregation, got:\n%s", sql)
+	}
+}
+
+// A filter on a model column between model_lookup and the aggregation must apply
+// AFTER the join and BEFORE the GROUP BY, so it filters rows (not final groups).
+func TestModelLookup_ModelFilterAppliesBeforeAggregation(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="rare", key=[user, image]) | percent < 1 | groupby(user)`)
+	joinIdx := strings.Index(sql, "AS _mlookup ON")
+	condIdx := strings.Index(sql, "percent < 1")
+	gbIdx := strings.LastIndex(sql, "GROUP BY")
+	if joinIdx < 0 || condIdx < 0 || gbIdx < 0 {
+		t.Fatalf("missing join/filter/groupby, got:\n%s", sql)
+	}
+	if condIdx < joinIdx || condIdx > gbIdx {
+		t.Errorf("percent filter must sit between the join and GROUP BY, got:\n%s", sql)
+	}
+	if strings.Contains(sql, "HAVING percent") {
+		t.Errorf("model filter must not become HAVING, got:\n%s", sql)
+	}
+}
+
+// Aggregation BEFORE model_lookup keeps the outer-wrap enrichment path unchanged.
+func TestModelLookup_AggregationBeforeKeepsOuterWrap(t *testing.T) {
+	sql := translateML(t, `* | groupby(user) | model_lookup(model="fs", key=[user])`)
+	if !strings.Contains(sql, "_outer.*") || !strings.Contains(sql, "AS _mlk_k0") {
+		t.Errorf("expected the outer join wrap with hidden key projection, got:\n%s", sql)
+	}
+	gbIdx := strings.Index(sql, "GROUP BY")
+	joinIdx := strings.Index(sql, "INNER JOIN")
+	if gbIdx < 0 || joinIdx < 0 || gbIdx > joinIdx {
+		t.Errorf("expected GROUP BY inside the join wrap, got:\n%s", sql)
+	}
+}
+
+// Pure enrichment (no aggregation) also keeps the outer-wrap path, where the
+// join touches only the final limited rows.
+func TestModelLookup_BareEnrichmentKeepsOuterWrap(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="fs", key=[user])`)
+	if !strings.Contains(sql, "_outer.*") {
+		t.Errorf("expected the outer join wrap for pure enrichment, got:\n%s", sql)
+	}
+}
+
+// chain() steps may reference model columns when model_lookup precedes chain:
+// the step condition compiles to the bare join column inside the sequence
+// aggregate, and the step-union prefilter moves to the post-join WHERE (the scan
+// keeps strict mode's key prefilter).
+func TestModelLookup_ChainStepsOnModelColumns(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="fs", key=[user]) | chain(user, within="5m") { is_new="1"; event_type="process_creation" }`)
+	if !strings.Contains(sql, "sequenceMatch") {
+		t.Fatalf("expected sequenceMatch, got:\n%s", sql)
+	}
+	// The step compiles against the bare join column (numeric-equality codegen
+	// stringifies it), never a JSON field shadow.
+	if !strings.Contains(sql, "toString(is_new)") && !strings.Contains(sql, "is_new = '1'") {
+		t.Errorf("expected bare is_new step condition, got:\n%s", sql)
+	}
+	if strings.Contains(sql, "fields.`is_new`") {
+		t.Errorf("is_new must not resolve to a JSON field, got:\n%s", sql)
+	}
+	joinIdx := strings.Index(sql, "AS _mlookup ON")
+	if joinIdx < 0 {
+		t.Fatalf("expected scan-level join, got:\n%s", sql)
+	}
+	// The step union references a model column, so its WHERE copy must sit after
+	// the join (the sequence aggregates in the SELECT also carry the conditions).
+	if !strings.Contains(sql[joinIdx:], "OR (fields.`event_type`::String = 'process_creation')") {
+		t.Errorf("step union referencing model columns must run post-join, got:\n%s", sql)
+	}
+	// Strict prefilter still narrows the scan.
+	if !strings.Contains(sql, "IN (SELECT") {
+		t.Errorf("expected the strict key prefilter on the scan, got:\n%s", sql)
+	}
+}
+
+// A chain() step on a model column without model_lookup before chain is a clear
+// BQL error, not ClickHouse code 47.
+func TestModelLookup_ChainStepModelColumnRequiresOrder(t *testing.T) {
+	pipeline, err := ParseQuery(`* | chain(user, within="5m") { is_new="1"; event_type="x" } | model_lookup(model="fs", key=[user])`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, err = TranslateToSQLWithOrder(pipeline, mlookupOpts())
+	if err == nil || !strings.Contains(err.Error(), "model_lookup() before chain()") {
+		t.Errorf("expected ordering error, got: %v", err)
+	}
+}
+
+// chain() after model_lookup with log-field-only steps keeps the step union on
+// the scan (it prunes) while the join still enriches rows.
+func TestModelLookup_ChainAfterModelLookupKeepsScanUnion(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="fs", key=[user]) | chain(user, within="5m") { event_type="login"; event_type="exec" }`)
+	joinIdx := strings.Index(sql, "AS _mlookup ON")
+	if joinIdx < 0 {
+		t.Fatalf("expected scan-level join, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "((fields.`event_type`::String = 'login') OR (fields.`event_type`::String = 'exec'))") {
+		t.Fatalf("expected step-union scan prefilter, got:\n%s", sql)
+	}
+}
+
+// groupby on a join output without the scan-level join is a clear BQL error.
+func TestModelLookup_GroupByModelColumnRequiresOrder(t *testing.T) {
+	pipeline, err := ParseQuery(`* | groupby(user) | model_lookup(model="fs", key=[user]) | groupby(is_new)`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if _, err = TranslateToSQLWithOrder(pipeline, mlookupOpts()); err == nil {
+		t.Errorf("expected an error grouping a join output without a scan-level join")
+	}
+}
+
+// Cluster mode: the scan-level join must be GLOBAL so each shard joins its local
+// scan against the broadcast model set and pre-aggregates.
+func TestModelLookup_ScanLevelJoinIsGlobalOnCluster(t *testing.T) {
+	opts := mlookupOpts()
+	opts.TableName = "logs_distributed"
+	m := opts.Models["fs"]
+	m.Distributed = true
+	opts.Models["fs"] = m
+	pipeline, err := ParseQuery(`* | model_lookup(model="fs", key=[user]) | groupby(is_new)`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
+	}
+	if !strings.Contains(result.SQL, "GLOBAL INNER JOIN") {
+		t.Errorf("expected GLOBAL scan-level join on cluster, got:\n%s", result.SQL)
+	}
+	if !strings.Contains(result.SQL, "GLOBAL IN (SELECT") {
+		t.Errorf("expected GLOBAL strict prefilter on cluster, got:\n%s", result.SQL)
+	}
+}
+
+// Outer mode with a projection stage after the aggregation (table after groupby):
+// the stage must carry the hidden _mlk_k keys through its explicit SELECT or the
+// wrap's ON cannot resolve (was a live ClickHouse 47).
+func TestModelLookup_ProjectionStageCarriesHiddenKeys(t *testing.T) {
+	sql := translateML(t, `* | groupby(user) | model_lookup(model="fs", key=[user]) | table(user, _count)`)
+	if !strings.Contains(sql, "SELECT user, _count, _mlk_k0 FROM") {
+		t.Errorf("projection stage must carry _mlk_k0 for the join ON, got:\n%s", sql)
+	}
+	if !strings.Contains(sql, "_outer._mlk_k0 = _mlookup.entity_key") {
+		t.Errorf("expected outer wrap ON, got:\n%s", sql)
+	}
+}
+
+// Outer mode: table() naming a model column after groupby must not emit a bare
+// reference inside the stage (the wrap adds the column); display restricts to it.
+func TestModelLookup_ProjectionStageModelColumnFromWrap(t *testing.T) {
+	pipeline, err := ParseQuery(`* | groupby(user) | model_lookup(model="fs", key=[user]) | table(user, is_new)`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, mlookupOpts())
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
+	}
+	if strings.Contains(result.SQL, "is_new AS is_new") {
+		t.Errorf("model column must come from the wrap, not a bare stage reference, got:\n%s", result.SQL)
+	}
+	want := []string{"user", "is_new"}
+	if len(result.FieldOrder) != 2 || result.FieldOrder[0] != want[0] || result.FieldOrder[1] != want[1] {
+		t.Errorf("expected field order %v, got %v", want, result.FieldOrder)
+	}
+}
+
+// Scan-level mode: a model column that did not survive the aggregation is a
+// clear BQL error from table() and from a later groupby stage, not CH code 47.
+func TestModelLookup_UnavailableModelColumnErrorsCleanly(t *testing.T) {
+	for query, wantErr := range map[string]string{
+		`* | model_lookup(model="fs", key=[user]) | groupby(user) | table(user, is_new)`:  "not available after the aggregation",
+		`* | model_lookup(model="fs", key=[user]) | groupby(user) | groupby(is_new)`:      "not carried out of the previous aggregation",
+	} {
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		_, err = TranslateToSQLWithOrder(pipeline, mlookupOpts())
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("expected error containing %q for %s, got: %v", wantErr, query, err)
 		}
 	}
 }

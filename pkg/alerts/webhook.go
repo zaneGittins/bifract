@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,6 +31,9 @@ type WebhookAction struct {
 	RetryCount       int               `json:"retry_count"`
 	IncludeAlertLink bool              `json:"include_alert_link"`
 	Enabled          bool              `json:"enabled"`
+	BodyMode         string            `json:"body_mode"`     // 'envelope', 'template'
+	BodyTemplate     string            `json:"body_template"` // used when BodyMode is 'template'
+	ContentType      string            `json:"content_type"`  // defaults to application/json
 	FractalID        string            `json:"fractal_id,omitempty"`
 	PrismID          string            `json:"prism_id,omitempty"`
 }
@@ -60,7 +63,14 @@ type WebhookResult struct {
 	Duration     time.Duration `json:"duration"`
 	AttemptCount int           `json:"attempt_count"`
 	Timestamp    time.Time     `json:"timestamp"`
+	// ResponseBody is a truncated copy of what the destination replied with.
+	// Destinations reject payloads with a reason in the body, so without it a
+	// failure is only ever a status code.
+	ResponseBody string `json:"response_body,omitempty"`
 }
+
+// maxResponseBodyCapture bounds how much of a destination's reply is retained.
+const maxResponseBodyCapture = 2 << 10
 
 // NewWebhookClient creates a new webhook client with default settings
 func NewWebhookClient(baseURL string) *WebhookClient {
@@ -127,10 +137,9 @@ func (wc *WebhookClient) buildAlertLink(alert *Alert, triggeredAt time.Time) str
 	return buildShareLink(wc.baseURL, alert, triggeredAt)
 }
 
-// Send delivers a webhook payload to the configured endpoint with retry logic.
-// resolvedName is the alert name with any {{field}} templates replaced.
-func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert *Alert, resolvedName string, results []map[string]interface{}) WebhookResult {
-	triggeredAt := time.Now()
+// BuildPayload assembles the envelope payload describing one alert trigger.
+// It is the data both delivery and the config preview render from.
+func (wc *WebhookClient) BuildPayload(webhook WebhookAction, alert *Alert, resolvedName string, results []map[string]interface{}, triggeredAt time.Time) WebhookPayload {
 	payload := WebhookPayload{
 		AlertName:   resolvedName,
 		AlertID:     alert.ID,
@@ -145,10 +154,16 @@ func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert 
 	if resolvedName != alert.Name {
 		payload.OriginalName = alert.Name
 	}
-
 	if webhook.IncludeAlertLink && wc.baseURL != "" && (alert.FractalID != "" || alert.PrismID != "") {
 		payload.AlertLink = wc.buildAlertLink(alert, triggeredAt)
 	}
+	return payload
+}
+
+// Send delivers a webhook payload to the configured endpoint with retry logic.
+// resolvedName is the alert name with any {{field}} templates replaced.
+func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert *Alert, resolvedName string, results []map[string]interface{}) WebhookResult {
+	payload := wc.BuildPayload(webhook, alert, resolvedName, results, time.Now())
 
 	result := WebhookResult{
 		WebhookID:   webhook.ID,
@@ -161,7 +176,48 @@ func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert 
 		result.Duration = time.Since(start)
 	}()
 
-	// Retry logic with exponential backoff
+	// URL validation and body rendering are deterministic, so a failure in either
+	// will fail identically on every attempt. Resolve them once, ahead of the
+	// retry loop, and report without burning the backoff schedule.
+	if err := wc.validateURL(webhook.URL); err != nil {
+		result.Error = fmt.Sprintf("invalid webhook URL: %v", err)
+		return result
+	}
+	body, contentType, err := RenderWebhookBody(webhook, payload)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	wc.deliver(ctx, webhook, body, contentType, &result)
+	return result
+}
+
+// SendRendered delivers an already-rendered body. A test uses it to send exactly
+// the bytes it showed the operator, rather than rendering a second time.
+func (wc *WebhookClient) SendRendered(ctx context.Context, webhook WebhookAction, body []byte, contentType string) WebhookResult {
+	result := WebhookResult{
+		WebhookID:   webhook.ID,
+		WebhookName: webhook.Name,
+		Timestamp:   time.Now(),
+	}
+
+	start := time.Now()
+	defer func() {
+		result.Duration = time.Since(start)
+	}()
+
+	if err := wc.validateURL(webhook.URL); err != nil {
+		result.Error = fmt.Sprintf("invalid webhook URL: %v", err)
+		return result
+	}
+
+	wc.deliver(ctx, webhook, body, contentType, &result)
+	return result
+}
+
+// deliver runs the retry loop against an already-rendered body.
+func (wc *WebhookClient) deliver(ctx context.Context, webhook WebhookAction, body []byte, contentType string, result *WebhookResult) {
 	maxRetries := webhook.RetryCount
 	if maxRetries < 1 {
 		maxRetries = 1
@@ -170,9 +226,11 @@ func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		result.AttemptCount = attempt
 
-		if err := wc.sendAttempt(ctx, webhook, payload, &result); err == nil {
+		if err := wc.sendAttempt(ctx, webhook, body, contentType, result); err == nil {
 			result.Success = true
-			return result
+			// An earlier attempt's failure is not this delivery's outcome.
+			result.Error = ""
+			return
 		}
 
 		// Don't sleep after the last attempt
@@ -182,33 +240,16 @@ func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert 
 			select {
 			case <-ctx.Done():
 				result.Error = "context cancelled during retry backoff"
-				return result
+				return
 			case <-time.After(backoffDuration):
 				// Continue to next retry
 			}
 		}
 	}
-
-	return result
 }
 
-// sendAttempt makes a single webhook delivery attempt
-func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction, payload WebhookPayload, result *WebhookResult) error {
-	// Validate webhook URL
-	if err := wc.validateURL(webhook.URL); err != nil {
-		result.Error = fmt.Sprintf("invalid webhook URL: %v", err)
-		result.StatusCode = 0
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-
-	// Marshal payload to JSON
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		result.Error = fmt.Sprintf("failed to marshal payload: %v", err)
-		result.StatusCode = 0
-		return fmt.Errorf("payload marshal error: %w", err)
-	}
-
+// sendAttempt makes a single webhook delivery attempt with an already-rendered body.
+func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction, payloadBytes []byte, contentType string, result *WebhookResult) error {
 	// Create HTTP request
 	method := strings.ToUpper(webhook.Method)
 	if method == "" {
@@ -222,8 +263,7 @@ func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction,
 		return fmt.Errorf("request creation error: %w", err)
 	}
 
-	// Set default content type
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", "Bifract-Alert-System/1.0")
 
 	// Add custom headers
@@ -256,6 +296,9 @@ func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction,
 	defer resp.Body.Close()
 
 	result.StatusCode = resp.StatusCode
+	if body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyCapture)); readErr == nil {
+		result.ResponseBody = strings.TrimSpace(string(body))
+	}
 
 	// Check if response indicates success (2xx status codes)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

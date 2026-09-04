@@ -5,9 +5,6 @@ const Alerts = {
     currentWebhook: null,
     editingFeedAlert: false,
     feedAlertOriginalId: null,
-    queryHistory: { states: [''], currentFractal: 0, maxSize: 50 },
-    isUndoRedoing: false,
-    historyTimer: null,
     // Alert editor state (identical to QueryExecutor)
     currentResults: [],
     fieldOrder: null,
@@ -193,38 +190,14 @@ const Alerts = {
             }
         }
 
-        // Panel resize
-        const resizeHandle = document.getElementById('alertPanelResizeHandle');
-        if (resizeHandle) {
-            let startX, startWidth;
-            const onMouseMove = (e) => {
-                const panel = document.getElementById('alertConfigPanel');
-                if (!panel) return;
-                const newWidth = Math.max(320, Math.min(window.innerWidth * 0.6, startWidth + (startX - e.clientX)));
-                panel.style.width = newWidth + 'px';
-                const editorView = document.getElementById('alertEditorView');
-                const mainContent = editorView ? editorView.querySelector('.main-content') : null;
-                if (mainContent) mainContent.style.marginRight = newWidth + 'px';
-            };
-            const onMouseUp = () => {
-                resizeHandle.classList.remove('dragging');
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', onMouseUp);
-                document.body.style.cursor = '';
-                document.body.style.userSelect = '';
-            };
-            resizeHandle.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                const panel = document.getElementById('alertConfigPanel');
-                startX = e.clientX;
-                startWidth = panel ? panel.offsetWidth : 420;
-                resizeHandle.classList.add('dragging');
-                document.body.style.cursor = 'col-resize';
-                document.body.style.userSelect = 'none';
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', onMouseUp);
-            });
-        }
+        // The definition rail: drag to resize, fold away while inspecting a log.
+        window.App?.bindEditorRail?.(document.getElementById('alertPanelResizeHandle'), {
+            body: document.querySelector('#alertEditorView .ae-body'),
+            cssVar: '--ae-rail-w',
+            storageKey: 'bifract-alert-rail-width',
+            detail: document.getElementById('alertLogDetailPanel'),
+            foldClass: 'ae-inspecting',
+        });
 
         // Schedule preset dropdown (custom cron toggle)
         const schedulePreset = document.getElementById('editorSchedulePreset');
@@ -263,20 +236,14 @@ const Alerts = {
         if (actionStatusFilter) actionStatusFilter.addEventListener('change', () => this.filterUnifiedActions());
         if (actionSearchInput) actionSearchInput.addEventListener('input', Utils.debounce(() => this.filterUnifiedActions(), 300));
 
-        // Modal form submissions
+        // Static buttons in index.html, which carry no inline handler. Buttons in
+        // markup this file renders bind onclick there; listing them here too fired
+        // every save and test twice.
         document.addEventListener('click', (e) => {
             if (e.target.id === 'importYamlBtn') {
                 this.importYAML();
             } else if (e.target.id === 'saveAlertBtn') {
                 this.saveAlertFromEditor();
-            } else if (e.target.id === 'saveWebhookBtn') {
-                this.saveWebhook();
-            } else if (e.target.id === 'testWebhookBtn') {
-                this.testWebhook();
-            } else if (e.target.id === 'saveFractalActionBtn') {
-                this.saveFractalAction();
-            } else if (e.target.id === 'saveDictActionBtn') {
-                this.saveDictAction();
             }
         });
 
@@ -1384,6 +1351,36 @@ const Alerts = {
                             </div>
                         </div>
                     </div>
+                    <div class="actions-form-group">
+                        <label for="webhookBodyMode">Payload</label>
+                        <select id="webhookBodyMode" onchange="Alerts.handleBodyModeChange(this.value)">
+                            <option value="envelope">Standard envelope</option>
+                            <option value="template">Custom template</option>
+                        </select>
+                    </div>
+                    <div class="actions-form-group" id="webhookContentTypeGroup" style="display: none;">
+                        <label for="webhookContentType">Content-Type</label>
+                        <input type="text" id="webhookContentType" placeholder="application/json">
+                    </div>
+                    <div class="actions-form-group full-width" id="webhookTemplateGroup" style="display: none;">
+                        <label for="webhookBodyTemplate">Body Template</label>
+                        <div class="webhook-template-presets">
+                            <span>Start from:</span>
+                            <button type="button" class="btn-sm btn-secondary" onclick="Alerts.applyTemplatePreset('hec')">Splunk HEC</button>
+                            <button type="button" class="btn-sm btn-secondary" onclick="Alerts.applyTemplatePreset('ndjson')">NDJSON rows</button>
+                            <button type="button" class="btn-sm btn-secondary" onclick="Alerts.applyTemplatePreset('slack')">Slack message</button>
+                        </div>
+                        <textarea id="webhookBodyTemplate" class="webhook-template-input" rows="10" spellcheck="false"
+                            placeholder="Go text/template rendered per delivery"></textarea>
+                        <div class="webhook-template-help">
+                            Fields: <code>.AlertName</code> <code>.Severity</code> <code>.AlertID</code> <code>.Description</code>
+                            <code>.QueryString</code> <code>.MatchCount</code> <code>.TriggeredAt</code> <code>.Labels</code>
+                            <code>.AlertLink</code> <code>.Results</code>.
+                            Functions: <code>toJSON</code> <code>field</code> <code>unixSeconds</code> <code>unixMillis</code>
+                            <code>rfc3339</code> <code>join</code> <code>lower</code> <code>upper</code> <code>default</code>.
+                            Use <code>{{field . "host.name"}}</code> for field names containing dots.
+                        </div>
+                    </div>
                     <div class="actions-form-group full-width">
                         <label class="actions-checkbox-label">
                             <input type="checkbox" id="webhookIncludeAlertLink" checked>
@@ -1399,10 +1396,12 @@ const Alerts = {
                 </div>
                 <div class="actions-form-actions">
                     <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
-                    ${isEdit ? '<button id="testWebhookBtn" class="btn-secondary" onclick="Alerts.testWebhook()">Test</button>' : ''}
+                    <button id="previewWebhookBtn" class="btn-secondary" onclick="Alerts.testWebhook(false)">Preview payload</button>
+                    <button id="testWebhookBtn" class="btn-secondary" onclick="Alerts.testWebhook(true)">Send test</button>
                     <button id="saveWebhookBtn" class="btn-primary" onclick="Alerts.saveWebhook()">Save Webhook</button>
                 </div>
                 <div id="webhookError" class="error-message" style="display: none;"></div>
+                <div id="webhookTestOutput" class="webhook-test-output" style="display: none;"></div>
             </div>
         `;
 
@@ -1422,6 +1421,12 @@ const Alerts = {
         document.getElementById('webhookAuthType').value = webhook.auth_type || 'none';
         document.getElementById('webhookEnabled').checked = webhook.enabled;
         document.getElementById('webhookIncludeAlertLink').checked = webhook.include_alert_link !== false;
+
+        const bodyMode = webhook.body_mode === 'template' ? 'template' : 'envelope';
+        document.getElementById('webhookBodyMode').value = bodyMode;
+        document.getElementById('webhookBodyTemplate').value = webhook.body_template || '';
+        document.getElementById('webhookContentType').value = webhook.content_type || '';
+        this.handleBodyModeChange(bodyMode);
 
         this.handleAuthTypeChange(webhook.auth_type);
         if (webhook.auth_type === 'bearer' && webhook.auth_config?.token) {
@@ -2164,15 +2169,18 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             });
 
             const data = await response.json();
-            if (data.success) {
-                const result = data.data;
-                if (result.success) {
-                    Toast.show('Webhook test successful', 'success');
-                } else {
-                    Toast.show(`Webhook test failed: ${result.error}`, 'error');
-                }
+            if (!data.success) throw new Error(data.error || 'Test failed');
+
+            const test = data.data;
+            if (test.render_error) {
+                Toast.show(`Webhook test failed to render: ${test.render_error}`, 'error');
+                return;
+            }
+            const result = test.result;
+            if (result?.success) {
+                Toast.show(`Webhook test successful (HTTP ${result.status_code})`, 'success');
             } else {
-                throw new Error(data.error || 'Test failed');
+                Toast.show(`Webhook test failed: ${result?.error || 'no response'}`, 'error');
             }
         } catch (error) {
             console.error('Test webhook error:', error);
@@ -2212,16 +2220,106 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         }
     },
 
-    async testWebhook() {
-        if (this.currentWebhook) {
-            // Test existing webhook
-            this.testWebhookDirect(this.currentWebhook.id);
-        } else {
-            Toast.show('Please save the webhook first before testing', 'warning');
+    // Tests the values currently in the form, saved or not, so a template can be
+    // iterated on without a save between every attempt. send=false renders only.
+    async testWebhook(send) {
+        const formData = this.getWebhookFormData({ requireName: false, requireUrl: send });
+        if (!formData) return;
+
+        const output = document.getElementById('webhookTestOutput');
+        const btn = document.getElementById(send ? 'testWebhookBtn' : 'previewWebhookBtn');
+        const label = btn?.textContent;
+        if (btn) { btn.disabled = true; btn.textContent = send ? 'Sending...' : 'Rendering...'; }
+
+        try {
+            const response = await fetch('/api/v1/webhooks/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ ...formData, send: !!send })
+            });
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'Test failed');
+            this.renderWebhookTestOutput(data.data, send);
+        } catch (error) {
+            console.error('Test webhook error:', error);
+            if (output) {
+                output.style.display = 'block';
+                output.innerHTML = `<div class="webhook-test-status failed">Test failed: ${Utils.escapeHtml(error.message)}</div>`;
+            }
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = label; }
         }
     },
 
-    getWebhookFormData() {
+    renderWebhookTestOutput(result, send) {
+        const output = document.getElementById('webhookTestOutput');
+        if (!output) return;
+        output.style.display = 'block';
+
+        if (result.render_error) {
+            output.innerHTML = `
+                <div class="webhook-test-status failed">Could not render the payload</div>
+                <pre class="webhook-test-error">${Utils.escapeHtml(result.render_error)}</pre>
+            `;
+            return;
+        }
+
+        let statusHtml = '';
+        if (send && result.result) {
+            const r = result.result;
+            const cls = r.success ? 'ok' : 'failed';
+            const code = r.status_code ? `HTTP ${r.status_code}` : 'no response';
+            const detail = r.error ? ` - ${Utils.escapeHtml(r.error)}` : '';
+            statusHtml = `<div class="webhook-test-status ${cls}">${r.success ? 'Delivered' : 'Failed'} (${code})${detail}</div>`;
+            if (r.response_body) {
+                statusHtml += `<div class="webhook-test-label">Response</div><pre class="webhook-test-body">${Utils.escapeHtml(r.response_body)}</pre>`;
+            }
+        } else {
+            statusHtml = `<div class="webhook-test-status ok">Rendered, not sent</div>`;
+        }
+
+        const size = result.truncated
+            ? `${result.body_bytes} bytes, preview truncated`
+            : `${result.body_bytes} bytes`;
+
+        output.innerHTML = `
+            ${statusHtml}
+            <div class="webhook-test-label">Request body <span class="webhook-test-meta">${Utils.escapeHtml(result.content_type)}, ${size}</span></div>
+            <pre class="webhook-test-body">${Utils.escapeHtml(result.rendered_body || '(empty)')}</pre>
+        `;
+    },
+
+    handleBodyModeChange(mode) {
+        const isTemplate = mode === 'template';
+        // Clearing rather than setting a value restores the stylesheet's flex layout.
+        const templateGroup = document.getElementById('webhookTemplateGroup');
+        const contentTypeGroup = document.getElementById('webhookContentTypeGroup');
+        if (templateGroup) templateGroup.style.display = isTemplate ? '' : 'none';
+        if (contentTypeGroup) contentTypeGroup.style.display = isTemplate ? '' : 'none';
+    },
+
+    // Starting points for the destinations that motivated templating. Each is a
+    // valid body on its own, and is meant to be edited rather than used as-is.
+    applyTemplatePreset(preset) {
+        const presets = {
+            hec: `{{- range .Results}}
+{"time":{{unixSeconds $.TriggeredAt}},"sourcetype":"bifract:alert","event":{{toJSON .}}}
+{{- end}}`,
+            ndjson: `{{- range .Results}}
+{{toJSON .}}
+{{- end}}`,
+            slack: `{"text":{{toJSON .AlertName}},"blocks":[
+  {"type":"section","text":{"type":"mrkdwn","text":{{toJSON (printf "*%s* (%s)\\n%d matches" .AlertName .Severity .MatchCount)}}}}
+]}`
+        };
+        const textarea = document.getElementById('webhookBodyTemplate');
+        if (!textarea || !presets[preset]) return;
+        if (textarea.value.trim() && !confirm('Replace the current template?')) return;
+        textarea.value = presets[preset];
+    },
+
+    getWebhookFormData({ requireName = true, requireUrl = true } = {}) {
         const name = document.getElementById('webhookName')?.value.trim();
         const url = document.getElementById('webhookUrl')?.value.trim();
         const method = document.getElementById('webhookMethod')?.value || 'POST';
@@ -2253,22 +2351,34 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             if (password) authConfig.password = password;
         }
 
-        // Validation
+        const bodyMode = document.getElementById('webhookBodyMode')?.value || 'envelope';
+        const bodyTemplate = document.getElementById('webhookBodyTemplate')?.value || '';
+        const contentType = document.getElementById('webhookContentType')?.value.trim() || '';
+
+        // Validation. A render-only preview needs neither a name nor a URL, so the
+        // caller says which are required rather than every path demanding both.
         const errorDiv = document.getElementById('webhookError');
-        if (!name) {
+        if (requireName && !name) {
             this.showError(errorDiv, 'Webhook name is required');
             return null;
         }
-        if (!url) {
+        if (requireUrl && !url) {
             this.showError(errorDiv, 'Webhook URL is required');
             return null;
         }
 
         // Basic URL validation
-        try {
-            new URL(url);
-        } catch (e) {
-            this.showError(errorDiv, 'Invalid webhook URL');
+        if (url) {
+            try {
+                new URL(url);
+            } catch (e) {
+                this.showError(errorDiv, 'Invalid webhook URL');
+                return null;
+            }
+        }
+
+        if (bodyMode === 'template' && !bodyTemplate.trim()) {
+            this.showError(errorDiv, 'A body template is required when the payload is set to Custom template');
             return null;
         }
 
@@ -2286,6 +2396,9 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             timeout_seconds: timeout,
             retry_count: retries,
             include_alert_link: includeAlertLink,
+            body_mode: bodyMode,
+            body_template: bodyTemplate,
+            content_type: contentType,
             enabled
         };
     },
@@ -2345,6 +2458,8 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         // Track if we're editing a feed alert
         this.editingFeedAlert = opts.fromFeed || false;
         this.feedAlertOriginalId = this.editingFeedAlert ? alertId : null;
+        // A prefill seeds a new rule; an editor opened on an existing one ignores it.
+        this._prefillTarget = alertId ? 'edit' : 'create';
 
         // Hide alerts tab content (sub-tabs + list views) and show editor
         const alertsTabContent = document.getElementById('fractalAlertsTabContent');
@@ -2397,10 +2512,29 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         this.sizeNameInput();
         this.syncEnabledLabel();
         Promise.resolve(this._editorReady).finally(() => {
+            this.applyPrefill(opts.prefill);
             this.sizeNameInput();
             this.syncEnabledLabel();
             window.AlertDrafts?.start(alertId);
         });
+    },
+
+    // Seeds a new rule from somewhere that already knows what it should detect, such
+    // as an uncovered ATT&CK technique. Applied after the editor settles so nothing
+    // the load path clears can undo it, and never over an existing alert.
+    applyPrefill(prefill) {
+        if (!prefill || this._prefillTarget !== 'create') return;
+
+        const name = document.getElementById('editorAlertName');
+        if (name && prefill.name) name.value = prefill.name;
+
+        const description = document.getElementById('editorAlertDescription');
+        if (description && prefill.description) {
+            description.value = prefill.description;
+            this.autosizeDescription();
+        }
+
+        if (prefill.labels?.length) this.setLabelsFromArray(prefill.labels);
     },
 
     // Editor teardown, shared by the post-save return and by tab navigation away
@@ -2933,14 +3067,16 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
     setupQueryTesting() {
         const queryInput = document.getElementById('editorQueryInput');
-        if (queryInput) {
-            // Remove automatic testing - user will manually click "Test Query"
+        // The editor's markup is static, so this runs again on every open: bind the
+        // query listeners once or each open stacks another copy of them.
+        if (queryInput && !queryInput.dataset.alertQueryBound) {
+            queryInput.dataset.alertQueryBound = '1';
             // Only clear results if query becomes empty
             queryInput.addEventListener('input', () => {
                 // Save to history (unless we're in undo/redo operation)
-                if (!this.isUndoRedoing) {
+                if (!window.App?.isUndoRedoing) {
                     setTimeout(() => {
-                        this.saveToHistory(queryInput.value);
+                        window.App?.saveToHistory('alert', queryInput.value);
                     }, 0);
                 }
 
@@ -2958,239 +3094,46 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                 }
             });
 
-            // Add keyboard handling for alert editor query input
-            queryInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    this.runOrCancelQuery();
-                } else if (e.key === 'Enter' && e.shiftKey) {
-                    // Allow new line (default behavior)
-                } else if (e.key === 'Tab') {
-                    e.preventDefault();
-                    const start = queryInput.selectionStart;
-                    const end = queryInput.selectionEnd;
-                    const value = queryInput.value;
-
-                    // Insert tab character at cursor position
-                    queryInput.value = value.substring(0, start) + '\t' + value.substring(end);
-
-                    // Move cursor after the inserted tab
-                    queryInput.selectionStart = queryInput.selectionEnd = start + 1;
-
-                    // Trigger input event to maintain consistency
-                    queryInput.dispatchEvent(new Event('input'));
-                } else if (e.key === '/' && e.ctrlKey) {
-                    e.preventDefault();
-                    this.toggleLineComment(queryInput);
-                } else if (e.key === 'z' && e.ctrlKey && !e.shiftKey) {
-                    e.preventDefault();
-                    this.undo(queryInput);
-                } else if ((e.key === 'y' && e.ctrlKey) || (e.key === 'z' && e.ctrlKey && e.shiftKey)) {
-                    e.preventDefault();
-                    this.redo(queryInput);
-                }
+            window.App?.bindQueryEditorKeys?.(queryInput, {
+                historyKey: 'alert',
+                onRun: () => this.runOrCancelQuery(),
             });
         }
 
-        // Set up time range controls
+        // Set up time range controls. The select is static markup, so the listener
+        // is bound once; only the state sync belongs to each open.
         const timeRangeSelect = document.getElementById('alertTimeRange');
-        const customTimeInputs = document.getElementById('alertCustomTimeInputs');
-        const customStart = document.getElementById('alertCustomStart');
-        const customEnd = document.getElementById('alertCustomEnd');
-
-        if (timeRangeSelect && customTimeInputs) {
-            timeRangeSelect.addEventListener('change', (e) => {
-                if (e.target.value === 'custom') {
-                    customTimeInputs.style.display = 'flex';
-                    const zoneTag = document.getElementById('alertCustomZone');
-                    if (zoneTag) zoneTag.textContent = TZ.abbrev();
-                    // Initialize custom inputs with default values if empty
-                    if (customStart && customEnd) {
-                        if (!customStart.value) {
-                            const now = Date.now();
-                            customStart.value = TZ.formatInput(now - 24 * 60 * 60 * 1000);
-                            customEnd.value = TZ.formatInput(now);
-                        }
-                    }
-                } else {
-                    customTimeInputs.style.display = 'none';
-                }
-                // Time range changed - user can manually re-test if needed
-            });
-
-            // Initialize time inputs on load
-            if (timeRangeSelect.value === 'custom' && customStart && customEnd) {
-                customTimeInputs.style.display = 'flex';
-                if (!customStart.value || !customEnd.value) {
-                    const now = new Date();
-                    const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000);
-                    customStart.value = oneDayAgo.toISOString().slice(0, 16).replace('T', ' ');
-                    customEnd.value = now.toISOString().slice(0, 16).replace('T', ' ');
-                }
-            }
-
-            // Time inputs setup - user can manually re-test query if needed
+        if (timeRangeSelect && !timeRangeSelect.dataset.alertRangeBound) {
+            timeRangeSelect.dataset.alertRangeBound = '1';
+            timeRangeSelect.addEventListener('change', () => this.syncCustomTimeRange());
         }
+        this.syncCustomTimeRange();
     },
 
-    toggleLineComment(textarea) {
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        const value = textarea.value;
+    // Shows the custom range inputs when the range calls for them, and seeds them
+    // the first time. getTimeRange reads these with TZ.parseWallClock, so they are
+    // written in the display timezone: seeding them in UTC shifted every custom
+    // window by the zone's offset.
+    syncCustomTimeRange() {
+        const select = document.getElementById('alertTimeRange');
+        const wrap = document.getElementById('alertCustomTimeInputs');
+        if (!select || !wrap) return;
 
-        // Find the start and end of the current line(s)
-        const beforeStart = value.lastIndexOf('\n', start - 1);
-        const lineStart = beforeStart === -1 ? 0 : beforeStart + 1;
-
-        const afterEnd = value.indexOf('\n', end);
-        const lineEnd = afterEnd === -1 ? value.length : afterEnd;
-
-        // Get the selected lines
-        const selectedText = value.substring(lineStart, lineEnd);
-        const lines = selectedText.split('\n');
-
-        // Check if all non-empty lines are commented
-        const nonEmptyLines = lines.filter(line => line.trim() !== '');
-        const allCommented = nonEmptyLines.length > 0 && nonEmptyLines.every(line => line.trim().startsWith('//'));
-
-        // Toggle comments on all lines
-        const modifiedLines = lines.map(line => {
-            if (line.trim() === '') return line; // Skip empty lines
-
-            if (allCommented) {
-                // Remove comment - find first occurrence of // and remove it
-                const commentIndex = line.indexOf('//');
-                if (commentIndex !== -1) {
-                    return line.substring(0, commentIndex) + line.substring(commentIndex + 2);
-                }
-                return line;
-            } else {
-                // Add comment at the beginning of the line (after leading whitespace)
-                const match = line.match(/^(\s*)(.*)/);
-                if (match) {
-                    return match[1] + '//' + match[2];
-                }
-                return '//' + line;
-            }
-        });
-
-        const newSelectedText = modifiedLines.join('\n');
-
-        // Replace the text
-        const newValue = value.substring(0, lineStart) + newSelectedText + value.substring(lineEnd);
-        textarea.value = newValue;
-
-        // Adjust selection to include the modified lines
-        const lengthDiff = newSelectedText.length - selectedText.length;
-        textarea.selectionStart = lineStart;
-        textarea.selectionEnd = lineEnd + lengthDiff;
-
-        // Trigger input event to update syntax highlighting
-        textarea.dispatchEvent(new Event('input'));
-
-        // Force save to history after comment toggle
-        this.saveToHistoryImmediate(textarea.value, true);
-    },
-
-    shouldSaveHistory(oldValue, newValue) {
-        // Always save if it's a significant change in length (paste, delete block, etc.)
-        const lengthDiff = Math.abs(newValue.length - oldValue.length);
-        if (lengthDiff >= 4) return true;
-
-        // Save at word boundaries - when we finish typing a word of 4+ characters
-        const oldWords = oldValue.split(/\s+/).filter(w => w.length > 0);
-        const newWords = newValue.split(/\s+/).filter(w => w.length > 0);
-
-        // If we added a new word and it's 4+ characters, save
-        if (newWords.length > oldWords.length) {
-            const lastWord = newWords[newWords.length - 1];
-            if (lastWord.length >= 4) return true;
-        }
-
-        // If we finished a word (added space or punctuation after 4+ chars)
-        if (newValue.length > oldValue.length) {
-            const lastChar = newValue[newValue.length - 1];
-            if (/[\s|,;.!?(){}[\]]/.test(lastChar)) {
-                // Check if the word before this separator is 4+ chars
-                const beforeSeparator = newValue.substring(0, newValue.length - 1).split(/[\s|,;.!?(){}[\]]+/).pop();
-                if (beforeSeparator && beforeSeparator.length >= 4) return true;
-            }
-        }
-
-        return false;
-    },
-
-    saveToHistoryImmediate(value, force = false) {
-        const history = this.queryHistory;
-        // Don't save if the value is the same as the current state
-        if (!force && history.states[history.currentFractal] === value) {
+        if (select.value !== 'custom') {
+            wrap.style.display = 'none';
             return;
         }
+        wrap.style.display = 'flex';
 
-        // Remove any states after current index (when we type after undoing)
-        history.states = history.states.slice(0, history.currentFractal + 1);
+        const zoneTag = document.getElementById('alertCustomZone');
+        if (zoneTag) zoneTag.textContent = TZ.abbrev();
 
-        // Add new state
-        history.states.push(value);
-        history.currentFractal = history.states.length - 1;
-
-        // Limit history size
-        if (history.states.length > history.maxSize) {
-            history.states.shift();
-            history.currentFractal--;
-        }
-    },
-
-    saveToHistoryDebounced(value) {
-        // Clear existing timer
-        if (this.historyTimer) {
-            clearTimeout(this.historyTimer);
-        }
-
-        // Set new timer to save after 1 second of inactivity
-        this.historyTimer = setTimeout(() => {
-            this.saveToHistoryImmediate(value);
-        }, 1000);
-    },
-
-    saveToHistory(value) {
-        const history = this.queryHistory;
-        const oldValue = history.states[history.currentFractal] || '';
-
-        // Check if we should save immediately
-        if (this.shouldSaveHistory(oldValue, value)) {
-            this.saveToHistoryImmediate(value);
-        } else {
-            // Otherwise, use debounced save for pauses in typing
-            this.saveToHistoryDebounced(value);
-        }
-    },
-
-    undo(textarea) {
-        const history = this.queryHistory;
-        if (history.currentFractal > 0) {
-            history.currentFractal--;
-            const newValue = history.states[history.currentFractal];
-            this.isUndoRedoing = true;
-            textarea.value = newValue;
-
-            // Trigger input event to update syntax highlighting
-            textarea.dispatchEvent(new Event('input'));
-            this.isUndoRedoing = false;
-        }
-    },
-
-    redo(textarea) {
-        const history = this.queryHistory;
-        if (history.currentFractal < history.states.length - 1) {
-            history.currentFractal++;
-            const newValue = history.states[history.currentFractal];
-            this.isUndoRedoing = true;
-            textarea.value = newValue;
-
-            // Trigger input event to update syntax highlighting
-            textarea.dispatchEvent(new Event('input'));
-            this.isUndoRedoing = false;
+        const start = document.getElementById('alertCustomStart');
+        const end = document.getElementById('alertCustomEnd');
+        if (start && end && (!start.value || !end.value)) {
+            const now = Date.now();
+            start.value = TZ.formatInput(now - 24 * 60 * 60 * 1000);
+            end.value = TZ.formatInput(now);
         }
     },
 
@@ -4016,16 +3959,6 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         };
         view.addEventListener('input', onEdit);
         view.addEventListener('change', onEdit);
-
-        // Inspecting a log wants the width the search page has, so the rail folds
-        // away while the detail panel is open and returns when it closes.
-        const detail = document.getElementById('alertLogDetailPanel');
-        const body = view.querySelector('.ae-body');
-        if (detail && body) {
-            const sync = () => body.classList.toggle('ae-inspecting', detail.classList.contains('open'));
-            new MutationObserver(sync).observe(detail, { attributes: true, attributeFilter: ['class'] });
-            sync();
-        }
 
         document.getElementById('alertTypeSelect')?.addEventListener('change', () => this.updateTypeBadge());
         document.getElementById('editorAlertEnabled')?.addEventListener('change', () => this.syncEnabledLabel());

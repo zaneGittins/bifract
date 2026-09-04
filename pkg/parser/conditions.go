@@ -272,9 +272,43 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	}
 	// Deferred conditions land above the source scan, so any source expression they
 	// reference must be exported there under a hidden alias (see deferredScope).
-	if clause := materializeCondGroup(plan.pendingDeferredConditions, registry, plan.deferredScope()); clause != "" {
+	deferred := plan.pendingDeferredConditions
+	if plan.ModelLookupAtScan {
+		// Scan-level model join: a condition on a model column filters rows between
+		// the join and the aggregation (PostJoinWhere), where both model columns and
+		// scan fields resolve directly. Only window-field conditions still need the
+		// outermost deferred layer.
+		var outer, postJoin []HavingCondition
+		for _, c := range deferred {
+			if condTouchesWindowField(c, registry) {
+				outer = append(outer, c)
+			} else {
+				postJoin = append(postJoin, c)
+			}
+		}
+		if clause := materializeCondGroup(postJoin, registry, nil); clause != "" {
+			plan.PostJoinWhere = append(plan.PostJoinWhere, clause)
+		}
+		deferred = outer
+	}
+	if clause := materializeCondGroup(deferred, registry, plan.deferredScope()); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
 	}
+}
+
+// condTouchesWindowField reports whether any leaf of the condition references a
+// window-layer output (z-score/outlier), which exists only above the window wrap.
+func condTouchesWindowField(cond HavingCondition, registry *FieldRegistry) bool {
+	if cond.IsCompound {
+		for _, child := range cond.Children {
+			if condTouchesWindowField(child, registry) {
+				return true
+			}
+		}
+		return false
+	}
+	entry := registry.Get(cond.Field)
+	return entry != nil && entry.ClassifyKind() == FieldKindWindow
 }
 
 // whereBindingStageIndex returns the index of the deepest stage that owns the

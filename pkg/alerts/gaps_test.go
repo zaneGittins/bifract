@@ -13,135 +13,131 @@ func candidate(feed, path, level, reason string, labels ...string) CandidateRule
 	}
 }
 
-func TestComputeGapsRanksActionableFirst(t *testing.T) {
+func gapFor(t *testing.T, m *attack.Matrix, id string, candidates []CandidateRule) Gap {
+	t.Helper()
+	tech := m.Technique(id)
+	if tech == nil {
+		t.Fatalf("%s missing from the matrix", id)
+	}
+	return techniqueGap(m, candidates, tech)
+}
+
+func TestTechniqueGapCountsWhatIsWaiting(t *testing.T) {
 	m := attack.MustGet()
 
-	// T1055 is covered; T1110 has unimported rules waiting; T1548 has none.
-	cov := m.Compute([]attack.RuleRow{
-		{ID: "r1", Name: "covered", Severity: "high", Enabled: true, Labels: []string{"attack.t1055"}},
-	}, attack.Filter{})
-
-	candidates := []CandidateRule{
+	gap := gapFor(t, m, "T1110", []CandidateRule{
 		candidate("f1", "a.yml", "high", "min_level", "attack.t1110"),
 		candidate("f1", "b.yml", "critical", "min_level", "attack.t1110"),
 		candidate("f1", "c.yml", "low", "translate_error", "attack.t1055"),
-	}
+	})
 
-	gaps := computeGaps(m, cov, candidates, attack.Filter{}, 0)
-	if len(gaps) == 0 {
-		t.Fatal("no gaps computed")
+	if gap.Available != 2 {
+		t.Errorf("T1110 available = %d, want 2", gap.Available)
 	}
-
-	// A covered technique is never a gap, whatever the catalog holds for it.
-	for _, g := range gaps {
-		if g.TechniqueID == "T1055" {
-			t.Fatal("T1055 is covered but was reported as a gap")
-		}
-	}
-
-	if gaps[0].TechniqueID != "T1110" {
-		t.Errorf("top gap = %s, want T1110 (the one with rules available today)", gaps[0].TechniqueID)
-	}
-	if gaps[0].Available != 2 {
-		t.Errorf("T1110 available = %d, want 2", gaps[0].Available)
-	}
-	if gaps[0].ByReason["min_level"] != 2 {
-		t.Errorf("T1110 by_reason = %v, want 2 under min_level", gaps[0].ByReason)
+	if gap.ByReason["min_level"] != 2 {
+		t.Errorf("T1110 by_reason = %v, want 2 under min_level", gap.ByReason)
 	}
 	// Highest severity candidate first: the drawer leads with what matters.
-	if gaps[0].Candidates[0].Level != "critical" {
-		t.Errorf("first candidate level = %q, want critical", gaps[0].Candidates[0].Level)
+	if gap.Candidates[0].Level != "critical" {
+		t.Errorf("first candidate level = %q, want critical", gap.Candidates[0].Level)
+	}
+	if len(gap.LogSources) == 0 {
+		t.Error("expected MITRE telemetry guidance for T1110")
 	}
 }
 
 // A parent technique's gap can be closed by a rule tagged with any of its
 // sub-techniques, so those must count as candidates.
-func TestComputeGapsRollsSubTechniqueCandidatesUp(t *testing.T) {
+func TestTechniqueGapRollsSubTechniqueCandidatesUp(t *testing.T) {
 	m := attack.MustGet()
-	cov := m.Compute(nil, attack.Filter{})
+	candidates := []CandidateRule{candidate("f1", "a.yml", "high", "min_level", "attack.t1543.003")}
 
-	gaps := computeGaps(m, cov, []CandidateRule{
-		candidate("f1", "a.yml", "high", "min_level", "attack.t1543.003"),
-	}, attack.Filter{}, 0)
-
-	var parent, sub *Gap
-	for i := range gaps {
-		switch gaps[i].TechniqueID {
-		case "T1543":
-			parent = &gaps[i]
-		case "T1543.003":
-			sub = &gaps[i]
-		}
+	if got := gapFor(t, m, "T1543", candidates).Available; got != 1 {
+		t.Errorf("T1543 available = %d, want 1 inherited from T1543.003", got)
 	}
-	if parent == nil || sub == nil {
-		t.Fatal("T1543 and T1543.003 should both be gaps with no rules at all")
+	if got := gapFor(t, m, "T1543.003", candidates).Available; got != 1 {
+		t.Errorf("T1543.003 available = %d, want 1", got)
 	}
-	if parent.Available != 1 {
-		t.Errorf("T1543 available = %d, want 1 inherited from T1543.003", parent.Available)
-	}
-	if sub.Available != 1 {
-		t.Errorf("T1543.003 available = %d, want 1", sub.Available)
+	// A sub-technique never inherits from its siblings.
+	if got := gapFor(t, m, "T1543.001", candidates).Available; got != 0 {
+		t.Errorf("T1543.001 available = %d, want 0", got)
 	}
 }
 
 // The same rule tagged with both a parent and its sub-technique must not be
 // counted twice against the parent.
-func TestComputeGapsDeduplicatesCandidates(t *testing.T) {
+func TestTechniqueGapDeduplicatesCandidates(t *testing.T) {
 	m := attack.MustGet()
-	cov := m.Compute(nil, attack.Filter{})
 
-	gaps := computeGaps(m, cov, []CandidateRule{
+	gap := gapFor(t, m, "T1543", []CandidateRule{
 		candidate("f1", "a.yml", "high", "min_level", "attack.t1543", "attack.t1543.003"),
-	}, attack.Filter{}, 0)
-
-	for _, g := range gaps {
-		if g.TechniqueID == "T1543" {
-			if g.Available != 1 {
-				t.Errorf("T1543 available = %d, want 1", g.Available)
-			}
-			return
-		}
-	}
-	t.Fatal("T1543 not found in gaps")
-}
-
-func TestComputeGapsRespectsLimitAndPlatform(t *testing.T) {
-	m := attack.MustGet()
-	cov := m.Compute(nil, attack.Filter{})
-
-	if got := len(computeGaps(m, cov, nil, attack.Filter{}, 5)); got != 5 {
-		t.Errorf("limit 5 returned %d gaps", got)
-	}
-
-	all := len(computeGaps(m, cov, nil, attack.Filter{}, 0))
-	windows := len(computeGaps(m, cov, nil, attack.Filter{Platform: "Windows"}, 0))
-	if windows == 0 || windows >= all {
-		t.Errorf("Windows gaps = %d, want fewer than the unfiltered %d", windows, all)
+	})
+	if gap.Available != 1 {
+		t.Errorf("T1543 available = %d, want 1", gap.Available)
 	}
 }
 
-func TestComputeGapsCapsCandidatesPerTechnique(t *testing.T) {
+func TestTechniqueGapCapsCandidatesButNotTheCount(t *testing.T) {
 	m := attack.MustGet()
-	cov := m.Compute(nil, attack.Filter{})
 
 	var many []CandidateRule
 	for i := 0; i < maxCandidatesPerGap+10; i++ {
 		many = append(many, candidate("f1", string(rune('a'+i))+".yml", "high", "min_level", "attack.t1110"))
 	}
 
-	gaps := computeGaps(m, cov, many, attack.Filter{}, 0)
-	for _, g := range gaps {
-		if g.TechniqueID != "T1110" {
-			continue
-		}
-		// The count stays honest even though the list is truncated for display.
-		if g.Available != maxCandidatesPerGap+10 {
-			t.Errorf("available = %d, want %d", g.Available, maxCandidatesPerGap+10)
-		}
-		if len(g.Candidates) != maxCandidatesPerGap {
-			t.Errorf("candidates rendered = %d, want %d", len(g.Candidates), maxCandidatesPerGap)
-		}
-		return
+	gap := gapFor(t, m, "T1110", many)
+	if gap.Available != maxCandidatesPerGap+10 {
+		t.Errorf("available = %d, want %d", gap.Available, maxCandidatesPerGap+10)
 	}
-	t.Fatal("T1110 not found in gaps")
+	if len(gap.Candidates) != maxCandidatesPerGap {
+		t.Errorf("candidates rendered = %d, want %d", len(gap.Candidates), maxCandidatesPerGap)
+	}
+}
+
+// The map only marks gaps: a technique with a rule on it is not closable, however
+// many candidates a feed still holds for it.
+func TestCandidateCountsSkipCoveredTechniques(t *testing.T) {
+	m := attack.MustGet()
+	cov := m.Compute([]attack.RuleRow{
+		{ID: "r1", Name: "covered", Severity: "high", Enabled: true, Labels: []string{"attack.t1055"}},
+	}, attack.Filter{})
+
+	counts := candidateCounts(m, cov, []CandidateRule{
+		candidate("f1", "a.yml", "high", "min_level", "attack.t1055"),
+		candidate("f1", "b.yml", "high", "min_level", "attack.t1110"),
+	}, attack.Filter{})
+
+	if _, ok := counts["T1055"]; ok {
+		t.Error("T1055 is covered but was counted as closable")
+	}
+	if counts["T1110"] != 1 {
+		t.Errorf("T1110 count = %d, want 1", counts["T1110"])
+	}
+	// Nothing waiting is left out entirely rather than reported as zero.
+	if _, ok := counts["T1548"]; ok {
+		t.Error("T1548 has no candidates and should not appear")
+	}
+}
+
+func TestCandidateCountsEmptyWithoutCatalog(t *testing.T) {
+	m := attack.MustGet()
+	if got := candidateCounts(m, m.Compute(nil, attack.Filter{}), nil, attack.Filter{}); len(got) != 0 {
+		t.Errorf("counts = %d entries, want 0 with no catalog", len(got))
+	}
+}
+
+// A platform filter narrows the denominators, so it must narrow the closable gaps
+// with them: an amber cell for a technique the filter excluded is a lie.
+func TestCandidateCountsRespectPlatformFilter(t *testing.T) {
+	m := attack.MustGet()
+	cov := m.Compute(nil, attack.Filter{})
+	// T1078.004 is cloud-only, so a Windows filter must drop it.
+	candidates := []CandidateRule{candidate("f1", "a.yml", "high", "min_level", "attack.t1078.004")}
+
+	if got := candidateCounts(m, cov, candidates, attack.Filter{})["T1078.004"]; got != 1 {
+		t.Fatalf("unfiltered count = %d, want 1", got)
+	}
+	if got := candidateCounts(m, cov, candidates, attack.Filter{Platform: "Windows"})["T1078.004"]; got != 0 {
+		t.Errorf("Windows-filtered count = %d, want 0", got)
+	}
 }
