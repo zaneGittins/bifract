@@ -851,6 +851,22 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// matchLookupExpr returns the value expression for one include column. dictRef is the
+// already-escaped dictionary name.
+//
+// The key column is not an attribute of a ClickHouse dictionary: it is declared
+// separately, so dictGet cannot read it back and fails with code 36 ("No such
+// attribute"). Asking for the key is the natural shape for a watchlist, a single
+// column of names to match against, so it resolves to the looked-up value itself
+// whenever the dictionary holds that key, matching what dictGet returns for a hit on
+// any other column.
+func matchLookupExpr(dictRef, col, keyColumn, fieldRef string) string {
+	if col == keyColumn {
+		return fmt.Sprintf("if(dictHas('%s', %s), %s, '')", dictRef, fieldRef, fieldRef)
+	}
+	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictRef, escapeString(col), fieldRef)
+}
+
 // matchHandler handles match(dict="name", field=logfield, column=keycolumn, include=[col1,col2])
 type matchHandler struct{}
 
@@ -893,8 +909,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && fieldRef != "" {
-			expr := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')",
-				escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), escapeString(c), fieldRef)
+			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, fieldRef)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -967,10 +982,9 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if colErr != nil {
 			return fmt.Errorf("match(): invalid include column: %w", colErr)
 		}
-		expr := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '') AS %s",
-			chDictRef, escapeString(col), fieldRef, safeCol)
-		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr(col, expr)
+		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, fieldRef)
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeCol)})
+		ctx.Registry.SetResolveExpr(col, scalarExpr)
 	}
 
 	if strict {

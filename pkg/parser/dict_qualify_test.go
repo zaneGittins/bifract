@@ -31,12 +31,12 @@ func TestDictionaryNamesAreDatabaseQualified(t *testing.T) {
 	}{
 		{
 			name:  "match",
-			query: `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[group_name])`,
+			query: `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[tier])`,
 			want:  []string{"dictGetOrDefault('logs.lookup_abc'"},
 		},
 		{
 			name:  "match strict adds dictHas",
-			query: `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[group_name], strict=true)`,
+			query: `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[tier], strict=true)`,
 			want:  []string{"dictGetOrDefault('logs.lookup_abc'", "dictHas('logs.lookup_abc'"},
 		},
 		{
@@ -65,7 +65,7 @@ func TestDictionaryNamesAreDatabaseQualified(t *testing.T) {
 func TestDictionaryNameBareWithoutDatabase(t *testing.T) {
 	opts := dictOpts()
 	opts.DictionaryDatabase = ""
-	sql := mustTranslate(t, `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[group_name])`, opts)
+	sql := mustTranslate(t, `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[tier])`, opts)
 	if !strings.Contains(sql, "dictGetOrDefault('lookup_abc'") {
 		t.Fatalf("expected a bare dictionary name, got:\n%s", sql)
 	}
@@ -75,7 +75,7 @@ func TestDictionaryNameBareWithoutDatabase(t *testing.T) {
 // read the raw stored value before, so lowercase(x) | match(field=x) matched against
 // the original casing and silently enriched nothing.
 func TestDictionaryLookupUsesTransformedField(t *testing.T) {
-	sql := mustTranslate(t, `* | lowercase(target_user) | match(dict="sensitive_groups", field=target_user, column=group_name, include=[group_name])`, dictOpts())
+	sql := mustTranslate(t, `* | lowercase(target_user) | match(dict="sensitive_groups", field=target_user, column=group_name, include=[tier])`, dictOpts())
 	if !strings.Contains(sql, "toString(lower(fields.`target_user`::String))") {
 		t.Fatalf("match() did not look up the lowercased value:\n%s", sql)
 	}
@@ -86,5 +86,32 @@ func TestDictionaryLookupUsesTransformedField(t *testing.T) {
 	}
 	if strings.Contains(sql, "toIPv4OrDefault(fields.`src_ip`::String)") {
 		t.Fatalf("lookupIP() still reads the raw field:\n%s", sql)
+	}
+}
+
+// The key column is declared separately from a ClickHouse dictionary's attributes, so
+// dictGet cannot read it back ("No such attribute", code 36). A watchlist -- a single
+// key column of names -- is the natural shape for match(), and asking for that column
+// back must resolve to the looked-up value on a hit and empty on a miss.
+func TestMatchOnKeyColumnUsesMembership(t *testing.T) {
+	sql := mustTranslate(t, `* | match(dict="sensitive_groups", field=target_user, column=group_name, include=[group_name])`, dictOpts())
+	if !strings.Contains(sql, "if(dictHas('logs.lookup_abc'") {
+		t.Fatalf("expected a membership expression for the key column:\n%s", sql)
+	}
+	if strings.Contains(sql, "dictGetOrDefault('logs.lookup_abc', 'group_name'") {
+		t.Fatalf("dictGet on the key column fails with code 36:\n%s", sql)
+	}
+}
+
+// A non-key column is a real attribute and still reads through dictGet.
+func TestMatchOnAttributeColumnUsesDictGet(t *testing.T) {
+	opts := dictOpts()
+	opts.Dictionaries = map[string]map[string]string{"groups": {"group_name": "lookup_abc"}}
+	sql := mustTranslate(t, `* | match(dict="groups", field=target_user, column=group_name, include=[group_name,tier])`, opts)
+	if !strings.Contains(sql, "dictGetOrDefault('logs.lookup_abc', 'tier'") {
+		t.Fatalf("attribute column must use dictGet:\n%s", sql)
+	}
+	if !strings.Contains(sql, "if(dictHas('logs.lookup_abc'") {
+		t.Fatalf("key column must still use membership:\n%s", sql)
 	}
 }
