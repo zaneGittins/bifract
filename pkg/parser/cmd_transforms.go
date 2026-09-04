@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -215,12 +214,11 @@ func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 				pattern = arg
 			}
 		}
-		namedGroupRe := regexp.MustCompile(`\(\?<([a-zA-Z_][a-zA-Z0-9_]*)>`)
-		namedGroups := namedGroupRe.FindAllStringSubmatch(pattern, -1)
-		if len(namedGroups) > 0 {
+		names := NamedCaptureGroups(pattern)
+		if len(names) > 0 {
 			// Named capture groups take precedence over as=.
-			for _, match := range namedGroups {
-				ctx.Registry.Register(match[1], FieldKindPerRow, match[1], ctx.CmdIndex)
+			for _, name := range names {
+				ctx.Registry.Register(name, FieldKindPerRow, name, ctx.CmdIndex)
 			}
 		} else if asName != "" {
 			ctx.Registry.Register(asName, FieldKindPerRow, asName, ctx.CmdIndex)
@@ -264,23 +262,17 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			fieldRef = "toString(timestamp)"
 		}
 
-		namedGroupRe := regexp.MustCompile(`\(\?<([a-zA-Z_][a-zA-Z0-9_]*)>`)
-		namedGroups := namedGroupRe.FindAllStringSubmatch(pattern, -1)
+		sqlPattern, names := rewriteCaptureGroups(pattern)
 
-		// Convert unnamed capturing groups to non-capturing so that
-		// extractAllGroups indices match named-group positions exactly.
-		sqlPattern := convertUnnamedGroupsToNonCapturing(pattern)
-
-		if len(namedGroups) > 0 {
-			for i, match := range namedGroups {
-				name := match[1]
+		if len(names) > 0 {
+			for i, name := range names {
 				safeName, err := sanitizeIdentifier(name)
 				if err != nil {
 					return fmt.Errorf("regex(): invalid capture name %q: %w", name, err)
 				}
-				expr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d] AS %s", fieldRef, escapeString(sqlPattern), i+1, safeName)
-				ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-				ctx.Registry.SetResolveExpr(safeName, fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1))
+				scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1)
+				ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
+				ctx.Registry.SetResolveExpr(safeName, scalarExpr)
 			}
 		} else if asName != "" {
 			// Single unnamed capture group aliased via as=. Use extract(), which
@@ -290,13 +282,18 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if err != nil {
 				return fmt.Errorf("regex(): invalid as name %q: %w", asName, err)
 			}
-			scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(pattern))
+			scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(sqlPattern))
 			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
 			ctx.Registry.SetResolveExpr(safeName, scalarExpr)
 		} else {
-			expr := fmt.Sprintf("extractAllGroups(%s, '%s') AS regex_match", fieldRef, escapeString(sqlPattern))
-			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-			ctx.Registry.SetResolveExpr("regex_match", expr)
+			// extractAllGroups requires at least one capturing group; without a name
+			// or as= there is also nothing to call the output but regex_match.
+			if captureGroupCount(sqlPattern) == 0 {
+				return fmt.Errorf("regex(): pattern has no capture group; wrap the part to extract in (?<name>...)")
+			}
+			scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')", fieldRef, escapeString(sqlPattern))
+			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS regex_match", scalarExpr)})
+			ctx.Registry.SetResolveExpr("regex_match", scalarExpr)
 		}
 	}
 	return nil
@@ -891,13 +888,13 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if logField == "timestamp" {
 		fieldRef = "toString(timestamp)"
 	} else if logField != "" {
-		fieldRef = "toString(" + jsonFieldRef(logField) + ")"
+		fieldRef = "toString(" + resolveFieldRef(logField, ctx.Registry) + ")"
 	}
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && fieldRef != "" {
 			expr := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')",
-				escapeString(chLookupName), escapeString(c), fieldRef)
+				escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), escapeString(c), fieldRef)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -955,27 +952,30 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("dictionary %q with key column %q not found - use the key toggle in the Context tab to enable it", dictName, keyColumn)
 	}
 
+	// Resolve through the registry so an earlier command that rewrote this field
+	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
 	var fieldRef string
 	if logField == "timestamp" {
 		fieldRef = "toString(timestamp)"
 	} else {
-		fieldRef = "toString(" + jsonFieldRef(logField) + ")"
+		fieldRef = "toString(" + resolveFieldRef(logField, ctx.Registry) + ")"
 	}
 
+	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {
 			return fmt.Errorf("match(): invalid include column: %w", colErr)
 		}
 		expr := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '') AS %s",
-			escapeString(chLookupName), escapeString(col), fieldRef, safeCol)
+			chDictRef, escapeString(col), fieldRef, safeCol)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(col, expr)
 	}
 
 	if strict {
 		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-			fmt.Sprintf("dictHas('%s', %s)", escapeString(chLookupName), fieldRef))
+			fmt.Sprintf("dictHas('%s', %s)", chDictRef, fieldRef))
 	}
 	return nil
 }
@@ -1030,8 +1030,8 @@ func geoipIsNumeric(field string) bool {
 
 // geoipLookupExpr builds the full dictGetOrDefault expression, wrapping numeric
 // results in toString() so the query handler can scan them as strings.
-func geoipLookupExpr(field, fieldRef string) string {
-	dictName := geoipDictName(field)
+func geoipLookupExpr(db, field, fieldRef string) string {
+	dictName := dictRef(db, geoipDictName(field))
 	defVal := geoipDefaultValue(field)
 	inner := fmt.Sprintf("dictGetOrDefault('%s', '%s', toIPv4OrDefault(%s), %s)",
 		escapeString(dictName), escapeString(field), fieldRef, defVal)
@@ -1062,13 +1062,13 @@ func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	var fieldRef string
 	if ipField != "" {
 		// geoip wraps the value in IP functions (isIPv4String/IPv4StringToNum)
-		// that reject a bare Dynamic subcolumn; cast to ::String.
-		fieldRef = groupableCast(jsonFieldRef(ipField))
+		// that reject a bare Dynamic subcolumn; resolveFieldRef casts to ::String.
+		fieldRef = resolveFieldRef(ipField, ctx.Registry)
 	}
 
 	for _, c := range includeColumns {
 		if fieldRef != "" && ctx.Opts.GeoIPEnabled {
-			expr := geoipLookupExpr(c, fieldRef)
+			expr := geoipLookupExpr(ctx.Opts.DictionaryDatabase, c, fieldRef)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -1106,7 +1106,7 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("lookupIP() requires MaxMind GeoLite2 configuration (set MAXMIND_LICENSE_KEY and MAXMIND_ACCOUNT_ID)")
 	}
 
-	fieldRef := groupableCast(jsonFieldRef(ipField))
+	fieldRef := resolveFieldRef(ipField, ctx.Registry)
 
 	for _, col := range includeColumns {
 		if _, okCity := geoIPCityFields[col]; !okCity {
@@ -1120,7 +1120,7 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("lookupIP(): invalid include column: %w", colErr)
 		}
 
-		lookupExpr := geoipLookupExpr(col, fieldRef)
+		lookupExpr := geoipLookupExpr(ctx.Opts.DictionaryDatabase, col, fieldRef)
 		expr := fmt.Sprintf("%s AS %s", lookupExpr, safeCol)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(col, expr)

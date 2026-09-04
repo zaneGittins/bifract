@@ -20,11 +20,24 @@ type Manager struct {
 	pg   *storage.PostgresClient
 	ch   *storage.ClickHouseClient
 	chDB string // ClickHouse database name
+
+	// distributed and ddlCluster come from the deployment topology, which is fixed
+	// at construction. They decide whether rows go through a Distributed companion.
+	distributed bool
+	ddlCluster  string
 }
 
-// NewManager creates a new dictionary manager.
+// NewManager creates a new dictionary manager. The database comes from the client
+// rather than a literal: CLICKHOUSE_DB is configurable, and every dictionary source
+// query and reload names its database explicitly.
 func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manager {
-	return &Manager{pg: pg, ch: ch, chDB: "logs"}
+	m := &Manager{pg: pg, ch: ch}
+	if ch != nil {
+		m.chDB = ch.LogsDatabase()
+		m.distributed = ch.Topology().DistributedTables
+		m.ddlCluster = ch.Topology().DDLCluster
+	}
+	return m
 }
 
 // invalidInput marks a failure the caller can fix. The handler turns it into a 400
@@ -62,6 +75,11 @@ func chTableName(id string) string {
 // chDictName returns the primary ClickHouse dictionary object name for a dictionary ID.
 func chDictName(id string) string {
 	return "lookup_" + strings.ReplaceAll(id, "-", "_")
+}
+
+// chDistTableName returns the Distributed companion of a dictionary's backing table.
+func chDistTableName(id string) string {
+	return chTableName(id) + "_distributed"
 }
 
 // chColDictName returns the ClickHouse dictionary name for a secondary key column.
@@ -301,6 +319,9 @@ func (m *Manager) AddColumn(ctx context.Context, id, colName string) (*Dictionar
 		if err := m.ch.Exec(ctx, alterSQL); err != nil {
 			return nil, fmt.Errorf("failed to alter ClickHouse table: %w", err)
 		}
+		if err := m.ensureDistTable(ctx, dict); err != nil {
+			return nil, fmt.Errorf("failed to refresh distributed table: %w", err)
+		}
 
 		if err := m.recreateAllCHDictionaries(ctx, dict, dict.Columns); err != nil {
 			return nil, fmt.Errorf("failed to recreate ClickHouse dictionaries: %w", err)
@@ -351,6 +372,9 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 		escCH(dict.CHTableName), escCH(colName)))
 	if err := m.ch.Exec(ctx, dropSQL); err != nil {
 		return nil, fmt.Errorf("failed to drop column: %w", err)
+	}
+	if err := m.ensureDistTable(ctx, dict); err != nil {
+		return nil, fmt.Errorf("failed to refresh distributed table: %w", err)
 	}
 
 	dict.Columns = newCols
@@ -459,7 +483,7 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 		where = "WHERE (" + strings.Join(searchClauses, " OR ") + ")"
 	}
 
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", escCH(dict.CHTableName), where)
+	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", escCH(m.rowTable(dict)), where)
 	countRows, err := m.ch.Query(ctx, countSQL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count rows: %w", err)
@@ -480,7 +504,7 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 	// FINAL collapses the superseded copies an edit leaves behind: without it the
 	// editor shows both versions of a row until the parts happen to merge.
 	querySQL := fmt.Sprintf("SELECT %s, `%s` FROM `%s` FINAL %s ORDER BY `%s` ASC, `%s` ASC LIMIT %d OFFSET %d",
-		strings.Join(colRefs, ", "), seqColumn, escCH(dict.CHTableName), where,
+		strings.Join(colRefs, ", "), seqColumn, escCH(m.rowTable(dict)), where,
 		seqColumn, escCH(dict.KeyColumn), limit, offset)
 
 	dataRows, err := m.ch.Query(ctx, querySQL)
@@ -551,19 +575,24 @@ func (m *Manager) UpsertRows(ctx context.Context, id string, rows []DictionaryRo
 // load past it is ordered by its own sequence, which is what a re-import means.
 const maxSeqLookup = 1000
 
+// maxSeq is the highest editor ordinal in the table, 0 when it is empty.
+func (m *Manager) maxSeq(ctx context.Context, dict *Dictionary) (uint64, error) {
+	rows, err := m.ch.Query(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(m.rowTable(dict))))
+	if err != nil {
+		return 0, fmt.Errorf("failed to read dictionary row order: %w", err)
+	}
+	for _, v := range rows[0] {
+		return toUint64(v), nil
+	}
+	return 0, nil
+}
+
 // assignSeq returns each row's ordinal: a key already in the table keeps the position
 // it has, so editing a row never moves it; anything new is appended in the order given.
 func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []DictionaryRow) ([]uint64, error) {
-	var next uint64
-	maxRows, err := m.ch.Query(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(dict.CHTableName)))
+	next, err := m.maxSeq(ctx, dict)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read dictionary row order: %w", err)
-	}
-	if len(maxRows) > 0 {
-		for _, v := range maxRows[0] {
-			next = toUint64(v)
-			break
-		}
+		return nil, err
 	}
 
 	existing := map[string]uint64{}
@@ -578,7 +607,7 @@ func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []Dictio
 		}
 		if len(keys) > 0 {
 			q := fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
-				escCH(dict.KeyColumn), seqColumn, escCH(dict.CHTableName),
+				escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict)),
 				escCH(dict.KeyColumn), strings.Join(keys, ", "))
 			found, err := m.ch.Query(ctx, q)
 			if err != nil {
@@ -631,7 +660,7 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 		return err
 	}
 	found, err := m.ch.Query(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
-		escCH(dict.CHTableName), escCH(dict.KeyColumn), escCHStr(key)))
+		escCH(m.rowTable(dict)), escCH(dict.KeyColumn), escCHStr(key)))
 	if err != nil {
 		return fmt.Errorf("failed to look up row: %w", err)
 	}
@@ -656,12 +685,25 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 // asynchronous by default, so without the wait the caller's next read still returns
 // the row it just deleted.
 func (m *Manager) deleteRowByKey(ctx context.Context, dict *Dictionary, key string) error {
+	return m.deleteRowsByKeys(ctx, dict, []string{"'" + escCHStr(key) + "'"}, "")
+}
+
+// deleteRowsByKeys mutates the local table, not the Distributed companion, which does
+// not accept mutations. ON CLUSTER makes it reach every shard. extra narrows the
+// predicate further; it is already-escaped SQL, never user input.
+func (m *Manager) deleteRowsByKeys(ctx context.Context, dict *Dictionary, quotedKeys []string, extra string) error {
+	if len(quotedKeys) == 0 {
+		return nil
+	}
 	sync := 1
 	if m.ch.Topology().ReplicatedEngines {
 		sync = 2
 	}
-	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE `%s` = '%s' SETTINGS mutations_sync = %d",
-		escCH(dict.CHTableName), escCH(dict.KeyColumn), escCHStr(key), sync)
+	if extra != "" {
+		extra = " AND " + extra
+	}
+	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE `%s` IN (%s)%s SETTINGS mutations_sync = %d",
+		escCH(dict.CHTableName), escCH(dict.KeyColumn), strings.Join(quotedKeys, ", "), extra, sync)
 	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(deleteSQL)); err != nil {
 		return fmt.Errorf("failed to delete row: %w", err)
 	}
@@ -793,8 +835,8 @@ func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []
 			batchPlaceholders[j] = rowPlaceholder
 		}
 
-		insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES %s",
-			escCH(dict.CHTableName), strings.Join(colNames, ", "), strings.Join(batchPlaceholders, ", "))
+		insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s)%s VALUES %s",
+			escCH(m.rowTable(dict)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(batchPlaceholders, ", "))
 
 		args := make([]interface{}, 0, len(batch)*(len(dict.Columns)+1))
 		for j, row := range batch {
@@ -829,7 +871,7 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 	}
 
 	querySQL := fmt.Sprintf("SELECT %s FROM `%s` FINAL ORDER BY `%s` ASC, `%s` ASC",
-		strings.Join(colRefs, ", "), escCH(dict.CHTableName), seqColumn, escCH(dict.KeyColumn))
+		strings.Join(colRefs, ", "), escCH(m.rowTable(dict)), seqColumn, escCH(dict.KeyColumn))
 
 	dataRows, err := m.ch.Query(ctx, querySQL)
 	if err != nil {
@@ -925,6 +967,16 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 				log.Printf("[Dictionaries] reconcile %s: column %q: %v", dict.ID, c.Name, err)
 			}
 		}
+		// Creates the Distributed companion on an install that predates it, and
+		// realigns its columns with the ALTERs above.
+		if err := m.ensureDistTable(ctx, dict); err != nil {
+			log.Printf("[Dictionaries] reconcile %s: distributed table: %v", dict.ID, err)
+			continue
+		}
+		if err := m.consolidateShards(ctx, dict); err != nil {
+			log.Printf("[Dictionaries] reconcile %s: consolidate shards: %v", dict.ID, err)
+			continue
+		}
 		if err := m.recreateAllCHDictionaries(ctx, dict, dict.Columns); err != nil {
 			log.Printf("[Dictionaries] reconcile %s: %v", dict.ID, err)
 			continue
@@ -934,8 +986,140 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 	return reconciled, nil
 }
 
+// writeShardNum is the shard every dictionary row lands on. The Distributed
+// companion's sharding key is the constant 0, which resolves to the first shard.
+const writeShardNum = 1
+
+// consolidation is the set of rows to rewrite onto the write shard, in key order.
+type consolidation struct {
+	rows []DictionaryRow
+	seqs []uint64
+	keys []string
+}
+
+// planConsolidation picks, for every key with a copy off the write shard, the copy to
+// keep. The copy on the write shard wins, since that is where every later edit lands;
+// a key held only off-shard keeps its lowest-numbered copy, so the choice does not
+// depend on scan order. Keys already wholly on the write shard are left alone.
+func planConsolidation(cols []DictionaryColumn, keyColumn string, found []map[string]interface{}) consolidation {
+	type candidate struct {
+		row   DictionaryRow
+		seq   uint64
+		shard uint64
+	}
+	best := map[string]candidate{}
+	stray := map[string]bool{}
+	var keyOrder []string
+
+	for _, r := range found {
+		key, _ := r[keyColumn].(string)
+		if key == "" {
+			continue
+		}
+		shard := toUint64(r["_shard_num"])
+		if shard != writeShardNum {
+			stray[key] = true
+		}
+		cur, seen := best[key]
+		if !seen {
+			keyOrder = append(keyOrder, key)
+		} else if cur.shard == writeShardNum || (shard != writeShardNum && cur.shard <= shard) {
+			continue
+		}
+		row := DictionaryRow{Key: key, Fields: make(map[string]string, len(cols))}
+		for _, c := range cols {
+			row.Fields[c.Name] = fmt.Sprintf("%v", r[c.Name])
+		}
+		best[key] = candidate{row: row, seq: toUint64(r[seqColumn]), shard: shard}
+	}
+
+	var out consolidation
+	for _, k := range keyOrder {
+		if !stray[k] {
+			continue
+		}
+		out.rows = append(out.rows, best[k].row)
+		out.seqs = append(out.seqs, best[k].seq)
+		out.keys = append(out.keys, k)
+	}
+	return out
+}
+
+// consolidateShards gathers rows that an older release scattered across shards onto
+// the write shard. Those rows went to whichever shard answered the pooled connection,
+// so one key can hold a different value on two shards, and FINAL cannot collapse
+// copies that live on different shards: the dictionary loads whichever the scan
+// returned last. No-op once nothing is off-shard, which is always true of a dictionary
+// written by this release.
+//
+// The rewrite comes before the delete, and never the other way round: a delete that
+// ran first would take out rows whose replacement then failed to land. Failing partway
+// through therefore leaves the duplicates that were already there for the next
+// reconcile to retry, and loses nothing.
+func (m *Manager) consolidateShards(ctx context.Context, dict *Dictionary) error {
+	if !m.distributed || len(dict.Columns) == 0 {
+		return nil
+	}
+	colRefs := make([]string, 0, len(dict.Columns))
+	for _, c := range dict.Columns {
+		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
+	}
+	found, err := m.ch.Query(ctx, fmt.Sprintf("SELECT %s, `%s`, _shard_num FROM `%s` FINAL",
+		strings.Join(colRefs, ", "), seqColumn, escCH(chDistTableName(dict.ID))))
+	if err != nil {
+		return fmt.Errorf("read rows: %w", err)
+	}
+	plan := planConsolidation(dict.Columns, dict.KeyColumn, found)
+	if len(plan.rows) == 0 {
+		return nil
+	}
+
+	// The delete runs ON CLUSTER and cannot name a shard, so it keys on the ordinal
+	// instead: writing the surviving copies above every ordinal already in the table
+	// is what makes them addressable separately from the copies they replace.
+	maxSeq, err := m.maxSeq(ctx, dict)
+	if err != nil {
+		return err
+	}
+	threshold := maxSeq + 1
+	staged := make([]uint64, len(plan.rows))
+	for i := range staged {
+		staged[i] = threshold + uint64(i)
+	}
+	if err := m.batchInsertRows(ctx, dict, plan.rows, staged); err != nil {
+		return err
+	}
+
+	quoted := make([]string, 0, len(plan.keys))
+	for _, k := range plan.keys {
+		quoted = append(quoted, "'"+escCHStr(k)+"'")
+	}
+	below := fmt.Sprintf("`%s` < %d", seqColumn, threshold)
+	for i := 0; i < len(quoted); i += csvImportBatchSize {
+		end := i + csvImportBatchSize
+		if end > len(quoted) {
+			end = len(quoted)
+		}
+		if err := m.deleteRowsByKeys(ctx, dict, quoted[i:end], below); err != nil {
+			return err
+		}
+	}
+
+	// Restore the ordinals the rows had, so consolidation does not reorder the editor.
+	// Only the write shard holds them now, so this supersedes the staged copies the
+	// way any other edit does. A failure here leaves correct data at staged ordinals.
+	if err := m.batchInsertRows(ctx, dict, plan.rows, plan.seqs); err != nil {
+		return err
+	}
+	log.Printf("[Dictionaries] %s: moved %d off-shard row(s) onto shard %d", dict.ID, len(plan.rows), writeShardNum)
+	return nil
+}
+
 func (m *Manager) createCHObjects(ctx context.Context, dict *Dictionary) error {
 	if err := m.createCHTable(ctx, dict); err != nil {
+		return err
+	}
+	if err := m.ensureDistTable(ctx, dict); err != nil {
 		return err
 	}
 	return m.createCHDictionary(ctx, dict, dict.Columns)
@@ -948,6 +1132,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
 			_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
 		}
 	}
+	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(chDistTableName(dict.ID)))))
 	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName))))
 	return nil
 }
@@ -973,8 +1158,52 @@ func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []Dictio
 		refs = append(refs, fmt.Sprintf("`%s`", escCH(c.Name)))
 	}
 	q := fmt.Sprintf("SELECT %s FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`)",
-		strings.Join(refs, ", "), escCH(m.chDB), escCH(dict.CHTableName), escCH(keyCol))
+		strings.Join(refs, ", "), escCH(m.chDB), escCH(m.rowTable(dict)), escCH(keyCol))
 	return escCHStr(q)
+}
+
+// rowTable is the table every row read and write goes through.
+//
+// On a cluster the backing table is Replicated per shard, so rows written through the
+// load-balanced pool land on whichever shard answered and every other shard's copy of
+// the dictionary loads empty: logs on those shards enrich to the empty string with no error. Reads
+// and writes therefore go through a Distributed companion whose sharding key is the
+// constant 0, which pins every row to the first shard. That keeps the table free of
+// cross-shard duplicates, which FINAL cannot collapse, so an edit still supersedes the
+// row it replaces, and lets each shard's dictionary load the full set.
+func (m *Manager) rowTable(dict *Dictionary) string {
+	if m.distributed {
+		return chDistTableName(dict.ID)
+	}
+	return dict.CHTableName
+}
+
+// insertSettings makes a Distributed insert synchronous. The editor reads a row back
+// immediately after writing it (row order, row count, dictionary reload), and the
+// default background forwarding has not delivered it yet at that point.
+func (m *Manager) insertSettings() string {
+	if m.distributed {
+		return " SETTINGS distributed_foreground_insert = 1"
+	}
+	return ""
+}
+
+// ensureDistTable creates or replaces the Distributed companion for a dictionary's
+// backing table. CREATE OR REPLACE rather than IF NOT EXISTS: the companion is created
+// "AS <local>", which snapshots the column list, so a later ADD/DROP COLUMN on the
+// local table leaves it stale. It holds no data, so replacing it costs nothing.
+func (m *Manager) ensureDistTable(ctx context.Context, dict *Dictionary) error {
+	if !m.distributed {
+		return nil
+	}
+	sql := fmt.Sprintf(
+		"CREATE OR REPLACE TABLE `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', 0)",
+		escCH(chDistTableName(dict.ID)), escCH(dict.CHTableName),
+		escCHStr(m.ddlCluster), escCH(dict.CHTableName))
+	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(sql)); err != nil && !storage.IsDDLTimeout(err) {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
@@ -1066,7 +1295,7 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 }
 
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(dict.CHTableName))
+	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(m.rowTable(dict)))
 	rows, err := m.ch.Query(ctx, countSQL)
 	if err != nil || len(rows) == 0 {
 		return

@@ -186,6 +186,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,
+		DictionaryDatabase:    h.dictDatabase(),
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),

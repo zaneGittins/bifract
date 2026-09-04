@@ -7,11 +7,11 @@ import (
 	"strings"
 )
 
-var namedGroupRe = regexp.MustCompile(`\(\?(?:P?<[a-zA-Z_][a-zA-Z0-9_]*>|P'[a-zA-Z_][a-zA-Z0-9_]*')`)
+var namedGroupRe = regexp.MustCompile(`\(\?P?(?:<[a-zA-Z_][a-zA-Z0-9_]*>|'[a-zA-Z_][a-zA-Z0-9_]*')`)
 
 // extractPattern strips named capture group syntax from a pattern so that
 // ClickHouse's extract() function receives a plain positional capture group.
-// (?<name>...) and (?P<name>...) become (...).
+// (?<name>...), (?P<name>...), (?P'name'...) and (?'name'...) become (...).
 func extractPattern(pattern string) string {
 	return namedGroupRe.ReplaceAllString(pattern, "(")
 }

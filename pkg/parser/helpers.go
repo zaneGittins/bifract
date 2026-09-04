@@ -844,46 +844,101 @@ func unescapeSQLString(s string) string {
 	return b.String()
 }
 
-// convertUnnamedGroupsToNonCapturing rewrites unnamed capturing groups (...)
-// to non-capturing (?:...) so that extractAllGroups indices align with named
-// group positions only. Escaped parens and named/non-capturing groups are left
-// untouched.
-func convertUnnamedGroupsToNonCapturing(pattern string) string {
-	var b strings.Builder
-	b.Grow(len(pattern) + 8)
+// namedGroupOpenRe matches the opening syntax of a named capture group in every
+// flavor users write: (?<n>, (?P<n>, (?P'n' and (?'n'.
+var namedGroupOpenRe = regexp.MustCompile(`^\(\?P?(?:<([a-zA-Z_][a-zA-Z0-9_]*)>|'([a-zA-Z_][a-zA-Z0-9_]*)')`)
+
+// captureToken is one capturing group's opening syntax within a pattern.
+type captureToken struct {
+	start, end int
+	name       string // empty for an unnamed group
+}
+
+// scanCaptureGroups locates every capturing group in a pattern, skipping escaped
+// characters, character classes, and non-capturing constructs ((?:, (?i), (?=).
+func scanCaptureGroups(pattern string) []captureToken {
+	var out []captureToken
 	inClass := false
 	for i := 0; i < len(pattern); i++ {
-		ch := pattern[i]
-		if ch == '\\' {
-			b.WriteByte(ch)
+		switch ch := pattern[i]; {
+		case ch == '\\':
 			i++
-			if i < len(pattern) {
-				b.WriteByte(pattern[i])
-			}
-			continue
-		}
-		if ch == '[' && !inClass {
+		case ch == '[' && !inClass:
 			inClass = true
-			b.WriteByte(ch)
-			continue
-		}
-		if ch == ']' && inClass {
+		case ch == ']' && inClass:
 			inClass = false
-			b.WriteByte(ch)
-			continue
-		}
-		if ch == '(' && !inClass {
-			if i+1 < len(pattern) && pattern[i+1] == '?' {
-				// Already (?:, (?<, (?=, (?! etc. — leave as-is
-				b.WriteByte(ch)
-			} else {
-				b.WriteString("(?:")
+		case ch == '(' && !inClass:
+			if m := namedGroupOpenRe.FindStringSubmatchIndex(pattern[i:]); m != nil {
+				name := ""
+				for g := 1; g <= 2; g++ {
+					if m[2*g] >= 0 {
+						name = pattern[i+m[2*g] : i+m[2*g+1]]
+					}
+				}
+				out = append(out, captureToken{start: i, end: i + m[1], name: name})
+				i += m[1] - 1
+			} else if i+1 >= len(pattern) || pattern[i+1] != '?' {
+				out = append(out, captureToken{start: i, end: i + 1})
 			}
-			continue
 		}
-		b.WriteByte(ch)
 	}
-	return b.String()
+	return out
+}
+
+// rewriteCaptureGroups returns a pattern safe for ClickHouse plus the names of its
+// named capture groups in order. Named-group syntax is stripped to a plain group
+// (RE2 in ClickHouse does not accept every flavor), and when named groups exist the
+// unnamed ones become non-capturing so group indices line up with the names.
+func rewriteCaptureGroups(pattern string) (string, []string) {
+	tokens := scanCaptureGroups(pattern)
+	var names []string
+	for _, t := range tokens {
+		if t.name != "" {
+			names = append(names, t.name)
+		}
+	}
+	if len(names) == 0 {
+		return pattern, nil
+	}
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	prev := 0
+	for _, t := range tokens {
+		b.WriteString(pattern[prev:t.start])
+		if t.name != "" {
+			b.WriteString("(")
+		} else {
+			b.WriteString("(?:")
+		}
+		prev = t.end
+	}
+	b.WriteString(pattern[prev:])
+	return b.String(), names
+}
+
+// NamedCaptureGroups returns the names of a pattern's named capture groups, in
+// order. Callers outside the parser use it to agree with regex() on which output
+// columns a pattern produces.
+func NamedCaptureGroups(pattern string) []string {
+	_, names := rewriteCaptureGroups(pattern)
+	return names
+}
+
+// captureGroupCount reports how many capturing groups a pattern has.
+func captureGroupCount(pattern string) int {
+	return len(scanCaptureGroups(pattern))
+}
+
+// dictRef returns the name to pass to dictGet/dictHas, qualified with the
+// database the dictionary objects live in. A Distributed fan-out executes the
+// remote half of a query with the shard connection's own current database, which
+// is not the one holding the dictionaries, so an unqualified name resolves to
+// nothing there and the shard fails the whole query with BAD_ARGUMENTS (36).
+func dictRef(db, name string) string {
+	if db == "" {
+		return name
+	}
+	return db + "." + name
 }
 
 // validateGeneratedSQL checks the final SQL for dangerous patterns that should never

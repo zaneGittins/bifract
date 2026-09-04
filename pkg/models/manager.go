@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"bifract/pkg/storage"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"github.com/lib/pq"
 )
 
@@ -506,17 +504,7 @@ func (m *Manager) SetAlertEnabled(ctx context.Context, id string, enabled bool) 
 
 // ---- ClickHouse object lifecycle ----
 
-// isCHDDLTimeout returns true for ClickHouse error code 159 (TIMEOUT_EXCEEDED),
-// which occurs when ON CLUSTER DDL exceeds distributed_ddl_task_timeout but the
-// task continues running in the background on all nodes. The object is created
-// successfully; the error is cosmetic and should be treated as a warning.
-func isCHDDLTimeout(err error) bool {
-	var ex *proto.Exception
-	if errors.As(err, &ex) {
-		return ex.Code == 159
-	}
-	return false
-}
+func isCHDDLTimeout(err error) bool { return storage.IsDDLTimeout(err) }
 
 func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	if mt.IsScheduled() {

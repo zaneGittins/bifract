@@ -102,7 +102,7 @@ Named captures extract to individual fields:
 * | regex(field=image, regex="(.+)\\\\(?<executable_name>.*\\.exe)")
 ```
 
-This creates a field called `executable_name` from the named capture group.
+This creates a field called `executable_name` from the named capture group. Both `(?<name>...)` and `(?P<name>...)` are accepted. Each named group becomes its own field; a pattern with no named group and no `as=` produces the array field `regex_match` instead.
 
 ### Replace
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,6 +85,11 @@ type Engine struct {
 	// hydrator refetches full log fields for triggered rows. Nil disables
 	// hydration, leaving fractal actions on the pruned projection.
 	hydrator logHydrator
+
+	// schemaErrNotified holds the alert IDs already reported as blocked on a missing
+	// base column, so a fault that persists across every evaluation is announced once
+	// rather than on every tick. Cleared when the alert next runs.
+	schemaErrNotified sync.Map
 }
 
 type engineNotifWriter interface {
@@ -655,6 +661,51 @@ func isUnrecoverableChError(err error) (code int32, ok bool) {
 	return 0, false
 }
 
+// baseSchemaColumns are the log schema's own flat columns, the ones the translator
+// treats as base rather than as JSON fields (see FieldKindBase). A code 47 naming one
+// means the table is missing a column the schema is supposed to have, which is a
+// deployment problem: the alert's BQL is not what needs changing, and disabling it is
+// a one-way door that outlives the repair. raw_log is absent on purpose -- the alert
+// projection deletes it rather than selecting it, so the engine never names it, and a
+// query that does is genuinely wrong.
+var baseSchemaColumns = map[string]bool{
+	"norm_log":         true,
+	"normalizer":       true,
+	"timestamp":        true,
+	"ingest_timestamp": true,
+	"log_id":           true,
+	"fractal_id":       true,
+}
+
+// unknownIdentifierRe pulls the identifier out of a code 47 message. ClickHouse writes
+// it back-quoted ("Unknown expression identifier `x` in scope ..." and the
+// "expression or function" variant); the pre-analyzer form spelled it after a colon.
+var unknownIdentifierRe = regexp.MustCompile("Unknown [a-z ]*identifier(?: `([^`]+)`|: ([^ ,]+))")
+
+// unknownIdentifier returns the identifier a code 47 error names, or "".
+func unknownIdentifier(err error) string {
+	m := unknownIdentifierRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return ""
+	}
+	if m[1] != "" {
+		return m[1]
+	}
+	return m[2]
+}
+
+// missingBaseColumn returns the base schema column a code 47 error names, or "" when
+// the error is something the alert's own query is answerable for.
+func missingBaseColumn(code int32, err error) string {
+	if code != 47 {
+		return ""
+	}
+	if col := unknownIdentifier(err); baseSchemaColumns[col] {
+		return col
+	}
+	return ""
+}
+
 // runAlertQuery translates and executes an alert query with timeout handling.
 // On timeout or an unrecoverable CH error the alert is auto-disabled and a
 // health notification is raised.
@@ -686,6 +737,18 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 			return nil, fmt.Errorf("query timed out after %ds", timeoutSec)
 		}
 		if code, ok := isUnrecoverableChError(err); ok {
+			if col := missingBaseColumn(code, err); col != "" {
+				// Stays enabled, so it resumes on its own once the schema is repaired.
+				// Notified once per alert rather than every tick: the evaluator retries
+				// on its interval, and the caller already logs each failure.
+				if _, notified := e.schemaErrNotified.LoadOrStore(alert.ID, struct{}{}); !notified && e.notifWriter != nil {
+					go e.notifWriter.Write("alerts.schema_error", "warning",
+						fmt.Sprintf("Alert Query Blocked: %s", alert.Name),
+						fmt.Sprintf("Alert '%s' cannot run: the log schema is missing column %q, which Bifract requires. The alert stays enabled and resumes once the schema is repaired; its BQL does not need changing.",
+							alert.Name, col))
+				}
+				return nil, fmt.Errorf("log schema is missing base column %q, left enabled to retry: %w", col, err)
+			}
 			reason := fmt.Sprintf("Auto-disabled: unrecoverable query error (code %d): %v", code, err)
 			log.Printf("[Alert Engine] Alert '%s' has unrecoverable query error (code %d), disabling", alert.Name, code)
 			if disableErr := e.disableAlertWithReason(ctx, alert.ID, reason); disableErr != nil {
@@ -699,6 +762,9 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 		}
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
+
+	// Recovered: a later break after a repair notifies again.
+	e.schemaErrNotified.Delete(alert.ID)
 
 	results = dropAlreadyReported(results, alert.CompletionColumn, windowStart)
 

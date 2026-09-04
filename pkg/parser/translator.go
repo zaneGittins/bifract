@@ -37,6 +37,7 @@ type QueryOptions struct {
 	UseIngestTimestamp    bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
 	AlertExtraFields      []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
+	DictionaryDatabase    string                        // ClickHouse database holding the dictionary objects; qualifies every dictGet
 	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
 	ProcLineageTable      string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
 	ProcFreqTable         string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")

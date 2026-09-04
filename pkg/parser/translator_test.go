@@ -5573,7 +5573,7 @@ func TestCaseGeneralCommands(t *testing.T) {
 	})
 	t.Run("regex transform in branch", func(t *testing.T) {
 		sql := mustTranslate(t, `* | case { level=error | regex(field=norm_log, pattern="code=(?<code>[0-9]+)"); * | x:="ok"; } | table(code)`, opts)
-		if !strings.Contains(sql, "THEN extractAllGroups(norm_log, 'code=(?<code>[0-9]+)')[1][1]") {
+		if !strings.Contains(sql, "THEN extractAllGroups(norm_log, 'code=([0-9]+)')[1][1]") {
 			t.Errorf("regex transform not conditionalized: %s", sql)
 		}
 	})

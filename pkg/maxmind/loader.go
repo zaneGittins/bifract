@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"bifract/pkg/storage"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // Manager handles downloading, parsing, and loading MaxMind GeoLite2 data
@@ -80,14 +82,22 @@ func (m *Manager) loadAll(ctx context.Context, initial bool) error {
 	// On startup, check if ClickHouse already has data from a previous run.
 	// If so, just ensure the dictionaries exist and skip the download entirely.
 	if initial && m.hasExistingData(ctx) {
-		log.Println("[MaxMind] ClickHouse already has GeoIP data, ensuring dictionaries exist...")
-		if err := m.ensureDictionaries(ctx); err != nil {
-			log.Printf("[MaxMind] Failed to ensure dictionaries, will do full reload: %v", err)
+		if m.hasOffShardRows(ctx) {
+			// Rows written before the Distributed companion existed sit on whichever
+			// shard answered, so the same network prefix can appear on several shards
+			// and IP_TRIE resolves it arbitrarily. A full reload rewrites the table
+			// through the companion, onto one shard.
+			log.Println("[MaxMind] GeoIP rows are spread across shards, reloading from source...")
 		} else {
-			m.mu.Lock()
-			m.loaded = true
-			m.mu.Unlock()
-			return nil
+			log.Println("[MaxMind] ClickHouse already has GeoIP data, ensuring dictionaries exist...")
+			if err := m.ensureDictionaries(ctx); err != nil {
+				log.Printf("[MaxMind] Failed to ensure dictionaries, will do full reload: %v", err)
+			} else {
+				m.mu.Lock()
+				m.loaded = true
+				m.mu.Unlock()
+				return nil
+			}
 		}
 	}
 
@@ -121,14 +131,39 @@ func (m *Manager) loadAll(ctx context.Context, initial bool) error {
 // hasExistingData checks if both geoip_city and geoip_asn tables exist and
 // have rows from a previous load.
 func (m *Manager) hasExistingData(ctx context.Context) bool {
-	for _, table := range []string{"geoip_city", "geoip_asn"} {
+	for _, table := range geoipTables {
+		// An install that predates the companion has none; creating it here is what
+		// makes the count below (and the reload decision after it) answerable.
+		if err := m.ensureDistTable(ctx, table); err != nil {
+			return false
+		}
 		var count uint64
-		row := m.ch.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s", table))
+		row := m.ch.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s", m.geoipReadTable(table)))
 		if err := row.Scan(&count); err != nil || count == 0 {
 			return false
 		}
 	}
 	return true
+}
+
+// hasOffShardRows reports whether any GeoIP row sits on a shard other than the one the
+// companion writes to. Always false on a single node.
+func (m *Manager) hasOffShardRows(ctx context.Context) bool {
+	if !m.ch.Topology().DistributedTables {
+		return false
+	}
+	for _, table := range geoipTables {
+		var count uint64
+		row := m.ch.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM %s WHERE _shard_num != %d",
+			m.geoipReadTable(table), writeShardNum))
+		if err := row.Scan(&count); err != nil {
+			return false
+		}
+		if count > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureDictionaries creates the IP_TRIE dictionaries if they don't already
@@ -138,6 +173,60 @@ func (m *Manager) ensureDictionaries(ctx context.Context) error {
 		return err
 	}
 	return m.createASNDictionary(ctx)
+}
+
+// geoipTables are the local backing tables the GeoIP dictionaries read from.
+var geoipTables = []string{"geoip_city", "geoip_asn"}
+
+// writeShardNum is the shard every GeoIP row lands on: the Distributed companion's
+// sharding key is the constant 0, which resolves to the first shard.
+const writeShardNum = 1
+
+// geoipReadTable names the local backing table and, on a cluster, the Distributed
+// companion every read and write goes through. The backing tables are Replicated per
+// shard, so rows written through the load-balanced pool reach one shard only and every
+// other shard's copy of the dictionary loads empty. The companion's sharding key is
+// the constant 0, pinning the whole table to the first shard, which each shard's
+// dictionary then reads in full.
+func (m *Manager) geoipReadTable(local string) string {
+	if m.ch.Topology().DistributedTables {
+		return local + "_distributed"
+	}
+	return local
+}
+
+// ensureDistTable creates or replaces a backing table's Distributed companion. It
+// holds no data, so replacing it rather than skipping an existing one keeps its
+// columns in step with the local table for free.
+func (m *Manager) ensureDistTable(ctx context.Context, local string) error {
+	if !m.ch.Topology().DistributedTables {
+		return nil
+	}
+	sql := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS %s ENGINE = Distributed('%s', currentDatabase(), '%s', 0)",
+		m.geoipReadTable(local), local, storage.EscCHStr(m.ch.Topology().DDLCluster), local)
+	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(sql)); err != nil && !storage.IsDDLTimeout(err) {
+		return err
+	}
+	return nil
+}
+
+// reloadSQL renders a cluster-aware SYSTEM RELOAD DICTIONARY. Every node keeps its own
+// copy, so reloading only the one this connection landed on leaves the rest stale, and
+// an unqualified name resolves against whatever database that node is using.
+func (m *Manager) reloadSQL(name string) string {
+	db := strings.ReplaceAll(m.ch.LogsDatabase(), "`", "")
+	return fmt.Sprintf("SYSTEM RELOAD DICTIONARY%s `%s`.`%s`", m.ch.OnClusterSQL(), db, name)
+}
+
+// insertCtx makes a Distributed insert synchronous, so the dictionary created right
+// after the load reads a table that already holds every row.
+func (m *Manager) insertCtx(ctx context.Context) context.Context {
+	if !m.ch.Topology().DistributedTables {
+		return ctx
+	}
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{
+		"distributed_foreground_insert": 1,
+	}))
 }
 
 // cityLocation holds denormalized location data keyed by geoname_id.
@@ -176,6 +265,9 @@ func (m *Manager) loadCity(ctx context.Context, csvDir string) error {
 	`))
 	if err := m.ch.Exec(ctx, createCitySQL); err != nil {
 		return fmt.Errorf("create geoip_city table: %w", err)
+	}
+	if err := m.ensureDistTable(ctx, "geoip_city"); err != nil {
+		return fmt.Errorf("create geoip_city distributed table: %w", err)
 	}
 
 	// Truncate before reload
@@ -261,7 +353,7 @@ func (m *Manager) loadCityBlocks(ctx context.Context, path string, locations map
 	total := 0
 	const batchSize = 10000
 
-	batch, err := m.ch.Conn().PrepareBatch(ctx, "INSERT INTO geoip_city (network, country, city, subdivision, continent, timezone, latitude, longitude, postal_code)")
+	batch, err := m.ch.Conn().PrepareBatch(m.insertCtx(ctx), "INSERT INTO "+m.geoipReadTable("geoip_city")+" (network, country, city, subdivision, continent, timezone, latitude, longitude, postal_code)")
 	if err != nil {
 		return 0, fmt.Errorf("prepare batch: %w", err)
 	}
@@ -305,7 +397,7 @@ func (m *Manager) loadCityBlocks(ctx context.Context, path string, locations map
 			if err := batch.Send(); err != nil {
 				return 0, fmt.Errorf("send batch at row %d: %w", total, err)
 			}
-			batch, err = m.ch.Conn().PrepareBatch(ctx, "INSERT INTO geoip_city (network, country, city, subdivision, continent, timezone, latitude, longitude, postal_code)")
+			batch, err = m.ch.Conn().PrepareBatch(m.insertCtx(ctx), "INSERT INTO "+m.geoipReadTable("geoip_city")+" (network, country, city, subdivision, continent, timezone, latitude, longitude, postal_code)")
 			if err != nil {
 				return 0, fmt.Errorf("prepare next batch: %w", err)
 			}
@@ -336,17 +428,16 @@ func (m *Manager) createCityDictionary(ctx context.Context) error {
 			postal_code String DEFAULT ''
 		)
 		PRIMARY KEY network
-		SOURCE(CLICKHOUSE(TABLE 'geoip_city' DB '%s' USER '%s' PASSWORD '%s'))
+		SOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'))
 		LIFETIME(MIN 0 MAX 3600)
 		LAYOUT(IP_TRIE())
-	`, m.ch.Database, m.ch.User, m.ch.Password))
+	`, m.geoipReadTable("geoip_city"), m.ch.LogsDatabase(), m.ch.User, m.ch.Password))
 
 	if err := m.ch.Exec(ctx, dictSQL); err != nil {
 		return fmt.Errorf("create geoip_city_lookup dictionary: %w", err)
 	}
 
-	// Force reload
-	if err := m.ch.Exec(ctx, "SYSTEM RELOAD DICTIONARY geoip_city_lookup"); err != nil {
+	if err := m.ch.Exec(ctx, m.reloadSQL("geoip_city_lookup")); err != nil {
 		return fmt.Errorf("reload geoip_city_lookup: %w", err)
 	}
 
@@ -366,6 +457,9 @@ func (m *Manager) loadASN(ctx context.Context, csvDir string) error {
 	`))
 	if err := m.ch.Exec(ctx, createASNSQL); err != nil {
 		return fmt.Errorf("create geoip_asn table: %w", err)
+	}
+	if err := m.ensureDistTable(ctx, "geoip_asn"); err != nil {
+		return fmt.Errorf("create geoip_asn distributed table: %w", err)
 	}
 
 	// Truncate before reload
@@ -404,7 +498,7 @@ func (m *Manager) loadASNBlocks(ctx context.Context, path string) (int, error) {
 	total := 0
 	const batchSize = 10000
 
-	batch, err := m.ch.Conn().PrepareBatch(ctx, "INSERT INTO geoip_asn (network, asn, as_org)")
+	batch, err := m.ch.Conn().PrepareBatch(m.insertCtx(ctx), "INSERT INTO "+m.geoipReadTable("geoip_asn")+" (network, asn, as_org)")
 	if err != nil {
 		return 0, fmt.Errorf("prepare batch: %w", err)
 	}
@@ -435,7 +529,7 @@ func (m *Manager) loadASNBlocks(ctx context.Context, path string) (int, error) {
 			if err := batch.Send(); err != nil {
 				return 0, fmt.Errorf("send batch at row %d: %w", total, err)
 			}
-			batch, err = m.ch.Conn().PrepareBatch(ctx, "INSERT INTO geoip_asn (network, asn, as_org)")
+			batch, err = m.ch.Conn().PrepareBatch(m.insertCtx(ctx), "INSERT INTO "+m.geoipReadTable("geoip_asn")+" (network, asn, as_org)")
 			if err != nil {
 				return 0, fmt.Errorf("prepare next batch: %w", err)
 			}
@@ -459,16 +553,16 @@ func (m *Manager) createASNDictionary(ctx context.Context) error {
 			as_org String DEFAULT ''
 		)
 		PRIMARY KEY network
-		SOURCE(CLICKHOUSE(TABLE 'geoip_asn' DB '%s' USER '%s' PASSWORD '%s'))
+		SOURCE(CLICKHOUSE(TABLE '%s' DB '%s' USER '%s' PASSWORD '%s'))
 		LIFETIME(MIN 0 MAX 3600)
 		LAYOUT(IP_TRIE())
-	`, m.ch.Database, m.ch.User, m.ch.Password))
+	`, m.geoipReadTable("geoip_asn"), m.ch.LogsDatabase(), m.ch.User, m.ch.Password))
 
 	if err := m.ch.Exec(ctx, dictSQL); err != nil {
 		return fmt.Errorf("create geoip_asn_lookup dictionary: %w", err)
 	}
 
-	if err := m.ch.Exec(ctx, "SYSTEM RELOAD DICTIONARY geoip_asn_lookup"); err != nil {
+	if err := m.ch.Exec(ctx, m.reloadSQL("geoip_asn_lookup")); err != nil {
 		return fmt.Errorf("reload geoip_asn_lookup: %w", err)
 	}
 

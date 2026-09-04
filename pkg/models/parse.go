@@ -2,7 +2,6 @@ package models
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -20,8 +19,6 @@ type ParsedSource struct {
 	Errors          []string          `json:"errors"`
 	Warnings        []string          `json:"warnings"`
 }
-
-var parseNamedGroupRe = regexp.MustCompile(`\(\?<([a-zA-Z_][a-zA-Z0-9_]*)>`)
 
 // ParseSourceQuery lowers a BQL source query into a model's Filter + Extractions.
 // It accepts only the model-expressible subset of BQL (flat-AND inline filters,
@@ -323,14 +320,14 @@ func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
 	}
 	// A model extraction has a single output column. The engine creates one column
 	// per named group, so reject patterns with more than one named group.
-	named := parseNamedGroupRe.FindAllStringSubmatch(pattern, -1)
+	named := parser.NamedCaptureGroups(pattern)
 	if len(named) > 1 {
 		return ExtractionStep{}, "a model extraction supports only one named capture group; use a single (?<name>...) group"
 	}
 	output := asName
 	if len(named) == 1 {
 		// Named group wins over as=, matching the regex() runtime.
-		output = named[0][1]
+		output = named[0]
 	}
 	if output == "" {
 		return ExtractionStep{}, "regex() needs an output name: add as=<field> or use a (?<name>...) capture group"

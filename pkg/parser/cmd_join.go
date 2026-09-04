@@ -110,6 +110,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		IncludeEmptyFractalID: ctx.Opts.IncludeEmptyFractalID,
 		Dictionaries:          ctx.Opts.Dictionaries,
 		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
+		DictionaryDatabase:    ctx.Opts.DictionaryDatabase,
 		TableName:             ctx.Opts.TableName,
 		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
 		DisplayTimezone:       ctx.Opts.DisplayTimezone,

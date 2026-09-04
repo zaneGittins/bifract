@@ -5163,17 +5163,11 @@ body.alert-editor-active {
 
 /* A row of controls is one row. Padding alone does not get there: an input, a select
    and a button each resolve their own line box, so the height is stated once here and
-   every control in these toolbars measures the same. */
-.alerts-filters input[type="text"],
-.alerts-filters select,
-.alerts-filters button,
-.unified-actions-toolbar input[type="text"],
-.unified-actions-toolbar select,
-.unified-actions-toolbar button,
-.atk-controls input[type="text"],
-.atk-controls select,
-.atk-controls button,
-.ap-admin-actions button {
+   every control in these toolbars measures the same. The sizing stops at the edge of a
+   popover the toolbar anchors: those are their own surfaces, and a menu item or a
+   stacked row sizes to its content rather than to a toolbar's control height. */
+:is(.alerts-filters, .unified-actions-toolbar, .atk-controls, .ap-admin-actions)
+    :is(input[type="text"], select, button):not(:where(.fb-menu, .kebab-menu, .alerts-drafts-panel, .atk-filters-menu) *) {
     height: 34px;
     box-sizing: border-box;
 }

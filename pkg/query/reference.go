@@ -575,10 +575,10 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			{
 				Name:        "regex",
 				Category:    "Extraction",
-				Description: "Extracts values from a field using a regex pattern with capture groups. Named captures (?<name>...) are extracted to individual fields.",
+				Description: "Extracts values from a field using a regex pattern with capture groups. Named captures are extracted to individual fields.",
 				Syntax:      `| regex("pattern", field=norm_log) or | regex(field=name, regex="pattern")`,
 				Parameters: []Param{
-					{Name: "pattern", Type: "regex", Required: true, Description: "Regex pattern with capture groups. Use (?<name>...) for named captures."},
+					{Name: "pattern", Type: "regex", Required: true, Description: "Regex pattern with capture groups. Use (?<name>...) or (?P<name>...) for named captures."},
 					{Name: "field", Type: "string", Required: false, Description: "Field to extract from (default: norm_log)"},
 					{Name: "regex", Type: "string", Required: false, Description: "Alternative way to specify the regex pattern"},
 				},

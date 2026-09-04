@@ -22,6 +22,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
 	dbsql "bifract/db"
 )
@@ -130,6 +131,11 @@ func (c *ClickHouseClient) logsDatabase() string {
 	}
 	return c.Database
 }
+
+// LogsDatabase is logsDatabase for callers outside this package. Anything naming a
+// ClickHouse object in SQL that a remote shard will execute must qualify it with
+// this rather than rely on the executing node's current database.
+func (c *ClickHouseClient) LogsDatabase() string { return c.logsDatabase() }
 
 // OnClusterSQL returns the ON CLUSTER clause for DDL statements, or an empty
 // string when the deployment has no DDL cluster.
@@ -279,6 +285,7 @@ var injectOnClusterPatterns = []struct {
 }{
 	{"CREATE MATERIALIZED VIEW", regexp.MustCompile(`(?i)(CREATE\s+MATERIALIZED\s+VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
 	{"CREATE TABLE", regexp.MustCompile(`(?i)(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\S+)`)},
+	{"CREATE OR REPLACE TABLE", regexp.MustCompile(`(?i)(CREATE\s+OR\s+REPLACE\s+TABLE\s+\S+)`)},
 	{"ALTER TABLE", regexp.MustCompile(`(?i)(ALTER\s+TABLE\s+\S+)`)},
 	{"TRUNCATE", regexp.MustCompile(`(?i)(TRUNCATE\s+TABLE\s+(?:IF\s+EXISTS\s+)?\S+)`)},
 	{"DROP TABLE", regexp.MustCompile(`(?i)(DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?\S+)`)},
@@ -288,8 +295,20 @@ var injectOnClusterPatterns = []struct {
 	{"DROP DICTIONARY", regexp.MustCompile(`(?i)(DROP\s+DICTIONARY\s+(?:IF\s+EXISTS\s+)?\S+)`)},
 }
 
-// InjectOnCluster inserts an ON CLUSTER clause into CREATE TABLE, ALTER TABLE,
-// TRUNCATE TABLE, and DROP TABLE statements. No-op for single-node deployments.
+// IsDDLTimeout reports ClickHouse error 159 (TIMEOUT_EXCEEDED), which an ON CLUSTER
+// statement returns when it outlives distributed_ddl_task_timeout. The task stays
+// queued and still runs on every node, so the object does get created: callers should
+// treat this as a warning, not a failure.
+func IsDDLTimeout(err error) bool {
+	var ex *proto.Exception
+	if errors.As(err, &ex) {
+		return ex.Code == 159
+	}
+	return false
+}
+
+// InjectOnCluster inserts an ON CLUSTER clause into the DDL statements listed in
+// injectOnClusterPatterns. No-op for single-node deployments.
 func (c *ClickHouseClient) InjectOnCluster(sql string) string {
 	if c.topo.DDLCluster == "" {
 		return sql

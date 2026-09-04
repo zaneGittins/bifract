@@ -103,6 +103,17 @@ func (h *QueryHandler) queryTableName() string {
 	return h.db.ReadTable()
 }
 
+// dictDatabase names the database holding the dictionary objects, so every dictGet
+// the translator emits is database-qualified. A shard executing the remote half of a
+// distributed query has its own current database, and an unqualified dictionary name
+// resolves to nothing there.
+func (h *QueryHandler) dictDatabase() string {
+	if h.db == nil {
+		return ""
+	}
+	return h.db.LogsDatabase()
+}
+
 // procLineageTableName returns the process-lineage read table for ptg() traversal,
 // mirroring queryTableName's cluster-vs-single-node selection.
 func (h *QueryHandler) procLineageTableName() string {
@@ -887,6 +898,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
 		GeoIPEnabled:          h.geoIPEnabled,
+		DictionaryDatabase:    h.dictDatabase(),
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
@@ -1255,6 +1267,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		Models:                modelInfos,
 		HasCommentFilter:      hasComment,
 		GeoIPEnabled:          h.geoIPEnabled,
+		DictionaryDatabase:    h.dictDatabase(),
 		TableName:             h.queryTableName(),
 		ProcLineageTable:      h.procLineageTableName(),
 		ProcFreqTable:         h.procFreqTableName(),
