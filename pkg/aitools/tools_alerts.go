@@ -3,9 +3,12 @@ package aitools
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"bifract/pkg/alerts"
+	"bifract/pkg/api"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -19,6 +22,40 @@ var carried = []string{
 	"window_duration", "schedule_cron", "query_window_seconds",
 	// Read and written under the same name, unlike the actions below.
 	"dictionary_action_ids",
+}
+
+// AlertTestArg is one test case: a set of events and what the rule should say about
+// them. Events are normalized field objects, the shape a query runs against.
+type AlertTestArg struct {
+	Name        string           `json:"name" jsonschema:"What this case proves, for example 'benign certutil must not fire'."`
+	Expectation string           `json:"expectation" jsonschema:"'match' if the rule should fire on these events, 'no_match' if it must not."`
+	Events      []map[string]any `json:"events" jsonschema:"The events, each a flat object of field names to values. Several events in one test are one scenario: a compound or chain rule only fires when they correlate."`
+}
+
+// testsBody converts test arguments into the API's shape. A nil slice means the
+// caller said nothing about tests, which must not be read as "remove them all".
+func testsBody(tests []AlertTestArg) []map[string]any {
+	if tests == nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(tests))
+	for i, t := range tests {
+		events := t.Events
+		if events == nil {
+			events = []map[string]any{}
+		}
+		expectation := strings.TrimSpace(t.Expectation)
+		if expectation == "" {
+			expectation = "match"
+		}
+		out = append(out, map[string]any{
+			"name":        t.Name,
+			"expectation": expectation,
+			"events":      events,
+			"position":    i,
+		})
+	}
+	return out
 }
 
 // actionFields are read expanded and written as ids.
@@ -87,6 +124,37 @@ func registerAlertTools(d *set) {
 	}, deleteAlert)
 
 	add(d, &mcp.Tool{
+		Name:        "get_alert_tests",
+		Annotations: readOnly(),
+		Description: "Show the test cases stored with an alert.\n\n" +
+			"Read these before editing a detection: they state what the rule is meant to " +
+			"catch and what it must ignore, and an edit that breaks one is a regression.",
+	}, getAlertTests)
+
+	add(d, &mcp.Tool{
+		Name:        "run_alert_tests",
+		Annotations: readOnly(),
+		Description: "Run test cases against a query without saving anything.\n\n" +
+			"The events are written to a private scratch table, the query runs against " +
+			"just them, and the table is dropped. Nothing touches real logs or the alert.\n\n" +
+			"Use it before create_alert or propose_alert_change: a scope may require " +
+			"passing tests, and this is how to know they pass first.\n\n" +
+			"Returns each case with passed, matched and the row count.",
+		// Read-only in effect, but the endpoint needs analyst: it writes the events
+		// to a scratch table before dropping it.
+	}, runAlertTests, needsAccess(api.AccessAnalyst))
+
+	add(d, &mcp.Tool{
+		Name:        "get_alert_policies",
+		Annotations: readOnly(),
+		Description: "List the policy rules this scope enforces on an alert definition.\n\n" +
+			"Read them before writing a detection. A rule with severity 'block' refuses " +
+			"the save outright; 'warn' is advice the author is expected to answer. Each " +
+			"rule names a field, a condition and the message an author sees.\n\n" +
+			"An empty list means the scope checks nothing.",
+	}, getAlertPolicies)
+
+	add(d, &mcp.Tool{
 		Name:        "get_alert_executions",
 		Annotations: readOnly(),
 		Description: "Show when an alert fired and what it matched.\n\n" +
@@ -139,6 +207,8 @@ type createAlertArgs struct {
 	ScheduleCron        string   `json:"schedule_cron,omitempty" jsonschema:"Five-field cron for a scheduled alert, for example '*/15 * * * *'. Required for alert_type scheduled."`
 	QueryWindowSeconds  int      `json:"query_window_seconds,omitempty" jsonschema:"How far back a scheduled run looks, in seconds. Required for alert_type scheduled."`
 	WindowDuration      int      `json:"window_duration,omitempty" jsonschema:"Correlation window for a compound alert, in seconds. Required for alert_type compound."`
+
+	Tests []AlertTestArg `json:"tests,omitempty" jsonschema:"Test cases stored with the alert, each naming events the rule should or should not fire on. A fractal may require them, and they are what proves a rule still works after an edit."`
 }
 
 func createAlert(ctx context.Context, c Client, in createAlertArgs) (any, error) {
@@ -178,6 +248,9 @@ func createAlert(ctx context.Context, c Client, in createAlertArgs) (any, error)
 	if in.WindowDuration > 0 {
 		body["window_duration"] = in.WindowDuration
 	}
+	if tests := testsBody(in.Tests); tests != nil {
+		body["tests"] = tests
+	}
 	return c.Post(ctx, "/alerts", body)
 }
 
@@ -192,6 +265,8 @@ type updateAlertArgs struct {
 	Labels              []string `json:"labels,omitempty" jsonschema:"New label list, replacing the current one. Omit to keep it."`
 	ThrottleTimeSeconds *int     `json:"throttle_time_seconds,omitempty" jsonschema:"New throttle window in seconds. Omit to keep the current one."`
 	ThrottleField       *string  `json:"throttle_field,omitempty" jsonschema:"New throttle field. Omit to keep the current one."`
+
+	Tests []AlertTestArg `json:"tests,omitempty" jsonschema:"Replace the alert's test cases with these. Omit to keep the existing ones; send an empty list to remove them."`
 }
 
 func updateAlert(ctx context.Context, c Client, in updateAlertArgs) (any, error) {
@@ -229,6 +304,9 @@ func updateAlert(ctx context.Context, c Client, in updateAlertArgs) (any, error)
 	if in.ThrottleField != nil {
 		body["throttle_field"] = *in.ThrottleField
 	}
+	if tests := testsBody(in.Tests); tests != nil {
+		body["tests"] = tests
+	}
 	return c.Put(ctx, path, body)
 }
 
@@ -256,6 +334,39 @@ func carryForward(alert any) map[string]any {
 		body[writeAs] = ids
 	}
 	return body
+}
+
+type getAlertTestsArgs struct {
+	AlertID string `json:"alert_id" jsonschema:"The alert UUID."`
+}
+
+func getAlertTests(ctx context.Context, c Client, in getAlertTestsArgs) (any, error) {
+	return c.Get(ctx, "/alerts/"+url.PathEscape(in.AlertID)+"/tests", nil)
+}
+
+type runAlertTestsArgs struct {
+	QueryString string         `json:"query_string" jsonschema:"The BQL query to evaluate."`
+	Tests       []AlertTestArg `json:"tests" jsonschema:"The cases to run."`
+}
+
+func runAlertTests(ctx context.Context, c Client, in runAlertTestsArgs) (any, error) {
+	// A fresh session per call: the scratch table is torn down with it, so a run
+	// never inherits events from an earlier one.
+	session := "mcp-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	result, err := c.Post(ctx, "/alerts/tests/run", map[string]any{
+		"session_id":   session,
+		"query_string": in.QueryString,
+		"tests":        testsBody(in.Tests),
+	})
+	// Released whatever the outcome: a failed run still left a table behind.
+	_, _ = c.Delete(ctx, "/alerts/tests/session/"+url.PathEscape(session))
+	return result, err
+}
+
+type getAlertPoliciesArgs struct{}
+
+func getAlertPolicies(ctx context.Context, c Client, in getAlertPoliciesArgs) (any, error) {
+	return c.Get(ctx, "/alert-policies", nil)
 }
 
 // nonEmpty reports a caller-supplied string as a change, or nil when it was left

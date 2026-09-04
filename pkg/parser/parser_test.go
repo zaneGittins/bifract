@@ -2124,3 +2124,30 @@ func TestTransformConditionGroupby(t *testing.T) {
 		})
 	}
 }
+
+// A token no stage can consume must fail the parse: stopping silently drops
+// the rest of the query, downstream commands included.
+func TestUnconsumedTokensAreRejected(t *testing.T) {
+	bad := []string{
+		`image=/re/,"b" | table(image)`,
+		`"a","b" | table(image)`,
+		`image=a ) | table(image)`,
+		`image=*,b | table(image)`,
+		`* | image=a , | count()`,
+	}
+	for _, q := range bad {
+		if _, err := ParseQuery(q); err == nil {
+			t.Errorf("%q: expected parse error, got none", q)
+		}
+	}
+	good := []string{
+		`image=a*,b | table(image)`,
+		`image=* | table(image)`,
+		`* | image=* AND user="a","b"`,
+	}
+	for _, q := range good {
+		if _, err := ParseQuery(q); err != nil {
+			t.Errorf("%q: unexpected error: %v", q, err)
+		}
+	}
+}

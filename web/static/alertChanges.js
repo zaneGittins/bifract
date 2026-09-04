@@ -15,7 +15,6 @@ const AlertChanges = {
     _config: null,
     _list: [],
     _openOnly: true,
-    _showDrafts: false,
     _selected: null,
     _detail: null,
     _busy: false,
@@ -67,7 +66,6 @@ const AlertChanges = {
     },
 
     async fetchList() {
-        if (this._showDrafts) return (await this.api('/api/v1/alert-drafts')) || [];
         return (await this.api(`/api/v1/alert-changes${this._openOnly ? '?open=true' : ''}`)) || [];
     },
 
@@ -91,38 +89,54 @@ const AlertChanges = {
         view.innerHTML = `
             <section class="ac-view">
                 <div class="ac-head">
-                    <h2 class="ac-title">Changes${this._list.length ? `<span class="ac-count">${this._list.length}</span>` : ''}</h2>
                     <div class="ac-head-actions">
-                        <div class="ac-filter">
-                            <button type="button" class="ac-filter-btn${!this._showDrafts && this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('open')">Open</button>
-                            <button type="button" class="ac-filter-btn${!this._showDrafts && !this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('all')">All</button>
-                            <button type="button" class="ac-filter-btn${this._showDrafts ? ' active' : ''}" onclick="AlertChanges.setFilter('drafts')">My drafts</button>
-                        </div>
-                        ${this._config?.enabled ? '' : '<span class="ac-off">Review is off for this scope</span>'}
+                        ${this._list.length === 0 && this._openOnly ? '' : `
+                            <div class="ac-filter">
+                                <button type="button" class="ac-filter-btn${this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('open')">Open</button>
+                                <button type="button" class="ac-filter-btn${!this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('all')">All</button>
+                            </div>`}
                     </div>
                 </div>
                 ${this._list.length === 0
-                    ? `<div class="ac-empty">${this._showDrafts ? 'No drafts.' : (this._openOnly ? 'Nothing awaiting review.' : 'No proposals.')}</div>`
+                    ? this.renderEmpty()
                     : `<div class="ac-rows">${this._list.map(cr => this.renderRow(cr)).join('')}</div>`}
             </section>
             <div id="alertChangeDrawer" class="ac-drawer"></div>
         `;
 
         view.querySelectorAll('.ac-row').forEach(el => {
-            el.addEventListener('click', () => {
-                if (this._showDrafts) {
-                    const draft = this._list.find(cr => cr.id === el.dataset.id);
-                    if (draft && window.Alerts?.openDraft) Alerts.openDraft(draft);
-                    return;
-                }
-                this.open(el.dataset.id);
-            });
+            el.addEventListener('click', () => this.open(el.dataset.id));
         });
         if (this._selected) this.renderDrawer();
     },
 
+    // Opens the proposal in the alert editor, feedback and all, so a reviewer's
+    // "changes requested" is something the author can act on rather than read.
+    editProposal() {
+        const cr = this._detail;
+        if (cr && window.Alerts?.editProposal) Alerts.editProposal(cr);
+    },
+
+    // An empty queue is the good outcome, so it says so. Review being off is the other
+    // reason it can be empty, and that one needs an answer rather than a compliment.
+    renderEmpty() {
+        if (!this._config?.enabled) {
+            return EmptyState.render({
+                icon: 'review',
+                title: 'Review is off for this scope',
+                detail: 'Enable reviews to require all alert edits are vetted before going live.',
+                action: { label: 'Open policies', onclick: 'AlertFeeds.showPoliciesTab()' }
+            });
+        }
+        if (this._openOnly) {
+            return EmptyState.render({ icon: 'review', title: EmptyState.clearQueueLine(),
+                detail: 'Proposed changes wait here until someone approves them.' });
+        }
+        return EmptyState.render({ icon: 'review', title: 'No proposals yet',
+            detail: 'Editing an alert in a reviewed scope opens one here.' });
+    },
+
     setFilter(which) {
-        this._showDrafts = which === 'drafts';
         this._openOnly = which === 'open';
         this.show();
     },
@@ -399,6 +413,9 @@ const AlertChanges = {
         if (cr.can_review) {
             buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.review(\'reject\')">Request changes</button>');
             buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.review(\'approve\')">Approve</button>');
+        }
+        if (cr.is_author && cr.kind !== 'delete') {
+            buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.editProposal()">Revise</button>');
         }
         if (cr.is_author) {
             buttons.push('<button class="btn-secondary btn-sm" onclick="AlertChanges.discard()">Withdraw</button>');

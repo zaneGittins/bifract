@@ -140,6 +140,14 @@ func TestBasicQueries(t *testing.T) {
 			},
 		},
 		{
+			name:  "Asterisk in an equality value is a literal, not a list terminator",
+			query: `image=a*,b | table(image)`,
+			wantContain: []string{
+				"fields.`image`::String IN ('a*', 'b')",
+				"AS image",
+			},
+		},
+		{
 			name:  "Count only",
 			query: "* | count()",
 			wantContain: []string{

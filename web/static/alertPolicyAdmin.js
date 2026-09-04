@@ -52,9 +52,9 @@ const AlertPolicyAdmin = {
                 ${this.renderGate()}
 
                 <div class="ap-admin-head">
-                    <h2 class="ap-admin-title">Rules${this._policies.length ? `<span class="ap-admin-count">${this._policies.length}</span>` : ''}
+                    <div class="ap-admin-lead">
                         ${this._policies.length ? '<button class="ap-link-btn" onclick="AlertPolicyAdmin.runCompliance()">Check existing alerts</button>' : ''}
-                    </h2>
+                    </div>
                     <div class="ap-admin-actions">
                         <button class="alert-btn alert-btn-ghost" onclick="AlertPolicyAdmin.exportPolicies()">Export</button>
                         <button class="alert-btn alert-btn-ghost" onclick="AlertPolicyAdmin.openImport()">Import</button>
@@ -101,9 +101,13 @@ const AlertPolicyAdmin = {
                                 ${[1, 2, 3].map(n => `<option value="${n}"${g.min_approvals === n ? ' selected' : ''}>${n}</option>`).join('')}
                             </select>
                         </label>
-                        <label class="ap-gate-field ap-gate-check">
-                            <input type="checkbox" ${g.allow_self_approval ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('allow_self_approval', this.checked)" />
-                            <span>Admins may approve their own</span>
+                        <label class="ap-gate-field ap-gate-check"
+                               title="A fractal or tenant admin may approve a proposal they wrote. An analyst never can, whatever this says.">
+                            <span>Admin self-approval</span>
+                            <span class="toggle-switch">
+                                <input type="checkbox" ${g.allow_self_approval ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('allow_self_approval', this.checked)" />
+                                <span class="toggle-slider"></span>
+                            </span>
                         </label>
                     </div>` : ''}
             </div>
@@ -125,7 +129,12 @@ const AlertPolicyAdmin = {
     },
 
     renderEmpty() {
-        return '<div class="ap-empty">No rules. Alerts are saved unchecked.</div>';
+        return EmptyState.render({
+            icon: 'rules',
+            title: 'No rules yet',
+            detail: 'Policy rules allow you to enforce quality constraints on your rule set.',
+            action: { label: 'Add a rule', onclick: 'AlertPolicyAdmin.addRule()' }
+        });
     },
 
     renderRule(policy, index) {
@@ -164,12 +173,12 @@ const AlertPolicyAdmin = {
                         <option value="block"${policy.severity === 'block' ? ' selected' : ''}>Block</option>
                     </select>
 
+                    <input type="text" class="ap-input ap-message" placeholder="What should the analyst do about it?"
+                           value="${Utils.escapeAttr(policy.message || '')}"
+                           onchange="AlertPolicyAdmin.update(${index}, 'message', this.value)" />
+
                     <button class="ap-rule-remove" title="Remove rule" onclick="AlertPolicyAdmin.remove(${index})">&times;</button>
                 </div>
-
-                <input type="text" class="ap-input ap-message" placeholder="What should the analyst do about it?"
-                       value="${Utils.escapeAttr(policy.message || '')}"
-                       onchange="AlertPolicyAdmin.update(${index}, 'message', this.value)" />
             </div>
         `;
     },

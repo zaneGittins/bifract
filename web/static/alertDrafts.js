@@ -218,6 +218,16 @@ const AlertDrafts = {
             window.Alerts?.loadReferencesFromTextarea?.();
         }
 
+        // Actions are part of the definition, so restoring without them would quietly
+        // drop every notification the author had chosen.
+        if (window.Alerts) {
+            Alerts.selectedWebhookIds = c.webhook_action_ids || [];
+            Alerts.selectedFractalActionIds = c.fractal_action_ids || [];
+            Alerts.selectedDictActionIds = c.dictionary_action_ids || [];
+            Alerts.selectedEmailActionIds = c.email_action_ids || [];
+            Alerts.loadActionsIntoEditor?.();
+        }
+
         if (Array.isArray(draft.tests) && window.AlertTests) AlertTests.adopt(draft.tests);
 
         document.getElementById('editorQueryInput')?.dispatchEvent(new Event('input'));

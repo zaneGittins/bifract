@@ -38,6 +38,7 @@ var exposed = map[string]bool{
 	"get_field_stats": true, "get_recent_logs": true, "get_bql_reference": true,
 	// Detections.
 	"list_alerts": true, "get_alert": true, "get_alert_executions": true,
+	"get_alert_tests": true, "get_alert_policies": true, "run_alert_tests": true,
 	"get_attack_coverage": true, "get_attack_gaps": true,
 	// Investigation.
 	"find_processes": true, "get_provenance_graph": true,

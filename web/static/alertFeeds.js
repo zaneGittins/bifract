@@ -67,18 +67,35 @@ const AlertFeeds = {
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
+            Alerts.closeDraftsPanel?.();
             Alerts.editingFeedAlert = false;
             Alerts.show();
         }
     },
 
+    installFilters() {
+        if (this._filtersInstalled) return;
+        this._filtersInstalled = !!FilterBar.install({
+            button: 'feedFilterBtn', menu: 'feedFilterMenu', chips: 'feedFilterChips',
+            selects: [
+                { id: 'feedAlertStatusFilter', label: 'Status' },
+                { id: 'feedAlertFeedFilter', label: 'Feed' },
+                { id: 'feedAlertSeverityFilter', label: 'Severity' },
+                { id: 'feedAlertLabelFilter', label: 'Label' }
+            ],
+            onChange: () => this.applyFilterNow()
+        });
+    },
+
     showFeedAlertsTab() {
         window.App?.pushSubPath('feeds');
         this.activateSubTab('feeds', 'feedAlertsView');
+        this.installFilters();
 
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
+            Alerts.closeDraftsPanel?.();
             Alerts.editingFeedAlert = false;
         }
 
@@ -91,6 +108,7 @@ const AlertFeeds = {
 
         if (window.Alerts) {
             Alerts.closeAlertPanel();
+            Alerts.closeDraftsPanel?.();
             Alerts.editingFeedAlert = false;
             Alerts.loadAllActions();
         }
@@ -104,6 +122,7 @@ const AlertFeeds = {
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
+            Alerts.closeDraftsPanel?.();
             Alerts.editingFeedAlert = false;
         }
 
@@ -118,6 +137,7 @@ const AlertFeeds = {
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
+            Alerts.closeDraftsPanel?.();
             Alerts.editingFeedAlert = false;
         }
 
@@ -132,6 +152,7 @@ const AlertFeeds = {
         if (window.Alerts) {
             Alerts.closeActionDrawer?.();
             Alerts.closeAlertPanel();
+            Alerts.closeDraftsPanel?.();
             Alerts.editingFeedAlert = false;
         }
 
@@ -274,6 +295,8 @@ const AlertFeeds = {
                 this.unfiltered = page.facets.unfiltered || 0;
                 this.populateLabelFilter();
                 this.populateFeedFilter();
+                // Rebuilt options can drop a selected value, so the chips re-read them.
+                window.FilterBar?.refresh();
             }
             this.renderFeedAlerts();
             this.updateBulkButtons();

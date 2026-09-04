@@ -3629,6 +3629,135 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/alerts/bundle": {
+      "get": {
+        "operationId": "get_api_v1_alerts_bundle",
+        "summary": "Export every manual alert in the scope, with its tests, as a zip archive.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success."
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      },
+      "post": {
+        "operationId": "post_api_v1_alerts_bundle",
+        "summary": "Import alerts and their tests from a zip archive.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alerts"
+        ],
+        "parameters": [
+          {
+            "name": "overwrite",
+            "in": "query",
+            "description": "Replace an alert whose name already exists here.",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/zip": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.BundleImportResult"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/alerts/feed": {
       "get": {
         "operationId": "get_api_v1_alerts_feed",
@@ -30033,6 +30162,57 @@
           "alert_ids",
           "enabled",
           "filter"
+        ]
+      },
+      "alerts.BundleAlertImport": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file",
+          "name",
+          "status"
+        ]
+      },
+      "alerts.BundleImportResult": {
+        "type": "object",
+        "properties": {
+          "alerts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/alerts.BundleAlertImport"
+            }
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "imported": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "imported",
+          "skipped",
+          "failed",
+          "alerts"
         ]
       },
       "alerts.CandidateRule": {

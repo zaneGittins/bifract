@@ -34,6 +34,9 @@ const AlertTests = {
 
     // Called when the editor opens. alertId is null for a new alert.
     async load(alertId) {
+        // A draft or proposal can adopt its own corpus while this request is still in
+        // flight; the generation says whose answer is still the current one.
+        const gen = (this._loadGen = (this._loadGen || 0) + 1);
         this._alertId = alertId || null;
         this._loaded = !alertId; // a new alert has nothing to lose
         this._tests = [];
@@ -49,6 +52,7 @@ const AlertTests = {
                 const res = await fetch(`/api/v1/alerts/${alertId}/tests`, { credentials: 'include' });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const payload = await res.json();
+                if (gen !== this._loadGen) return;
                 this._tests = (payload.data || []).map(t => ({
                     name: t.name,
                     expectation: t.expectation,
@@ -108,6 +112,7 @@ const AlertTests = {
     // Takes a corpus from a draft. Marked loaded, since it is the author's own work
     // and replacing the stored corpus with it on save is the intent.
     adopt(tests) {
+        this._loadGen = (this._loadGen || 0) + 1;
         this._tests = (tests || []).map(t => ({ name: t.name, expectation: t.expectation, events: t.events || [] }));
         this._loaded = true;
         this._selected = new Set();

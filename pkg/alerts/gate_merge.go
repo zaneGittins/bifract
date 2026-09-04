@@ -147,6 +147,14 @@ func (m *Manager) MergeChangeRequest(ctx context.Context, crID, username string)
 	// The gate is bypassed for the write itself: this call is the approval.
 	ctx = withGateBypass(ctx)
 
+	// The alert is credited to whoever wrote the change, not to whoever merged it.
+	// Who approved and merged is already recorded on the proposal. An author whose
+	// account is gone leaves the merger as the only name available.
+	author := cr.Author
+	if author == "" {
+		author = username
+	}
+
 	// The proposal is already marked merged, so a failure here leaves a claimed row
 	// rather than one that can be applied twice. Releasing it on error would reopen
 	// exactly the race the claim closes.
@@ -160,7 +168,7 @@ func (m *Manager) MergeChangeRequest(ctx context.Context, crID, username string)
 				tests := cr.Tests
 				req.Tests = &tests
 			}
-			if _, err := m.CreateAlert(ctx, req, username, fractalID, prismID); err != nil {
+			if _, err := m.CreateAlert(ctx, req, author, fractalID, prismID); err != nil {
 				return fmt.Errorf("applying proposal: %w", err)
 			}
 
@@ -174,7 +182,7 @@ func (m *Manager) MergeChangeRequest(ctx context.Context, crID, username string)
 				tests := cr.Tests
 				req.Tests = &tests
 			}
-			if _, err := m.UpdateAlert(ctx, cr.AlertID, req, username); err != nil {
+			if _, err := m.UpdateAlert(ctx, cr.AlertID, req, author); err != nil {
 				return fmt.Errorf("applying proposal: %w", err)
 			}
 

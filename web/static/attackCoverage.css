@@ -126,15 +126,24 @@
     margin-left: auto;
 }
 
+/* The same box as every other toolbar in the alerts tabs. */
 .atk-search,
 .atk-select {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 4px;
     color: var(--text-primary);
     font-family: var(--font-main);
-    font-size: 0.82rem;
-    padding: 0.45rem 0.6rem;
+    font-size: 0.8125rem;
+    padding: 0.5rem 0.875rem;
+}
+
+.atk-controls .btn-secondary,
+.atk-controls .btn-sm {
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    line-height: normal;
 }
 
 .atk-search { min-width: 200px; }

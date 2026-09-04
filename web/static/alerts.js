@@ -56,14 +56,21 @@ const Alerts = {
         // No need to add event listener for alertsTabBtn here
 
         // Main control buttons
-        const importBtn = document.getElementById('importYamlBtn');
+        FilterBar.install({
+            button: 'alertFilterBtn', menu: 'alertFilterMenu', chips: 'alertFilterChips',
+            selects: [
+                { id: 'alertStatusFilter', label: 'Status' },
+                { id: 'alertActionFilter', label: 'Action' },
+                { id: 'alertSeverityFilter', label: 'Severity' },
+                { id: 'alertLabelFilter', label: 'Label' }
+            ],
+            onChange: () => this.filterAlerts()
+        });
+
         const createBtn = document.getElementById('createAlertBtn');
         const webhooksBtn = document.getElementById('manageWebhooksBtn');
         const refreshBtn = document.getElementById('alertsRefreshBtn');
 
-        if (importBtn) {
-            importBtn.addEventListener('click', () => this.showImportModal());
-        }
         if (createBtn) {
             createBtn.addEventListener('click', () => this.showAlertEditor());
         }
@@ -408,6 +415,9 @@ const Alerts = {
     async loadAlerts() {
         const alertsList = document.getElementById('alertsList');
         if (!alertsList) return;
+
+        // The drafts count belongs to the same view, and a save or discard changes it.
+        this.refreshDrafts();
 
         try {
             // The screen filters and pages client-side, so fetch the server's
@@ -836,6 +846,8 @@ const Alerts = {
         } else {
             select.value = 'all';
         }
+
+        window.FilterBar?.refresh();
     },
 
     matchesActionFilter(alert, actionFilter) {
@@ -952,6 +964,8 @@ const Alerts = {
             + [...labels].sort((a, b) => a.localeCompare(b))
                 .map(l => `<option value="${Utils.escapeHtml(l)}">${Utils.escapeHtml(l)}</option>`).join('');
         if ([...select.options].some(o => o.value === current)) select.value = current;
+
+        window.FilterBar?.refresh();
     },
 
     updateBulkButtons() {
@@ -1468,6 +1482,27 @@ const Alerts = {
         if (modal) {
             modal.style.display = 'none';
         }
+    },
+
+    // A rule usually arrives as a file. Reading it into the box keeps one import path,
+    // so Sigma detection and the normalizer picker work the same either way.
+    loadYamlFile(input) {
+        const file = input.files?.[0];
+        if (!file) return;
+        const name = document.getElementById('yamlFileName');
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            const textarea = document.getElementById('yamlContent');
+            if (textarea) {
+                textarea.value = String(reader.result || '');
+                textarea.dispatchEvent(new Event('input'));
+            }
+            if (name) name.textContent = file.name;
+        };
+        reader.onerror = () => Toast.error('Could not read the file', file.name);
+        reader.readAsText(file);
+        input.value = '';
     },
 
     // YAML Import/Export
@@ -2380,6 +2415,8 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         window.AlertTests?.release();
         window.AlertPolicy?.reset();
         window.AlertDrafts?.stop();
+        this._revisingProposal = null;
+        document.getElementById('alertProposalNotice')?.remove();
         document.querySelector('#alertEditorView .ae-body')?.classList.remove('ae-inspecting');
         this.cancelPropose();
         this.cancelTestQuery();
@@ -3667,7 +3704,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             return;
         }
 
-        if (this.gateEnabled && !this.editingFeedAlert) {
+        if ((this.gateEnabled || this._revisingProposal) && !this.editingFeedAlert) {
             this.openProposeComposer(formData);
             return;
         }
@@ -3763,6 +3800,10 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
     applyGateMode(alertId) {
         const saveBtn = document.getElementById('saveAlertBtn');
+        if (saveBtn && this._revisingProposal) {
+            saveBtn.textContent = 'Update proposal';
+            return;
+        }
         if (saveBtn && !this.editingFeedAlert) {
             if (this.gateEnabled) saveBtn.textContent = 'Propose change';
             else saveBtn.textContent = alertId ? 'Update Alert' : 'Create Alert';
@@ -3833,14 +3874,17 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             email_action_ids: formData.email_action_ids
         };
 
+        // Revising keeps the proposal it came from, so its review thread and its place
+        // in the queue survive the edit; only a fresh one is created from scratch.
+        const revising = this._revisingProposal;
         try {
-            const res = await fetch('/api/v1/alert-changes', {
-                method: 'POST',
+            const res = await fetch(revising ? `/api/v1/alert-changes/${revising.id}` : '/api/v1/alert-changes', {
+                method: revising ? 'PUT' : 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    kind: this.currentAlert ? 'update' : 'create',
-                    alert_id: this.currentAlert ? this.currentAlert.id : '',
+                    kind: revising ? revising.kind : (this.currentAlert ? 'update' : 'create'),
+                    alert_id: revising ? (revising.alert_id || '') : (this.currentAlert ? this.currentAlert.id : ''),
                     title: formData.name,
                     summary,
                     content,
@@ -3852,7 +3896,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
 
             this.cancelPropose();
             await window.AlertDrafts?.finished();
-            Toast.success('Proposal opened', 'Ready for review.');
+            Toast.success(revising ? 'Proposal updated' : 'Proposal opened', 'Ready for review.');
             if (payload.data?.id) this.showProposal(payload.data.id);
             else this.backToAlerts();
         } catch (e) {
@@ -4001,6 +4045,210 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         AlertFeeds.showChangesTab();
         await AlertChanges.show();
         AlertChanges.open(id);
+    },
+
+    // ---- Drafts ----
+    //
+    // A draft is unfinished, private work, so it lives beside Create Alert rather than
+    // in the review queue: the queue is what a reviewer reads, and a draft is not that.
+
+    async refreshDrafts() {
+        const btn = document.getElementById('alertsDraftsBtn');
+        const count = document.getElementById('alertsDraftsCount');
+        if (!btn) return;
+        try {
+            const res = await fetch('/api/v1/alert-drafts', { credentials: 'include' });
+            const payload = await res.json().catch(() => ({}));
+            this._drafts = res.ok ? (payload.data || []) : [];
+        } catch (e) {
+            this._drafts = [];
+        }
+        btn.style.display = this._drafts.length ? '' : 'none';
+        if (count) count.textContent = this._drafts.length;
+        if (!this._drafts.length) this.closeDraftsPanel();
+        else if (!document.getElementById('alertsDraftsPanel')?.hidden) this.renderDraftsPanel();
+    },
+
+    toggleDraftsPanel() {
+        const panel = document.getElementById('alertsDraftsPanel');
+        if (!panel) return;
+        if (panel.hidden) {
+            this.renderDraftsPanel();
+            panel.hidden = false;
+            // One dismissal path, bound while the panel is the thing on screen.
+            this._draftsAway = (e) => {
+                if (e.target.closest('#alertsDraftsPanel, #alertsDraftsBtn')) return;
+                this.closeDraftsPanel();
+            };
+            setTimeout(() => document.addEventListener('click', this._draftsAway), 0);
+        } else {
+            this.closeDraftsPanel();
+        }
+    },
+
+    closeDraftsPanel() {
+        const panel = document.getElementById('alertsDraftsPanel');
+        if (panel) panel.hidden = true;
+        if (this._draftsAway) {
+            document.removeEventListener('click', this._draftsAway);
+            this._draftsAway = null;
+        }
+    },
+
+    renderDraftsPanel() {
+        const panel = document.getElementById('alertsDraftsPanel');
+        if (!panel) return;
+
+        panel.innerHTML = (this._drafts || []).map((d, i) => `
+            <div class="adr-row">
+                <button type="button" class="adr-open" onclick="Alerts.openDraftAt(${i})">
+                    <span class="adr-name">${Utils.escapeHtml(d.content?.name || d.title || 'Untitled')}</span>
+                    <span class="adr-meta">${d.alert_id ? 'Edit of an existing alert' : 'New alert'} &middot; ${Utils.escapeHtml(Utils.timeAgo(d.updated_at))}</span>
+                </button>
+                <button type="button" class="adr-discard" title="Discard this draft" onclick="Alerts.discardDraftAt(${i})">&times;</button>
+            </div>
+        `).join('');
+    },
+
+    openDraftAt(index) {
+        const draft = (this._drafts || [])[index];
+        this.closeDraftsPanel();
+        if (draft) this.openDraft(draft);
+    },
+
+    // Discarding is terminal and private to its author, so it asks first.
+    async discardDraftAt(index) {
+        const draft = (this._drafts || [])[index];
+        if (!draft) return;
+        const name = draft.content?.name || draft.title || 'Untitled';
+        if (!confirm(`Discard the draft "${name}"? This cannot be undone.`)) return;
+        try {
+            const res = await fetch(`/api/v1/alert-drafts/${draft.id}`, { method: 'DELETE', credentials: 'include' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            Toast.show('Draft discarded', 'success');
+            await this.refreshDrafts();
+        } catch (e) {
+            Toast.error('Could not discard the draft', e.message);
+        }
+    },
+
+    // Every alert in this scope, with its tests, as a zip to carry to another
+    // instance. Feed alerts are left out: their own feed syncs them there.
+    async exportBundle() {
+        const btn = document.getElementById('alertsExportBundleBtn');
+        if (btn) btn.disabled = true;
+        try {
+            const res = await fetch('/api/v1/alerts/bundle', { credentials: 'include' });
+            if (!res.ok) {
+                const payload = await res.json().catch(() => ({}));
+                throw new Error(payload.error || `HTTP ${res.status}`);
+            }
+            const blob = await res.blob();
+            const name = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1]
+                || 'bifract-alerts.zip';
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = name;
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+            Toast.show(`Exported alerts to ${name}`, 'success');
+        } catch (e) {
+            Toast.error('Could not export alerts', e.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    importBundle() {
+        const input = document.getElementById('alertsBundleFile');
+        if (!input) return;
+        if (!input.dataset.bound) {
+            input.dataset.bound = '1';
+            input.addEventListener('change', () => this.uploadBundle(input));
+        }
+        input.value = '';
+        input.click();
+    },
+
+    // Each alert in the archive lands on its own, so one bad rule does not cost the
+    // rest. The summary says exactly what happened to each.
+    async uploadBundle(input) {
+        const file = input.files?.[0];
+        if (!file) return;
+
+        const btn = document.getElementById('alertsImportBundleBtn');
+        if (btn) btn.disabled = true;
+        try {
+            const res = await fetch('/api/v1/alerts/bundle', {
+                method: 'POST',
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/zip' },
+                body: file
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                if (this.classifyRefusal(res, payload) === 'gate') {
+                    throw new Error('This scope reviews alert changes, so a bundle cannot be applied directly. Turn review off to import.');
+                }
+                throw new Error(payload.error || `HTTP ${res.status}`);
+            }
+
+            const r = payload.data || {};
+            const parts = [`${r.imported || 0} imported`];
+            if (r.skipped) parts.push(`${r.skipped} skipped`);
+            if (r.failed) parts.push(`${r.failed} failed`);
+            const failures = (r.alerts || []).filter(a => a.status !== 'imported');
+            Toast.show(parts.join(', '), r.failed ? 'warning' : 'success');
+            if (failures.length) {
+                console.info('Bundle import detail:', failures);
+            }
+            this.loadAlerts();
+        } catch (e) {
+            Toast.error('Could not import the bundle', e.message);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    // Opens the editor onto an existing proposal so its author can revise it. The
+    // definition and its tests come from the proposal, not from the live alert, so a
+    // proposal sent back for changes returns exactly as it was written.
+    async editProposal(cr) {
+        if (!cr?.content) return;
+        if (window.AlertFeeds?.showManualAlerts) AlertFeeds.showManualAlerts();
+        this.showAlertEditor(cr.alert_id || null);
+        try { await this._editorReady; } catch (e) { /* the editor reported it */ }
+
+        this._revisingProposal = { id: cr.id, kind: cr.kind, alert_id: cr.alert_id || '' };
+        window.AlertDrafts?.stop();
+        window.AlertDrafts?.applyToEditor({ content: cr.content, tests: cr.tests || [] });
+        this.renderProposalNotice(cr);
+        this.applyGateMode(cr.alert_id || null);
+    },
+
+    // The reviewer's own words, above the work they are about. Only the latest request
+    // for changes: the full thread lives on the proposal.
+    renderProposalNotice(cr) {
+        document.getElementById('alertProposalNotice')?.remove();
+        const head = document.querySelector('#alertEditorView .ae-head');
+        if (!head) return;
+
+        const asked = (cr.reviews || []).filter(r => r.decision === 'reject' && !r.stale).pop();
+        const who = asked ? (asked.reviewer_label || asked.reviewer || 'a reviewer') : '';
+        const detail = asked?.comment
+            ? `<span class="ae-notice-quote">${Utils.escapeHtml(asked.comment)}</span>` : '';
+
+        head.insertAdjacentHTML('afterend', `
+            <div id="alertProposalNotice" class="ae-notice">
+                <span class="ae-notice-dot"></span>
+                <span>${asked ? `${Utils.escapeHtml(who)} asked for changes` : 'Revising a proposal under review'}</span>
+                ${detail}
+                <button type="button" class="ae-notice-btn" onclick="Alerts.showProposal('${Utils.escapeAttr(cr.id)}')">View proposal</button>
+            </div>
+        `);
     },
 
     // Opens the editor onto a draft from the drafts list.

@@ -61,6 +61,8 @@ var routeTable = []string{
 	"GET /api/v1/alerts 9 auth resp viewer",
 	"POST /api/v1/alerts 9 auth body resp analyst",
 	"POST /api/v1/alerts/batch-toggle 9 auth body resp analyst",
+	"GET /api/v1/alerts/bundle 9 auth analyst",
+	"POST /api/v1/alerts/bundle 9 auth body resp analyst",
 	"GET /api/v1/alerts/feed 9 auth resp viewer",
 	"POST /api/v1/alerts/feed/batch-toggle 9 auth body resp analyst",
 	"POST /api/v1/alerts/import 9 auth body resp analyst",

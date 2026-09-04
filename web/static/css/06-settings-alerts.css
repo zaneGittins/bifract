@@ -274,12 +274,15 @@
     flex: 1;
     min-width: 200px;
     max-width: 400px;
-    padding: 0.625rem 1rem;
+    /* The same box as the buttons beside it: a taller search field reads as a
+       different kind of control than the row it sits in. */
+    padding: 0.5rem 0.875rem;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 4px;
     color: var(--text-primary);
-    font-size: 0.875rem;
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
     transition: var(--transition);
 }
 
@@ -290,12 +293,13 @@
 }
 
 .alerts-filter-select {
-    padding: 0.625rem 1rem;
+    padding: 0.5rem 0.875rem;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
-    border-radius: 6px;
+    border-radius: 4px;
     color: var(--text-primary);
-    font-size: 0.875rem;
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
     cursor: pointer;
     transition: var(--transition);
 }
@@ -1751,14 +1755,16 @@
 }
 
 .alert-btn {
-    padding: 0.625rem 1.25rem;
-    border-radius: 6px;
-    font-size: 0.8rem;
+    /* Transparent, not none: a borderless button sits 2px shorter beside one that
+       has a border, and these share rows with .btn-secondary. */
+    padding: 0.5rem 1rem;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
     font-weight: 500;
-    border: none;
     cursor: pointer;
     transition: var(--transition);
-    font-family: inherit;
 }
 
 .alert-btn-primary {
@@ -3706,8 +3712,6 @@ body.alert-panel-resizing .alert-details-panel {
 /* ---- Policies admin tab ---- */
 
 .ap-admin {
-    max-width: 1080px;
-    margin: 0 auto;
     padding: 4px 0 24px;
 }
 
@@ -3774,9 +3778,12 @@ body.alert-panel-resizing .alert-details-panel {
     opacity: 0.55;
 }
 
+/* One rule, one line: the message sits with the condition it explains rather than
+   under it, and drops to its own line only when the row runs out of room. */
 .ap-rule-row {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 7px;
 }
 
@@ -3817,11 +3824,11 @@ body.alert-panel-resizing .alert-details-panel {
     flex: 0 0 auto;
 }
 
-/* The message reads as the rule's second line: plain text until it is edited. */
+/* The message is plain text until it is edited, so a rule reads as a sentence. */
 .ap-message {
-    width: calc(100% - 22px);
-    margin: 3px 0 0 22px;
-    padding: 3px 7px;
+    flex: 1 1 320px;
+    min-width: 220px;
+    padding: 4px 7px;
     background: transparent;
     border-color: transparent;
     color: var(--text-secondary);
@@ -4045,9 +4052,23 @@ body.alert-panel-resizing .alert-details-panel {
     transform: translateX(16px);
 }
 
-.ap-gate-check input {
-    accent-color: var(--accent-primary);
-    cursor: pointer;
+.ap-gate-check {
+    gap: 8px;
+}
+
+/* The same switch as Review beside it, at the size the rest of the bar uses. */
+.ap-gate-check .toggle-switch {
+    width: 34px;
+    height: 18px;
+}
+
+.ap-gate-check .toggle-slider:before {
+    width: 12px;
+    height: 12px;
+}
+
+.ap-gate-check .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
 }
 
 .ap-gate-row {
@@ -4076,22 +4097,15 @@ body.alert-panel-resizing .alert-details-panel {
     padding: 4px 0 24px;
 }
 
+/* The sub-tab already names this view and carries its count, so the head holds only
+   the filter. It stays right-aligned, where it was when a title sat opposite it. */
 .ac-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 20px;
+    min-height: 30px;
     margin-bottom: 14px;
-}
-
-.ac-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-primary);
 }
 
 .ac-count {
@@ -5113,6 +5127,400 @@ body.alert-editor-active {
 .ae-bench .results-header {
     flex-wrap: wrap;
     row-gap: 6px;
+}
+
+/* The toolbar kebab is always visible, unlike the per-row ones that appear on hover,
+   and it matches the height of the buttons it sits beside. */
+.kebab-wrapper.alerts-tools .kebab-btn {
+    opacity: 1;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    /* 1rem is the content height the buttons beside it settle on, and the kebab glyph
+       has its own metrics: left to itself it sits two pixels taller. */
+    line-height: 1rem;
+}
+
+/* Choosing a file sits with the label it belongs to, not below the box. */
+.import-yaml-source {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+
+.import-yaml-source label {
+    margin: 0;
+}
+
+.import-yaml-file {
+    font-size: 11.5px;
+    color: var(--text-muted);
+}
+
+/* A row of controls is one row. Padding alone does not get there: an input, a select
+   and a button each resolve their own line box, so the height is stated once here and
+   every control in these toolbars measures the same. */
+.alerts-filters input[type="text"],
+.alerts-filters select,
+.alerts-filters button,
+.unified-actions-toolbar input[type="text"],
+.unified-actions-toolbar select,
+.unified-actions-toolbar button,
+.atk-controls input[type="text"],
+.atk-controls select,
+.atk-controls button,
+.ap-admin-actions button {
+    height: 34px;
+    box-sizing: border-box;
+}
+
+/* A row of controls is one row: the search box, the selects and the buttons all
+   settle on the same height, type and radius. */
+.ap-admin-lead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+}
+
+.unified-actions-toolbar .btn-primary,
+.unified-actions-toolbar .btn-secondary,
+.alerts-filters .btn-primary,
+.alerts-filters .btn-secondary {
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    line-height: normal;
+}
+
+/* An icon-only button in a toolbar keeps the row's height without stretching wide. */
+.alerts-filters #feedManageToggleBtn {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+}
+
+/* ---- Filter popover ---- */
+
+.fb-pop {
+    position: relative;
+    display: inline-flex;
+}
+
+.fb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0.5rem 1rem;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-family: var(--font-main);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.fb-btn:hover,
+.fb-btn.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.fb-btn.filtered {
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.fb-count {
+    padding: 0 5px;
+    border-radius: 8px;
+    background: var(--accent-primary);
+    color: white;
+    font-size: 10px;
+    font-family: var(--font-mono);
+}
+
+/* :not([hidden]) matters: a bare display here outranks the browser's [hidden] rule
+   and the popover would never close. */
+.fb-menu:not([hidden]) {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 260px;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-lg);
+}
+
+.fb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.fb-field > span {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-muted);
+}
+
+.fb-field select {
+    width: 100%;
+}
+
+.fb-chips {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.fb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px 3px 9px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    font-size: 11.5px;
+    color: var(--text-primary);
+}
+
+.fb-chip-label {
+    color: var(--text-muted);
+}
+
+.fb-chip-clear {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.fb-chip-clear:hover {
+    background: var(--bg-hover);
+    color: var(--error);
+}
+
+.fb-chip-clear-all {
+    padding: 3px 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    cursor: pointer;
+}
+
+.fb-chip-clear-all:hover {
+    color: var(--accent-primary);
+}
+
+/* ---- Shared empty state ---- */
+
+.es {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 64px 24px;
+    text-align: center;
+}
+
+.es-icon {
+    color: var(--text-muted);
+    opacity: 0.45;
+}
+
+.es-title {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.es-detail {
+    max-width: 460px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+
+.es-action {
+    margin-top: 4px;
+}
+
+/* Drafts hang off the Alerts toolbar, next to where a new alert is started. */
+.alerts-drafts-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.alerts-drafts-count {
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-family: var(--font-mono);
+}
+
+.alerts-drafts-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 40;
+    width: min(360px, 90vw);
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-lg);
+}
+
+.adr-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+}
+
+.adr-row:hover {
+    background: var(--bg-hover);
+}
+
+.adr-open {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+    padding: 7px 9px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+}
+
+.adr-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-size: 12.5px;
+}
+
+.adr-meta {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.adr-discard {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    margin-right: 4px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.adr-discard:hover {
+    background: var(--bg-tertiary);
+    color: var(--error);
+}
+
+/* A strip under the head: why this editor is open on someone else's request. */
+.ae-notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 20px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ae-notice-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warning);
+}
+
+.ae-notice-quote {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.ae-notice-btn {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 2px 8px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 11.5px;
+    cursor: pointer;
+}
+
+.ae-notice-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* The discard affordance on a draft row, quiet until the row is hovered. */
+.ac-row-discard {
+    flex: 0 0 auto;
+    width: 20px;
+    text-align: center;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1.2;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.ac-row:hover .ac-row-discard,
+.ac-row-discard:focus {
+    opacity: 1;
+}
+
+.ac-row-discard:hover {
+    background: var(--bg-hover);
+    color: var(--error);
 }
 
 /* A quiet tool at the right edge of a section label, such as the label suggester. */

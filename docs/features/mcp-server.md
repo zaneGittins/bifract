@@ -150,6 +150,9 @@ add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 | `update_alert` | Modify an existing alert |
 | `delete_alert` | Remove an alert |
 | `get_alert_executions` | View when an alert fired and what it matched |
+| `get_alert_tests` | Show the test cases stored with an alert |
+| `run_alert_tests` | Run test cases against a query without saving anything |
+| `get_alert_policies` | List the policy rules this scope enforces on a definition |
 
 ### Alert governance
 
@@ -157,6 +160,11 @@ A fractal or prism can keep a history of every alert definition, enforce policy 
 what a definition must contain, and review changes before they go live. Where review is
 on, `create_alert`, `update_alert` and `delete_alert` are refused and the work is
 submitted with `propose_alert_change` instead.
+
+Read `get_alert_policies` before writing a definition: a rule with severity `block`
+refuses the save outright. Where a policy requires passing tests, `run_alert_tests`
+checks them before anything is submitted. An update proposal carries the alert's existing
+actions and tests forward unless new ones are named.
 
 Approving and merging a proposal are not exposed as tools. A model that could approve its
 own proposal would make the gate meaningless, so those stay with a reviewer.

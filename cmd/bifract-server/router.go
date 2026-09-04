@@ -1571,6 +1571,23 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleProposeFromYAML,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodGet,
+					Path:     "/alerts/bundle",
+					Access:   api.AccessAnalyst,
+					Summary:  "Export every manual alert in the scope, with its tests, as a zip archive.",
+					Handler:  d.alertHandler.HandleExportBundle,
+				})
+				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alerts/bundle",
+					Access:   api.AccessAnalyst,
+					Consumes: "application/zip",
+					Query:    []api.QueryParam{{Name: "overwrite", Type: "boolean", Description: "Replace an alert whose name already exists here."}},
+					Response: api.Response[*alerts.BundleImportResult]{},
+					Summary:  "Import alerts and their tests from a zip archive.",
+					Handler:  d.alertHandler.HandleImportBundle,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodPut,
 					Path:     "/alert-changes/{id}",
 					Access:   api.AccessAnalyst,

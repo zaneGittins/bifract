@@ -343,6 +343,12 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		}
 	}
 
+	// Anything left over is a token no stage could consume. Stopping here
+	// silently would drop the rest of the query, commands included.
+	if cur := p.current(); cur.Type != TokenEOF {
+		return nil, newPosError(cur, "unexpected %q", cur.Value)
+	}
+
 	return pipeline, nil
 }
 
@@ -708,8 +714,8 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	}
 
 	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
-	// Only plain literal values (no regex, no wildcard) participate.
-	if (cond.Operator == "=" || cond.Operator == "!=") && !cond.IsRegex && !strings.Contains(cond.Value, "*") {
+	// Regex and the bare existence wildcard (field=*) are single-value only.
+	if (cond.Operator == "=" || cond.Operator == "!=") && !cond.IsRegex && cond.Value != "*" {
 		values, err := p.collectEqualityList(cond.Value)
 		if err != nil {
 			return nil, err
@@ -1238,7 +1244,7 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 	}
 
 	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
-	if (having.Operator == "=" || having.Operator == "!=") && !having.IsRegex && !strings.Contains(having.Value, "*") {
+	if (having.Operator == "=" || having.Operator == "!=") && !having.IsRegex && having.Value != "*" {
 		values, err := p.collectEqualityList(having.Value)
 		if err != nil {
 			return nil, err

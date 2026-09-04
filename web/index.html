@@ -2400,30 +2400,56 @@
                 <!-- Alert Filters + Actions -->
                 <div class="alerts-filters">
                     <input type="text" id="alertSearchInput" class="alerts-search" placeholder="Search alerts..." />
-                    <select id="alertStatusFilter" class="alerts-filter-select">
-                        <option value="all">All Alerts</option>
-                        <option value="enabled">Enabled Only</option>
-                        <option value="disabled">Disabled Only</option>
-                    </select>
-                    <select id="alertActionFilter" class="alerts-filter-select">
-                        <option value="all">All Actions</option>
-                    </select>
-                    <select id="alertSeverityFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
-                        <option value="all">All Severities</option>
-                        <option value="critical">Critical</option>
-                        <option value="high">High</option>
-                        <option value="medium">Medium</option>
-                        <option value="low">Low</option>
-                        <option value="informational">Informational</option>
-                    </select>
-                    <select id="alertLabelFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
-                        <option value="all">All Labels</option>
-                    </select>
+                    <div class="fb-pop">
+                        <button type="button" id="alertFilterBtn" class="fb-btn">Filter<span class="fb-count" hidden>0</span></button>
+                        <div id="alertFilterMenu" class="fb-menu" hidden>
+                            <label class="fb-field"><span>Status</span>
+                        <select id="alertStatusFilter" class="alerts-filter-select">
+                            <option value="all">All Alerts</option>
+                            <option value="enabled">Enabled Only</option>
+                            <option value="disabled">Disabled Only</option>
+                        </select>
+                            </label>
+                            <label class="fb-field"><span>Action</span>
+                        <select id="alertActionFilter" class="alerts-filter-select">
+                            <option value="all">All Actions</option>
+                        </select>
+                            </label>
+                            <label class="fb-field"><span>Severity</span>
+                        <select id="alertSeverityFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
+                            <option value="all">All Severities</option>
+                            <option value="critical">Critical</option>
+                            <option value="high">High</option>
+                            <option value="medium">Medium</option>
+                            <option value="low">Low</option>
+                            <option value="informational">Informational</option>
+                        </select>
+                            </label>
+                            <label class="fb-field"><span>Label</span>
+                        <select id="alertLabelFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
+                            <option value="all">All Labels</option>
+                        </select>
+                            </label>
+                        </div>
+                    </div>
+                    <div id="alertFilterChips" class="fb-chips"></div>
                     <button id="alertsBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkEnableFiltered()">Enable Filtered</button>
                     <button id="alertsBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkDisableFiltered()">Disable Filtered</button>
                     <span class="filters-spacer"></span>
-                    <button id="alertsRefreshBtn" class="btn-secondary">Refresh</button>
-                    <button id="importYamlBtn" class="btn-primary">Import YAML</button>
+                    <div class="kebab-wrapper alerts-tools">
+                        <button class="kebab-btn" title="More" onclick="KebabMenu.toggle(event,this)">&vellip;</button>
+                        <div class="kebab-menu">
+                            <button id="alertsRefreshBtn" class="kebab-item">Refresh</button>
+                            <button id="alertsExportBundleBtn" class="kebab-item" onclick="Alerts.exportBundle()">Export bundle</button>
+                            <button id="alertsImportBundleBtn" class="kebab-item" onclick="Alerts.importBundle()">Import bundle</button>
+                            <button class="kebab-item" onclick="Alerts.showImportModal()">Import YAML or Sigma</button>
+                        </div>
+                    </div>
+                    <input type="file" id="alertsBundleFile" accept=".zip,application/zip" style="display:none;">
+                    <span class="alerts-drafts-wrap">
+                        <button id="alertsDraftsBtn" class="btn-secondary" style="display:none;" onclick="Alerts.toggleDraftsPanel()">Drafts <span id="alertsDraftsCount" class="alerts-drafts-count">0</span></button>
+                        <div id="alertsDraftsPanel" class="alerts-drafts-panel" hidden></div>
+                    </span>
                     <button id="createAlertBtn" class="btn-primary">Create Alert</button>
                 </div>
 
@@ -2441,25 +2467,39 @@
                 <div id="feedAlertsListView">
                     <div class="alerts-filters">
                         <input type="text" id="feedAlertSearch" class="alerts-search" placeholder="Search feed alerts..." oninput="AlertFeeds.filterFeedAlerts()" />
-                        <select id="feedAlertStatusFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                            <option value="all">All Alerts</option>
-                            <option value="enabled">Enabled Only</option>
-                            <option value="disabled">Disabled Only</option>
-                        </select>
-                        <select id="feedAlertFeedFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                            <option value="all">All Feeds</option>
-                        </select>
-                        <select id="feedAlertSeverityFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                            <option value="all">All Severities</option>
-                            <option value="critical">Critical</option>
-                            <option value="high">High</option>
-                            <option value="medium">Medium</option>
-                            <option value="low">Low</option>
-                            <option value="informational">Informational</option>
-                        </select>
-                        <select id="feedAlertLabelFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                            <option value="all">All Labels</option>
-                        </select>
+                        <div class="fb-pop">
+                            <button type="button" id="feedFilterBtn" class="fb-btn">Filter<span class="fb-count" hidden>0</span></button>
+                            <div id="feedFilterMenu" class="fb-menu" hidden>
+                                <label class="fb-field"><span>Status</span>
+                            <select id="feedAlertStatusFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
+                                <option value="all">All Alerts</option>
+                                <option value="enabled">Enabled Only</option>
+                                <option value="disabled">Disabled Only</option>
+                            </select>
+                                </label>
+                                <label class="fb-field"><span>Feed</span>
+                            <select id="feedAlertFeedFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
+                                <option value="all">All Feeds</option>
+                            </select>
+                                </label>
+                                <label class="fb-field"><span>Severity</span>
+                            <select id="feedAlertSeverityFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
+                                <option value="all">All Severities</option>
+                                <option value="critical">Critical</option>
+                                <option value="high">High</option>
+                                <option value="medium">Medium</option>
+                                <option value="low">Low</option>
+                                <option value="informational">Informational</option>
+                            </select>
+                                </label>
+                                <label class="fb-field"><span>Label</span>
+                            <select id="feedAlertLabelFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
+                                <option value="all">All Labels</option>
+                            </select>
+                                </label>
+                            </div>
+                        </div>
+                        <div id="feedFilterChips" class="fb-chips"></div>
                         <button id="feedBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkEnableFiltered()">Enable Filtered</button>
                         <button id="feedBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkDisableFiltered()">Disable Filtered</button>
                         <span class="filters-spacer"></span>
@@ -3711,7 +3751,12 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label for="yamlContent">YAML Configuration:</label>
+                    <div class="import-yaml-source">
+                        <label for="yamlContent">YAML Configuration:</label>
+                        <button type="button" class="btn-secondary btn-sm" onclick="document.getElementById('yamlFileInput').click()">Choose file</button>
+                        <input type="file" id="yamlFileInput" accept=".yml,.yaml,.txt,text/yaml,text/plain" style="display:none;" onchange="Alerts.loadYamlFile(this)">
+                        <span id="yamlFileName" class="import-yaml-file"></span>
+                    </div>
                     <textarea id="yamlContent" class="search-input" rows="20" placeholder="name: My Alert
 description: Alert description here
 queryString: |-
@@ -4299,6 +4344,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/alertTests.js"></script>
     <script src="/static/alertPolicy.js"></script>
     <script src="/static/alertDrafts.js"></script>
+    <script src="/static/filterBar.js"></script>
     <script src="/static/alertPolicyAdmin.js"></script>
     <script src="/static/alertChanges.js"></script>
     <script src="/static/alertList.js"></script>

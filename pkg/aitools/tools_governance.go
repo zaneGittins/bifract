@@ -3,6 +3,7 @@ package aitools
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -40,7 +41,12 @@ func registerGovernanceTools(d *set) {
 			"is reviewed, this is how the work is submitted instead. The alert keeps " +
 			"running its current definition until a person approves and merges.\n\n" +
 			"kind create needs the full definition; update needs alert_id and the full " +
-			"definition it should become; delete needs alert_id and a summary saying why.\n\n" +
+			"definition it should become; delete needs alert_id and a summary saying why. " +
+			"An update carries the alert's existing actions and tests forward unless you " +
+			"name new ones.\n\n" +
+			"A scope may enforce policy rules on the definition: read them with " +
+			"get_alert_policies, and check required tests pass with run_alert_tests, " +
+			"before proposing.\n\n" +
 			"Approving and merging are not available to a model. Say that the proposal is " +
 			"open and let a reviewer decide.",
 	}, proposeAlertChange)
@@ -85,6 +91,8 @@ type proposeAlertChangeArgs struct {
 	ScheduleCron        string   `json:"schedule_cron,omitempty" jsonschema:"Five-field cron. Required for alert_type scheduled."`
 	QueryWindowSeconds  int      `json:"query_window_seconds,omitempty" jsonschema:"Scheduled lookback in seconds."`
 	WindowDuration      int      `json:"window_duration,omitempty" jsonschema:"Compound correlation window in seconds."`
+
+	Tests []AlertTestArg `json:"tests,omitempty" jsonschema:"Test cases to submit with the proposal. A scope may require them before a change can merge; run_alert_tests checks they pass first. For an update, omitting them keeps the alert's existing tests."`
 }
 
 func proposeAlertChange(ctx context.Context, c Client, in proposeAlertChangeArgs) (any, error) {
@@ -97,6 +105,21 @@ func proposeAlertChange(ctx context.Context, c Client, in proposeAlertChangeArgs
 	}
 
 	if kind != "delete" {
+		// A proposal replaces the whole definition on merge, so an update must carry
+		// the alert's actions and tests forward. Sending empty lists would quietly
+		// strip every notification the alert has.
+		var current map[string]any
+		if kind == "update" && strings.TrimSpace(in.AlertID) != "" {
+			existing, err := c.Get(ctx, "/alerts/"+url.PathEscape(in.AlertID), nil)
+			if err != nil {
+				return nil, err
+			}
+			current, _ = existing.(map[string]any)
+			if nested := Field[map[string]any](existing, "alert"); nested != nil {
+				current = nested
+			}
+		}
+
 		alertType := strings.TrimSpace(in.AlertType)
 		if alertType == "" {
 			alertType = "event"
@@ -121,6 +144,13 @@ func proposeAlertChange(ctx context.Context, c Client, in proposeAlertChangeArgs
 			"dictionary_action_ids": []string{},
 			"email_action_ids":      []string{},
 		}
+		if current != nil {
+			for key, ids := range carryForward(current) {
+				if strings.HasSuffix(key, "_action_ids") {
+					content[key] = ids
+				}
+			}
+		}
 		if cron := strings.TrimSpace(in.ScheduleCron); cron != "" {
 			content["schedule_cron"] = cron
 		}
@@ -131,6 +161,18 @@ func proposeAlertChange(ctx context.Context, c Client, in proposeAlertChangeArgs
 			content["window_duration"] = in.WindowDuration
 		}
 		body["content"] = content
+
+		if tests := testsBody(in.Tests); tests != nil {
+			body["tests"] = tests
+		} else if current != nil {
+			// Not named means unchanged, and a proposal carries its own corpus: without
+			// this, merging an update would drop every test the alert had.
+			if existing, err := c.Get(ctx, "/alerts/"+url.PathEscape(in.AlertID)+"/tests", nil); err == nil {
+				if list, ok := existing.([]any); ok && len(list) > 0 {
+					body["tests"] = list
+				}
+			}
+		}
 	}
 
 	return c.Post(ctx, "/alert-changes", body)
