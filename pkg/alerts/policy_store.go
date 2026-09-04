@@ -117,7 +117,7 @@ func (m *Manager) enforcePolicies(ctx context.Context, fractalID, prismID string
 	// for this, so the run happens here even though the client already ran the same
 	// tests while the author was typing.
 	if policiesNeedTests(policies) && len(subject.Tests) > 0 && m.testRunner.Available() {
-		run, err := m.testRunner.RunOnce(ctx, subject.Content.QueryString, subject.Tests)
+		run, err := m.testRunner.RunOnce(ctx, subject.Content.QueryString, subject.Tests, fractalID, prismID)
 		if err != nil {
 			return fmt.Errorf("evaluating tests for policy: %w", err)
 		}

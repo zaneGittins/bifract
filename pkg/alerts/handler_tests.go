@@ -56,6 +56,14 @@ func (h *Handler) HandleRunTests(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, rbac.RoleAnalyst) {
 		return
 	}
+	// The scope the editor is working in, so match() resolves the same dictionaries the
+	// alert will see once it runs. Not required: only match() needs it, so an
+	// unresolvable scope leaves that one command reporting no dictionaries rather than
+	// blocking every test in the corpus.
+	fractalID, prismID, err := h.getScope(r)
+	if err != nil {
+		log.Printf("[Alerts] test run: scope unavailable, match() will not resolve: %v", err)
+	}
 
 	var req RunTestsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -75,7 +83,7 @@ func (h *Handler) HandleRunTests(w http.ResponseWriter, r *http.Request) {
 	// loaded events.
 	sessionKey := h.attributionUser(r) + ":" + req.SessionID
 
-	result, err := h.testRunner.Run(r.Context(), sessionKey, req.QueryString, req.Tests)
+	result, err := h.testRunner.Run(r.Context(), sessionKey, req.QueryString, req.Tests, fractalID, prismID)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid query syntax") ||
 			strings.Contains(err.Error(), "test ") ||

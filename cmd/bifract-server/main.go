@@ -723,6 +723,7 @@ func main() {
 	alertHandler := alerts.NewHandlerWithFractals(alertManager, fractalManager)
 	alertTestRunner := alerts.NewTestRunner(db)
 	defer alertTestRunner.Close()
+	alertTestRunner.SetDictionaryResolver(dictionaryManager)
 	alertHandler.SetTestRunner(alertTestRunner)
 	alertManager.SetTestRunner(alertTestRunner)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())

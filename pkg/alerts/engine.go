@@ -590,6 +590,12 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 			opts.Dictionaries = mappings
 		}
 	}
+	// Qualifies every dictGet with its database. A shard running the remote half of a
+	// distributed alert query has its own current database, where an unqualified
+	// dictionary name resolves to nothing (code 36).
+	if e.ch != nil {
+		opts.DictionaryDatabase = e.ch.LogsDatabase()
+	}
 
 	// Load analytics model infos for model_lookup() BQL support. A prism-scoped
 	// alert has no owning fractal of its own, so resolve models across every

@@ -83,7 +83,7 @@ func (m *Manager) EvaluateChangeRequest(ctx context.Context, cr *ChangeRequest, 
 		subject.TestsRun = true
 		subject.TestsPassing = stored.OK()
 	} else if run && len(cr.Tests) > 0 && m.testRunner.Available() {
-		result, err := m.testRunner.RunOnce(ctx, cr.Content.QueryString, cr.Tests)
+		result, err := m.testRunner.RunOnce(ctx, cr.Content.QueryString, cr.Tests, fractalID, prismID)
 		if err != nil {
 			readiness.Tests = &TestRunResult{Error: err.Error()}
 		} else {

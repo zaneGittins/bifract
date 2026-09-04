@@ -957,14 +957,19 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("match() requires column= parameter to specify the lookup key column")
 	}
 
-	chLookupName := ""
-	if ctx.Opts.Dictionaries != nil {
-		if colMap, ok := ctx.Opts.Dictionaries[dictName]; ok {
-			chLookupName = colMap[keyColumn]
-		}
+	// The three ways this resolves to nothing are different problems with different
+	// fixes, and one message for all of them sent authors to the key toggle for a
+	// context that never had dictionaries at all.
+	if ctx.Opts.Dictionaries == nil {
+		return fmt.Errorf("match() is not available here: this context has no dictionaries")
 	}
+	colMap, known := ctx.Opts.Dictionaries[dictName]
+	if !known {
+		return fmt.Errorf("dictionary %q not found in this fractal or prism", dictName)
+	}
+	chLookupName := colMap[keyColumn]
 	if chLookupName == "" {
-		return fmt.Errorf("dictionary %q with key column %q not found - use the key toggle in the Context tab to enable it", dictName, keyColumn)
+		return fmt.Errorf("dictionary %q has no key column %q - enable that column as a key in the Context tab", dictName, keyColumn)
 	}
 
 	// Resolve through the registry so an earlier command that rewrote this field

@@ -79,6 +79,39 @@ type TestRunner struct {
 	// shared client is already pinned by definition.
 	pinned     *storage.ClickHouseClient
 	pinnedAddr string
+
+	// dicts resolves the dictionaries a scope can see, so match() in a rule under
+	// test behaves as it will when the alert runs. Nil leaves match() unresolvable,
+	// which is the honest answer for a caller that cannot reach them.
+	dicts dictionaryResolver
+}
+
+// dictionaryResolver is the slice of the dictionary manager the runner needs.
+type dictionaryResolver interface {
+	ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, error)
+}
+
+// SetDictionaryResolver wires in dictionary lookups. Without it, a rule using match()
+// reports that the dictionary is unavailable rather than resolving it.
+func (r *TestRunner) SetDictionaryResolver(d dictionaryResolver) {
+	if r != nil {
+		r.dicts = d
+	}
+}
+
+// dictionariesFor resolves a scope's dictionary mappings. A failure is not fatal: the
+// run continues and match() reports the dictionary as unavailable, which is a clearer
+// outcome for the author than the whole run erroring.
+func (r *TestRunner) dictionariesFor(ctx context.Context, fractalID, prismID string) map[string]map[string]string {
+	if r.dicts == nil || (fractalID == "" && prismID == "") {
+		return nil
+	}
+	mappings, err := r.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
+	if err != nil {
+		log.Printf("[Alerts] test run: resolve dictionaries for scope: %v", err)
+		return nil
+	}
+	return mappings
 }
 
 // NewTestRunner starts a runner and its idle-session sweeper.
@@ -249,7 +282,7 @@ func (r *TestRunner) sweep() {
 //
 // sessionID identifies one editor. Its corpus is loaded once and reused until the
 // events change, so editing a query and re-running costs one query per test.
-func (r *TestRunner) Run(ctx context.Context, sessionID, bql string, tests []AlertTest) (*TestRunResult, error) {
+func (r *TestRunner) Run(ctx context.Context, sessionID, bql string, tests []AlertTest, fractalID, prismID string) (*TestRunResult, error) {
 	if !r.Available() {
 		return nil, fmt.Errorf("test runs need a ClickHouse connection")
 	}
@@ -271,12 +304,16 @@ func (r *TestRunner) Run(ctx context.Context, sessionID, bql string, tests []Ale
 	if err != nil {
 		return nil, err
 	}
+	// Re-resolved per run rather than cached with the session, so a dictionary edited
+	// while the editor is open is visible on the next run, and held locally so
+	// overlapping runs on one session cannot race on the session's scratch.
+	scratch := session.scratch.WithDictionaries(r.dictionariesFor(ctx, fractalID, prismID))
 
 	for i := range tests {
 		started := time.Now()
 		outcome := TestOutcome{Name: tests[i].Name, Expectation: tests[i].Expectation}
 
-		rows, _, err := session.scratch.Evaluate(ctx, pipeline, session.units[i], session.window)
+		rows, _, err := scratch.Evaluate(ctx, pipeline, session.units[i], session.window)
 		if err != nil {
 			outcome.Reason = err.Error()
 		} else {
@@ -300,7 +337,7 @@ func (r *TestRunner) Run(ctx context.Context, sessionID, bql string, tests []Ale
 
 // RunOnce evaluates tests without leaving a session behind, for the save path where
 // there is no editor to keep one warm.
-func (r *TestRunner) RunOnce(ctx context.Context, bql string, tests []AlertTest) (*TestRunResult, error) {
+func (r *TestRunner) RunOnce(ctx context.Context, bql string, tests []AlertTest, fractalID, prismID string) (*TestRunResult, error) {
 	sessionID := "once:" + uuid.NewString()
 	defer func() {
 		// Not the caller's context: a cancelled request would abandon the DROP, and
@@ -309,7 +346,7 @@ func (r *TestRunner) RunOnce(ctx context.Context, bql string, tests []AlertTest)
 		defer cancel()
 		r.Release(cleanup, sessionID)
 	}()
-	return r.Run(ctx, sessionID, bql, tests)
+	return r.Run(ctx, sessionID, bql, tests, fractalID, prismID)
 }
 
 // session returns a loaded session for these events, rebuilding it when the corpus

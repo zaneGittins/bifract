@@ -154,6 +154,12 @@ func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 		UseIngestTimestamp: true,
 		TableName:          s.table,
 		FractalID:          u.FractalID,
+		// Resolved from the rule's own scope, not the per-case scratch fractal above:
+		// the isolation fractal exists only inside this table and owns no dictionaries.
+		// The dictionary objects share the scratch table's database, both being
+		// CLICKHOUSE_DB (see NewScratch and ClickHouseClient.LogsDatabase).
+		Dictionaries:       s.dictionaries,
+		DictionaryDatabase: s.database,
 	}
 }
 

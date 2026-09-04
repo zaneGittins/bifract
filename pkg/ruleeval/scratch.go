@@ -27,6 +27,11 @@ type Scratch struct {
 	client   *storage.ClickHouseClient
 	database string
 	table    string
+
+	// dictionaries maps a BQL dictionary name to its ClickHouse lookup objects, so
+	// match() resolves the same way it does when the alert runs for real. Nil leaves
+	// match() unresolvable, which is what a caller with no access to them wants.
+	dictionaries map[string]map[string]string
 }
 
 // NewScratch creates a scratch table on the given connection. The caller owns the
@@ -138,4 +143,18 @@ func (s *Scratch) Drop(ctx context.Context) error {
 	}
 	s.table = ""
 	return nil
+}
+
+// WithDictionaries returns a view of s that resolves match() against the dictionaries
+// of the scope the rule belongs to. The scratch table is ordinary data and a dictionary
+// is a separate ClickHouse object, so a lookup resolves over scratch rows exactly as it
+// does over logs.
+//
+// A copy rather than a setter: one editor session's scratch is shared by whatever runs
+// overlap on it, and mutating the mappings underneath a run in flight is a data race.
+// The copy shares the table; only the mappings differ.
+func (s *Scratch) WithDictionaries(mappings map[string]map[string]string) *Scratch {
+	clone := *s
+	clone.dictionaries = mappings
+	return &clone
 }
