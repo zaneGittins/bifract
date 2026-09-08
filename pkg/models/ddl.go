@@ -30,12 +30,14 @@ type aggOpts struct {
 }
 
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
-func GenerateDDL(def ModelDefinition, mt ModelType, tableName, mvName string) (string, string, error) {
+// fractalID is the owning fractal: it scopes the MV's source scan so a model only
+// ever aggregates its own fractal's logs. See fractalScopeClause.
+func GenerateDDL(def ModelDefinition, mt ModelType, tableName, mvName, fractalID string) (string, string, error) {
 	tableSQL, err := generateTableDDL(def, mt, tableName)
 	if err != nil {
 		return "", "", err
 	}
-	mvSQL, err := generateMVDDL(def, mt, tableName, mvName)
+	mvSQL, err := generateMVDDL(def, mt, tableName, mvName, fractalID)
 	if err != nil {
 		return "", "", err
 	}
@@ -65,6 +67,20 @@ SETTINGS index_granularity = 8192`, tableName), nil
     days        AggregateFunction(groupUniqArray(365), Date)
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, entity_key)
+SETTINGS index_granularity = 8192`, tableName), nil
+
+	case ModelTypeTLSH:
+		// digest is the verbatim on-disk string, never a canonicalised form: it is
+		// what tlsh() emits into the log filter, so it has to match what is stored.
+		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+    fractal_id  LowCardinality(String),
+    digest      String,
+    first_seen  SimpleAggregateFunction(min, DateTime64(3, 'UTC')),
+    last_seen   SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
+    event_count SimpleAggregateFunction(sum, UInt64),
+    days        AggregateFunction(groupUniqArray(365), Date)
+) ENGINE = AggregatingMergeTree()
+ORDER BY (fractal_id, digest)
 SETTINGS index_granularity = 8192`, tableName), nil
 
 	case ModelTypeVolumeBaseline:
@@ -121,10 +137,10 @@ func volumeScoreBounds(timeBucket string) (lower, upper string) {
 	return "today() - 90", "today()"
 }
 
-func generateMVDDL(def ModelDefinition, mt ModelType, tableName, mvName string) (string, error) {
+func generateMVDDL(def ModelDefinition, mt ModelType, tableName, mvName, fractalID string) (string, error) {
 	// Build the SELECT body using CTE chains. The MV reads from the local `logs`
-	// table with no extra predicate; this output must remain byte-for-byte stable.
-	selectSQL, err := buildModelSelect(def, mt, "logs", "", aggOpts{})
+	// table, scoped to the owning fractal and carrying no other extra predicate.
+	selectSQL, err := buildModelSelect(def, mt, "logs", "", aggOpts{}, fractalID)
 	if err != nil {
 		return "", err
 	}
@@ -145,8 +161,8 @@ DEFINER = default SQL SECURITY DEFINER AS
 //
 // IMPORTANT: this performs NO DDL. It only inserts into an already-existing
 // model table, so it can never orphan a table or materialized view.
-func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra string) (string, error) {
-	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra, aggOpts{})
+func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra, fractalID string) (string, error) {
+	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra, aggOpts{}, fractalID)
 	if err != nil {
 		return "", err
 	}
@@ -157,7 +173,22 @@ func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceT
 // shared by the materialized view (sourceTable="logs", whereExtra="") and the
 // backfill INSERT...SELECT (distributed source + time-window predicate).
 // whereExtra, when non-empty, is ANDed into the source-scan WHERE clause.
-func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts) (string, error) {
+func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts, fractalID string) (string, error) {
+	// An unscoped model MV aggregates every fractal's logs into the owning
+	// fractal's table: an ingest-time cost on fractals that never read it, and
+	// cross-fractal rows sitting behind nothing but the read-side predicate.
+	// Refuse to generate one rather than emit a silently over-broad view.
+	if fractalID == "" {
+		return "", fmt.Errorf("model select: owning fractal_id is required to scope the source scan")
+	}
+	// tlsh() filters logs by the indexed digest, so it must be the verbatim value
+	// stored in the field. Checked here as well as in validateDefinitionShape
+	// because the startup reconcile paths rebuild from stored definitions without
+	// re-validating them.
+	if mt == ModelTypeTLSH && len(def.Extractions) > 0 {
+		return "", fmt.Errorf("model select: tlsh models cannot use extractions")
+	}
+
 	var b strings.Builder
 
 	// CTE chain for extractions
@@ -176,7 +207,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 			}
 		}
 		b.WriteString(fmt.Sprintf("\n    FROM %s\n", sourceTable))
-		b.WriteString("    WHERE fractal_id != ''")
+		b.WriteString(fmt.Sprintf("    WHERE %s", fractalScopeClause(fractalID)))
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
 		}
@@ -219,7 +250,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 		b.WriteString(buildFinalSelect(def, mt, prevCTE, opts))
 	} else {
 		// No extractions — SELECT directly from the source table
-		b.WriteString(buildDirectSelect(def, mt, sourceTable, whereExtra, opts))
+		b.WriteString(buildDirectSelect(def, mt, sourceTable, whereExtra, opts, fractalID))
 	}
 
 	return b.String(), nil
@@ -292,7 +323,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts 
 
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
-func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts) string {
+func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts, fractalID string) string {
 	var b strings.Builder
 	b.WriteString("SELECT fractal_id")
 
@@ -301,7 +332,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n",
 			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-		b.WriteString("WHERE fractal_id != ''")
+		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
 		}
@@ -322,7 +353,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		}
 		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-		b.WriteString("WHERE fractal_id != ''")
+		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
 		}
@@ -330,6 +361,19 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
 		b.WriteString("\nGROUP BY fractal_id, entity_key, first_seen, last_seen")
+	case ModelTypeTLSH:
+		b.WriteString(fmt.Sprintf(",\n    %s AS digest", chFieldRef(def.KeyFields[0])))
+		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
+		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
+		for _, fc := range def.Filter {
+			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		}
+		if whereExtra != "" {
+			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
+		}
+		b.WriteString(fmt.Sprintf("\nAND %s", tlshDigestGuard(chFieldRef(def.KeyFields[0]))))
+		b.WriteString("\nGROUP BY fractal_id, digest, first_seen, last_seen")
 	case ModelTypeVolumeBaseline:
 		if len(def.KeyFields) == 1 {
 			b.WriteString(fmt.Sprintf(",\n    %s AS entity_val", chFieldRef(def.KeyFields[0])))
@@ -342,7 +386,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		}
 		b.WriteString(fmt.Sprintf(",\n    %s AS bucket,\n    toUInt64(count()) AS event_count\n", volumeBucketExpr(def.TimeBucket)))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-		b.WriteString("WHERE fractal_id != ''")
+		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		for _, fc := range def.Filter {
 			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
 		}
@@ -521,7 +565,10 @@ func netFieldMap(def ModelDefinition) NetworkFieldMap {
 // BuildNetStateMV returns the materialized view that maintains per-pair-per-day
 // aggregation state at ingest. The model's filter is applied here so the state
 // reflects the model's own scope.
-func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName string) (string, error) {
+func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName, fractalID string) (string, error) {
+	if fractalID == "" {
+		return "", fmt.Errorf("net state mv: owning fractal_id is required to scope the source scan")
+	}
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
@@ -545,12 +592,22 @@ func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName strin
 	b.WriteString("    min(timestamp) AS first_ts,\n")
 	b.WriteString("    max(timestamp) AS last_ts\n")
 	b.WriteString("FROM logs\n")
-	b.WriteString(fmt.Sprintf("WHERE fractal_id != '' AND %s != '' AND %s != ''", src, dst))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != ''", fractalScopeClause(fractalID), src, dst))
 	for _, fc := range def.Filter {
 		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
 	}
 	b.WriteString("\nGROUP BY fractal_id, src, dst, port, day")
 	return b.String(), nil
+}
+
+// tlshDigestGuard admits only well-formed TLSH digests: 70 hex characters, with an
+// optional "T1" version prefix. Producers emit nothing for inputs under 50 bytes,
+// so absent and truncated values are routine in log data, and two of them compare
+// at distance 0, which makes them match every needle. Enforcing shape at the MV
+// keeps them out of the index entirely rather than relying on a query-time guard.
+// Kept in lockstep with tlsh.Parse; see TestTLSHGuardMatchesParser.
+func tlshDigestGuard(ref string) string {
+	return fmt.Sprintf("match(%s, '^([Tt]1)?[0-9A-Fa-f]{70}$')", ref)
 }
 
 // fractalScopeClause returns the WHERE predicate scoping a state read to a fractal.

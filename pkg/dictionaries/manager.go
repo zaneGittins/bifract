@@ -1661,3 +1661,33 @@ func escCHStr(s string) string {
 	s = strings.ReplaceAll(s, "'", "\\'")
 	return s
 }
+
+// GetKeys returns up to limit key-column values from a dictionary, unpaginated.
+// Needle lists are read whole and compared in Go, so paging through GetRows (which
+// also materialises every other column) would be wasted work.
+func (m *Manager) GetKeys(ctx context.Context, id string, limit int) ([]string, error) {
+	dict, err := m.GetDictionary(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	keyCol := dict.KeyColumn
+	if keyCol == "" {
+		return nil, fmt.Errorf("dictionary %q has no key column", dict.Name)
+	}
+	if limit <= 0 {
+		limit = 1_000_000
+	}
+	sql := fmt.Sprintf("SELECT DISTINCT `%s` AS k FROM `%s` FINAL WHERE `%s` != '' LIMIT %d",
+		escCH(keyCol), escCH(m.rowTable(dict)), escCH(keyCol), limit)
+	rows, err := m.ch.Query(ctx, sql)
+	if err != nil {
+		return nil, fmt.Errorf("read dictionary keys: %w", err)
+	}
+	keys := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if s, ok := r["k"].(string); ok && s != "" {
+			keys = append(keys, s)
+		}
+	}
+	return keys, nil
+}

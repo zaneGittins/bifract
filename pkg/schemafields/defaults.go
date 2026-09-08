@@ -58,6 +58,12 @@ var ProjectDefaultFields = []SchemaField{
 	// dynamic path) consumes none of the max_dynamic_paths=1024 budget.
 	{FieldName: "target_image", IndexType: IndexTypeNone, IsDefault: true},
 	{FieldName: "target_file", IndexType: IndexTypeNone, IsDefault: true},
+	// Fuzzy-hash digest read by tlsh(). Unlike the reconnection fields above this
+	// earns a bloom: tlsh() resolves similarity to an equality IN over this column
+	// against the whole log table, and high-cardinality digests are the case a
+	// bloom prunes best. Its model MV also scans the field on every insert, which a
+	// hint keeps off the dynamic-path budget.
+	{FieldName: "tlsh", IndexType: IndexTypeBloomFilter, IsDefault: true},
 }
 
 // ProjectDefaultFieldMap returns a set of project default field names for O(1) lookup.

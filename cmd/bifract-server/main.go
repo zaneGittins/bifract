@@ -560,6 +560,9 @@ func main() {
 	// Recreate any model whose ClickHouse objects went missing (a log-data reset
 	// drops them by design). Without this the scorer fails on every tick forever.
 	modelManager.ReconcileCHObjects(context.Background())
+	// Re-scope any model MV built before the source scan was bound to its owning
+	// fractal. Rebuilds the trigger only, so no model data is lost.
+	modelManager.ReconcileMVFractalScope(context.Background())
 	modelManager.RecoverBackfills(context.Background())
 
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)

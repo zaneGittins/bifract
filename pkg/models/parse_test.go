@@ -86,7 +86,7 @@ func TestEndToEndBQLToDDL(t *testing.T) {
 	}
 
 	// 4. Compile to ClickHouse DDL — must succeed and reference the extracted field.
-	tableSQL, mvSQL, err := GenerateDDL(def, ModelTypeRarity, "model_test", "model_mv_test")
+	tableSQL, mvSQL, err := GenerateDDL(def, ModelTypeRarity, "model_test", "model_mv_test", "f1")
 	if err != nil {
 		t.Fatalf("GenerateDDL failed: %v", err)
 	}

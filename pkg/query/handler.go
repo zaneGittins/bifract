@@ -27,6 +27,7 @@ import (
 	"bifract/pkg/rbac"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
+	"bifract/pkg/tlshresolve"
 
 	"github.com/google/uuid"
 )
@@ -46,6 +47,13 @@ type QueryHandler struct {
 	// pgrRecorder accumulates pgr() score distributions for severity calibration. Optional:
 	// nil in tools and tests, where calibration has no meaning.
 	pgrRecorder *pgrcal.Recorder
+}
+
+// tlshResolver builds the shared tlsh() resolver from the handler's dependencies.
+// The alert engine builds the same thing from its own, so a query and an alert
+// resolve tlsh() identically.
+func (h *QueryHandler) tlshResolver() *tlshresolve.Resolver {
+	return &tlshresolve.Resolver{Models: h.modelManager, Dicts: h.dictionaryManager, DB: h.db}
 }
 
 // SetPgrRecorder wires severity calibration. Set once at startup, before serving.
@@ -881,6 +889,42 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			selectedIndex, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339), commentTags, commentKeyword, len(commentLogIDs))
 	}
 
+	// Pre-process tlsh(): resolve the digests within threshold of a needle against
+	// the model's distinct-digest index. Comparing a field against many digests has
+	// no workable SQL form, so the distance runs in Go and returns an IN filter.
+	var tlshMatches []parser.TLSHMatch
+	var hasTLSHFilter bool
+	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
+	if tlshErr != nil {
+		respondJSON(w, http.StatusBadRequest, QueryResponse{
+			Success: false,
+			Error:   tlshErr.Error(),
+			Query:   req.Query,
+		})
+		return nil
+	}
+	if hasTLSH {
+		hasTLSHFilter = true
+		scopeFractals := prismFractalIDs
+		if !isPrismContext {
+			scopeFractals = []string{selectedIndex}
+		}
+		matches, rerr := h.tlshResolver().Resolve(r.Context(), tlshParams, scopeFractals, selectedPrismID)
+		if rerr != nil {
+			// Configuration and input problems both land here (no index, bad digest,
+			// oversized dictionary), and each names the fix, so surface the message.
+			respondJSON(w, http.StatusBadRequest, QueryResponse{
+				Success: false,
+				Error:   rerr.Error(),
+				Query:   req.Query,
+			})
+			return nil
+		}
+		tlshMatches = matches
+		log.Printf("[QueryHandler] tlsh() pre-resolve: field=%q threshold=%d -> %d matching digest(s)",
+			tlshParams.Field, tlshParams.Threshold, len(tlshMatches))
+	}
+
 	// Translate to SQL
 	fractalIDForQuery := selectedIndex
 	if isPrismContext {
@@ -897,6 +941,8 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
+		HasTLSHFilter:         hasTLSHFilter,
+		TLSHMatches:           tlshMatches,
 		GeoIPEnabled:          h.geoIPEnabled,
 		DictionaryDatabase:    h.dictDatabase(),
 		TableName:             h.queryTableName(),
@@ -1256,6 +1302,14 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		fractalIDForQuery = ""
 	}
 	_, _, hasComment := parser.ExtractCommentParams(pipeline)
+	// Validation must not touch ClickHouse, so tlsh() is marked present with no
+	// resolved matches: the command renders its empty-result form, and bad
+	// arguments still surface as an error here rather than at execution.
+	_, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
+	if tlshErr != nil {
+		respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: tlshErr.Error()})
+		return
+	}
 	opts := parser.QueryOptions{
 		StartTime:             startTime,
 		EndTime:               endTime,
@@ -1266,6 +1320,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		Dictionaries:          dictMappings,
 		Models:                modelInfos,
 		HasCommentFilter:      hasComment,
+		HasTLSHFilter:         hasTLSH,
 		GeoIPEnabled:          h.geoIPEnabled,
 		DictionaryDatabase:    h.dictDatabase(),
 		TableName:             h.queryTableName(),

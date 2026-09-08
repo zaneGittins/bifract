@@ -36,7 +36,7 @@ func TestBuildNetStateMVWildcard(t *testing.T) {
 		t.Fatalf("unexpected parse errors: %v", parsed.Errors)
 	}
 	def := ModelDefinition{Filter: parsed.Filter}
-	mv, err := BuildNetStateMV(def, ModelTypeBeacon, "state_tbl", "mv_name")
+	mv, err := BuildNetStateMV(def, ModelTypeBeacon, "state_tbl", "mv_name", "f1")
 	if err != nil {
 		t.Fatal(err)
 	}

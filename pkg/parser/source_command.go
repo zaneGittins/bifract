@@ -1,5 +1,7 @@
 package parser
 
+import "sort"
+
 import "fmt"
 
 // Source commands GENERATE the pipeline's source rather than filtering/transforming an
@@ -11,6 +13,18 @@ import "fmt"
 // layer; the core translate/handler path needs no per-command special-casing.
 var sourceCommandNames = map[string]bool{
 	"pgr": true,
+}
+
+// SourceCommandNames returns every registered source command name. Exported for
+// the same reason as RegisteredCommandNames: these are commands a user types, so
+// the built-in reference has to be checkable against them.
+func SourceCommandNames() []string {
+	names := make([]string, 0, len(sourceCommandNames))
+	for name := range sourceCommandNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // FirstSourceCommand returns the first source command in the pipeline, if any.

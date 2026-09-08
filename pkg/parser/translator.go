@@ -34,6 +34,8 @@ type QueryOptions struct {
 	Models                map[string]AnalyticsModelInfo // model name -> ModelInfo for model_lookup() BQL command
 	HasCommentFilter      bool                          // True when query uses comment() and log_ids have been pre-fetched
 	CommentLogIDs         []string                      // Pre-fetched log_ids from PostgreSQL for comment() filtering
+	HasTLSHFilter         bool                          // True when query uses tlsh() and the digest match has been resolved
+	TLSHMatches           []TLSHMatch                   // Digests within threshold of a needle, resolved server-side against the tlsh model index
 	UseIngestTimestamp    bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
 	AlertExtraFields      []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
@@ -195,6 +197,12 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		if err := handler.Declare(cmd, ctx); err != nil {
 			return nil, err
 		}
+	}
+
+	// tlsh() used as a boolean operand never reaches its handler, so its projected
+	// columns are declared here instead. See DeclareTLSHOperandColumns.
+	if err := DeclareTLSHOperandColumns(pipeline, ctx); err != nil {
+		return nil, err
 	}
 
 	// model_lookup() placement: with an aggregation (groupby/chain/stats) AFTER it,

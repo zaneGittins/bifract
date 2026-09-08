@@ -412,6 +412,16 @@ const AnalyticsModels = {
                 { col: 'event_count', label: 'Events', fmt: 'int', align: 'num' },
             ],
         },
+        tlsh: {
+            sortDefault: 'first_seen',
+            sortable: ['digest', 'first_seen', 'last_seen', 'event_count'],
+            cols: [
+                { col: 'digest', keys: true },
+                { col: 'first_seen', label: 'First seen', fmt: 'ts' },
+                { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
+                { col: 'event_count', label: 'Events', fmt: 'int', align: 'num' },
+            ],
+        },
         volume_baseline: {
             sortDefault: 'z_score',
             sortable: ['entity_val', 'latest_count', 'baseline_median', 'mad', 'z_score', 'n_buckets', 'latest_bucket'],
@@ -466,6 +476,12 @@ const AnalyticsModels = {
         ],
         first_seen: [
             { k: 'total_entities', label: 'Entities', fmt: 'int' },
+            { k: 'new_today', label: 'New today', fmt: 'int', tone: 'flag' },
+            { k: 'newest_seen', label: 'Newest', fmt: 'ago' },
+            { k: 'oldest_seen', label: 'Oldest', fmt: 'ago' },
+        ],
+        tlsh: [
+            { k: 'total_entities', label: 'Digests', fmt: 'int' },
             { k: 'new_today', label: 'New today', fmt: 'int', tone: 'flag' },
             { k: 'newest_seen', label: 'Newest', fmt: 'ago' },
             { k: 'oldest_seen', label: 'Oldest', fmt: 'ago' },
@@ -1386,6 +1402,7 @@ ${m.description ? `<div class="me-sec">
         { id: 'rarity', label: 'Rarity', desc: 'Scores how unusual a value is within its partition.' },
         { id: 'first_seen', label: 'First / Last Seen', desc: 'Tracks when an entity was first and last observed.' },
         { id: 'volume_baseline', label: 'Volume Baseline', desc: 'Flags entities whose volume deviates from their own history, by modified z-score.' },
+        { id: 'tlsh', label: 'TLSH Index', desc: 'Indexes the distinct fuzzy-hash digests in a field so tlsh() can match similar files. Not a detection on its own.' },
         { id: 'beacon', label: 'Beacon', desc: 'Finds regular, automated check-ins (C2 beaconing) in network connection logs.' },
         { id: 'long_connection', label: 'Long Connection', desc: 'Surfaces unusually long-lived sessions (tunnels, exfil, persistent C2) by total duration.' },
     ],
@@ -1394,6 +1411,7 @@ ${m.description ? `<div class="me-sec">
         rarity: '<path d="M6 3h12l3 6-9 12L3 9z"/><path d="M3 9h18"/>',
         first_seen: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>',
         volume_baseline: '<polyline points="3 13 7 13 10 5 14 19 17 13 21 13"/>',
+        tlsh: '<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>',
         beacon: '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4"/><path d="M16.2 16.2a6 6 0 0 0 0-8.4"/><path d="M4.9 4.9a10 10 0 0 0 0 14.2"/><path d="M19.1 19.1a10 10 0 0 0 0-14.2"/>',
         long_connection: '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.6.4l2.6-2.6a4.5 4.5 0 0 0-6.4-6.4l-1.5 1.5"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.6-.4l-2.6 2.6a4.5 4.5 0 0 0 6.4 6.4l1.5-1.5"/>',
     },
@@ -1549,7 +1567,7 @@ ${m.description ? `<div class="me-sec">
                 <div class="me-sec">
                     <div class="me-sec-label">Detection</div>
                     <div id="modelAlertConfig">${this._editorAlertConfigHTML()}</div>
-                    <p class="me-hint">A paused alert is created with these thresholds${e.editId ? '' : ' on save'}. Enable it and set actions, throttling and severity from the Alerts page.</p>
+                    <p class="me-hint" id="modelAlertHint"${e.modelType === 'tlsh' ? ' style="display:none"' : ''}>A paused alert is created with these thresholds${e.editId ? '' : ' on save'}. Enable it and set actions, throttling and severity from the Alerts page.</p>
                 </div>
 
                 <div class="me-sec">
@@ -1646,6 +1664,13 @@ ${m.description ? `<div class="me-sec">
             card.addEventListener('click', () => {
                 const e = this.editor;
                 e.modelType = card.dataset.type;
+                // A tlsh model takes exactly one digest field, and its shape editor
+                // renders only the first row with no remove button. Extra fields
+                // carried over from another type would be invisible here but still
+                // submitted, leaving the form permanently unsavable.
+                if (e.modelType === 'tlsh' && e.keyFields.length > 1) {
+                    e.keyFields = [e.keyFields.find(Boolean) || ''];
+                }
                 document.querySelectorAll('#modelTypeCards .me-type-card').forEach(c => c.classList.toggle('active', c === card));
                 const help = document.getElementById('modelTypeHelp');
                 if (help) help.textContent = this._typeDesc(e.modelType);
@@ -1870,6 +1895,17 @@ ${isBeacon ? `
 </div>
 <p class="config-hint">Counts events per <em>${e.timeBucket === 'hour' ? 'hour' : 'day'}</em> per entity, then scores the latest complete bucket against the entity's own median (modified z-score). The current, incomplete bucket is excluded.</p>`;
         }
+        if (e.modelType === 'tlsh') {
+            return `
+<div class="field-group">
+    <label>Digest Field</label>
+    <div id="keyFieldsList">
+<div class="key-field-row" data-idx="0">
+    ${this._fieldInput('keyField0', e.keyFields[0] || '', 'e.g. tlsh')}
+</div></div>
+</div>
+<p class="config-hint">Indexes the distinct TLSH digests in this field so <em>tlsh()</em> can match against them. Only well-formed digests are indexed, so absent and truncated values never enter the index. Seed it with a backfill to cover existing history.</p>`;
+        }
         return `
 <div class="field-group">
     <label>Key Fields (entity to track)</label>
@@ -1924,8 +1960,10 @@ ${isBeacon ? `
         document.querySelectorAll('#keyFieldsList .key-field-row').forEach(row => {
             const i = parseInt(row.dataset.idx);
             const sel = row.querySelector('.model-field-input');
-            sel.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); this._schedulePreview(); });
-            row.querySelector('.btn-remove-row').addEventListener('click', () => {
+            sel?.addEventListener('input', ev => { e.keyFields[i] = ev.target.value.trim(); this._schedulePreview(); });
+            // A tlsh model has exactly one digest field, so its row carries no
+            // remove button. Every other type renders one.
+            row.querySelector('.btn-remove-row')?.addEventListener('click', () => {
                 e.keyFields.splice(i, 1);
                 if (!e.keyFields.length) e.keyFields = [''];
                 this._renderEditorShape();
@@ -1937,6 +1975,9 @@ ${isBeacon ? `
     _editorAlertConfigHTML() {
         const c = this.editor.alertConfig;
         const mt = this.editor.modelType;
+        if (mt === 'tlsh') {
+            return `<p class="config-hint">A TLSH index raises no alerts of its own. It records which digests exist; the detection is <em>tlsh()</em> in a query or alert, where the distance threshold decides what counts as a match.</p>`;
+        }
         let typeFields;
         if (mt === 'beacon') {
             typeFields = `
@@ -1984,6 +2025,8 @@ ${isBeacon ? `
     },
 
     _renderEditorAlertConfig() {
+        const hint = document.getElementById('modelAlertHint');
+        if (hint) hint.style.display = this.editor.modelType === 'tlsh' ? 'none' : '';
         const el = document.getElementById('modelAlertConfig');
         if (el) { el.innerHTML = this._editorAlertConfigHTML(); this._bindAlertConfigEvents(); }
     },
@@ -2318,6 +2361,9 @@ ${isBeacon ? `
     _validateShape() {
         const e = this.editor;
         if (e.modelType === 'rarity' && (!e.partitionKey || !e.valueKey)) return 'Select a partition key and a value key';
+        if (e.modelType === 'tlsh' && e.keyFields.filter(Boolean).length !== 1) {
+            return 'Set the log field that holds the TLSH digest';
+        }
         if ((e.modelType === 'first_seen' || e.modelType === 'volume_baseline') && !e.keyFields.filter(Boolean).length) {
             return e.modelType === 'volume_baseline' ? 'Add at least one entity field' : 'Add at least one key field';
         }

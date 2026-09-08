@@ -1,5 +1,7 @@
 package parser
 
+import "sort"
+
 // CommandContext provides shared state for command handlers during declare and execute phases.
 type CommandContext struct {
 	Registry *FieldRegistry
@@ -59,6 +61,18 @@ func registerTransformCommand(handler CommandHandler, names ...string) {
 	for _, name := range names {
 		transformCommandNames[name] = true
 	}
+}
+
+// RegisteredCommandNames returns every registered command name, including aliases.
+// Exported so the built-in query reference can be tested against the real registry
+// rather than against a hand-maintained list that silently drifts.
+func RegisteredCommandNames() []string {
+	names := make([]string, 0, len(commandHandlers))
+	for name := range commandHandlers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // getCommandHandler returns the handler for a command name, or nil if not found.

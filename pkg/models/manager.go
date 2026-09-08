@@ -266,7 +266,7 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	// alert state; the operator enables it and configures actions/throttle on the
 	// Alerts page. Best-effort: a failure here must not fail model creation, the
 	// alert can be (re)created on a later update.
-	if m.alerts != nil {
+	if m.alerts != nil && req.ModelType.SupportsAlert() {
 		mo := &Model{
 			ID: id, FractalID: fractalID, Name: req.Name, Description: req.Description,
 			ModelType: req.ModelType, Definition: req.Definition, CreatedBy: createdBy,
@@ -287,7 +287,7 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if err := m.createCHObjects(bgCtx, id, req.Definition, req.ModelType, tableName, mvName); err != nil {
+		if err := m.createCHObjects(bgCtx, id, fractalID, req.Definition, req.ModelType, tableName, mvName); err != nil {
 			log.Printf("model %s: async create CH objects failed: %v", id, err)
 			_, _ = m.pg.Exec(bgCtx, `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
 				err.Error(), id)
@@ -336,7 +336,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		if err := m.dropCHObjects(ddlCtx, id, existing.CHTableName, existing.CHMVName, existing.ModelType); err != nil {
 			log.Printf("model %s: drop CH objects during update: %v", id, err)
 		}
-		if err := m.createCHObjects(ddlCtx, id, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
+		if err := m.createCHObjects(ddlCtx, id, existing.FractalID, req.Definition, existing.ModelType, existing.CHTableName, existing.CHMVName); err != nil {
 			_, _ = m.pg.Exec(context.Background(), `UPDATE analytics_models SET status='error', error_message=$1 WHERE id=$2`,
 				err.Error(), id)
 			return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
@@ -386,7 +386,7 @@ func detectionChanged(a, b ModelDefinition) bool {
 // syncLinkedAlert updates the model's backing alert query, creating it if absent.
 // Best-effort: alert sync failures are logged, not surfaced as model errors.
 func (m *Manager) syncLinkedAlert(ctx context.Context, model *Model) {
-	if m.alerts == nil {
+	if m.alerts == nil || !model.ModelType.SupportsAlert() {
 		return
 	}
 	if model.LinkedAlertID == "" {
@@ -479,6 +479,9 @@ func (m *Manager) SetAlertEnabled(ctx context.Context, id string, enabled bool) 
 	if err != nil {
 		return err
 	}
+	if !model.ModelType.SupportsAlert() {
+		return fmt.Errorf("%s models do not raise alerts; they index data for query-time use", model.ModelType)
+	}
 	// Lazily create the backing alert if it is missing (deleted on the Alerts
 	// page, or a model predating linked alerts), then apply the requested state.
 	if model.LinkedAlertID == "" {
@@ -506,11 +509,11 @@ func (m *Manager) SetAlertEnabled(ctx context.Context, id string, enabled bool) 
 
 func isCHDDLTimeout(err error) bool { return storage.IsDDLTimeout(err) }
 
-func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
+func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	if mt.IsScheduled() {
-		return m.createNetworkCHObjects(ctx, id, def, mt, tableName, mvName)
+		return m.createNetworkCHObjects(ctx, id, fractalID, def, mt, tableName, mvName)
 	}
-	tableSQL, mvSQL, err := GenerateDDL(def, mt, "`"+tableName+"`", "`"+mvName+"`")
+	tableSQL, mvSQL, err := GenerateDDL(def, mt, "`"+tableName+"`", "`"+mvName+"`", fractalID)
 	if err != nil {
 		return err
 	}
@@ -548,7 +551,7 @@ func (m *Manager) createCHObjects(ctx context.Context, id string, def ModelDefin
 // model owns: the rolling-state table (MV target), the results table (scorer output,
 // read by model_lookup / the data viewer), and the MV that maintains state at ingest.
 // Backfill is N/A: the MV + TTL self-seed the rolling window.
-func (m *Manager) createNetworkCHObjects(ctx context.Context, id string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
+func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	stateName := chModelStateName(id)
 	windowDays := def.WindowDays()
 
@@ -563,7 +566,7 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id string, def Mod
 		return fmt.Errorf("create results table: %w", err)
 	}
 
-	mvSQL, err := BuildNetStateMV(def, mt, "`"+stateName+"`", "`"+mvName+"`")
+	mvSQL, err := BuildNetStateMV(def, mt, "`"+stateName+"`", "`"+mvName+"`", fractalID)
 	if err != nil {
 		return err
 	}
@@ -680,7 +683,9 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 	case ModelTypeRarity:
 		return m.getRarityData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "entity_key")
+	case ModelTypeTLSH:
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "digest")
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, search, sortCol, sortDir, limit, offset)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -754,33 +759,36 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, searc
 // an optional predicate ANDed into the scan (e.g. a search filter). first_seen's
 // aggregates (min/max/sum over exact timestamps) are day-chunk invariant, so the
 // preview matches the post-backfill table without day bucketing.
-func firstSeenAggSQL(source, fidEsc, extraWhere string) string {
+// firstSeenAggSQL collapses the per-row aggregate state into one row per key.
+// keyCol is "entity_key" for first_seen models and "digest" for tlsh models, which
+// share this shape exactly.
+func firstSeenAggSQL(source, fidEsc, extraWhere, keyCol string) string {
 	q := fmt.Sprintf(`
-SELECT entity_key,
+SELECT %s,
     min(first_seen) AS first_seen,
     max(last_seen) AS last_seen,
     sum(event_count) AS event_count,
     arraySort(groupUniqArrayMerge(365)(days)) AS days
 FROM %s
-WHERE fractal_id = '%s'`, source, fidEsc)
+WHERE fractal_id = '%s'`, keyCol, source, fidEsc)
 	if extraWhere != "" {
 		q += "\nAND " + extraWhere
 	}
-	q += "\nGROUP BY entity_key"
+	q += "\nGROUP BY " + keyCol
 	return q
 }
 
-func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
-	allowed := map[string]bool{"entity_key": true, "first_seen": true, "last_seen": true, "event_count": true}
+func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int, keyCol string) ([]map[string]interface{}, uint64, error) {
+	allowed := map[string]bool{keyCol: true, "first_seen": true, "last_seen": true, "event_count": true}
 	if !allowed[sortCol] {
 		sortCol = "first_seen"
 	}
 
 	extra := ""
 	if search != "" {
-		extra = fmt.Sprintf("entity_key ILIKE '%%%s%%'", storage.EscCHStr(search))
+		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(search))
 	}
-	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra)
+	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol)
 
 	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
 	var total uint64
@@ -965,7 +973,9 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 	case ModelTypeRarity:
 		return m.getRarityStats(ctx, qt, fid)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenStats(ctx, qt, fid)
+		return m.getFirstSeenStats(ctx, qt, fid, "entity_key")
+	case ModelTypeTLSH:
+		return m.getFirstSeenStats(ctx, qt, fid, "digest")
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -994,17 +1004,17 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string) (map[strin
 	return result, nil
 }
 
-func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid, keyCol string) (map[string]interface{}, error) {
 	q := fmt.Sprintf(`
 SELECT count() AS total_entities,
        min(first_seen) AS oldest_seen,
        max(last_seen) AS newest_seen,
        countIf(first_seen >= now() - INTERVAL 1 DAY) AS new_today
 FROM (
-    SELECT entity_key, min(first_seen) AS first_seen, max(last_seen) AS last_seen
+    SELECT %s, min(first_seen) AS first_seen, max(last_seen) AS last_seen
     FROM %s FINAL WHERE fractal_id = '%s'
-    GROUP BY entity_key
-)`, qt, fid)
+    GROUP BY %s
+)`, keyCol, qt, fid, keyCol)
 	rows, err := m.ch.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen stats: %w", err)
@@ -1062,7 +1072,9 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 	case ModelTypeRarity:
 		return m.getRarityHistogram(ctx, qt, fid)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenHistogram(ctx, qt, fid)
+		return m.getFirstSeenHistogram(ctx, qt, fid, "entity_key")
+	case ModelTypeTLSH:
+		return m.getFirstSeenHistogram(ctx, qt, fid, "digest")
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineHistogram(ctx, tableName, model.Definition, fid)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -1148,8 +1160,8 @@ func rarityConfidenceInner(source, fidEsc string) string {
 
 // firstSeenCountInner returns the SQL projecting one `event_count` column per
 // first_seen entity, ready for histogram bucketing.
-func firstSeenCountInner(source, fidEsc string) string {
-	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "") + ") WHERE event_count >= 1"
+func firstSeenCountInner(source, fidEsc, keyCol string) string {
+	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol) + ") WHERE event_count >= 1"
 }
 
 func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
@@ -1160,8 +1172,8 @@ func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string) (map[s
 	return map[string]interface{}{"metric": "confidence", "buckets": buckets}, nil
 }
 
-func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
-	buckets, err := m.runHistogram(ctx, firstSeenCountInner(qt+" FINAL", fid), firstSeenHistBucketExpr, firstSeenHistLabels)
+func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol string) (map[string]interface{}, error) {
+	buckets, err := m.runHistogram(ctx, firstSeenCountInner(qt+" FINAL", fid, keyCol), firstSeenHistBucketExpr, firstSeenHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen histogram: %w", err)
 	}
@@ -1318,6 +1330,19 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		if len(def.KeyFields) == 0 {
 			return fmt.Errorf("key_fields is required for first_seen models")
 		}
+	case ModelTypeTLSH:
+		// One field, because the key is a single digest. A composite key would be
+		// concatenated into something no longer parseable as a TLSH digest.
+		if len(def.KeyFields) != 1 || strings.TrimSpace(def.KeyFields[0]) == "" {
+			return fmt.Errorf("tlsh models take exactly one key field: the log field holding the digest")
+		}
+		// tlsh() filters logs with `<field> IN (<indexed digests>)`, so an indexed
+		// digest has to be the verbatim value stored in that field. An extraction
+		// indexes something derived (and lowercases it, if asked), which exists in
+		// no log field at all: the filter would then match nothing, silently.
+		if len(def.Extractions) > 0 {
+			return fmt.Errorf("tlsh models cannot use extractions: the indexed digest must be the value stored in the log field, so tlsh() can filter on it")
+		}
 	case ModelTypeVolumeBaseline:
 		if len(def.KeyFields) == 0 {
 			return fmt.Errorf("key_fields is required for volume_baseline models")
@@ -1354,6 +1379,9 @@ func validateCreateRequest(req CreateRequest) error {
 	if alertMode == "" {
 		alertMode = "none"
 	}
+	if alertMode != "none" && !req.ModelType.SupportsAlert() {
+		return fmt.Errorf("%s models do not raise alerts; they index data for query-time use", req.ModelType)
+	}
 	if alertMode != "none" && alertMode != "paused" && alertMode != "active" {
 		return fmt.Errorf("invalid alert_mode: %s", alertMode)
 	}
@@ -1375,21 +1403,21 @@ func validateCreateRequest(req CreateRequest) error {
 // so one bad definition never blocks startup.
 func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 	rows, err := m.pg.Query(ctx,
-		`SELECT id, model_type, definition, ch_table_name, ch_mv_name FROM analytics_models`)
+		`SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, ch_mv_name FROM analytics_models`)
 	if err != nil {
 		log.Printf("models: reconcile CH objects: %v", err)
 		return
 	}
 	type target struct {
-		id, table, mv string
-		mt            ModelType
-		def           ModelDefinition
+		id, fractalID, table, mv string
+		mt                       ModelType
+		def                      ModelDefinition
 	}
 	var targets []target
 	for rows.Next() {
 		var t target
 		var mt, defJSON string
-		if err := rows.Scan(&t.id, &mt, &defJSON, &t.table, &t.mv); err != nil {
+		if err := rows.Scan(&t.id, &t.fractalID, &mt, &defJSON, &t.table, &t.mv); err != nil {
 			log.Printf("models: reconcile CH objects: scan: %v", err)
 			rows.Close()
 			return
@@ -1413,7 +1441,7 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 		if exists {
 			continue
 		}
-		if err := m.createCHObjects(ctx, t.id, t.def, t.mt, t.table, t.mv); err != nil {
+		if err := m.createCHObjects(ctx, t.id, t.fractalID, t.def, t.mt, t.table, t.mv); err != nil {
 			log.Printf("models: reconcile CH objects: recreate %s: %v", t.table, err)
 			continue
 		}
@@ -1422,4 +1450,192 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 	if recreated > 0 {
 		log.Printf("[Models] Recreated ClickHouse objects for %d model(s); run a backfill to repopulate", recreated)
 	}
+}
+
+// ReconcileMVFractalScope rewrites any model materialized view whose source scan is
+// not scoped to its owning fractal. Such an MV aggregates every fractal's inserts
+// into one fractal's table: an ingest-time cost paid by fractals that never read it,
+// and cross-fractal rows held back by nothing but the read-side predicate.
+//
+// Only the MV (an insert trigger) is dropped and recreated, never the target table,
+// so this loses no data and needs no backfill. It is fix-forward by design: rows
+// already indexed from other fractals stay put, unreadable, until their parts age out.
+//
+// Idempotent and safe at every startup; best-effort, so one bad model never blocks boot.
+func (m *Manager) ReconcileMVFractalScope(ctx context.Context) {
+	rows, err := m.pg.Query(ctx,
+		`SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, ch_mv_name
+		 FROM analytics_models WHERE status = 'active'`)
+	if err != nil {
+		log.Printf("models: reconcile mv scope: %v", err)
+		return
+	}
+	type target struct {
+		id, fractalID, table, mv string
+		mt                       ModelType
+		def                      ModelDefinition
+	}
+	var targets []target
+	for rows.Next() {
+		var t target
+		var mt, defJSON string
+		if err := rows.Scan(&t.id, &t.fractalID, &mt, &defJSON, &t.table, &t.mv); err != nil {
+			log.Printf("models: reconcile mv scope: scan: %v", err)
+			rows.Close()
+			return
+		}
+		if t.fractalID == "" || t.mv == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(defJSON), &t.def); err != nil {
+			log.Printf("models: reconcile mv scope: model %s definition: %v", t.id, err)
+			continue
+		}
+		t.mt = ModelType(mt)
+		targets = append(targets, t)
+	}
+	rows.Close()
+
+	rescoped := 0
+	for _, t := range targets {
+		// The MV that a scoped generator would emit carries this predicate verbatim.
+		// Its absence is what identifies a view created before scoping was enforced.
+		//
+		// count() rather than a bare select so "the view is gone" is a zero row
+		// count instead of a scan error indistinguishable from a transient failure.
+		want := fractalScopeClause(t.fractalID)
+		var present uint64
+		var createQuery string
+		err := m.ch.QueryRow(ctx,
+			`SELECT count(), any(create_table_query) FROM system.tables
+			 WHERE database = currentDatabase() AND name = ? AND engine = 'MaterializedView'`,
+			t.mv).Scan(&present, &createQuery)
+		if err != nil {
+			log.Printf("models: reconcile mv scope: probe %s: %v", t.mv, err)
+			continue
+		}
+		// An absent view is rebuilt here too. ReconcileCHObjects only fires when the
+		// target TABLE is missing, so a view lost on its own (an interrupted rescope,
+		// an out-of-band DROP) would otherwise never come back and the model would
+		// stop updating silently, forever.
+		if present > 0 && strings.Contains(createQuery, want) {
+			continue
+		}
+		if present == 0 {
+			log.Printf("models: reconcile mv scope: %s is missing; rebuilding", t.mv)
+		}
+
+		var mvSQL string
+		if t.mt.IsScheduled() {
+			mvSQL, err = BuildNetStateMV(t.def, t.mt, "`"+chModelStateName(t.id)+"`", "`"+t.mv+"`", t.fractalID)
+		} else {
+			_, mvSQL, err = GenerateDDL(t.def, t.mt, "`"+t.table+"`", "`"+t.mv+"`", t.fractalID)
+		}
+		if err != nil {
+			log.Printf("models: reconcile mv scope: build %s: %v", t.mv, err)
+			continue
+		}
+		// A DDL timeout on the DROP is NOT success here. The recreate below is
+		// CREATE ... IF NOT EXISTS, so if the old view survived the timeout the
+		// create silently does nothing and the unscoped view stays live. Leave it
+		// for the next startup rather than reporting a rescope that did not happen.
+		if present > 0 {
+			if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", t.mv))); err != nil {
+				log.Printf("models: reconcile mv scope: drop %s: %v (will retry next startup)", t.mv, err)
+				continue
+			}
+		}
+		if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
+			// The view is already dropped, so the model has stopped updating. Leave
+			// status alone: 'active' is what makes the next startup retry this, and
+			// marking it 'error' would exclude it from both this reconcile and
+			// ReconcileCHObjects (which only fires on a missing target table),
+			// stranding it with no automatic recovery path.
+			log.Printf("models: reconcile mv scope: recreate %s: %v (model is not updating until this succeeds; will retry next startup)", t.mv, err)
+			continue
+		}
+		rescoped++
+	}
+	if rescoped > 0 {
+		log.Printf("[Models] Re-scoped %d model materialized view(s) to their owning fractal", rescoped)
+	}
+}
+
+// TLSHIndex describes one fractal's TLSH digest index: the table tlsh() probes for
+// the distinct digests present in that fractal.
+type TLSHIndex struct {
+	ModelID   string
+	Name      string
+	TableName string // distributed table in cluster mode, local otherwise
+	FractalID string
+	KeyField  string // the log field whose digests this indexes
+}
+
+// ListTLSHIndexes returns the active tlsh model indexing keyField, per fractal.
+//
+// Keyed by fractal rather than by model name: tlsh() has to cover every fractal in
+// scope, and a prism spanning several needs each member's own index. A caller must
+// treat a missing entry as a hard failure, not a slow path. The probe is only
+// allowed to return a SUPERSET of the digests a query could see; reading a partial
+// set would drop real matches with no sign that anything was missed.
+//
+// A model carrying a definition filter is excluded: it indexes a subset of its
+// fractal's rows, so it cannot answer for a query whose filters differ.
+func (m *Manager) ListTLSHIndexes(ctx context.Context, fractalIDs []string, keyField string) (map[string]TLSHIndex, map[string]string, error) {
+	result := make(map[string]TLSHIndex)
+	// Models excluded because they carry a definition filter, keyed by fractal, so
+	// the caller can say why an index that visibly exists is not being used.
+	filtered := make(map[string]string)
+	if len(fractalIDs) == 0 || keyField == "" {
+		return result, filtered, nil
+	}
+	rows, err := m.pg.Query(ctx,
+		`SELECT id, name, definition, COALESCE(fractal_id::text,'') FROM analytics_models
+		 WHERE fractal_id = ANY($1) AND status = 'active' AND model_type = $2
+		 ORDER BY created_at ASC, id ASC`, pq.Array(fractalIDs), string(ModelTypeTLSH))
+	if err != nil {
+		return nil, nil, fmt.Errorf("list tlsh indexes: %w", err)
+	}
+	defer rows.Close()
+
+	distributed := m.ch.Topology().DistributedTables
+	for rows.Next() {
+		var id, name, ownerFractalID string
+		var defRaw []byte
+		if err := rows.Scan(&id, &name, &defRaw, &ownerFractalID); err != nil {
+			return nil, nil, fmt.Errorf("scan tlsh index: %w", err)
+		}
+		var def ModelDefinition
+		if err := json.Unmarshal(defRaw, &def); err != nil {
+			continue
+		}
+		if len(def.KeyFields) != 1 || def.KeyFields[0] != keyField {
+			continue
+		}
+		if len(def.Filter) > 0 {
+			// Indexes a subset of the fractal's rows, so it cannot answer for a query
+			// whose filters differ. Recorded rather than dropped: "no index" is a
+			// baffling error when one is sitting there in the UI.
+			if _, taken := filtered[ownerFractalID]; !taken {
+				filtered[ownerFractalID] = name
+			}
+			continue
+		}
+		if _, taken := result[ownerFractalID]; taken {
+			continue // oldest wins, matching model_lookup's tie-break
+		}
+
+		tableName := chModelTableName(id)
+		if distributed {
+			tableName = chModelDistName(id)
+		}
+		result[ownerFractalID] = TLSHIndex{
+			ModelID:   id,
+			Name:      name,
+			TableName: tableName,
+			FractalID: ownerFractalID,
+			KeyField:  keyField,
+		}
+	}
+	return result, filtered, rows.Err()
 }

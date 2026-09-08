@@ -296,7 +296,7 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 			ch.end.UTC().Format("2006-01-02 15:04:05"),
 			anchorLit)
 
-		sqlStr, err := BuildBackfillInsert(model.Definition, model.ModelType, targetTable, sourceTable, whereExtra)
+		sqlStr, err := BuildBackfillInsert(model.Definition, model.ModelType, targetTable, sourceTable, whereExtra, model.FractalID)
 		if err != nil {
 			m.finishBackfill(id, "failed", fmt.Sprintf("build query: %v", err))
 			return

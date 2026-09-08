@@ -9,10 +9,13 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 | **Rarity** | How unusual is a value within its group? | Partition key (group by), value key, min sample size |
 | **First / Last Seen** | When was an entity first and last observed? | One or more key fields |
 | **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, time bucket (hour/day), min history |
+| **TLSH Index** | Which fuzzy-hash digests exist here? | One digest field |
 | **Beacon** | Is this pair talking on a suspiciously regular interval? | `src_ip`, `dst_ip`, `dst_port` |
 | **Long Connection** | Is this pair holding an unusually long-lived session? | `src_ip`, `dst_ip`, `dst_port` |
 
 Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
+
+TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
 
 Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.
 

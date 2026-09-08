@@ -29,7 +29,7 @@ func TestBuildBackfillInsert_RarityDirect(t *testing.T) {
 		ValueKey:     "sin_port",
 	}
 	where := "timestamp >= '2026-06-12 00:00:00' AND timestamp < '2026-06-13 00:00:00' AND ingest_timestamp < '2026-06-13 09:00:00'"
-	sql, err := BuildBackfillInsert(def, ModelTypeRarity, "`model_x`", "`logs_distributed`", where)
+	sql, err := BuildBackfillInsert(def, ModelTypeRarity, "`model_x`", "`logs_distributed`", where, "f1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestBuildBackfillInsert_RarityDirect(t *testing.T) {
 func TestBuildBackfillInsert_FirstSeenDirect(t *testing.T) {
 	def := ModelDefinition{KeyFields: []string{"computer_name", "user"}}
 	where := "timestamp >= '2026-06-01 00:00:00' AND timestamp < '2026-06-02 00:00:00' AND ingest_timestamp < '2026-06-13 09:00:00'"
-	sql, err := BuildBackfillInsert(def, ModelTypeFirstSeen, "`m`", "`logs`", where)
+	sql, err := BuildBackfillInsert(def, ModelTypeFirstSeen, "`m`", "`logs`", where, "f1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestBuildBackfillInsert_RarityWithExtraction(t *testing.T) {
 		ValueKey:     "tld",
 	}
 	where := "timestamp >= '2026-06-12 00:00:00' AND timestamp < '2026-06-13 00:00:00' AND ingest_timestamp < '2026-06-13 09:00:00'"
-	sql, err := BuildBackfillInsert(def, ModelTypeRarity, "`m`", "`logs_distributed`", where)
+	sql, err := BuildBackfillInsert(def, ModelTypeRarity, "`m`", "`logs_distributed`", where, "f1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestMVDDLUnchanged(t *testing.T) {
 		PartitionKey: "computer_name",
 		ValueKey:     "sin_port",
 	}
-	_, mvSQL, err := GenerateDDL(def, ModelTypeRarity, "`t`", "`mv`")
+	_, mvSQL, err := GenerateDDL(def, ModelTypeRarity, "`t`", "`mv`", "f1")
 	if err != nil {
 		t.Fatal(err)
 	}

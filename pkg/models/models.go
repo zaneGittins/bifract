@@ -41,6 +41,13 @@ const (
 	ModelTypeRarity         ModelType = "rarity"
 	ModelTypeFirstSeen      ModelType = "first_seen"
 	ModelTypeVolumeBaseline ModelType = "volume_baseline"
+	// ModelTypeTLSH indexes the distinct TLSH digests present in a field. It is
+	// not a detection on its own: it is the index tlsh() probes, which is what
+	// makes similarity matching cost O(distinct digests) instead of O(rows).
+	// Its MV admits only well-formed digests, so the empty and malformed values
+	// that TLSH producers emit for small inputs can never enter the index (two
+	// of those compare at distance 0, which matches everything).
+	ModelTypeTLSH ModelType = "tlsh"
 	// Network analysis types. Unlike the streaming types above (incremental MVs),
 	// these are scheduled: an MV maintains compact rolling state and a background
 	// scorer periodically reads that state, scores in Go, and writes a results table.
@@ -53,8 +60,18 @@ const (
 func (ModelType) EnumValues() []string {
 	return []string{
 		string(ModelTypeRarity), string(ModelTypeFirstSeen), string(ModelTypeVolumeBaseline),
-		string(ModelTypeBeacon), string(ModelTypeLongConnection),
+		string(ModelTypeTLSH), string(ModelTypeBeacon), string(ModelTypeLongConnection),
 	}
+}
+
+// SupportsAlert reports whether a model type can drive a detection alert.
+//
+// A tlsh model is an index, not a detection: it records which digests exist, and
+// the judgement lives in tlsh()'s threshold at query time. It has no alert query
+// to generate, and GenerateQuery would return an empty one, which matches every
+// ingested log.
+func (mt ModelType) SupportsAlert() bool {
+	return mt != ModelTypeTLSH
 }
 
 // IsScheduled reports whether the model type is scored by the background scorer

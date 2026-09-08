@@ -154,3 +154,69 @@ Keyword AND at least one matching tag.
 * | comment(tags=incident) | groupby(src_ip, function=count())
 * | comment() | table(timestamp, norm_log, src_ip)
 ```
+
+## tlsh()
+
+Filter logs to those whose fuzzy-hash digest is similar to one or more known digests. TLSH survives recompilation and repacking, so it matches variants of a file that a SHA-256 comparison would miss.
+
+```
+event_id=1 | tlsh(field=tlsh, dict="known_bad", threshold=30)
+```
+
+### Parameters
+
+| Parameter   | Required | Description |
+|-------------|----------|-------------|
+| `field`     | Yes      | Log field holding the TLSH digest. Must be a stored field, not one produced by an earlier command. |
+| `hash`      | One of   | Literal digest to compare against. Comma-separate for several. |
+| `dict`      | One of   | Dictionary whose key column holds the digests to compare against. |
+| `threshold` | No       | Maximum TLSH distance. Defaults to 30. |
+
+Supply either `hash` or `dict`, not both.
+
+Distance runs from 0 (identical) upward. The convention is `<=30` for similar and `<=50` for loosely similar; the maximum accepted is 200.
+
+Digests are accepted as 70 hex characters, with or without the `T1` version prefix, in either case. Producers differ: the Go implementation behind Velociraptor's `tlsh_hash()` writes bare lowercase, while MalwareBazaar publishes the uppercase prefixed form.
+
+### Requires a TLSH index
+
+`tlsh()` reads a **tlsh analytics model** on the same field, which indexes the distinct digests present in the fractal. Without one the query fails and names the model to create.
+
+The index is what makes this affordable. Digests repeat heavily across rows, so the comparison runs over the number of distinct digests rather than the number of rows, which is why the filter works over billions of logs. The model's view admits only well-formed digests, so the empty and truncated values that producers emit for inputs under 50 bytes never enter the index. That matters: two empty digests compare at distance 0, which would otherwise match everything.
+
+Create the model under Analytics Models, then run a backfill to cover existing history.
+
+In a prism, every member fractal needs its own TLSH index on that field. A partially indexed prism fails rather than silently returning matches from only the indexed members.
+
+### Added columns
+
+| Column          | Description |
+|-----------------|-------------|
+| `tlsh_distance` | Distance to the closest matching needle |
+| `tlsh_match`    | The needle that matched: the dictionary key, or the literal digest |
+
+```
+event_id=1 | tlsh(field=tlsh, dict="known_bad") | sort(tlsh_distance)
+```
+
+### Position in the pipeline
+
+`tlsh()` filters log rows, so it must come before `groupby()` or any aggregation. Placing it after one is an error rather than a silent re-interpretation as a filter on the pre-aggregation rows.
+
+```
+event_id=1 | tlsh(field=tlsh, dict="known_bad") | groupby(computer_name, function=count())
+```
+
+### Cost
+
+Work scales with distinct digests multiplied by needle count. Aim to keep that product under roughly 10^9 for interactive hunting and 10^8 for alerting, which means curated, family-representative digest lists rather than corpus dumps.
+
+Three limits are enforced, each with an error naming the numbers involved:
+
+| Limit | Value |
+|-------|-------|
+| Distinct digests in the index | 500,000 |
+| Digests in a `dict` | 50,000 |
+| Distinct digests x needles | 2 x 10^9 |
+
+`tlsh()` works in alerts as well as in search. The index probe runs on each evaluation, which is cheap because it reads the model rather than the log table.

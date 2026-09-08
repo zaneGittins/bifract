@@ -170,6 +170,27 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		}
 	}
 
+	// Pre-resolve tlsh() to the digests within threshold of a needle. Comparing a
+	// field against many digests has no workable SQL form, so the distance runs in
+	// Go over the model's distinct-digest index and comes back as an IN filter.
+	var tlshMatches []parser.TLSHMatch
+	var hasTLSHFilter bool
+	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
+	if tlshErr != nil {
+		return nil, tlshErr
+	}
+	if hasTLSH {
+		hasTLSHFilter = true
+		scopeFractals := prismFractalIDs
+		if !isPrismContext {
+			scopeFractals = []string{fractalID}
+		}
+		tlshMatches, err = h.tlshResolver().Resolve(ctx, tlshParams, scopeFractals, prismID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	fractalIDForQuery := fractalID
 	if isPrismContext {
 		fractalIDForQuery = ""
@@ -185,6 +206,8 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
+		HasTLSHFilter:         hasTLSHFilter,
+		TLSHMatches:           tlshMatches,
 		GeoIPEnabled:          h.geoIPEnabled,
 		DictionaryDatabase:    h.dictDatabase(),
 		TableName:             h.queryTableName(),

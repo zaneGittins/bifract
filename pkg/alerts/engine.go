@@ -18,6 +18,7 @@ import (
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
+	"bifract/pkg/tlshresolve"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"github.com/lib/pq"
@@ -622,6 +623,29 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 				}
 			}
 			opts.Models = parserModels
+		}
+	}
+
+	// Pre-resolve tlsh(): the similarity distance runs in Go against the model's
+	// digest index, exactly as it does for an interactive search. Without this the
+	// command has no matches to render and every evaluation of the alert fails.
+	if pipeline, perr := parser.ParseQuery(alert.QueryString); perr == nil {
+		params, hasTLSH, terr := parser.ExtractTLSHParams(pipeline)
+		if terr != nil {
+			return opts, terr
+		}
+		if hasTLSH {
+			scopeFractals := opts.FractalIDs
+			if len(scopeFractals) == 0 && alert.FractalID != "" {
+				scopeFractals = []string{alert.FractalID}
+			}
+			resolver := &tlshresolve.Resolver{Models: e.modelManager, Dicts: e.dictManager, DB: e.ch}
+			matches, rerr := resolver.Resolve(ctx, params, scopeFractals, alert.PrismID)
+			if rerr != nil {
+				return opts, rerr
+			}
+			opts.HasTLSHFilter = true
+			opts.TLSHMatches = matches
 		}
 	}
 

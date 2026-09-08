@@ -24,7 +24,7 @@ func TestModelMVsAreDefiner(t *testing.T) {
 		{"rarity", ModelDefinition{PartitionKey: "src_ip", ValueKey: "dst_ip"}, ModelTypeRarity},
 		{"volume_baseline", ModelDefinition{PartitionKey: "src_ip", TimeBucket: "day"}, ModelTypeVolumeBaseline},
 	} {
-		ddl, err := generateMVDDL(tc.def, tc.mt, "state_tbl", "mv_name")
+		ddl, err := generateMVDDL(tc.def, tc.mt, "state_tbl", "mv_name", "f1")
 		if err != nil {
 			t.Fatalf("%s: generateMVDDL: %v", tc.name, err)
 		}
@@ -39,7 +39,7 @@ func TestModelMVsAreDefiner(t *testing.T) {
 		if len(parsed.Errors) != 0 {
 			t.Fatalf("%s: parse: %v", mt, parsed.Errors)
 		}
-		ddl, err := BuildNetStateMV(ModelDefinition{Filter: parsed.Filter}, mt, "state_tbl", "mv_name")
+		ddl, err := BuildNetStateMV(ModelDefinition{Filter: parsed.Filter}, mt, "state_tbl", "mv_name", "f1")
 		if err != nil {
 			t.Fatalf("%s: BuildNetStateMV: %v", mt, err)
 		}

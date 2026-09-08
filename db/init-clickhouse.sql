@@ -45,7 +45,10 @@ CREATE TABLE IF NOT EXISTS logs (
         -- migration rewriting this list from a fixed set would strip user-added
         -- hints and break dependent skip indexes.
         `target_image`        String,
-        `target_file`         String
+        `target_file`         String,
+        -- Fuzzy-hash digest read by tlsh(). Bloom-indexed because tlsh() resolves
+        -- to an equality IN over this column, which is exactly what a bloom prunes.
+        `tlsh`                String
     ),
     fractal_id LowCardinality(String) DEFAULT '',
     -- Near-constant within a part, so Delta leaves almost nothing to store.
@@ -77,6 +80,7 @@ CREATE TABLE IF NOT EXISTS logs (
     INDEX idx_image              fields.image              TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX idx_parent_image       fields.parent_image       TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX idx_original_file_name fields.original_file_name TYPE bloom_filter(0.001) GRANULARITY 1,
+    INDEX idx_tlsh               fields.tlsh               TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX idx_query              fields.query              TYPE bloom_filter(0.001) GRANULARITY 1,
     INDEX idx_event_id           fields.event_id           TYPE set(256)           GRANULARITY 1,
     INDEX idx_operation          fields.operation          TYPE set(256)            GRANULARITY 1,
@@ -194,7 +198,10 @@ CREATE TABLE IF NOT EXISTS logs_hot (
         -- migration rewriting this list from a fixed set would strip user-added
         -- hints and break dependent skip indexes.
         `target_image`        String,
-        `target_file`         String
+        `target_file`         String,
+        -- Fuzzy-hash digest read by tlsh(). Bloom-indexed because tlsh() resolves
+        -- to an equality IN over this column, which is exactly what a bloom prunes.
+        `tlsh`                String
     ),
     fractal_id       LowCardinality(String) DEFAULT '',
     ingest_timestamp DateTime64(3, 'UTC') DEFAULT now64(3, 'UTC') CODEC(Delta(8), ZSTD(1)),

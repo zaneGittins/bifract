@@ -114,13 +114,14 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	end := time.Now().UTC()
 	start := end.Add(-time.Duration(days) * 24 * time.Hour)
 	fidEsc := storage.EscCHStr(fractalID)
-	whereExtra := fmt.Sprintf("fractal_id = '%s' AND timestamp >= '%s' AND timestamp < '%s'",
-		fidEsc, start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
+	// buildModelSelect scopes the scan to fractalID itself; whereExtra adds only the window.
+	whereExtra := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
+		start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
 
 	// rarity counts distinct days, so its windowed aggregation must be split by
 	// day to match the day-chunked backfill; first_seen/volume are day-invariant.
 	opts := aggOpts{dayBucket: mt == ModelTypeRarity}
-	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, opts)
+	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, opts, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("build preview aggregation: %w", err)
 	}
@@ -131,7 +132,9 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	case ModelTypeRarity:
 		err = m.previewRarity(ctx, res, source, fidEsc, def)
 	case ModelTypeFirstSeen:
-		err = m.previewFirstSeen(ctx, res, source, fidEsc, def, end)
+		err = m.previewFirstSeen(ctx, res, source, fidEsc, def, end, "entity_key")
+	case ModelTypeTLSH:
+		err = m.previewFirstSeen(ctx, res, source, fidEsc, def, end, "digest")
 	case ModelTypeVolumeBaseline:
 		err = m.previewVolume(ctx, res, source, fidEsc, def, start)
 	default:
@@ -259,8 +262,8 @@ LIMIT 25`, scored, minSample)
 	return nil
 }
 
-func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time) error {
-	agg := firstSeenAggSQL(source, fidEsc, "")
+func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time, keyCol string) error {
+	agg := firstSeenAggSQL(source, fidEsc, "", keyCol)
 
 	// The is_new alert (cmd_model_lookup) fires on entities whose first_seen is
 	// within the last hour of each evaluation, so an exact count can't be replayed
@@ -275,19 +278,19 @@ func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, sour
     toUInt64(countIf(first_seen >= toDateTime64('%s', 3, 'UTC'))) AS new_recent
 FROM (%s)`, recent, agg)
 
-	topSQL := fmt.Sprintf(`SELECT entity_key, first_seen, last_seen, event_count
+	topSQL := fmt.Sprintf(`SELECT %s, first_seen, last_seen, event_count
 FROM (%s)
 ORDER BY first_seen DESC, event_count DESC
-LIMIT 25`, agg)
+LIMIT 25`, keyCol, agg)
 
 	hist, metrics, top, err := m.runPreviewQueries(ctx,
-		firstSeenCountInner(source, fidEsc), firstSeenHistBucketExpr, firstSeenHistLabels, metricsSQL, topSQL)
+		firstSeenCountInner(source, fidEsc, keyCol), firstSeenHistBucketExpr, firstSeenHistLabels, metricsSQL, topSQL)
 	if err != nil {
 		return err
 	}
 	res.Histogram = hist
 	res.Top = top
-	res.TopColumns = []string{"entity_key", "first_seen", "last_seen", "event_count"}
+	res.TopColumns = []string{keyCol, "first_seen", "last_seen", "event_count"}
 
 	alertOnNew := def.Alert != nil && def.Alert.AlertOnNew
 	if alertOnNew {
