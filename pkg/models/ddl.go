@@ -185,8 +185,16 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 	// stored in the field. Checked here as well as in validateDefinitionShape
 	// because the startup reconcile paths rebuild from stored definitions without
 	// re-validating them.
-	if mt == ModelTypeTLSH && len(def.Extractions) > 0 {
-		return "", fmt.Errorf("model select: tlsh models cannot use extractions")
+	if mt == ModelTypeTLSH {
+		if len(def.Extractions) > 0 {
+			return "", fmt.Errorf("model select: tlsh models cannot use extractions")
+		}
+		// The tlsh projection indexes KeyFields[0] directly. Update() does not
+		// re-run validateDefinitionShape, so an edited definition can arrive here
+		// with no key field at all: return an error rather than panicking.
+		if len(def.KeyFields) != 1 || strings.TrimSpace(def.KeyFields[0]) == "" {
+			return "", fmt.Errorf("model select: tlsh models take exactly one key field, got %d", len(def.KeyFields))
+		}
 	}
 
 	var b strings.Builder

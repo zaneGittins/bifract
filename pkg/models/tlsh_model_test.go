@@ -150,3 +150,48 @@ func TestTLSHModelRejectsExtractions(t *testing.T) {
 		t.Fatalf("extractions must remain valid for first_seen: %v", err)
 	}
 }
+
+// The model editor sends its default alert mode ("paused") for every type, so a
+// type that raises no alerts must be stored with alert_mode="none" rather than
+// rejected: rejecting made a TLSH index impossible to create through the UI at all.
+func TestTLSHModelAcceptsEditorDefaultAlertMode(t *testing.T) {
+	for _, mode := range []string{"", "none", "paused", "active"} {
+		req := CreateRequest{
+			Name:       "digest_index",
+			ModelType:  ModelTypeTLSH,
+			Definition: tlshTestDef(),
+			AlertMode:  mode,
+		}
+		if err := validateCreateRequest(req); err != nil {
+			t.Errorf("alert_mode %q: model rejected: %v", mode, err)
+		}
+	}
+}
+
+// A type that cannot alert still must not be advertised as alerting.
+func TestTLSHModelDoesNotSupportAlerts(t *testing.T) {
+	if ModelTypeTLSH.SupportsAlert() {
+		t.Error("tlsh models have no alert query to generate; GenerateQuery would return an empty one that matches every log")
+	}
+	for _, mt := range []ModelType{ModelTypeRarity, ModelTypeFirstSeen, ModelTypeVolumeBaseline, ModelTypeBeacon, ModelTypeLongConnection} {
+		if !mt.SupportsAlert() {
+			t.Errorf("%s should still support alerts", mt)
+		}
+	}
+}
+
+// Update() does not re-run validateDefinitionShape, so a malformed definition can
+// reach DDL generation. The tlsh projection indexes KeyFields[0] directly, and an
+// empty list there would panic the server rather than fail the request.
+func TestTLSHDDLRejectsMalformedKeyFieldsWithoutPanicking(t *testing.T) {
+	for _, def := range []ModelDefinition{
+		{KeyFields: nil},
+		{KeyFields: []string{}},
+		{KeyFields: []string{""}},
+		{KeyFields: []string{"tlsh", "image"}},
+	} {
+		if _, _, err := GenerateDDL(def, ModelTypeTLSH, "`t`", "`mv`", "f1"); err == nil {
+			t.Errorf("key_fields %v: expected an error, got none", def.KeyFields)
+		}
+	}
+}

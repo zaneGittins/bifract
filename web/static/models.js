@@ -2333,15 +2333,19 @@ ${isBeacon ? `
 
         const btn = document.getElementById('modelEditorSave');
         if (btn) btn.disabled = true;
+        // A TLSH index raises no alerts, so it is saved with no alert mode rather
+        // than the editor's default of "paused".
+        const alertMode = e.modelType === 'tlsh' ? 'none' : e.alertMode;
+
         try {
             if (e.editId) {
                 await this._api('PUT', `/models/${e.editId}`, {
-                    name: e.name.trim(), description: e.description.trim(), definition: def, alert_mode: e.alertMode,
+                    name: e.name.trim(), description: e.description.trim(), definition: def, alert_mode: alertMode,
                 });
                 Toast.success('Model updated');
             } else {
                 await this._api('POST', '/models', {
-                    name: e.name.trim(), description: e.description.trim(), model_type: e.modelType, definition: def, alert_mode: e.alertMode,
+                    name: e.name.trim(), description: e.description.trim(), model_type: e.modelType, definition: def, alert_mode: alertMode,
                 });
                 Toast.success('Model created');
             }

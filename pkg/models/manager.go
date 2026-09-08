@@ -234,6 +234,12 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	if err := validateCreateRequest(req); err != nil {
 		return nil, err
 	}
+	// A type that raises no alerts is stored as such rather than rejected. The
+	// editor sends its default mode ("paused") for every type, so rejecting here
+	// made an index model impossible to create at all.
+	if !req.ModelType.SupportsAlert() {
+		req.AlertMode = "none"
+	}
 
 	defJSON, _ := json.Marshal(req.Definition)
 
@@ -1378,9 +1384,6 @@ func validateCreateRequest(req CreateRequest) error {
 	alertMode := req.AlertMode
 	if alertMode == "" {
 		alertMode = "none"
-	}
-	if alertMode != "none" && !req.ModelType.SupportsAlert() {
-		return fmt.Errorf("%s models do not raise alerts; they index data for query-time use", req.ModelType)
 	}
 	if alertMode != "none" && alertMode != "paused" && alertMode != "active" {
 		return fmt.Errorf("invalid alert_mode: %s", alertMode)
