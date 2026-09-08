@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
+	"bifract/pkg/tlshresolve"
 )
 
 // ExecuteResult is the output of a server-side (non-HTTP) BQL execution. Its
@@ -185,9 +187,13 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		if !isPrismContext {
 			scopeFractals = []string{fractalID}
 		}
-		tlshMatches, err = h.tlshResolver().Resolve(ctx, tlshParams, scopeFractals, prismID)
-		if err != nil {
-			return nil, err
+		res, rerr := h.tlshResolver().Resolve(ctx, tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: prismID})
+		if rerr != nil {
+			return nil, rerr
+		}
+		tlshMatches = res.Matches
+		for _, w := range tlshSkipWarnings(tlshParams.Field, res.Skipped) {
+			log.Printf("[ExecuteBQL] %s", w)
 		}
 	}
 

@@ -20,6 +20,11 @@ import (
 type Client struct {
 	cfg  Config
 	http *http.Client
+	// upload has no deadline of its own: BIFRACT_TIMEOUT bounds an interactive
+	// call, while a bulk load costs whatever the body it carries costs, so the
+	// caller's context is what bounds it. The transport is shared, so both
+	// clients pool the same connections.
+	upload *http.Client
 
 	// Answers that do not change for the life of the process. Tool calls can run
 	// concurrently, so the caches are guarded.
@@ -31,17 +36,14 @@ type Client struct {
 // NewClient builds the one client the process shares, so connections are pooled
 // across tool calls.
 func NewClient(cfg Config) *Client {
+	transport := &http.Transport{TLSClientConfig: cfg.TLS}
+	// A redirect would drop the Authorization header or replay it at another
+	// host; neither is something to do silently with a key.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
-		cfg: cfg,
-		http: &http.Client{
-			Timeout:   cfg.Timeout,
-			Transport: &http.Transport{TLSClientConfig: cfg.TLS},
-			// A redirect would drop the Authorization header or replay it at
-			// another host; neither is something to do silently with a key.
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		cfg:    cfg,
+		http:   &http.Client{Timeout: cfg.Timeout, Transport: transport, CheckRedirect: noRedirect},
+		upload: &http.Client{Transport: transport, CheckRedirect: noRedirect},
 	}
 }
 
@@ -178,6 +180,45 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		return nil, fmt.Errorf("%s %s: the response could not be read: %w", method, path, err)
 	}
 	return aitools.Decode(method, path, resp.StatusCode, payload)
+}
+
+// Upload posts a body the endpoint reads as a file rather than as JSON. body is
+// sent verbatim under contentType, gzip-encoded when compressed is set, and the
+// deadline comes from ctx.
+func (c *Client) Upload(ctx context.Context, path string, query url.Values, contentType string, compressed bool, body []byte) (any, error) {
+	target := c.cfg.APIBase() + path
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("could not build the upload request for %s: %w", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	if c.cfg.Scope != "" {
+		req.Header.Set("X-Bifract-Scope", c.cfg.Scope)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", contentType)
+	if compressed {
+		req.Header.Set("Content-Encoding", "gzip")
+	}
+	// Set so the server sees a length rather than a chunked body it has to read
+	// to the end before it can reject an oversized one.
+	req.ContentLength = int64(len(body))
+
+	resp, err := c.upload.Do(req)
+	if err != nil {
+		return nil, c.transportError(http.MethodPost, path, err)
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: the response could not be read: %w", path, err)
+	}
+	return aitools.Decode(http.MethodPost, path, resp.StatusCode, payload)
 }
 
 func (c *Client) transportError(method, path string, err error) error {

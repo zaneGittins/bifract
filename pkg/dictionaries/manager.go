@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"slices"
 	"strings"
 
 	"bifract/pkg/storage"
@@ -162,18 +163,48 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 
 // GetDictionaryByName returns a dictionary by name within a fractal or prism scope.
 // Pass fractalID or prismID (not both). The matching scope column is used for the lookup.
+const dictByNameColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at`
+
+// dictByNameFractalSQL and dictByNamePrismSQL resolve a dictionary by name within
+// a scope. Both admit globals, matching ListDictionaryMappings (which match() uses)
+// so the two paths agree on what is visible, and the ORDER BY makes a scope-owned
+// dictionary shadow a global of the same name.
+//
+// Two things the SQL has to get right, both of which failed silently in review:
+//
+//   - The scope id is compared as text on BOTH sides. Using the parameter as a uuid
+//     in the WHERE and as text in the ORDER BY leaves its type ambiguous, and
+//     Postgres rejects the whole statement at Parse time with "operator does not
+//     exist: uuid = text" (lib/pq sends no parameter type OIDs).
+//   - The sort key is COALESCEd. A global dictionary is owned by a fractal, so its
+//     prism_id is NULL and the comparison yields NULL; DESC defaults to NULLS FIRST,
+//     which would sort the global ahead of the scope's own and invert the shadowing.
+const dictByNameFractalSQL = `SELECT ` + dictByNameColumns + `
+	FROM dictionaries WHERE name = $2 AND (fractal_id::text = $1 OR is_global = true)
+	ORDER BY COALESCE(fractal_id::text = $1, false) DESC, created_at ASC LIMIT 1`
+
+const dictByNamePrismSQL = `SELECT ` + dictByNameColumns + `
+	FROM dictionaries WHERE name = $2 AND (prism_id::text = $1 OR is_global = true)
+	ORDER BY COALESCE(prism_id::text = $1, false) DESC, created_at ASC LIMIT 1`
+
 func (m *Manager) GetDictionaryByName(ctx context.Context, fractalID, prismID, name string) (*Dictionary, error) {
 	d := &Dictionary{}
 	var colsJSON []byte
 	var q string
 	var arg string
+	// A global dictionary is owned by one fractal but visible from every scope, so
+	// resolution by name has to consider it. Without this a global dictionary was
+	// reachable through match() (see ListDictionaryMappings, which has always had
+	// the is_global clause) but not by name, so any by-name caller failed with a
+	// bare "no rows in result set" from anywhere but the owning fractal.
+	//
+	// A scope-owned dictionary wins over a global of the same name: ORDER BY puts
+	// the exact match first so the local definition shadows the shared one.
 	if prismID != "" {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
-		     FROM dictionaries WHERE prism_id = $1 AND name = $2`
+		q = dictByNamePrismSQL
 		arg = prismID
 	} else {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
-		     FROM dictionaries WHERE fractal_id = $1 AND name = $2`
+		q = dictByNameFractalSQL
 		arg = fractalID
 	}
 	err := m.pg.QueryRow(ctx, q, arg, name).
@@ -729,79 +760,151 @@ func (m *Manager) reloadDictionaries(ctx context.Context, dict *Dictionary) {
 
 const csvImportBatchSize = 1000
 
-// ImportCSV parses a CSV reader and batch-inserts all rows. First row must be headers.
-// Returns the number of rows imported.
-func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader) (int, error) {
+// ImportOptions tunes a CSV load.
+type ImportOptions struct {
+	// DeferReload skips the live-dictionary refresh and the row-count update. A
+	// caller loading one file as a series of requests sets it on every request
+	// and finishes with ReloadDictionary, which does both once: a reload reads
+	// the whole table back, so paying for it per chunk is quadratic.
+	DeferReload bool
+}
+
+// ImportCSV loads rows from a CSV, whose first record is the header. Rows are
+// inserted in batches as the file is read, so a file of any size costs one batch
+// of memory rather than the whole file. Returns the number of rows imported,
+// including on failure, since a partial load has already been committed.
+func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader, opts ImportOptions) (int, error) {
 	dict, err := m.GetDictionary(ctx, id)
 	if err != nil {
 		return 0, err
 	}
 
+	reader, headers, err := newCSVImport(r)
+	if err != nil {
+		return 0, err
+	}
+	if dict, err = m.addMissingColumns(ctx, dict, headers); err != nil {
+		return 0, err
+	}
+
+	// New rows append after whatever the dictionary already holds, so a file
+	// loaded in several requests keeps the order it was written in.
+	next, err := m.maxSeq(ctx, dict)
+	if err != nil {
+		return 0, err
+	}
+
+	imported, err := streamCSVBatches(reader, headers, dict.KeyColumn, next, csvImportBatchSize,
+		func(batch []DictionaryRow, seqs []uint64) error {
+			return m.batchInsertRows(ctx, dict, batch, seqs)
+		})
+	if err != nil {
+		return imported, err
+	}
+
+	if imported > 0 && !opts.DeferReload {
+		m.reloadDictionaries(ctx, dict)
+		m.updateRowCount(ctx, dict)
+	}
+	return imported, nil
+}
+
+// newCSVImport starts a reader on the header record.
+func newCSVImport(r io.Reader) (*csv.Reader, []string, error) {
 	reader := csv.NewReader(r)
+	// A short record pads and a long one is truncated to the header. One ragged
+	// line in a million-row file should cost that line, not the whole load.
+	reader.FieldsPerRecord = -1
+	reader.ReuseRecord = true
 	headers, err := reader.Read()
 	if err != nil {
-		return 0, fmt.Errorf("failed to read CSV headers: %w", err)
+		return nil, nil, badInput("failed to read CSV headers: %v", err)
 	}
+	return reader, slices.Clone(headers), nil
+}
 
-	// Auto-add any new columns found in CSV
-	existingCols := make(map[string]bool)
-	for _, c := range dict.Columns {
-		existingCols[c.Name] = true
-	}
-	for _, h := range headers {
-		if !existingCols[h] {
-			if _, err := m.AddColumn(ctx, id, h); err != nil {
-				return 0, fmt.Errorf("failed to add column %q: %w", h, err)
-			}
-			existingCols[h] = true
-			dict, err = m.GetDictionary(ctx, id)
-			if err != nil {
-				return 0, err
-			}
+// streamCSVBatches reads records and hands them to insert in batches, numbering
+// them from firstSeq+1. It returns the number of rows insert accepted, which on
+// a parse error part way through a file is what is already committed.
+func streamCSVBatches(reader *csv.Reader, headers []string, keyColumn string, firstSeq uint64, batchSize int,
+	insert func([]DictionaryRow, []uint64) error) (int, error) {
+
+	imported, seq := 0, firstSeq
+	batch := make([]DictionaryRow, 0, batchSize)
+	seqs := make([]uint64, 0, batchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
 		}
+		if err := insert(batch, seqs); err != nil {
+			return err
+		}
+		imported += len(batch)
+		batch, seqs = batch[:0], seqs[:0]
+		return nil
 	}
 
-	var rows []DictionaryRow
-	rowNum := 0
-	for {
+	for line := 1; ; line++ {
 		record, err := reader.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return len(rows), fmt.Errorf("CSV parse error at row %d: %w", rowNum+1, err)
+			// Whatever is in hand is real data, so commit it before reporting.
+			_ = flush()
+			return imported, badInput("CSV parse error at row %d: %v", line, err)
 		}
-		rowNum++
 
-		fields := make(map[string]string)
+		fields := make(map[string]string, len(headers))
 		for i, h := range headers {
 			if i < len(record) {
 				fields[h] = record[i]
 			}
 		}
-
-		keyVal := fields[dict.KeyColumn]
-		if keyVal == "" {
+		// A row with no key is not addressable, so it would only ever be junk.
+		if fields[keyColumn] == "" {
 			continue
 		}
-		rows = append(rows, DictionaryRow{Key: keyVal, Fields: fields})
-	}
 
-	if len(rows) == 0 {
-		return 0, nil
+		seq++
+		batch = append(batch, DictionaryRow{Key: fields[keyColumn], Fields: fields})
+		seqs = append(seqs, seq)
+		if len(batch) == batchSize {
+			if err := flush(); err != nil {
+				return imported, err
+			}
+		}
 	}
+	return imported, flush()
+}
 
-	// A CSV defines its own order, so number the rows as the file lists them.
-	seqs := make([]uint64, len(rows))
-	for i := range rows {
-		seqs[i] = uint64(i + 1)
+// maxImportColumns bounds how wide an import may make a dictionary. Adding a
+// column alters the table and recreates its ClickHouse dictionaries, so a file
+// with a header per row is otherwise an expensive way to stall the cluster.
+const maxImportColumns = 256
+
+// addMissingColumns adds any header the dictionary has no column for, and
+// returns the definition that results.
+func (m *Manager) addMissingColumns(ctx context.Context, dict *Dictionary, headers []string) (*Dictionary, error) {
+	known := make(map[string]bool, len(dict.Columns))
+	for _, c := range dict.Columns {
+		known[c.Name] = true
 	}
-	if err := m.batchInsertRows(ctx, dict, rows, seqs); err != nil {
-		return 0, err
+	for _, h := range headers {
+		if known[h] {
+			continue
+		}
+		if len(known) >= maxImportColumns {
+			return nil, badInput("a dictionary holds at most %d columns, and this file needs more", maxImportColumns)
+		}
+		added, err := m.AddColumn(ctx, dict.ID, h)
+		if err != nil {
+			return nil, fmt.Errorf("failed to add column %q: %w", h, err)
+		}
+		known[h] = true
+		dict = added
 	}
-	m.reloadDictionaries(ctx, dict)
-	m.updateRowCount(ctx, dict)
-	return len(rows), nil
+	return dict, nil
 }
 
 // batchInsertRows inserts rows in batches of csvImportBatchSize using multi-row INSERT
@@ -908,6 +1011,9 @@ func (m *Manager) ReloadDictionary(ctx context.Context, id string) error {
 		return err
 	}
 	m.reloadDictionaries(ctx, dict)
+	// Also the finalizer for a deferred bulk load, which leaves the stored count
+	// behind the table it just wrote.
+	m.updateRowCount(ctx, dict)
 	return nil
 }
 

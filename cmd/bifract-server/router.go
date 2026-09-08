@@ -1571,11 +1571,11 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleProposeFromYAML,
 				})
 				r.Register(api.Route{
-					Method:   http.MethodGet,
-					Path:     "/alerts/bundle",
-					Access:   api.AccessAnalyst,
-					Summary:  "Export every manual alert in the scope, with its tests, as a zip archive.",
-					Handler:  d.alertHandler.HandleExportBundle,
+					Method:  http.MethodGet,
+					Path:    "/alerts/bundle",
+					Access:  api.AccessAnalyst,
+					Summary: "Export every manual alert in the scope, with its tests, as a zip archive.",
+					Handler: d.alertHandler.HandleExportBundle,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodPost,
@@ -2576,9 +2576,12 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Method:   http.MethodPost,
 				Path:     "/dictionaries/{id}/import",
 				Consumes: "multipart/form-data",
+				Query: []api.QueryParam{
+					{Name: "reload", Type: "boolean"},
+				},
 				Access:   api.AccessAnalyst,
 				Response: api.Response[map[string]int]{},
-				Summary:  "Load dictionary rows from an uploaded CSV.",
+				Summary:  "Load dictionary rows from an uploaded CSV. reload=false defers the live refresh for a chunked load, which POST /reload then finalizes.",
 				Handler:  d.dictionaryHandler.HandleImportCSV,
 			})
 			r.Register(api.Route{

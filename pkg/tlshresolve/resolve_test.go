@@ -3,8 +3,10 @@ package tlshresolve
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
+	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/tlsh"
 )
@@ -171,5 +173,155 @@ func TestMatchTLSHLowerBoundPruningIsSafe(t *testing.T) {
 				t.Errorf("threshold %d: digest %s pruned incorrectly (want match=%v)", threshold, c.raw, want)
 			}
 		}
+	}
+}
+
+// An unindexed fractal is skipped, not scanned and not fatal: the query still runs
+// over the indexed members. Scanning it is not cheap (nothing prunes a
+// distinct-value read), and blocking the whole prism over a fractal that may hold
+// no digests at all is worse than covering less.
+func TestNoIndexErrorNamesTheModelToCreate(t *testing.T) {
+	// Single fractal: an empty result would read as "no matches" rather than
+	// "not searched", so this must be an error.
+	err := tlshNoIndexError("tlsh", []string{"f1"}, nil, "")
+	for _, want := range []string{"tlsh", "backfill", "Analytics Models"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("single-fractal error should mention %q, got: %v", want, err)
+		}
+	}
+
+	// Prism where nothing at all is indexed.
+	prismErr := tlshNoIndexError("tlsh", []string{"f1", "f2"}, nil, "p1")
+	if !strings.Contains(prismErr.Error(), "prism") {
+		t.Errorf("prism error should say so, got: %v", prismErr)
+	}
+
+	// A filtered model is a different fix and must not be reported as "no index".
+	filteredErr := tlshNoIndexError("tlsh", []string{"f1"}, map[string]string{"f1": "partial_idx"}, "")
+	if !strings.Contains(filteredErr.Error(), "partial_idx") {
+		t.Errorf("filtered-model error should name the model, got: %v", filteredErr)
+	}
+	if strings.Contains(filteredErr.Error(), "no TLSH index") {
+		t.Errorf("a filtered model exists; the error must not claim there is none: %v", filteredErr)
+	}
+}
+
+// fakeDB returns a fixed digest list for any index probe.
+type fakeDB struct {
+	digests []string
+	queries []string
+}
+
+func (f *fakeDB) Query(_ context.Context, q string) ([]map[string]interface{}, error) {
+	f.queries = append(f.queries, q)
+	rows := make([]map[string]interface{}, 0, len(f.digests))
+	for _, d := range f.digests {
+		rows = append(rows, map[string]interface{}{"digest": d})
+	}
+	return rows, nil
+}
+
+// The whole design turns on telling "searched and found nothing" apart from "not
+// searched". An unindexed member is skipped so it never blocks the query, but the
+// skip is reported; only when nothing at all was indexed is it an error, because
+// then an empty result would be indistinguishable from a clean miss.
+func TestProbeSkipsUnindexedWithoutScanningThem(t *testing.T) {
+	db := &fakeDB{digests: []string{digestA}}
+	r := &Resolver{DB: db}
+	indexes := map[string]models.TLSHIndex{
+		"f-indexed": {Name: "idx", TableName: "model_idx", FractalID: "f-indexed"},
+	}
+
+	candidates, skipped, err := r.probeTLSHIndex(context.Background(), indexes, nil,
+		[]string{"f-indexed", "f-bare-1", "f-bare-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Errorf("expected the indexed fractal's digest, got %d candidates", len(candidates))
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("expected both unindexed fractals reported, got %v", skipped)
+	}
+	for _, sk := range skipped {
+		if sk.FilteredModel != "" {
+			t.Errorf("no filtered model was supplied, so none should be reported: %+v", sk)
+		}
+	}
+	// One query only: an unindexed fractal must not be scanned.
+	if len(db.queries) != 1 {
+		t.Errorf("expected exactly one probe query (the index), got %d:\n%v", len(db.queries), db.queries)
+	}
+	for _, q := range db.queries {
+		if strings.Contains(q, "f-bare") {
+			t.Errorf("an unindexed fractal was queried:\n%s", q)
+		}
+	}
+}
+
+// An index that exists but is empty means the fractal WAS searched, so it must not
+// be confused with an unindexed one.
+func TestEmptyIndexIsSearchedNotSkipped(t *testing.T) {
+	db := &fakeDB{digests: nil}
+	r := &Resolver{DB: db}
+	indexes := map[string]models.TLSHIndex{"f1": {Name: "idx", TableName: "model_idx", FractalID: "f1"}}
+
+	candidates, skipped, err := r.probeTLSHIndex(context.Background(), indexes, nil,
+		[]string{"f1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("expected no candidates, got %d", len(candidates))
+	}
+	if len(skipped) != 0 {
+		t.Errorf("an empty index is not a skip; got skipped=%v", skipped)
+	}
+}
+
+// The same digest present in two fractals is compared once.
+func TestProbeDeduplicatesAcrossFractals(t *testing.T) {
+	db := &fakeDB{digests: []string{digestA, digestA}}
+	r := &Resolver{DB: db}
+	indexes := map[string]models.TLSHIndex{
+		"f1": {Name: "i1", TableName: "m1", FractalID: "f1"},
+		"f2": {Name: "i2", TableName: "m2", FractalID: "f2"},
+	}
+	candidates, _, err := r.probeTLSHIndex(context.Background(), indexes, nil,
+		[]string{"f1", "f2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Errorf("expected the shared digest once, got %d", len(candidates))
+	}
+}
+
+// A fractal whose tlsh model exists but is filtered is skipped for a different
+// reason than one with no model at all, and the caller words the two differently:
+// "no index" is actively misleading when a model is sitting in the models list.
+func TestSkipCarriesTheFilteredModelReason(t *testing.T) {
+	db := &fakeDB{digests: []string{digestA}}
+	r := &Resolver{DB: db}
+	indexes := map[string]models.TLSHIndex{"f-ok": {Name: "idx", TableName: "m", FractalID: "f-ok"}}
+	filtered := map[string]string{"f-filtered": "partial_idx"}
+
+	_, skipped, err := r.probeTLSHIndex(context.Background(), indexes, filtered,
+		[]string{"f-ok", "f-filtered", "f-bare"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, s := range skipped {
+		got[s.FractalID] = s.FilteredModel
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected two skipped fractals, got %v", got)
+	}
+	if got["f-filtered"] != "partial_idx" {
+		t.Errorf("filtered fractal should name its model, got %q", got["f-filtered"])
+	}
+	if got["f-bare"] != "" {
+		t.Errorf("fractal with no model should name none, got %q", got["f-bare"])
 	}
 }

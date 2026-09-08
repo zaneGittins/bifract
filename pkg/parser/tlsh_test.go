@@ -254,3 +254,129 @@ func TestTLSHRejectsUnknownArguments(t *testing.T) {
 		})
 	}
 }
+
+// tlsh() is the one command whose field name reaches a hand-built SQL identifier
+// (the fallback probe for an unindexed fractal), and a quoted argument reaches the
+// parser verbatim. An unvalidated name closed the identifier and ran as SQL, which
+// crossed the fractal isolation boundary.
+func TestTLSHRejectsHostileFieldNames(t *testing.T) {
+	hostile := []string{
+		"a`::String, 1 AS z FROM system.tables --",
+		"a`",
+		"a'b",
+		"a b",
+		"a;DROP",
+		"a)",
+		"*",
+		"",
+	}
+	for _, f := range hostile {
+		p := TLSHParams{Field: f, Dict: "d", Threshold: DefaultTLSHThreshold}
+		if err := p.validate(); err == nil {
+			t.Errorf("field %q accepted, want rejected", f)
+		}
+	}
+
+	// Real field names must keep working, including nested and hyphenated forms.
+	for _, f := range []string{"tlsh", "target_tlsh", "host.name", "a-b", "field_1", "authenticode__extra_info_catalog"} {
+		p := TLSHParams{Field: f, Dict: "d", Threshold: DefaultTLSHThreshold}
+		if err := p.validate(); err != nil {
+			t.Errorf("field %q rejected: %v", f, err)
+		}
+	}
+}
+
+// End to end: a hostile name must not survive extraction either.
+func TestTLSHHostileFieldRejectedAtExtraction(t *testing.T) {
+	pipeline, err := ParseQuery(`* | tlsh(field="a` + "`" + `::String, 1 AS z FROM system.tables --", dict="d")`)
+	if err != nil {
+		t.Skipf("query does not parse: %v", err)
+	}
+	if _, _, err := ExtractTLSHParams(pipeline); err == nil {
+		t.Fatal("hostile field name accepted by ExtractTLSHParams")
+	}
+}
+
+// table() clears the source SELECT and rebuilds it from the registry, so a column
+// registered only as a placeholder (Expr == name) resolves to a raw fields.`name`
+// JSON path: an always-empty column rather than the computed one. The projected
+// tlsh columns must therefore publish their real expression via SetResolveExpr.
+func TestTLSHColumnsSurviveTable(t *testing.T) {
+	matches := []TLSHMatch{{Digest: tlshTestDigestA, Distance: 42, Needle: "dropper.a"}}
+	q := `event_id=1 | tlsh=* | tlsh(field=tlsh, dict="d", threshold=85) | table(timestamp, image, tlsh_distance, tlsh_match)`
+
+	sql, err := translateTLSH(t, q, tlshOpts(matches))
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if strings.Contains(sql, "fields.`tlsh_distance`") || strings.Contains(sql, "fields.`tlsh_match`") {
+		t.Fatalf("tlsh columns resolved as raw log fields, which are always empty:\n%s", sql)
+	}
+	if !strings.Contains(sql, "transform(") {
+		t.Fatalf("table() dropped the distance projection:\n%s", sql)
+	}
+	for _, want := range []string{"42", "dropper.a", "AS " + TLSHDistanceField, "AS " + TLSHMatchField} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("expected %q in the projection:\n%s", want, sql)
+		}
+	}
+}
+
+// The empty-result and negated forms project constants, and those must survive
+// table() the same way rather than falling back to a phantom JSON field.
+func TestTLSHConstantColumnsSurviveTable(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		query string
+		opts  QueryOptions
+	}{
+		{"no matches", `* | tlsh(field=tlsh, dict="d") | table(timestamp, tlsh_distance)`, tlshOpts(nil)},
+		{"negated", `* | !tlsh(field=tlsh, dict="d") | table(timestamp, tlsh_distance)`,
+			tlshOpts([]TLSHMatch{{Digest: tlshTestDigestA, Distance: 1, Needle: "n"}})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sql, err := translateTLSH(t, c.query, c.opts)
+			if err != nil {
+				t.Fatalf("translate: %v", err)
+			}
+			if strings.Contains(sql, "fields.`tlsh_distance`") {
+				t.Errorf("distance column resolved as a raw log field:\n%s", sql)
+			}
+			if !strings.Contains(sql, "toInt32(-1)") {
+				t.Errorf("expected the constant distance projection:\n%s", sql)
+			}
+		})
+	}
+}
+
+// Pulling extra dictionary columns onto a hit composes out of match(), but only
+// keyed on tlsh_match. The log row's own digest is merely SIMILAR to the needle,
+// never equal (except at distance 0), so match() on the log field would look up a
+// key the dictionary does not contain and enrich nothing. tlsh_match carries the
+// needle that actually matched, which is a real dictionary key.
+//
+// This composition depends on tlsh_match publishing its expression to the registry
+// (see publishTLSHExprs): as a bare placeholder it resolved to an empty JSON field
+// and the lookup silently returned defaults.
+func TestTLSHMatchEnrichesViaMatch(t *testing.T) {
+	opts := tlshOpts([]TLSHMatch{{Digest: tlshTestDigestA, Distance: 42, Needle: "T1NEEDLE"}})
+	opts.Dictionaries = map[string]map[string]string{"tlsh": {"key": "dict_tlsh", "name": "dict_tlsh"}}
+	opts.DictionaryDatabase = "bifract"
+
+	sql, err := translateTLSH(t,
+		`* | tlsh(field=tlsh, dict="tlsh") | match(dict="tlsh", field=tlsh_match, column=key, include=[name]) | table(timestamp, tlsh_distance, name)`,
+		opts)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	// The lookup key must be the matched needle, not the log's own digest.
+	if !strings.Contains(sql, "dictGetOrDefault('bifract.dict_tlsh', 'name'") {
+		t.Fatalf("expected a dictionary lookup for the extra column:\n%s", sql)
+	}
+	if !strings.Contains(sql, "'T1NEEDLE'") {
+		t.Errorf("lookup should key on the needle carried by tlsh_match:\n%s", sql)
+	}
+	if strings.Contains(sql, "fields.`tlsh_match`") {
+		t.Errorf("tlsh_match resolved as a raw log field, so the lookup would always miss:\n%s", sql)
+	}
+}

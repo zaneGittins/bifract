@@ -60,3 +60,46 @@ func TestClusterInsertIsForeground(t *testing.T) {
 		t.Errorf("cluster insert must be synchronous, got %q", got)
 	}
 }
+
+// A global dictionary is owned by one fractal but visible everywhere, so by-name
+// resolution has to consider it. Before this, match() could read a global (its
+// query has always carried the is_global clause) while any by-name caller failed
+// with a bare "no rows in result set" from every fractal but the owner.
+func TestGetDictionaryByNameQueryIncludesGlobals(t *testing.T) {
+	// The by-name lookup and the mapping lookup must agree on visibility, so both
+	// are asserted against the same rule rather than one being fixed in isolation.
+	for _, src := range []string{dictByNameFractalSQL, dictByNamePrismSQL} {
+		if !strings.Contains(src, "is_global = true") {
+			t.Errorf("by-name lookup must consider global dictionaries:\n%s", src)
+		}
+	}
+}
+
+// Two properties of these statements are invisible until Postgres parses them, and
+// both shipped broken once. Asserting them on the SQL text catches the regression
+// without needing a live database.
+func TestGetDictionaryByNameQueryIsTypeSafeAndNullSafe(t *testing.T) {
+	for name, src := range map[string]string{"fractal": dictByNameFractalSQL, "prism": dictByNamePrismSQL} {
+		col := "fractal_id"
+		if name == "prism" {
+			col = "prism_id"
+		}
+
+		// The scope id must be compared as text everywhere. Using $1 as a uuid in the
+		// WHERE and as text in the ORDER BY leaves the parameter's type ambiguous, and
+		// Postgres rejects the statement outright: "operator does not exist: uuid = text".
+		if strings.Contains(src, col+" = $1") {
+			t.Errorf("%s: %s must be compared as ::text so $1 has one type:\n%s", name, col, src)
+		}
+		if !strings.Contains(src, col+"::text = $1") {
+			t.Errorf("%s: expected a ::text comparison on %s:\n%s", name, col, src)
+		}
+
+		// A global dictionary has a NULL scope id, so the sort key is NULL and DESC
+		// puts NULLS FIRST, which would sort the global ahead of the scope's own
+		// dictionary and invert the shadowing the comment promises.
+		if !strings.Contains(src, "COALESCE("+col+"::text = $1, false) DESC") {
+			t.Errorf("%s: ordering must be NULL-safe or a global shadows the local dictionary:\n%s", name, src)
+		}
+	}
+}

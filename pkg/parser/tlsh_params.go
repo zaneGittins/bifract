@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -101,9 +102,19 @@ func ExtractTLSHParams(pipeline *PipelineNode) (TLSHParams, bool, error) {
 	return p, found, nil
 }
 
+// tlshFieldNamePattern is the shape a log field name may take. tlsh() is the one
+// command whose field name reaches a hand-built SQL identifier (the fallback probe
+// for an unindexed fractal), and a quoted argument passes the lexer verbatim, so
+// the name is validated here rather than trusted. Identifier quoting is applied on
+// top of this, not instead of it.
+var tlshFieldNamePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.\-]*$`)
+
 func (p TLSHParams) validate() error {
 	if p.Field == "" {
 		return fmt.Errorf("tlsh(): field= is required, naming the log field that holds the digest")
+	}
+	if !tlshFieldNamePattern.MatchString(p.Field) {
+		return fmt.Errorf("tlsh(): %q is not a valid field name; use letters, digits, underscore, dot or hyphen", p.Field)
 	}
 	if len(p.Hashes) == 0 && p.Dict == "" {
 		return fmt.Errorf("tlsh(): needs hash=\"<digest>\" or dict=\"<name>\" to compare against")

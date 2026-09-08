@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/tlshresolve"
 )
 
 // referenceNames returns every name the built-in reference advertises, primary
@@ -131,5 +132,33 @@ func TestReferenceExamplesParse(t *testing.T) {
 				t.Errorf("%s: example does not parse: %q\n  %v", fn.Name, ex, err)
 			}
 		}
+	}
+}
+
+// The two skip reasons must be worded differently: telling someone "no TLSH index"
+// about a fractal whose model is merely filtered sends them looking for something
+// that is already there.
+func TestTLSHSkipWarningsDistinguishReasons(t *testing.T) {
+	ws := tlshSkipWarnings("tlsh", []tlshresolve.SkippedFractal{
+		{FractalID: "f-bare"},
+		{FractalID: "f-filtered", FilteredModel: "partial_idx"},
+	})
+	if len(ws) != 2 {
+		t.Fatalf("expected one warning per reason, got %d: %v", len(ws), ws)
+	}
+	joined := strings.Join(ws, "\n")
+	for _, want := range []string{"f-bare", "no TLSH index", "f-filtered", "partial_idx", "definition filter"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings should mention %q:\n%s", want, joined)
+		}
+	}
+	// A fractal with a filtered model must not be described as having no index.
+	for _, w := range ws {
+		if strings.Contains(w, "f-filtered") && strings.Contains(w, "no TLSH index") {
+			t.Errorf("filtered fractal wrongly reported as unindexed: %s", w)
+		}
+	}
+	if len(tlshSkipWarnings("tlsh", nil)) != 0 {
+		t.Error("no skips should produce no warnings")
 	}
 }

@@ -841,6 +841,18 @@ const QueryExecutor = {
                 const suffix = data.has_more ? '+' : '';
                 elements.resultsCount.textContent = `${resultsLength.toLocaleString()}${suffix} results`;
             }
+
+            // Non-fatal coverage notices (e.g. tlsh() skipping prism members with no
+            // index). The query succeeded, but it did not cover everything asked for,
+            // so the count alone would read as a complete answer.
+            if (Array.isArray(data.warnings) && data.warnings.length) {
+                const note = document.createElement('span');
+                note.className = 'results-warning';
+                note.style.cssText = 'color:#e0a800;margin-left:8px;cursor:help';
+                note.textContent = 'partial coverage';
+                note.title = data.warnings.join('\n');
+                elements.resultsCount.appendChild(note);
+            }
         }
 
         if (elements.executionTime && data.execution_ms !== undefined) {

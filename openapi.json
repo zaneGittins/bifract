@@ -12539,7 +12539,7 @@
     "/api/v1/dictionaries/{id}/import": {
       "post": {
         "operationId": "post_api_v1_dictionaries_byId_import",
-        "summary": "Load dictionary rows from an uploaded CSV.",
+        "summary": "Load dictionary rows from an uploaded CSV. reload=false defers the live refresh for a chunked load, which POST /reload then finalizes.",
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "dictionaries"
@@ -12551,6 +12551,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -37333,6 +37340,12 @@
           },
           "time_start": {
             "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [

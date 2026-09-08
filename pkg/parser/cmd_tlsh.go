@@ -114,7 +114,7 @@ func (h *tlshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else {
 			source.Layer.Where = append(source.Layer.Where, "1 = 0")
 		}
-		projectTLSHConstants(source)
+		projectTLSHConstants(ctx, source)
 		return nil
 	}
 
@@ -128,11 +128,11 @@ func (h *tlshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Every surviving row of a negated filter is by definition not a match, so the
 	// distance and needle are constants rather than a lookup.
 	if cmd.Negate {
-		projectTLSHConstants(source)
+		projectTLSHConstants(ctx, source)
 		return nil
 	}
 
-	projectTLSHTransforms(source, fieldRef, digests, distances, needles)
+	projectTLSHTransforms(ctx, source, fieldRef, digests, distances, needles)
 	return nil
 }
 
@@ -164,24 +164,37 @@ func renderTLSHLiterals(matches []TLSHMatch) (digests, distances, needles []stri
 // so the scores travel with the rows instead of needing a second lookup. Rows that
 // matched the query some other way (tlsh() as one side of an OR) fall to the
 // defaults, which is why this is correct wherever the filter itself sits.
-func projectTLSHTransforms(source *QueryStage, fieldRef string, digests, distances, needles []string) {
-	source.Layer.UpsertSelect(SelectExpr{
-		Expr: fmt.Sprintf("transform(%s, [%s], [%s], -1)",
-			fieldRef, strings.Join(digests, ", "), strings.Join(distances, ", ")),
-		Alias: TLSHDistanceField,
-	})
-	source.Layer.UpsertSelect(SelectExpr{
-		Expr: fmt.Sprintf("transform(%s, [%s], [%s], '')",
-			fieldRef, strings.Join(digests, ", "), strings.Join(needles, ", ")),
-		Alias: TLSHMatchField,
-	})
+func projectTLSHTransforms(ctx *CommandContext, source *QueryStage, fieldRef string, digests, distances, needles []string) {
+	distanceExpr := fmt.Sprintf("transform(%s, [%s], [%s], -1)",
+		fieldRef, strings.Join(digests, ", "), strings.Join(distances, ", "))
+	matchExpr := fmt.Sprintf("transform(%s, [%s], [%s], '')",
+		fieldRef, strings.Join(digests, ", "), strings.Join(needles, ", "))
+
+	source.Layer.UpsertSelect(SelectExpr{Expr: distanceExpr, Alias: TLSHDistanceField})
+	source.Layer.UpsertSelect(SelectExpr{Expr: matchExpr, Alias: TLSHMatchField})
+	publishTLSHExprs(ctx, distanceExpr, matchExpr)
+}
+
+// publishTLSHExprs tells the registry what these columns actually compute.
+//
+// Declare registers them as placeholders (Expr == name), which FieldRegistry.Resolve
+// reads as "no expression yet" and answers with a raw fields.`name` JSON path. That
+// is what made `| table(..., tlsh_distance)` render an always-empty column: table()
+// clears the source SELECT and rebuilds it from the registry, so the projection
+// added above was discarded and the placeholder resolved to a log field that does
+// not exist. Publishing the real expression is the convention every transform
+// command follows (see cmd_transforms.go).
+func publishTLSHExprs(ctx *CommandContext, distanceExpr, matchExpr string) {
+	ctx.Registry.SetResolveExpr(TLSHDistanceField, distanceExpr)
+	ctx.Registry.SetResolveExpr(TLSHMatchField, matchExpr)
 }
 
 // projectTLSHConstants emits the "no match on this row" form of the projected
 // columns, so a downstream sort or table still resolves them.
-func projectTLSHConstants(source *QueryStage) {
+func projectTLSHConstants(ctx *CommandContext, source *QueryStage) {
 	source.Layer.UpsertSelect(SelectExpr{Expr: "toInt32(-1)", Alias: TLSHDistanceField})
 	source.Layer.UpsertSelect(SelectExpr{Expr: "''", Alias: TLSHMatchField})
+	publishTLSHExprs(ctx, "toInt32(-1)", "''")
 }
 
 // DeclareTLSHOperandColumns registers and projects tlsh_distance / tlsh_match when
@@ -216,10 +229,10 @@ func DeclareTLSHOperandColumns(pipeline *PipelineNode, ctx *CommandContext) erro
 	source := ctx.Plan.SourceStage()
 	digests, distances, needles := renderTLSHLiterals(ctx.Opts.TLSHMatches)
 	if len(digests) == 0 {
-		projectTLSHConstants(source)
+		projectTLSHConstants(ctx, source)
 		return nil
 	}
-	projectTLSHTransforms(source, groupableCast(jsonFieldRef(p.Field)), digests, distances, needles)
+	projectTLSHTransforms(ctx, source, groupableCast(jsonFieldRef(p.Field)), digests, distances, needles)
 	return nil
 }
 

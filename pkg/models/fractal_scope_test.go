@@ -6,9 +6,9 @@ import (
 )
 
 // A model MV must aggregate only its owning fractal's logs. Before this was
-// enforced, every model's MV carried nothing but `fractal_id != ''`, so a model
-// created in one fractal ran its aggregation over every fractal's inserts and
-// stored rows only the read-side predicate kept out of view.
+// enforced, a model's MV carried only a non-empty-fractal check, so a model created
+// in one fractal ran its aggregation over every fractal's inserts and stored rows
+// that only the read-side predicate kept out of view.
 func TestModelMVsAreFractalScoped(t *testing.T) {
 	cases := []struct {
 		name string
@@ -59,8 +59,8 @@ func TestBackfillIsFractalScoped(t *testing.T) {
 	mustNotContain(t, sql, "fractal_id != ''", "backfill must not scan every fractal")
 }
 
-// An empty owner must fail loudly. Rendering it would produce `fractal_id = ''`,
-// which silently matches only pre-fractal legacy rows.
+// An empty owner must fail loudly. Rendering it would compare fractal_id against
+// the empty string, which silently matches only pre-fractal legacy rows.
 func TestModelDDLRejectsEmptyFractal(t *testing.T) {
 	def := ModelDefinition{KeyFields: []string{"image"}}
 	if _, _, err := GenerateDDL(def, ModelTypeFirstSeen, "`t`", "`mv`", ""); err == nil {

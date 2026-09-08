@@ -2,6 +2,7 @@ package dictionaries
 
 import (
 	"bifract/pkg/api"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -346,8 +347,13 @@ func (h *Handler) HandleDeleteRow(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]bool{"deleted": true})
 }
 
-// HandleImportCSV imports dictionary data from a CSV file.
-// Accepts multipart/form-data with a "file" field or raw CSV body.
+// HandleImportCSV loads dictionary rows from a CSV. Accepts multipart/form-data
+// with a "file" field or a raw CSV body, gzip-encoded or not, and streams it
+// rather than buffering, so the size of the file is the client's concern alone.
+//
+// reload=false defers the live-dictionary refresh and the row-count update, for
+// a client sending one file as a series of requests; it must finish with
+// POST /dictionaries/{id}/reload, which does both.
 func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -358,11 +364,11 @@ func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	id := existing.ID
 
-	var csvReader io.Reader
-
-	contentType := r.Header.Get("Content-Type")
-	if len(contentType) >= 19 && contentType[:19] == "multipart/form-data" {
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
+	var csvReader io.Reader = r.Body
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		// Spills to a temporary file past this, so a large upload is bounded by
+		// disk rather than by memory.
+		if err := r.ParseMultipartForm(8 << 20); err != nil {
 			h.respondError(w, http.StatusBadRequest, "failed to parse multipart form")
 			return
 		}
@@ -373,17 +379,62 @@ func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		defer file.Close()
 		csvReader = file
-	} else {
-		csvReader = r.Body
 	}
 
-	count, err := h.manager.ImportCSV(r.Context(), id, csvReader)
+	if strings.Contains(strings.ToLower(r.Header.Get("Content-Encoding")), "gzip") {
+		gz, err := gzip.NewReader(csvReader)
+		if err != nil {
+			h.respondError(w, http.StatusBadRequest, "body is not gzip data")
+			return
+		}
+		defer gz.Close()
+		// Compression means a small body can expand without bound, so what it
+		// expands to is capped as it is read. Nothing else here is: an
+		// uncompressed body is already bounded by what the client sent.
+		csvReader = &cappedReader{r: gz, max: maxDecompressedImport}
+	}
+
+	opts := ImportOptions{DeferReload: r.URL.Query().Get("reload") == "false"}
+	count, err := h.manager.ImportCSV(r.Context(), id, csvReader, opts)
 	if err != nil {
-		log.Printf("[Dictionaries] CSV import failed for dictionary %s: %v", id, err)
-		h.respondError(w, http.StatusInternalServerError, "CSV import failed")
+		log.Printf("[Dictionaries] CSV import failed for dictionary %s after %d rows: %v", id, count, err)
+		// A partial load stays committed, so the count travels with the error and
+		// the client can report what landed.
+		respondErrorDetail(w, importStatus(err), "CSV import failed: "+err.Error(),
+			map[string]int{"imported": count})
 		return
 	}
 	h.respondSuccess(w, map[string]int{"imported": count})
+}
+
+// maxDecompressedImport is what one gzip-encoded import may expand to. Far
+// larger than any dictionary CSV, and far short of a bomb.
+const maxDecompressedImport = 2 << 30
+
+// cappedReader fails once it has read more than it was allowed. io.LimitReader
+// would report a clean end of file instead, which reads as a short CSV that
+// imported successfully.
+type cappedReader struct {
+	r    io.Reader
+	max  int64
+	read int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += int64(n)
+	if c.read > c.max {
+		return n, badInput("the request expands to more than %d bytes", c.max)
+	}
+	return n, err
+}
+
+// importStatus separates a malformed file from a failure of ours.
+func importStatus(err error) int {
+	if IsInvalidInput(err) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 // HandleExportCSV streams all dictionary rows as a CSV file download.
@@ -627,4 +678,15 @@ func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
 	api.WriteError(w, status, msg)
+}
+
+// respondErrorDetail reports a failure that still has a result worth returning,
+// which a partly committed bulk load does.
+func respondErrorDetail[T any](w http.ResponseWriter, status int, msg string, data T) {
+	api.WriteJSON(w, status, api.Response[T]{
+		Success: false,
+		Error:   msg,
+		Code:    api.CodeForStatus(status),
+		Data:    data,
+	})
 }

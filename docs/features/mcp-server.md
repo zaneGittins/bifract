@@ -185,6 +185,24 @@ Watchlists and lookup tables detections join against, rather than hard-coding va
 | `get_dictionary` | One dictionary's columns and key definition |
 | `search_dictionary` | Read rows, optionally filtered, to check an indicator against a watchlist |
 | `add_dictionary_rows` | Insert or update rows, changing what live detections match on |
+| `upload_dictionary_file` | Load a local file into a dictionary, whatever its size |
+
+`upload_dictionary_file` takes a path, not rows. The file is read on the machine the MCP
+server runs on and streamed to the instance in chunks, so a list of millions of
+indicators is one call rather than a conversation the model has to hold the file in.
+CSV, TSV, JSON array, NDJSON, and a plain one-value-per-line list are recognised from the
+extension and the content, and a `.gz` file is decompressed as it is read.
+
+Rows are keyed, so re-uploading a corrected file updates rather than duplicates; rows the
+file no longer lists stay as they are. Columns the dictionary lacks are added, and a
+column name the schema will not take is renamed and the rename reported. Naming a
+`dictionary_name` that does not exist creates it, keyed on the file's first column. Pass
+`key_field` where the file's key column is named something else, and `dry_run` to see what
+a file would write before writing it.
+
+It is the only tool that touches the filesystem, and it exists only here: the same tool in
+the in-product [chat](ai-chat.md) would read files off the server rather than off the
+analyst's machine.
 
 ### ATT&CK Coverage
 

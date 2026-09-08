@@ -195,3 +195,31 @@ func TestTLSHDDLRejectsMalformedKeyFieldsWithoutPanicking(t *testing.T) {
 		}
 	}
 }
+
+// chFieldRef builds a quoted identifier from a field name that originates in user
+// input, so a backtick must be escaped rather than closing the identifier.
+func TestCHFieldRefEscapesBackticks(t *testing.T) {
+	payload := "a`::String, 1 AS z FROM system.tables --"
+	got := chFieldRef(payload)
+
+	// Every backtick from the input must be doubled, which keeps the whole payload
+	// inside one quoted identifier instead of closing it.
+	want := "fields.`" + strings.ReplaceAll(payload, "`", "``") + "`::String"
+	if got != want {
+		t.Fatalf("identifier not escaped as expected\n got: %s\nwant: %s", got, want)
+	}
+	// The body must contain no lone backtick: an odd run would terminate the quote.
+	body := strings.TrimSuffix(strings.TrimPrefix(got, "fields.`"), "`::String")
+	for i := 0; i < len(body); i++ {
+		if body[i] == '`' {
+			if i+1 >= len(body) || body[i+1] != '`' {
+				t.Fatalf("lone backtick at %d closes the identifier: %s", i, got)
+			}
+			i++
+		}
+	}
+	// Ordinary names are unchanged.
+	if chFieldRef("tlsh") != "fields.`tlsh`::String" {
+		t.Errorf("unexpected rendering for a plain field: %s", chFieldRef("tlsh"))
+	}
+}

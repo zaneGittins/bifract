@@ -49,6 +49,33 @@ type QueryHandler struct {
 	pgrRecorder *pgrcal.Recorder
 }
 
+// tlshSkipWarnings explains, per reason, which fractals tlsh() did not search.
+// The two reasons need different words: "no index" is wrong, and actively
+// confusing, for a fractal whose tlsh model exists but is filtered.
+func tlshSkipWarnings(field string, skipped []tlshresolve.SkippedFractal) []string {
+	var bare, filtered []string
+	for _, s := range skipped {
+		if s.FilteredModel != "" {
+			filtered = append(filtered, fmt.Sprintf("%s (model %q)", s.FractalID, s.FilteredModel))
+			continue
+		}
+		bare = append(bare, s.FractalID)
+	}
+
+	var out []string
+	if len(bare) > 0 {
+		out = append(out, fmt.Sprintf(
+			"tlsh(): %d fractal(s) have no TLSH index on %q and were not searched (%s). Create a tlsh analytics model there to include them.",
+			len(bare), field, strings.Join(bare, ", ")))
+	}
+	if len(filtered) > 0 {
+		out = append(out, fmt.Sprintf(
+			"tlsh(): %d fractal(s) were not searched because their TLSH model on %q carries a definition filter, so it indexes only part of the fractal (%s). An unfiltered model would include them.",
+			len(filtered), field, strings.Join(filtered, ", ")))
+	}
+	return out
+}
+
 // tlshResolver builds the shared tlsh() resolver from the handler's dependencies.
 // The alert engine builds the same thing from its own, so a query and an alert
 // resolve tlsh() identically.
@@ -252,6 +279,7 @@ type QueryResponse struct {
 	FieldOrder   []string               `json:"field_order,omitempty"`
 	IsAggregated bool                   `json:"is_aggregated,omitempty"`
 	LimitHit     string                 `json:"limit_hit,omitempty"`      // "bloom", "search", "truncated", or empty
+	Warnings     []string               `json:"warnings,omitempty"`       // non-fatal notices about scope the query could not cover
 	ChartType    string                 `json:"chart_type,omitempty"`     // "piechart", "barchart", "" for table
 	ChartConfig  map[string]interface{} `json:"chart_config,omitempty"`   // Chart-specific configuration
 	Histogram    []int                  `json:"histogram,omitempty"`      // Time-bucketed counts for timeline
@@ -462,6 +490,10 @@ type preparedQuery struct {
 	pipeline            *parser.PipelineNode
 	translationOpts     parser.QueryOptions
 	translated          *parser.TranslationResult // drives evidence enrichment
+	// warnings are non-fatal notices about scope the query could not cover, such
+	// as prism members skipped by tlsh() for lacking an index. They ride the
+	// successful response so partial coverage is visible rather than silent.
+	warnings []string
 }
 
 // buildHistogramSQL re-translates the histogram for one bucket-aligned slice of
@@ -893,6 +925,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	// the model's distinct-digest index. Comparing a field against many digests has
 	// no workable SQL form, so the distance runs in Go and returns an IN filter.
 	var tlshMatches []parser.TLSHMatch
+	var tlshWarnings []string
 	var hasTLSHFilter bool
 	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
 	if tlshErr != nil {
@@ -909,7 +942,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		if !isPrismContext {
 			scopeFractals = []string{selectedIndex}
 		}
-		matches, rerr := h.tlshResolver().Resolve(r.Context(), tlshParams, scopeFractals, selectedPrismID)
+		matches, rerr := h.tlshResolver().Resolve(r.Context(), tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: selectedPrismID})
 		if rerr != nil {
 			// Configuration and input problems both land here (no index, bad digest,
 			// oversized dictionary), and each names the fix, so surface the message.
@@ -920,9 +953,13 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			})
 			return nil
 		}
-		tlshMatches = matches
-		log.Printf("[QueryHandler] tlsh() pre-resolve: field=%q threshold=%d -> %d matching digest(s)",
-			tlshParams.Field, tlshParams.Threshold, len(tlshMatches))
+		tlshMatches = matches.Matches
+		// Not an error: the query still runs over the indexed members. But those
+		// fractals were not searched, so saying nothing would let a prism
+		// under-report and look like a clean "no matches".
+		tlshWarnings = append(tlshWarnings, tlshSkipWarnings(tlshParams.Field, matches.Skipped)...)
+		log.Printf("[QueryHandler] tlsh() pre-resolve: field=%q threshold=%d -> %d matching digest(s), %d fractal(s) skipped",
+			tlshParams.Field, tlshParams.Threshold, len(tlshMatches), len(matches.Skipped))
 	}
 
 	// Translate to SQL
@@ -1127,6 +1164,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 
 	prep = &preparedQuery{
 		req:                 req,
+		warnings:            tlshWarnings,
 		sql:                 sql,
 		fieldOrder:          fieldOrder,
 		isAggregated:        isAggregated,
@@ -1550,6 +1588,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 					FieldOrder:   fieldOrder,
 					IsAggregated: isAggregated,
 					LimitHit:     "truncated",
+					Warnings:     prep.warnings,
 					Error:        "Warning: Result set was very large and has been truncated to 1000 rows. Consider adding more specific filters or using head() to limit results.",
 					Histogram:    histogram,
 					Profile:      profileData,
@@ -1586,6 +1625,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		FieldOrder:   fieldOrder,
 		IsAggregated: isAggregated,
 		LimitHit:     limitHit,
+		Warnings:     prep.warnings,
 		ChartType:    chartType,
 		ChartConfig:  chartConfig,
 		Histogram:    histogram,

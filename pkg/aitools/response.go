@@ -13,21 +13,44 @@ import (
 // page from a proxy in front of Bifract would otherwise fill the model's context.
 const MaxErrorBody = 400
 
+// APIError is a failure the server reported. The message is what a model reads;
+// the status is carried alongside it so a caller can tell a request worth
+// retrying from one that will be refused however often it is sent.
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string { return e.Message }
+
+// Retryable reports whether sending the same request again could succeed.
+func (e *APIError) Retryable() bool {
+	switch e.Status {
+	case http.StatusTooManyRequests, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
 // Decode turns a response into either the payload the tools want or an
 // explanation a model can act on. Shared by both clients, so an error reads the
 // same whether the call crossed the network or not.
 func Decode(method, path string, status int, payload []byte) (any, error) {
+	fail := func(format string, args ...any) error {
+		return &APIError{Status: status, Message: fmt.Sprintf(format, args...)}
+	}
 	switch {
 	case status == http.StatusUnauthorized:
 		// Neutral on purpose: the same text reaches an MCP client holding an API
 		// key and a chat user holding a session.
-		return nil, errors.New("not authenticated: the credential was rejected as missing, invalid, or expired")
+		return nil, fail("not authenticated: the credential was rejected as missing, invalid, or expired")
 	case status == http.StatusForbidden:
-		return nil, fmt.Errorf("forbidden: %s. This account's permissions do not cover it", detail(payload))
+		return nil, fail("forbidden: %s. This account's permissions do not cover it", detail(payload))
 	case status == http.StatusNotFound:
-		return nil, fmt.Errorf("%s %s: not found. Check the id, and that it exists in this fractal", method, path)
+		return nil, fail("%s %s: not found. Check the id, and that it exists in this fractal", method, path)
 	case status >= 400:
-		return nil, fmt.Errorf("%s %s failed (%d): %s", method, path, status, detail(payload))
+		return nil, fail("%s %s failed (%d): %s", method, path, status, detail(payload))
 	}
 
 	if len(bytes.TrimSpace(payload)) == 0 {

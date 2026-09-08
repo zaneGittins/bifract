@@ -180,13 +180,13 @@ Digests are accepted as 70 hex characters, with or without the `T1` version pref
 
 ### Requires a TLSH index
 
-`tlsh()` reads a **tlsh analytics model** on the same field, which indexes the distinct digests present in the fractal. Without one the query fails and names the model to create.
+`tlsh()` reads a **tlsh analytics model** on the same field, which indexes the distinct digests present in the fractal. With nothing in scope indexed, the query fails and names the model to create, because an empty result would read as "no matches" rather than "not searched".
 
 The index is what makes this affordable. Digests repeat heavily across rows, so the comparison runs over the number of distinct digests rather than the number of rows, which is why the filter works over billions of logs. The model's view admits only well-formed digests, so the empty and truncated values that producers emit for inputs under 50 bytes never enter the index. That matters: two empty digests compare at distance 0, which would otherwise match everything.
 
 Create the model under Analytics Models, then run a backfill to cover existing history.
 
-In a prism, every member fractal needs its own TLSH index on that field. A partially indexed prism fails rather than silently returning matches from only the indexed members.
+In a prism, each member fractal is read from its own index. A member with no index is **skipped, not scanned**: the query still runs over the indexed members and returns a `partial coverage` notice naming what was left out. So a fractal that holds no digests for that field needs no model, and one member missing an index never blocks the whole prism.
 
 ### Added columns
 
@@ -198,6 +198,19 @@ In a prism, every member fractal needs its own TLSH index on that field. A parti
 ```
 event_id=1 | tlsh(field=tlsh, dict="known_bad") | sort(tlsh_distance)
 ```
+
+### Pulling other dictionary columns onto a hit
+
+A needle dictionary can carry more than the digest: a family name, a source, a reference. Chain [`match()`](#match) keyed on **`tlsh_match`** to bring those columns onto the matching rows.
+
+```
+event_id=1
+| tlsh(field=tlsh, dict="known_bad")
+| match(dict="known_bad", field=tlsh_match, column=<key column>, include=[name])
+| table(timestamp, image, tlsh_distance, name)
+```
+
+Key on `tlsh_match`, never on the log field itself. The log row's digest is only *similar* to the needle, not equal to it, so a lookup keyed on the log field would search for a key the dictionary does not contain and enrich nothing. `tlsh_match` holds the needle that actually matched, which is a real dictionary key.
 
 ### Position in the pipeline
 

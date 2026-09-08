@@ -33,9 +33,11 @@ Times are RFC3339 and default to the last 24 hours.
 
 Investigating. find_processes locates a process_guid, and get_provenance_graph
 expands it into a scored process tree for endpoint data. search_dictionary checks an
-indicator against the watchlists already in place. When a hunt reaches past hot
-retention, search_archive runs the same BQL over the archive; it is minutes-slow and
-returns a job to poll, so reach for it only once query_logs cannot answer.
+indicator against the watchlists already in place, and upload_dictionary_file loads a
+list from this machine into one, however large the file is: give it the path, never
+the rows. When a hunt reaches past hot retention, search_archive runs the same BQL
+over the archive; it is minutes-slow and returns a job to poll, so reach for it only
+once query_logs cannot answer.
 
 Detections. list_alerts shows what is already watched and is the best guide to this
 fractal's real query patterns. get_attack_coverage says which ATT&CK
@@ -61,6 +63,7 @@ func New(c *Client) *mcp.Server {
 	)
 	aitools.Serve(s, c, aitools.All())
 	addContextTool(s, c)
+	addDictionaryFileTool(s, c)
 	return s
 }
 

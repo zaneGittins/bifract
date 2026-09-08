@@ -640,12 +640,16 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 				scopeFractals = []string{alert.FractalID}
 			}
 			resolver := &tlshresolve.Resolver{Models: e.modelManager, Dicts: e.dictManager, DB: e.ch}
-			matches, rerr := resolver.Resolve(ctx, params, scopeFractals, alert.PrismID)
+			res, rerr := resolver.Resolve(ctx, params, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: alert.PrismID})
 			if rerr != nil {
 				return opts, rerr
 			}
+			for _, sk := range res.Skipped {
+				log.Printf("[Alerts] alert %s: tlsh() did not search fractal %s (no usable TLSH index on %q; filtered model %q)",
+					alert.ID, sk.FractalID, params.Field, sk.FilteredModel)
+			}
 			opts.HasTLSHFilter = true
-			opts.TLSHMatches = matches
+			opts.TLSHMatches = res.Matches
 		}
 	}
 

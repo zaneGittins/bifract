@@ -50,14 +50,6 @@ const tlshMaxWork = 2_000_000_000
 // limit that binds, and truncation is reported rather than silent.
 const tlshMaxMatches = 25_000
 
-// resolveTLSH turns a tlsh() invocation into the concrete digest matches the
-// translator renders as an IN filter.
-//
-// The work is proportional to the number of DISTINCT digests, not to row count,
-// which is what makes similarity matching viable over billions of rows. That
-// collapse is why a tlsh model is required rather than optional: without its index
-// the probe degrades to a DISTINCT scan of the whole window, which on a real fleet
-// is slow enough that the feature would look broken instead of unconfigured.
 // ModelIndexer resolves the per-fractal tlsh model indexes. Satisfied by *models.Manager.
 type ModelIndexer interface {
 	ListTLSHIndexes(ctx context.Context, fractalIDs []string, keyField string) (map[string]models.TLSHIndex, map[string]string, error)
@@ -83,58 +75,98 @@ type Resolver struct {
 	DB     LogQuerier
 }
 
+// Scope is what the resolution runs against. No time window: the index holds a
+// fractal's distinct digests regardless of when they were seen, which is a superset
+// of anything a windowed query can match, and a superset is exactly what the probe
+// must return.
+type Scope struct {
+	FractalIDs []string
+	PrismID    string
+}
+
+// Result is the outcome of resolving a tlsh() invocation.
+type Result struct {
+	Matches []parser.TLSHMatch
+	// Skipped lists prism members that were not searched because they carry no
+	// usable index. Reported rather than swallowed: their rows cannot match, so a
+	// prism would otherwise under-report with no sign that it had.
+	Skipped []SkippedFractal
+}
+
+// SkippedFractal is one fractal that was not searched, and why.
+type SkippedFractal struct {
+	FractalID string
+	// FilteredModel names a tlsh model that exists on the field but carries a
+	// definition filter, so it indexes only part of its fractal and cannot answer
+	// a query whose filters differ. Empty when there is no model at all. The
+	// distinction matters: telling someone "no index" about a model sitting in
+	// their models list sends them in circles.
+	FilteredModel string
+}
+
+// FractalIDs returns just the ids, for messages that only need to name them.
+func skippedIDs(skipped []SkippedFractal) []string {
+	out := make([]string, 0, len(skipped))
+	for _, s := range skipped {
+		out = append(out, s.FractalID)
+	}
+	return out
+}
+
 // Resolve returns the digests within threshold of a needle.
-func (h *Resolver) Resolve(ctx context.Context, p parser.TLSHParams, fractalIDs []string, prismID string) ([]parser.TLSHMatch, error) {
+//
+// The work is proportional to the number of DISTINCT digests, not to row count,
+// which is what makes similarity matching viable over billions of rows. A tlsh
+// model supplies that distinct set directly. A fractal without one falls back to a
+// bounded scan, which is cheap when the fractal holds no digests and refuses with
+// a message naming the fractal when it holds many.
+func (h *Resolver) Resolve(ctx context.Context, p parser.TLSHParams, scope Scope) (Result, error) {
+	fractalIDs, prismID := scope.FractalIDs, scope.PrismID
 	if h == nil || h.Models == nil {
-		return nil, fmt.Errorf("tlsh(): analytics models are not available in this deployment")
+		return Result{}, fmt.Errorf("tlsh(): analytics models are not available in this deployment")
 	}
 	if h.DB == nil {
-		return nil, fmt.Errorf("tlsh(): no log store available in this deployment")
+		return Result{}, fmt.Errorf("tlsh(): no log store available in this deployment")
 	}
 	if len(fractalIDs) == 0 {
-		return nil, fmt.Errorf("tlsh(): no fractal in scope")
+		return Result{}, fmt.Errorf("tlsh(): no fractal in scope")
 	}
 
 	indexes, filtered, err := h.Models.ListTLSHIndexes(ctx, fractalIDs, p.Field)
 	if err != nil {
-		return nil, fmt.Errorf("tlsh(): resolve digest index: %w", err)
-	}
-
-	// Every fractal in scope must be indexed. A partially indexed prism would
-	// return a subset of the digests present and silently drop real matches, so
-	// this fails loudly instead, naming what to create.
-	var missing []string
-	for _, fid := range fractalIDs {
-		if _, ok := indexes[fid]; !ok {
-			missing = append(missing, fid)
-		}
-	}
-	if len(missing) > 0 {
-		return nil, tlshMissingIndexError(p.Field, missing, filtered, len(fractalIDs), prismID)
+		return Result{}, fmt.Errorf("tlsh(): resolve digest index: %w", err)
 	}
 
 	needles, err := h.loadTLSHNeedles(ctx, p, fractalIDs, prismID)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	if len(needles) == 0 {
-		return nil, fmt.Errorf("tlsh(): no valid digests to compare against")
+		return Result{}, fmt.Errorf("tlsh(): no valid digests to compare against")
 	}
 
-	candidates, err := h.probeTLSHIndex(ctx, indexes, fractalIDs)
+	candidates, skipped, err := h.probeTLSHIndex(ctx, indexes, filtered, fractalIDs)
 	if err != nil {
-		return nil, err
+		return Result{}, err
+	}
+
+	// Nothing in scope was indexed, so nothing was searched. Returning an empty
+	// result here would read as "no matches" when the truth is "not searched", so
+	// name the model to create instead. (Every fractal skipped implies no index was
+	// read, so candidates is necessarily empty.)
+	if len(skipped) == len(fractalIDs) {
+		return Result{}, tlshNoIndexError(p.Field, skippedIDs(skipped), filtered, prismID)
 	}
 
 	if work := len(candidates) * len(needles); work > tlshMaxWork {
-		return nil, fmt.Errorf(
+		return Result{}, fmt.Errorf(
 			"tlsh(): %d indexed digests against %d needles is %d comparisons, past the %d limit; narrow the needle list or the preceding filters",
 			len(candidates), len(needles), work, tlshMaxWork)
 	}
 
 	matches, err := matchTLSH(ctx, candidates, needles, p.Threshold)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	if len(matches) > tlshMaxMatches {
 		// Ordered closest-first, so the tail is the weakest. Say so: the result is
@@ -144,7 +176,7 @@ func (h *Resolver) Resolve(ctx context.Context, p parser.TLSHParams, fractalIDs 
 			len(matches), p.Threshold, tlshMaxMatches)
 		matches = matches[:tlshMaxMatches]
 	}
-	return matches, nil
+	return Result{Matches: matches, Skipped: skipped}, nil
 }
 
 // tlshCandidate is one distinct digest from the index, carried alongside its
@@ -154,28 +186,46 @@ type tlshCandidate struct {
 	digest tlsh.Digest
 }
 
-// probeTLSHIndex reads the distinct digests indexed for every fractal in scope.
-func (h *Resolver) probeTLSHIndex(ctx context.Context, indexes map[string]models.TLSHIndex, fractalIDs []string) ([]tlshCandidate, error) {
-	// One SELECT per index table, unioned: each fractal's index is its own model
-	// and therefore its own table.
+// probeTLSHIndex reads the distinct digests indexed for each fractal in scope, and
+// reports any that carry no index instead of reading them.
+//
+// A fractal with no index is skipped rather than scanned. Scanning it is not cheap:
+// nothing prunes a distinct-value read (bloom skip indexes serve equality and IN,
+// never the match() shape guard, and the probe wants every value rather than a
+// filtered subset), so an unindexed member would cost a full column scan on every
+// query and every alert tick. Skipping keeps the query fast and unblocked; the
+// caller surfaces the skipped fractals so a prism cannot quietly under-report.
+//
+// A single-fractal query is different: skipping its only fractal would return an
+// empty result that looks like "no matches" rather than "not searched", so that
+// case is an error naming the model to create. Handled by the caller.
+func (h *Resolver) probeTLSHIndex(ctx context.Context, indexes map[string]models.TLSHIndex, filtered map[string]string, fractalIDs []string) ([]tlshCandidate, []SkippedFractal, error) {
+	// One SELECT per index table: each fractal's index is its own model and
+	// therefore its own table.
 	seen := make(map[string]struct{})
 	var out []tlshCandidate
+	var skipped []SkippedFractal
 
 	for _, fid := range fractalIDs {
-		idx := indexes[fid]
+		idx, indexed := indexes[fid]
+		if !indexed {
+			skipped = append(skipped, SkippedFractal{FractalID: fid, FilteredModel: filtered[fid]})
+			continue
+		}
+
 		sql := fmt.Sprintf(
 			"SELECT DISTINCT digest FROM `%s` WHERE fractal_id = '%s' LIMIT %d",
 			storage.EscCHStr(idx.TableName), storage.EscCHStr(fid), tlshMaxIndexRows+1)
 
 		rows, err := h.DB.Query(ctx, sql)
 		if err != nil {
-			return nil, fmt.Errorf("tlsh(): probe digest index %q: %w", idx.Name, err)
+			return nil, nil, fmt.Errorf("tlsh(): probe digest index %q: %w", idx.Name, err)
 		}
 		if len(rows) > tlshMaxIndexRows || len(out)+len(rows) > tlshMaxIndexRows {
 			// Checked against the running total, not just this table: a prism spanning
 			// several fractals would otherwise accumulate the per-index limit once per
 			// member before anything complained.
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"tlsh(): digest index %q pushes the candidate set past %d distinct values; a field this varied is not a fuzzy-hash field",
 				idx.Name, tlshMaxIndexRows)
 		}
@@ -198,7 +248,7 @@ func (h *Resolver) probeTLSHIndex(ctx context.Context, indexes map[string]models
 			out = append(out, tlshCandidate{raw: raw, digest: d})
 		}
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 // tlshNeedle is a parsed comparison target plus the label reported on a match.
@@ -266,6 +316,33 @@ func (h *Resolver) loadTLSHNeedles(ctx context.Context, p parser.TLSHParams, fra
 // matchTLSH keeps every candidate within threshold of some needle, recording its
 // closest one. Parallel across candidates: the comparison is pure and the work is
 // candidates x needles, which is the only part that grows with the index.
+// tlshNoIndexError fires when nothing in scope carries an index. An empty result
+// would be indistinguishable from "no matches", so this names the model to create.
+func tlshNoIndexError(field string, missing []string, filtered map[string]string, prismID string) error {
+	// A model that exists but carries a definition filter indexes only part of its
+	// fractal, so it is deliberately not used. Saying "no index" about a model
+	// sitting in the UI would send someone in circles.
+	var unusable []string
+	for _, fid := range missing {
+		if name, ok := filtered[fid]; ok {
+			unusable = append(unusable, name)
+		}
+	}
+	if len(unusable) > 0 {
+		return fmt.Errorf(
+			"tlsh(): the TLSH model(s) on field %q (%s) carry a definition filter, so they index only part of their fractal and cannot answer this query. Create an unfiltered tlsh model on %q instead",
+			field, strings.Join(unusable, ", "), field)
+	}
+	if prismID != "" && len(missing) > 1 {
+		return fmt.Errorf(
+			"tlsh(): none of the %d fractals in this prism has a TLSH index on %q. Create a tlsh analytics model on %q in at least one of them, then seed it with a backfill",
+			len(missing), field, field)
+	}
+	return fmt.Errorf(
+		"tlsh(): no TLSH index on field %q. Create a tlsh analytics model keyed on %q under Analytics Models, then seed it with a backfill to cover existing history",
+		field, field)
+}
+
 func matchTLSH(ctx context.Context, candidates []tlshCandidate, needles []tlshNeedle, threshold int) ([]parser.TLSHMatch, error) {
 	if len(candidates) == 0 || len(needles) == 0 {
 		return nil, nil
@@ -335,32 +412,4 @@ func matchTLSH(ctx context.Context, candidates []tlshCandidate, needles []tlshNe
 		return matches[i].Digest < matches[j].Digest
 	})
 	return matches, nil
-}
-
-func tlshMissingIndexError(field string, missing []string, filtered map[string]string, total int, prismID string) error {
-	// A model that exists but carries a definition filter indexes only part of its
-	// fractal, so it cannot answer for a query whose filters differ. Saying "no
-	// index" about a model visible in the UI would send someone in circles.
-	var unusable []string
-	for _, fid := range missing {
-		if name, ok := filtered[fid]; ok {
-			unusable = append(unusable, name)
-		}
-	}
-	if len(unusable) > 0 {
-		return fmt.Errorf(
-			"tlsh(): the TLSH model(s) on field %q (%s) carry a definition filter, so they index only part of their fractal and cannot answer this query. "+
-				"Create an unfiltered tlsh model on %q instead",
-			field, strings.Join(unusable, ", "), field)
-	}
-	if prismID != "" && total > 1 {
-		return fmt.Errorf(
-			"tlsh(): %d of %d fractals in this prism have no TLSH index on %q (%s). "+
-				"Create a tlsh analytics model on %q in each, or run the query against a single fractal",
-			len(missing), total, field, strings.Join(missing, ", "), field)
-	}
-	return fmt.Errorf(
-		"tlsh(): no TLSH index on field %q. Create a tlsh analytics model keyed on %q "+
-			"under Analytics Models, then seed it with a backfill to cover existing history",
-		field, field)
 }
