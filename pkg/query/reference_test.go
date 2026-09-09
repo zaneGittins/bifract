@@ -162,3 +162,27 @@ func TestTLSHSkipWarningsDistinguishReasons(t *testing.T) {
 		t.Error("no skips should produce no warnings")
 	}
 }
+
+// A description may embed a runnable snippet after "Example: ". Those are copied
+// into the query bar like any other, but TestReferenceExamplesParse only walks the
+// Examples slice, so a broken one shipped in both the docs and the in-product help.
+func TestReferenceDescriptionExamplesParse(t *testing.T) {
+	for _, fn := range bqlFunctionDocs {
+		for _, seg := range strings.Split(fn.Description, "Example: ")[1:] {
+			// The snippet runs to the end of the sentence.
+			snippet := strings.TrimSpace(strings.SplitN(seg, ". ", 2)[0])
+			snippet = strings.TrimSuffix(snippet, ".")
+			if snippet == "" {
+				continue
+			}
+			// A leading pipe makes it a fragment; give it a source to hang off.
+			q := snippet
+			if strings.HasPrefix(q, "|") {
+				q = "*" + " " + q
+			}
+			if _, err := parser.ParseQuery(q); err != nil {
+				t.Errorf("%s: embedded example does not parse: %q\n  %v", fn.Name, snippet, err)
+			}
+		}
+	}
+}

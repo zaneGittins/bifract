@@ -25,6 +25,18 @@ type fakeBifract struct {
 
 	keyColumn string
 	columns   []string
+	// fractal is what the key itself carries. Empty is an instance-wide key,
+	// which belongs to no fractal and has to be told which one to act in.
+	fractal  string
+	isGlobal bool
+	// instanceWide is a key issued for no scope, which names the one it means per
+	// request.
+	instanceWide bool
+	// dedupe counts rows by key, as the keyed row table does.
+	dedupe bool
+	// scopes records the X-Bifract-Scope of every request, so a redirected load
+	// can be seen to have been redirected.
+	scopes []string
 	// created records that the dictionary was made by the upload rather than
 	// looked up.
 	created bool
@@ -42,6 +54,9 @@ type fakeBifract struct {
 
 func (f *fakeBifract) start(t *testing.T) *Client {
 	t.Helper()
+	if f.fractal == "" && !f.instanceWide {
+		f.fractal = "fractal-1"
+	}
 	server := httptest.NewServer(f)
 	t.Cleanup(server.Close)
 	return NewClient(Config{URL: server.URL, APIKey: "k", Timeout: 0})
@@ -54,6 +69,7 @@ func (f *fakeBifract) definition() map[string]any {
 	}
 	return map[string]any{
 		"id": "dict-1", "name": "iocs", "key_column": f.keyColumn, "columns": columns,
+		"fractal_id": f.fractal, "is_global": f.isGlobal, "row_count": float64(f.rowCount()),
 	}
 }
 
@@ -65,11 +81,20 @@ func (f *fakeBifract) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": payload})
 	}
 
+	f.scopes = append(f.scopes, r.Header.Get("X-Bifract-Scope"))
+
 	switch {
+	case r.URL.Path == "/api/v1/auth/user":
+		// Exempt from the scope header on the real server: it reports what the
+		// credential itself carries.
+		write(map[string]any{"user": map[string]any{"selected_fractal": f.fractal}})
 	case r.URL.Path == "/api/v1/dictionaries" && r.Method == http.MethodGet:
 		write([]any{})
 	case r.URL.Path == "/api/v1/dictionaries" && r.Method == http.MethodPost:
 		f.created = true
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.isGlobal, _ = body["is_global"].(bool)
 		write(f.definition())
 	case r.URL.Path == "/api/v1/dictionaries/dict-1" && r.Method == http.MethodGet:
 		write(f.definition())
@@ -135,6 +160,18 @@ func (f *fakeBifract) importRows(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success": true, "data": map[string]int{"imported": len(records) - 1},
 	})
+}
+
+// rowCount is what the dictionary holds: distinct keys where the table dedupes.
+func (f *fakeBifract) rowCount() int {
+	if !f.dedupe {
+		return len(f.rows)
+	}
+	keys := map[string]bool{}
+	for _, row := range f.rows {
+		keys[row[f.keyColumn]] = true
+	}
+	return len(keys)
 }
 
 func contains(all []string, want string) bool {
@@ -558,6 +595,105 @@ func TestAColumnIsFoldedOntoTheOneTheDictionaryHas(t *testing.T) {
 	}
 	if fake.rows[0]["ioc"] != "evil.example" || fake.rows[0]["source"] != "feed" {
 		t.Errorf("values did not reach the existing columns: %v", fake.rows[0])
+	}
+}
+
+// An instance-wide key belongs to no fractal, so a load that names none would go
+// wherever the server falls back to. A watchlist in the wrong fractal detects
+// nothing while reading as a successful load, so it is refused instead.
+func TestAnInstanceWideKeyMustNameItsFractal(t *testing.T) {
+	fake := &fakeBifract{instanceWide: true, keyColumn: "ioc", columns: []string{"ioc"}}
+	client := fake.start(t)
+	path := write(t, "feed.csv", "ioc\na\n")
+
+	_, err := upload(t, client, uploadDictionaryFileArgs{Path: path, DictionaryID: "dict-1"})
+	if err == nil {
+		t.Fatal("a load with no fractal to act in must be refused")
+	}
+	if !strings.Contains(err.Error(), "fractal_id") {
+		t.Errorf("the refusal should say how to fix it: %v", err)
+	}
+	if fake.imports != 0 {
+		t.Error("nothing should have been written")
+	}
+
+	// Naming one redirects every call in the load.
+	fake.fractal = "velociraptor-1"
+	summary, err := upload(t, client, uploadDictionaryFileArgs{
+		Path: path, DictionaryID: "dict-1", FractalID: "velociraptor-1",
+	})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	for _, scope := range fake.scopes {
+		if scope != "" && scope != "fractal:velociraptor-1" {
+			t.Errorf("a call went out scoped to %q", scope)
+		}
+	}
+	if summary["fractal_id"] != "velociraptor-1" {
+		t.Errorf("the summary reports fractal %v, want the one named", summary["fractal_id"])
+	}
+}
+
+// A key issued for one fractal needs no fractal named, and must not have to
+// name one.
+func TestAScopedKeyLoadsWithoutNamingAFractal(t *testing.T) {
+	fake := &fakeBifract{keyColumn: "ioc", columns: []string{"ioc"}}
+	client := fake.start(t)
+
+	summary, err := upload(t, client, uploadDictionaryFileArgs{
+		Path: write(t, "feed.csv", "ioc\na\n"), DictionaryID: "dict-1",
+	})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if summary["fractal_id"] != "fractal-1" {
+		t.Errorf("the summary must say where the rows landed, got %v", summary["fractal_id"])
+	}
+}
+
+// A watchlist every fractal consults has to be created global: it cannot be made
+// global afterwards through this tool.
+func TestADictionaryCanBeCreatedGlobal(t *testing.T) {
+	fake := &fakeBifract{}
+	client := fake.start(t)
+
+	summary, err := upload(t, client, uploadDictionaryFileArgs{
+		Path:           write(t, "feed.csv", "ioc\na\n"),
+		DictionaryName: "shared iocs",
+		IsGlobal:       true,
+	})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if !fake.isGlobal {
+		t.Error("is_global did not reach the create call")
+	}
+	if summary["is_global"] != true {
+		t.Errorf("the summary must report the scope it created: %v", summary)
+	}
+}
+
+// Rows are keyed, so a file that repeats a key holds fewer rows than it wrote.
+// Reporting only what was sent reads as data lost.
+func TestARepeatedKeyIsExplainedRatherThanLookingLikeLoss(t *testing.T) {
+	fake := &fakeBifract{keyColumn: "ioc", columns: []string{"ioc"}, dedupe: true}
+	client := fake.start(t)
+
+	summary, err := upload(t, client, uploadDictionaryFileArgs{
+		Path: write(t, "feed.csv", "ioc\na\nb\na\n"), DictionaryID: "dict-1",
+	})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if summary["rows_written"] != 3 {
+		t.Errorf("wrote %v rows, want the 3 the file held", summary["rows_written"])
+	}
+	if summary["dictionary_row_count"] != 2 {
+		t.Errorf("the dictionary holds %v rows, want the 2 distinct keys", summary["dictionary_row_count"])
+	}
+	if !strings.Contains(fmt.Sprint(summary["notes"]), "keyed") {
+		t.Errorf("the difference must be explained, got %v", summary["notes"])
 	}
 }
 

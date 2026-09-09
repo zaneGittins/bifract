@@ -206,9 +206,11 @@ A needle dictionary can carry more than the digest: a family name, a source, a r
 ```
 event_id=1
 | tlsh(field=tlsh, dict="known_bad")
-| match(dict="known_bad", field=tlsh_match, column=<key column>, include=[name])
+| match(dict="known_bad", field=tlsh_match, column=digest, include=[name])
 | table(timestamp, image, tlsh_distance, name)
 ```
+
+`column=` names your dictionary's own key column (`digest` above); substitute whatever yours is.
 
 Key on `tlsh_match`, never on the log field itself. The log row's digest is only *similar* to the needle, not equal to it, so a lookup keyed on the log field would search for a key the dictionary does not contain and enrich nothing. `tlsh_match` holds the needle that actually matched, which is a real dictionary key.
 

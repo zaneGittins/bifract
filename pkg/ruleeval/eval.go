@@ -11,6 +11,7 @@ import (
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
+	"bifract/pkg/tlshresolve"
 )
 
 // WindowSpan is how far either side of now an evaluation looks. Entries are stamped
@@ -163,10 +164,50 @@ func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 	}
 }
 
+// resolveTLSH pre-resolves a tlsh() rule the way the query and alert paths do, but
+// with the candidate digests taken from the scratch table: the events the test case
+// inserted are the data under test, and no model indexes them.
+//
+// Without a resolver the translator would fail with "requires server-side
+// pre-processing", which says nothing about why a rule test in particular cannot
+// run, so say it here instead.
+func (s *Scratch) resolveTLSH(ctx context.Context, pipeline *parser.PipelineNode, opts *parser.QueryOptions, u Unit) error {
+	p, found, err := parser.ExtractTLSHParams(pipeline)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if s.tlsh == nil {
+		return fmt.Errorf("tlsh() cannot be evaluated in this test runner: it has no access to the dictionaries and ClickHouse connection the lookup needs")
+	}
+
+	res, err := s.tlsh.ResolveForTable(ctx, p, tlshresolve.TableSource{
+		Table:     s.table,
+		FractalID: u.FractalID,
+		// The needle dictionary belongs to the rule's scope, not to the unit's
+		// synthetic isolation fractal, which owns no dictionaries at all.
+		DictFractalID: s.tlshFractalID,
+		DictPrismID:   s.tlshPrismID,
+	})
+	if err != nil {
+		return err
+	}
+	opts.HasTLSHFilter = true
+	opts.TLSHMatches = res.Matches
+	return nil
+}
+
 // Evaluate runs a parsed rule against one unit and reports how many rows it returned.
 // The SQL is returned for explain output whether or not the query succeeded.
 func (s *Scratch) Evaluate(ctx context.Context, pipeline *parser.PipelineNode, u Unit, w Window) (rows int, sql string, err error) {
-	sql, err = parser.TranslateToSQL(pipeline, s.QueryOptions(u, w))
+	opts := s.QueryOptions(u, w)
+	if err := s.resolveTLSH(ctx, pipeline, &opts, u); err != nil {
+		return 0, "", err
+	}
+
+	sql, err = parser.TranslateToSQL(pipeline, opts)
 	if err != nil {
 		return 0, "", fmt.Errorf("translating BQL to SQL: %w", err)
 	}

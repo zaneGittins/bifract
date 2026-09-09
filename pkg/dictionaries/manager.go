@@ -187,7 +187,35 @@ const dictByNamePrismSQL = `SELECT ` + dictByNameColumns + `
 	FROM dictionaries WHERE name = $2 AND (prism_id::text = $1 OR is_global = true)
 	ORDER BY COALESCE(prism_id::text = $1, false) DESC, created_at ASC LIMIT 1`
 
+// The owned-only variants resolve a name WITHOUT the global fallback, for callers
+// that write. A global dictionary is owned by one scope and read by all, so
+// resolving a name to someone else's global and then writing to it is destructive
+// across the fractal boundary: ExecuteDictionaryAction rebuilds the schema and
+// TRUNCATEs before refilling, which would wipe the owner's data and hand every
+// reader of that global this scope's rows instead.
+const dictOwnedByNameFractalSQL = `SELECT ` + dictByNameColumns + `
+	FROM dictionaries WHERE name = $2 AND fractal_id::text = $1
+	ORDER BY created_at ASC LIMIT 1`
+
+const dictOwnedByNamePrismSQL = `SELECT ` + dictByNameColumns + `
+	FROM dictionaries WHERE name = $2 AND prism_id::text = $1
+	ORDER BY created_at ASC LIMIT 1`
+
+// GetDictionaryByName resolves a dictionary by name, including one shared globally
+// from another scope. Read-only callers want this: a global is meant to be visible
+// everywhere. Callers that WRITE must use GetOwnedDictionaryByName instead.
 func (m *Manager) GetDictionaryByName(ctx context.Context, fractalID, prismID, name string) (*Dictionary, error) {
+	return m.dictionaryByName(ctx, fractalID, prismID, name, dictByNameFractalSQL, dictByNamePrismSQL)
+}
+
+// GetOwnedDictionaryByName resolves a dictionary by name within the given scope
+// only, never falling back to a global owned elsewhere. Use this before any write:
+// see the comment on dictOwnedByNameFractalSQL.
+func (m *Manager) GetOwnedDictionaryByName(ctx context.Context, fractalID, prismID, name string) (*Dictionary, error) {
+	return m.dictionaryByName(ctx, fractalID, prismID, name, dictOwnedByNameFractalSQL, dictOwnedByNamePrismSQL)
+}
+
+func (m *Manager) dictionaryByName(ctx context.Context, fractalID, prismID, name, fractalSQL, prismSQL string) (*Dictionary, error) {
 	d := &Dictionary{}
 	var colsJSON []byte
 	var q string
@@ -201,10 +229,10 @@ func (m *Manager) GetDictionaryByName(ctx context.Context, fractalID, prismID, n
 	// A scope-owned dictionary wins over a global of the same name: ORDER BY puts
 	// the exact match first so the local definition shadows the shared one.
 	if prismID != "" {
-		q = dictByNamePrismSQL
+		q = prismSQL
 		arg = prismID
 	} else {
-		q = dictByNameFractalSQL
+		q = fractalSQL
 		arg = fractalID
 	}
 	err := m.pg.QueryRow(ctx, q, arg, name).
@@ -1603,8 +1631,10 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 	}
 	keyCol := colOrder[0]
 
-	// Look up or create the target dictionary.
-	dict, err := m.GetDictionaryByName(ctx, fractalID, prismID, action.DictionaryName)
+	// Owned-only: this path rebuilds the schema and TRUNCATEs before refilling, so
+	// resolving the name to a global owned by another scope would destroy that
+	// scope's data and republish this scope's rows to every reader of it.
+	dict, err := m.GetOwnedDictionaryByName(ctx, fractalID, prismID, action.DictionaryName)
 	if err != nil {
 		// Dictionary doesn't exist - create it.
 		var cols []DictionaryColumn

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"bifract/pkg/dictionaries"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
 	"bifract/pkg/tlsh"
@@ -323,5 +324,58 @@ func TestSkipCarriesTheFilteredModelReason(t *testing.T) {
 	}
 	if got["f-bare"] != "" {
 		t.Errorf("fractal with no model should name none, got %q", got["f-bare"])
+	}
+}
+
+// fakeDicts records which scope a dictionary was resolved against.
+type fakeDicts struct {
+	gotFractalID string
+	gotPrismID   string
+}
+
+func (f *fakeDicts) GetDictionaryByName(_ context.Context, fractalID, prismID, _ string) (*dictionaries.Dictionary, error) {
+	f.gotFractalID, f.gotPrismID = fractalID, prismID
+	return &dictionaries.Dictionary{ID: "d1", KeyColumn: "key"}, nil
+}
+
+func (f *fakeDicts) GetKeys(_ context.Context, _ string, _ int) ([]string, error) {
+	return []string{digestA}, nil
+}
+
+// The table holding the rows and the scope owning the needle dictionary are two
+// different things. In the rule tester the rows sit under a synthetic per-case
+// fractal that exists only inside the scratch table and owns no dictionaries, so
+// resolving needles against it would find nothing, or silently fall through to a
+// same-named global and compare against the wrong list.
+func TestResolveForTableSeparatesDataScopeFromDictionaryScope(t *testing.T) {
+	dicts := &fakeDicts{}
+	db := &fakeDB{digests: []string{digestA}}
+	r := &Resolver{Dicts: dicts, DB: db}
+
+	res, err := r.ResolveForTable(context.Background(),
+		parser.TLSHParams{Field: "tlsh", Dict: "known_bad", Threshold: 30},
+		TableSource{
+			Table:         "scratch_abc",
+			FractalID:     "synthetic-per-case-uuid",
+			DictFractalID: "real-rule-fractal",
+			DictPrismID:   "",
+		})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(res.Matches) != 1 {
+		t.Errorf("expected the identical digest to match, got %d", len(res.Matches))
+	}
+
+	if dicts.gotFractalID != "real-rule-fractal" {
+		t.Errorf("needles resolved against %q; must use the rule's scope, not the synthetic data fractal",
+			dicts.gotFractalID)
+	}
+	// The scan, by contrast, must be scoped to the rows actually under test.
+	if len(db.queries) != 1 || !strings.Contains(db.queries[0], "synthetic-per-case-uuid") {
+		t.Errorf("digest scan should be scoped to the unit's rows:\n%v", db.queries)
+	}
+	if !strings.Contains(db.queries[0], "scratch_abc") {
+		t.Errorf("digest scan should read the scratch table:\n%v", db.queries)
 	}
 }

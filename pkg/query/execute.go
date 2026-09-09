@@ -26,6 +26,11 @@ type ExecuteResult struct {
 	ChartConfig  map[string]interface{}   `json:"chart_config"`
 	FieldOrder   []string                 `json:"field_order"`
 	IsAggregated bool                     `json:"is_aggregated"`
+	// Warnings are non-fatal notices about scope the query could not cover, such as
+	// prism members tlsh() skipped for lacking an index. Carried on the result so a
+	// dashboard or notebook can show that coverage shrank; a log line alone leaves a
+	// widget looking complete when it is not.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ExecuteScope is where and when a server-side BQL execution runs. It is a
@@ -176,6 +181,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	// field against many digests has no workable SQL form, so the distance runs in
 	// Go over the model's distinct-digest index and comes back as an IN filter.
 	var tlshMatches []parser.TLSHMatch
+	var tlshWarnings []string
 	var hasTLSHFilter bool
 	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
 	if tlshErr != nil {
@@ -192,7 +198,8 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 			return nil, rerr
 		}
 		tlshMatches = res.Matches
-		for _, w := range tlshSkipWarnings(tlshParams.Field, res.Skipped) {
+		tlshWarnings = tlshSkipWarnings(tlshParams.Field, res.Skipped)
+		for _, w := range tlshWarnings {
 			log.Printf("[ExecuteBQL] %s", w)
 		}
 	}
@@ -320,5 +327,6 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		ChartConfig:  chartConfig,
 		FieldOrder:   fieldOrder,
 		IsAggregated: isAggregated,
+		Warnings:     tlshWarnings,
 	}, nil
 }

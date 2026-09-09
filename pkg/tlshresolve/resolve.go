@@ -179,6 +179,84 @@ func (h *Resolver) Resolve(ctx context.Context, p parser.TLSHParams, scope Scope
 	return Result{Matches: matches, Skipped: skipped}, nil
 }
 
+// TableSource says where ResolveForTable reads candidate digests, and separately
+// which scope owns the needle dictionary. The two are not the same in the rule
+// tester: rows live under a synthetic per-case fractal inside a scratch table,
+// while the dictionary belongs to the fractal or prism the rule itself is scoped to.
+type TableSource struct {
+	Table     string
+	FractalID string
+
+	DictFractalID string
+	DictPrismID   string
+}
+
+// ResolveForTable resolves tlsh() with candidate digests read straight from an
+// explicit table instead of from a model index.
+//
+// This exists for the rule tester, where the data under test is a scratch table
+// holding the handful of events a test case inserted. There is no model index over
+// those rows, and building one would be absurd; reading them directly is both
+// correct and trivially cheap because the table is tiny and belongs to this run.
+//
+// Deliberately NOT a general escape hatch for production logs: nothing prunes a
+// distinct-value scan, so pointing this at the log table would read a column across
+// the whole window on every call. That is why the query path skips an unindexed
+// fractal rather than scanning it.
+func (h *Resolver) ResolveForTable(ctx context.Context, p parser.TLSHParams, src TableSource) (Result, error) {
+	if h == nil || h.DB == nil {
+		return Result{}, fmt.Errorf("tlsh(): no log store available in this deployment")
+	}
+	if src.Table == "" {
+		return Result{}, fmt.Errorf("tlsh(): no table to read digests from")
+	}
+
+	// Needles come from the RULE's scope, never from FractalID. In the rule tester
+	// that field is a synthetic per-case UUID that exists only inside the scratch
+	// table and owns no dictionaries, so resolving a dictionary against it finds
+	// nothing (or, worse, silently falls through to a same-named global).
+	needles, err := h.loadTLSHNeedles(ctx, p, []string{src.DictFractalID}, src.DictPrismID)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(needles) == 0 {
+		return Result{}, fmt.Errorf("tlsh(): no valid digests to compare against")
+	}
+
+	ref := models.CHFieldRef(p.Field)
+	sql := fmt.Sprintf("SELECT DISTINCT %s AS digest FROM %s WHERE fractal_id = '%s' AND %s LIMIT %d",
+		ref, src.Table, storage.EscCHStr(src.FractalID), models.TLSHDigestGuard(ref), tlshMaxIndexRows+1)
+
+	rows, err := h.DB.Query(ctx, sql)
+	if err != nil {
+		return Result{}, fmt.Errorf("tlsh(): read digests from %s: %w", src.Table, err)
+	}
+
+	seen := make(map[string]struct{}, len(rows))
+	candidates := make([]tlshCandidate, 0, len(rows))
+	for _, r := range rows {
+		raw, _ := r["digest"].(string)
+		if raw == "" {
+			continue
+		}
+		if _, dup := seen[raw]; dup {
+			continue
+		}
+		d, perr := tlsh.Parse(raw)
+		if perr != nil {
+			continue
+		}
+		seen[raw] = struct{}{}
+		candidates = append(candidates, tlshCandidate{raw: raw, digest: d})
+	}
+
+	matches, err := matchTLSH(ctx, candidates, needles, p.Threshold)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Matches: matches}, nil
+}
+
 // tlshCandidate is one distinct digest from the index, carried alongside its
 // verbatim string because that string is what the log filter must match.
 type tlshCandidate struct {

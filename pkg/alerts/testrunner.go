@@ -15,6 +15,7 @@ import (
 	"bifract/pkg/parser"
 	"bifract/pkg/ruleeval"
 	"bifract/pkg/storage"
+	"bifract/pkg/tlshresolve"
 )
 
 // Test sessions are cheap to keep and expensive to rebuild, so an editor holds one
@@ -102,6 +103,45 @@ func (r *TestRunner) SetDictionaryResolver(d dictionaryResolver) {
 // dictionariesFor resolves a scope's dictionary mappings. A failure is not fatal: the
 // run continues and match() reports the dictionary as unavailable, which is a clearer
 // outcome for the author than the whole run erroring.
+// tlshResolver lets a rule under test use tlsh(). Candidate digests come from the
+// scratch table (see Scratch.resolveTLSH), so no model index is involved and Models
+// is deliberately nil; only the dictionary reader and a connection are needed.
+//
+// The connection must be the same pinned one the scratch table lives on, or the
+// digest read would hit another node and find an empty table, which silently turns
+// every "should match" case into a failure.
+func (r *TestRunner) tlshResolver() *tlshresolve.Resolver {
+	if r == nil {
+		return nil
+	}
+	// The connection must be the pinned one the scratch table lives on. A
+	// load-balanced client could read the digests from another node, find an empty
+	// table, and turn every "should match" case into a silent failure.
+	db := r.ch
+	if r.pinned != nil {
+		db = r.pinned
+	}
+	if db == nil {
+		return nil
+	}
+
+	// Dicts is optional: tlsh(hash="...") compares against literals and needs no
+	// dictionary at all, so a missing reader must not block those rules. When a rule
+	// does use dict=, loadTLSHNeedles reports the absence itself.
+	//
+	// dictionaryResolver is deliberately narrow (mappings only), which is all match()
+	// needs; reading a needle list needs more, so ask for it by assertion rather than
+	// widening an interface every stub would then have to satisfy.
+	var reader tlshresolve.DictReader
+	if r.dicts != nil {
+		// Guarded: asserting a nil r.dicts would still yield a nil interface, but a
+		// typed nil stored in it would yield a NON-nil interface wrapping a nil
+		// pointer, which passes the nil check in loadTLSHNeedles and then panics.
+		reader, _ = r.dicts.(tlshresolve.DictReader)
+	}
+	return &tlshresolve.Resolver{Dicts: reader, DB: db}
+}
+
 func (r *TestRunner) dictionariesFor(ctx context.Context, fractalID, prismID string) map[string]map[string]string {
 	if r.dicts == nil || (fractalID == "" && prismID == "") {
 		return nil
@@ -307,7 +347,8 @@ func (r *TestRunner) Run(ctx context.Context, sessionID, bql string, tests []Ale
 	// Re-resolved per run rather than cached with the session, so a dictionary edited
 	// while the editor is open is visible on the next run, and held locally so
 	// overlapping runs on one session cannot race on the session's scratch.
-	scratch := session.scratch.WithDictionaries(r.dictionariesFor(ctx, fractalID, prismID))
+	scratch := session.scratch.WithDictionaries(r.dictionariesFor(ctx, fractalID, prismID)).
+		WithTLSH(r.tlshResolver(), fractalID, prismID)
 
 	for i := range tests {
 		started := time.Now()

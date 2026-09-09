@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,9 +29,19 @@ type Client struct {
 
 	// Answers that do not change for the life of the process. Tool calls can run
 	// concurrently, so the caches are guarded.
-	mu      sync.Mutex
+	mu     sync.Mutex
+	static map[string]any
+	// carried is the scope the credential itself has, and carriedKnown that it
+	// has been looked up: no scope is an answer, so the two cannot be one field.
+	carried      keyScope
+	carriedKnown bool
+}
+
+// keyScope is what a credential is scoped to by itself, both empty for an
+// instance-wide key.
+type keyScope struct {
 	fractal string
-	static  map[string]any
+	prism   string
 }
 
 // NewClient builds the one client the process shares, so connections are pooled
@@ -50,48 +61,119 @@ func NewClient(cfg Config) *Client {
 // Config exposes the resolved settings for tools that report them.
 func (c *Client) Config() Config { return c.cfg }
 
-// FractalID is the fractal this session acts in, for the few endpoints that name
-// it in the path. Resolved once; a failure is not cached, so a transient outage
-// does not disable every scoped tool until restart.
-func (c *Client) FractalID(ctx context.Context) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.fractal != "" {
-		return c.fractal, nil
-	}
+// scopeOverrideKey carries a per-call scope on the context.
+type scopeOverrideKey struct{}
 
-	// /auth/user is exempt from the scope header, so it reports what the key
-	// carries. That wins over BIFRACT_FRACTAL_ID, as it does on the server.
-	bound, err := c.boundFractal(ctx)
-	if err != nil {
-		return "", err
-	}
-	if bound == "" {
-		// An instance-wide key belongs to no fractal and names one per request.
-		bound = c.cfg.FractalScope()
-	}
-	if bound == "" {
-		return "", errors.New(
-			"this session is not scoped to a single fractal, which this call needs. " +
-				"Set BIFRACT_FRACTAL_ID to the one to act in (call list_fractals for the ids), " +
-				"or use a key issued for that fractal")
-	}
-	c.fractal = bound
-	return bound, nil
+// withScope makes every call on ctx act in scope ("fractal:<id>" or
+// "prism:<id>") rather than in the session's configured one. Only a key that
+// belongs to no scope of its own is redirected by it; the server ignores the
+// header for a key issued for one scope, which is what stops a tool from
+// reaching outside the credential it runs under.
+func withScope(ctx context.Context, scope string) context.Context {
+	return context.WithValue(ctx, scopeOverrideKey{}, scope)
 }
 
-// boundFractal is the fractal the credential itself carries, empty for an
-// instance-wide key or one issued for a prism.
-func (c *Client) boundFractal(ctx context.Context) (string, error) {
-	identity, err := c.Get(ctx, "/auth/user", nil)
+// scopeOverride is the scope a call was redirected to, empty when it acts in the
+// session's own.
+func scopeOverride(ctx context.Context) string {
+	override, _ := ctx.Value(scopeOverrideKey{}).(string)
+	return override
+}
+
+// scope is the scope header this call sends.
+func (c *Client) scope(ctx context.Context) string {
+	if override := scopeOverride(ctx); override != "" {
+		return override
+	}
+	return c.cfg.Scope
+}
+
+// ResolveScope settles which fractal a tool call acts in, and refuses one that
+// cannot be settled. An instance-wide key belongs to no fractal, so a call that
+// names none would be answered in whichever one the server falls back to: a
+// watchlist or an alert that lands there reads as a success and watches nothing.
+func (c *Client) ResolveScope(ctx context.Context, fractalID string) (context.Context, error) {
+	if id := strings.TrimSpace(fractalID); id != "" {
+		if !validScopeID(id) {
+			return nil, fmt.Errorf("%q is not a fractal id. Call list_fractals for the ids", id)
+		}
+		return withScope(ctx, "fractal:"+id), nil
+	}
+	if c.cfg.Scope != "" {
+		return ctx, nil
+	}
+	carried, err := c.credential(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if carried.fractal == "" && carried.prism == "" {
+		return nil, errors.New(
+			"this key is instance-wide and belongs to no fractal, so a call that names none would " +
+				"be answered in whichever fractal the server falls back to. Pass fractal_id " +
+				"(call list_fractals for the ids), or set BIFRACT_FRACTAL_ID for the session")
+	}
+	return ctx, nil
+}
+
+// credential is the scope the key itself carries. Resolved once: it cannot
+// change for the life of the process, and the scope guard runs before every
+// tool call. A failure is not cached, so a transient outage does not disable
+// every tool until restart.
+func (c *Client) credential(ctx context.Context) (keyScope, error) {
+	c.mu.Lock()
+	if c.carriedKnown {
+		defer c.mu.Unlock()
+		return c.carried, nil
+	}
+	c.mu.Unlock()
+
+	// Fetched outside the lock, so a slow request does not block an unrelated
+	// call. /auth/user is exempt from the scope header, so it reports what the
+	// key carries rather than what the session asked for.
+	payload, err := c.Get(ctx, "/auth/user", nil)
+	if err != nil {
+		return keyScope{}, err
+	}
+	user := payload
+	if nested := aitools.Field[map[string]any](payload, "user"); nested != nil {
+		user = nested
+	}
+	carried := keyScope{
+		fractal: aitools.Field[string](user, "selected_fractal"),
+		prism:   aitools.Field[string](user, "selected_prism"),
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.carried, c.carriedKnown = carried, true
+	return carried, nil
+}
+
+// FractalID is the fractal this session acts in, for the few endpoints that name
+// it in the path.
+func (c *Client) FractalID(ctx context.Context) (string, error) {
+	// A call redirected to another scope answers for that one, and must not be
+	// remembered as the session's.
+	if id, ok := strings.CutPrefix(scopeOverride(ctx), "fractal:"); ok {
+		return id, nil
+	}
+
+	// What the key carries wins over BIFRACT_FRACTAL_ID, as it does on the server.
+	carried, err := c.credential(ctx)
 	if err != nil {
 		return "", err
 	}
-	user := identity
-	if nested := aitools.Field[map[string]any](identity, "user"); nested != nil {
-		user = nested
+	if carried.fractal != "" {
+		return carried.fractal, nil
 	}
-	return aitools.Field[string](user, "selected_fractal"), nil
+	// An instance-wide key belongs to no fractal and names one per request.
+	if id := c.cfg.FractalScope(); id != "" {
+		return id, nil
+	}
+	return "", errors.New(
+		"this session is not scoped to a single fractal, which this call needs. " +
+			"Set BIFRACT_FRACTAL_ID to the one to act in (call list_fractals for the ids), " +
+			"or use a key issued for that fractal")
 }
 
 // Get calls path with optional query parameters.
@@ -161,8 +243,8 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		return nil, fmt.Errorf("could not build the request for %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	if c.cfg.Scope != "" {
-		req.Header.Set("X-Bifract-Scope", c.cfg.Scope)
+	if scope := c.scope(ctx); scope != "" {
+		req.Header.Set("X-Bifract-Scope", scope)
 	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -196,8 +278,8 @@ func (c *Client) Upload(ctx context.Context, path string, query url.Values, cont
 		return nil, fmt.Errorf("could not build the upload request for %s: %w", path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	if c.cfg.Scope != "" {
-		req.Header.Set("X-Bifract-Scope", c.cfg.Scope)
+	if scope := c.scope(ctx); scope != "" {
+		req.Header.Set("X-Bifract-Scope", scope)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", contentType)

@@ -612,6 +612,15 @@ func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName, frac
 	return b.String(), nil
 }
 
+// TLSHDigestGuard and CHFieldRef expose the expressions the index MV is built
+// from, so a caller reading digests out of a table directly (the rule tester's
+// scratch table) selects the same column and applies the same shape guard. Two
+// spellings of "a usable digest" would drift.
+func TLSHDigestGuard(ref string) string { return tlshDigestGuard(ref) }
+
+// CHFieldRef renders a log field as the column expression the model indexes.
+func CHFieldRef(field string) string { return chFieldRef(field) }
+
 // tlshDigestGuard admits only well-formed TLSH digests: 70 hex characters, with an
 // optional "T1" version prefix. Producers emit nothing for inputs under 50 bytes,
 // so absent and truncated values are routine in log data, and two of them compare

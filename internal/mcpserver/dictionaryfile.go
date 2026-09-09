@@ -56,6 +56,8 @@ type uploadDictionaryFileArgs struct {
 	// created, which is what loading a new watchlist means.
 	DictionaryID   string `json:"dictionary_id,omitempty" jsonschema:"The dictionary to load into, from list_dictionaries. Give this or dictionary_name."`
 	DictionaryName string `json:"dictionary_name,omitempty" jsonschema:"Name of the dictionary to load into. One that does not exist yet is created from the file's columns."`
+	FractalID      string `json:"fractal_id,omitempty" jsonschema:"The fractal to act in, from list_fractals. Needed only for an instance-wide key, which belongs to no fractal of its own; a key issued for one fractal or prism ignores it."`
+	IsGlobal       bool   `json:"is_global,omitempty" jsonschema:"When creating the dictionary, make it visible to every fractal rather than only the one it is created in."`
 	Format         string `json:"format,omitempty" jsonschema:"File format: auto (default) csv tsv json ndjson or lines. lines is one value per line, for a plain indicator list."`
 	KeyField       string `json:"key_field,omitempty" jsonschema:"The column in the file holding the lookup key, when it is not already named as the dictionary's key column. Its values are written to that column."`
 	Column         string `json:"column,omitempty" jsonschema:"For the lines format only: the column each line's value is written to. Defaults to the dictionary's key column."`
@@ -83,8 +85,11 @@ func addDictionaryFileTool(s *mcp.Server, c *Client) {
 			"renamed and the rename reported. Rows are keyed, so re-uploading a corrected file " +
 			"updates rather than duplicates, and rows the file no longer lists stay as they are.\n\n" +
 			"This changes what live detections match on. Use dry_run first on a file whose shape " +
-			"is not known.\n\n" +
-			"Returns what was written: rows, columns added, and anything skipped.",
+			"is not known. Where the key is instance-wide, pass fractal_id: it belongs to no " +
+			"fractal, and a load with none named would go wherever the server defaults to. Pass " +
+			"is_global to create a watchlist every fractal can see.\n\n" +
+			"Returns what was written and where: rows, the fractal and scope of the dictionary, " +
+			"columns added, and anything skipped.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in uploadDictionaryFileArgs) (*mcp.CallToolResult, any, error) {
 		out, failure := uploadDictionaryFile(ctx, c, in, progressReporter(ctx, req))
 		if out == nil {
@@ -163,6 +168,14 @@ func uploadDictionaryFile(ctx context.Context, c *Client, in uploadDictionaryFil
 		return nil, err
 	}
 
+	// Resolved before anything is written: a key that belongs to no fractal would
+	// otherwise load into whichever one the server falls back to, and a watchlist
+	// in the wrong fractal detects nothing while looking like it worked.
+	ctx, err = c.ResolveScope(ctx, in.FractalID)
+	if err != nil {
+		return nil, err
+	}
+
 	dict, created, err := resolveTargetDictionary(ctx, c, in, in.DryRun)
 	if err != nil {
 		return nil, err
@@ -193,6 +206,11 @@ func uploadDictionaryFile(ctx context.Context, c *Client, in uploadDictionaryFil
 		report:  report,
 		started: time.Now(),
 	}
+	if !created && in.IsGlobal && !aitools.Field[bool](dict, "is_global") {
+		up.notes = append(up.notes, "is_global applies only when the dictionary is created. "+
+			aitools.Field[string](dict, "name")+" already exists and is not global; change that in the dictionary editor")
+	}
+
 	if err := up.run(ctx, rows); err != nil {
 		return up.summary(path, format, created, err), err
 	}
@@ -302,7 +320,7 @@ func resolveTargetDictionary(ctx context.Context, c *Client, in uploadDictionary
 
 	if dryRun {
 		// A dry run writes nothing, the dictionary included.
-		return map[string]any{"name": name, "columns": []any{}}, true, nil
+		return map[string]any{"name": name, "columns": []any{}, "is_global": in.IsGlobal}, true, nil
 	}
 
 	// Created with no columns: the first one the file names becomes the key, which
@@ -310,6 +328,7 @@ func resolveTargetDictionary(ctx context.Context, c *Client, in uploadDictionary
 	dict, err := c.Post(ctx, "/dictionaries", map[string]any{
 		"name":        name,
 		"description": "Loaded from " + filepath.Base(in.Path),
+		"is_global":   in.IsGlobal,
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("could not create the dictionary %q: %w", name, err)
@@ -613,6 +632,8 @@ type uploader struct {
 	report func(int, string)
 
 	started time.Time
+	// loaded is the dictionary as it stands once the load has finished.
+	loaded  any
 	order   []string
 	pending []map[string]string
 	bytes   int
@@ -810,31 +831,59 @@ func (u *uploader) encode() ([]byte, error) {
 }
 
 // finalize refreshes the live dictionary and its row count once, which every
-// chunk deferred. Best effort: the rows are already committed, and the objects
-// reload on their own within their lifetime.
+// chunk deferred, then reads back what the dictionary now holds. Best effort on
+// both: the rows are already committed, and the objects reload on their own
+// within their lifetime.
 func (u *uploader) finalize(ctx context.Context) {
 	if u.dryRun || u.rowsWritten == 0 {
 		return
 	}
-	id := aitools.Field[string](u.dict, "id")
-	if _, err := u.client.Post(ctx, "/dictionaries/"+url.PathEscape(id)+"/reload", nil); err != nil {
+	path := "/dictionaries/" + url.PathEscape(aitools.Field[string](u.dict, "id"))
+	if _, err := u.client.Post(ctx, path+"/reload", nil); err != nil {
 		u.notes = append(u.notes,
 			"the rows were loaded but the live dictionary refresh failed, so lookups pick them up "+
 				"within the dictionary's lifetime rather than at once: "+err.Error())
+		return
+	}
+	// Read back rather than report what was sent: the count is what the analyst
+	// will see, and keyed rows mean a file that repeats a key holds fewer.
+	if loaded, err := u.client.Get(ctx, path, nil); err == nil {
+		u.loaded = loaded
 	}
 }
 
 func (u *uploader) summary(path, format string, created bool, failure error) any {
+	// Where it landed matters as much as what landed: an instance-wide key names
+	// its scope per call, and a watchlist in the wrong fractal detects nothing
+	// while reading as a successful load.
+	target := u.dict
+	if u.loaded != nil {
+		target = u.loaded
+	}
 	out := map[string]any{
 		"file":          path,
 		"format":        format,
-		"dictionary":    aitools.Field[string](u.dict, "name"),
-		"dictionary_id": aitools.Field[string](u.dict, "id"),
+		"dictionary":    aitools.Field[string](target, "name"),
+		"dictionary_id": aitools.Field[string](target, "id"),
+		"fractal_id":    aitools.Field[string](target, "fractal_id"),
+		"is_global":     aitools.Field[bool](target, "is_global"),
 		"key_column":    u.key,
 		"rows_read":     u.rowsRead,
 		"rows_written":  u.rowsWritten,
 		"chunks":        u.chunks,
 		"elapsed":       time.Since(u.started).Round(time.Millisecond).String(),
+	}
+	if prism := aitools.Field[string](target, "prism_id"); prism != "" {
+		out["prism_id"] = prism
+	}
+	if u.loaded != nil {
+		count := int(aitools.Field[float64](u.loaded, "row_count"))
+		out["dictionary_row_count"] = count
+		if count < u.rowsWritten {
+			u.notes = append(u.notes,
+				"the dictionary holds fewer rows than were written because rows are keyed: "+
+					"the file repeats keys, and each key keeps its last row")
+		}
 	}
 	if u.dryRun {
 		out["dry_run"] = true

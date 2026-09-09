@@ -8,7 +8,7 @@
   <a href="https://docs.bifract.io"><img src="https://img.shields.io/badge/docs-bifract.io-9c6ade" alt="Documentation"></a>
 </div>
 
-![Provenance graph](docs/images/pgr.png)
+![Provenance graph](docs/images/pgr.gif)
 
 Bifract is a log platform for security teams, built on ClickHouse for high-volume storage and search. It pairs a pipe-based query language with behavioral baselines, process provenance, and collaborative investigation.
 

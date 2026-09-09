@@ -35,6 +35,31 @@ type Client interface {
 	FractalID(ctx context.Context) (string, error)
 }
 
+// FractalArg is the argument a scoped tool takes to say which fractal it acts
+// in. It is added to the MCP schema here rather than to each tool's own
+// arguments, so no tool can ship without it and none has to retype it.
+//
+// It is absent from the schema chat renders: there the scope is the one the user
+// has selected on screen, and it is not the model's to pick.
+const FractalArg = "fractal_id"
+
+const fractalArgDescription = "The fractal to act in, from list_fractals. Needed only for an " +
+	"instance-wide key, which belongs to no fractal of its own; a key issued for one fractal " +
+	"or prism ignores it."
+
+// fractalArgIgnored is what the argument means to a tool that acts across the
+// instance rather than in one fractal.
+const fractalArgIgnored = "Ignored: this tool reports on the instance rather than acting in one fractal."
+
+// ScopeResolver is implemented by a client whose credential may belong to no
+// scope, and so has to be told which one a call acts in. It returns the context
+// the call runs on, and refuses a call that names none where none can be
+// inferred: a write that lands in whichever fractal the server falls back to
+// reads as a success and detects nothing.
+type ScopeResolver interface {
+	ResolveScope(ctx context.Context, fractalID string) (context.Context, error)
+}
+
 // noArgs is the argument type of a tool that takes none. It still has to be a
 // struct, because the MCP spec requires an object input schema.
 type noArgs struct{}
@@ -45,9 +70,10 @@ type handler[In any] func(ctx context.Context, c Client, in In) (any, error)
 
 // declaration collects the options a tool is declared with.
 type declaration struct {
-	enums   map[string][]string
-	needs   api.Access
-	confirm *bool
+	enums     map[string][]string
+	needs     api.Access
+	confirm   *bool
+	scopeFree bool
 }
 
 // option adjusts a tool as it is declared.
@@ -82,6 +108,14 @@ func noConfirm() option {
 	return func(d *declaration) { no := false; d.confirm = &no }
 }
 
+// scopeFree marks a tool that acts outside any one fractal, so it neither takes
+// a fractal argument nor requires a scope to be resolvable. Discovery is the
+// case: naming the fractal cannot be a precondition of finding out which
+// fractals there are.
+func scopeFree() option {
+	return func(d *declaration) { d.scopeFree = true }
+}
+
 // readOnly marks a tool that cannot change anything. Chat runs these without
 // asking the user, so it is an authorization fact rather than decoration: an
 // unannotated tool reads as a write, which is the safe way to be wrong.
@@ -113,6 +147,9 @@ type Tool struct {
 	// window records that the tool accepts a start/end range, so a caller that
 	// governs the range centrally knows to supply it.
 	window bool
+	// scopeFree records that the tool acts across the instance, so no scope is
+	// resolved before it runs.
+	scopeFree bool
 
 	addTo func(*mcp.Server, Client)
 	run   func(context.Context, Client, json.RawMessage) (any, error)
@@ -138,6 +175,12 @@ func (t Tool) NeedsConfirmation() bool { return t.confirm }
 
 // TakesWindow reports whether the tool accepts a start/end time range.
 func (t Tool) TakesWindow() bool { return t.window }
+
+// ScopeFree reports whether the tool acts across the instance rather than in one
+// fractal, and so runs without a scope being resolved. Exported so a test can
+// hold the set to an explicit list: a scoped tool marked scope-free by mistake
+// would write wherever the server falls back to, and nothing else would say so.
+func (t Tool) ScopeFree() bool { return t.scopeFree }
 
 // Call runs the tool with arguments as the model produced them.
 func (t Tool) Call(ctx context.Context, c Client, args json.RawMessage) (any, error) {
@@ -165,26 +208,55 @@ func add[In any](d *set, t *mcp.Tool, h handler[In], opts ...option) {
 		o(spec)
 	}
 
-	schema, err := jsonschema.For[In](nil)
-	if err != nil {
-		panic(fmt.Sprintf("%s: input schema: %v", t.Name, err))
-	}
-	for name, values := range spec.enums {
-		property, ok := schema.Properties[name]
-		if !ok {
-			panic(fmt.Sprintf("%s: no argument %q to constrain", t.Name, name))
+	build := func() *jsonschema.Schema {
+		schema, err := jsonschema.For[In](nil)
+		if err != nil {
+			panic(fmt.Sprintf("%s: input schema: %v", t.Name, err))
 		}
-		property.Enum = make([]any, len(values))
-		for i, v := range values {
-			property.Enum[i] = v
+		for name, values := range spec.enums {
+			property, ok := schema.Properties[name]
+			if !ok {
+				panic(fmt.Sprintf("%s: no argument %q to constrain", t.Name, name))
+			}
+			property.Enum = make([]any, len(values))
+			for i, v := range values {
+				property.Enum[i] = v
+			}
 		}
+		return schema
 	}
+
+	schema := build()
 	t.InputSchema = schema
 
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
 		panic(fmt.Sprintf("%s: input schema does not resolve: %v", t.Name, err))
 	}
+
+	// The MCP surface takes one argument more than chat's, so the two schemas are
+	// built separately rather than one being mutated after the fact.
+	//
+	// Every tool takes it, a scope-free one included: the schemas refuse an
+	// argument they do not declare, and a model told to name the fractal on every
+	// call must not be answered with a validation error by the very tool it calls
+	// to find the id.
+	served := *t
+	scoped := build()
+	if scoped.Properties == nil {
+		// A tool that takes no arguments of its own still takes this one.
+		scoped.Properties = map[string]*jsonschema.Schema{}
+		scoped.Type = "object"
+	}
+	if _, taken := scoped.Properties[FractalArg]; taken {
+		panic(fmt.Sprintf("%s declares its own %s, which the scope argument would shadow", t.Name, FractalArg))
+	}
+	description := fractalArgDescription
+	if spec.scopeFree {
+		description = fractalArgIgnored
+	}
+	scoped.Properties[FractalArg] = &jsonschema.Schema{Type: "string", Description: description}
+	served.InputSchema = scoped
 
 	if d.seen == nil {
 		d.seen = map[string]bool{}
@@ -207,12 +279,17 @@ func add[In any](d *set, t *mcp.Tool, h handler[In], opts ...option) {
 	_, windowed := schema.Properties["start"]
 
 	d.tools = append(d.tools, Tool{
-		Def:     t,
-		needs:   needs,
-		confirm: confirm,
-		window:  windowed,
+		Def:       t,
+		needs:     needs,
+		confirm:   confirm,
+		window:    windowed,
+		scopeFree: spec.scopeFree,
 		addTo: func(s *mcp.Server, c Client) {
-			mcp.AddTool(s, t, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+			mcp.AddTool(s, &served, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+				ctx, err := scopedCall(ctx, c, spec.scopeFree, req)
+				if err != nil {
+					return nil, nil, err
+				}
 				out, err := h(ctx, c, in)
 				if err != nil {
 					return nil, nil, err
@@ -264,6 +341,36 @@ func All() []Tool {
 	registerInstructionTools(d)
 	registerProvenanceTools(d)
 	return d.tools
+}
+
+// scopedCall settles which scope a tool call acts in, for a client whose
+// credential may belong to none.
+func scopedCall(ctx context.Context, c Client, isScopeFree bool, req *mcp.CallToolRequest) (context.Context, error) {
+	resolver, ok := c.(ScopeResolver)
+	if !ok || isScopeFree {
+		return ctx, nil
+	}
+	return resolver.ResolveScope(ctx, fractalArgument(req))
+}
+
+// fractalArgument reads the fractal a call named. It comes off the raw arguments
+// because the tool's own argument type does not carry it, and it is keyed on
+// FractalArg rather than on a struct tag: a name that drifted from the schema
+// would read as a call that named no fractal, which is the failure this whole
+// argument exists to prevent.
+func fractalArgument(req *mcp.CallToolRequest) string {
+	if req == nil || req.Params == nil || len(req.Params.Arguments) == 0 {
+		return ""
+	}
+	var named map[string]json.RawMessage
+	if err := json.Unmarshal(req.Params.Arguments, &named); err != nil {
+		return ""
+	}
+	var id string
+	if err := json.Unmarshal(named[FractalArg], &id); err != nil {
+		return ""
+	}
+	return id
 }
 
 // Serve registers every tool on an MCP server backed by c.

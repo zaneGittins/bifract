@@ -103,3 +103,30 @@ func TestGetDictionaryByNameQueryIsTypeSafeAndNullSafe(t *testing.T) {
 		}
 	}
 }
+
+// A global dictionary is owned by one scope and readable by all. Resolving a name
+// to someone else's global is right for a reader and destructive for a writer:
+// ExecuteDictionaryAction rebuilds the schema and TRUNCATEs before refilling, so a
+// dictionary action in fractal B would wipe fractal A's global and republish B's
+// rows to every reader of it.
+func TestOwnedLookupExcludesGlobalsWhileReadLookupIncludesThem(t *testing.T) {
+	for _, src := range []string{dictByNameFractalSQL, dictByNamePrismSQL} {
+		if !strings.Contains(src, "is_global = true") {
+			t.Errorf("the read lookup must see globals:\n%s", src)
+		}
+	}
+	for _, src := range []string{dictOwnedByNameFractalSQL, dictOwnedByNamePrismSQL} {
+		// is_global appears in the shared column list; what must be absent is the
+		// predicate that widens the WHERE to globals owned elsewhere.
+		if strings.Contains(src, "is_global = true") {
+			t.Errorf("the write lookup must NOT fall back to a global owned elsewhere:\n%s", src)
+		}
+	}
+	// Both variants keep the parameter unambiguously text; mixing uuid and text use
+	// of $1 makes Postgres reject the statement at Parse time.
+	for _, src := range []string{dictOwnedByNameFractalSQL, dictOwnedByNamePrismSQL} {
+		if strings.Contains(src, "fractal_id = $1") || strings.Contains(src, "prism_id = $1") {
+			t.Errorf("scope id must be compared as ::text:\n%s", src)
+		}
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"bifract/pkg/storage"
+	"bifract/pkg/tlshresolve"
 )
 
 // DefaultDatabase is the database holding the log schema.
@@ -32,6 +33,17 @@ type Scratch struct {
 	// match() resolves the same way it does when the alert runs for real. Nil leaves
 	// match() unresolvable, which is what a caller with no access to them wants.
 	dictionaries map[string]map[string]string
+
+	// tlsh resolves tlsh() against the scratch table itself. A rule under test runs
+	// over the events its case inserted, not over a fractal's indexed history, so the
+	// candidate digests are those events' own. Nil leaves tlsh() unresolvable, and
+	// Evaluate then says so plainly instead of failing inside the translator.
+	tlsh *tlshresolve.Resolver
+	// tlshScope is the rule's own fractal or prism, which owns the needle dictionary.
+	// Deliberately separate from the unit's fractal: that one is synthetic, exists
+	// only inside the scratch table, and owns nothing.
+	tlshFractalID string
+	tlshPrismID   string
 }
 
 // NewScratch creates a scratch table on the given connection. The caller owns the
@@ -156,5 +168,16 @@ func (s *Scratch) Drop(ctx context.Context) error {
 func (s *Scratch) WithDictionaries(mappings map[string]map[string]string) *Scratch {
 	clone := *s
 	clone.dictionaries = mappings
+	return &clone
+}
+
+// WithTLSH returns a view of s that can resolve tlsh(). A copy for the same reason
+// as WithDictionaries: one editor session's scratch is shared across overlapping
+// runs, so mutating it in place would race.
+func (s *Scratch) WithTLSH(r *tlshresolve.Resolver, fractalID, prismID string) *Scratch {
+	clone := *s
+	clone.tlsh = r
+	clone.tlshFractalID = fractalID
+	clone.tlshPrismID = prismID
 	return &clone
 }

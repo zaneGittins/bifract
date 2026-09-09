@@ -83,7 +83,7 @@ func registerQueryTools(d *set) {
 		Name:        "get_bql_reference",
 		Annotations: readOnly(),
 		Description: "Get the BQL syntax reference: every supported function and operator with examples.",
-	}, getBQLReference)
+	}, getBQLReference, scopeFree())
 }
 
 type queryLogsArgs struct {

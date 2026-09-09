@@ -75,8 +75,14 @@ func (h *tlshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return nil
 	}
 
+	// Reached only where a caller translates without pre-resolving the digests.
+	// Name the contexts that legitimately cannot, so the message is actionable
+	// rather than describing an internal contract: a join() subquery is translated
+	// with its own options and never carries the outer command's matches (copying
+	// them would filter the inner field by the outer field's digests), and archive
+	// search has no TLSH model index to resolve against.
 	if !ctx.Opts.HasTLSHFilter {
-		return fmt.Errorf("tlsh() requires server-side pre-processing")
+		return fmt.Errorf("tlsh() cannot be resolved in this context; it is not supported inside a join() subquery or in archive search")
 	}
 
 	// A similarity filter reads as "keep the rows whose digest looks like this".

@@ -1154,6 +1154,15 @@ func validateRecallQuery(query string) error {
 	if err != nil {
 		return fmt.Errorf("invalid query: %w", err)
 	}
+	// tlsh() resolves against a tlsh model, which indexes the ClickHouse log table.
+	// The archive is a separate Iceberg copy with no such index, so the command
+	// cannot be answered here. Reject at submit rather than letting it translate and
+	// fail (or match nothing) once the job is already running.
+	if _, hasTLSH, terr := parser.ExtractTLSHParams(pipeline); terr != nil {
+		return terr
+	} else if hasTLSH {
+		return fmt.Errorf("tlsh() is not supported in archive search: it resolves against a TLSH model index, which covers live logs rather than the archive")
+	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, parser.QueryOptions{
 		StartTime:          time.Now().Add(-time.Hour),
 		EndTime:            time.Now(),

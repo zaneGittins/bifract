@@ -92,10 +92,15 @@ func getContext(ctx context.Context, c *Client) (any, error) {
 			"'viewer' can read only; 'analyst' can also write comments, alerts, " +
 			"notebooks, and dashboards.",
 	}
-	if conflict != "" {
+	switch {
+	case conflict != "":
 		reported["scope_warning"] = conflict
-	} else if scope != "" {
+	case scope != "":
 		reported["scope_source"] = "BIFRACT_FRACTAL_ID/BIFRACT_PRISM_ID: this key is instance-wide and belongs to no scope of its own"
+	case fractal == "" && prism == "":
+		// Nothing fixes the scope, so every call has to name it or be refused.
+		reported["scope_source"] = "none: this key is instance-wide and belongs to no fractal. " +
+			"Pass fractal_id on every call that acts in one, using list_fractals for the ids"
 	}
 	return reported, nil
 }

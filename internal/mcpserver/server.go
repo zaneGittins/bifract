@@ -53,7 +53,9 @@ is a collaborative platform and other analysts read what you leave behind.
 
 Writes are real. Creating an alert, or adding rows to a dictionary, changes what a
 live system detects. Confirm scope with get_context before changing anything, and
-prefer reading the current state before overwriting it.`
+prefer reading the current state before overwriting it. Where get_context reports no
+fractal of its own, the key is instance-wide and every write has to name the fractal
+it means.`
 
 // New builds the server with every tool registered against c.
 func New(c *Client) *mcp.Server {

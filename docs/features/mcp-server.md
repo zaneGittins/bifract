@@ -68,9 +68,17 @@ means on each request. Give the session a fractal to act in:
 }
 ```
 
-Without it, tools that name a fractal in the request say so rather than guessing. Prefer a
-fractal-scoped key where one will do: it cannot reach past the fractal it was issued for,
-whichever way the session is configured.
+Every tool also takes a `fractal_id` argument, so one session can work across several
+fractals without being reconfigured. A key issued for one fractal ignores it: the server
+fixes that key's scope, and no argument widens it.
+
+Without either, a call that acts in a fractal is refused rather than answered in whichever
+one the server falls back to. `list_fractals` and `get_bql_reference` run unscoped and
+ignore the argument, since naming a fractal cannot be a precondition of finding out which
+fractals exist.
+
+Prefer a fractal-scoped key where one will do: it cannot reach past the fractal it was
+issued for, whichever way the session is configured.
 
 ### Connecting through mTLS
 
@@ -194,11 +202,18 @@ CSV, TSV, JSON array, NDJSON, and a plain one-value-per-line list are recognised
 extension and the content, and a `.gz` file is decompressed as it is read.
 
 Rows are keyed, so re-uploading a corrected file updates rather than duplicates; rows the
-file no longer lists stay as they are. Columns the dictionary lacks are added, and a
-column name the schema will not take is renamed and the rename reported. Naming a
-`dictionary_name` that does not exist creates it, keyed on the file's first column. Pass
+file no longer lists stay as they are. A file that repeats a key therefore loads fewer rows
+than it holds, which the summary says rather than leaving as an apparent loss. Columns the
+dictionary lacks are added, and a column name the schema will not take is renamed and the
+rename reported. Naming a `dictionary_name` that does not exist creates it, keyed on the
+file's first column; pass `is_global` to make that one visible to every fractal. Pass
 `key_field` where the file's key column is named something else, and `dry_run` to see what
 a file would write before writing it.
+
+An instance-wide key (`bifract_admin_...`) belongs to no fractal, so it must name one:
+pass `fractal_id`, or set `BIFRACT_FRACTAL_ID` for the session. Without either, the load is
+refused rather than sent to whichever fractal the server falls back to. The summary always
+reports the fractal and scope the rows landed in.
 
 It is the only tool that touches the filesystem, and it exists only here: the same tool in
 the in-product [chat](ai-chat.md) would read files off the server rather than off the
