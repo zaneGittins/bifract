@@ -3134,7 +3134,7 @@ func buildFieldsTypeHintSQL(table string, fields []string) string {
 	sb.WriteString(table)
 	sb.WriteString(" MODIFY COLUMN fields JSON(\n    max_dynamic_paths=1024")
 	for _, f := range sorted {
-		escaped := strings.ReplaceAll(f, "`", "``")
+		escaped := escapeCHBacktickIdent(f)
 		sb.WriteString(",\n    `")
 		sb.WriteString(escaped)
 		sb.WriteString("` String")
@@ -3264,7 +3264,7 @@ func (c *ClickHouseClient) applySchemaFieldIndexes(ctx context.Context, fields [
 		default:
 			idxExpr = "TYPE bloom_filter(0.001)"
 		}
-		escaped := strings.ReplaceAll(f.FieldName, "`", "``")
+		escaped := escapeCHBacktickIdent(f.FieldName)
 		idxName := schemaFieldIndexName(f.FieldName)
 		idxSQL := fmt.Sprintf(
 			"ALTER TABLE logs ADD INDEX IF NOT EXISTS %s fields.`%s` %s GRANULARITY 1",

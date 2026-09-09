@@ -166,7 +166,16 @@ func (c *ClickHouseClient) cleanKeeperPaths(ctx context.Context, extraTables []s
 // above and from Postgres, so this guards the interpolation rather than validating
 // a user-supplied name.
 func quoteCHIdent(name string) string {
-	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+	return "`" + escapeCHBacktickIdent(name) + "`"
+}
+
+// escapeCHBacktickIdent escapes a string for use inside a ClickHouse
+// backtick-quoted identifier. ClickHouse treats a backslash-escaped backtick as
+// a literal backtick, so doubling only backticks lets a `\` escape the closing
+// quote and break out of the identifier; the backslash must be escaped first.
+func escapeCHBacktickIdent(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return strings.ReplaceAll(s, "`", "``")
 }
 
 // Analytics model objects are named from the model's UUID. Defined here, in the

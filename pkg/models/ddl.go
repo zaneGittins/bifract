@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"bifract/pkg/parser"
 )
 
 var namedGroupRe = regexp.MustCompile(`\(\?P?(?:<[a-zA-Z_][a-zA-Z0-9_]*>|'[a-zA-Z_][a-zA-Z0-9_]*')`)
@@ -417,11 +419,11 @@ func chFieldRef(field string) string {
 	case "timestamp", "norm_log", "log_id", "fractal_id", "ingest_timestamp", "normalizer":
 		return field
 	default:
-		// Escape backticks the way the query translator's jsonFieldRef does. A field
-		// name reaches here from a model definition and, via the tlsh() fallback
-		// probe, straight from a user's query, so an unescaped backtick would close
-		// the identifier and let the rest of the name run as SQL.
-		return "fields.`" + strings.ReplaceAll(field, "`", "``") + "`::String"
+		// Quote the way the query translator's jsonFieldRef does. A field name
+		// reaches here from a model definition and, via the tlsh() fallback probe,
+		// straight from a user's query, so an unescaped backtick or backslash would
+		// close the identifier and let the rest of the name run as SQL.
+		return "fields.`" + parser.EscapeCHBacktickIdent(field) + "`::String"
 	}
 }
 

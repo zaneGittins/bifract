@@ -1105,12 +1105,24 @@ func jsonFieldRef(field string) string {
 	var b strings.Builder
 	b.WriteString("fields")
 	for _, p := range parts {
-		escaped := strings.ReplaceAll(p, "`", "``")
 		b.WriteString(".`")
-		b.WriteString(escaped)
+		b.WriteString(EscapeCHBacktickIdent(p))
 		b.WriteString("`")
 	}
 	return b.String() + "::String"
+}
+
+// EscapeCHBacktickIdent escapes a string for use inside a ClickHouse
+// backtick-quoted identifier. ClickHouse honours BOTH a doubled backtick and a
+// backslash-escaped backtick inside the quotes, so a name may contain a
+// backslash that escapes the closing quote: doubling only backticks then leaves
+// `\` + `` `` `` reading as an escaped-backtick-plus-close, breaking out of the
+// identifier. Escaping the backslash first closes that hole. Field names reach
+// here straight from a user's query (sort, dedup, concat, ...), so this is the
+// boundary that keeps an attacker-supplied name from becoming SQL.
+func EscapeCHBacktickIdent(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return strings.ReplaceAll(s, "`", "``")
 }
 
 // validateNumeric ensures a value is a valid number, preventing SQL injection in numeric contexts.
