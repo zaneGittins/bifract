@@ -6,7 +6,9 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -40,6 +42,35 @@ type Route struct {
 	// them ad hoc, so nothing but this declaration can tell a client they exist.
 	Query   []QueryParam
 	Handler http.HandlerFunc
+	// StreamsBody exempts the route from the API's blanket request-body cap.
+	//
+	// That cap exists so an ordinary JSON endpoint cannot be handed an unbounded
+	// body, which is right for every route that unmarshals into a struct. An upload
+	// is the exception: it streams its body and bounds itself (spilling to disk, or
+	// capping what a compressed body may expand to), so the cap only truncates a
+	// legitimate file. Set this ONLY on a handler that does its own bounding.
+	StreamsBody bool
+}
+
+// uncappedBodyKey carries the request body as it was before the size cap wrapped
+// it, so a StreamsBody route can read the whole upload.
+type uncappedBodyKey struct{}
+
+// WithUncappedBody stashes the pre-cap body. The body-limit middleware calls this
+// before wrapping, so the original stays reachable for routes that declare they
+// stream; nothing else can reach it.
+func WithUncappedBody(ctx context.Context, body io.ReadCloser) context.Context {
+	return context.WithValue(ctx, uncappedBodyKey{}, body)
+}
+
+// restoreUncappedBody hands a streaming handler the body without the size cap.
+func restoreUncappedBody(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := r.Context().Value(uncappedBodyKey{}).(io.ReadCloser); ok && body != nil {
+			r.Body = body
+		}
+		h(w, r)
+	}
 }
 
 // QueryParam is one query-string parameter a route accepts.
@@ -142,7 +173,11 @@ func (rt Router) With(middlewares ...func(http.Handler) http.Handler) Router {
 // Register mounts route behind its access requirement and records it.
 func (rt Router) Register(route Route) {
 	rt.reg.add(rt.prefix, route)
-	rt.Router.Method(route.Method, route.Path, guard(route.Access, route.Handler))
+	h := route.Handler
+	if route.StreamsBody {
+		h = restoreUncappedBody(h)
+	}
+	rt.Router.Method(route.Method, route.Path, guard(route.Access, h))
 }
 
 // guard refuses a request whose principal does not satisfy access, or that

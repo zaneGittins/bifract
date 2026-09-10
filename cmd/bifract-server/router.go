@@ -299,9 +299,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 		r.Group(func(r api.Router) {
 			r.Use(d.authHandler.AuthMiddleware)
 
-			// Body size limit for non-ingest API endpoints (1MB)
+			// Body size limit for non-ingest API endpoints (1MB). A route that
+			// declares api.Route.StreamsBody reads the body from before this wrap:
+			// an upload streams and bounds itself, and the cap would otherwise
+			// truncate any file over 1MB well before the handler saw it.
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					r = r.WithContext(api.WithUncappedBody(r.Context(), r.Body))
 					r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
 					next.ServeHTTP(w, r)
 				})
@@ -2573,9 +2577,10 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.dictionaryHandler.HandleDeleteRow,
 			})
 			r.Register(api.Route{
-				Method:   http.MethodPost,
-				Path:     "/dictionaries/{id}/import",
-				Consumes: "multipart/form-data",
+				Method:      http.MethodPost,
+				Path:        "/dictionaries/{id}/import",
+				Consumes:    "multipart/form-data",
+				StreamsBody: true,
 				Query: []api.QueryParam{
 					{Name: "reload", Type: "boolean"},
 				},
