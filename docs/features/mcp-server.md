@@ -194,6 +194,8 @@ Watchlists and lookup tables detections join against, rather than hard-coding va
 | `search_dictionary` | Read rows, optionally filtered, to check an indicator against a watchlist |
 | `add_dictionary_rows` | Insert or update rows, changing what live detections match on |
 | `upload_dictionary_file` | Load a local file into a dictionary, whatever its size |
+| `get_dictionary_key_collisions` | The keys that stop being distinct when case is ignored |
+| `set_dictionary_case_insensitive` | Turn case-insensitive key lookups on or off |
 
 `upload_dictionary_file` takes a path, not rows. The file is read on the machine the MCP
 server runs on and streamed to the instance in chunks, so a list of millions of

@@ -3825,7 +3825,7 @@ body.alert-panel-resizing .alert-details-panel {
 }
 
 /* The message is plain text until it is edited, so a rule reads as a sentence. */
-.ap-message {
+.ap-rule-message {
     flex: 1 1 320px;
     min-width: 220px;
     padding: 4px 7px;
@@ -3834,11 +3834,11 @@ body.alert-panel-resizing .alert-details-panel {
     color: var(--text-secondary);
 }
 
-.ap-message:hover {
+.ap-rule-message:hover {
     border-color: var(--border-color);
 }
 
-.ap-message:focus {
+.ap-rule-message:focus {
     background: var(--bg-primary);
     color: var(--text-primary);
 }
@@ -4781,6 +4781,11 @@ body.alert-panel-resizing .alert-details-panel {
     background: var(--error);
 }
 
+.ap-check-warn .ap-check-mark,
+.ac-check-warn .ac-check-mark {
+    background: var(--warning);
+}
+
 .ap-check-body,
 .ac-check-body {
     flex: 1;
@@ -4810,6 +4815,11 @@ body.alert-panel-resizing .alert-details-panel {
 .ap-badge-fail {
     background: rgba(248, 113, 113, 0.14);
     color: var(--error);
+}
+
+.ap-badge-warn {
+    background: rgba(251, 191, 36, 0.14);
+    color: var(--warning);
 }
 
 .ap-badge-deferred {

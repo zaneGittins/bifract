@@ -906,8 +906,8 @@ func TestModelLookup_ProjectionStageModelColumnFromWrap(t *testing.T) {
 // clear BQL error from table() and from a later groupby stage, not CH code 47.
 func TestModelLookup_UnavailableModelColumnErrorsCleanly(t *testing.T) {
 	for query, wantErr := range map[string]string{
-		`* | model_lookup(model="fs", key=[user]) | groupby(user) | table(user, is_new)`:  "not available after the aggregation",
-		`* | model_lookup(model="fs", key=[user]) | groupby(user) | groupby(is_new)`:      "not carried out of the previous aggregation",
+		`* | model_lookup(model="fs", key=[user]) | groupby(user) | table(user, is_new)`: "not available after the aggregation",
+		`* | model_lookup(model="fs", key=[user]) | groupby(user) | groupby(is_new)`:     "not carried out of the previous aggregation",
 	} {
 		pipeline, err := ParseQuery(query)
 		if err != nil {

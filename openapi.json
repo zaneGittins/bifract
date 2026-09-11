@@ -11743,6 +11743,97 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/dictionaries/{id}/case-insensitive": {
+      "post": {
+        "operationId": "post_api_v1_dictionaries_byId_case_insensitive",
+        "summary": "Turn case-insensitive key lookups on or off.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "dictionaries"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dictionaries.CaseInsensitiveKeysRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/dictionaries.Dictionary"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/dictionaries/{id}/columns": {
       "post": {
         "operationId": "post_api_v1_dictionaries_byId_columns",
@@ -12631,6 +12722,87 @@
           }
         },
         "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/dictionaries/{id}/key-collisions": {
+      "get": {
+        "operationId": "get_api_v1_dictionaries_byId_key_collisions",
+        "summary": "Report the keys that stop being distinct when case is ignored.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "dictionaries"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/dictionaries.KeyCollisionReport"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
       }
     },
     "/api/v1/dictionaries/{id}/reload": {
@@ -33573,6 +33745,21 @@
           "name"
         ]
       },
+      "dictionaries.CaseInsensitiveKeysRequest": {
+        "type": "object",
+        "properties": {
+          "confirm_collisions": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "confirm_collisions"
+        ]
+      },
       "dictionaries.CreateDictionaryRequest": {
         "type": "object",
         "properties": {
@@ -33606,6 +33793,9 @@
       "dictionaries.Dictionary": {
         "type": "object",
         "properties": {
+          "case_insensitive_keys": {
+            "type": "boolean"
+          },
           "ch_dict_name": {
             "type": "string"
           },
@@ -33663,6 +33853,7 @@
           "key_column",
           "columns",
           "row_count",
+          "case_insensitive_keys",
           "created_by",
           "created_at",
           "updated_at"
@@ -33784,6 +33975,54 @@
         "required": [
           "key",
           "fields"
+        ]
+      },
+      "dictionaries.KeyCollision": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "stored": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "column",
+          "key",
+          "stored"
+        ]
+      },
+      "dictionaries.KeyCollisionReport": {
+        "type": "object",
+        "properties": {
+          "case_insensitive_keys": {
+            "type": "boolean"
+          },
+          "collisions": {
+            "type": "integer"
+          },
+          "collisions_capped": {
+            "type": "boolean"
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/dictionaries.KeyCollision"
+            }
+          }
+        },
+        "required": [
+          "case_insensitive_keys",
+          "collisions",
+          "samples",
+          "collisions_capped"
         ]
       },
       "dictionaries.UpdateDictionaryRequest": {

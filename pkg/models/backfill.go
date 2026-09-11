@@ -304,7 +304,7 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 		sqlStr += settings
 
 		chunkCtx, chunkCancel := context.WithTimeout(ctx, time.Duration(m.bfCfg.chunkTimeoutSec)*time.Second)
-		err = m.ch.Exec(chunkCtx, sqlStr)
+		err = m.ch.ExecSchema(chunkCtx, sqlStr)
 		chunkCancel()
 		if err != nil {
 			if ctx.Err() != nil {

@@ -191,11 +191,13 @@ func collectConditionFieldsOrdered(conds []ConditionNode, seen map[string]bool, 
 			continue
 		}
 		// Bare-term searches match norm_log as a whole and name no field.
-		if c.Field == "" || c.Field == normLogColumn || seen[c.Field] {
-			continue
+		for _, f := range []string{c.Field, c.ValueField} {
+			if f == "" || f == normLogColumn || seen[f] {
+				continue
+			}
+			seen[f] = true
+			out = append(out, f)
 		}
-		seen[c.Field] = true
-		out = append(out, c.Field)
 	}
 	return out
 }

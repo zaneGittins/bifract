@@ -12,6 +12,7 @@ import (
 
 	"time"
 
+	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 	"github.com/lib/pq"
 )
@@ -316,6 +317,14 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		return nil, err
 	}
 
+	// The definition is re-validated here, not only on create: an update writes it
+	// to Postgres and rebuilds the model's ClickHouse objects from it, so a create
+	// with a benign definition followed by an edit reaches the same DDL. The model
+	// type cannot change, so the existing one is what the shape is checked against.
+	if err := validateDefinitionShape(existing.ModelType, req.Definition); err != nil {
+		return nil, err
+	}
+
 	rebuild := detectionChanged(existing.Definition, req.Definition)
 
 	if rebuild {
@@ -527,14 +536,14 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	tableSQL = m.ch.RewriteEngine(tableSQL)
 	tableSQL = m.ch.InjectOnCluster(tableSQL)
 
-	if err := m.ch.Exec(ctx, tableSQL); err != nil && !isCHDDLTimeout(err) {
+	if err := m.ch.ExecSchema(ctx, tableSQL); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("create model table: %w", err)
 	}
 
 	mvSQL = m.ch.InjectOnCluster(mvSQL)
-	if err := m.ch.Exec(ctx, mvSQL); err != nil && !isCHDDLTimeout(err) {
+	if err := m.ch.ExecSchema(ctx, mvSQL); err != nil && !isCHDDLTimeout(err) {
 		// Roll back table creation
-		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
 		return fmt.Errorf("create model mv: %w", err)
 	}
 
@@ -545,7 +554,7 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			distName, tableName, storage.EscCHStr(m.ch.Topology().DDLCluster), tableName,
 		)
-		if err := m.ch.Exec(ctx, distSQL); err != nil {
+		if err := m.ch.ExecSchema(ctx, distSQL); err != nil {
 			log.Printf("model %s: create distributed table: %v", id, err)
 		}
 	}
@@ -562,13 +571,13 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 	windowDays := def.WindowDays()
 
 	stateSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL("`"+stateName+"`", windowDays)))
-	if err := m.ch.Exec(ctx, stateSQL); err != nil && !isCHDDLTimeout(err) {
+	if err := m.ch.ExecSchema(ctx, stateSQL); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("create state table: %w", err)
 	}
 
 	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`" + tableName + "`")))
-	if err := m.ch.Exec(ctx, resultsSQL); err != nil && !isCHDDLTimeout(err) {
-		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
+	if err := m.ch.ExecSchema(ctx, resultsSQL); err != nil && !isCHDDLTimeout(err) {
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
 		return fmt.Errorf("create results table: %w", err)
 	}
 
@@ -576,10 +585,10 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 	if err != nil {
 		return err
 	}
-	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
+	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
 		// Roll back state + results so a failed create leaves nothing behind.
-		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
-		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
 		return fmt.Errorf("create state mv: %w", err)
 	}
 
@@ -591,14 +600,14 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			chModelDistName(id), tableName, cl, tableName,
 		)
-		if err := m.ch.Exec(ctx, distResults); err != nil {
+		if err := m.ch.ExecSchema(ctx, distResults); err != nil {
 			log.Printf("model %s: create distributed results table: %v", id, err)
 		}
 		distState := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			chModelStateDistName(id), stateName, cl, stateName,
 		)
-		if err := m.ch.Exec(ctx, distState); err != nil {
+		if err := m.ch.ExecSchema(ctx, distState); err != nil {
 			log.Printf("model %s: create distributed state table: %v", id, err)
 		}
 	}
@@ -611,29 +620,29 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 	// a partial prior failure still fully cleans up. InjectOnCluster fans each drop
 	// out to every shard/replica.
 	mvDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", mvName))
-	if err := m.ch.Exec(ctx, mvDrop); err != nil {
+	if err := m.ch.ExecSchema(ctx, mvDrop); err != nil {
 		log.Printf("drop MV %s: %v", mvName, err)
 	}
 	// A scheduled model also owns a rolling-state table (the MV's target); drop it.
 	if mt.IsScheduled() {
 		stateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateName(id)))
-		if err := m.ch.Exec(ctx, stateDrop); err != nil {
+		if err := m.ch.ExecSchema(ctx, stateDrop); err != nil {
 			log.Printf("drop state table %s: %v", chModelStateName(id), err)
 		}
 	}
 	tableDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName))
-	if err := m.ch.Exec(ctx, tableDrop); err != nil {
+	if err := m.ch.ExecSchema(ctx, tableDrop); err != nil {
 		log.Printf("drop table %s: %v", tableName, err)
 	}
 	// Drop the distributed table(s) (cluster mode) so no dangling fan-out object remains.
 	if m.ch.Topology().DistributedTables {
 		distDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelDistName(id)))
-		if err := m.ch.Exec(ctx, distDrop); err != nil {
+		if err := m.ch.ExecSchema(ctx, distDrop); err != nil {
 			log.Printf("drop distributed table %s: %v", chModelDistName(id), err)
 		}
 		if mt.IsScheduled() {
 			distStateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateDistName(id)))
-			if err := m.ch.Exec(ctx, distStateDrop); err != nil {
+			if err := m.ch.ExecSchema(ctx, distStateDrop); err != nil {
 				log.Printf("drop distributed state table %s: %v", chModelStateDistName(id), err)
 			}
 		}
@@ -643,7 +652,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 
 // RowCount returns the approximate number of rows in a model's aggregating table.
 func (m *Manager) RowCount(ctx context.Context, tableName string) (uint64, error) {
-	rows, err := m.ch.Query(ctx, fmt.Sprintf("SELECT count() FROM `%s`", tableName))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM `%s`", tableName))
 	if err != nil {
 		return 0, err
 	}
@@ -751,7 +760,7 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, searc
 	}
 
 	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, sortCol, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.Query(ctx, dataQuery)
+	rows, err := m.ch.QuerySchema(ctx, dataQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query rarity data: %w", err)
 	}
@@ -803,7 +812,7 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, se
 	}
 
 	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, sortCol, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.Query(ctx, dataQuery)
+	rows, err := m.ch.QuerySchema(ctx, dataQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query first_seen data: %w", err)
 	}
@@ -886,7 +895,7 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		orderExpr = "abs(z_score)"
 	}
 	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, orderExpr, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.Query(ctx, dataQuery)
+	rows, err := m.ch.QuerySchema(ctx, dataQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query volume_baseline data: %w", err)
 	}
@@ -933,7 +942,7 @@ func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID, sear
 		return nil, 0, fmt.Errorf("count network data: %w", err)
 	}
 	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", base, sortCol, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.Query(ctx, dataQuery)
+	rows, err := m.ch.QuerySchema(ctx, dataQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query network data: %w", err)
 	}
@@ -947,7 +956,7 @@ func (m *Manager) getNetworkStats(ctx context.Context, qt, fid string, def Model
        countIf(final_score > 0.8) AS critical,
        round(max(final_score), 3) AS max_score
 FROM %s FINAL WHERE fractal_id = '%s'`, threshold, qt, fid)
-	rows, err := m.ch.Query(ctx, q)
+	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("network stats: %w", err)
 	}
@@ -993,7 +1002,7 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 
 func (m *Manager) getRarityStats(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
 	summaryQ := fmt.Sprintf(`SELECT count() AS total_rows, uniq(partition_val) AS distinct_partitions FROM %s FINAL WHERE fractal_id = '%s'`, qt, fid)
-	rows, err := m.ch.Query(ctx, summaryQ)
+	rows, err := m.ch.QuerySchema(ctx, summaryQ)
 	if err != nil {
 		return nil, fmt.Errorf("rarity stats: %w", err)
 	}
@@ -1003,7 +1012,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string) (map[strin
 		result["distinct_partitions"] = rows[0]["distinct_partitions"]
 	}
 	topQ := fmt.Sprintf(`SELECT partition_val, sum(event_count) AS cnt FROM %s FINAL WHERE fractal_id = '%s' GROUP BY partition_val ORDER BY cnt DESC LIMIT 5`, qt, fid)
-	topRows, err := m.ch.Query(ctx, topQ)
+	topRows, err := m.ch.QuerySchema(ctx, topQ)
 	if err == nil {
 		result["top_partitions"] = topRows
 	}
@@ -1021,7 +1030,7 @@ FROM (
     FROM %s FINAL WHERE fractal_id = '%s'
     GROUP BY %s
 )`, keyCol, qt, fid, keyCol)
-	rows, err := m.ch.Query(ctx, q)
+	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen stats: %w", err)
 	}
@@ -1046,7 +1055,7 @@ func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, 
        countIf(abs(z_score) > %g) AS anomalous,
        round(max(abs(z_score)), 4) AS max_z
 FROM (%s)`, threshold, scoring)
-	rows, err := m.ch.Query(ctx, q)
+	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline stats: %w", err)
 	}
@@ -1094,7 +1103,7 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 // evaluate to a 0-based bucket index) and returns counts zero-filled to labels so
 // the distribution always has a stable, complete x-axis.
 func (m *Manager) runHistogram(ctx context.Context, innerSQL, bucketExpr string, labels []string) ([]histBucket, error) {
-	rows, err := m.ch.Query(ctx, histogramQuerySQL(innerSQL, bucketExpr))
+	rows, err := m.ch.QuerySchema(ctx, histogramQuerySQL(innerSQL, bucketExpr))
 	if err != nil {
 		return nil, err
 	}
@@ -1239,7 +1248,7 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 		outField, prevCTE, outField))
 
 	sql := b.String()
-	results, err := m.ch.Query(ctx, sql)
+	results, err := m.ch.QuerySchema(ctx, sql)
 	return results, sql, err
 }
 
@@ -1324,6 +1333,9 @@ func scanModelRow(row modelScannable) (*Model, error) {
 // fields. Shared by create/update validation and the pre-save preview so both
 // reject the same invalid definitions with identical messages.
 func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
+	if err := validateDefinitionFieldNames(def); err != nil {
+		return err
+	}
 	switch mt {
 	case ModelTypeRarity:
 		if def.PartitionKey == "" {
@@ -1370,6 +1382,56 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		}
 	default:
 		return fmt.Errorf("invalid model type: %s", mt)
+	}
+	return nil
+}
+
+// validateDefinitionFieldNames rejects any field name in a definition that is not
+// shaped like a log field.
+//
+// A definition is stored configuration, not query text, so the BQL lexer never sees
+// it. Most names reach SQL through chFieldRef, which escapes; extraction fields do
+// not, because an extraction output becomes a plain CTE column that later steps
+// reference by name, so they are written into the statement unquoted. A name of
+// "out, (SELECT 1) AS pwned" therefore became a second select expression in the
+// model's materialized view, which then ran on every insert into logs.
+//
+// One check for every name, allowing the dots a log field carries, so a legitimate
+// definition is unaffected.
+func validateDefinitionFieldNames(def ModelDefinition) error {
+	named := []struct {
+		what  string
+		value string
+	}{
+		{"partition_key", def.PartitionKey},
+		{"value_key", def.ValueKey},
+	}
+	for _, kf := range def.KeyFields {
+		named = append(named, struct{ what, value string }{"key_fields", kf})
+	}
+	for _, ext := range def.Extractions {
+		named = append(named,
+			struct{ what, value string }{"extraction from_field", ext.FromField},
+			struct{ what, value string }{"extraction output_field", ext.OutputField})
+	}
+	nf := def.Network.WithDefaults()
+	for what, v := range map[string]string{
+		"src_field": nf.SrcField, "dst_field": nf.DstField, "port_field": nf.PortField,
+		"duration_field": nf.DurationField, "bytes_field": nf.BytesField,
+	} {
+		named = append(named, struct{ what, value string }{what, v})
+	}
+	for _, f := range def.Filter {
+		named = append(named, struct{ what, value string }{"filter field", f.Field})
+	}
+
+	for _, n := range named {
+		if n.value == "" {
+			continue // absent is a shape question, handled per model type below
+		}
+		if !parser.IsPlainFieldName(n.value) {
+			return fmt.Errorf("%s %q is not a field name: use letters, digits, dot, dash or underscore", n.what, n.value)
+		}
 	}
 	return nil
 }
@@ -1543,12 +1605,12 @@ func (m *Manager) ReconcileMVFractalScope(ctx context.Context) {
 		// create silently does nothing and the unscoped view stays live. Leave it
 		// for the next startup rather than reporting a rescope that did not happen.
 		if present > 0 {
-			if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", t.mv))); err != nil {
+			if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", t.mv))); err != nil {
 				log.Printf("models: reconcile mv scope: drop %s: %v (will retry next startup)", t.mv, err)
 				continue
 			}
 		}
-		if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
 			// The view is already dropped, so the model has stopped updating. Leave
 			// status alone: 'active' is what makes the next startup retry this, and
 			// marking it 'error' would exclude it from both this reconcile and

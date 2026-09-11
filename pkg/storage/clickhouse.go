@@ -45,6 +45,10 @@ type ClickHouseClient struct {
 	// caps holds what this server actually permits; see capabilities.go.
 	caps capabilityStore
 
+	// schema is the least-privilege identity that runs generated schema DDL; see
+	// SchemaCHUser. Falls back to conn when it could not be provisioned.
+	schema schemaIdentity
+
 	// Shard-direct lookup (cluster mode only). shardHosts caches shard_num -> host:port
 	// from system.clusters so detail queries can bypass the Distributed fan-out.
 	shardHostsMu sync.RWMutex
@@ -136,6 +140,12 @@ func (c *ClickHouseClient) logsDatabase() string {
 // ClickHouse object in SQL that a remote shard will execute must qualify it with
 // this rather than rely on the executing node's current database.
 func (c *ClickHouseClient) LogsDatabase() string { return c.logsDatabase() }
+
+// EscCHIdent escapes a name for use as a ClickHouse backtick-quoted identifier. It is
+// the same rule as escapeCHBacktickIdent, exported for callers that build a grant or a
+// qualified object name. Database names come from configuration, so this is the
+// guarantee rather than a fix.
+func EscCHIdent(s string) string { return escapeCHBacktickIdent(s) }
 
 // OnClusterSQL returns the ON CLUSTER clause for DDL statements, or an empty
 // string when the deployment has no DDL cluster.
@@ -1293,6 +1303,7 @@ func (c *ClickHouseClient) ClusterServerStats(ctx context.Context) (*ClusterServ
 
 func (c *ClickHouseClient) Close() error {
 	c.closeQueryIdentities()
+	c.closeSchemaIdentity()
 	return c.conn.Close()
 }
 
@@ -1801,10 +1812,13 @@ func (c *ClickHouseClient) query(ctx context.Context, query string, settings cli
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 	defer rows.Close()
+	return collectRowMaps(rows)
+}
 
+// collectRowMaps drains a result set into one map per row.
+func collectRowMaps(rows driver.Rows) ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 	columnTypes := rows.ColumnTypes()
-
 	for rows.Next() {
 		row, err := scanRowMap(columnTypes, rows)
 		if err != nil {
@@ -1812,11 +1826,9 @@ func (c *ClickHouseClient) query(ctx context.Context, query string, settings cli
 		}
 		results = append(results, row)
 	}
-
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
-
 	return results, nil
 }
 
@@ -3008,7 +3020,16 @@ func (c *ClickHouseClient) execOnEveryShard(ctx context.Context, stmt, what stri
 }
 
 // escCHLiteral escapes a value for use inside a single-quoted ClickHouse literal.
-func escCHLiteral(s string) string { return strings.ReplaceAll(s, "'", "''") }
+//
+// The backslash is escaped first for the same reason escapeCHBacktickIdent does it:
+// ClickHouse honours a backslash-escaped quote inside a literal, so doubling only
+// the quote lets a trailing backslash escape the closing one and run what follows.
+// Today's callers pass UUIDs, ISO dates and Keeper paths, none of which can carry
+// either character, so this is the guarantee rather than a fix.
+func escCHLiteral(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return strings.ReplaceAll(s, "'", "''")
+}
 
 // PruneHistogramRollup removes the pre-aggregated counts belonging to log data
 // that has been dropped. logs_histogram is filled by a materialized view on

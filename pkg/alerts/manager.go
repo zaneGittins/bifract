@@ -374,9 +374,28 @@ func (m *Manager) ProposeFromYAML(ctx context.Context, yamlContent, summary, use
 }
 
 // CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
+// validateThrottleField rejects a throttle field that cannot be rendered as a column
+// name. It lives here rather than in the HTTP handlers because the handlers are not
+// the only sink: a YAML import and a revision restore both build these requests
+// directly. A field that gets past this is dropped from the alert query's projection
+// (see the alert branch of translator.go), and throttleKey then falls back to
+// throttling the alert globally instead of per value -- suppressing firings with no
+// error anywhere.
+func validateThrottleField(field string) error {
+	if field == "" || parser.IsPlainFieldName(field) {
+		return nil
+	}
+	// Wrapped so the HTTP layer answers 400 rather than 500; see HandleCreateAlert.
+	return fmt.Errorf("%w: throttle field %q is not a field name, use letters, digits, dot, dash or underscore", ErrInvalidAlert, field)
+}
+
 func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, createdBy string, fractalID, prismID string) (*Alert, error) {
 	// Validate query syntax
 	if err := validateAlertType(string(req.AlertType)); err != nil {
+		return nil, err
+	}
+
+	if err := validateThrottleField(req.ThrottleField); err != nil {
 		return nil, err
 	}
 
@@ -552,6 +571,9 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 
 // UpdateAlert updates an existing alert
 func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpdateRequest, username string) (*Alert, error) {
+	if err := validateThrottleField(req.ThrottleField); err != nil {
+		return nil, err
+	}
 	// Validate query syntax
 	parsedQuery, err := parser.ParseQuery(req.QueryString)
 	if err != nil {

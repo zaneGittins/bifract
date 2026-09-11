@@ -37,9 +37,7 @@ event_id=1 | table(process_guid, parent_process_guid) | graph(child=process_guid
 ## Trace a process tree from a specific process
 
 ```
-event_id=1
-| bfs(child=process_guid, parent=parent_process_guid, start="{63047898-81ee-6860-5202-000000002502}")
-| graph(child=process_guid, parent=parent_process_guid, labels=image)
+ptg(start="{63047898-81ee-6860-5202-000000002502}") | pgraph()
 ```
 
 ## Total event count as a single value

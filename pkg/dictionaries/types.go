@@ -20,9 +20,12 @@ type Dictionary struct {
 	KeyColumn   string             `json:"key_column"`
 	Columns     []DictionaryColumn `json:"columns"`
 	RowCount    int64              `json:"row_count"`
-	CreatedBy   string             `json:"created_by"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	// CaseInsensitiveKeys builds the ClickHouse dictionary objects over lower(key),
+	// so match() hits regardless of the casing the log carries.
+	CaseInsensitiveKeys bool      `json:"case_insensitive_keys"`
+	CreatedBy           string    `json:"created_by"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 
 	// CHTableName is the ClickHouse backing table name (not stored in PG).
 	CHTableName string `json:"ch_table_name,omitempty"`

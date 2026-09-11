@@ -33,6 +33,8 @@ type Scratch struct {
 	// match() resolves the same way it does when the alert runs for real. Nil leaves
 	// match() unresolvable, which is what a caller with no access to them wants.
 	dictionaries map[string]map[string]string
+	// dictCaseInsensitive names the dictionaries whose keys were hashed lowercased.
+	dictCaseInsensitive map[string]bool
 
 	// tlsh resolves tlsh() against the scratch table itself. A rule under test runs
 	// over the events its case inserted, not over a fractal's indexed history, so the
@@ -165,9 +167,10 @@ func (s *Scratch) Drop(ctx context.Context) error {
 // A copy rather than a setter: one editor session's scratch is shared by whatever runs
 // overlap on it, and mutating the mappings underneath a run in flight is a data race.
 // The copy shares the table; only the mappings differ.
-func (s *Scratch) WithDictionaries(mappings map[string]map[string]string) *Scratch {
+func (s *Scratch) WithDictionaries(mappings map[string]map[string]string, caseInsensitive map[string]bool) *Scratch {
 	clone := *s
 	clone.dictionaries = mappings
+	clone.dictCaseInsensitive = caseInsensitive
 	return &clone
 }
 

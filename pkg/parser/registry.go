@@ -63,6 +63,13 @@ type FieldRegistry struct {
 	// specific Iceberg table this query targets. Nil in hot mode, and nil-safe in
 	// iceberg mode (no `_ice_` pruning). See icebergEqualityPredicate.
 	icePromoted map[string]bool
+	// groupKeys maps a grouping key's field name to the alias it is addressable by
+	// after the aggregation. See SetGroupKeyAlias.
+	groupKeys map[string]string
+	// groupKeyCmd is the command index of the groupby that recorded groupKeys. A
+	// later groupby groups by its own keys, so the earlier stage's are superseded
+	// rather than accumulated.
+	groupKeyCmd int
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
@@ -101,6 +108,11 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		order:       append([]string(nil), r.order...),
 		sourceMode:  r.sourceMode,
 		icePromoted: r.icePromoted,
+		groupKeys:   make(map[string]string, len(r.groupKeys)),
+		groupKeyCmd: r.groupKeyCmd,
+	}
+	for k, v := range r.groupKeys {
+		c.groupKeys[k] = v
 	}
 	for k, v := range r.fields {
 		entry := *v
@@ -112,6 +124,31 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 // fieldRef returns the source-mode-appropriate reference for a JSON/MAP field.
 func (r *FieldRegistry) fieldRef(field string) string {
 	return fieldRefMode(field, r.sourceMode)
+}
+
+// SetGroupKeyAlias records that a field is one of the plan's grouping keys, and the
+// alias it is addressable by after the aggregation. Recorded at classify time because
+// only that stage has the plan; read when resolving an operand that must survive the
+// GROUP BY.
+func (r *FieldRegistry) SetGroupKeyAlias(field, alias string, cmdIndex int) {
+	if r.groupKeys == nil || cmdIndex > r.groupKeyCmd {
+		// A later groupby replaces the previous stage's keys: those are not in the
+		// new GROUP BY, and treating them as still addressable would emit a column
+		// ClickHouse rejects (code 215) after the aggregation check waved it through.
+		r.groupKeys = map[string]string{}
+		r.groupKeyCmd = cmdIndex
+	}
+	if cmdIndex < r.groupKeyCmd {
+		return // an earlier stage's key, already superseded
+	}
+	r.groupKeys[field] = alias
+}
+
+// GroupKeyAlias returns the alias a grouping key is addressable by, and whether the
+// field is a grouping key at all.
+func (r *FieldRegistry) GroupKeyAlias(field string) (string, bool) {
+	alias, ok := r.groupKeys[field]
+	return alias, ok
 }
 
 // Register adds or updates a field entry in the registry.

@@ -338,6 +338,10 @@ const Autocomplete = {
         if (window.BQLLang) {
             for (const fn of BQLLang.functions) {
                 if (!fn || !fn.name) continue;
+                // An operand (field(...)) is written inside an expression, never as a
+                // pipeline stage: offering it after a pipe inserts what the parser
+                // rejects as an unknown command.
+                if (fn.operand && ctx.afterPipe) continue;
                 // Match against the name first, then any alias (for ranking), but
                 // emphasize against the displayed label only.
                 const nameM = this._match(fn.name, partial);

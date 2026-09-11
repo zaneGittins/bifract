@@ -22,6 +22,10 @@ type ConditionNode struct {
 	Value    string
 	Values   []string // multi-value list for =~, =^, =$ operators
 	IsRegex  bool
+	// ValueField names the right-hand operand when it was written as field(name),
+	// making the comparison field-to-field rather than field-to-literal. Value
+	// carries the same name for display; SQL generation must use this.
+	ValueField string
 	// LiteralTerm holds the unmodified analyst-typed text of a bare-term search,
 	// which Value stores only in already-regex-escaped form. norm_log serializes
 	// differently per source mode, so the final pattern is built at translation
@@ -64,6 +68,8 @@ type HavingCondition struct {
 	Value    string
 	Values   []string // multi-value list for =~, =^, =$ operators
 	IsRegex  bool
+	// ValueField names the right-hand operand when it was written as field(name).
+	ValueField string
 	// LiteralTerm mirrors ConditionNode.LiteralTerm for bare-term searches.
 	LiteralTerm string
 	Logic       string // "AND", "OR", ""
@@ -598,6 +604,43 @@ func (p *Parser) parseValueList() ([]string, error) {
 	return values, nil
 }
 
+// fieldOperandName is the function name that turns a comparison's right-hand
+// side into a reference to another field: src_port = field(dst_port).
+const fieldOperandName = "field"
+
+// atFieldOperand reports whether the parser is sitting on a field(...) operand.
+func (p *Parser) atFieldOperand() bool {
+	tok := p.current()
+	return tok.Type == TokenFunction && strings.EqualFold(tok.Value, fieldOperandName)
+}
+
+// parseFieldOperand consumes field(name) and returns the referenced field name.
+func (p *Parser) parseFieldOperand() (string, error) {
+	p.advance() // field
+	if _, err := p.expect(TokenLParen); err != nil {
+		return "", err
+	}
+	tok := p.current()
+	if tok.Type != TokenField && tok.Type != TokenValue && tok.Type != TokenString {
+		return "", newPosError(tok, "field() expects a field name, got %s", tok.Type)
+	}
+	name := tok.Value
+	if !isPlainFieldName(name) {
+		return "", newPosError(tok, "field(): invalid field name %q", name)
+	}
+	p.advance()
+	if _, err := p.expect(TokenRParen); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// fieldOperandUnsupported rejects field() for the multi-value operators, which
+// match against a list of literals and have no field-to-field meaning.
+func (p *Parser) fieldOperandUnsupported(operator string) error {
+	return newPosError(p.current(), "field() cannot be used with %s; it is supported with =, !=, >, <, >= and <=", operator)
+}
+
 func (p *Parser) parseCondition() (*ConditionNode, error) {
 	cond := &ConditionNode{}
 
@@ -656,6 +699,9 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 
 	// Multi-value operators: parse comma-separated list and return early
 	if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
+		if p.atFieldOperand() {
+			return nil, p.fieldOperandUnsupported(cond.Operator)
+		}
 		values, err := p.parseValueList()
 		if err != nil {
 			return nil, err
@@ -667,7 +713,17 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 		return cond, nil
 	}
 
-	// Value
+	// Value. field(name) makes the right-hand side another field rather than a literal.
+	if p.atFieldOperand() {
+		name, err := p.parseFieldOperand()
+		if err != nil {
+			return nil, err
+		}
+		cond.ValueField = name
+		cond.Value = name
+		return cond, nil
+	}
+
 	valTok := p.current()
 	if valTok.Type == TokenString {
 		cond.Value = valTok.Value
@@ -978,9 +1034,19 @@ func (p *Parser) isCompoundHavingCondition() bool {
 	for p.pos < len(p.tokens) {
 		tok := p.current()
 
-		// Stop at pipe, EOF, or function (end of this pipeline stage)
-		if tok.Type == TokenPipe || tok.Type == TokenEOF || tok.Type == TokenFunction {
+		// Stop at pipe, EOF, or function (end of this pipeline stage). field() is
+		// a comparison operand, not a stage boundary, so scan past it.
+		if tok.Type == TokenPipe || tok.Type == TokenEOF {
 			break
+		}
+		if tok.Type == TokenFunction {
+			if !p.atFieldOperand() {
+				break
+			}
+			if _, err := p.parseFieldOperand(); err != nil {
+				break
+			}
+			continue
 		}
 
 		// Track parentheses depth
@@ -1161,6 +1227,7 @@ func havingFromCondition(cond ConditionNode) HavingCondition {
 		Operator:    cond.Operator,
 		Value:       cond.Value,
 		Values:      cond.Values,
+		ValueField:  cond.ValueField,
 		IsRegex:     cond.IsRegex,
 		LiteralTerm: cond.LiteralTerm,
 	}
@@ -1205,6 +1272,9 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 
 	// Multi-value operators: parse comma-separated list and return early
 	if having.Operator == "=~" || having.Operator == "=^" || having.Operator == "=$" {
+		if p.atFieldOperand() {
+			return nil, p.fieldOperandUnsupported(having.Operator)
+		}
 		values, err := p.parseValueList()
 		if err != nil {
 			return nil, err
@@ -1216,7 +1286,17 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 		return having, nil
 	}
 
-	// Value
+	// Value. field(name) makes the right-hand side another field rather than a literal.
+	if p.atFieldOperand() {
+		name, err := p.parseFieldOperand()
+		if err != nil {
+			return nil, err
+		}
+		having.ValueField = name
+		having.Value = name
+		return having, nil
+	}
+
 	valTok := p.current()
 	if valTok.Type == TokenField || valTok.Type == TokenValue || valTok.Type == TokenString {
 		having.Value = valTok.Value

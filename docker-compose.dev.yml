@@ -6,10 +6,11 @@ services:
       BIFRACT_MODEL_SCORE_INTERVAL: "30"
 
   caddy:
+    # This list replaces the base file's, so the :ro flags must be repeated here.
     volumes:
-      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile
-      - ./caddy/ship-logs.sh:/usr/local/bin/ship-logs.sh
-      - ./caddy/entrypoint.sh:/usr/local/bin/entrypoint.sh
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./caddy/ship-logs.sh:/usr/local/bin/ship-logs.sh:ro
+      - ./caddy/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
       - caddy-data:/data
       - caddy-config:/config
     ports:

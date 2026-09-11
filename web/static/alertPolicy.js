@@ -112,8 +112,8 @@ const AlertPolicy = {
             return;
         }
 
-        const { blocking = 0, warnings = 0, passed = 0, checks = [] } = this._result;
-        const total = checks.length;
+        const { blocking = 0, warnings = 0, passed = 0, checks = [], violations = [] } = this._result;
+        const total = checks.length || violations.length;
 
         chip.hidden = total === 0;
         chip.className = 'ert-chip';
@@ -168,7 +168,19 @@ const AlertPolicy = {
             return;
         }
 
-        const { checks = [], blocking = 0, warnings = 0, passed = 0 } = this._result;
+        const { checks = [], violations = [], blocking = 0, warnings = 0, passed = 0 } = this._result;
+
+        // A refused save carries only the violations that stopped it, with no per-rule
+        // verdicts to list. Rendering the empty check list there would report "no rules
+        // apply" over the reasons the save was just blocked.
+        if (checks.length === 0 && violations.length > 0) {
+            pane.innerHTML = `
+                <div class="ap-head">${this.renderSummary(blocking, warnings, passed, violations.length)}</div>
+                <div class="ap-list">${violations.map(v => this.renderViolation(v)).join('')}</div>
+            `;
+            return;
+        }
+
         if (checks.length === 0) {
             pane.innerHTML = '<div class="ap-empty">No rules apply here.</div>';
             return;
@@ -176,7 +188,7 @@ const AlertPolicy = {
 
         // Failures first: the reader is looking for what to fix, and the passing rules
         // are reassurance rather than work.
-        const order = { fail: 0, deferred: 1, pass: 2 };
+        const order = { fail: 0, warn: 1, deferred: 2, pass: 3 };
         const sorted = [...checks].sort((a, b) => order[this.stateOf(a)] - order[this.stateOf(b)]);
 
         pane.innerHTML = `
@@ -185,9 +197,12 @@ const AlertPolicy = {
         `;
     },
 
+    // A suggestion is not a failure: only a block-severity rule earns the red mark and
+    // the Blocking badge, so the row agrees with the summary above it.
     stateOf(check) {
         if (check.deferred) return 'deferred';
-        return check.passed ? 'pass' : 'fail';
+        if (check.passed) return 'pass';
+        return check.severity === 'block' ? 'fail' : 'warn';
     },
 
     renderSummary(blocking, warnings, passed, total) {
@@ -205,7 +220,7 @@ const AlertPolicy = {
     // to do about it and what was actually found.
     renderCheck(check) {
         const state = this.stateOf(check);
-        const badge = { pass: 'Pass', fail: check.severity === 'block' ? 'Blocking' : 'Suggested', deferred: 'On save' };
+        const badge = { pass: 'Pass', fail: 'Blocking', warn: 'Suggested', deferred: 'On save' };
 
         return `
             <div class="ap-check ap-check-${state}">

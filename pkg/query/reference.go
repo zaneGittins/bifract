@@ -6,8 +6,13 @@ import (
 )
 
 type FunctionDoc struct {
-	Name        string   `json:"name"`
-	Aliases     []string `json:"aliases,omitempty"`
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
+	// Operand marks function-shaped syntax that is written inside an expression
+	// rather than as a pipeline stage. Completion offers it where a value goes and
+	// not after a pipe, where it would insert something the parser rejects as an
+	// unknown command.
+	Operand     bool     `json:"operand,omitempty"`
 	Category    string   `json:"category"`
 	Description string   `json:"description"`
 	Syntax      string   `json:"syntax"`
@@ -1022,7 +1027,7 @@ var bqlFunctionDocs = []FunctionDoc{
 	{
 		Name:        "ptg",
 		Category:    "Traversal",
-		Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). A drop-in replacement for dfs/bfs on process trees that does not OOM on large graphs or long timeframes, because each hop is a primary-key point lookup instead of a full scan of logs. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pipe to pgraph() for the process map (spawn edges only: no anomaly scoring, no file/network/DNS activity, no reconnection -- use pgr() for those), or to graph() for a plain node-link tree. NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
+		Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). Each hop is a primary-key point lookup rather than a scan of logs, so it holds up on large graphs and long timeframes. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pipe to pgraph() for the process map (spawn edges only: no anomaly scoring, no file/network/DNS activity, no reconnection -- use pgr() for those). NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
 		Syntax:      `| ptg(start="<process_guid>", depth=N, direction=forward|backward|both)`,
 		Parameters: []Param{
 			{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
@@ -1031,7 +1036,6 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 		Examples: []string{
 			`ptg(start="{GUID}") | pgraph()`,
-			`ptg(start="{GUID}") | graph(child=process_guid, parent=parent_guid, labels=image)`,
 			`ptg(start="{GUID}", direction=backward, depth=20)`,
 			`ptg(start="{GUID}", direction=forward) | table(process_guid, image, commandline, _depth)`,
 		},
@@ -1065,41 +1069,18 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
-		Name:        "bfs",
-		Category:    "Traversal",
-		Description: "Breadth-first search traversal of parent-child relationships in log data. Starts from a specific node and discovers all connected nodes level by level. Always returns child and parent fields. Use include= to add extra fields. Pairs well with graph() for visualization.",
-		Syntax:      `| bfs(child=field, parent=field, start="value", depth=N, include=[field1,field2])`,
+		Name:        "field",
+		Operand:     true,
+		Category:    "Filtering",
+		Description: "Compares a field against another field instead of a literal. Written on the right of a comparison: without it, src_port=dst_port matches the literal text \"dst_port\". Valid with =, !=, >, <, >= and <=. Equality compares the two as text; the ordering operators compare them numerically. A row missing either field never matches = and always matches !=. Both sides are read per row, so the comparison cannot prune granules through a skip index: keep a time range or another selective filter in front of it. Not valid with =~, =^ or =$, which match a list of literals.",
+		Syntax:      "field(name)",
 		Parameters: []Param{
-			{Name: "child", Type: "string", Required: true, Description: "Field that uniquely identifies each node (e.g., process_guid)"},
-			{Name: "parent", Type: "string", Required: true, Description: "Field that references the parent node (e.g., parent_process_guid)"},
-			{Name: "start", Type: "string", Required: true, Description: "Value of the child field for the starting node"},
-			{Name: "depth", Type: "number", Required: false, Description: "Maximum traversal depth (default: 10, max: 50)"},
-			{Name: "include", Type: "array", Required: false, Description: "Additional fields to extract from logs (e.g., include=[image,command_line]). Child and parent fields are always included."},
+			{Name: "name", Type: "string", Required: true, Description: "Field whose value is the right-hand side of the comparison"},
 		},
 		Examples: []string{
-			`event_id=1 | bfs(child=process_guid, parent=parent_process_guid, start="{GUID}")`,
-			`event_id=1 | bfs(child=process_guid, parent=parent_process_guid, start="{GUID}", include=image)`,
-			`event_id=1 | bfs(child=process_guid, parent=parent_process_guid, start="{GUID}", include=[image,command_line]) | graph(child=process_guid, parent=parent_process_guid, labels=image)`,
-			`event_id=1 | bfs(child=process_guid, parent=parent_process_guid, start="{GUID}", depth=5) | table(process_guid, image, _depth)`,
-		},
-	},
-	{
-		Name:        "dfs",
-		Category:    "Traversal",
-		Description: "Depth-first search traversal of parent-child relationships in log data. Starts from a specific node and follows each chain to its maximum depth before backtracking. Always returns child and parent fields. Use include= to add extra fields. Results are ordered by traversal path.",
-		Syntax:      `| dfs(child=field, parent=field, start="value", depth=N, include=[field1,field2])`,
-		Parameters: []Param{
-			{Name: "child", Type: "string", Required: true, Description: "Field that uniquely identifies each node (e.g., process_guid)"},
-			{Name: "parent", Type: "string", Required: true, Description: "Field that references the parent node (e.g., parent_process_guid)"},
-			{Name: "start", Type: "string", Required: true, Description: "Value of the child field for the starting node"},
-			{Name: "depth", Type: "number", Required: false, Description: "Maximum traversal depth (default: 10, max: 50)"},
-			{Name: "include", Type: "array", Required: false, Description: "Additional fields to extract from logs (e.g., include=[image,command_line]). Child and parent fields are always included."},
-		},
-		Examples: []string{
-			`event_id=1 | dfs(child=process_guid, parent=parent_process_guid, start="{GUID}")`,
-			`event_id=1 | dfs(child=process_guid, parent=parent_process_guid, start="{GUID}", include=[image,command_line])`,
-			`event_id=1 | dfs(child=process_guid, parent=parent_process_guid, start="{GUID}", depth=3) | graph(child=process_guid, parent=parent_process_guid, labels=image)`,
-			`event_id=1 | dfs(child=process_guid, parent=parent_process_guid, start="{GUID}") | table(process_guid, image, _depth, _path)`,
+			"src_port = field(dst_port)",
+			"src_bytes > field(dst_bytes)",
+			"user != field(process_owner)",
 		},
 	},
 	{

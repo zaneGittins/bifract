@@ -7,9 +7,11 @@ services:
       - "443:443"
       - "8443:8443"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
-      - ./caddy/ship-logs.sh:/usr/local/bin/ship-logs.sh
-      - ./caddy/entrypoint.sh:/usr/local/bin/entrypoint.sh
+      # Config and scripts are read-only: the entrypoint only reads them, and a
+      # writable bind mount would let a compromised Caddy rewrite them on the host.
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/ship-logs.sh:/usr/local/bin/ship-logs.sh:ro
+      - ./caddy/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
       - caddy-data:/data
       - caddy-config:/config
 {{- if or (eq .SSLMode "self-signed") (eq .SSLMode "custom")}}
@@ -73,16 +75,31 @@ services:
 {{- end}}
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-v1.81.14-stable
+    image: ghcr.io/berriai/litellm:v1.100.1@sha256:a3715fa7ad8387941ab697259bd2881d68931657247a41984f90fae6d11c62bf
     container_name: bifract-litellm
     volumes:
-      - ./litellm-config.yaml:/app/config.yaml
+      - ./litellm-config.yaml:/app/config.yaml:ro
     environment:
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
     command: ["--config", "/app/config.yaml", "--port", "8000"]
+    # Third-party image hardened to the same bar as the Bifract services. The
+    # upstream image ships USER root, so the identity is set here. /tmp is the
+    # only path it writes, so the rootfs can be read-only.
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    # Only the app tier calls LiteLLM, so it sits on its own network instead of
+    # the shared one: a compromised LiteLLM cannot reach Postgres, ClickHouse,
+    # the ingest tier or Caddy. It still needs outbound internet for the model
+    # provider, so this network must not be `internal`.
     networks:
-      - bifract-network
+      - bifract-llm
     restart: unless-stopped
 
   bifract:
@@ -165,8 +182,11 @@ services:
       clickhouse:
         condition: service_healthy
 {{- end}}
+    # The app tier is the only LiteLLM caller, so it is the only service that
+    # joins both networks.
     networks:
       - bifract-network
+      - bifract-llm
     restart: unless-stopped
 
   # Ingest data-plane tier. Same image as bifract, run in ingest mode
@@ -348,4 +368,8 @@ volumes:
 
 networks:
   bifract-network:
+    driver: bridge
+  # Isolates the third-party LiteLLM container from the data plane. Joined only
+  # by litellm and the app tier.
+  bifract-llm:
     driver: bridge

@@ -860,11 +860,25 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // column of names to match against, so it resolves to the looked-up value itself
 // whenever the dictionary holds that key, matching what dictGet returns for a hit on
 // any other column.
-func matchLookupExpr(dictRef, col, keyColumn, fieldRef string) string {
-	if col == keyColumn {
-		return fmt.Sprintf("if(dictHas('%s', %s), %s, '')", dictRef, fieldRef, fieldRef)
+// dictProbe is the value a match() lookup is made with. A case-insensitive
+// dictionary hashed lower(key), so the probe has to be lowered to meet it; an
+// unlowered probe would simply miss every mixed-case key.
+func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
+	if fieldRef == "" || !opts.CaseInsensitiveDicts[dictName] {
+		return fieldRef
 	}
-	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictRef, escapeString(col), fieldRef)
+	return "lower(" + fieldRef + ")"
+}
+
+// probeRef is the value looked up (lowercased for a case-insensitive dictionary);
+// displayRef is the value as the log carries it. They differ only for the key
+// column, which is echoed back rather than read from the dictionary: echoing the
+// probe would show a lowercased value the event never contained.
+func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string) string {
+	if col == keyColumn {
+		return fmt.Sprintf("if(dictHas('%s', %s), %s, '')", dictRef, probeRef, displayRef)
+	}
+	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictRef, escapeString(col), probeRef)
 }
 
 // matchHandler handles match(dict="name", field=logfield, column=keycolumn, include=[col1,col2])
@@ -906,10 +920,11 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	} else if logField != "" {
 		fieldRef = "toString(" + resolveFieldRef(logField, ctx.Registry) + ")"
 	}
+	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && fieldRef != "" {
-			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, fieldRef)
+			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -980,6 +995,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	} else {
 		fieldRef = "toString(" + resolveFieldRef(logField, ctx.Registry) + ")"
 	}
+	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
 
 	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
 	for _, col := range includeColumns {
@@ -987,14 +1003,14 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if colErr != nil {
 			return fmt.Errorf("match(): invalid include column: %w", colErr)
 		}
-		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, fieldRef)
+		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, probeRef, fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeCol)})
 		ctx.Registry.SetResolveExpr(col, scalarExpr)
 	}
 
 	if strict {
 		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-			fmt.Sprintf("dictHas('%s', %s)", chDictRef, fieldRef))
+			fmt.Sprintf("dictHas('%s', %s)", chDictRef, probeRef))
 	}
 	return nil
 }

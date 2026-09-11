@@ -13,10 +13,24 @@ spec:
       labels:
         app: litellm
     spec:
+      automountServiceAccountToken: false
+      # Third-party image, hardened to the same bar as the Bifract workloads.
+      # It ships USER root, so the identity is set here rather than inherited.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:main-v1.81.14-stable
+          image: ghcr.io/berriai/litellm:v1.100.1@sha256:a3715fa7ad8387941ab697259bd2881d68931657247a41984f90fae6d11c62bf
           args: ["--config", "/app/config.yaml", "--port", "8000"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8000
           env:
@@ -36,6 +50,9 @@ spec:
               mountPath: /app/config.yaml
               subPath: config.yaml
               readOnly: true
+            # The only path litellm writes under readOnlyRootFilesystem.
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             httpGet:
               path: /health/readiness
@@ -59,6 +76,11 @@ spec:
         - name: config
           configMap:
             name: litellm-config
+        # Disk-backed on purpose: a Memory-medium emptyDir counts against the
+        # container's memory limit, which is 1Gi on most profiles.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
 ---
 apiVersion: v1
 kind: Service

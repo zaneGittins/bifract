@@ -268,6 +268,7 @@ const Dictionaries = {
 <div class="dict-meta-bar">
     <span class="dict-meta-pill" id="dictMetaRows"></span>
     <label class="dict-meta-global"><input type="checkbox" id="dictGlobalToggle"${d.is_global ? ' checked' : ''}> Global</label>
+    <label class="dict-meta-global" title="Lookups match the key whatever its casing"><input type="checkbox" id="dictCaseToggle"${d.case_insensitive_keys ? ' checked' : ''}> Ignore case</label>
     <span class="dict-meta-syntax" id="dictMetaSyntax"></span>
 </div>
 
@@ -327,6 +328,7 @@ const Dictionaries = {
         document.getElementById('dictReloadBtn')?.addEventListener('click', () => this.reloadDictionary());
         document.getElementById('dictDeleteBtn')?.addEventListener('click', () => this.deleteDictionary());
         document.getElementById('dictGlobalToggle')?.addEventListener('change', () => this._scheduleSaveMeta());
+        document.getElementById('dictCaseToggle')?.addEventListener('change', (e) => this._setCaseInsensitive(e.target.checked));
 
         const dropZone = document.getElementById('csvDropZone');
         const fileInput = document.getElementById('csvFileInput');
@@ -831,6 +833,66 @@ const Dictionaries = {
         } catch (e) {
             this.showToast('Failed to save: ' + e.message, 'error');
         }
+    },
+
+    // Case-insensitivity rebuilds the ClickHouse dictionary objects over lower(key),
+    // so it is its own endpoint rather than part of the debounced metadata save.
+    // Turning it on where keys collide is refused once and confirmed explicitly:
+    // only one row per collapsed key stays reachable.
+    async _setCaseInsensitive(enabled, confirmCollisions = false) {
+        const d = this.currentDictionary;
+        const toggle = document.getElementById('dictCaseToggle');
+        if (!d) return;
+        try {
+            const resp = await fetch(`/api/v1/dictionaries/${d.id}/case-insensitive`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ enabled, confirm_collisions: confirmCollisions }),
+            });
+            const data = await resp.json();
+            if (!data.success) {
+                // Only the collision refusal is retryable, and only with the user's
+                // consent. Any other 400 (no key column, say) is a real error: keying
+                // on the status alone offered to confirm "0 keys" and then failed again.
+                if (enabled && !confirmCollisions && resp.status === 400) {
+                    const report = await this._keyCollisions(d);
+                    if (report && report.collisions > 0) {
+                        if (await this._confirmKeyCollisions(report)) return this._setCaseInsensitive(true, true);
+                        if (toggle) toggle.checked = false;
+                        return;
+                    }
+                }
+                throw new Error(data.error);
+            }
+            this.currentDictionary = data.data;
+            this.showToast(enabled ? 'Lookups now ignore case' : 'Lookups now match case exactly', 'success');
+        } catch (e) {
+            if (toggle) toggle.checked = !enabled;
+            this.showToast('Failed to change case sensitivity: ' + e.message, 'error');
+        }
+    },
+
+    async _keyCollisions(d) {
+        try {
+            const resp = await fetch(`/api/v1/dictionaries/${d.id}/key-collisions`, { credentials: 'include' });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error);
+            return data.data;
+        } catch (e) {
+            this.showToast('Failed to check key collisions: ' + e.message, 'error');
+            return null;
+        }
+    },
+
+    async _confirmKeyCollisions(report) {
+        const examples = (report.samples || []).slice(0, 5)
+            .map(c => `  ${c.stored.join(' / ')}`).join('\n');
+        return confirm(
+            `${report.collisions} key${report.collisions === 1 ? '' : 's'} stop being distinct when case is ignored.\n\n` +
+            `Only one row per key stays reachable, and which one is not defined.\n\n` +
+            (examples ? `${examples}\n\n` : '') +
+            `Ignore case anyway?`);
     },
 
     // ---- Delete / Reload ----

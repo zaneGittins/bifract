@@ -109,11 +109,11 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
+		q = `SELECT ` + dictColumns + `
 		     FROM dictionaries WHERE prism_id = $1 OR is_global = true ORDER BY name ASC`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
+		q = `SELECT ` + dictColumns + `
 		     FROM dictionaries WHERE fractal_id = $1 OR is_global = true ORDER BY name ASC`
 		arg = fractalID
 	}
@@ -128,7 +128,7 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 		d := &Dictionary{}
 		var colsJSON []byte
 		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(colsJSON, &d.Columns); err != nil {
@@ -146,10 +146,10 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 	d := &Dictionary{}
 	var colsJSON []byte
 	err := m.pg.QueryRow(ctx,
-		`SELECT id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at
+		`SELECT `+dictColumns+`
 		 FROM dictionaries WHERE id = $1`, id).
 		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
+			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -161,9 +161,14 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 	return d, nil
 }
 
+// dictColumns is the column list EVERY dictionary read selects, in the order the
+// Scan calls expect. It is one constant because it was two: adding a column to the
+// list query and the by-name query separately left the by-name SELECT one short,
+// which Scan (being variadic) reports only at runtime, on every call.
+const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, case_insensitive_keys, COALESCE(created_by, ''), created_at, updated_at`
+
 // GetDictionaryByName returns a dictionary by name within a fractal or prism scope.
 // Pass fractalID or prismID (not both). The matching scope column is used for the lookup.
-const dictByNameColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, COALESCE(created_by, ''), created_at, updated_at`
 
 // dictByNameFractalSQL and dictByNamePrismSQL resolve a dictionary by name within
 // a scope. Both admit globals, matching ListDictionaryMappings (which match() uses)
@@ -179,11 +184,11 @@ const dictByNameColumns = `id, name, description, COALESCE(fractal_id::text, '')
 //   - The sort key is COALESCEd. A global dictionary is owned by a fractal, so its
 //     prism_id is NULL and the comparison yields NULL; DESC defaults to NULLS FIRST,
 //     which would sort the global ahead of the scope's own and invert the shadowing.
-const dictByNameFractalSQL = `SELECT ` + dictByNameColumns + `
+const dictByNameFractalSQL = `SELECT ` + dictColumns + `
 	FROM dictionaries WHERE name = $2 AND (fractal_id::text = $1 OR is_global = true)
 	ORDER BY COALESCE(fractal_id::text = $1, false) DESC, created_at ASC LIMIT 1`
 
-const dictByNamePrismSQL = `SELECT ` + dictByNameColumns + `
+const dictByNamePrismSQL = `SELECT ` + dictColumns + `
 	FROM dictionaries WHERE name = $2 AND (prism_id::text = $1 OR is_global = true)
 	ORDER BY COALESCE(prism_id::text = $1, false) DESC, created_at ASC LIMIT 1`
 
@@ -193,11 +198,11 @@ const dictByNamePrismSQL = `SELECT ` + dictByNameColumns + `
 // across the fractal boundary: ExecuteDictionaryAction rebuilds the schema and
 // TRUNCATEs before refilling, which would wipe the owner's data and hand every
 // reader of that global this scope's rows instead.
-const dictOwnedByNameFractalSQL = `SELECT ` + dictByNameColumns + `
+const dictOwnedByNameFractalSQL = `SELECT ` + dictColumns + `
 	FROM dictionaries WHERE name = $2 AND fractal_id::text = $1
 	ORDER BY created_at ASC LIMIT 1`
 
-const dictOwnedByNamePrismSQL = `SELECT ` + dictByNameColumns + `
+const dictOwnedByNamePrismSQL = `SELECT ` + dictColumns + `
 	FROM dictionaries WHERE name = $2 AND prism_id::text = $1
 	ORDER BY created_at ASC LIMIT 1`
 
@@ -237,7 +242,7 @@ func (m *Manager) dictionaryByName(ctx context.Context, fractalID, prismID, name
 	}
 	err := m.pg.QueryRow(ctx, q, arg, name).
 		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
+			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +380,7 @@ func (m *Manager) AddColumn(ctx context.Context, id, colName string) (*Dictionar
 
 		alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
 			escCH(dict.CHTableName), escCH(colName)))
-		if err := m.ch.Exec(ctx, alterSQL); err != nil {
+		if err := m.ch.ExecSchema(ctx, alterSQL); err != nil {
 			return nil, fmt.Errorf("failed to alter ClickHouse table: %w", err)
 		}
 		if err := m.ensureDistTable(ctx, dict); err != nil {
@@ -419,7 +424,7 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 
 	// Drop secondary key dict before altering the table
 	if wasKey {
-		_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(id, colName)))))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(id, colName)))))
 	}
 
 	colsJSON, _ := json.Marshal(newCols)
@@ -429,7 +434,7 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 
 	dropSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN IF EXISTS `%s`",
 		escCH(dict.CHTableName), escCH(colName)))
-	if err := m.ch.Exec(ctx, dropSQL); err != nil {
+	if err := m.ch.ExecSchema(ctx, dropSQL); err != nil {
 		return nil, fmt.Errorf("failed to drop column: %w", err)
 	}
 	if err := m.ensureDistTable(ctx, dict); err != nil {
@@ -480,6 +485,196 @@ func (m *Manager) SetColumnKey(ctx context.Context, id, colName string) (*Dictio
 	return m.GetDictionary(ctx, id)
 }
 
+// KeyCollision is one lowercased key that more than one stored key maps to.
+type KeyCollision struct {
+	Column string   `json:"column"`
+	Key    string   `json:"key"`
+	Stored []string `json:"stored"`
+}
+
+// KeyCollisionReport is what turning case-insensitivity on would cost.
+type KeyCollisionReport struct {
+	CaseInsensitiveKeys bool           `json:"case_insensitive_keys"`
+	Collisions          int            `json:"collisions"`
+	Samples             []KeyCollision `json:"samples"`
+	// CollisionsCapped reports that counting stopped at maxCollisionCount, so
+	// Collisions is a floor rather than a total.
+	CollisionsCapped bool `json:"collisions_capped"`
+}
+
+// maxCollisionSamples bounds the preview. The samples are there to show what kind of
+// duplicate it is, not to list them all.
+const maxCollisionSamples = 10
+
+// maxCollisionCount caps the count so the scan stops once the answer is no longer in
+// doubt. CollisionsCapped says whether the number is exact or a floor.
+const maxCollisionCount = 1000
+
+// collisionScanSettings bounds the scan in the server rather than trusting the cap
+// alone: the GROUP BY still reads the table, and a user is waiting on a checkbox.
+const collisionScanSettings = " SETTINGS max_execution_time = 15"
+
+// KeyCollisions reports the keys that stop being distinct once case is ignored.
+// A HASHED dictionary keeps one row per key, so each collision is a row whose
+// attributes become unreachable, and which one survives is not defined. Every key
+// column is checked: each one becomes its own dictionary object.
+func (m *Manager) KeyCollisions(ctx context.Context, id string) (*KeyCollisionReport, error) {
+	dict, err := m.GetDictionary(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	report := &KeyCollisionReport{CaseInsensitiveKeys: dict.CaseInsensitiveKeys}
+	if dict.KeyColumn == "" {
+		return report, nil
+	}
+
+	table := escCH(m.rowTable(dict))
+	for _, col := range m.keyColumns(dict) {
+		c := escCH(col)
+		// Bounded: this runs synchronously on the toggle request, over a dictionary
+		// that can hold millions of rows, and what the caller needs is whether any
+		// key collides plus enough examples to judge it. Counting past the cap would
+		// block the request to refine a number nobody reads.
+		countSQL := fmt.Sprintf(
+			"SELECT count() FROM (SELECT lower(`%s`) AS k FROM `%s` FINAL WHERE notEmpty(`%s`) GROUP BY k HAVING uniqExact(`%s`) > 1 LIMIT %d)%s",
+			c, table, c, c, maxCollisionCount, collisionScanSettings)
+		rows, err := m.ch.QuerySchema(ctx, countSQL)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 0 {
+			for _, v := range rows[0] {
+				n := int(toInt64(v))
+				if n >= maxCollisionCount {
+					report.CollisionsCapped = true
+				}
+				report.Collisions += n
+			}
+		}
+
+		if len(report.Samples) >= maxCollisionSamples {
+			continue
+		}
+		sampleSQL := fmt.Sprintf(
+			"SELECT lower(`%s`) AS k, groupUniqArray(`%s`) AS stored FROM `%s` FINAL WHERE notEmpty(`%s`) GROUP BY k HAVING uniqExact(`%s`) > 1 ORDER BY k LIMIT %d%s",
+			c, c, table, c, c, maxCollisionSamples-len(report.Samples), collisionScanSettings)
+		sampleRows, err := m.ch.QuerySchema(ctx, sampleSQL)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range sampleRows {
+			key, _ := r["k"].(string)
+			report.Samples = append(report.Samples, KeyCollision{Column: col, Key: key, Stored: toStrings(r["stored"])})
+		}
+	}
+	return report, nil
+}
+
+// SetCaseInsensitiveKeys turns case-insensitive lookups on or off and rebuilds the
+// ClickHouse dictionary objects over the new key expression. The stored rows are
+// untouched, so the toggle is reversible.
+//
+// Turning it on where keys collide silently drops rows from the lookup, so that needs
+// confirming: KeyCollisions is what the caller confirms against.
+func (m *Manager) SetCaseInsensitiveKeys(ctx context.Context, id string, enabled, confirmCollisions bool) (*Dictionary, error) {
+	dict, err := m.GetDictionary(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if dict.CaseInsensitiveKeys == enabled {
+		return dict, nil
+	}
+
+	if enabled && !confirmCollisions {
+		report, err := m.KeyCollisions(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if report.Collisions > 0 {
+			return nil, badInput("%d key(s) stop being distinct when case is ignored, and only one row per key would stay reachable. Re-send with confirm_collisions to apply anyway", report.Collisions)
+		}
+	}
+
+	// ClickHouse first, Postgres second. The flag is what makes match() probe with
+	// lower(), and ListDictionaryMappings reads it per query with no cache, so
+	// committing it before the objects are rebuilt would leave every search and
+	// alert evaluation in that window probing a lowercased value against keys still
+	// hashed on exact bytes: no hit, no error, a silently missed detection. The
+	// other order is safe -- the objects accept both spellings until the flag turns
+	// the probe on, so the window is one of nothing changing rather than of misses.
+	dict.CaseInsensitiveKeys = enabled
+
+	// Every key column has its own dictionary object, and a half-applied change
+	// would leave some lookups case-sensitive and some not.
+	if err := m.recreateAllCHDictionaries(ctx, dict, dict.Columns); err != nil {
+		// The primary is rebuilt before the secondaries, so a failure part way
+		// through leaves some objects on the new key expression. Putting the flag
+		// back alone would leave lookups probing the wrong way round, so the
+		// objects are rebuilt on the old expression first and the flag follows
+		// only if that succeeds.
+		// Postgres still holds the old value, so nothing has changed for a reader.
+		// Put the objects back the way that flag describes.
+		dict.CaseInsensitiveKeys = !enabled
+		if rbErr := m.recreateAllCHDictionaries(ctx, dict, dict.Columns); rbErr != nil {
+			log.Printf("[Dictionaries] %s: rebuild failed (%v) and could not be undone (%v); restart to reconcile from Postgres", id, err, rbErr)
+			return nil, fmt.Errorf("failed to rebuild dictionary objects and could not undo it, restart to reconcile: %w", err)
+		}
+		m.reloadDictionaries(ctx, dict)
+		return nil, fmt.Errorf("failed to rebuild dictionary objects: %w", err)
+	}
+
+	// Objects are in place; now make lookups use them.
+	if _, err := m.pg.Exec(ctx, `UPDATE dictionaries SET case_insensitive_keys = $1 WHERE id = $2`, enabled, id); err != nil {
+		return nil, fmt.Errorf("dictionary objects rebuilt but the setting could not be saved: %w", err)
+	}
+	m.reloadDictionaries(ctx, dict)
+	return m.GetDictionary(ctx, id)
+}
+
+// keyColumns is every column a lookup can be made against: the primary key plus
+// any column promoted to a key.
+func (m *Manager) keyColumns(dict *Dictionary) []string {
+	cols := []string{dict.KeyColumn}
+	for _, c := range dict.Columns {
+		if c.IsKey && c.Name != dict.KeyColumn {
+			cols = append(cols, c.Name)
+		}
+	}
+	return cols
+}
+
+func toInt64(v any) int64 {
+	switch n := v.(type) {
+	case uint64:
+		return int64(n)
+	case int64:
+		return n
+	case uint32:
+		return int64(n)
+	case int32:
+		return int64(n)
+	}
+	return 0
+}
+
+func toStrings(v any) []string {
+	vals, ok := v.([]string)
+	if ok {
+		return vals
+	}
+	anys, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(anys))
+	for _, a := range anys {
+		if s, ok := a.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // UnsetColumnKey removes the secondary lookup key status from a column and drops
 // the associated ClickHouse DICTIONARY.
 func (m *Manager) UnsetColumnKey(ctx context.Context, id, colName string) (*Dictionary, error) {
@@ -511,7 +706,7 @@ func (m *Manager) UnsetColumnKey(ctx context.Context, id, colName string) (*Dict
 		return nil, err
 	}
 
-	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, colName)))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, colName)))))
 	return m.GetDictionary(ctx, id)
 }
 
@@ -543,7 +738,7 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 	}
 
 	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", escCH(m.rowTable(dict)), where)
-	countRows, err := m.ch.Query(ctx, countSQL)
+	countRows, err := m.ch.QuerySchema(ctx, countSQL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count rows: %w", err)
 	}
@@ -566,7 +761,7 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 		strings.Join(colRefs, ", "), seqColumn, escCH(m.rowTable(dict)), where,
 		seqColumn, escCH(dict.KeyColumn), limit, offset)
 
-	dataRows, err := m.ch.Query(ctx, querySQL)
+	dataRows, err := m.ch.QuerySchema(ctx, querySQL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query rows: %w", err)
 	}
@@ -636,7 +831,7 @@ const maxSeqLookup = 1000
 
 // maxSeq is the highest editor ordinal in the table, 0 when it is empty.
 func (m *Manager) maxSeq(ctx context.Context, dict *Dictionary) (uint64, error) {
-	rows, err := m.ch.Query(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(m.rowTable(dict))))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(m.rowTable(dict))))
 	if err != nil {
 		return 0, fmt.Errorf("failed to read dictionary row order: %w", err)
 	}
@@ -668,7 +863,7 @@ func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []Dictio
 			q := fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
 				escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict)),
 				escCH(dict.KeyColumn), strings.Join(keys, ", "))
-			found, err := m.ch.Query(ctx, q)
+			found, err := m.ch.QuerySchema(ctx, q)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read dictionary row order: %w", err)
 			}
@@ -718,7 +913,7 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 	if err != nil {
 		return err
 	}
-	found, err := m.ch.Query(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
+	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
 		escCH(m.rowTable(dict)), escCH(dict.KeyColumn), escCHStr(key)))
 	if err != nil {
 		return fmt.Errorf("failed to look up row: %w", err)
@@ -763,7 +958,7 @@ func (m *Manager) deleteRowsByKeys(ctx context.Context, dict *Dictionary, quoted
 	}
 	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE `%s` IN (%s)%s SETTINGS mutations_sync = %d",
 		escCH(dict.CHTableName), escCH(dict.KeyColumn), strings.Join(quotedKeys, ", "), extra, sync)
-	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(deleteSQL)); err != nil {
+	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(deleteSQL)); err != nil {
 		return fmt.Errorf("failed to delete row: %w", err)
 	}
 	return nil
@@ -774,13 +969,13 @@ func (m *Manager) deleteRowsByKeys(ctx context.Context, dict *Dictionary, quoted
 // should not have to wait that long. Best effort: the data is already committed.
 func (m *Manager) reloadDictionaries(ctx context.Context, dict *Dictionary) {
 	names := []string{dict.CHDictName}
-	for _, c := range dict.Columns {
-		if c.IsKey && c.Name != dict.KeyColumn {
-			names = append(names, chColDictName(dict.ID, c.Name))
+	for _, col := range m.keyColumns(dict) {
+		if col != dict.KeyColumn {
+			names = append(names, chColDictName(dict.ID, col))
 		}
 	}
 	for _, n := range names {
-		if err := m.ch.Exec(ctx, m.reloadSQL(n)); err != nil {
+		if err := m.ch.ExecSchema(ctx, m.reloadSQL(n)); err != nil {
 			log.Printf("[Dictionaries] reload %s: %v", n, err)
 		}
 	}
@@ -977,7 +1172,7 @@ func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []
 			args = append(args, seqs[i+j])
 		}
 
-		if err := m.ch.ExecArgs(ctx, insertSQL, args...); err != nil {
+		if err := m.ch.ExecSchemaArgs(ctx, insertSQL, args...); err != nil {
 			return fmt.Errorf("failed to batch insert rows: %w", err)
 		}
 	}
@@ -1004,7 +1199,7 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 	querySQL := fmt.Sprintf("SELECT %s FROM `%s` FINAL ORDER BY `%s` ASC, `%s` ASC",
 		strings.Join(colRefs, ", "), escCH(m.rowTable(dict)), seqColumn, escCH(dict.KeyColumn))
 
-	dataRows, err := m.ch.Query(ctx, querySQL)
+	dataRows, err := m.ch.QuerySchema(ctx, querySQL)
 	if err != nil {
 		return fmt.Errorf("failed to query rows for export: %w", err)
 	}
@@ -1053,7 +1248,7 @@ func (m *Manager) ReloadDictionary(ctx context.Context, id string) error {
 // surfaces only when a query runs, as a BAD_ARGUMENTS (code 36) from dictGet; this
 // converges that state at startup instead. Every statement is idempotent.
 func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
-	rows, err := m.pg.Query(ctx, `SELECT id, COALESCE(key_column, ''), columns FROM dictionaries`)
+	rows, err := m.pg.Query(ctx, `SELECT id, COALESCE(key_column, ''), columns, case_insensitive_keys FROM dictionaries`)
 	if err != nil {
 		return 0, err
 	}
@@ -1061,7 +1256,7 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 	for rows.Next() {
 		d := &Dictionary{}
 		var colsJSON []byte
-		if err := rows.Scan(&d.ID, &d.KeyColumn, &colsJSON); err != nil {
+		if err := rows.Scan(&d.ID, &d.KeyColumn, &colsJSON, &d.CaseInsensitiveKeys); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -1091,13 +1286,13 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 		// The table may predate a column that was added while this node was down.
 		alterSeq := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` UInt64 DEFAULT 0",
 			escCH(dict.CHTableName), seqColumn))
-		if err := m.ch.Exec(ctx, alterSeq); err != nil {
+		if err := m.ch.ExecSchema(ctx, alterSeq); err != nil {
 			log.Printf("[Dictionaries] reconcile %s: row order column: %v", dict.ID, err)
 		}
 		for _, c := range dict.Columns {
 			alterSQL := m.ch.InjectOnCluster(fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` String DEFAULT ''",
 				escCH(dict.CHTableName), escCH(c.Name)))
-			if err := m.ch.Exec(ctx, alterSQL); err != nil {
+			if err := m.ch.ExecSchema(ctx, alterSQL); err != nil {
 				log.Printf("[Dictionaries] reconcile %s: column %q: %v", dict.ID, c.Name, err)
 			}
 		}
@@ -1198,7 +1393,7 @@ func (m *Manager) consolidateShards(ctx context.Context, dict *Dictionary) error
 	for _, c := range dict.Columns {
 		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
 	}
-	found, err := m.ch.Query(ctx, fmt.Sprintf("SELECT %s, `%s`, _shard_num FROM `%s` FINAL",
+	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT %s, `%s`, _shard_num FROM `%s` FINAL",
 		strings.Join(colRefs, ", "), seqColumn, escCH(chDistTableName(dict.ID))))
 	if err != nil {
 		return fmt.Errorf("read rows: %w", err)
@@ -1260,14 +1455,14 @@ func (m *Manager) createCHObjects(ctx context.Context, dict *Dictionary) error {
 }
 
 func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
-	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
 	for _, c := range dict.Columns {
 		if c.IsKey {
-			_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
 		}
 	}
-	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(chDistTableName(dict.ID)))))
-	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(chDistTableName(dict.ID)))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName))))
 	return nil
 }
 
@@ -1284,7 +1479,13 @@ func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []Dictio
 	// same columns in any other order silently loads the values into the wrong
 	// attributes, and every lookup misses.
 	refs := make([]string, 0, len(cols)+1)
-	refs = append(refs, fmt.Sprintf("`%s`", escCH(keyCol)))
+	// A HASHED dictionary probes exact bytes, so ignoring case has to happen when the
+	// keys are hashed: lower() here is what makes lower() at lookup time hit.
+	if dict.CaseInsensitiveKeys {
+		refs = append(refs, fmt.Sprintf("lower(`%s`)", escCH(keyCol)))
+	} else {
+		refs = append(refs, fmt.Sprintf("`%s`", escCH(keyCol)))
+	}
 	for _, c := range cols {
 		if c.Name == keyCol {
 			continue
@@ -1330,11 +1531,15 @@ func (m *Manager) ensureDistTable(ctx context.Context, dict *Dictionary) error {
 	if !m.distributed {
 		return nil
 	}
+	// The Distributed engine takes its table argument as a string literal, not as a
+	// quoted identifier, so that one is escaped for a string. Both escapers are the
+	// identity on the UUID-derived names used here (see chTableName), so this is
+	// about using the right one for the context rather than a behaviour change.
 	sql := fmt.Sprintf(
 		"CREATE OR REPLACE TABLE `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', 0)",
 		escCH(chDistTableName(dict.ID)), escCH(dict.CHTableName),
-		escCHStr(m.ddlCluster), escCH(dict.CHTableName))
-	if err := m.ch.Exec(ctx, m.ch.InjectOnCluster(sql)); err != nil && !storage.IsDDLTimeout(err) {
+		escCHStr(m.ddlCluster), escCHStr(dict.CHTableName))
+	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(sql)); err != nil && !storage.IsDDLTimeout(err) {
 		return err
 	}
 	return nil
@@ -1350,7 +1555,7 @@ func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
 		"CREATE TABLE IF NOT EXISTS `%s` (%s) ENGINE = ReplacingMergeTree() ORDER BY (`%s`)",
 		escCH(dict.CHTableName), strings.Join(colDefs, ", "), escCH(dict.KeyColumn))
 	createSQL = m.ch.RewriteEngine(m.ch.InjectOnCluster(createSQL))
-	return m.ch.Exec(ctx, createSQL)
+	return m.ch.ExecSchema(ctx, createSQL)
 }
 
 func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols []DictionaryColumn) error {
@@ -1377,19 +1582,19 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 		escCHStr(m.ch.Password),
 		m.dictSourceQuery(dict, dict.KeyColumn, cols),
 	)
-	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
+	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
 // recreateAllCHDictionaries drops and recreates the primary dictionary and any secondary
 // key column dictionaries after a schema change.
 func (m *Manager) recreateAllCHDictionaries(ctx context.Context, dict *Dictionary, cols []DictionaryColumn) error {
-	_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
 	if err := m.createCHDictionary(ctx, dict, cols); err != nil {
 		return err
 	}
 	for _, c := range cols {
 		if c.IsKey {
-			_ = m.ch.Exec(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(chColDictName(dict.ID, c.Name)))))
 			if err := m.createCHDictionaryForKey(ctx, dict, c.Name, cols); err != nil {
 				return fmt.Errorf("failed to recreate secondary key dictionary for %q: %w", c.Name, err)
 			}
@@ -1425,12 +1630,12 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 		escCHStr(m.ch.Password),
 		m.dictSourceQuery(dict, colName, cols),
 	)
-	return m.ch.Exec(ctx, m.ch.InjectOnCluster(createSQL))
+	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
 	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(m.rowTable(dict)))
-	rows, err := m.ch.Query(ctx, countSQL)
+	rows, err := m.ch.QuerySchema(ctx, countSQL)
 	if err != nil || len(rows) == 0 {
 		return
 	}
@@ -1447,32 +1652,40 @@ func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
 	}
 }
 
-// ListDictionaryMappings returns a map of dict name -> (key col -> CH dict name) for a fractal or prism.
+// ListDictionaryMappings returns a map of dict name -> (key col -> CH dict name) for a fractal or prism,
+// plus the set of dictionary names whose keys were hashed lowercased.
 // The primary key column always maps to the main dictionary (lookup_<id>).
 // Columns with IsKey=true map to their secondary dictionaries (lookup_<id>_by_<col>).
 // Used by the query translator for match() resolution.
-func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, error) {
+//
+// Both come from one read: a lookup that used the wrong case-sensitivity for its
+// dictionary object would silently miss, so the two cannot be allowed to disagree.
+// Postgres is read per query rather than cached, so a toggle applies to every
+// replica at once.
+func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool, error) {
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, key_column, columns FROM dictionaries WHERE prism_id = $1 OR is_global = true`
+		q = `SELECT id, name, key_column, columns, case_insensitive_keys FROM dictionaries WHERE prism_id = $1 OR is_global = true`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, key_column, columns FROM dictionaries WHERE fractal_id = $1 OR is_global = true`
+		q = `SELECT id, name, key_column, columns, case_insensitive_keys FROM dictionaries WHERE fractal_id = $1 OR is_global = true`
 		arg = fractalID
 	}
 	rows, err := m.pg.Query(ctx, q, arg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
 	mappings := make(map[string]map[string]string)
+	caseInsensitive := make(map[string]bool)
 	for rows.Next() {
 		var id, name, keyCol string
 		var colsJSON []byte
-		if err := rows.Scan(&id, &name, &keyCol, &colsJSON); err != nil {
-			return nil, err
+		var ci bool
+		if err := rows.Scan(&id, &name, &keyCol, &colsJSON, &ci); err != nil {
+			return nil, nil, err
 		}
 
 		inner := make(map[string]string)
@@ -1486,9 +1699,13 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 				}
 			}
 		}
+		// Last write wins, and both must come from the SAME row: a scope-owned
+		// dictionary and a global can share a name, and a lookup that probed
+		// lower() against a dictionary hashed on exact bytes would silently miss.
 		mappings[name] = inner
+		caseInsensitive[name] = ci
 	}
-	return mappings, rows.Err()
+	return mappings, caseInsensitive, rows.Err()
 }
 
 // ---- Dictionary Actions ----
@@ -1663,7 +1880,7 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 
 	// Truncate existing data.
 	truncSQL := m.ch.InjectOnCluster(fmt.Sprintf("TRUNCATE TABLE `%s`", escCH(dict.CHTableName)))
-	if err := m.ch.Exec(ctx, truncSQL); err != nil {
+	if err := m.ch.ExecSchema(ctx, truncSQL); err != nil {
 		return 0, fmt.Errorf("failed to truncate dictionary table: %w", err)
 	}
 
@@ -1779,9 +1996,21 @@ func getLogField(log map[string]interface{}, field string) string {
 	return ""
 }
 
-// escCH sanitizes an identifier for use inside ClickHouse backtick-quoted names.
+// escCH escapes an identifier for use inside ClickHouse backtick-quoted names.
+//
+// Backslashes are escaped BEFORE backticks, and both are escaped rather than
+// stripped. ClickHouse honours a backslash-escaped backtick inside the quotes, so a
+// name ending in a backslash escapes the closing quote and the identifier swallows
+// the rest of the statement ("Back quoted string is not closed"). Stripping only
+// backticks left that open: dictionary columns are created from raw log field names
+// by ExecuteDictionaryAction (see collectLogColumns), which validates nothing, so
+// the name reaching DDL is ingested data.
+//
+// Escaping rather than stripping also keeps the name intact, so what Postgres
+// records and what ClickHouse creates stay the same string.
 func escCH(s string) string {
-	return strings.ReplaceAll(s, "`", "")
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	return strings.ReplaceAll(s, "`", "``")
 }
 
 // escCHStr escapes a value for use inside single-quoted ClickHouse strings.
@@ -1815,7 +2044,7 @@ func (m *Manager) GetKeys(ctx context.Context, id string, limit int) ([]string, 
 	}
 	sql := fmt.Sprintf("SELECT DISTINCT `%s` AS k FROM `%s` FINAL WHERE `%s` != '' LIMIT %d",
 		escCH(keyCol), escCH(m.rowTable(dict)), escCH(keyCol), limit)
-	rows, err := m.ch.Query(ctx, sql)
+	rows, err := m.ch.QuerySchema(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("read dictionary keys: %w", err)
 	}

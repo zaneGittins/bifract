@@ -104,6 +104,20 @@ bytes>1000
 response_time<200
 ```
 
+### Compare two fields (`field()`)
+
+The right-hand side of a comparison is normally a literal: `src_port=dst_port` matches rows whose `src_port` is the text "dst_port". Wrap it in `field()` to compare against another field's value instead.
+
+```
+src_port = field(dst_port)
+src_bytes > field(dst_bytes)
+user != field(process_owner)
+```
+
+Valid with `=`, `!=`, `>`, `<`, `>=` and `<=`. `=` and `!=` compare the two as text; the ordering operators compare them numerically. A row missing either field never matches `=` and always matches `!=`.
+
+Both fields are read per row, so the comparison cannot prune granules through a skip index. Put a time range or another selective filter in front of it.
+
 ### In (value list)
 
 Filter by a set of values:

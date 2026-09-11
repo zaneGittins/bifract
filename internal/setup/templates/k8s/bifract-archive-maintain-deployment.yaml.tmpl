@@ -31,6 +31,7 @@ spec:
       # of the ingest pod) so a compaction memory spike OOMs only this pod and
       # never disrupts ingestion. It needs no Kubernetes API access or RBAC: the
       # trigger is a Postgres row, not a Job/CronJob object.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

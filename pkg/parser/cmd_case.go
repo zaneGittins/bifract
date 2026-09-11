@@ -36,8 +36,8 @@ type compiledCase struct {
 var caseDisallowedCommands = map[string]string{
 	"groupby": "groupby", "sort": "sort", "limit": "limit", "head": "head",
 	"tail": "tail", "dedup": "dedup", "join": "join", "chain": "chain",
-	"bfs": "bfs", "dfs": "dfs", "analyzefields": "analyzefields",
-	"table": "table", "piechart": "piechart", "barchart": "barchart",
+	"analyzefields": "analyzefields",
+	"table":         "table", "piechart": "piechart", "barchart": "barchart",
 	"heatmap": "heatmap", "singleval": "singleval", "histogram": "histogram",
 	"modifiedzscore": "modifiedzscore", "modifiedz": "modifiedzscore", "mzscore": "modifiedzscore",
 	"madoutlier": "madoutlier", "outlier": "madoutlier", "model_lookup": "model_lookup",
@@ -125,7 +125,7 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	// Backstop: reject any structural effect a handler may have produced (groupby,
 	// sort, limit, join, chain, window layers, extra stages).
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" || src.LimitBy != "" ||
-		plan.IsJoin || plan.IsTraversal || plan.IsChain || len(plan.WindowLayers) > 0 ||
+		plan.IsJoin || plan.IsChain || len(plan.WindowLayers) > 0 ||
 		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
 		return eff, fmt.Errorf("structural command (groupby/sort/limit/join/chain/window) cannot be used inside a case branch")
 	}

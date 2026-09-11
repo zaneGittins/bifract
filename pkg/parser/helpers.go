@@ -94,191 +94,6 @@ func buildAnalyzeFieldsSQL(
 	}, nil
 }
 
-// buildTraversalSQL generates a recursive CTE query for bfs/dfs graph traversal.
-func buildTraversalSQL(
-	mode, childField, parentField, startValue string, maxDepth int,
-	includeFields []string,
-	whereConditions []string,
-	selectFields, orderByFields []string, limitClause string,
-	havingConditions []string,
-	chartType string, chartConfig map[string]interface{},
-	opts QueryOptions, hasTableCmd bool,
-) (*TranslationResult, error) {
-	if _, err := sanitizeIdentifier(childField); err != nil {
-		return nil, fmt.Errorf("%s(): invalid child field: %w", mode, err)
-	}
-	if _, err := sanitizeIdentifier(parentField); err != nil {
-		return nil, fmt.Errorf("%s(): invalid parent field: %w", mode, err)
-	}
-
-	// Cast to ::String: childRef/parentRef feed the recursive INNER JOIN ON key
-	// and concat(_path); a bare Dynamic subcolumn errors 44 there. The base-case
-	// equality childRef = 'startvalue' stays index-safe (no-op cast is elided).
-	childRef := groupableCast(jsonFieldRef(childField))
-	parentRef := groupableCast(jsonFieldRef(parentField))
-
-	// Always include child and parent fields; deduplicate
-	seen := map[string]bool{childField: true, parentField: true}
-	allInclude := []string{childField, parentField}
-	for _, f := range includeFields {
-		if !seen[f] {
-			seen[f] = true
-			allInclude = append(allInclude, f)
-		}
-	}
-
-	// Build WHERE for base case: fractal + time range + user filter + start node
-	var baseConditions []string
-	baseConditions = append(baseConditions, whereConditions...)
-	baseConditions = append(baseConditions, fmt.Sprintf("%s = '%s'", childRef, escapeString(startValue)))
-	baseWhere := strings.Join(baseConditions, " AND ")
-
-	// Build WHERE for recursive case: same conditions qualified with table alias
-	var recursiveConditions []string
-	for _, cond := range whereConditions {
-		recursiveConditions = append(recursiveConditions, qualifyColumnRefs(cond, "l"))
-	}
-	recursiveConditions = append(recursiveConditions, fmt.Sprintf("t._depth < %d", maxDepth))
-	recursiveWhere := strings.Join(recursiveConditions, " AND ")
-
-	// Build recursive CTE
-	var sql strings.Builder
-	sql.WriteString("WITH RECURSIVE traversal AS (")
-
-	// Build include field expressions for CTE columns
-	var baseIncludeCols, recursiveIncludeCols string
-	for _, f := range allInclude {
-		ref := groupableCast(jsonFieldRef(f))
-		safeAlias := strings.ReplaceAll(f, ".", "_")
-		baseIncludeCols += fmt.Sprintf(", %s AS _%s", ref, safeAlias)
-		recursiveIncludeCols += fmt.Sprintf(", l.%s AS _%s", ref, safeAlias)
-	}
-
-	// Base case: find starting node(s)
-	sql.WriteString("SELECT timestamp, norm_log, log_id, ")
-	sql.WriteString("toUInt32(0) AS _depth, ")
-	sql.WriteString(fmt.Sprintf("%s AS _node_id, ", childRef))
-	sql.WriteString(fmt.Sprintf("%s AS _path", childRef))
-	sql.WriteString(baseIncludeCols)
-	sql.WriteString(fmt.Sprintf(" FROM %s ", opts.EffectiveTableName()))
-	sql.WriteString(fmt.Sprintf("WHERE %s ", baseWhere))
-
-	sql.WriteString("UNION ALL ")
-
-	// Recursive case: find children via parent->child relationship
-	sql.WriteString("SELECT l.timestamp, l.norm_log, l.log_id, ")
-	sql.WriteString("t._depth + 1 AS _depth, ")
-	sql.WriteString(fmt.Sprintf("l.%s AS _node_id, ", childRef))
-	sql.WriteString(fmt.Sprintf("concat(t._path, ' > ', l.%s) AS _path", childRef))
-	sql.WriteString(recursiveIncludeCols)
-	sql.WriteString(fmt.Sprintf(" FROM %s l ", opts.EffectiveTableName()))
-	sql.WriteString(fmt.Sprintf("INNER JOIN traversal t ON l.%s = t._node_id ", parentRef))
-	sql.WriteString(fmt.Sprintf("WHERE %s", recursiveWhere))
-
-	sql.WriteString(") ")
-
-	// Build include column references for the final SELECT (aliased without underscore prefix)
-	var finalIncludeCols string
-	for _, f := range allInclude {
-		safeAlias := strings.ReplaceAll(f, ".", "_")
-		finalIncludeCols += fmt.Sprintf(", _%s AS %s", safeAlias, safeAlias)
-	}
-
-	// Final SELECT from CTE
-	sql.WriteString("SELECT ")
-	if hasTableCmd && len(selectFields) > 0 {
-		formattedFields := make([]string, 0, len(selectFields))
-		for _, field := range selectFields {
-			alias := extractFieldAlias(field)
-			if alias == "timestamp" {
-				formattedFields = append(formattedFields, "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as timestamp")
-			} else if alias == "_depth" {
-				formattedFields = append(formattedFields, "toString(_depth) AS _depth")
-			} else if alias == "_path" || alias == "_node_id" {
-				formattedFields = append(formattedFields, alias)
-			} else {
-				// For fields that are part of the CTE output (child, parent, or include
-				// fields), the CTE exposes them as _alias, not as JSON subcolumn refs.
-				// table() generates jsonFieldRef expressions that are invalid inside
-				// SELECT FROM traversal; remap them to the CTE column form.
-				lookupAlias := strings.Trim(alias, "`")
-				safeAlias := strings.ReplaceAll(lookupAlias, ".", "_")
-				if seen[lookupAlias] {
-					formattedFields = append(formattedFields, fmt.Sprintf("_%s AS %s", safeAlias, safeAlias))
-				} else {
-					formattedFields = append(formattedFields, field)
-				}
-			}
-		}
-		sql.WriteString(strings.Join(formattedFields, ", "))
-	} else {
-		sql.WriteString("formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as timestamp, ")
-		sql.WriteString("norm_log, log_id, toString(_depth) AS _depth, _path")
-		sql.WriteString(finalIncludeCols)
-	}
-
-	sql.WriteString(" FROM traversal ")
-
-	// Post-traversal filters (e.g. _depth <= 3)
-	if len(havingConditions) > 0 {
-		sql.WriteString("WHERE ")
-		sql.WriteString(strings.Join(havingConditions, " AND "))
-		sql.WriteString(" ")
-	}
-
-	// ORDER BY
-	if len(orderByFields) > 0 {
-		sql.WriteString("ORDER BY ")
-		sql.WriteString(strings.Join(orderByFields, ", "))
-		sql.WriteString(" ")
-	} else if mode == "bfs" {
-		sql.WriteString("ORDER BY _depth ASC, timestamp ASC ")
-	} else {
-		// DFS: path-based ordering gives pre-order traversal
-		sql.WriteString("ORDER BY _path ASC ")
-	}
-
-	// LIMIT
-	if limitClause != "" {
-		sql.WriteString(limitClause)
-	} else if opts.MaxRows > 0 {
-		sql.WriteString(fmt.Sprintf("LIMIT %d", opts.MaxRows))
-	}
-
-	finalSQL := sql.String()
-	if err := validateGeneratedSQL(finalSQL); err != nil {
-		return nil, err
-	}
-
-	// Build field order for the UI
-	var fieldOrder []string
-	if hasTableCmd && len(selectFields) > 0 {
-		for _, field := range selectFields {
-			alias := extractFieldAlias(field)
-			if alias != "_all_fields" && alias != "norm_log" && alias != "log_id" {
-				fieldOrder = append(fieldOrder, strings.Trim(alias, "`"))
-			}
-		}
-	} else {
-		fieldOrder = []string{"timestamp", "_depth", "_path"}
-		for _, f := range allInclude {
-			fieldOrder = append(fieldOrder, strings.ReplaceAll(f, ".", "_"))
-		}
-	}
-
-	return &TranslationResult{
-		SQL:          finalSQL,
-		FieldOrder:   fieldOrder,
-		IsAggregated: false,
-		ChartType:    chartType,
-		ChartConfig:  chartConfig,
-	}, nil
-}
-
-// procLineageFractalCond builds the fractal-isolation predicate for proc_lineage,
-// mirroring addBaseConditions exactly (prism FractalIDs, single FractalID, and the
-// IncludeEmptyFractalID legacy-data case). prefix is "" for the base case or "l." for the
-// recursive JOIN alias. Returns "" when no fractal scope is set (same as logs queries).
 func procLineageFractalCond(opts QueryOptions, prefix string) string {
 	col := prefix + "fractal_id"
 	if len(opts.FractalIDs) > 0 {
@@ -313,8 +128,7 @@ const procTreePgraphCols = "parent_guid AS parent, process_guid AS child, image 
 var procTreePgraphFieldOrder = []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
 
 // buildProcessTreeSQL generates a recursive CTE for ptg() over the flat proc_lineage
-// table (MV-backed process lineage): the fast replacement for dfs/bfs-on-logs for process
-// trees. Unlike buildTraversalSQL it uses bare columns (no fields.* JSON access, no
+// table (MV-backed process lineage). It uses bare columns (no fields.* JSON access, no
 // norm_log) and reads proc_lineage FINAL so re-ingested / iceberg-replayed duplicates
 // collapse. Only the time/fractal base conditions are applied (proc_lineage is flat, so
 // user fields.* filters are dropped -- v1 scoping).
@@ -540,8 +354,13 @@ func collectConditionFields(conditions []ConditionNode) map[string]bool {
 			for k := range collectConditionFields(cond.Children) {
 				fields[k] = true
 			}
-		} else if cond.Field != "" {
+			continue
+		}
+		if cond.Field != "" {
 			fields[cond.Field] = true
+		}
+		if cond.ValueField != "" {
+			fields[cond.ValueField] = true
 		}
 	}
 	return fields
@@ -553,8 +372,13 @@ func collectHavingConditionFields(conditions []HavingCondition, fields map[strin
 	for _, cond := range conditions {
 		if cond.IsCompound {
 			collectHavingConditionFields(cond.Children, fields)
-		} else if cond.Field != "" {
+			continue
+		}
+		if cond.Field != "" {
 			fields[cond.Field] = true
+		}
+		if cond.ValueField != "" {
+			fields[cond.ValueField] = true
 		}
 	}
 }
@@ -722,6 +546,20 @@ func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string,
 			return fmt.Sprintf("toFloat64OrZero(toString(%s))", fieldRef)
 		}
 		return fmt.Sprintf("toFloat64OrZero(%s)", fieldRef)
+	}
+
+	// field(name) on the right-hand side: compare against another field.
+	if cond.ValueField != "" {
+		rhs := resolveValueField(cond.ValueField, registry)
+		lhs := lhsOperand(cond.Field, fieldRef, isJSONField, resolvedComputed)
+		sql = buildFieldComparisonSQL(lhs, rhs, cond.Operator)
+		if sql == "" {
+			return "", fmt.Errorf("field() is not supported with the %s operator", cond.Operator)
+		}
+		if cond.Negate {
+			sql = "NOT (" + sql + ")"
+		}
+		return sql, nil
 	}
 
 	if cond.Value == "*" {
@@ -1116,7 +954,7 @@ func jsonFieldRef(field string) string {
 // backtick-quoted identifier. ClickHouse honours BOTH a doubled backtick and a
 // backslash-escaped backtick inside the quotes, so a name may contain a
 // backslash that escapes the closing quote: doubling only backticks then leaves
-// `\` + `` `` `` reading as an escaped-backtick-plus-close, breaking out of the
+// `\` + “ “ “ reading as an escaped-backtick-plus-close, breaking out of the
 // identifier. Escaping the backslash first closes that hole. Field names reach
 // here straight from a user's query (sort, dedup, concat, ...), so this is the
 // boundary that keeps an attacker-supplied name from becoming SQL.
@@ -1985,7 +1823,7 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	src := &plan.SourceStage().Layer
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
 		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
-		plan.IsTraversal || plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
+		plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
 		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
 		return nil, nil, fmt.Errorf("chain step: only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name)
 	}
@@ -2017,6 +1855,13 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	return src.Where, fields, nil
 }
 
+// IsPlainFieldName reports whether s is shaped like a log field name, and so is
+// safe to render as a ClickHouse identifier or alias. The plan derives output
+// column names by string-parsing SQL expressions, so a name carrying a backtick,
+// a quote or " AS " cannot be made safe by escaping alone and has to be rejected
+// where it enters.
+func IsPlainFieldName(s string) bool { return isPlainFieldName(s) }
+
 // isPlainFieldName reports whether s looks like a bare field reference rather than
 // a literal or expression.
 func isPlainFieldName(s string) bool {
@@ -2039,9 +1884,11 @@ func collectHavingFieldsOrdered(c HavingCondition, seen map[string]bool, out *[]
 		}
 		return *out
 	}
-	if c.Field != "" && c.Field != normLogColumn && !seen[c.Field] {
-		seen[c.Field] = true
-		*out = append(*out, c.Field)
+	for _, f := range []string{c.Field, c.ValueField} {
+		if f != "" && f != normLogColumn && !seen[f] {
+			seen[f] = true
+			*out = append(*out, f)
+		}
 	}
 	return *out
 }

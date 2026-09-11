@@ -170,7 +170,7 @@ func (m *Manager) runPreviewQueries(ctx context.Context, histInner, histBucketEx
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		rows, e := m.ch.Query(ctx, histogramQuerySQL(histInner, histBucketExpr)+cfg.settings())
+		rows, e := m.ch.QuerySchema(ctx, histogramQuerySQL(histInner, histBucketExpr)+cfg.settings())
 		if e != nil {
 			record(fmt.Errorf("preview histogram: %w", e))
 			return
@@ -179,7 +179,7 @@ func (m *Manager) runPreviewQueries(ctx context.Context, histInner, histBucketEx
 	}()
 	go func() {
 		defer wg.Done()
-		rows, e := m.ch.Query(ctx, metricsSQL+cfg.settings())
+		rows, e := m.ch.QuerySchema(ctx, metricsSQL+cfg.settings())
 		if e != nil {
 			record(fmt.Errorf("preview metrics: %w", e))
 			return
@@ -192,7 +192,7 @@ func (m *Manager) runPreviewQueries(ctx context.Context, histInner, histBucketEx
 	}()
 	go func() {
 		defer wg.Done()
-		rows, e := m.ch.Query(ctx, topSQL+cfg.settings())
+		rows, e := m.ch.QuerySchema(ctx, topSQL+cfg.settings())
 		if e != nil {
 			record(fmt.Errorf("preview top rows: %w", e))
 			return

@@ -7,16 +7,17 @@ import (
 )
 
 type stubResolver struct {
-	mappings map[string]map[string]string
-	err      error
-	calls    int
-	gotScope [2]string
+	mappings        map[string]map[string]string
+	caseInsensitive map[string]bool
+	err             error
+	calls           int
+	gotScope        [2]string
 }
 
-func (s *stubResolver) ListDictionaryMappings(_ context.Context, fractalID, prismID string) (map[string]map[string]string, error) {
+func (s *stubResolver) ListDictionaryMappings(_ context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool, error) {
 	s.calls++
 	s.gotScope = [2]string{fractalID, prismID}
-	return s.mappings, s.err
+	return s.mappings, s.caseInsensitive, s.err
 }
 
 // A rule under test must see the dictionaries of the scope it belongs to, not the
@@ -26,7 +27,7 @@ func TestDictionariesForScope(t *testing.T) {
 	stub := &stubResolver{mappings: want}
 	r := &TestRunner{dicts: stub}
 
-	got := r.dictionariesFor(context.Background(), "", "prism-1")
+	got, _ := r.dictionariesFor(context.Background(), "", "prism-1")
 	if len(got) != 1 || got["sensitive_groups"]["group_name"] != "lookup_abc" {
 		t.Fatalf("got %v", got)
 	}
@@ -38,11 +39,11 @@ func TestDictionariesForScope(t *testing.T) {
 // No resolver wired, or no scope: match() reports the dictionary as unavailable
 // instead of the run failing.
 func TestDictionariesWithoutResolverOrScope(t *testing.T) {
-	if got := (&TestRunner{}).dictionariesFor(context.Background(), "f1", ""); got != nil {
+	if got, _ := (&TestRunner{}).dictionariesFor(context.Background(), "f1", ""); got != nil {
 		t.Fatalf("no resolver must yield nil, got %v", got)
 	}
 	stub := &stubResolver{mappings: map[string]map[string]string{"x": nil}}
-	if got := (&TestRunner{dicts: stub}).dictionariesFor(context.Background(), "", ""); got != nil {
+	if got, _ := (&TestRunner{dicts: stub}).dictionariesFor(context.Background(), "", ""); got != nil {
 		t.Fatalf("no scope must yield nil, got %v", got)
 	}
 	if stub.calls != 0 {
@@ -54,7 +55,20 @@ func TestDictionariesWithoutResolverOrScope(t *testing.T) {
 // rather than erroring the whole run and hiding every other test's outcome.
 func TestDictionaryResolveFailureIsNotFatal(t *testing.T) {
 	r := &TestRunner{dicts: &stubResolver{err: errors.New("postgres down")}}
-	if got := r.dictionariesFor(context.Background(), "f1", ""); got != nil {
+	if got, _ := r.dictionariesFor(context.Background(), "f1", ""); got != nil {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// The rule tester resolves case-insensitivity alongside the mappings: a rule tested
+// against a case-insensitive dictionary must probe it the same way the live alert does.
+func TestDictionariesForCarriesCaseInsensitivity(t *testing.T) {
+	stub := &stubResolver{
+		mappings:        map[string]map[string]string{"iocs": {"indicator": "lookup_abc"}},
+		caseInsensitive: map[string]bool{"iocs": true},
+	}
+	r := &TestRunner{dicts: stub}
+	if _, ci := r.dictionariesFor(context.Background(), "f1", ""); !ci["iocs"] {
+		t.Fatalf("case-insensitive flag lost, got %v", ci)
 	}
 }

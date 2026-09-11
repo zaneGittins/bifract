@@ -259,6 +259,54 @@ func (h *Handler) HandleUnsetColumnKey(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, dict)
 }
 
+// CaseInsensitiveKeysRequest toggles case-insensitive lookups on a dictionary.
+type CaseInsensitiveKeysRequest struct {
+	Enabled bool `json:"enabled"`
+	// ConfirmCollisions applies the change even though keys stop being distinct
+	// once case is ignored. Without it such a request is refused, because the
+	// colliding rows would quietly become unreachable.
+	ConfirmCollisions bool `json:"confirm_collisions"`
+}
+
+func (h *Handler) HandleSetCaseInsensitiveKeys(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	var req CaseInsensitiveKeysRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	dict, err := h.manager.SetCaseInsensitiveKeys(r.Context(), existing.ID, req.Enabled, req.ConfirmCollisions)
+	if err != nil {
+		log.Printf("[Dictionaries] Failed to set case sensitivity on dictionary %s: %v", existing.ID, err)
+		h.respondManagerError(w, "Failed to change case sensitivity", err)
+		return
+	}
+	h.respondSuccess(w, dict)
+}
+
+// HandleKeyCollisions previews what ignoring case would cost, so the toggle can
+// say so before it is flipped rather than after.
+func (h *Handler) HandleKeyCollisions(w http.ResponseWriter, r *http.Request) {
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	report, err := h.manager.KeyCollisions(r.Context(), existing.ID)
+	if err != nil {
+		log.Printf("[Dictionaries] Failed to check key collisions on dictionary %s: %v", existing.ID, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to check key collisions")
+		return
+	}
+	h.respondSuccess(w, report)
+}
+
 // ---- Data (rows) ----
 
 func (h *Handler) HandleGetRows(w http.ResponseWriter, r *http.Request) {

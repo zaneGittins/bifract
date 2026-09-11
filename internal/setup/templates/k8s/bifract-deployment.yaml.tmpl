@@ -39,6 +39,9 @@ spec:
                   matchLabels:
                     app: bifract
                 topologyKey: kubernetes.io/hostname
+      # Nothing in Bifract talks to the Kubernetes API (no client-go), so the
+      # token is pure attack surface on a pod that reaches the network.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -110,10 +111,14 @@ func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps
 
 	next := map[string]*queryIdentity{}
 	for _, workload := range []string{QuerySearchWorkload, QueryRecallWorkload} {
-		limit, capped := memCaps[workload]
-		if !capped || limit <= 0 {
-			continue
+		limit := memCaps[workload]
+		if limit < 0 {
+			limit = 0
 		}
+		// Provisioned whether or not the class is capped. The identity is the
+		// privilege boundary a query runs inside, and an uncapped class running on
+		// the privileged default connection would give an injected query the
+		// admin's reach. limit == 0 means no memory ceiling, not no identity.
 		if live := current[workload]; live != nil && withinCapTolerance(live.memCapBytes, limit) {
 			next[workload] = live
 			continue
@@ -125,7 +130,11 @@ func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps
 			continue
 		}
 		next[workload] = &queryIdentity{conn: conn, memCapBytes: limit}
-		log.Printf("[ClickHouse] Query identity %q ensured (max_memory_usage_for_user = %d)", user, limit)
+		if limit > 0 {
+			log.Printf("[ClickHouse] Query identity %q ensured (read-only on %s, max_memory_usage_for_user = %d)", user, c.logsDatabase(), limit)
+		} else {
+			log.Printf("[ClickHouse] Query identity %q ensured (read-only on %s, uncapped)", user, c.logsDatabase())
+		}
 	}
 
 	// Swap first, then close only what this reconcile actually replaced, so a reused
@@ -142,6 +151,8 @@ func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps
 // identity already carries to leave it alone. An admin changing the share moves it far
 // more than the tolerance; server-memory drift moves it far less.
 func withinCapTolerance(live, next int64) bool {
+	// Both uncapped, or one becoming (un)capped, is an exact comparison: the
+	// difference is whether the ceiling exists at all, not how big it is.
 	if live <= 0 || next <= 0 {
 		return live == next
 	}
@@ -160,16 +171,53 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 	onCluster := c.OnClusterSQL()
 	pw := EscCHStr(c.queryIdentityPassword(user))
 
-	// Required: without these the identity does not exist or does not enforce the
-	// ceiling it exists for, so a failure means no identity.
-	required := []string{
+	// Required: without these the identity does not exist or cannot read, so a
+	// failure means no identity.
+	//
+	// Scoped to the logs database plus system rather than *.*: the identity is also
+	// the blast radius of a SQL injection in the query path, and a search has no
+	// reason to reach another database. system is needed for profiling and for the
+	// backpressure/readiness reads the query path makes.
+	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
+	create := []string{
 		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", user, onCluster, pw),
 		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", user, onCluster, pw),
-		// SELECT and dictGet cover log reads and model_lookup enrichment.
-		fmt.Sprintf("GRANT%s SELECT, dictGet ON *.* TO %s", onCluster, user),
-		// The whole point of the identity.
-		fmt.Sprintf("ALTER USER %s%s SETTINGS max_memory_usage_for_user = %d", user, onCluster, memCapBytes),
 	}
+	for _, stmt := range create {
+		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+		err := c.conn.Exec(sctx, stmt)
+		cancel()
+		if err != nil {
+			c.recordCapability(CapQueryIdentity, err)
+			return nil, fmt.Errorf("%s: %w", user, err)
+		}
+	}
+	// Before the grants, because ClickHouse revokes hierarchically: revoking SELECT
+	// ON *.* also removes SELECT ON <db>.*, so a revoke after the grants would undo
+	// them. Only runs when something stale is actually present, so the window in
+	// which the identity holds nothing is confined to the one-time migration off a
+	// broader release -- not every settings save and replica start.
+	c.revokeStaleGrants(ctx, user)
+
+	required := []string{
+		// SELECT and dictGet cover log reads and model_lookup/match() enrichment.
+		fmt.Sprintf("GRANT%s SELECT, dictGet ON %s.* TO %s", onCluster, db, user),
+		fmt.Sprintf("GRANT%s SELECT ON system.* TO %s", onCluster, user),
+	}
+	if memCapBytes > 0 {
+		// Applied only when the class is capped. The identity exists regardless: it
+		// is a privilege boundary first and a memory accounting unit second.
+		required = append(required,
+			fmt.Sprintf("ALTER USER %s%s SETTINGS max_memory_usage_for_user = %d", user, onCluster, memCapBytes))
+	} else {
+		required = append(required,
+			fmt.Sprintf("ALTER USER %s%s SETTINGS NONE", user, onCluster))
+	}
+	// Nothing granted below is a capability an injected query should inherit:
+	// SOURCES (file/url/s3/remote -- local file reads and an outbound exfiltration
+	// channel), INTROSPECTION (addressToLine/demangle), ACCESS MANAGEMENT, SYSTEM,
+	// and every form of write or DDL. A release that granted them more broadly is
+	// narrowed by revokeStaleGrants below.
 	for _, stmt := range required {
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 		err := c.conn.Exec(sctx, stmt)
@@ -185,13 +233,12 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 	// defines all of them. Bundled into one statement, a single unsupported
 	// privilege would cost the whole identity and with it the class's memory
 	// ceiling, which is a far worse outcome than losing one capability.
-	optional := []struct{ priv, covers string }{
-		{"REMOTE", "cross-shard fan-out"},
-		{"CREATE TEMPORARY TABLE", "GLOBAL IN"},
-		{"S3", "recall over S3-backed archives"},
-		{"AZURE", "recall over Azure-backed archives"},
-		{"URL", "recall over URL-addressed archives"},
-	}
+	//
+	// Per class, because an object-store grant is also the one outbound channel an
+	// injected query could exfiltrate through. Only recall reads archives, so only
+	// recall gets S3/AZURE. URL is granted to neither: no archive backend addresses
+	// data by URL (see objstore.Backend), so it would be reach with no use.
+	optional := queryIdentityOptionalGrants(user)
 	for _, o := range optional {
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 		err := c.conn.Exec(sctx, fmt.Sprintf("GRANT%s %s ON *.* TO %s", onCluster, o.priv, user))
@@ -222,6 +269,117 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		return nil, fmt.Errorf("probe as %s: %w", user, err)
 	}
 	return conn, nil
+}
+
+// revokeStaleGrants narrows an identity provisioned by an earlier, broader release.
+//
+// It runs AFTER the grants it is narrowing towards, and only when something stale is
+// actually present, for two reasons. A fresh user has no grants at all, so an
+// unconditional revoke logs a "no role in user directories" failure on every first
+// startup -- a security-shaped error at the moment an operator is watching. And these
+// identities are re-ensured on every settings save and every replica start, while
+// their pools are serving live queries: a revoke that is not needed still opens a
+// window in which the identity holds nothing and an in-flight query fails with "Not
+// enough privileges".
+//
+// ClickHouse revokes hierarchically, so a privilege listed here is removed from the
+// narrower grant too. That is why it names only the forms an older release used and
+// this one does not, rather than REVOKE ALL.
+func (c *ClickHouseClient) revokeStaleGrants(ctx context.Context, user string) {
+	stale := c.staleGrantsFor(ctx, user)
+	if len(stale) == 0 {
+		return
+	}
+	for _, priv := range stale {
+		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+		err := c.conn.Exec(sctx, fmt.Sprintf("REVOKE%s %s ON *.* FROM %s", c.OnClusterSQL(), priv, user))
+		cancel()
+		if err != nil {
+			log.Printf("[ClickHouse] %s: could not narrow prior grant %s: %v", user, priv, err)
+			continue
+		}
+		log.Printf("[ClickHouse] %s: narrowed prior grant %s ON *.*", user, priv)
+	}
+}
+
+// staleGrantsFor reads what the identity currently holds and returns the instance-wide
+// privileges this release does not grant. An unreadable grant list yields nothing to
+// revoke: guessing would risk removing a privilege the identity is still using.
+func (c *ClickHouseClient) staleGrantsFor(ctx context.Context, user string) []string {
+	sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+	defer cancel()
+	rows, err := c.conn.Query(sctx, fmt.Sprintf("SHOW GRANTS FOR %s", user))
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var held string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return nil
+		}
+		held += line + "\n"
+	}
+	if rows.Err() != nil {
+		return nil
+	}
+
+	return staleInstanceWideGrants(held)
+}
+
+// staleInstanceWideGrants parses SHOW GRANTS output and returns the instance-wide
+// privileges this release does not grant.
+//
+// The privilege list has to be parsed rather than substring-matched: ClickHouse
+// coalesces grants, so the same privilege appears as "SELECT ON *.*" one moment and
+// "SELECT, CREATE TEMPORARY TABLE ON *.*" the next, and a substring check silently
+// misses the second form -- leaving the broad grant in place, which is the whole
+// thing this is here to remove.
+func staleInstanceWideGrants(showGrants string) []string {
+	// Forms an earlier release granted instance-wide that no identity needs now.
+	// URL was granted for "recall over URL-addressed archives", which no backend
+	// uses; SELECT/dictGet ON *.* predate scoping them to the logs database.
+	unwanted := map[string]bool{"SELECT": true, "dictGet": true, "URL": true}
+
+	var stale []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(showGrants, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "GRANT ") {
+			continue
+		}
+		idx := strings.Index(line, " ON *.*")
+		if idx < 0 {
+			continue // scoped to a database: not what this removes
+		}
+		for _, priv := range strings.Split(line[len("GRANT "):idx], ",") {
+			priv = strings.TrimSpace(priv)
+			if unwanted[priv] && !seen[priv] {
+				seen[priv] = true
+				stale = append(stale, priv)
+			}
+		}
+	}
+	return stale
+}
+
+// queryIdentityOptionalGrants is what a class may additionally reach. Per class,
+// because an object-store grant is also the one outbound channel an injected query
+// could exfiltrate through: only recall reads archives, so only recall gets S3/AZURE.
+// URL is granted to neither, since no archive backend addresses data by URL
+// (see objstore.Backend) and it would be reach with no use.
+func queryIdentityOptionalGrants(user string) []struct{ priv, covers string } {
+	optional := []struct{ priv, covers string }{
+		{"REMOTE", "cross-shard fan-out"},
+		{"CREATE TEMPORARY TABLE", "GLOBAL IN"},
+	}
+	if user == RecallCHUser {
+		optional = append(optional,
+			struct{ priv, covers string }{"S3", "recall over S3-backed archives"},
+			struct{ priv, covers string }{"AZURE", "recall over Azure-backed archives"})
+	}
+	return optional
 }
 
 // connFor returns the connection a query on ctx must run on: the class identity when

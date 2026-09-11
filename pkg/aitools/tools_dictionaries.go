@@ -46,6 +46,31 @@ func registerDictionaryTools(d *set) {
 	}, searchDictionary)
 
 	add(d, &mcp.Tool{
+		Name:        "set_dictionary_case_insensitive",
+		Annotations: mutates(),
+		Description: "Turn case-insensitive key lookups on or off for a dictionary.\n\n" +
+			"Lookups normally match the key exactly, so an indicator stored as " +
+			"\"Mimikatz.exe\" is not found in a log carrying \"mimikatz.exe\". Turning this on " +
+			"makes every lookup against this dictionary ignore case. It applies to the whole " +
+			"dictionary, not one query, so it changes what live detections match on.\n\n" +
+			"Ignoring case can make two stored keys the same key. Only one of them stays " +
+			"reachable and which one is not defined, so a request that would do this is " +
+			"refused and reports the count; read get_dictionary_key_collisions to see which " +
+			"keys, and pass confirm_collisions once that is understood to be acceptable.\n\n" +
+			"Returns the updated dictionary.",
+	}, setDictionaryCaseInsensitive)
+
+	add(d, &mcp.Tool{
+		Name:        "get_dictionary_key_collisions",
+		Annotations: readOnly(),
+		Description: "Report the keys that stop being distinct when case is ignored.\n\n" +
+			"Read this before turning case-insensitive lookups on: each collision is a stored " +
+			"row whose values become unreachable. Every key column is checked, since each one " +
+			"is looked up separately.\n\n" +
+			"Returns the collision count and a sample of the colliding keys.",
+	}, getDictionaryKeyCollisions)
+
+	add(d, &mcp.Tool{
 		Name:        "add_dictionary_rows",
 		Annotations: mutates(),
 		Description: "Insert or update rows in a dictionary.\n\n" +
@@ -65,7 +90,7 @@ func listDictionaries(ctx context.Context, c Client, _ noArgs) (any, error) {
 	if _, ok := payload.([]any); !ok {
 		return payload, nil
 	}
-	summaries := summarize(payload, "id", "name", "description", "key_column", "row_count", "is_global")
+	summaries := summarize(payload, "id", "name", "description", "key_column", "row_count", "is_global", "case_insensitive_keys")
 	return map[string]any{"count": len(summaries), "dictionaries": summaries}, nil
 }
 
@@ -75,6 +100,23 @@ type dictionaryIDArgs struct {
 
 func getDictionary(ctx context.Context, c Client, in dictionaryIDArgs) (any, error) {
 	return c.Get(ctx, "/dictionaries/"+url.PathEscape(in.DictionaryID), nil)
+}
+
+type setDictionaryCaseInsensitiveArgs struct {
+	DictionaryID      string `json:"dictionary_id" jsonschema:"The dictionary UUID, from list_dictionaries."`
+	Enabled           bool   `json:"enabled" jsonschema:"True to make lookups ignore case, false to go back to exact matching."`
+	ConfirmCollisions bool   `json:"confirm_collisions,omitempty" jsonschema:"Apply even though keys stop being distinct once case is ignored, leaving only one row per key reachable. Check get_dictionary_key_collisions first."`
+}
+
+func setDictionaryCaseInsensitive(ctx context.Context, c Client, in setDictionaryCaseInsensitiveArgs) (any, error) {
+	return c.Post(ctx, "/dictionaries/"+url.PathEscape(in.DictionaryID)+"/case-insensitive", map[string]any{
+		"enabled":            in.Enabled,
+		"confirm_collisions": in.ConfirmCollisions,
+	})
+}
+
+func getDictionaryKeyCollisions(ctx context.Context, c Client, in dictionaryIDArgs) (any, error) {
+	return c.Get(ctx, "/dictionaries/"+url.PathEscape(in.DictionaryID)+"/key-collisions", nil)
 }
 
 type searchDictionaryArgs struct {

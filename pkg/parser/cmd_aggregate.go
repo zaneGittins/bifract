@@ -828,6 +828,11 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if !contains(source.Layer.GroupBy, fieldRef) {
 				source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
 			}
+			// The key survives the aggregation, addressable by the alias it is
+			// projected under. Recorded here, where the name the query used is still
+			// known: by classify time the plan holds only the alias or the expression
+			// depending on what else ran, which is not enough to recover the name.
+			ctx.Registry.SetGroupKeyAlias(arg, sanitizedAlias(arg), ctx.CmdIndex)
 		}
 	}
 

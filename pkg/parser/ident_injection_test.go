@@ -46,11 +46,11 @@ func TestBacktickIdentifierNoBreakout(t *testing.T) {
 
 func TestEscapeCHBacktickIdent(t *testing.T) {
 	cases := map[string]string{
-		"plain":     "plain",
-		"a`b":       "a``b",
-		"a\\":       "a\\\\",
-		"a\\`b":     "a\\\\``b",
-		"a\\\\`b":   "a\\\\\\\\``b",
+		"plain":   "plain",
+		"a`b":     "a``b",
+		"a\\":     "a\\\\",
+		"a\\`b":   "a\\\\``b",
+		"a\\\\`b": "a\\\\\\\\``b",
 	}
 	for in, want := range cases {
 		if got := EscapeCHBacktickIdent(in); got != want {

@@ -318,6 +318,10 @@ func main() {
 	// node's CPU and memory so no one class can consume the machine and stall
 	// ingestion. Non-fatal: on failure queries run unscheduled, as they did before.
 	cur := settings.Get()
+	// The identity that runs DDL generated from dictionary and model definitions.
+	// Best effort: without it that DDL runs as the privileged user, as it did before.
+	db.EnsureSchemaIdentity(context.Background())
+
 	if err := db.ReconcileQueryWorkloads(context.Background(), storage.WorkloadLimits{
 		SearchCPUPercent:    cur.QueryCPUPercent,
 		SearchMemoryPercent: cur.QueryMemoryPercent,

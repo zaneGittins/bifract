@@ -44,6 +44,13 @@ var statsOnlyFunctions = map[string]bool{
 	"collect": true,
 }
 
+// syntaxFunctions are function-shaped syntax the parser handles inline rather than
+// through the command registry. They are documented as functions because that is how
+// they are typed, and because completion and the ? hint read only the function list.
+var syntaxFunctions = map[string]bool{
+	"field": true, // right-hand operand of a comparison: src_port = field(dst_port)
+}
+
 // Every command the parser accepts must appear in the built-in reference, because
 // that reference is how the command is discovered: it drives the query UI's
 // documentation panel and is the description an agent reads.
@@ -76,7 +83,7 @@ func TestReferenceDocumentsNoUnknownCommands(t *testing.T) {
 	for _, fn := range bqlFunctionDocs {
 		for _, n := range append([]string{fn.Name}, fn.Aliases...) {
 			lower := strings.ToLower(n)
-			if !registered[lower] && !statsOnlyFunctions[lower] {
+			if !registered[lower] && !statsOnlyFunctions[lower] && !syntaxFunctions[lower] {
 				unknown = append(unknown, n)
 			}
 		}

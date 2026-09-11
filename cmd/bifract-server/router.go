@@ -2631,6 +2631,23 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.dictionaryHandler.HandleUnsetColumnKey,
 			})
 			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/dictionaries/{id}/key-collisions",
+				Access:   api.AccessViewer,
+				Response: api.Response[*dictionaries.KeyCollisionReport]{},
+				Summary:  "Report the keys that stop being distinct when case is ignored.",
+				Handler:  d.dictionaryHandler.HandleKeyCollisions,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/case-insensitive",
+				Access:   api.AccessAnalyst,
+				Request:  dictionaries.CaseInsensitiveKeysRequest{},
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Turn case-insensitive key lookups on or off.",
+				Handler:  d.dictionaryHandler.HandleSetCaseInsensitiveKeys,
+			})
+			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/dictionaries/{id}/reload",
 				Access:   api.AccessAnalyst,

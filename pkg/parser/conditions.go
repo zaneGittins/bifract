@@ -26,9 +26,9 @@ type condGroup struct {
 // fields are produced after GROUP BY and therefore require HAVING. Assignment and PerRow
 // fields are both per-row scalars computed before aggregation; they differ only in whether
 // the value needs numeric coercion, not in SQL placement.
-func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, plan *QueryPlan) {
+func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, plan *QueryPlan) error {
 	if len(conditions) == 0 {
-		return
+		return nil
 	}
 
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
@@ -42,75 +42,162 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			// different stages: AND distributes, so split it and bind each
 			// conjunct where its fields exist.
 			if parts := splitMixedAndCompound(cond, registry, plan, willHaveAggregation); parts != nil {
-				classifyConditions(parts, registry, plan)
+				if err := classifyConditions(parts, registry, plan); err != nil {
+					return err
+				}
 				continue
+			}
+			// A compound that stays whole binds to one stage, so its leaves face the
+			// same constraint as a standalone one. Checking only the leaf path let an
+			// OR carry a per-row column into HAVING (ClickHouse code 215), which is
+			// the error this check exists to replace with a clear message.
+			if err := validateCompoundOperandStages(cond, registry, plan, willHaveAggregation); err != nil {
+				return err
 			}
 			target := classifyCompoundTarget(cond, registry, plan, willHaveAggregation)
 			*target = append(*target, cond)
 			continue
 		}
 
-		entry := registry.Get(cond.Field)
-		var target *[]HavingCondition
+		if err := validateOperandStages(cond, registry, plan, willHaveAggregation); err != nil {
+			return err
+		}
 
-		if entry != nil {
-			switch entry.ClassifyKind() {
-			case FieldKindWindow:
-				if plan.IsTraversal || plan.IsProcessTree {
-					target = &plan.pendingHavingConditions
-				} else {
-					target = &plan.pendingDeferredConditions
-				}
-			case FieldKindJoined:
-				// Model-lookup outputs exist only after the JOIN wrap; defer to a
-				// post-join outer WHERE (same mechanism as window fields).
-				target = &plan.pendingDeferredConditions
-			case FieldKindAggregate:
-				if willHaveAggregation {
-					target = &plan.pendingHavingConditions
-				} else {
-					target = &plan.pendingWhereConditions
-				}
-			case FieldKindPerRow:
-				target = &plan.pendingWhereConditions
-			case FieldKindAssignment:
-				target = &plan.pendingWhereConditions
-			default:
-				target = &plan.pendingWhereConditions
-			}
-		} else {
-			switch cond.Field {
-			case "count", "sum", "avg":
-				if willHaveAggregation {
-					target = &plan.pendingHavingConditions
-				} else {
-					target = &plan.pendingWhereConditions
-				}
-			default:
-				target = &plan.pendingWhereConditions
-			}
+		var target *[]HavingCondition
+		switch leafPriority(cond, registry, plan, willHaveAggregation) {
+		case 2:
+			target = &plan.pendingHavingConditions
+		case 1:
+			// Window and model_lookup outputs exist only after the outer wrap;
+			// defer to a post-join/post-window WHERE.
+			target = &plan.pendingDeferredConditions
+		default:
+			target = &plan.pendingWhereConditions
 		}
 
 		*target = append(*target, cond)
 	}
+	return nil
+}
+
+// validateCompoundOperandStages checks every leaf of a compound that binds as one
+// unit. The compound's stage is the highest its leaves need, so a leaf is judged
+// against that rather than against its own.
+func validateCompoundOperandStages(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
+	if subtreePriority(cond, registry, plan, willHaveAggregation) != 2 {
+		return nil
+	}
+	var walk func(HavingCondition) error
+	walk = func(c HavingCondition) error {
+		if c.IsCompound {
+			for _, child := range c.Children {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return validateOperandStages(c, registry, plan, willHaveAggregation)
+	}
+	return walk(cond)
+}
+
+// validateOperandStages rejects a field(...) comparison that straddles the
+// aggregation boundary. A comparison against an aggregate binds to HAVING, where
+// a per-row field no longer exists: ClickHouse rejects it with code 215, naming
+// the column but not the reason.
+func validateOperandStages(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
+	if cond.ValueField == "" || !willHaveAggregation {
+		return nil
+	}
+	if leafPriority(cond, registry, plan, willHaveAggregation) != 2 {
+		return nil
+	}
+	for _, side := range []string{cond.Field, cond.ValueField} {
+		if fieldPriority(side, registry, plan, willHaveAggregation) == 2 {
+			continue
+		}
+		if !isGroupKey(registry, side) {
+			return fmt.Errorf("cannot compare %s with field(%s): %s is a per-row field and does not survive the aggregation; add it to groupBy()",
+				cond.Field, cond.ValueField, side)
+		}
+		// The operand has to be addressable by name after the GROUP BY. A grouping
+		// key is (its alias, quoted when the name carries a dot); anything still
+		// rendering as an expression is not in the GROUP BY and ClickHouse would
+		// reject it with code 215, naming the column but not the reason.
+		if ref := resolveValueField(side, registry).ref; !isAddressableAfterGroupBy(ref) {
+			return fmt.Errorf("cannot compare %s with field(%s): %s is grouped as an expression rather than a plain column, so it cannot be referenced after the aggregation; assign it to a simple name first",
+				cond.Field, cond.ValueField, side)
+		}
+	}
+	return nil
+}
+
+// isAddressableAfterGroupBy reports whether a reference can be named in HAVING: a
+// bare column, or a single backtick-quoted identifier as a dotted grouping key is
+// projected under.
+func isAddressableAfterGroupBy(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if isBareIdentifier(ref) {
+		return true
+	}
+	if len(ref) > 2 && ref[0] == '`' && ref[len(ref)-1] == '`' {
+		return !strings.Contains(ref[1:len(ref)-1], "`")
+	}
+	return false
+}
+
+// isBareAggregate reports whether a name is an aggregate function used without a
+// registry entry, which resolves to the numeric _count/_sum/_avg alias.
+func isBareAggregate(field string) bool {
+	return field == "count" || field == "sum" || field == "avg"
+}
+
+// sanitizedAlias is the alias a grouping key is projected under. A name carrying a
+// dot or dash is not a bare identifier, so it is quoted; sanitizeIdentifier already
+// makes that decision for every other alias.
+func sanitizedAlias(field string) string {
+	if safe, err := sanitizeIdentifier(field); err == nil {
+		return safe
+	}
+	return field
+}
+
+// isGroupKey reports whether a field is one of the plan's grouping keys, and so
+// still addressable after the aggregation.
+func isGroupKey(registry *FieldRegistry, field string) bool {
+	if registry == nil {
+		return false
+	}
+	_, ok := registry.GroupKeyAlias(field)
+	return ok
 }
 
 // leafPriority returns the stage bucket a single (non-compound) condition needs:
-// 0=WHERE, 1=DeferredWhere, 2=HAVING.
+// 0=WHERE, 1=DeferredWhere, 2=HAVING. Both operands count: `a > field(_count)`
+// can only be evaluated where the later-produced side exists.
 func leafPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
-	entry := registry.Get(c.Field)
+	p := fieldPriority(c.Field, registry, plan, willHaveAggregation)
+	if c.ValueField != "" {
+		if rp := fieldPriority(c.ValueField, registry, plan, willHaveAggregation); rp > p {
+			return rp
+		}
+	}
+	return p
+}
+
+// fieldPriority is leafPriority for a single field name.
+func fieldPriority(field string, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	entry := registry.Get(field)
 	if entry == nil {
-		switch c.Field {
-		case "count", "sum", "avg":
-			if willHaveAggregation {
-				return 2
-			}
+		if isBareAggregate(field) && willHaveAggregation {
+			return 2
 		}
 		return 0
 	}
 	switch entry.ClassifyKind() {
 	case FieldKindWindow:
-		if plan.IsTraversal || plan.IsProcessTree {
+		if plan.IsProcessTree {
 			return 2
 		}
 		return 1
@@ -454,6 +541,19 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 	// column; bare column names pass through untouched.
 	fieldRef = scope.ref(fieldRef, cond.Field)
 
+	// field(name) on the right-hand side: compare against another field.
+	if cond.ValueField != "" {
+		rhs := resolveValueField(cond.ValueField, registry)
+		rhs.ref = scope.ref(rhs.ref, cond.ValueField)
+		// A bare count/sum/avg has no registry entry but resolves to the numeric
+		// _count/_sum/_avg alias, which toFloat64OrZero rejects (code 43). Same
+		// carve-out the literal comparison path makes below.
+		computed := isBareAggregate(cond.Field) ||
+			(entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
+		lhs := lhsOperand(cond.Field, fieldRef, isJSONField, computed)
+		return buildFieldComparisonSQL(lhs, rhs, cond.Operator)
+	}
+
 	if cond.Value == "*" {
 		if cond.Operator == "!=" {
 			if isJSONField {
@@ -515,7 +615,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		isPerRow := entry != nil && entry.Kind == FieldKindPerRow
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
 		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
-		isAggFallback := entry == nil && (cond.Field == "count" || cond.Field == "sum" || cond.Field == "avg")
+		isAggFallback := entry == nil && isBareAggregate(cond.Field)
 		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
 		if isPerRow {
 			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)

@@ -42,6 +42,8 @@ spec:
                   matchLabels:
                     app: bifract-ingest
                 topologyKey: kubernetes.io/hostname
+      # No client-go anywhere in Bifract: nothing here needs an API token.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:

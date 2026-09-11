@@ -298,74 +298,8 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 	return nil
 }
 
-// bfsHandler handles bfs/dfs traversal commands
-type bfsHandler struct{}
-
-func (h *bfsHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	// Set traversal mode early so condition routing knows to use HAVING for post-CTE filters
-	ctx.Plan.IsTraversal = true
-	// _depth and _path are CTE-produced fields (FieldKindWindow).
-	// routeConditions sends Window fields to HAVING for traversal queries,
-	// which buildTraversalSQL uses as the post-CTE filter.
-	ctx.Registry.Register("_depth", FieldKindWindow, "_depth", ctx.CmdIndex)
-	ctx.Registry.Register("_path", FieldKindWindow, "_path", ctx.CmdIndex)
-	return nil
-}
-
-func (h *bfsHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if ctx.Plan.TraversalMode != "" {
-		return fmt.Errorf("cannot use multiple traversal functions (bfs/dfs) in the same query")
-	}
-	var traversalChild, traversalParent, traversalStart string
-	traversalDepth := 0
-	var traversalInclude []string
-
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "child=") {
-			traversalChild = strings.TrimPrefix(arg, "child=")
-		} else if strings.HasPrefix(arg, "parent=") {
-			traversalParent = strings.TrimPrefix(arg, "parent=")
-		} else if strings.HasPrefix(arg, "start=") {
-			traversalStart = strings.TrimPrefix(arg, "start=")
-		} else if strings.HasPrefix(arg, "depth=") {
-			depthStr := strings.TrimPrefix(arg, "depth=")
-			if d, err := strconv.Atoi(depthStr); err == nil && d > 0 {
-				traversalDepth = d
-			}
-		} else if strings.HasPrefix(arg, "include=") {
-			val := strings.TrimPrefix(arg, "include=")
-			val = strings.Trim(val, "[]")
-			for _, c := range strings.Split(val, ",") {
-				c = strings.TrimSpace(c)
-				if c != "" {
-					traversalInclude = append(traversalInclude, c)
-				}
-			}
-		}
-	}
-	if traversalChild == "" || traversalParent == "" || traversalStart == "" {
-		return fmt.Errorf("%s() requires child=, parent=, and start= parameters", cmd.Name)
-	}
-	if traversalDepth == 0 {
-		traversalDepth = 10
-	}
-	if traversalDepth > 50 {
-		traversalDepth = 50
-	}
-	ctx.Plan.IsTraversal = true
-	ctx.Plan.TraversalMode = cmd.Name
-	ctx.Plan.TraversalChild = traversalChild
-	ctx.Plan.TraversalParent = traversalParent
-	ctx.Plan.TraversalStart = traversalStart
-	ctx.Plan.TraversalDepth = traversalDepth
-	ctx.Plan.TraversalInclude = traversalInclude
-	ctx.Registry.SetResolveExpr("_depth", "_depth")
-	ctx.Registry.SetResolveExpr("_path", "_path")
-	return nil
-}
-
 // ptgHandler handles ptg() (Process Tree Graph): MV-backed process-lineage traversal
-// over proc_lineage, a fast replacement for dfs/bfs-on-logs for process trees.
+// over proc_lineage.
 type ptgHandler struct{}
 
 func (h *ptgHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -379,9 +313,6 @@ func (h *ptgHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if ctx.Plan.ProcessTreeStart != "" {
 		return fmt.Errorf("cannot use multiple ptg() functions in the same query")
-	}
-	if ctx.Plan.IsTraversal {
-		return fmt.Errorf("ptg() cannot be combined with bfs()/dfs()")
 	}
 	var start, direction string
 	depth := 0
@@ -784,7 +715,6 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 func init() {
 	registerCommand(&tableHandler{}, "table")
-	registerCommand(&bfsHandler{}, "bfs", "dfs")
 	registerCommand(&ptgHandler{}, "ptg")
 	registerCommand(&analyzefieldsHandler{}, "analyzefields")
 	registerCommand(&chainHandler{}, "chain")

@@ -234,7 +234,7 @@ FROM logs;
 
 -- Process-lineage skeleton: one row per process-create event, ordered by
 -- (fractal_id, process_guid) so ptg() traversal hops are primary-key point lookups
--- instead of full-table scans over logs (which OOMs dfs/bfs at scale). This is a
+-- instead of full-table scans over logs, which OOM at scale. This is a
 -- self-sufficient, compact table (no raw_log/norm_log/fields bulk): the process tree
 -- renders from these columns alone even after the source logs tier/expire, so it is
 -- retained on a long, DFIR-driven TTL decoupled from logs. ReplacingMergeTree dedups

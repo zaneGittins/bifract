@@ -109,6 +109,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		FractalIDs:            ctx.Opts.FractalIDs,
 		IncludeEmptyFractalID: ctx.Opts.IncludeEmptyFractalID,
 		Dictionaries:          ctx.Opts.Dictionaries,
+		CaseInsensitiveDicts:  ctx.Opts.CaseInsensitiveDicts,
 		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
 		DictionaryDatabase:    ctx.Opts.DictionaryDatabase,
 		TableName:             ctx.Opts.TableName,

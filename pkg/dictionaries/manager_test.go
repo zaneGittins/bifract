@@ -130,3 +130,107 @@ func TestOwnedLookupExcludesGlobalsWhileReadLookupIncludesThem(t *testing.T) {
 		}
 	}
 }
+
+// Every dictionary read scans into the same 13 struct fields, so the column list
+// must name 13 columns. Scan is variadic, so a list one column short compiles
+// cleanly and fails only at runtime, on every call: that is how the by-name
+// lookup shipped broken when case_insensitive_keys was added to the other reads
+// and not to this one. Counting top-level commas catches the divergence here.
+func TestDictColumnsMatchesScanArity(t *testing.T) {
+	const wantColumns = 13 // id..updated_at, see scanDictionary
+
+	depth, got := 0, 1
+	for _, r := range dictColumns {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				got++
+			}
+		}
+	}
+	if got != wantColumns {
+		t.Errorf("dictColumns selects %d columns but every Scan expects %d; add the column to dictColumns and to every Scan:\n%s",
+			got, wantColumns, dictColumns)
+	}
+	if !strings.Contains(dictColumns, "case_insensitive_keys") {
+		t.Errorf("dictColumns must select case_insensitive_keys:\n%s", dictColumns)
+	}
+}
+
+// ExecuteDictionaryAction builds dictionary columns from raw log field names
+// (collectLogColumns validates nothing), so escCH is handed ingested data and is
+// the boundary that keeps it from becoming DDL. ClickHouse honours a
+// backslash-escaped backtick inside a quoted identifier, so escaping the backtick
+// alone is not enough: a name ending in a backslash escapes the closing quote and
+// the identifier swallows the rest of the statement.
+func TestEscCHCannotBreakOutOfAQuotedIdentifier(t *testing.T) {
+	// Identifiers that need no escaping must pass through byte for byte, or every
+	// existing table and column would be renamed by this function.
+	for _, safe := range []string{"indicator", "user_name", "col-1", "winlog.user", "_bf_seq", ""} {
+		if got := escCH(safe); got != safe {
+			t.Errorf("escCH(%q) = %q, ordinary identifiers must be unchanged", safe, got)
+		}
+	}
+
+	for _, hostile := range []string{
+		`x\`,                            // escapes the closing backtick
+		"x`",                            // closes the identifier
+		"x` , y String) ENGINE=Null --", // closes it and appends DDL
+		`x\` + "`",                      // escaped backtick then a real one
+		`x\\`,                           // even backslashes, then the quote closes
+		"x``y",
+	} {
+		got := escCH(hostile)
+		// Rendered into the quoted identifier the DDL builds.
+		rendered := "`" + got + "`"
+		if !quotedIdentifierIsClosed(rendered) {
+			t.Errorf("escCH(%q) = %q renders %s, which does not close its quote", hostile, got, rendered)
+		}
+	}
+}
+
+// quotedIdentifierIsClosed walks a backtick-quoted identifier the way ClickHouse
+// does (backslash escapes the next character, a doubled backtick is a literal one)
+// and reports whether it closes at the final character rather than earlier or not
+// at all.
+func quotedIdentifierIsClosed(s string) bool {
+	if len(s) < 2 || s[0] != '`' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++ // the escaped character is literal
+		case '`':
+			if i+1 < len(s) && s[i+1] == '`' {
+				i++ // doubled: a literal backtick
+				continue
+			}
+			return i == len(s)-1 // closes here; must be the end
+		}
+	}
+	return false
+}
+
+// Every ClickHouse object name is derived from the dictionary's UUID, which is what
+// lets the DDL interpolate them directly. If that ever stops holding, the escapers
+// around them stop being no-ops and each call site has to be re-read.
+func TestGeneratedObjectNamesNeedNoEscaping(t *testing.T) {
+	const id = "8c1168bb-23b0-44e5-9486-58ed89ecc9b4"
+	for _, name := range []string{
+		chTableName(id), chDictName(id), chDistTableName(id), chColDictName(id, "indicator"),
+	} {
+		if escCH(name) != name || escCHStr(name) != name {
+			t.Errorf("%q is not escape-neutral: escCH=%q escCHStr=%q", name, escCH(name), escCHStr(name))
+		}
+		for _, r := range name {
+			if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				t.Errorf("%q contains %q; generated names must stay [a-z0-9_]", name, r)
+			}
+		}
+	}
+}

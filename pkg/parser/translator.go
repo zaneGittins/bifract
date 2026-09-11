@@ -27,25 +27,28 @@ type QueryOptions struct {
 	EndTime               time.Time
 	EndExclusive          bool // emit "timestamp < EndTime" instead of "<="; lets adjacent chunks abut without dropping or duplicating a row
 	MaxRows               int
-	FractalID             string                        // Fractal UUID for filtering logs to specific fractal
-	FractalIDs            []string                      // Multiple fractal UUIDs (prism context); overrides FractalID when set
-	IncludeEmptyFractalID bool                          // Include logs with no fractal_id (legacy data) when querying default fractal
-	Dictionaries          map[string]map[string]string  // dict name -> key col -> ClickHouse lookup name
-	Models                map[string]AnalyticsModelInfo // model name -> ModelInfo for model_lookup() BQL command
-	HasCommentFilter      bool                          // True when query uses comment() and log_ids have been pre-fetched
-	CommentLogIDs         []string                      // Pre-fetched log_ids from PostgreSQL for comment() filtering
-	HasTLSHFilter         bool                          // True when query uses tlsh() and the digest match has been resolved
-	TLSHMatches           []TLSHMatch                   // Digests within threshold of a needle, resolved server-side against the tlsh model index
-	UseIngestTimestamp    bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
-	AlertExtraFields      []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
-	GeoIPEnabled          bool                          // True when MaxMind GeoLite2 dictionaries are loaded
-	DictionaryDatabase    string                        // ClickHouse database holding the dictionary objects; qualifies every dictGet
-	TableName             string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
-	ProcLineageTable      string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
-	ProcFreqTable         string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
-	ProcEdgesTable        string                        // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
-	IncludeShardNum       bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
-	SourceMode            SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
+	FractalID             string                       // Fractal UUID for filtering logs to specific fractal
+	FractalIDs            []string                     // Multiple fractal UUIDs (prism context); overrides FractalID when set
+	IncludeEmptyFractalID bool                         // Include logs with no fractal_id (legacy data) when querying default fractal
+	Dictionaries          map[string]map[string]string // dict name -> key col -> ClickHouse lookup name
+	// CaseInsensitiveDicts names the dictionaries whose ClickHouse objects were built
+	// over lower(key); match() must lowercase the looked-up value to hit them.
+	CaseInsensitiveDicts map[string]bool
+	Models               map[string]AnalyticsModelInfo // model name -> ModelInfo for model_lookup() BQL command
+	HasCommentFilter     bool                          // True when query uses comment() and log_ids have been pre-fetched
+	CommentLogIDs        []string                      // Pre-fetched log_ids from PostgreSQL for comment() filtering
+	HasTLSHFilter        bool                          // True when query uses tlsh() and the digest match has been resolved
+	TLSHMatches          []TLSHMatch                   // Digests within threshold of a needle, resolved server-side against the tlsh model index
+	UseIngestTimestamp   bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
+	AlertExtraFields     []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
+	GeoIPEnabled         bool                          // True when MaxMind GeoLite2 dictionaries are loaded
+	DictionaryDatabase   string                        // ClickHouse database holding the dictionary objects; qualifies every dictGet
+	TableName            string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	ProcLineageTable     string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
+	ProcFreqTable        string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
+	ProcEdgesTable       string                        // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
+	IncludeShardNum      bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
+	SourceMode           SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 	// IcePromoted lists the field names whose `_ice_` promoted column exists on
 	// the Iceberg table this query targets. Iceberg mode only. Leave nil when the
 	// target table's schema is unknown: pruning is skipped, results stay correct.
@@ -346,7 +349,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	if err := resolveCommandConditions(pipeline.HavingConditions, opts); err != nil {
 		return nil, err
 	}
-	classifyConditions(pipeline.HavingConditions, registry, plan)
+	if err := classifyConditions(pipeline.HavingConditions, registry, plan); err != nil {
+		return nil, err
+	}
 	materializeConditions(registry, plan)
 
 	// ---------------------------------------------------------------
@@ -370,7 +375,15 @@ func HistogramIsScopeOnly(pipeline *PipelineNode, opts QueryOptions) bool {
 	}
 	// Mirrors BuildHistogramSQL: the computed-column pass only matters when there
 	// are having conditions to inline, and it is too costly to run otherwise.
-	return len(pipeline.HavingConditions) == 0 || histogramComputedWhere(pipeline, opts) == ""
+	if len(pipeline.HavingConditions) == 0 {
+		return true
+	}
+	// An empty clause means "nothing to inline" only when the pass succeeded. A pass
+	// that gave up cannot show the histogram is unfiltered, and answering from the
+	// rollup on that basis would count every log in the window beside a filtered
+	// result set, so an indeterminate answer falls back to scanning.
+	where, ok := histogramComputedWhere(pipeline, opts)
+	return ok && where == ""
 }
 
 // BuildHistogramSQL generates a lightweight COUNT(*) GROUP BY time-bucket query.
@@ -411,7 +424,7 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 	// and window conditions reference outputs that don't exist in the flat histogram
 	// query and are intentionally skipped.
 	if len(pipeline.HavingConditions) > 0 {
-		if computedWhere := histogramComputedWhere(pipeline, opts); computedWhere != "" {
+		if computedWhere, _ := histogramComputedWhere(pipeline, opts); computedWhere != "" {
 			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, computedWhere)
 		}
 	}
@@ -597,7 +610,7 @@ func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsP
 
 	// Computed-column filters (e.g. len(field) | _len > 500), same as the histogram.
 	if len(pipeline.HavingConditions) > 0 {
-		if computedWhere := histogramComputedWhere(pipeline, opts); computedWhere != "" {
+		if computedWhere, _ := histogramComputedWhere(pipeline, opts); computedWhere != "" {
 			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, computedWhere)
 		}
 	}
@@ -668,7 +681,9 @@ LIMIT %d`,
 //     with strict=true appends dictHas(...)). These are also valid histogram filters.
 //
 // Returns "" on any error so the histogram degrades gracefully.
-func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
+// The bool reports whether the pass ran to completion. An empty clause with false
+// means "could not determine", which is not the same as "no filter".
+func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) (string, bool) {
 	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	helperPlan := NewQueryPlan()
 	ctx := &CommandContext{
@@ -686,7 +701,7 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
 			continue
 		}
 		if err := handler.Declare(cmd, ctx); err != nil {
-			return ""
+			return "", false
 		}
 	}
 	for _, a := range pipeline.Assignments {
@@ -701,20 +716,22 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) string {
 			continue
 		}
 		if err := handler.Execute(cmd, ctx); err != nil {
-			return ""
+			return "", false
 		}
 	}
 
 	// Classify after Execute (matching the main translator ordering) so the
 	// registry fully reflects every produced field kind before routing.
-	classifyConditions(pipeline.HavingConditions, registry, helperPlan)
+	if err := classifyConditions(pipeline.HavingConditions, registry, helperPlan); err != nil {
+		return "", false
+	}
 
 	// Materialize: generate SQL from classified conditions using the now-populated registry.
 	// Only pendingWhereConditions (FieldKindAssignment, FieldKindPerRow) land in
 	// helperPlan.SourceStage().Layer.Where; aggregate and window conditions are ignored.
 	materializeConditions(registry, helperPlan)
 
-	return strings.Join(helperPlan.SourceStage().Layer.Where, " AND ")
+	return strings.Join(helperPlan.SourceStage().Layer.Where, " AND "), true
 }
 
 // chTimeLiteral renders a time as a ClickHouse datetime literal for comparison
@@ -778,24 +795,6 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	opts := ctx.Opts
 
 	// --- Special query modes (generate entirely different SQL) ---
-	if plan.IsTraversal {
-		if plan.IsAggregated {
-			return nil, fmt.Errorf("%s() cannot be combined with aggregation functions", plan.TraversalMode)
-		}
-		if plan.IsChain {
-			return nil, fmt.Errorf("%s() cannot be combined with chain()", plan.TraversalMode)
-		}
-		return buildTraversalSQL(
-			plan.TraversalMode, plan.TraversalChild, plan.TraversalParent, plan.TraversalStart,
-			plan.TraversalDepth, plan.TraversalInclude,
-			source.Layer.Where,
-			selectExprStrings(source.Layer.Selects),
-			source.Layer.OrderBy,
-			source.Layer.Limit,
-			source.Layer.Having,
-			plan.ChartType, plan.ChartConfig, opts, plan.HasTableCmd,
-		)
-	}
 	if plan.IsProcessTree {
 		if plan.IsAggregated {
 			return nil, fmt.Errorf("ptg() cannot be combined with aggregation functions")
@@ -1243,7 +1242,17 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 					{Expr: "fractal_id"},
 				}
 				for field := range fields {
-					safe := fmt.Sprintf("%s AS `%s`", groupableCast(jsonFieldRef(field)), field)
+					// These names include alert-configured ones (throttle field, name
+					// template), which are not query text and are not constrained by
+					// the lexer. An unescaped backtick closed the alias and appended a
+					// select expression of the caller's choosing, so the name is both
+					// checked and escaped: the outer projection re-derives column names
+					// by string-parsing this expression, which escaping alone cannot
+					// make safe.
+					if !isPlainFieldName(field) {
+						continue
+					}
+					safe := fmt.Sprintf("%s AS `%s`", groupableCast(jsonFieldRef(field)), EscapeCHBacktickIdent(field))
 					source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: safe})
 				}
 				return

@@ -2931,11 +2931,8 @@ const QueryExecutor = {
                 fieldsHtml = '<div class="graph-detail-empty">No additional fields available</div>';
             }
 
-            const parentId = parentMap.get(nodeId);
-            const canWalkUp = parentId && /\b(?:dfs|bfs)\s*\(/i.test(this.currentQuery || '');
             const actionsHtml = `
                 <div class="graph-detail-actions">
-                    ${canWalkUp ? '<button class="graph-detail-action" data-act="walkup" title="Re-root the traversal at this node\'s parent">Walk Up</button>' : ''}
                     <button class="graph-detail-action" data-act="subtree">Focus subtree</button>
                     <button class="graph-detail-action secondary" data-act="copy">Copy ID</button>
                 </div>`;
@@ -2958,7 +2955,6 @@ const QueryExecutor = {
                 const connected = this.currentChart.getConnectedNodes(nodeId);
                 VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
             });
-            body.querySelector('[data-act="walkup"]')?.addEventListener('click', () => this.pivotTraversal(parentId));
             body.querySelectorAll('.graph-path-seg').forEach(el => {
                 el.addEventListener('click', () => {
                     const id = el.getAttribute('data-node');
@@ -3084,10 +3080,7 @@ const QueryExecutor = {
             menu.className = 'graph-context-menu';
             menu.style.left = params.event.pageX + 'px';
             menu.style.top = params.event.pageY + 'px';
-            const ctxParentId = parentMap.get(nodeId);
-            const canWalkUp = ctxParentId && /\b(?:dfs|bfs)\s*\(/i.test(this.currentQuery || '');
             menu.innerHTML = `
-                ${canWalkUp ? '<button class="graph-ctx-item" data-action="walkup">Walk Up</button>' : ''}
                 <button class="graph-ctx-item" data-action="focus">Focus neighborhood</button>
                 <button class="graph-ctx-item" data-action="copy">Copy node ID</button>
             `;
@@ -3095,9 +3088,7 @@ const QueryExecutor = {
 
             menu.addEventListener('click', (e) => {
                 const action = e.target.dataset.action;
-                if (action === 'walkup') {
-                    this.pivotTraversal(ctxParentId);
-                } else if (action === 'focus') {
+                if (action === 'focus') {
                     const connected = this.currentChart.getConnectedNodes(nodeId);
                     VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400 }, padding: 80 });
                 } else if (action === 'copy') {
@@ -4518,7 +4509,7 @@ const QueryExecutor = {
     // Shared-object node click: list the processes that reconnect through this artifact (the
     // rare IP/domain both trees touched), each opening its source log.
     // Node click in the graph: slide out the process's log detail in-graph (so the busy
-    // canvas isn't covered by the global panel), with "Analyze from here" to re-root pgr().
+    // canvas isn't covered by the global panel), with "Analyze from here" to re-root the traversal.
     async _pgOpenNodeDrawer(guid) {
         const host = this._pgGraphHost, m = this._pgModel;
         const drawer = host && host.querySelector('.pg-drawer');
@@ -4605,7 +4596,7 @@ const QueryExecutor = {
         }
     },
 
-    // "Analyze from here": re-root the pgr() traversal at guid (mirrors graph()'s Walk Up).
+    // "Analyze from here": re-root the ptg()/pgr() traversal at guid.
     _pgAnalyzeFrom(guid) {
         const qi = document.getElementById('queryInput');
         if (!qi) return;
@@ -5559,26 +5550,6 @@ const QueryExecutor = {
                 VisView.fit(this.currentChart, { nodes: [nodeId, ...connected], animation: { duration: 400, easingFunction: 'easeInOutQuad' }, padding: 80 });
             }
         });
-    },
-
-    // Re-root the active dfs()/bfs() traversal at startId by swapping the start=
-    // argument inside the existing call, preserving every other pipeline stage.
-    // "Walk Up" passes the selected node's parent guid here, climbing the tree.
-    pivotTraversal(startId) {
-        if (!startId) return;
-        const qi = document.getElementById('queryInput');
-        if (!qi) return;
-        const cur = this.currentQuery || qi.value || '';
-        const re = /(\b(?:dfs|bfs)\s*\([^)]*?\bstart\s*=\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,)\s]+)/i;
-        if (!re.test(cur)) {
-            Toast.show('No dfs()/bfs() in query to re-root', 'error');
-            return;
-        }
-        qi.value = cur.replace(re, `$1"${startId}"`);
-        qi.dispatchEvent(new Event('input', { bubbles: true }));
-        const btn = document.getElementById('executeBtn');
-        if (btn) setTimeout(() => btn.click(), 0);
-        Toast.show('Walking up to parent', 'info');
     },
 
     renderSingleVal(results) {

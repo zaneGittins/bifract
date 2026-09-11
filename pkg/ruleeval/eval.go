@@ -159,8 +159,9 @@ func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 		// the isolation fractal exists only inside this table and owns no dictionaries.
 		// The dictionary objects share the scratch table's database, both being
 		// CLICKHOUSE_DB (see NewScratch and ClickHouseClient.LogsDatabase).
-		Dictionaries:       s.dictionaries,
-		DictionaryDatabase: s.database,
+		Dictionaries:         s.dictionaries,
+		CaseInsensitiveDicts: s.dictCaseInsensitive,
+		DictionaryDatabase:   s.database,
 	}
 }
 

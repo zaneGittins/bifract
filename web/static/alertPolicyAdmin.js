@@ -173,7 +173,7 @@ const AlertPolicyAdmin = {
                         <option value="block"${policy.severity === 'block' ? ' selected' : ''}>Block</option>
                     </select>
 
-                    <input type="text" class="ap-input ap-message" placeholder="What should the analyst do about it?"
+                    <input type="text" class="ap-input ap-rule-message" placeholder="What should the analyst do about it?"
                            value="${Utils.escapeAttr(policy.message || '')}"
                            onchange="AlertPolicyAdmin.update(${index}, 'message', this.value)" />
 

@@ -89,7 +89,7 @@ type TestRunner struct {
 
 // dictionaryResolver is the slice of the dictionary manager the runner needs.
 type dictionaryResolver interface {
-	ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, error)
+	ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool, error)
 }
 
 // SetDictionaryResolver wires in dictionary lookups. Without it, a rule using match()
@@ -142,16 +142,16 @@ func (r *TestRunner) tlshResolver() *tlshresolve.Resolver {
 	return &tlshresolve.Resolver{Dicts: reader, DB: db}
 }
 
-func (r *TestRunner) dictionariesFor(ctx context.Context, fractalID, prismID string) map[string]map[string]string {
+func (r *TestRunner) dictionariesFor(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool) {
 	if r.dicts == nil || (fractalID == "" && prismID == "") {
-		return nil
+		return nil, nil
 	}
-	mappings, err := r.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
+	mappings, caseInsensitive, err := r.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
 	if err != nil {
 		log.Printf("[Alerts] test run: resolve dictionaries for scope: %v", err)
-		return nil
+		return nil, nil
 	}
-	return mappings
+	return mappings, caseInsensitive
 }
 
 // NewTestRunner starts a runner and its idle-session sweeper.

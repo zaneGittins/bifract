@@ -75,6 +75,10 @@ const (
 	// CapIngestIdentity is security-relevant: without it the ingest tier runs as
 	// the admin user instead of the INSERT-only one.
 	CapIngestIdentity CapabilityKey = "ingest_identity"
+	// CapSchemaIdentity is security-relevant: without it the DDL generated from
+	// dictionary and model definitions runs as the admin user rather than one
+	// confined to the logs database.
+	CapSchemaIdentity CapabilityKey = "schema_identity"
 	// CapMVSecurityDefiner backs least-privilege inserts through materialized views.
 	CapMVSecurityDefiner CapabilityKey = "mv_security_definer"
 	// CapServerMemoryBudget is whether the server's memory budget is readable at

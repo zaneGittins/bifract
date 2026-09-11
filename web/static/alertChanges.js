@@ -336,10 +336,10 @@ const AlertChanges = {
         if (!checks.length) return '';
 
         // Same ordering as the editor: what needs fixing first, what is satisfied after.
-        const order = { fail: 0, deferred: 1, pass: 2 };
-        const stateOf = c => (c.deferred ? 'deferred' : (c.passed ? 'pass' : 'fail'));
+        const order = { fail: 0, warn: 1, deferred: 2, pass: 3 };
+        const stateOf = c => (c.deferred ? 'deferred' : (c.passed ? 'pass' : (c.severity === 'block' ? 'fail' : 'warn')));
         const sorted = [...checks].sort((a, b) => order[stateOf(a)] - order[stateOf(b)]);
-        const badge = { pass: 'Pass', fail: 'Fail', deferred: 'On merge' };
+        const badge = { pass: 'Pass', fail: 'Blocking', warn: 'Suggested', deferred: 'On merge' };
 
         return `
             <div class="ac-section">

@@ -121,14 +121,15 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 
 	// Dictionary mappings for match() resolution.
 	var dictMappings map[string]map[string]string
+	var dictCaseInsensitive map[string]bool
 	if h.dictionaryManager != nil {
 		if isPrismContext {
-			if m, derr := h.dictionaryManager.ListDictionaryMappings(ctx, "", prismID); derr == nil {
-				dictMappings = m
+			if m, ci, derr := h.dictionaryManager.ListDictionaryMappings(ctx, "", prismID); derr == nil {
+				dictMappings, dictCaseInsensitive = m, ci
 			}
 		} else if fractalID != "" {
-			if m, derr := h.dictionaryManager.ListDictionaryMappings(ctx, fractalID, ""); derr == nil {
-				dictMappings = m
+			if m, ci, derr := h.dictionaryManager.ListDictionaryMappings(ctx, fractalID, ""); derr == nil {
+				dictMappings, dictCaseInsensitive = m, ci
 			}
 		}
 	}
@@ -216,6 +217,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		FractalIDs:            prismFractalIDs,
 		IncludeEmptyFractalID: includeEmptyFractalID,
 		Dictionaries:          dictMappings,
+		CaseInsensitiveDicts:  dictCaseInsensitive,
 		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,

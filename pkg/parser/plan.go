@@ -96,18 +96,9 @@ type QueryPlan struct {
 	ChartConfig  map[string]interface{}
 
 	// Special query modes (generate entirely different SQL)
-	IsTraversal bool
-	IsAnalyze   bool
-	IsChain     bool
-	Chain       *ChainMeta
-
-	// Traversal-specific fields
-	TraversalMode    string
-	TraversalChild   string
-	TraversalParent  string
-	TraversalStart   string
-	TraversalInclude []string
-	TraversalDepth   int
+	IsAnalyze bool
+	IsChain   bool
+	Chain     *ChainMeta
 
 	// Process-tree (ptg) fields: MV-backed process lineage traversal over proc_lineage.
 	IsProcessTree        bool
@@ -287,9 +278,6 @@ func (p *QueryPlan) PushStage() {
 
 // Render converts the QueryPlan into a final SQL string.
 func (p *QueryPlan) Render(opts QueryOptions) (string, error) {
-	if p.IsTraversal {
-		return p.renderTraversal(opts)
-	}
 	if p.IsProcessTree {
 		return p.renderProcessTree(opts)
 	}
@@ -571,34 +559,6 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	}
 
 	return innerSQL, nil
-}
-
-func (p *QueryPlan) renderTraversal(opts QueryOptions) (string, error) {
-	source := p.SourceStage()
-	result, err := buildTraversalSQL(
-		p.TraversalMode,
-		p.TraversalChild,
-		p.TraversalParent,
-		p.TraversalStart,
-		p.TraversalDepth,
-		p.TraversalInclude,
-		source.Layer.Where,
-		p.selectFieldStrings(),
-		source.Layer.OrderBy,
-		source.Layer.Limit,
-		source.Layer.Having,
-		p.ChartType,
-		p.ChartConfig,
-		opts,
-		p.HasTableCmd,
-	)
-	if err != nil {
-		return "", err
-	}
-	// Copy result metadata back to plan
-	p.FieldOrder = result.FieldOrder
-	p.IsAggregated = result.IsAggregated
-	return result.SQL, nil
 }
 
 func (p *QueryPlan) renderProcessTree(opts QueryOptions) (string, error) {

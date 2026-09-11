@@ -44,3 +44,64 @@ func TestBuildNetStateMVWildcard(t *testing.T) {
 		t.Fatalf("MV contains a literal wildcard match that would never match:\n%s", mv)
 	}
 }
+
+// A model definition is stored configuration, not query text, so nothing else
+// constrains it. Extraction fields in particular are written into the statement
+// unquoted (an extraction output becomes a plain CTE column), so a name carrying
+// SQL became a second select expression in the model's materialized view, which
+// then ran on every insert into logs.
+func TestModelDefinitionRejectsFieldNamesThatAreNotFieldNames(t *testing.T) {
+	hostile := []string{
+		"out, (SELECT 1) AS pwned",
+		"image` , 1 AS x, fields.`image",
+		"a' OR '1'='1",
+		"a) UNION ALL SELECT 1 --",
+		"a b",
+		`a\`,
+	}
+	for _, bad := range hostile {
+		defs := []ModelDefinition{
+			{KeyFields: []string{bad}},
+			{KeyFields: []string{"ok"}, Extractions: []ExtractionStep{{FromField: "image", Pattern: "(.*)", OutputField: bad}}},
+			{KeyFields: []string{"ok"}, Extractions: []ExtractionStep{{FromField: bad, Pattern: "(.*)", OutputField: "out"}}},
+			{PartitionKey: bad, ValueKey: "v"},
+			{PartitionKey: "p", ValueKey: bad},
+		}
+		for i, def := range defs {
+			if err := validateDefinitionFieldNames(def); err == nil {
+				t.Errorf("definition %d accepted hostile field name %q", i, bad)
+			}
+		}
+	}
+
+	// Real definitions must still pass, including the dots a log field carries.
+	for _, def := range []ModelDefinition{
+		{KeyFields: []string{"winlog.user", "computer_name"}},
+		{PartitionKey: "src_ip", ValueKey: "dst_port"},
+		{KeyFields: []string{"out"}, Extractions: []ExtractionStep{{FromField: "commandline", Pattern: "(.*)", OutputField: "out"}}},
+		{KeyFields: []string{"host-name_1"}},
+		{}, // empty: a shape question, not a name question
+	} {
+		if err := validateDefinitionFieldNames(def); err != nil {
+			t.Errorf("legitimate definition rejected: %v", err)
+		}
+	}
+}
+
+// Update rebuilds the model's ClickHouse objects from the definition it is given, so
+// it has to validate as create does. Without this, a model created with a benign
+// definition and then edited put an unvalidated field name straight into the
+// materialized view, which runs on every insert into logs.
+func TestUpdateValidatesDefinitionFieldNames(t *testing.T) {
+	hostile := ModelDefinition{
+		KeyFields: []string{"out"},
+		Extractions: []ExtractionStep{{
+			FromField:   "image",
+			Pattern:     "(.*)",
+			OutputField: "out, (SELECT 1) AS pwned",
+		}},
+	}
+	if err := validateDefinitionShape(ModelTypeFirstSeen, hostile); err == nil {
+		t.Fatal("a definition carrying SQL in a field name must be rejected on the shape check every writer runs")
+	}
+}
