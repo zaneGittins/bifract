@@ -192,6 +192,10 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 		}
 	}
 
+	// Read the pre-upgrade ingest manifest kind before it is overwritten: only an
+	// install still on the old Deployment needs the cleanup notice below.
+	ingestWasDeployment := manifestKind(filepath.Join(dir, "bifract", "ingest-deployment.yaml")) == "Deployment"
+
 	// All renders succeeded - copy staged files to real output directory.
 	if err := copyStagedManifests(stagingDir, dir); err != nil {
 		return fmt.Errorf("apply staged manifests: %w", err)
@@ -241,10 +245,12 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 	// the Deployment is deleted. Deleting it is safe -- ingest is stateless apart
 	// from the spool, and the old emptyDir spool held nothing durable. Do it AFTER
 	// applying so the StatefulSet's pods are already taking traffic.
-	fmt.Println()
-	fmt.Println(WarningStyle.Render("  The ingest tier is now a StatefulSet (was a Deployment) for a durable spool."))
-	fmt.Println(DimStyle.Render("  After applying, remove the obsolete Deployment:"))
-	fmt.Println(DimStyle.Render("    kubectl delete deployment bifract-ingest -n bifract"))
+	if ingestWasDeployment {
+		fmt.Println()
+		fmt.Println(WarningStyle.Render("  The ingest tier is now a StatefulSet (was a Deployment) for a durable spool."))
+		fmt.Println(DimStyle.Render("  After applying, remove the obsolete Deployment:"))
+		fmt.Println(DimStyle.Render("    kubectl delete deployment bifract-ingest -n bifract"))
+	}
 	fmt.Println()
 	printDone("Upgrade complete")
 	fmt.Println()
@@ -865,4 +871,21 @@ func targetFromManifestEnv(manifest string) ClickHouseTarget {
 	}
 	env[envCHBackend] = string(CHBackendExternal)
 	return TargetFromEnv(env)
+}
+
+// manifestKindRe captures the first top-level `kind:` of a rendered manifest.
+var manifestKindRe = regexp.MustCompile(`(?m)^kind:\s*(\S+)\s*$`)
+
+// manifestKind returns the kind of the first document in a manifest file, or ""
+// if the file is missing or has none.
+func manifestKind(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	m := manifestKindRe.FindSubmatch(data)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
 }
