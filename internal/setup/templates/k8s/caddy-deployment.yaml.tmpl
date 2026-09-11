@@ -14,6 +14,10 @@ spec:
     metadata:
       labels:
         app: caddy
+      annotations:
+        # Rolls the pod when the Caddyfile changes. The file is mounted with
+        # subPath, which kubelet never updates in place.
+        bifract.io/config-hash: "{{.CaddyConfigHash}}"
     spec:
       # Caddy is a reverse proxy, not a Kubernetes client: no token needed.
       automountServiceAccountToken: false

@@ -1129,6 +1129,14 @@ type k8sTemplateData struct {
 	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
 	ImagePullSecrets []string
 
+	// Config hashes stamped onto the pods that mount the matching ConfigMap.
+	// Both are mounted with subPath, which kubelet never updates in place, and an
+	// unchanged Deployment spec is not rolled by kubectl apply. Without the hash
+	// in the pod template a config change reaches the cluster but never the
+	// running process: the pod keeps serving the file it booted with.
+	CaddyConfigHash   string
+	LiteLLMConfigHash string
+
 	// MaxmindPVCAccessMode and MaxmindPVCStorageClass carry user-customized PVC
 	// settings through upgrades. Empty = use template defaults.
 	MaxmindPVCAccessMode   string
@@ -1330,6 +1338,23 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		CaddyRes:                     cfg.SizeProfile.Caddy,
 		CaddyShipper:                 cfg.SizeProfile.CaddyShipper,
 		LiteLLMRes:                   cfg.SizeProfile.LiteLLM,
+	}
+
+	// Hash the rendered ConfigMaps before the main pass so the deployments that
+	// mount them carry the hash. Neither ConfigMap template reads these fields,
+	// so the pre-render is not circular.
+	for _, cm := range []struct {
+		template string
+		dest     *string
+	}{
+		{"templates/k8s/caddy-configmap.yaml.tmpl", &data.CaddyConfigHash},
+		{"templates/k8s/litellm-configmap.yaml.tmpl", &data.LiteLLMConfigHash},
+	} {
+		content, err := renderK8sTemplate(cm.template, data)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", cm.template, err)
+		}
+		*cm.dest = fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 	}
 
 	for _, m := range k8sManifests {

@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: litellm
+      annotations:
+        # Rolls the pod when config.yaml changes. The file is mounted with
+        # subPath, which kubelet never updates in place.
+        bifract.io/config-hash: "{{.LiteLLMConfigHash}}"
     spec:
       automountServiceAccountToken: false
       # Third-party image, hardened to the same bar as the Bifract workloads.
