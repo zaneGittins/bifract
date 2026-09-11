@@ -16,6 +16,9 @@ spec:
   replicas: 1
   strategy:
     type: Recreate
+  # Deliberately NOT narrowed to include component: app. A Deployment's selector
+  # is immutable, so adding to it fails apply on every existing install. The pod
+  # labels and the Service selector below carry the distinction instead.
   selector:
     matchLabels:
       app: bifract
@@ -23,6 +26,12 @@ spec:
     metadata:
       labels:
         app: bifract
+        # bifract-archive-maintain also carries app: bifract, deliberately, so the
+        # NetworkPolicies that key on it cover both. component is what separates
+        # them, and the Service below selects on it: without that the maintainer
+        # (which listens on nothing) joins the Service and kube-proxy refuses
+        # roughly half of all new connections, surfacing as intermittent 502s.
+        component: app
     spec:
 {{- if .ImagePullSecrets}}
       imagePullSecrets:
@@ -38,6 +47,7 @@ spec:
                 labelSelector:
                   matchLabels:
                     app: bifract
+                    component: app
                 topologyKey: kubernetes.io/hostname
       # Nothing in Bifract talks to the Kubernetes API (no client-go), so the
       # token is pure attack surface on a pod that reaches the network.
@@ -401,3 +411,4 @@ spec:
       targetPort: 8080
   selector:
     app: bifract
+    component: app
