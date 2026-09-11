@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.47.0
-	github.com/KimMachineGun/automemlimit v0.7.5
+	github.com/KimMachineGun/automemlimit v1.0.0
 	github.com/apache/arrow-go/v18 v18.7.0
 	github.com/apache/iceberg-go v0.6.0
 	github.com/aws/aws-sdk-go-v2 v1.43.4
