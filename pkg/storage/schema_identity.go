@@ -43,6 +43,24 @@ func schemaIdentityGrants(onCluster, db, user string) []string {
 	}
 }
 
+// schemaIdentityGlobalGrants are the privileges this identity needs that have no
+// database scope, so they cannot be folded into schemaIdentityGrants.
+//
+// CLUSTER is required rather than optional: on a cluster every statement this
+// identity issues is ON CLUSTER, and ClickHouse refuses those without it (code 497)
+// however complete the table grants are. Shipping without it left every dictionary
+// and model failing to reconcile on clusters while working on a single node, where
+// OnClusterSQL is empty and the privilege is never consulted.
+//
+// It confers no access of its own: it permits distributing a statement, and each
+// node still checks that statement against this identity's grants, so reading or
+// writing another database stays denied.
+func schemaIdentityGlobalGrants(onCluster, user string) []string {
+	return []string{
+		fmt.Sprintf("GRANT%s CLUSTER ON *.* TO %s", onCluster, user),
+	}
+}
+
 // schemaIdentityOptionalGrants widen what the identity can do without being required
 // for it to work. Granted one at a time so an unsupported privilege costs only itself.
 func schemaIdentityOptionalGrants(onCluster, user string) []struct{ priv, covers string } {
@@ -71,10 +89,10 @@ func (c *ClickHouseClient) EnsureSchemaIdentity(ctx context.Context) {
 	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
 	pw := c.queryIdentityPassword(SchemaCHUser)
 
-	required := []string{
+	required := append([]string{
 		fmt.Sprintf("CREATE USER IF NOT EXISTS %s%s IDENTIFIED BY '%s'", SchemaCHUser, onCluster, EscCHStr(pw)),
 		fmt.Sprintf("ALTER USER %s%s IDENTIFIED BY '%s'", SchemaCHUser, onCluster, EscCHStr(pw)),
-	}
+	}, schemaIdentityGlobalGrants(onCluster, SchemaCHUser)...)
 	// Create the user, then narrow any prior broad grants, then grant. The revoke
 	// precedes the grants because ClickHouse revokes hierarchically; see
 	// revokeStaleGrants.

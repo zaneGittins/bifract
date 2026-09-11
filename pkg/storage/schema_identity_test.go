@@ -11,7 +11,7 @@ import (
 func TestSchemaIdentityGrantsAreScoped(t *testing.T) {
 	stmts := strings.Join(schemaIdentityGrants("", "`logs`", SchemaCHUser), "\n")
 
-	// Every grant is confined to the logs database.
+	// Every data grant is confined to the logs database.
 	for _, line := range strings.Split(stmts, "\n") {
 		if line == "" {
 			continue
@@ -99,6 +99,27 @@ func TestStaleInstanceWideGrantsParsesPrivilegeLists(t *testing.T) {
 				t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 				break
 			}
+		}
+	}
+}
+
+// On a cluster every statement the schema identity issues is ON CLUSTER, which
+// ClickHouse refuses without the CLUSTER privilege (code 497) no matter how complete
+// the table grants are. It shipped without this and every dictionary and model failed
+// to reconcile on clusters while working on a single node, where OnClusterSQL is empty
+// and the privilege is never consulted.
+func TestSchemaIdentityCanIssueOnClusterDDL(t *testing.T) {
+	global := strings.Join(schemaIdentityGlobalGrants("", SchemaCHUser), "\n")
+	if !strings.Contains(global, "GRANT CLUSTER ON *.* TO "+SchemaCHUser) {
+		t.Errorf("the schema identity must be granted CLUSTER, or every ON CLUSTER statement it issues fails with code 497 on a cluster:\n%s", global)
+	}
+
+	// CLUSTER permits distributing a statement; it must not be accompanied by
+	// anything that grants data access instance-wide, which would undo the scoping
+	// the rest of the identity depends on.
+	for _, forbidden := range []string{"SELECT", "INSERT", "ALTER", "CREATE", "DROP", "FILE", "URL", "S3", "ACCESS MANAGEMENT", "ALL"} {
+		if strings.Contains(global, forbidden) {
+			t.Errorf("instance-wide grants must stay limited to CLUSTER, found %s:\n%s", forbidden, global)
 		}
 	}
 }
