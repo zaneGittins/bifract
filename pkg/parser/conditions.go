@@ -804,16 +804,34 @@ func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) e
 		if conditions[i].Command == nil {
 			continue
 		}
-		sql, err := CommandPredicate(*conditions[i].Command, opts)
+		sql, err := negatedCommandPredicate(*conditions[i].Command, opts)
 		if err != nil {
 			return err
-		}
-		if conditions[i].Command.Negate {
-			sql = "NOT (" + sql + ")"
 		}
 		conditions[i].PredicateSQL = sql
 	}
 	return nil
+}
+
+// negatedCommandPredicate builds a condition function's predicate and applies its
+// negation exactly once.
+//
+// Some handlers honour cmd.Negate themselves (in, cidr) and some do not (comment,
+// tlsh). Wrapping the handler's output in NOT therefore doubled the negation on
+// the first pair, so `!in(status,"200") AND x` returned exactly what was
+// excluded, and dropped it entirely on the second. Building with Negate cleared
+// makes this the only place negation is applied.
+func negatedCommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
+	negate := cmd.Negate
+	cmd.Negate = false
+	sql, err := CommandPredicate(cmd, opts)
+	if err != nil {
+		return "", err
+	}
+	if negate {
+		return "NOT (" + sql + ")", nil
+	}
+	return sql, nil
 }
 
 // resolveCommandConditionNodes is resolveCommandConditions for filter conditions.
@@ -828,12 +846,9 @@ func resolveCommandConditionNodes(conditions []ConditionNode, opts QueryOptions)
 		if conditions[i].Command == nil {
 			continue
 		}
-		sql, err := CommandPredicate(*conditions[i].Command, opts)
+		sql, err := negatedCommandPredicate(*conditions[i].Command, opts)
 		if err != nil {
 			return err
-		}
-		if conditions[i].Command.Negate {
-			sql = "NOT (" + sql + ")"
 		}
 		conditions[i].PredicateSQL = sql
 	}
@@ -849,6 +864,17 @@ func resolveCommandConditionNodes(conditions []ConditionNode, opts QueryOptions)
 // producer already brackets its own output, but that was an unwritten invariant
 // with nothing enforcing it: a new producer that forgot re-opened the hole.
 // Enforcing it here makes the guarantee structural.
+// isClauseSpace reports whether a byte separates SQL tokens.
+func isClauseSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// isORBoundary reports whether a byte can follow the R of a standalone OR.
+// "OR(" is a boundary; "ORDER" is not.
+func isORBoundary(c byte) bool {
+	return isClauseSpace(c) || c == '('
+}
+
 func andJoin(parts []string) string {
 	safe := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -894,8 +920,15 @@ func hasTopLevelOR(clause string) bool {
 			depth++
 		case c == ')':
 			depth--
-		case depth == 0 && (c == 'O' || c == 'o') && i > 0 && clause[i-1] == ' ' &&
-			i+2 < len(clause) && (clause[i+1] == 'R' || clause[i+1] == 'r') && clause[i+2] == ' ':
+			if depth < 0 {
+				// Unbalanced, so the clause is not shaped as expected (a backtick
+				// identifier can carry a stray paren). Bracket rather than let an
+				// OR past the scope guards.
+				return true
+			}
+		case depth == 0 && (c == 'O' || c == 'o') &&
+			i+1 < len(clause) && (clause[i+1] == 'R' || clause[i+1] == 'r') &&
+			i > 0 && isClauseSpace(clause[i-1]) && i+2 < len(clause) && isORBoundary(clause[i+2]):
 			return true
 		}
 	}

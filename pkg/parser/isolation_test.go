@@ -141,6 +141,14 @@ func TestHasTopLevelOr(t *testing.T) {
 		{`a = 'it\'s OR nothing'`, false},
 		// Unterminated: bracket rather than risk letting an OR past the guards.
 		{`a = 'unterminated OR b`, true},
+		// "OR(" is a boundary; "ORDER" is not.
+		{`a = '1' OR(b = '2')`, true},
+		{`a = '1' ORDER BY x`, false},
+		{"a = '1'\tOR\tb = '2'", true},
+		{"a = '1'\nOR b = '2'", true},
+		// A stray paren from a backtick identifier must fail safe, not silently
+		// mark the rest of the clause as nested.
+		{"fields.`a)b`::String = '1' OR b = '2'", true},
 	}
 	for _, c := range cases {
 		if got := hasTopLevelOR(c.clause); got != c.want {

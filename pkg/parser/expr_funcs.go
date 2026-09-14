@@ -288,7 +288,10 @@ func init() {
 		Params:  []exprParam{str("field"), str("substring")},
 		Returns: TypeBool,
 		Render: func(a []string) string {
-			return fmt.Sprintf("positionCaseInsensitive(%s, %s) > 0", a[0], a[1])
+			// Bracketed: the render is an infix comparison behind a call node, and
+			// ClickHouse puts =, >, < at one left-associative level, so
+			// contains(a,"x") = contains(b,"y") would regroup.
+			return fmt.Sprintf("(positionCaseInsensitive(%s, %s) > 0)", a[0], a[1])
 		},
 	})
 

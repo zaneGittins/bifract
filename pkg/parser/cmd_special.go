@@ -207,6 +207,12 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			ref := groupableCast(ctx.Registry.fieldRef(field))
 			if sql, ok := exprArgSQL(field, ctx.Registry); ok {
 				ref = sql
+				// Register the derived alias, as groupby() does. Without it a later
+				// sort/dedup/filter on the name resolved it as a JSON sub-column
+				// that exists on no row.
+				alias := strings.Trim(safeAlias, "`")
+				ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+				ctx.Registry.SetResolveExpr(alias, alias)
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", ref, safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
@@ -441,7 +447,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	chainFields := listArg(chainFieldsStr)
 
-	steps, stepFields, err := parseChainSteps(cmd.BlockTokens, ctx.Opts, ctx.Registry)
+	steps, stepFields, err := parseChainSteps(cmd.BlockTokens, cmd.BlockSource, ctx.Opts, ctx.Registry)
 	if err != nil {
 		return fmt.Errorf("chain(): %w", err)
 	}

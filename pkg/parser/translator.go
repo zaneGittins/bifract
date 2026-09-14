@@ -278,7 +278,16 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 				// case -- can reference it even when they drop other columns.
 				postAggByPos[assignment.CmdIndex] = append(postAggByPos[assignment.CmdIndex], assignment)
 			default:
-				// No aggregation in the pipeline: computed in the outer formatter.
+				// No aggregation: computed in the outer formatter, but registered so
+				// a downstream filter folds in the expression. Without this the
+				// filter referenced a column the inner scan does not have and
+				// silently matched nothing.
+				sqlExpr, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+				if err != nil {
+					return nil, assignmentError(assignment.Field, err)
+				}
+				registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
+				registry.SetResolveExpr(safeField, sqlExpr)
 				deferredAssignments = append(deferredAssignments, assignment)
 			}
 			continue
@@ -1623,7 +1632,16 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 				registry.SetResolveExpr(alias, alias)
 			}
 		}
+		projected := map[string]bool{}
+		for _, f := range selectFields {
+			projected[strings.Trim(extractFieldAlias(f), "`")] = true
+		}
 		for _, da := range deferredAssignments {
+			// A later command may already project this column. Recomputing it here
+			// would alias two expressions to one name (ClickHouse code 179).
+			if projected[da.Field] {
+				continue
+			}
 			safeName, _ := sanitizeIdentifier(da.Field)
 			sqlExpr, _, err := compileExpr(da.Expr, registry, da.Field)
 			if err != nil {

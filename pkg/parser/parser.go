@@ -104,6 +104,10 @@ type CommandNode struct {
 	Arguments   []string
 	Negate      bool    // True when command is prefixed with ! (e.g., !in())
 	BlockTokens []Token // Raw tokens from block body (used by chain to avoid double-tokenization)
+	// BlockSource is the original query text. BlockTokens carry absolute offsets
+	// into it, so a sub-parser over them can still read source-backed syntax such
+	// as an expression. Without it, chain steps could not use expressions at all.
+	BlockSource []rune
 	// QuotedArgs holds the indices of arguments that were written as quoted
 	// strings. Arguments are plain strings by the time a handler sees them, and a
 	// regex pattern such as "powershell(.+)" is indistinguishable from a call
@@ -1491,9 +1495,7 @@ func (p *Parser) parseAssignment() (*AssignmentNode, error) {
 // into identifiers.
 func (p *Parser) parseExprHere() (*ExprNode, int, error) {
 	if p.input == nil {
-		// The only input-less parse is a chain step, whose contract is a row
-		// condition. Say that rather than reporting a missing-source internal.
-		return nil, 0, newPosError(p.current(), "field assignment (:=) is not supported here; assign before the block instead")
+		return nil, 0, newPosError(p.current(), "expressions are not available in this context")
 	}
 	return ParseExpressionAt(p.input, p.current().Pos)
 }
@@ -1630,6 +1632,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 	// Arguments: [0]=groupFields (comma-separated), [1]=within, [2]=order
 	cmd.Arguments = []string{strings.Join(groupFields, ","), withinValue, orderValue}
 	cmd.BlockTokens = blockTokens
+	cmd.BlockSource = p.input
 
 	return cmd, nil
 }

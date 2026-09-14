@@ -304,8 +304,8 @@ func TestExprAliasCollisionRejected(t *testing.T) {
 func TestExprLeafInsideCompoundSurvives(t *testing.T) {
 	cases := []struct{ query, want string }{
 		{`* | (lower(a)="x" OR b="y") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
-		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, "NOT (positionCaseInsensitive("},
-		{`* | c="z" AND (contains(a,"b") OR b="y")`, "positionCaseInsensitive(fields.`a`::String, 'b')"},
+		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, "NOT ((positionCaseInsensitive("},
+		{`* | c="z" AND (contains(a,"b") OR b="y")`, "(positionCaseInsensitive(fields.`a`::String, 'b') > 0)"},
 		{`* | (lower(a)="x") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
 	}
 	for _, c := range cases {
@@ -334,5 +334,134 @@ func TestExprAliasClashDoesNotPanicOnCarriedColumn(t *testing.T) {
 		}
 		// Must not panic; an error is an acceptable outcome.
 		_, _ = TranslateToSQLWithOrder(pipeline, revOpts())
+	}
+}
+
+// A condition function used as a boolean operand had its negation applied twice
+// when the handler honoured cmd.Negate itself (in, cidr) and not at all when it
+// did not (comment, tlsh), so `!in(x) AND y` returned exactly what was excluded.
+func TestNegatedConditionFunctionNegatesOnce(t *testing.T) {
+	cases := []struct{ query, want, reject string }{
+		{`* | !in(status,"200,404") AND user="bob"`,
+			"NOT (fields.`status`::String IN ('200', '404'))", "NOT IN"},
+		{`* | !cidr(dst_ip,"10.0.0.0/8") AND dst_port="445"`,
+			"NOT (", "NOT (NOT ("},
+		{`* | !cidr(dst_ip,"10.0.0.0/8")`, "NOT (isIPAddressInRange(", "NOT (NOT ("},
+	}
+	for _, c := range cases {
+		sql := revSQL(t, c.query)
+		if !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  want %q in: %s", c.query, c.want, sql)
+		}
+		if strings.Contains(sql, c.reject) {
+			t.Errorf("%s\n  negation applied twice: %s", c.query, sql)
+		}
+	}
+	t.Run("non-negated is unchanged", func(t *testing.T) {
+		sql := revSQL(t, `* | in(status,"200,404") AND user="bob"`)
+		if strings.Contains(sql, "NOT") {
+			t.Errorf("unexpected negation: %s", sql)
+		}
+	})
+}
+
+// contains() renders an infix comparison behind a call node. Unbracketed, it
+// regrouped when used as an operand, because ClickHouse puts =, >, < at one
+// left-associative level.
+func TestContainsBracketsItsOwnRender(t *testing.T) {
+	sql := revSQL(t, `* | x := if(contains(a,"x") = contains(b,"y"), "same", "diff")`)
+	if !strings.Contains(sql, "(positionCaseInsensitive(fields.`a`::String, 'x') > 0) = (positionCaseInsensitive(fields.`b`::String, 'y') > 0)") {
+		t.Errorf("contains() render is not bracketed: %s", sql)
+	}
+}
+
+// A token opening with a digit is a number or a mistake. Reading it as a field
+// name compiled 1e6 to fields.`1e6`, NULL on every row.
+func TestNumericLiteralForms(t *testing.T) {
+	accept := []struct{ query, want string }{
+		{`* | x := bytes / 1e6`, "/ 1e6"},
+		{`* | x := bytes * 1.5e3`, "* 1.5e3"},
+		{`* | x := bytes * 0x10`, "* 0x10"},
+		{`* | x := bytes * 2`, "* 2"},
+		{`* | x := bytes / 1.5`, "/ 1.5"},
+	}
+	for _, c := range accept {
+		sql := revSQL(t, c.query)
+		if !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  want %q in: %s", c.query, c.want, sql)
+		}
+		if strings.Contains(sql, "fields.`1") || strings.Contains(sql, "fields.`0x") {
+			t.Errorf("%s: numeric literal compiled as a field: %s", c.query, sql)
+		}
+	}
+	t.Run("malformed number is rejected", func(t *testing.T) {
+		if _, err := ParseQuery(`* | x := 1.2.3`); err == nil {
+			t.Error("expected 1.2.3 to be rejected")
+		}
+	})
+}
+
+// table() projected an expression under a derived name without registering it,
+// so every downstream reference resolved as a JSON path that does not exist.
+func TestTableRegistersDerivedAlias(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`* | table(lower(user)) | sort(lower_user)`, "ORDER BY lower_user"},
+		{`* | table(lower(user)) | dedup(lower_user)`, "LIMIT 1 BY lower_user"},
+		{`* | table(lower(user)) | lower_user = "bob"`, "lower_user = 'bob'"},
+	}
+	for _, c := range cases {
+		sql := revSQL(t, c.query)
+		if !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  want %q in: %s", c.query, c.want, sql)
+		}
+		if strings.Contains(sql, "fields.`lower_user`") {
+			t.Errorf("%s: derived alias resolved as a JSON path: %s", c.query, sql)
+		}
+	}
+}
+
+// A computed assignment with no aggregation is projected by the outer formatter,
+// so a downstream filter has to fold in the expression rather than reference a
+// column the inner scan does not have.
+func TestDeferredAssignmentIsAddressable(t *testing.T) {
+	sql := revSQL(t, `* | x := lower(user) | x = "bob"`)
+	if !strings.Contains(sql, "lower(fields.`user`::String) = 'bob'") {
+		t.Errorf("filter did not fold in the expression: %s", sql)
+	}
+	if strings.Contains(sql, "fields.`x`") {
+		t.Errorf("filter referenced a column the scan does not have: %s", sql)
+	}
+	t.Run("no duplicate alias when a later command projects it", func(t *testing.T) {
+		sql := revSQL(t, `* | x := bytes * 8 | table(x)`)
+		if n := strings.Count(sql, " AS x"); n != 1 {
+			t.Errorf("expected one projection of x, got %d: %s", n, sql)
+		}
+	})
+}
+
+// eval() assigns into the same SELECT, so a self-reference reads the column the
+// previous eval produced, unlike := where it means the log field.
+func TestEvalSelfReferenceReadsTheColumn(t *testing.T) {
+	sql := revSQL(t, `* | eval(total=bytes*2) | eval(total=total*3)`)
+	if strings.Contains(sql, "fields.`total`") {
+		t.Errorf("eval self-reference read a log field that does not exist: %s", sql)
+	}
+}
+
+// Chain steps parse from block tokens whose offsets point into the original
+// query, so the sub-parser needs that source to support expressions at all.
+func TestChainStepsAcceptExpressions(t *testing.T) {
+	for _, q := range []string{
+		`* | chain(host) { lower(image)="cmd.exe"; b="2" }`,
+		`* | chain(host) { a="1"; len(commandline) > 5 }`,
+	} {
+		pipeline, err := ParseQuery(q)
+		if err != nil {
+			t.Errorf("parse %q: %v", q, err)
+			continue
+		}
+		if _, err := TranslateToSQLWithOrder(pipeline, revOpts()); err != nil {
+			t.Errorf("%q: %v", q, err)
+		}
 	}
 }

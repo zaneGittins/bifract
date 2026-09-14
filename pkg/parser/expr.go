@@ -206,6 +206,10 @@ func (p *exprParser) parsePrimary() (*ExprNode, error) {
 		switch {
 		case isNumericLiteral(tok.Value):
 			kind = ExprNumber
+		case startsWithDigit(tok.Value):
+			// A token that opens with a digit is a number or a mistake. Reading it
+			// as a field name compiled 1e6 to fields.`1e6`, NULL on every row.
+			return nil, newPosError(tok, "%q is not a valid number", tok.Value)
 		case strings.EqualFold(tok.Value, "true"), strings.EqualFold(tok.Value, "false"):
 			// Without this, isPrivateIP(ip) = false compares the condition to a log
 			// field named "false", which exists on no row.
@@ -300,24 +304,48 @@ func paramNamesOf(fnName string) string {
 	return "no named parameters"
 }
 
+// isNumericLiteral accepts the numeric spellings ClickHouse does: decimal,
+// fractional, scientific and hexadecimal.
 func isNumericLiteral(s string) bool {
-	if s == "" {
+	if s == "" || !startsWithDigit(s) {
 		return false
 	}
-	dots := 0
-	for _, r := range s {
+	if len(s) > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		for _, r := range s[2:] {
+			if !isHexDigit(r) {
+				return false
+			}
+		}
+		return true
+	}
+	dots, exponent := 0, -1
+	for i, r := range s {
 		switch {
 		case r >= '0' && r <= '9':
 		case r == '.':
 			dots++
-			if dots > 1 {
+			if dots > 1 || exponent >= 0 {
 				return false
 			}
+		case r == 'e' || r == 'E':
+			if exponent >= 0 || i == len(s)-1 {
+				return false
+			}
+			exponent = i
+		case (r == '+' || r == '-') && i == exponent+1 && i != len(s)-1:
 		default:
 			return false
 		}
 	}
-	return s != "."
+	return true
+}
+
+func startsWithDigit(s string) bool {
+	return s != "" && s[0] >= '0' && s[0] <= '9'
+}
+
+func isHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
 
 // String renders the expression back to BQL. Used in error messages so a

@@ -169,7 +169,10 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err != nil {
 			return fmt.Errorf("eval(): invalid field name: %w", err)
 		}
-		sqlExpr, err := compileExpressionText(strings.TrimSpace(expression), ctx.Registry, fieldName)
+		// No selfField: unlike `x := x * 100`, where x means the log field, eval()
+		// assigns into the same SELECT, so total=total*3 must read the column the
+		// previous eval produced.
+		sqlExpr, err := compileExpressionText(strings.TrimSpace(expression), ctx.Registry, "")
 		if err != nil {
 			return fmt.Errorf("eval(): %w", err)
 		}

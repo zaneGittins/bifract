@@ -308,7 +308,7 @@ func TestExprLexingMode(t *testing.T) {
 // step is compiled at translation time from its own tokens.
 func TestExprAssignmentInChainStepRejected(t *testing.T) {
 	msg := exprError(t, `* | chain(user) { x := 1; event_id=1 }`)
-	if !strings.Contains(msg, "not supported here") {
+	if !strings.Contains(msg, "cannot be used inside a chain step") {
 		t.Errorf("expected a clear rejection, got: %v", msg)
 	}
 }
@@ -359,7 +359,7 @@ func TestExprFilters(t *testing.T) {
 
 	t.Run("negated", func(t *testing.T) {
 		sql := translateExpr(t, `* | !contains(commandline, "-enc")`)
-		if !strings.Contains(sql, "NOT (positionCaseInsensitive(") {
+		if !strings.Contains(sql, "NOT ((positionCaseInsensitive(") {
 			t.Errorf("expected a negated predicate, got: %s", sql)
 		}
 	})

@@ -26,7 +26,7 @@ func buildAnalyzeFieldsSQL(
 	// Build WHERE clause for the inner scan
 	whereClause := ""
 	if len(whereConditions) > 0 {
-		whereClause = " WHERE " + strings.Join(whereConditions, " AND ")
+		whereClause = " WHERE " + andJoin(whereConditions)
 	}
 
 	// Build optional path filter for specific fields
@@ -42,7 +42,7 @@ func buildAnalyzeFieldsSQL(
 	// HAVING conditions become WHERE on the outermost query
 	outerFilter := ""
 	if len(havingConditions) > 0 {
-		outerFilter = " WHERE " + strings.Join(havingConditions, " AND ")
+		outerFilter = " WHERE " + andJoin(havingConditions)
 	}
 
 	// Order: default to _events DESC, respect user sort if provided
@@ -221,7 +221,7 @@ func buildProcessTreeSQL(
 	// so the toString projection lives in a strictly outer SELECT than the filter.
 	inner := "SELECT " + unionCols + " FROM " + traversal
 	if len(havingConditions) > 0 {
-		inner += " WHERE " + strings.Join(havingConditions, " AND ")
+		inner += " WHERE " + andJoin(havingConditions)
 	}
 
 	// pgraph() renders the pgr() edge shape, so a `ptg() | pgraph()` tree is projected into
@@ -1605,7 +1605,7 @@ func spanToSeconds(span string) int {
 // throwaway plan, so condition commands (cidr, in, comment) contribute their
 // predicate to that step instead of the whole query. Anything that is not a row
 // predicate (projections, aggregates, structural commands) is rejected.
-func parseChainSteps(tokens []Token, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
+func parseChainSteps(tokens []Token, source []rune, opts QueryOptions, parentReg *FieldRegistry) ([]string, []string, error) {
 	var allSteps [][]Token
 	var current []Token
 	for _, tok := range tokens {
@@ -1626,7 +1626,7 @@ func parseChainSteps(tokens []Token, opts QueryOptions, parentReg *FieldRegistry
 	var fields []string
 	seen := make(map[string]bool)
 	for _, stepTokens := range allSteps {
-		sql, stepFields, err := buildChainStep(append(stepTokens, Token{Type: TokenEOF}), opts, parentReg)
+		sql, stepFields, err := buildChainStep(append(stepTokens, Token{Type: TokenEOF}), source, opts, parentReg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1645,8 +1645,13 @@ func parseChainSteps(tokens []Token, opts QueryOptions, parentReg *FieldRegistry
 // buildChainStep compiles one step into a single boolean expression, or errors.
 // It never returns an empty expression: a step that matched nothing would be
 // dropped from the pattern and silently change which sequences match.
-func buildChainStep(stepTokens []Token, opts QueryOptions, parentReg *FieldRegistry) (string, []string, error) {
-	pl, err := NewParser(stepTokens).Parse()
+func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parentReg *FieldRegistry) (string, []string, error) {
+	// The step's tokens carry absolute offsets into the original query, so giving
+	// the sub-parser that source lets a step use source-backed syntax such as an
+	// expression filter.
+	stepParser := NewParser(stepTokens)
+	stepParser.input = source
+	pl, err := stepParser.Parse()
 	if err != nil {
 		return "", nil, fmt.Errorf("chain step: %w", err)
 	}
@@ -1737,7 +1742,7 @@ func CommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
 	case 1:
 		return where[0], nil
 	default:
-		return "(" + strings.Join(where, " AND ") + ")", nil
+		return "(" + andJoin(where) + ")", nil
 	}
 }
 
