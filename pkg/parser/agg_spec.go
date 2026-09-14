@@ -63,22 +63,15 @@ func aggOperandNumeric(a Argument, registry *FieldRegistry) (string, error) {
 	return fmt.Sprintf("toFloat64OrNull(%s)", sql), nil
 }
 
-// aggAlias is the output column an aggregate projects. Without as=, a fixed
-// alias names the aggregate (sum -> _sum) and a derived one names the operand
-// too (median -> median_bytes); which of the two is per function.
-func aggAlias(o aggOptions, fallback string, derived bool) (string, error) {
-	alias := o.alias
-	if alias == "" {
-		alias = fallback
-		if derived {
-			part, err := aggAliasPart(o.operand)
-			if err != nil {
-				return "", err
-			}
-			alias = fallback + part
-		}
+// aggregateAlias is the column an aggregate projects: the author's as= when
+// given, otherwise the aggregate's own name with an underscore. One rule, so the
+// same aggregate written as a pipeline command and inside multi() names its
+// column the same, and every aggregate honours as=.
+func aggregateAlias(as, agg string) (string, error) {
+	if as == "" {
+		as = "_" + agg
 	}
-	return sanitizeIdentifier(alias)
+	return sanitizeIdentifier(as)
 }
 
 // aggSpecNames are the aggregate specifications processAggSpec renders. They are
@@ -105,9 +98,20 @@ func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[st
 	}
 	o := readAggOptions(spec)
 
-	emit := func(alias, sql string) {
-		*selectFields = append(*selectFields, sql+" AS "+alias)
+	emit := func(alias, sql string) error {
+		want := sql + " AS " + alias
+		for _, sel := range *selectFields {
+			if strings.Trim(extractFieldAlias(sel), "`") != alias || sel == want {
+				continue
+			}
+			if idx := strings.LastIndex(sel, " AS "); idx >= 0 {
+				return fmt.Errorf("%s(): %s and %s both produce the column %s; name one with as=",
+					name, sel[:idx], sql, alias)
+			}
+		}
+		*selectFields = append(*selectFields, want)
 		computedFields[alias] = true
+		return nil
 	}
 	// ref and num are the operand's plain and numeric renderings, resolved lazily
 	// so count() needs no operand at all. ResolveArg casts a raw JSON ref to
@@ -115,8 +119,8 @@ func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[st
 	ref := func() (string, error) { return ResolveArg(o.operand, registry) }
 	num := func() (string, error) { return aggOperandNumeric(o.operand, registry) }
 
-	render := func(fallback string, derived bool, format string, resolve func() (string, error)) (bool, error) {
-		alias, err := aggAlias(o, fallback, derived)
+	render := func(agg, format string, resolve func() (string, error)) (bool, error) {
+		alias, err := aggregateAlias(o.alias, agg)
 		if err != nil {
 			return false, fmt.Errorf("%s(): %w", name, err)
 		}
@@ -124,79 +128,82 @@ func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[st
 		if err != nil {
 			return false, fmt.Errorf("%s(): %w", name, err)
 		}
-		emit(alias, fmt.Sprintf(format, sql))
-		return true, nil
+		return true, emit(alias, fmt.Sprintf(format, sql))
 	}
 	// timestamped covers the aggregates that read the event time directly when
 	// their operand is the timestamp column.
-	timestamped := func(tsAlias, tsSQL, fallback string, derived bool, format string, resolve func() (string, error)) (bool, error) {
+	timestamped := func(agg, tsSQL, format string, resolve func() (string, error)) (bool, error) {
 		if o.operand.FieldName() == "timestamp" {
-			return render(tsAlias, false, "%s", func() (string, error) { return tsSQL, nil })
+			return render(agg, "%s", func() (string, error) { return tsSQL, nil })
 		}
-		return render(fallback, derived, format, resolve)
+		return render(agg, format, resolve)
 	}
 
 	switch name {
 	case "count":
 		switch {
 		case o.hasField && o.distinct:
-			return render("unique_", true, "uniqExact(%s)", ref)
+			return render("count", "uniqExact(%s)", ref)
 		case o.hasField:
-			return render("total", false, "count(%s)", ref)
+			return render("count", "count(%s)", ref)
 		default:
-			return render("_count", false, "%s", func() (string, error) { return "COUNT(*)", nil })
+			return render("count", "%s", func() (string, error) { return "COUNT(*)", nil })
 		}
 	case "avg":
-		return render("_avg", false, "avg(%s)", num)
+		return render("avg", "avg(%s)", num)
 	case "sum":
-		return render("_sum", false, "sum(%s)", num)
+		return render("sum", "sum(%s)", num)
 	case "max":
-		return timestamped("max_timestamp", "max(timestamp)", "_max", false, "max(%s)", num)
+		return timestamped("max", "max(timestamp)", "max(%s)", num)
 	case "min":
-		return timestamped("min_timestamp", "min(timestamp)", "_min", false, "min(%s)", num)
+		return timestamped("min", "min(timestamp)", "min(%s)", num)
 	case "percentile":
-		return render("percentile_", true, "quantiles(0.5, 0.75, 0.99)(%s)", num)
+		return render("percentile", "quantiles(0.5, 0.75, 0.99)(%s)", num)
 	case "stddev":
-		return render("stddev_", true, "stddevPop(%s)", num)
+		return render("stddev", "stddevPop(%s)", num)
 	case "skewness", "skew":
-		return render("skewness_", true, "skewPop(%s)", num)
+		return render("skewness", "skewPop(%s)", num)
 	case "kurtosis", "kurt":
-		return render("kurtosis_", true, "kurtPop(%s)", num)
+		return render("kurtosis", "kurtPop(%s)", num)
 	case "median":
-		return render("median_", true, "median(%s)", num)
+		return render("median", "median(%s)", num)
 	case "mad":
-		return render("mad_", true, "arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%[1]s))), groupArray(%[1]s)))", num)
+		return render("mad", "arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%[1]s))), groupArray(%[1]s)))", num)
 	case "iqr":
 		cast, err := num()
 		if err != nil {
 			return false, fmt.Errorf("iqr(): %w", err)
 		}
-		// iqr() projects three columns, so as= cannot name them; each carries the
-		// operand's name and is validated like any other generated identifier.
-		aliases := make([]string, 3)
-		for i, prefix := range []string{"iqr_q1_", "iqr_q3_", "iqr_"} {
-			if aliases[i], err = aggOutputAlias(prefix, o.operand); err != nil {
-				return false, fmt.Errorf("iqr(): %w", err)
+		// iqr() projects three columns, so as= names the range and the quartiles
+		// take their own fixed names.
+		alias, err := aggregateAlias(o.alias, "iqr")
+		if err != nil {
+			return false, fmt.Errorf("iqr(): %w", err)
+		}
+		for _, e := range []struct{ alias, sql string }{
+			{"_q1", fmt.Sprintf("quantile(0.25)(%s)", cast)},
+			{"_q3", fmt.Sprintf("quantile(0.75)(%s)", cast)},
+			{alias, fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s)", cast, cast)},
+		} {
+			if err := emit(e.alias, e.sql); err != nil {
+				return false, err
 			}
 		}
-		emit(aliases[0], fmt.Sprintf("quantile(0.25)(%s)", cast))
-		emit(aliases[1], fmt.Sprintf("quantile(0.75)(%s)", cast))
-		emit(aliases[2], fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s)", cast, cast))
 		return true, nil
 	case "selectfirst":
-		return timestamped("first_timestamp", "min(timestamp)", "first_", true, "argMin(%s, timestamp)", ref)
+		return timestamped("first", "min(timestamp)", "argMin(%s, timestamp)", ref)
 	case "selectlast":
-		return timestamped("last_timestamp", "max(timestamp)", "last_", true, "argMax(%s, timestamp)", ref)
+		return timestamped("last", "max(timestamp)", "argMax(%s, timestamp)", ref)
 	case "collect":
 		if o.operand.FieldName() == "timestamp" {
-			return render("collect_timestamp", false, "groupArray(%s)", func() (string, error) { return "toString(timestamp)", nil })
+			return render("collect", "groupArray(%s)", func() (string, error) { return "toString(timestamp)", nil })
 		}
-		return render("collect_", true, "groupArray(%s)", ref)
+		return render("collect", "groupArray(%s)", ref)
 	case "top":
 		if o.percent {
-			return render("top_", true, "arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), topKWeightedWithCount(10)(%s, 1))", ref)
+			return render("top", "arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), topKWeightedWithCount(10)(%s, 1))", ref)
 		}
-		return render("top_", true, "topK(10)(%s)", ref)
+		return render("top", "topK(10)(%s)", ref)
 	}
 	return false, nil
 }
@@ -218,4 +225,16 @@ func asAggSpec(a Argument) (*AggSpec, bool) {
 		return spec, true
 	}
 	return nil, false
+}
+
+// aggAliasClash rejects a second aggregate that would project a column an
+// earlier one already owns. Every aggregate names its column after itself, so
+// two of the same kind in one stage collide; without this the second is dropped
+// or emitted twice, and the query answers a question nobody asked.
+func aggAliasClash(stage *QueryStage, agg, alias, sql string) error {
+	prior, clash := exprAliasClash(stage, alias, sql)
+	if !clash {
+		return nil
+	}
+	return fmt.Errorf("%s(): %s and %s both produce the column %s; name one with as=", agg, prior, sql, alias)
 }

@@ -1,3 +1,20 @@
+// render= is how many marks a chart draws; limit= bounds the rows the query
+// returns. They were one parameter, which meant limit= on a chart silently
+// bounded neither. Older saved charts still carry limit=, so it is read as the
+// draw cap when no render= is present.
+function chartRenderCap(config, fallback) {
+    if (!config) return fallback;
+    return config.render || config.limit || fallback;
+}
+
+// Every aggregate BQL produces names its column after itself, underscore first:
+// _count, _sum, _percentile, _first. A column named with as= is the author's
+// own and is picked up through the chart's explicit value fields instead.
+// 'count' without the underscore is the name a subquery carries forward.
+function isAggregateColumn(f) {
+    return f === 'count' || (f.startsWith('_') && f !== '_id');
+}
+
 // Shared mesh() coloring helpers, used by the full renderMesh (queryExecutor.js)
 // and renderMeshSimple below. Subnet grouping is a fixed prefix (IPv4 /24, IPv6
 // /64 by default) because real netmasks are not in the log data; 'auto' mode only
@@ -418,7 +435,7 @@ window.BifractCharts = {
         if (!data || data.length === 0) return null;
 
         const { labelField, valueField } = this._detectFields(data, opts.fields);
-        const limit = (opts.config && opts.config.limit) || 10;
+        const limit = chartRenderCap(opts.config, 10);
         const cv = this._cv();
 
         let chartData = data.map(row => ({
@@ -488,7 +505,7 @@ window.BifractCharts = {
         if (!data || data.length === 0) return null;
 
         const { labelField, valueField } = this._detectFields(data, opts.fields);
-        const limit = (opts.config && opts.config.limit) || 10;
+        const limit = chartRenderCap(opts.config, 10);
         const cv = this._cv();
 
         let chartData = data.map(row => ({
@@ -655,11 +672,7 @@ window.BifractCharts = {
             ? cfg.valueFields.filter(f => fields.includes(f))
             : null;
         const valueFields = (explicitValues && explicitValues.length) ? explicitValues : fields.filter(f =>
-            f !== timeField && f !== 'time_bucket' &&
-            (f === '_count' || f === 'count' ||
-             f === '_sum' || f === '_avg' || f === '_min' || f === '_max' ||
-             f.startsWith('sum_') || f.startsWith('avg_') || f.startsWith('min_') ||
-             f.startsWith('max_') || f.startsWith('bucket_') || f.startsWith('stddev_'))
+            f !== timeField && f !== 'time_bucket' && isAggregateColumn(f)
         );
         const groupFields = (explicitValues && explicitValues.length)
             ? []
@@ -942,12 +955,7 @@ window.BifractCharts = {
         let numValue = NaN;
 
         if (data && data.length > 0) {
-            valueField = fields.find(f =>
-                f === '_count' || f === 'count' ||
-                f === '_sum' || f === '_avg' || f === '_min' || f === '_max' ||
-                f.startsWith('sum_') || f.startsWith('avg_') || f.startsWith('min_') ||
-                f.startsWith('max_') || f.startsWith('stddev_')
-            ) || fields[0];
+            valueField = fields.find(isAggregateColumn) || fields[0];
 
             const val = data[0][valueField];
             numValue = parseFloat(val);
@@ -956,7 +964,8 @@ window.BifractCharts = {
             } else {
                 rawValue = unit ? this.formatValue(numValue, unit) : this.formatSingleValue(numValue);
             }
-            label = cfg.label || valueField.replace(/_/g, ' ');
+            // title= is the parameter; label= is what older saved charts carry.
+            label = cfg.title || cfg.label || valueField.replace(/_/g, ' ');
         }
 
         // Threshold-based formatting (Stat). Falls back to legacy row-coloring
@@ -1387,7 +1396,7 @@ window.BifractCharts = {
 
         const data = opts.data || [];
         const fields = opts.fields || Object.keys(data[0] || {});
-        const limit = config.limit || 100;
+        const limit = chartRenderCap(config, 100);
         const limitedResults = data.slice(0, limit);
         const specifiedLabels = config.labels || [];
         const labelFields = specifiedLabels.length > 0
@@ -1475,7 +1484,7 @@ window.BifractCharts = {
         const sizeField = config.sizeField || '_count';
         let colorMode = config.color || 'auto';
         const directed = config.directed === true;
-        const limit = config.limit || 100;
+        const limit = chartRenderCap(config, 100);
         const data = (opts.data || []).slice(0, limit);
         const fields = opts.fields || Object.keys(data[0] || {});
         const specifiedLabels = config.labels || [];

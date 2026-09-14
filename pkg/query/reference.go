@@ -188,11 +188,11 @@ var bqlFunctionDocs = []FunctionDoc{
 		Name:        "chain",
 		Category:    "Detection",
 		Description: "Detects sequential event patterns sharing common field(s) using ClickHouse sequenceMatch. With a single field, events are grouped by that field. With multiple fields, they are treated as identity aliases for the same entity (e.g., user, source_user, target_user) enabling cross-field correlation like lateral movement detection. Returns the field(s) plus chain_count; steps are ordered at millisecond precision. Steps accept filter syntax plus condition functions (cidr, in, comment), negatable with ! and combinable with AND/OR; projecting/aggregating functions are rejected. Also carries an undisplayed _chain_ts holding the longest matching sequence's timestamps in step order.",
-		Syntax:      "| chain(field1, field2, ..., within=DURATION) { step1; step2; ... }",
+		Syntax:      "| chain(field1, field2, ..., within=DURATION, sequence=strict|any) { step1; step2; ... }",
 		Parameters: []Param{
 			{Name: "field", Type: "string", Required: true, Description: "One or more identity fields. Single field groups directly. Multiple fields are treated as aliases for the same entity, matching events where any field contains the entity value."},
 			{Name: "within", Type: "duration", Required: false, Description: "Max time between consecutive steps (e.g., 5m, 1h, 1d)"},
-			{Name: "order", Type: "boolean", Required: false, Description: "Default true: steps must occur in the written order. false requires every step to occur for the entity in any order, and cannot be combined with within."},
+			{Name: "sequence", Type: "string", Required: false, Description: "Default strict: steps must occur in the written order. any requires every step to occur for the entity in any order, and cannot be combined with within."},
 		},
 		Examples: []string{
 			"| chain(user) { event_id=4624; event_id=4688 }",
@@ -200,7 +200,7 @@ var bqlFunctionDocs = []FunctionDoc{
 			"event_source=Security | chain(user, within=1h) { event_id=4624; event_id=4672; event_id=4688 }",
 			"| chain(user, within=1d) { event_id=1 | image=/explorer/i; event_id=1 | image=/powershell/i | command_line=/-nop/i; event_id=3 | image=/powershell/i }",
 			"| chain(user, source_user, target_user, within=1d) { event_id=1 | image=/powershell/i; event_id=10; event_id=4625 }",
-			"| chain(user, order=false) { event_id=4625; event_id=4672 }",
+			"| chain(user, sequence=any) { event_id=4625; event_id=4672 }",
 			"| chain(process_guid, within=5m) { dst_ip!=\"\" | !cidr(dst_ip, \"10.0.0.0/8\"); cidr(dst_ip, \"10.0.0.0/8\") }",
 		},
 	},
@@ -330,14 +330,14 @@ var bqlFunctionDocs = []FunctionDoc{
 		Name:        "singleval",
 		Category:    "Visualization",
 		Description: "Displays a single aggregate value as a large number. Requires an aggregation function without groupBy.",
-		Syntax:      `| singleval(label="Label")`,
+		Syntax:      `| singleval(title="Label")`,
 		Parameters: []Param{
-			{Name: "label", Type: "string", Required: false, Description: "Display label for the value"},
+			{Name: "title", Type: "string", Required: false, Description: "Display title for the value"},
 		},
 		Examples: []string{
 			"* | count() | singleval()",
-			`* | avg(response_time) | singleval(label="Avg Response")`,
-			`* | sum(bytes) | singleval(label="Total Bytes")`,
+			`* | avg(response_time) | singleval(title="Avg Response")`,
+			`* | sum(bytes) | singleval(title="Total Bytes")`,
 		},
 	},
 	{
@@ -374,7 +374,8 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
-		Name:        "model_lookup",
+		Name:        "modelLookup",
+		Aliases:     []string{"model_lookup"},
 		Category:    "Enrichment",
 		Description: "Scores each log row against a trained analytics model (Models tab) and adds that model's output columns, so a rarity/first-seen/volume/beacon verdict can be filtered, sorted and displayed like any other field. key= maps YOUR log fields onto the model's key positionally, so the field names need not match the model's. Output columns by model type: rarity -> percent, confidence, model_count, model_total; first_seen -> first_seen, last_seen, event_count, is_new; volume_baseline -> z_score, baseline_median, latest_count, mad, n_buckets; beacon -> beacon_score, regularity_score, ts_score, ds_score, dur_score, hist_score, prevalence, prevalence_score, conn_count; long_connection -> longconn_score, total_duration, conn_count, prevalence, prevalence_score. Filter the source logs BEFORE model_lookup() so the scan stays small, then threshold on the model outputs after it. Placed before an aggregation (groupby/stats/chain), model_lookup() enriches rows first: model columns can then be group keys, aggregation inputs (e.g. avg(percent)), row filters, and chain() step conditions. Placed after an aggregation it enriches the aggregated results instead, which requires every key field to be one of the group columns. Only one model_lookup() per query, and it cannot be combined with join(). In a prism the model is resolved across the member fractals. By default (strict=true) only rows the model scored are returned, and the model's key set is pushed into the log scan so the query reads just those rows; strict=false keeps the unscored rows with their model columns at type defaults (0 for a score), which makes a `less than` threshold match every one of them. Models score forward from creation, so under the default a window older than the model returns nothing.",
 		Syntax:      `| model_lookup(model="name", key=[field1, field2, ...], strict=true)`,
@@ -913,20 +914,6 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
-		Name:        "bucket",
-		Category:    "Aggregation",
-		Description: "Groups events into time buckets with an aggregation function",
-		Syntax:      "| bucket(span=1h, function=count())",
-		Parameters: []Param{
-			{Name: "span", Type: "string", Required: true, Description: "Time bucket size (e.g., 1s, 5m, 1h, 1d)"},
-			{Name: "function", Type: "string", Required: true, Description: "Aggregation function: count(), sum(field)"},
-		},
-		Examples: []string{
-			"| bucket(span=1h, function=count())",
-			"| bucket(span=5m, function=sum(bytes))",
-		},
-	},
-	{
 		Name:        "piechart",
 		Category:    "Visualization",
 		Description: "Renders results as a pie chart. Requires groupby with aggregation.",
@@ -1009,17 +996,17 @@ var bqlFunctionDocs = []FunctionDoc{
 		Aliases:     []string{"attack"},
 		Category:    "Visualization",
 		Description: "Renders the events a query matched as a MITRE ATT&CK matrix, heat-mapped by how many events hit each technique. It reads the tags straight out of rule_tags by default, in whatever shape the source writes them: a JSON array string (`[\"attack.t1059.004\",\"attack.execution\"]`), a comma list, or a bare technique ID. Point it at another field with tags= (detect_mtd_tags for raw LimaCharlie detections, alert_labels for a Bifract alert forwarded into a fractal), or at tags=norm_log to scan the whole event when a source has not been normalized onto a tag field. Tactic-only tags are counted but never color a technique cell, since they do not say which technique fired. Sub-technique hits roll up to their parent as inherited, and a retired technique ID is followed to its replacement. Add by=<field> to break each technique down by host, user, or rule in the detail drawer. This is an aggregation: it returns one row per tag, so it stays cheap over a very large match set. Export the result as an ATT&CK Navigator layer from the toolbar.",
-		Syntax:      "| mitre(tags=field, by=field, limit=N)",
+		Syntax:      "| mitre(field, by=field, limit=N)",
 		Parameters: []Param{
-			{Name: "tags", Type: "string", Required: false, Description: "Field holding the ATT&CK tags (default: rule_tags). Use detect_mtd_tags for raw LimaCharlie detections, alert_labels for a forwarded Bifract alert, or norm_log to scan the whole event."},
+			{Name: "field", Type: "string", Required: false, Description: "Field holding the ATT&CK tags (default: rule_tags). Use detect_mtd_tags for raw LimaCharlie detections, alert_labels for a forwarded Bifract alert, or norm_log to scan the whole event."},
 			{Name: "by", Type: "string", Required: false, Description: "Second dimension counted per technique (computer_name, user, rule_name), shown as the breakdown in the technique drawer."},
 			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows (tag x by combinations) returned (default: 5000, max: 50000)"},
 		},
 		Examples: []string{
 			`computer_name="wks01.contoso.corp" | mitre()`,
 			`* | mitre(by=computer_name)`,
-			`* | mitre(tags=detect_mtd_tags, by=rule_name)`,
-			`alert_forwarded=true | mitre(tags=alert_labels, by=alert_name)`,
+			`* | mitre(field=detect_mtd_tags, by=rule_name)`,
+			`alert_forwarded=true | mitre(field=alert_labels, by=alert_name)`,
 		},
 	},
 	{

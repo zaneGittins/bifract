@@ -919,7 +919,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | stdDev(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "stddevPop(toFloat64OrNull(fields.`response_time`::String)) AS stddev_response_time")
+				return containsSubstr([]string{sql}, "stddevPop(toFloat64OrNull(fields.`response_time`::String)) AS _stddev")
 			},
 		},
 		{
@@ -927,7 +927,7 @@ func TestNewAggregateFunctions(t *testing.T) {
 			query:   "* | percentile(response_time)",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "quantiles(0.5, 0.75, 0.99)(toFloat64OrNull(fields.`response_time`::String)) AS percentile_response_time")
+				return containsSubstr([]string{sql}, "quantiles(0.5, 0.75, 0.99)(toFloat64OrNull(fields.`response_time`::String)) AS _percentile")
 			},
 		},
 		{
@@ -1128,7 +1128,7 @@ func TestStringFunctions(t *testing.T) {
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "extractAllGroups(norm_log,") &&
-					containsSubstr([]string{sql}, "AS regex_match")
+					containsSubstr([]string{sql}, "AS _regex")
 			},
 		},
 		{
@@ -1143,7 +1143,7 @@ func TestStringFunctions(t *testing.T) {
 		},
 		{
 			name:    "replace function basic",
-			query:   `* | replace("error", "ERROR")`,
+			query:   `* | replace(norm_log, "error", "ERROR")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "replaceRegexpAll(norm_log,") &&
@@ -1171,7 +1171,7 @@ func TestStringFunctions(t *testing.T) {
 		},
 		{
 			name:    "replace with output alias",
-			query:   `* | replace("\\d+", "NUM", norm_log, clean_message) | table(timestamp, clean_message)`,
+			query:   `* | replace(norm_log, "\\d+", "NUM", as=clean_message) | table(timestamp, clean_message)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "replaceRegexpAll(norm_log,") &&
@@ -1180,7 +1180,7 @@ func TestStringFunctions(t *testing.T) {
 		},
 		{
 			name:    "multiple string operations",
-			query:   `* | replace("error", "ERROR") | lowercase("status") | table(timestamp, status)`,
+			query:   `* | replace(norm_log, "error", "ERROR") | lowercase("status") | table(timestamp, status)`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "lower(fields.`status`::String)") &&
@@ -1392,21 +1392,21 @@ func TestTimeFunctions(t *testing.T) {
 		},
 		{
 			name:    "bucket function with count",
-			query:   `* | bucket("1h", "count()")`,
+			query:   `* | timechart(span="1h", function="count()")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "toStartOfHour(timestamp) AS time_bucket") &&
-					containsSubstr([]string{sql}, "COUNT(*) AS bucket_count") &&
+					containsSubstr([]string{sql}, "COUNT(*) AS _count") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
 		{
 			name:    "bucket with sum",
-			query:   `* | bucket("1d", "sum(bytes)")`,
+			query:   `* | timechart(span="1d", function="sum(bytes)")`,
 			wantErr: false,
 			checkSQL: func(sql string) bool {
 				return containsSubstr([]string{sql}, "toStartOfDay(timestamp) AS time_bucket") &&
-					containsSubstr([]string{sql}, "sum(toFloat64OrNull(fields.`bytes`::String)) AS bucket_sum") &&
+					containsSubstr([]string{sql}, "sum(toFloat64OrNull(fields.`bytes`::String)) AS _sum") &&
 					containsSubstr([]string{sql}, "GROUP BY")
 			},
 		},
@@ -1990,21 +1990,21 @@ func TestGraphWorldCommand(t *testing.T) {
 			},
 		},
 		{
-			name:      "with limit",
-			query:     `* | graphWorld(limit=500)`,
+			name:      "with render",
+			query:     `* | graphWorld(render=500)`,
 			wantErr:   false,
 			checkType: "worldmap",
 			checkCfg: func(cfg map[string]interface{}) bool {
-				return cfg["limit"] == 500
+				return cfg["render"] == 500
 			},
 		},
 		{
-			name:      "limit capped at 50000",
-			query:     `* | graphWorld(limit=100000)`,
+			name:      "render capped at 50000",
+			query:     `* | graphWorld(render=100000)`,
 			wantErr:   false,
 			checkType: "worldmap",
 			checkCfg: func(cfg map[string]interface{}) bool {
-				return cfg["limit"] == 50000
+				return cfg["render"] == 50000
 			},
 		},
 		{

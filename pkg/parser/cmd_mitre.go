@@ -6,7 +6,7 @@ import (
 )
 
 // mitreTagAlias is the output column holding one ATT&CK tag per row.
-const mitreTagAlias = "attack_tag"
+const mitreTagAlias = "_attack_tag"
 
 // mitreDefaultTagField is where ATT&CK tags live by convention: Sigma writes
 // rule_tags, and other sources are normalized onto it. Reading one JSON
@@ -52,10 +52,10 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	tagField := b.StrOf("tags", "tag", "field")
-	byField := b.StrOf("groupby", "by")
+	tagField := b.Str("field", "")
+	byField := b.Str("by", "")
 	limit := 5000
-	if raw := b.StrOf("limit"); raw != "" {
+	if raw := b.Str("limit", ""); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
 			return fmt.Errorf("mitre(): limit must be a positive number, got %q", raw)
@@ -134,7 +134,6 @@ func init() {
 
 func init() {
 	registerSpec(&CommandSpec{Name: "mitre", Params: []ParamSpec{
-		field("tags"), namedField("tag"), namedField("field"),
-		namedField("groupby"), namedField("by"), namedLit("limit"),
+		field("field"), namedField("by"), namedLit("limit"),
 	}}, "mitre", "attack")
 }

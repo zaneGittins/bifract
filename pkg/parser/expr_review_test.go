@@ -153,7 +153,7 @@ func TestExprValidationIgnoresStringLiterals(t *testing.T) {
 	for _, q := range []string{
 		`* | regex("powershell(?<ps>.+)", field=commandline)`,
 		`* | regex("foo, bar(?<baz>.+)", field=commandline)`,
-		`* | replace("user(\\d+)", "u", norm_log)`,
+		`* | replace(norm_log, "user(\\d+)", "u")`,
 		`* | table(a) | "some(text)"`,
 	} {
 		pipeline, err := ParseQuery(q)

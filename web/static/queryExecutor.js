@@ -2460,7 +2460,7 @@ const QueryExecutor = {
 
         const childField = this.chartConfig.childField;
         const parentField = this.chartConfig.parentField;
-        const limit = this.chartConfig.limit || 100;
+        const limit = chartRenderCap(this.chartConfig, 100);
         const cv = ThemeManager.getCSSVar;
 
         const nodes = new vis.DataSet();
@@ -3118,7 +3118,7 @@ const QueryExecutor = {
         if (chartCanvas) chartCanvas.style.display = 'none';
         if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
 
-        const limit = (this.chartConfig && this.chartConfig.limit) || 3000;
+        const limit = chartRenderCap(this.chartConfig, 3000);
         // The queried start node (pgr start guid): centered on first render and ring-highlighted.
         // Must be set BEFORE the model/fanout are built -- both classify nodes relative to it
         // (home vs external tree; focus is never collapsed into an aggregate).
@@ -4993,7 +4993,7 @@ const QueryExecutor = {
         const sizeField = cfg.sizeField || '_count';
         let colorMode = cfg.color || 'auto';
         const directed = cfg.directed === true;
-        const limit = cfg.limit || 100;
+        const limit = chartRenderCap(cfg, 100);
         const cv = ThemeManager.getCSSVar;
 
         const fields = this.fieldOrder || Object.keys(results[0] || {});
@@ -5623,7 +5623,7 @@ const QueryExecutor = {
         const latField = (this.chartConfig && this.chartConfig.latField) || 'latitude';
         const lonField = (this.chartConfig && this.chartConfig.lonField) || 'longitude';
         const labelField = (this.chartConfig && this.chartConfig.labelField) || null;
-        const limit = (this.chartConfig && this.chartConfig.limit) || 5000;
+        const limit = chartRenderCap(this.chartConfig, 5000);
 
         const container = document.createElement('div');
         container.className = 'worldmap-container';

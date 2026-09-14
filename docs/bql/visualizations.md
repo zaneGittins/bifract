@@ -4,21 +4,21 @@
 
 ```
 * | groupBy(status) | piechart()
-* | groupBy(image, function=count()) | piechart(limit=5)
+* | groupBy(image, function=count()) | piechart(render=5)
 ```
 
 ## Bar Chart
 
 ```
 * | groupBy(user, function=count()) | barchart()
-* | groupBy(status) | barchart(limit=10)
+* | groupBy(status) | barchart(render=10)
 ```
 
 ## Graph (Relationship View)
 
 ```
 * | table(process_guid, parent_process_guid) | graph(child=process_guid, parent=parent_process_guid)
-* | graph(child=process_guid, parent=parent_process_guid, limit=200)
+* | graph(child=process_guid, parent=parent_process_guid, render=200)
 ```
 
 Both `child=` and `parent=` are required. Default limit 100, max 500.
@@ -29,7 +29,7 @@ Renders a force-directed graph of source-to-destination relationships. Where `gr
 
 ```
 * | mesh(src=src_ip, dst=dst_ip)
-* | mesh(src=src_ip, dst=dst_ip, weight=_count, directed=true, limit=300)
+* | mesh(src=src_ip, dst=dst_ip, weight=_count, directed=true, render=300)
 * | mesh(src=user, dst=computer_name, color=department, labels=user)
 ```
 
@@ -52,8 +52,8 @@ Display a single aggregate statistic as a large number. Requires an aggregation 
 
 ```
 * | count() | singleval()
-* | avg(response_time) | singleval(label="Avg Response Time")
-* | groupBy(computer_name) | count() | singleval(label="Unique Computers")
+* | avg(response_time) | singleval(title="Avg Response Time")
+* | groupBy(computer_name) | count() | singleval(title="Unique Computers")
 ```
 
 ### Parameters
@@ -117,3 +117,12 @@ Combine with `groupBy()` for multi-series charts (one line per group):
 |------------|----------|-------------|
 | `span`     | No       | Bucket interval. Supports `s`, `m`, `h`, `d`, `w`. Default: `5m`. |
 | `function` | No       | Aggregation function to apply per bucket: `count()`, `sum(field)`, `avg(field)`, `max(field)`, `min(field)`. Default: `count()`. |
+
+## Render caps vs row limits
+
+`render=` is how many marks a chart draws; `limit=` bounds the rows the query
+returns. A chart with a large result set usually wants both.
+
+```
+* | groupBy(src_ip) | mesh(src=src_ip, dst=dst_ip, render=300, limit=5000)
+```

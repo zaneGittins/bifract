@@ -8,7 +8,7 @@ import (
 )
 
 // regex(... as=NAME) without a named capture group must alias the extracted
-// value to NAME (not the legacy "regex_match"), so downstream references and
+// value to NAME (not the legacy "_regex"), so downstream references and
 // live previews see the intended column.
 func TestRegexAsAliasesOutputColumn(t *testing.T) {
 	opts := QueryOptions{
@@ -27,7 +27,7 @@ func TestRegexAsAliasesOutputColumn(t *testing.T) {
 	if !strings.Contains(result.SQL, "AS num") {
 		t.Fatalf("expected column aliased AS num, got SQL:\n%s", result.SQL)
 	}
-	if strings.Contains(result.SQL, "regex_match") {
+	if strings.Contains(result.SQL, "_regex") {
 		t.Fatalf("did not expect regex_match when as= is provided, got SQL:\n%s", result.SQL)
 	}
 }
@@ -108,7 +108,7 @@ func TestRegexNamedGroupFlavors(t *testing.T) {
 					t.Fatalf("missing %q in SQL:\n%s", want, result.SQL)
 				}
 			}
-			if strings.Contains(result.SQL, "regex_match") {
+			if strings.Contains(result.SQL, "_regex") {
 				t.Fatalf("named groups should not fall back to regex_match:\n%s", result.SQL)
 			}
 			// Named-group syntax is stripped so ClickHouse's RE2 sees plain groups.

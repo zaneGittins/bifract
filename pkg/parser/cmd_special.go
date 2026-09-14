@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -293,14 +292,43 @@ func (h *analyzefieldsHandler) Execute(cmd CommandNode, ctx *CommandContext) err
 		return err
 	}
 	if limitVal := b.Str("limit", ""); limitVal != "" {
-		if strings.EqualFold(limitVal, "max") {
-			ctx.Plan.AnalyzeFieldsScanLimit = analyzeFieldsMaxScan
-		} else if n, err := strconv.Atoi(limitVal); err == nil && n > 0 {
+		n, err := validateInt(limitVal)
+		if err != nil {
+			return fmt.Errorf("analyzeFields(): %w", err)
+		}
+		if n > 0 {
 			ctx.Plan.AnalyzeFieldsScanLimit = min(n, analyzeFieldsMaxScan)
 		}
 	}
 	ctx.Plan.AnalyzeFieldsList = append(ctx.Plan.AnalyzeFieldsList, b.Strings("fields")...)
 	return nil
+}
+
+// chainOrdered reads whether the steps must match in the order written.
+// sequence=strict|any is the spelling; order=true|false is the original one and
+// still parses, because saved queries carry it.
+func chainOrdered(b *Bound) (bool, error) {
+	if v := strings.ToLower(b.Str("sequence", "")); v != "" {
+		switch v {
+		case "strict":
+			return true, nil
+		case "any":
+			return false, nil
+		default:
+			return false, fmt.Errorf("chain(): sequence must be strict or any, got %q", v)
+		}
+	}
+	if v := strings.ToLower(b.Str("order", "")); v != "" {
+		switch v {
+		case "true", "1", "yes":
+			return true, nil
+		case "false", "0", "no":
+			return false, nil
+		default:
+			return false, fmt.Errorf("chain(): sequence must be strict or any, got %q", v)
+		}
+	}
+	return true, nil
 }
 
 // chainWithinSeconds is the chain's span, or 0 when no within= was given.
@@ -345,16 +373,9 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 
 	withinSeconds := chainWithinSeconds(b)
-	ordered := true
-	if v := strings.ToLower(b.Str("order", "")); v != "" {
-		switch v {
-		case "true", "1", "yes":
-			ordered = true
-		case "false", "0", "no":
-			ordered = false
-		default:
-			return fmt.Errorf("chain(): order must be true or false, got %q", v)
-		}
+	ordered, err := chainOrdered(b)
+	if err != nil {
+		return err
 	}
 	if !ordered && withinSeconds > 0 {
 		// An unordered window needs a sliding span over the matching events, which
@@ -643,7 +664,7 @@ func init() {
 	// chain(field, ...) { steps } and case { branches } carry a block the handler
 	// parses itself.
 	registerSpec(&CommandSpec{Name: "chain", FreeForm: true, Params: []ParamSpec{
-		fields("fields"), namedLit("within"), namedLit("order"),
+		fields("fields"), namedLit("within"), namedLit("sequence"), namedLit("order"),
 	}})
 	registerSpec(&CommandSpec{Name: "case", FreeForm: true, Params: []ParamSpec{reqLit("branches")}})
 	registerSpec(&CommandSpec{Name: "ptg", Params: []ParamSpec{
@@ -674,16 +695,16 @@ func tableAggregateSelects(arg Argument, ctx *CommandContext) ([]SelectExpr, boo
 	sel := func(format string, args ...any) ([]SelectExpr, bool, error) {
 		return []SelectExpr{{Expr: fmt.Sprintf(format, args...)}}, true, nil
 	}
-	// named renders an aggregate whose output column carries the operand's name.
-	// The alias is validated because it reaches SQL unquoted and a field name is
-	// user input: stddev("x, 1 AS y") would otherwise add a column of its own.
-	named := func(prefix, format string) ([]SelectExpr, bool, error) {
-		alias, err := aggOutputAlias(prefix, *operand)
+	// named renders an aggregate under the one alias rule every aggregate uses,
+	// so table(median(x)) and multi(median(x)) name their column the same.
+	named := func(agg, format string) ([]SelectExpr, bool, error) {
+		alias, err := aggregateAlias("", agg)
 		if err != nil {
 			return nil, false, err
 		}
 		return sel(format, cast, alias)
 	}
+
 	switch name {
 	case "sum":
 		return sel("sum(%s) AS _sum", cast)
@@ -691,30 +712,30 @@ func tableAggregateSelects(arg Argument, ctx *CommandContext) ([]SelectExpr, boo
 		return sel("avg(%s) AS _avg", cast)
 	case "max":
 		if inner == "timestamp" {
-			return sel("max(timestamp) AS max_timestamp")
+			return sel("max(timestamp) AS _max")
 		}
 		return sel("max(%s) AS _max", cast)
 	case "min":
 		if inner == "timestamp" {
-			return sel("min(timestamp) AS min_timestamp")
+			return sel("min(timestamp) AS _min")
 		}
 		return sel("min(%s) AS _min", cast)
 	case "percentile":
-		return named("percentile_", "quantiles(0.5, 0.75, 0.99)(%s) AS %s")
+		return named("percentile", "quantiles(0.5, 0.75, 0.99)(%s) AS %s")
 	case "stddev":
-		return named("stddev_", "stddevPop(%s) AS %s")
+		return named("stddev", "stddevPop(%s) AS %s")
 	case "median":
-		return named("median_", "median(%s) AS %s")
+		return named("median", "median(%s) AS %s")
 	case "mad":
-		alias, err := aggOutputAlias("mad_", *operand)
+		alias, err := aggregateAlias("", "mad")
 		if err != nil {
 			return nil, false, err
 		}
 		return sel("arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%[1]s))), groupArray(%[1]s))) AS %[2]s", cast, alias)
 	case "skew", "skewness":
-		return named("skewness_", "skewPop(%s) AS %s")
+		return named("skewness", "skewPop(%s) AS %s")
 	case "kurt", "kurtosis":
-		return named("kurtosis_", "kurtPop(%s) AS %s")
+		return named("kurtosis", "kurtPop(%s) AS %s")
 	case "iqr":
 		return []SelectExpr{
 			{Expr: fmt.Sprintf("quantile(0.25)(%s) AS _q1", cast)},

@@ -21,13 +21,13 @@ Beacon and Long Connection are network models. They maintain rolling per-connect
 
 ## Using a Model in Queries
 
-Any model can be read from BQL with `model_lookup()`, which joins the model's baseline onto matching rows so you can filter or aggregate on it:
+Any model can be read from BQL with `modelLookup()`, which joins the model's baseline onto matching rows so you can filter or aggregate on it:
 
 ```
-* | model_lookup(model="rare_parent_child", key=[parent_image, image])
+* | modelLookup(model="rare_parent_child", key=[parent_image, image])
 ```
 
-See [Enrichment](../bql/enrichment.md#model_lookup) for the key shape each model type expects.
+See [Enrichment](../bql/enrichment.md#modellookup) for the key shape each model type expects.
 
 ## Building a Model
 

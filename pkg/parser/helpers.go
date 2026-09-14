@@ -1833,7 +1833,7 @@ func commandIndex(commands []CommandNode, name string) int {
 // sourced from aggregatingCommandNames, populated at command registration.
 func firstAggregatingCommandIndex(commands []CommandNode) int {
 	for i, cmd := range commands {
-		if aggregatingCommandNames[cmd.Name] {
+		if IsAggregatingCommand(cmd.Name) {
 			return i
 		}
 	}

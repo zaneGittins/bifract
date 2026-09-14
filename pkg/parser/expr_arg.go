@@ -99,24 +99,16 @@ func firstFieldArg(cmd CommandNode, param string) (*Bound, Argument, bool, error
 	return b, a, ok, nil
 }
 
-// aggOutputAlias is the column an aggregate projects when the author did not
-// name one: a fixed prefix plus the operand's name. The whole identifier is
-// validated here, since it reaches SQL unquoted and a field name is user input:
-// stddev("x, 1 AS y") would otherwise add a column of its own.
-func aggOutputAlias(prefix string, arg Argument) (string, error) {
-	part, err := aggAliasPart(arg)
+// transformAlias is the column a per-row transform writes: the author's as= when
+// given, otherwise the command's own default. Declare and Execute both call it,
+// so the column the registry knows about is the column the SELECT produces.
+func transformAlias(cmd CommandNode, def string) (string, error) {
+	b, err := BindCommand(cmd)
 	if err != nil {
-		return "", err
+		return def, err
 	}
-	return sanitizeIdentifier(prefix + part)
-}
-
-// aggAliasPart is the text an aggregate embeds in its output alias: the field's
-// own name, or a derived name when the argument computes its value.
-func aggAliasPart(arg Argument) (string, error) {
-	if f := arg.FieldName(); f != "" {
-		return f, nil
+	if as := b.Str("as", ""); as != "" {
+		return sanitizeIdentifier(as)
 	}
-	alias, err := ArgAlias(arg)
-	return strings.Trim(alias, "`"), err
+	return def, nil
 }

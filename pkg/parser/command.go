@@ -1,6 +1,9 @@
 package parser
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // CommandContext provides shared state for command handlers during declare and execute phases.
 type CommandContext struct {
@@ -30,10 +33,13 @@ var commandHandlers = map[string]CommandHandler{}
 // (inlined per-row) from a post-aggregation one (computed after the GROUP BY).
 var aggregatingCommandNames = map[string]bool{}
 
-// registerCommand registers a handler for one or more command names.
+// registerCommand registers a handler for one or more command names. Names are
+// folded to lower case here and looked up the same way, so a command written
+// modelLookup() resolves whichever case the registration used. Storing them
+// verbatim meant a mixed-case registration silently matched nothing.
 func registerCommand(handler CommandHandler, names ...string) {
 	for _, name := range names {
-		commandHandlers[name] = handler
+		commandHandlers[strings.ToLower(name)] = handler
 	}
 }
 
@@ -43,7 +49,7 @@ func registerCommand(handler CommandHandler, names ...string) {
 func registerAggregatingCommand(handler CommandHandler, names ...string) {
 	registerCommand(handler, names...)
 	for _, name := range names {
-		aggregatingCommandNames[name] = true
+		aggregatingCommandNames[strings.ToLower(name)] = true
 	}
 }
 
@@ -59,7 +65,7 @@ var transformCommandNames = map[string]bool{}
 func registerTransformCommand(handler CommandHandler, names ...string) {
 	registerCommand(handler, names...)
 	for _, name := range names {
-		transformCommandNames[name] = true
+		transformCommandNames[strings.ToLower(name)] = true
 	}
 }
 
@@ -75,7 +81,15 @@ func RegisteredCommandNames() []string {
 	return names
 }
 
+// IsAggregatingCommand reports whether a command collapses rows. Callers hold a
+// name as the author wrote it, so the case is folded here rather than at each
+// call site.
+func IsAggregatingCommand(name string) bool { return aggregatingCommandNames[strings.ToLower(name)] }
+
+// IsTransformCommand reports whether a command adds a per-row computed column.
+func IsTransformCommand(name string) bool { return transformCommandNames[strings.ToLower(name)] }
+
 // getCommandHandler returns the handler for a command name, or nil if not found.
 func getCommandHandler(name string) CommandHandler {
-	return commandHandlers[name]
+	return commandHandlers[strings.ToLower(name)]
 }

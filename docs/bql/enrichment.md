@@ -41,12 +41,12 @@ Combine with other pipeline stages:
   | groupBy(department, function=count())
 ```
 
-## model_lookup()
+## modelLookup()
 
 Enrich rows with the baseline an analytics [model](../features/models.md) has built, so a query can score each event against learned history.
 
 ```
-* | model_lookup(model="rare_parent_child", key=[parent_image, image])
+* | modelLookup(model="rare_parent_child", key=[parent_image, image])
 ```
 
 ### Parameters
@@ -72,19 +72,19 @@ Enrichment columns can be filtered and aggregated like any other field.
 
 Placement relative to an aggregation (`groupby`, stats functions, [`chain()`](chain.md)) decides what gets enriched:
 
-- `model_lookup()` before the aggregation enriches rows first. Model columns can then be group keys, aggregation inputs, row filters ahead of the aggregation, and step conditions inside `chain()`.
-- `model_lookup()` after the aggregation enriches the aggregated results instead, so the key fields must be among the group columns.
+- `modelLookup()` before the aggregation enriches rows first. Model columns can then be group keys, aggregation inputs, row filters ahead of the aggregation, and step conditions inside `chain()`.
+- `modelLookup()` after the aggregation enriches the aggregated results instead, so the key fields must be among the group columns.
 
 Count events by whether the model has seen the user before:
 
 ```
-* | model_lookup(model="known_users", key=[user]) | groupby(is_new)
+* | modelLookup(model="known_users", key=[user]) | groupby(is_new)
 ```
 
 Sequence a first-ever-seen user straight into process execution:
 
 ```
-* | model_lookup(model="known_users", key=[user]) | chain(user, within=10m) {
+* | modelLookup(model="known_users", key=[user]) | chain(user, within=10m) {
   is_new="1";
   bifract_category="process_creation"
 }
@@ -97,7 +97,7 @@ By default a row the model never scored is dropped. The model's key set is pushe
 `strict=false` keeps unscored rows with their enrichment columns at ClickHouse's type defaults (`0` for a score, empty for a date). Those defaults compare like real values, so a threshold that looks for something small matches every unscored row:
 
 ```
-* | model_lookup(model="rare_images", key=[computer_name, image], strict=false) | percent < 0.1
+* | modelLookup(model="rare_images", key=[computer_name, image], strict=false) | percent < 0.1
 ```
 
 That query returns every log the model has no entry for. Use `strict=false` only to see which rows went unscored, and test the enrichment column for emptiness rather than thresholding it.

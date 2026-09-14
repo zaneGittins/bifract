@@ -1,5 +1,19 @@
 # Aggregation
 
+
+## Output columns
+
+Every aggregate names its column after itself, underscore first: `count()` gives
+`_count`, `sum()` gives `_sum`, `percentile()` gives `_percentile`. The name is
+the same whether the aggregate is a pipeline command or sits inside `multi()`.
+
+`as=` overrides it, and is required when two aggregates of the same kind appear
+in one stage:
+
+```
+* | groupBy(host, function=multi(sum(bytes_in, as=rx), sum(bytes_out, as=tx)))
+```
+
 ## Count
 
 ```
@@ -107,7 +121,7 @@ Build a frequency table with count, percentage, and cumulative percentage:
 * | frequency(status_code)
 ```
 
-Returns `value`, `_count`, `_percentage`, and `_cumulative_pct` columns, sorted by count descending.
+Returns `_value`, `_count`, `_percentage`, and `_cumulative_pct` columns, sorted by count descending.
 
 ## IQR (Interquartile Range)
 
@@ -127,7 +141,7 @@ Segment values into "head" and "tail" groups based on cumulative percentage (80/
 * | headTail(computer_name, threshold=90)
 ```
 
-Returns `value`, `_count`, `_percentage`, `_cumulative_pct`, and `_segment` (head or tail). Default threshold is 80%.
+Returns `_value`, `_count`, `_percentage`, `_cumulative_pct`, and `_segment` (head or tail). Default threshold is 80%.
 
 ## Modified Z-Score
 
@@ -198,5 +212,9 @@ Piping `count()` after `groupBy()` counts the number of groups (not per-group co
 Use `function=multi(...)` to compute multiple aggregations per group:
 
 ```
-* | groupBy(computer_name, function=multi(count(computer_name), count(user, unique=true), sum(bytes)))
+* | groupBy(computer_name, function=multi(count(computer_name, as=events), count(user, unique=true, as=users), sum(bytes)))
 ```
+
+Each aggregate names its output column after itself (`count()` produces `_count`,
+`sum()` produces `_sum`), so two of the same kind in one `multi()` need `as=` to
+tell them apart.

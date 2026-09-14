@@ -620,7 +620,7 @@ func TestSingleVal(t *testing.T) {
 	})
 
 	t.Run("singleval with label", func(t *testing.T) {
-		pipeline, err := ParseQuery(`* | avg(response_time) | singleval(label="Avg Response")`)
+		pipeline, err := ParseQuery(`* | avg(response_time) | singleval(title="Avg Response")`)
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -631,8 +631,8 @@ func TestSingleVal(t *testing.T) {
 		if result.ChartType != "singleval" {
 			t.Errorf("Expected chartType=singleval, got: %s", result.ChartType)
 		}
-		if result.ChartConfig["label"] != "Avg Response" {
-			t.Errorf("Expected label=Avg Response, got: %v", result.ChartConfig["label"])
+		if result.ChartConfig["title"] != "Avg Response" {
+			t.Errorf("Expected title=Avg Response, got: %v", result.ChartConfig["title"])
 		}
 	})
 
@@ -1066,13 +1066,13 @@ func TestHashFunction(t *testing.T) {
 		if !strings.Contains(result.SQL, "cityHash64") {
 			t.Errorf("Expected cityHash64 in SQL, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "hash_key") {
-			t.Errorf("Expected hash_key alias, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "_hash") {
+			t.Errorf("Expected _hash alias, got: %s", result.SQL)
 		}
 	})
 
 	t.Run("hash multiple fields", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | hash(field=user, computer)")
+		pipeline, err := ParseQuery("* | hash(user, computer)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -1308,7 +1308,7 @@ func TestAnalyzeFields(t *testing.T) {
 	})
 
 	t.Run("limit=max keyword", func(t *testing.T) {
-		pipeline, err := ParseQuery("* | analyzeFields(limit=max)")
+		pipeline, err := ParseQuery("* | analyzeFields(limit=200000)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -1694,7 +1694,7 @@ func TestMeshFunction(t *testing.T) {
 	})
 
 	t.Run("full args: directed, weight, labels, limit cap", func(t *testing.T) {
-		pipeline, err := ParseQuery(`* | groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip, weight=_count, size=_count, color=role, directed=true, labels=[hostname,asn], limit=9000)`)
+		pipeline, err := ParseQuery(`* | groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip, weight=_count, size=_count, color=role, directed=true, labels=[hostname,asn], render=9000)`)
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -1711,8 +1711,8 @@ func TestMeshFunction(t *testing.T) {
 		if result.ChartConfig["color"] != "role" {
 			t.Errorf("Expected color=role, got: %v", result.ChartConfig["color"])
 		}
-		if result.ChartConfig["limit"] != 500 {
-			t.Errorf("Expected limit capped at 500, got: %v", result.ChartConfig["limit"])
+		if result.ChartConfig["render"] != 500 {
+			t.Errorf("Expected render capped at 500, got: %v", result.ChartConfig["render"])
 		}
 		labels, ok := result.ChartConfig["labels"].([]string)
 		if !ok || len(labels) != 2 || labels[0] != "hostname" || labels[1] != "asn" {
@@ -1900,8 +1900,8 @@ func TestLogSizeQueries(t *testing.T) {
 			{"* | len(message) | groupby(event_type)", "_len"},
 			{"* | levenshtein(a, b) | groupby(event_type, function=avg(_distance))", "_distance"},
 			{"* | logSize() | timechart(span=1h, function=sum(_size))", "_size"},
-			{`* | replace("a", "b") | groupby(event_type)`, "norm_log"},
-			{`* | replace("a", "b", message) | groupby(event_type)`, "norm_log"},
+			{`* | replace(norm_log, "a", "b") | groupby(event_type)`, "norm_log"},
+			{`* | replace(message, "a", "b") | groupby(event_type)`, "norm_log"},
 			{"* | table(timestamp, event_type) | groupby(event_type)", "timestamp"},
 		}
 		for _, tc := range cases {
@@ -2049,8 +2049,8 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if strings.Contains(result.SQL, "fields.`hash_key`::String") {
-			t.Errorf("hash_key should be a computed field, not JSON field: %s", result.SQL)
+		if strings.Contains(result.SQL, "fields.`_hash`::String") {
+			t.Errorf("_hash should be a computed field, not JSON field: %s", result.SQL)
 		}
 	})
 
@@ -2156,7 +2156,7 @@ func TestComputedFieldPipedConditions(t *testing.T) {
 	})
 
 	t.Run("replace with piped condition", func(t *testing.T) {
-		pipeline, err := ParseQuery(`* | replace("[0-9]+", "X", message, cleaned) | cleaned = "errorX"`)
+		pipeline, err := ParseQuery(`* | replace(message, "[0-9]+", "X", as=cleaned) | cleaned = "errorX"`)
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -2409,8 +2409,8 @@ func TestComputedFieldAggregation(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		t.Logf("SQL: %s", result.SQL)
-		if !strings.Contains(result.SQL, "formatDateTime(timestamp, '%H', 'UTC') AS value") {
-			t.Errorf("Expected formatDateTime expression for value, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "formatDateTime(timestamp, '%H', 'UTC') AS _value") {
+			t.Errorf("Expected formatDateTime expression for _value, got: %s", result.SQL)
 		}
 		if strings.Contains(result.SQL, "fields.`_hour`::String") {
 			t.Errorf("Should not reference _hour as JSON field: %s", result.SQL)
@@ -2445,8 +2445,8 @@ func TestComputedFieldAggregation(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		t.Logf("SQL: %s", result.SQL)
-		if !strings.Contains(result.SQL, "formatDateTime(timestamp, '%H', 'UTC') AS value") {
-			t.Errorf("Expected formatDateTime expression for value, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "formatDateTime(timestamp, '%H', 'UTC') AS _value") {
+			t.Errorf("Expected formatDateTime expression for _value, got: %s", result.SQL)
 		}
 		if strings.Contains(result.SQL, "fields.`_hour`::String") {
 			t.Errorf("Should not reference _hour as JSON field: %s", result.SQL)
@@ -2499,8 +2499,8 @@ func TestComputedFieldAggregation(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		t.Logf("SQL: %s", result.SQL)
-		if !strings.Contains(result.SQL, "min(timestamp) AS first_timestamp") {
-			t.Errorf("Expected min(timestamp) AS first_timestamp, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "min(timestamp) AS _first") {
+			t.Errorf("Expected min(timestamp) AS _first, got: %s", result.SQL)
 		}
 	})
 
@@ -2514,8 +2514,8 @@ func TestComputedFieldAggregation(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		t.Logf("SQL: %s", result.SQL)
-		if !strings.Contains(result.SQL, "max(timestamp) AS last_timestamp") {
-			t.Errorf("Expected max(timestamp) AS last_timestamp, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "max(timestamp) AS _last") {
+			t.Errorf("Expected max(timestamp) AS _last, got: %s", result.SQL)
 		}
 	})
 
@@ -2979,8 +2979,8 @@ func TestMADFunction(t *testing.T) {
 		if !strings.Contains(result.SQL, "arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(toFloat64OrNull(") {
 			t.Errorf("Expected arrayReduce MAD expression in multi SQL, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "mad_response_time") {
-			t.Errorf("Expected mad_response_time alias, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "_mad") {
+			t.Errorf("Expected _mad alias, got: %s", result.SQL)
 		}
 	})
 
@@ -3321,8 +3321,8 @@ func TestTopFunction(t *testing.T) {
 		if !strings.Contains(result.SQL, "topK(10)") {
 			t.Errorf("Expected topK(10) in SQL, got: %s", result.SQL)
 		}
-		if !strings.Contains(result.SQL, "top_image") {
-			t.Errorf("Expected top_image alias, got: %s", result.SQL)
+		if !strings.Contains(result.SQL, "_top") {
+			t.Errorf("Expected _top alias, got: %s", result.SQL)
 		}
 	})
 
@@ -3542,7 +3542,7 @@ func TestFrequencyFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "AS value") {
+		if !strings.Contains(result.SQL, "AS _value") {
 			t.Errorf("Expected value alias, got: %s", result.SQL)
 		}
 		if !strings.Contains(result.SQL, "count(*) AS _count") {
@@ -3887,7 +3887,7 @@ func TestHeadTailFunction(t *testing.T) {
 			t.Fatalf("Failed to translate: %v", err)
 		}
 		sql := result.SQL
-		if !strings.Contains(sql, "AS value") {
+		if !strings.Contains(sql, "AS _value") {
 			t.Errorf("Expected value alias, got: %s", sql)
 		}
 		if !strings.Contains(sql, "count(*) AS _count") {
@@ -4922,9 +4922,10 @@ func TestJoinFunction(t *testing.T) {
 		},
 		{
 			// include= must name columns the subquery actually produces; selectFirst
-			// outputs first_<field>, so those are the referenceable names.
+			// Every aggregate names its column after itself, so two selectFirst in
+			// one subquery have to be told apart with as=.
 			name:  "Join with include parameter",
-			query: `* | join(user, include=[first_department,first_role]) { * | groupby(user) | selectFirst(department) | selectFirst(role) }`,
+			query: `* | join(user, include=[first_department,first_role]) { * | groupby(user) | selectFirst(department, as=first_department) | selectFirst(role, as=first_role) }`,
 			wantContain: []string{
 				"INNER JOIN",
 				"_join_sub.first_department AS _join_first_department",
@@ -5354,7 +5355,7 @@ func TestAggregationPipelineFixes(t *testing.T) {
 	})
 
 	t.Run("sprintf accepts a field= prefix on positional args", func(t *testing.T) {
-		sql := mustTranslate(t, `a=x | groupby(h,function=avg(c,as=ac)) | sprintf("%.1f", field=ac, as=fmtd)`, opts)
+		sql := mustTranslate(t, `a=x | groupby(h,function=avg(c,as=ac)) | sprintf("%.1f", ac, as=fmtd)`, opts)
 		if strings.Contains(sql, "field=ac") {
 			t.Errorf("field= prefix not stripped: %s", sql)
 		}

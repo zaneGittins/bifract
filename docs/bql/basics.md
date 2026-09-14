@@ -183,3 +183,15 @@ user=@target_user AND image=@process
 ```
 
 When the query runs, `@target_user` and `@process` are replaced with the values set in the variables bar. Variables default to `*` if no value is set, so a notebook or dashboard is reused across investigations by changing values instead of editing every query.
+
+## Boolean parameters
+
+Most switches are off by default and turned on: `strict=true`, `distinct=true`,
+`percent=true`, `directed=true`.
+
+`pgr()` is the exception. Its `reconnect=` and `diffuse=` are on by default,
+because a provenance graph without them is the narrower answer, so you write
+`reconnect=false` or `diffuse=false` to turn them off.
+
+Anything a parameter does not recognise as a yes or a no leaves the default
+alone, so a typo cannot silently flip a switch.

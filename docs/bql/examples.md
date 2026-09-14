@@ -43,7 +43,7 @@ ptg(start="{63047898-81ee-6860-5202-000000002502}") | pgraph()
 ## Total event count as a single value
 
 ```
-* | count() | singleval(label="Total Events")
+* | count() | singleval(title="Total Events")
 ```
 
 ## Request volume over time by status

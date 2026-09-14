@@ -8,16 +8,16 @@ import (
 
 func TestBucketTimezone(t *testing.T) {
 	cases := []struct{ q, tz, want string }{
-		{"* | bucket(1d, count())", "", "toStartOfDay(timestamp)"},
-		{"* | bucket(1d, count())", "UTC", "toStartOfDay(timestamp)"},
-		{"* | bucket(1d, count())", "America/Denver", "toStartOfDay(timestamp, 'America/Denver')"},
-		{"* | bucket(1h, count())", "Asia/Kathmandu", "toStartOfHour(timestamp, 'Asia/Kathmandu')"},
-		{"* | bucket(1w, count())", "Europe/Dublin", "toStartOfWeek(timestamp, 0, 'Europe/Dublin')"},
-		{"* | bucket(1w, count())", "", "toStartOfWeek(timestamp)"},
-		{"* | bucket(5m, count())", "Asia/Kolkata", "toStartOfFiveMinutes(timestamp, 'Asia/Kolkata')"},
-		{"* | bucket(15m, count())", "Asia/Kolkata", "toStartOfFifteenMinutes(timestamp, 'Asia/Kolkata')"},
-		{"* | bucket(1m, count())", "Asia/Kolkata", "toStartOfMinute(timestamp, 'Asia/Kolkata')"},
-		{"* | bucket(6h, count())", "America/Denver", "toStartOfInterval(timestamp, INTERVAL 6 HOUR, 'America/Denver')"},
+		{"* | timechart(span=1d, count())", "", "toStartOfDay(timestamp)"},
+		{"* | timechart(span=1d, count())", "UTC", "toStartOfDay(timestamp)"},
+		{"* | timechart(span=1d, count())", "America/Denver", "toStartOfDay(timestamp, 'America/Denver')"},
+		{"* | timechart(span=1h, count())", "Asia/Kathmandu", "toStartOfHour(timestamp, 'Asia/Kathmandu')"},
+		{"* | timechart(span=1w, count())", "Europe/Dublin", "toStartOfWeek(timestamp, 0, 'Europe/Dublin')"},
+		{"* | timechart(span=1w, count())", "", "toStartOfWeek(timestamp)"},
+		{"* | timechart(span=5m, count())", "Asia/Kolkata", "toStartOfFiveMinutes(timestamp, 'Asia/Kolkata')"},
+		{"* | timechart(span=15m, count())", "Asia/Kolkata", "toStartOfFifteenMinutes(timestamp, 'Asia/Kolkata')"},
+		{"* | timechart(span=1m, count())", "Asia/Kolkata", "toStartOfMinute(timestamp, 'Asia/Kolkata')"},
+		{"* | timechart(span=6h, count())", "America/Denver", "toStartOfInterval(timestamp, INTERVAL 6 HOUR, 'America/Denver')"},
 		{"* | timechart(span=1d, count())", "America/Denver", "toStartOfDay(timestamp, 'America/Denver')"},
 	}
 	for _, c := range cases {
@@ -49,7 +49,7 @@ func TestBucketTimezone(t *testing.T) {
 // A zone the tzdata cannot resolve buckets in UTC rather than failing the
 // query, and the reported zone is the one actually used.
 func TestBucketTimezoneUnresolvable(t *testing.T) {
-	p, _ := ParseQuery("* | bucket(1d, count())")
+	p, _ := ParseQuery("* | timechart(span=1d, count())")
 	res, err := TranslateToSQLWithOrder(p, QueryOptions{
 		StartTime: time.Now().Add(-time.Hour), EndTime: time.Now(),
 		FractalID: "11111111-1111-1111-1111-111111111111", MaxRows: 10,

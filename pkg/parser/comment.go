@@ -18,7 +18,6 @@ func ExtractCommentParams(pipeline *PipelineNode) (tags []string, keyword string
 			return
 		}
 		tags = append(tags, b.Strings("tags")...)
-		tags = append(tags, b.Strings("tag")...)
 		keyword = b.Str("keyword", "")
 	})
 	return
@@ -30,6 +29,6 @@ func init() {
 	// the remaining tags arrive as bare arguments, which the handler folds back in.
 	registerSpec(&CommandSpec{Name: "comment", Params: []ParamSpec{
 		ParamSpec{Name: "tags", Kind: ParamList, Positional: true, Variadic: true},
-		namedList("tag"), namedLit("keyword"),
+		namedLit("keyword"),
 	}}, "comment", "comments")
 }

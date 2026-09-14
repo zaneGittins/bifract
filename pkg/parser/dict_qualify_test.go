@@ -80,7 +80,7 @@ func TestDictionaryLookupUsesTransformedField(t *testing.T) {
 		t.Fatalf("match() did not look up the lowercased value:\n%s", sql)
 	}
 
-	sql = mustTranslate(t, `* | replace("^::ffff:", "", src_ip, src_ip) | lookupIP(field=src_ip, include=[country])`, dictOpts())
+	sql = mustTranslate(t, `* | replace(src_ip, "^::ffff:", "", as=src_ip) | lookupIP(field=src_ip, include=[country])`, dictOpts())
 	if !strings.Contains(sql, "replaceRegexpAll(") || !strings.Contains(sql, "geoip_city_lookup") {
 		t.Fatalf("lookupIP() did not look up the rewritten value:\n%s", sql)
 	}

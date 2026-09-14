@@ -196,7 +196,7 @@ immediately.
 
 ## Unsupported rules
 
-Rules using `pgr()`, `ptg()`, `model_lookup()` or `join()` are **rejected with an error**
+Rules using `pgr()`, `ptg()`, `modelLookup()` or `join()` are **rejected with an error**
 rather than reported as "no match". They read tables built by materialized views on the live
 `logs` table or data that only exists in a real deployment, so the tester cannot judge them
 honestly. Failing loudly is deliberate: a silent false negative in a detection gate is worse

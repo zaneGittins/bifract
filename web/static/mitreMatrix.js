@@ -150,7 +150,7 @@ const BifractMitreMatrix = {
         };
 
         for (const row of rows || []) {
-            const tag = row.attack_tag;
+            const tag = row._attack_tag !== undefined ? row._attack_tag : row.attack_tag;
             if (!tag) continue;
             const count = Number(row._count) || 0;
             const byValue = byField ? row[byField] : null;
@@ -343,7 +343,7 @@ const BifractMitreMatrix = {
             status.style.display = 'block';
             status.textContent = tagField === 'norm_log'
                 ? 'No ATT&CK tags found anywhere in these events.'
-                : `No ATT&CK tags found in ${tagField}. If this source keeps them elsewhere, name it (mitre(tags=detect_mtd_tags)) or scan the whole event with mitre(tags=norm_log).`;
+                : `No ATT&CK tags found in ${tagField}. If this source keeps them elsewhere, name it (mitre(field=detect_mtd_tags)) or scan the whole event with mitre(field=norm_log).`;
         } else if (view.config.limit && view.rows.length >= view.config.limit) {
             // A truncated tail makes every count below a lower bound, which a report
             // must not present as a total.

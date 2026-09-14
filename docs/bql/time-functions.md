@@ -37,8 +37,8 @@ Common format specifiers:
 ## Time Bucketing
 
 ```
-* | bucket(span=1h, function=count())
-* | bucket(span=5m, function=sum(bytes))
+* | timechart(span=1h, count())
+* | timechart(span=5m, sum(bytes))
 ```
 
 Supported spans: `s` (second), `m` (minute), `h` (hour), `d` (day), `w` (week).

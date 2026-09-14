@@ -480,13 +480,14 @@ func modelLookupFieldRef(field string) string {
 }
 
 func init() {
-	registerCommand(&modelLookupHandler{}, "model_lookup")
+	// model_lookup is the original spelling, kept so stored queries keep running.
+	registerCommand(&modelLookupHandler{}, "modelLookup", "model_lookup")
 }
 
 func init() {
-	registerSpec(&CommandSpec{Name: "model_lookup", Params: []ParamSpec{
+	registerSpec(&CommandSpec{Name: "modelLookup", Params: []ParamSpec{
 		ParamSpec{Name: "model", Kind: ParamLiteral, Required: true},
 		ParamSpec{Name: "key", Kind: ParamList, Required: true},
 		namedLit("strict"),
-	}})
+	}}, "modelLookup", "model_lookup")
 }

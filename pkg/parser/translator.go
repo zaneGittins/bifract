@@ -224,7 +224,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	if mlIdx := commandIndex(pipeline.Commands, "model_lookup"); mlIdx >= 0 {
 		aggBefore, aggAfter := false, false
 		for i, cmd := range pipeline.Commands {
-			if aggregatingCommandNames[cmd.Name] || cmd.Name == "chain" {
+			if IsAggregatingCommand(cmd.Name) || strings.EqualFold(cmd.Name, "chain") {
 				if i < mlIdx {
 					aggBefore = true
 				} else if i > mlIdx {
@@ -322,7 +322,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		// A per-row transform that runs on a GROUP BY stage would add a
 		// non-grouped column to an aggregate SELECT (invalid, silently dropped).
 		// Move it onto a post-aggregation projection stage first.
-		if transformCommandNames[cmd.Name] && len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 {
+		if IsTransformCommand(cmd.Name) && len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 {
 			if _, err := pushCarryForwardStage(ctx); err != nil {
 				return nil, fmt.Errorf("%s (post-aggregation stage): %w", cmd.Name, err)
 			}

@@ -26,7 +26,10 @@ func (h *piechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 10, 0)
+	ctx.Plan.ChartConfig["render"] = chartRender(b, 10, 0)
+	if err := applyChartLimit(b, ctx); err != nil {
+		return fmt.Errorf("piechart(): %w", err)
+	}
 	return nil
 }
 
@@ -51,7 +54,10 @@ func (h *barchartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 10, 0)
+	ctx.Plan.ChartConfig["render"] = chartRender(b, 10, 0)
+	if err := applyChartLimit(b, ctx); err != nil {
+		return fmt.Errorf("barchart(): %w", err)
+	}
 	return nil
 }
 
@@ -68,10 +74,19 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	childField := b.Str("child", "")
-	parentField := b.Str("parent", "")
+	childField, err := chartFieldName(b, "graph", "child")
+	if err != nil {
+		return err
+	}
+	parentField, err := chartFieldName(b, "graph", "parent")
+	if err != nil {
+		return err
+	}
 	labelFields := b.Strings("labels")
-	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 100, 500)
+	ctx.Plan.ChartConfig["render"] = chartRender(b, 100, 500)
+	if err := applyChartLimit(b, ctx); err != nil {
+		return fmt.Errorf("graph(): %w", err)
+	}
 
 	if childField == "" || parentField == "" {
 		return fmt.Errorf("graph() requires both child= and parent= parameters, e.g. graph(child=process_guid, parent=parent_process_guid)")
@@ -100,7 +115,10 @@ func (h *pgraphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 3000, 0)
+	ctx.Plan.ChartConfig["render"] = chartRender(b, 3000, 0)
+	if err := applyChartLimit(b, ctx); err != nil {
+		return fmt.Errorf("pgraph(): %w", err)
+	}
 	return nil
 }
 
@@ -121,14 +139,29 @@ func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	srcField := b.Str("src", "")
-	dstField := b.Str("dst", "")
-	weightField := b.Str("weight", "")
-	sizeField := b.Str("size", "")
+	srcField, err := chartFieldName(b, "mesh", "src")
+	if err != nil {
+		return err
+	}
+	dstField, err := chartFieldName(b, "mesh", "dst")
+	if err != nil {
+		return err
+	}
+	weightField, err := chartFieldName(b, "mesh", "weight")
+	if err != nil {
+		return err
+	}
+	sizeField, err := chartFieldName(b, "mesh", "size")
+	if err != nil {
+		return err
+	}
 	colorField := b.Str("color", "")
-	labelFields := append(b.Strings("labels"), b.Strings("label")...)
+	labelFields := b.Strings("labels")
 	ctx.Plan.ChartConfig["directed"] = b.Flag("directed", false)
-	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 100, 500)
+	ctx.Plan.ChartConfig["render"] = chartRender(b, 100, 500)
+	if err := applyChartLimit(b, ctx); err != nil {
+		return fmt.Errorf("mesh(): %w", err)
+	}
 
 	if srcField == "" || dstField == "" {
 		return fmt.Errorf("mesh() requires both src= and dst= parameters, e.g. mesh(src=src_ip, dst=dst_ip)")
@@ -181,8 +214,8 @@ func (h *singlevalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	if label := b.Str("label", ""); label != "" {
-		ctx.Plan.ChartConfig["label"] = label
+	if title := b.Str("title", ""); title != "" {
+		ctx.Plan.ChartConfig["title"] = title
 	}
 	return nil
 }
@@ -317,10 +350,22 @@ func (h *graphWorldHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 	if err != nil {
 		return err
 	}
-	latField := b.Str("lat", "")
-	lonField := b.Str("lon", "")
-	labelField := b.Str("label", "")
-	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 5000, 50000)
+	latField, err := chartFieldName(b, "graphWorld", "lat")
+	if err != nil {
+		return err
+	}
+	lonField, err := chartFieldName(b, "graphWorld", "lon")
+	if err != nil {
+		return err
+	}
+	labelField, err := chartFieldName(b, "graphWorld", "label")
+	if err != nil {
+		return err
+	}
+	ctx.Plan.ChartConfig["render"] = chartRender(b, 5000, 50000)
+	if err := applyChartLimit(b, ctx); err != nil {
+		return fmt.Errorf("graphworld(): %w", err)
+	}
 
 	if latField == "" {
 		latField = "latitude"
@@ -350,44 +395,79 @@ func init() {
 }
 
 func init() {
-	registerSpec(&CommandSpec{Name: "piechart", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
-	registerSpec(&CommandSpec{Name: "barchart", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
+	// Charts take no positional fields: they read the columns the preceding
+	// aggregation produced. render= caps the marks drawn, limit= the rows scanned.
+	registerSpec(&CommandSpec{Name: "piechart", Params: []ParamSpec{namedLit("render"), namedLit("limit")}})
+	registerSpec(&CommandSpec{Name: "barchart", Params: []ParamSpec{namedLit("render"), namedLit("limit")}})
 	// heatmap(x=a, y=b, count()) puts the aggregate positionally, as timechart does.
 	registerSpec(&CommandSpec{Name: "heatmap", Params: []ParamSpec{
 		ParamSpec{Name: "value", Kind: ParamAggSpec, Positional: true},
 		namedField("x"), namedField("y"), namedLit("limit"),
 	}})
-	registerSpec(&CommandSpec{Name: "singleval", Params: []ParamSpec{field("field"), namedLit("label")}})
+	// #11: bucket() was timechart() with fewer aggregates and different output
+	// column names. timechart() is the one spelling.
+	registerSpec(&CommandSpec{Name: "singleval", Params: []ParamSpec{field("field"), namedLit("title")}})
 	// timechart(span=1d, count()) puts the aggregate positionally.
 	registerSpec(&CommandSpec{Name: "timechart", Params: []ParamSpec{
 		ParamSpec{Name: "function", Kind: ParamAggSpec, Positional: true},
 		namedLit("span"),
 	}})
 	registerSpec(&CommandSpec{Name: "graph", Params: []ParamSpec{
-		namedField("parent"), namedField("child"), namedList("labels"), namedLit("limit"),
+		namedField("parent"), namedField("child"), namedList("labels"),
+		namedLit("render"), namedLit("limit"),
 	}})
 	registerSpec(&CommandSpec{Name: "mesh", Params: []ParamSpec{
-		namedField("src"), namedField("dst"), namedList("include"), namedList("labels"),
-		namedField("label"), namedField("size"), namedField("weight"),
-		namedLit("directed"), namedLit("color"), namedLit("limit"),
+		namedField("src"), namedField("dst"), namedList("labels"),
+		namedField("size"), namedField("weight"),
+		namedLit("directed"), namedLit("color"), namedLit("render"), namedLit("limit"),
 	}})
-	registerSpec(&CommandSpec{Name: "pgraph", Params: []ParamSpec{namedLit("limit")}})
+	registerSpec(&CommandSpec{Name: "pgraph", Params: []ParamSpec{namedLit("render"), namedLit("limit")}})
 	registerSpec(&CommandSpec{Name: "graphworld", Params: []ParamSpec{
-		namedField("lat"), namedField("lon"), namedField("label"), namedLit("limit"),
+		namedField("lat"), namedField("lon"), namedField("label"),
+		namedLit("render"), namedLit("limit"),
 	}}, "graphworld", "graphWorld", "worldmap")
 }
 
-// chartLimit reads a chart command's limit=, keeping the default when it is
-// absent, unparseable or not positive, and clamping to maxLimit when one is set.
-func chartLimit(b *Bound, def, maxLimit int) int {
-	n := b.Int("limit", def)
+// chartFieldName is a column name a chart hands to the browser. The renderer
+// looks the name up in the returned rows, so an expression there would name a
+// column no row has; it is rejected rather than drawn as an empty chart.
+func chartFieldName(b *Bound, cmd, param string) (string, error) {
+	a, ok := b.First(param)
+	if !ok {
+		return "", nil
+	}
+	name := a.FieldName()
+	if name == "" {
+		return "", fmt.Errorf("%s(): %s= takes a field name, not an expression (%s); compute it first with eval() or :=", cmd, param, a)
+	}
+	return name, nil
+}
+
+// chartRender reads a chart command's render=, the number of marks the browser
+// draws. It is separate from limit=, which bounds the rows the query returns:
+// one caps the picture, the other caps the scan.
+func chartRender(b *Bound, def, maxRender int) int {
+	n := b.Int("render", def)
 	if n <= 0 {
 		return def
 	}
-	if maxLimit > 0 {
-		n = min(n, maxLimit)
+	if maxRender > 0 {
+		n = min(n, maxRender)
 	}
 	return n
+}
+
+// applyChartLimit applies a chart command's limit= as a row limit on the query.
+func applyChartLimit(b *Bound, ctx *CommandContext) error {
+	if !b.Has("limit") {
+		return nil
+	}
+	n, err := validateInt(b.Str("limit", ""))
+	if err != nil {
+		return err
+	}
+	ctx.Plan.CurrentStage().Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+	return nil
 }
 
 // aggFields returns an aggregate spec's field arguments, ignoring its named

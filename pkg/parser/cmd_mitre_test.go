@@ -26,8 +26,8 @@ func TestMitreCommand(t *testing.T) {
 		if !strings.Contains(sql, `\\bt[0-9]{4}`) {
 			t.Errorf("a dedicated tag field should also accept bare ids: %s", sql)
 		}
-		if !strings.Contains(sql, "AS attack_tag") || !strings.Contains(sql, "GROUP BY attack_tag") {
-			t.Errorf("expected attack_tag group key, got: %s", sql)
+		if !strings.Contains(sql, "AS _attack_tag") || !strings.Contains(sql, "GROUP BY _attack_tag") {
+			t.Errorf("expected _attack_tag group key, got: %s", sql)
 		}
 		if !strings.Contains(sql, "COUNT(*) AS _count") || !strings.Contains(sql, "_count DESC") {
 			t.Errorf("expected counted, count-ordered output, got: %s", sql)
@@ -35,7 +35,7 @@ func TestMitreCommand(t *testing.T) {
 	})
 
 	t.Run("any named field is read the same way", func(t *testing.T) {
-		sql := mustTranslate(t, `* | mitre(tags=detect_mtd_tags)`, opts)
+		sql := mustTranslate(t, `* | mitre(field=detect_mtd_tags)`, opts)
 		if !strings.Contains(sql, "fields.`detect_mtd_tags`") {
 			t.Errorf("expected detect_mtd_tags field reference, got: %s", sql)
 		}
@@ -45,7 +45,7 @@ func TestMitreCommand(t *testing.T) {
 	})
 
 	t.Run("tags=norm_log scans the whole event without bare ids", func(t *testing.T) {
-		sql := mustTranslate(t, `* | mitre(tags=norm_log)`, opts)
+		sql := mustTranslate(t, `* | mitre(field=norm_log)`, opts)
 		if !strings.Contains(sql, "extractAll(lower(toString(norm_log))") {
 			t.Errorf("expected a norm_log scan, got: %s", sql)
 		}
@@ -63,11 +63,11 @@ func TestMitreCommand(t *testing.T) {
 	})
 
 	t.Run("by adds a second group key", func(t *testing.T) {
-		sql := mustTranslate(t, `* | mitre(tags=rule_tags, by=computer_name)`, opts)
+		sql := mustTranslate(t, `* | mitre(field=rule_tags, by=computer_name)`, opts)
 		if !strings.Contains(sql, "AS computer_name") {
 			t.Errorf("expected by= column, got: %s", sql)
 		}
-		if !strings.Contains(sql, "GROUP BY attack_tag,") {
+		if !strings.Contains(sql, "GROUP BY _attack_tag,") {
 			t.Errorf("expected both group keys, got: %s", sql)
 		}
 	})

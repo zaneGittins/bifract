@@ -141,7 +141,7 @@ Create a hash key from one or more fields:
 
 ```
 * | hash(user)
-* | hash(field=user, computer)
+* | hash(user, computer)
 * | hash(user, event_id, as=composite_key)
 ```
 
@@ -217,7 +217,7 @@ This creates a field called `executable_name` from the named capture group. Both
 ### Replace
 
 ```
-* | replace("password=\S+", "password=***", norm_log)
+* | replace(norm_log, "password=\S+", "password=***")
 ```
 
 ### Concat

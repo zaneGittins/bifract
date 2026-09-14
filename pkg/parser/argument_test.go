@@ -14,9 +14,9 @@ func TestNamedThenPositionalArguments(t *testing.T) {
 		{`* | cidr(field=src_ip, "10.0.0.0/8")`, "isIPAddressInRange"},
 		{`* | substr(field=image, 1, 10)`, "substring(fields.`image`::String, 1, 10)"},
 		{`* | split(field=path, "/", 2)`, "splitByString('/', fields.`path`::String)[2]"},
-		{`* | headTail(field=src_ip, 90)`, "fields.`src_ip`::String AS value"},
-		{`* | replace(pattern="p", "r", commandline)`, "replaceRegexpAll(fields.`commandline`::String, 'p', 'r')"},
-		{`* | bucket(span=1h, count())`, "COUNT(*) AS bucket_count"},
+		{`* | headTail(field=src_ip, 90)`, "fields.`src_ip`::String AS _value"},
+		{`* | replace(commandline, pattern="p", replacement="r")`, "replaceRegexpAll(fields.`commandline`::String, 'p', 'r')"},
+		{`* | timechart(span=1h, count())`, "COUNT(*) AS _count"},
 		{`* | lowercase(field=user, out)`, "lower(fields.`user`::String) AS out"},
 	}
 	for _, c := range cases {
@@ -64,7 +64,7 @@ func TestExpressionInEveryFieldPosition(t *testing.T) {
 		{`* | logSize(lower(user))`, "byteSize(lower(fields.`user`::String))"},
 		{`* | levenshtein(lower(user), "admin")`, "damerauLevenshteinDistance(lower(fields.`user`::String), 'admin')"},
 		{`* | heatmap(x=lower(user), y=host)`, "lower(fields.`user`::String) AS _heatmap_x"},
-		{`* | top(lower(user))`, "topK(10)(lower(fields.`user`::String)) AS top_lower_user"},
+		{`* | top(lower(user))`, "topK(10)(lower(fields.`user`::String)) AS _top"},
 		{`* | count(lower(user), unique=true)`, "uniqExact(lower(fields.`user`::String))"},
 		{`* | strftime("%Y-%m-%d", field=lower(ts))`, "lower(fields.`ts`::String)"},
 		{`* | timechart(span=1h, groupby(lower(user), distinct=true))`, "uniqExact(lower(fields.`user`::String))"},
@@ -92,8 +92,7 @@ func TestUnusableArgumentsAreReported(t *testing.T) {
 	for _, q := range []string{
 		`* | head(-5)`, `* | tail(-5)`, `* | limit(-5)`,
 		`* | timechart(span=1h, function=bogus(x))`,
-		`* | bucket(span=1h, function=bogus(x))`,
-		`* | bucket(span=1h, function=avg(bytes))`,
+		`* | timechart(span=1h, function=bogus(x))`,
 		`* | heatmap(x=a, y=b, value=bogus(x))`,
 		`* | timechart(span=1h, groupby("user, 1 AS y"))`,
 		`* | join(user, max=) { event_id="1" | groupby(user) }`,
@@ -146,7 +145,7 @@ func TestExpressionAcceptedInEverySQLFieldPosition(t *testing.T) {
 		`* | top(lower(user))`, `* | frequency(lower(user))`, `* | headTail(lower(user))`,
 		`* | mzscore(lower(bytes))`, `* | outlier(lower(bytes))`, `* | in(lower(user), ["a"])`,
 		`* | cidr(lower(src_ip), "10.0.0.0/8")`, `* | heatmap(x=lower(user), y=host)`,
-		`* | regex(field=lower(msg), pattern="a(b)")`, `* | replace("a", "b", lower(msg))`,
+		`* | regex(field=lower(msg), pattern="a(b)")`, `* | replace(lower(msg), "a", "b")`,
 		`* | logSize(lower(user))`, `* | levenshtein(lower(user), "admin")`,
 		`* | strftime("%Y-%m-%d", field=lower(ts))`, `* | count(lower(user), unique=true)`,
 	} {
