@@ -414,3 +414,69 @@ func TestExprFilterDoesNotHijackCommands(t *testing.T) {
 		}
 	})
 }
+
+// modelOpts adds a beacon model so model_lookup() resolves, producing the joined
+// columns that only exist above the source scan.
+func modelOpts() QueryOptions {
+	o := exprOpts()
+	o.FractalID = "f1"
+	o.Models = map[string]AnalyticsModelInfo{
+		"beacons": {ID: "m1", TableName: "model_beacons", ModelType: "beacon", MinSample: 5, FractalID: "f1"},
+	}
+	return o
+}
+
+func translateWith(t *testing.T, query string, opts QueryOptions) string {
+	t.Helper()
+	pipeline, err := ParseQuery(query)
+	if err != nil {
+		t.Fatalf("parse %q: %v", query, err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
+		t.Fatalf("translate %q: %v", query, err)
+	}
+	return result.SQL
+}
+
+// TestExprFilterOverDeferredColumns covers filters that sit above the source
+// scan. A source-scope leaf there must be exported as a hidden column, because a
+// raw JSON sub-column does not resolve at that layer (ClickHouse code 47).
+func TestExprFilterOverDeferredColumns(t *testing.T) {
+	t.Run("join output only", func(t *testing.T) {
+		sql := translateWith(t, `* | model_lookup(model="beacons", key=[src_ip,dst_ip,dst_port]) | round(beacon_score, 2) > 0.9`, modelOpts())
+		// The joined column is read by name, coerced like any registered column.
+		if !strings.Contains(sql, "round(toFloat64OrNull(toString(beacon_score)), 2) > 0.9") {
+			t.Errorf("expected the joined column read directly, got: %s", sql)
+		}
+		if strings.Contains(sql, "_dfr_") {
+			t.Errorf("a column that already exists at the deferred layer must not be exported: %s", sql)
+		}
+	})
+
+	t.Run("mixed with a log field exports the source leaf", func(t *testing.T) {
+		sql := translateWith(t, `* | model_lookup(model="beacons", key=[src_ip,dst_ip,dst_port]) | round(beacon_score,2) > 0.9 AND lower(image) = "chrome.exe"`, modelOpts())
+		if !strings.Contains(sql, "fields.`image`::String AS _dfr_0") {
+			t.Errorf("source leaf not exported into the scan: %s", sql)
+		}
+		if !strings.Contains(sql, "lower(_dfr_0) = 'chrome.exe'") {
+			t.Errorf("deferred filter did not read the exported column: %s", sql)
+		}
+		if !strings.Contains(sql, "EXCEPT (_dfr_0)") {
+			t.Errorf("hidden column not stripped from the result: %s", sql)
+		}
+		if strings.Contains(sql, "lower(fields.`image`::String) = 'chrome.exe'") {
+			t.Errorf("raw JSON reference survived to the deferred layer: %s", sql)
+		}
+	})
+
+	t.Run("window output", func(t *testing.T) {
+		sql := translateExpr(t, `* | madOutlier(bytes) | abs(_modified_z) > 4`)
+		if !strings.Contains(sql, "abs(toFloat64OrNull(toString(_modified_z))) > 4") {
+			t.Errorf("expected the window column read directly, got: %s", sql)
+		}
+		if strings.Contains(sql, "_dfr_") {
+			t.Errorf("a window column must not be exported: %s", sql)
+		}
+	})
+}

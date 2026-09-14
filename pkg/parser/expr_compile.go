@@ -17,19 +17,37 @@ import (
 // it bypasses the registry so `x := x * 100` reads the log field rather than the
 // alias it is about to create.
 func compileExpr(e *ExprNode, registry *FieldRegistry, selfField string) (string, ExprType, error) {
+	return compileIn(e, exprCtx{registry: registry, selfField: selfField})
+}
+
+// exprCtx carries what compilation needs beyond the expression itself.
+type exprCtx struct {
+	registry  *FieldRegistry
+	selfField string
+	// scope, when set, means the expression is being built above the source scan.
+	// A leaf that only the scan can compute is exported through it under a hidden
+	// alias, because a raw JSON sub-column does not resolve at that layer
+	// (ClickHouse code 47). See deferredScope.
+	scope *deferredScope
+	// deferredFields names the columns that the deferred layer produces, which are
+	// therefore already bare columns there and must not be exported.
+	deferredFields map[string]bool
+}
+
+func compileIn(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	switch e.Kind {
 	case ExprString:
 		return "'" + escapeString(e.Value) + "'", TypeString, nil
 	case ExprNumber:
 		return e.Value, TypeNumber, nil
 	case ExprField:
-		return compileFieldRef(e.Value, registry, selfField)
+		return compileFieldRef(e.Value, ctx)
 	case ExprUnary:
-		return compileUnary(e, registry, selfField)
+		return compileUnary(e, ctx)
 	case ExprBinary:
-		return compileBinary(e, registry, selfField)
+		return compileBinary(e, ctx)
 	case ExprCall:
-		return compileCall(e, registry, selfField)
+		return compileCall(e, ctx)
 	}
 	return "", TypeAny, fmt.Errorf("unsupported expression")
 }
@@ -37,9 +55,14 @@ func compileExpr(e *ExprNode, registry *FieldRegistry, selfField string) (string
 // compileFieldRef resolves an identifier to a column reference. A registered
 // field resolves to its alias (or is folded in when the registry marks it
 // inline); anything else is a JSON sub-column of the log.
-func compileFieldRef(name string, registry *FieldRegistry, selfField string) (string, ExprType, error) {
+func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
+	registry, selfField := ctx.registry, ctx.selfField
 	if registry == nil {
-		return groupableCast(jsonFieldRef(name)), TypeAny, nil
+		return ctx.export(groupableCast(jsonFieldRef(name)), name), TypeAny, nil
+	}
+	if ctx.deferredFields[name] {
+		// Produced by the deferred layer: already a bare column there.
+		return name, TypeAny, nil
 	}
 	if name != selfField && registry.Has(name) {
 		if registry.IsInline(name) {
@@ -52,11 +75,20 @@ func compileFieldRef(name string, registry *FieldRegistry, selfField string) (st
 		// back into a fields.`name` JSON path that does not exist in this stage.
 		return name, TypeAny, nil
 	}
-	return groupableCast(registry.fieldRef(name)), TypeAny, nil
+	return ctx.export(groupableCast(registry.fieldRef(name)), name), TypeAny, nil
 }
 
-func compileUnary(e *ExprNode, registry *FieldRegistry, selfField string) (string, ExprType, error) {
-	sql, typ, err := compileExpr(e.Arg, registry, selfField)
+// export routes a source-scope reference through the deferred scope when the
+// expression is being built above the scan, and is a no-op otherwise.
+func (c exprCtx) export(sql, label string) string {
+	if c.scope == nil {
+		return sql
+	}
+	return c.scope.ref(sql, label)
+}
+
+func compileUnary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
+	sql, typ, err := compileIn(e.Arg, ctx)
 	if err != nil {
 		return "", TypeAny, err
 	}
@@ -76,12 +108,12 @@ func compileUnary(e *ExprNode, registry *FieldRegistry, selfField string) (strin
 	return "", TypeAny, fmt.Errorf("unsupported operator %q", e.Value)
 }
 
-func compileBinary(e *ExprNode, registry *FieldRegistry, selfField string) (string, ExprType, error) {
-	leftSQL, leftType, err := compileExpr(e.Left, registry, selfField)
+func compileBinary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
+	leftSQL, leftType, err := compileIn(e.Left, ctx)
 	if err != nil {
 		return "", TypeAny, err
 	}
-	rightSQL, rightType, err := compileExpr(e.Right, registry, selfField)
+	rightSQL, rightType, err := compileIn(e.Right, ctx)
 	if err != nil {
 		return "", TypeAny, err
 	}
@@ -206,7 +238,7 @@ func asString(sql string, typ ExprType) string {
 	return sql
 }
 
-func compileCall(e *ExprNode, registry *FieldRegistry, selfField string) (string, ExprType, error) {
+func compileCall(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	fn, ok := exprFuncs[e.Value]
 	if !ok {
 		return "", TypeAny, unknownFunctionError(e.Value)
@@ -222,7 +254,7 @@ func compileCall(e *ExprNode, registry *FieldRegistry, selfField string) (string
 		if arg == nil {
 			continue // omitted optional; Render sees an empty string
 		}
-		sql, typ, err := compileExpr(arg, registry, selfField)
+		sql, typ, err := compileIn(arg, ctx)
 		if err != nil {
 			return "", TypeAny, err
 		}

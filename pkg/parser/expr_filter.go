@@ -87,7 +87,37 @@ func (p *Parser) parseExprFilter() (*ExprNode, error) {
 // type as a condition: `| lower(image)` on its own is a value, not a test, and
 // letting it through would filter on whatever ClickHouse made of a string.
 func exprConditionSQL(expr *ExprNode, registry *FieldRegistry, negate bool) (string, error) {
-	sql, typ, err := compileExpr(expr, registry, "")
+	return exprConditionSQLIn(expr, exprCtx{registry: registry}, negate)
+}
+
+// exprConditionSQLDeferred compiles a filter that sits above the source scan.
+// Leaves only the scan can compute are exported through the scope; columns the
+// deferred layer itself produces are read directly.
+func exprConditionSQLDeferred(expr *ExprNode, registry *FieldRegistry, scope *deferredScope, negate bool) (string, error) {
+	return exprConditionSQLIn(expr, exprCtx{
+		registry:       registry,
+		scope:          scope,
+		deferredFields: deferredFieldSet(expr, registry),
+	}, negate)
+}
+
+// deferredFieldSet names the expression's fields that the deferred layer
+// produces: window outputs and join outputs exist only after the outer wrap.
+func deferredFieldSet(expr *ExprNode, registry *FieldRegistry) map[string]bool {
+	out := map[string]bool{}
+	for _, f := range exprFieldNames(expr) {
+		if entry := registry.Get(f); entry != nil {
+			switch entry.ClassifyKind() {
+			case FieldKindWindow, FieldKindJoined:
+				out[f] = true
+			}
+		}
+	}
+	return out
+}
+
+func exprConditionSQLIn(expr *ExprNode, ctx exprCtx, negate bool) (string, error) {
+	sql, typ, err := compileIn(expr, ctx)
 	if err != nil {
 		return "", err
 	}
@@ -133,7 +163,8 @@ func exprFieldNames(e *ExprNode) []string {
 }
 
 // exprPriority is fieldPriority over every field an expression reads: the
-// expression binds to the latest stage any of its inputs is available in.
+// expression binds to the latest stage any of its inputs is available in, so a
+// filter mixing a joined score with a log field defers to the post-join layer.
 func exprPriority(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	best := 0
 	for _, f := range exprFieldNames(e) {

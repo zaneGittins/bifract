@@ -68,6 +68,8 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			switch priority {
 			case 2:
 				plan.pendingHavingConditions = append(plan.pendingHavingConditions, cond)
+			case 1:
+				plan.pendingDeferredConditions = append(plan.pendingDeferredConditions, cond)
 			default:
 				plan.pendingWhereConditions = append(plan.pendingWhereConditions, cond)
 			}
@@ -101,14 +103,15 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 // expression needs the deferredScope export that plain conditions get.
 func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
 	priority := exprPriority(cond.Expr, registry, plan, willHaveAggregation)
+	// A deferred filter sits above the source scan, so its source-scope leaves are
+	// exported through the plan's scope as they compile. Classification runs before
+	// exportDeferredColumns, so the aliases allocated here are projected.
 	if priority == 1 {
-		return "", 0, fmt.Errorf("%s reads a value produced after the aggregation, which an expression filter cannot reach yet; filter on it with a plain comparison instead", cond.Expr.String())
+		sql, err := exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
+		return sql, priority, err
 	}
 	sql, err := exprConditionSQL(cond.Expr, registry, cond.Negate)
-	if err != nil {
-		return "", 0, err
-	}
-	return sql, priority, nil
+	return sql, priority, err
 }
 
 // validateCompoundOperandStages checks every leaf of a compound that binds as one
