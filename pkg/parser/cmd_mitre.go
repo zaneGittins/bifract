@@ -144,3 +144,10 @@ func mitreFieldRef(field string, ctx *CommandContext) (string, error) {
 func init() {
 	registerAggregatingCommand(&mitreHandler{}, "mitre", "attack")
 }
+
+func init() {
+	registerSpec(&CommandSpec{Name: "mitre", Params: []ParamSpec{
+		field("tags"), namedField("tag"), namedField("field"),
+		namedField("groupby"), namedField("by"), namedLit("limit"),
+	}}, "mitre", "attack")
+}

@@ -927,8 +927,6 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			includeColumns = append(includeColumns, cols...)
 		} else if strings.HasPrefix(arg, "strict=") {
 			strict = strings.ToLower(strings.TrimPrefix(arg, "strict=")) == "true"
-		} else {
-			return fmt.Errorf("match(): unexpected argument %q; every parameter is named, and a list goes in brackets: include=[a,b]", arg)
 		}
 	}
 
@@ -1089,8 +1087,6 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if strings.HasPrefix(arg, "include=") {
 			cols, _ := namedListArg(arg, "include")
 			includeColumns = append(includeColumns, cols...)
-		} else {
-			return fmt.Errorf("lookupIP(): unexpected argument %q; every parameter is named, and a list goes in brackets: include=[country,city]", arg)
 		}
 	}
 
@@ -1149,4 +1145,54 @@ func init() {
 	registerTransformCommand(&sprintfHandler{}, "sprintf")
 	registerTransformCommand(&matchHandler{}, "match")
 	registerTransformCommand(&lookupIPHandler{}, "lookupIP", "lookupip", "geoip")
+}
+
+func init() {
+	registerSpec(&CommandSpec{Name: "strftime", Params: []ParamSpec{
+		reqLit("format"), namedField("field"), namedLit("timezone"), as(),
+	}})
+	// lowercase(field) and lowercase(field, output) rebind in place by default.
+	registerSpec(&CommandSpec{Name: "lowercase", Params: []ParamSpec{reqField("field"), lit("output")}})
+	registerSpec(&CommandSpec{Name: "uppercase", Params: []ParamSpec{reqField("field"), lit("output")}})
+	// eval("name = expression") is one free-form assignment per argument.
+	registerSpec(&CommandSpec{Name: "eval", FreeForm: true, Params: []ParamSpec{reqLit("expression")}})
+	// Only the first positional is read as the pattern; a second was silently
+	// ignored, so regex(commandline, "p") used commandline AS the pattern.
+	// The pattern comes from the first positional, pattern= or regex=; the
+	// handler reports the case where none is given.
+	registerSpec(&CommandSpec{Name: "regex", Params: []ParamSpec{
+		lit("pattern"), namedLit("regex"), namedField("field"), as(),
+	}})
+	registerSpec(&CommandSpec{Name: "replace", Params: []ParamSpec{
+		reqLit("pattern"), reqLit("replacement"), field("field"), lit("outputField"),
+	}})
+	registerSpec(&CommandSpec{Name: "concat", Params: []ParamSpec{fields("fields"), as()}})
+	registerSpec(&CommandSpec{Name: "hash", Params: []ParamSpec{fields("fields"), namedField("field"), as()}})
+	registerSpec(&CommandSpec{Name: "now", Params: []ParamSpec{lit("outputField")}})
+	registerSpec(&CommandSpec{Name: "len", Params: []ParamSpec{reqField("field"), as()}})
+	registerSpec(&CommandSpec{Name: "logsize", Params: []ParamSpec{field("field"), as()}})
+	registerSpec(&CommandSpec{Name: "levenshtein", Params: []ParamSpec{reqField("s1"), reqField("s2"), as()}})
+	registerSpec(&CommandSpec{Name: "base64decode", Params: []ParamSpec{reqField("field"), as()}})
+	registerSpec(&CommandSpec{Name: "split", Params: []ParamSpec{
+		reqField("field"), reqLit("delimiter"), reqLit("index"), as(),
+	}})
+	registerSpec(&CommandSpec{Name: "substr", Params: []ParamSpec{
+		reqField("field"), reqLit("start"), lit("length"), as(),
+	}})
+	registerSpec(&CommandSpec{Name: "urldecode", Params: []ParamSpec{reqField("field"), as()}})
+	registerSpec(&CommandSpec{Name: "coalesce", Params: []ParamSpec{fields("fields"), as()}})
+	registerSpec(&CommandSpec{Name: "sprintf", Params: []ParamSpec{
+		reqLit("format"), fields("fields"), namedField("field"), as(),
+	}})
+	registerSpec(&CommandSpec{Name: "match", Params: []ParamSpec{
+		ParamSpec{Name: "dict", Kind: ParamLiteral, Required: true},
+		ParamSpec{Name: "field", Kind: ParamField, Required: true},
+		ParamSpec{Name: "column", Kind: ParamLiteral, Required: true},
+		ParamSpec{Name: "include", Kind: ParamList, Required: true},
+		namedLit("strict"),
+	}})
+	registerSpec(&CommandSpec{Name: "lookupip", Params: []ParamSpec{
+		ParamSpec{Name: "field", Kind: ParamField, Required: true},
+		ParamSpec{Name: "include", Kind: ParamList, Required: true},
+	}}, "lookupip", "lookupIP", "geoip")
 }

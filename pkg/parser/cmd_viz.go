@@ -437,3 +437,29 @@ func init() {
 	registerAggregatingCommand(&timechartHandler{}, "timechart")
 	registerCommand(&graphWorldHandler{}, "graphWorld", "graphworld", "worldmap")
 }
+
+func init() {
+	registerSpec(&CommandSpec{Name: "piechart", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
+	registerSpec(&CommandSpec{Name: "barchart", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
+	registerSpec(&CommandSpec{Name: "heatmap", Params: []ParamSpec{
+		namedField("x"), namedField("y"), namedAgg("value"),
+	}})
+	registerSpec(&CommandSpec{Name: "singleval", Params: []ParamSpec{field("field"), namedLit("label")}})
+	// timechart(span=1d, count()) puts the aggregate positionally.
+	registerSpec(&CommandSpec{Name: "timechart", Params: []ParamSpec{
+		ParamSpec{Name: "function", Kind: ParamAggSpec, Positional: true},
+		namedLit("span"),
+	}})
+	registerSpec(&CommandSpec{Name: "graph", Params: []ParamSpec{
+		namedField("parent"), namedField("child"), namedList("labels"), namedLit("limit"),
+	}})
+	registerSpec(&CommandSpec{Name: "mesh", Params: []ParamSpec{
+		namedField("src"), namedField("dst"), namedList("include"), namedList("labels"),
+		namedField("label"), namedField("size"), namedField("weight"),
+		namedLit("directed"), namedLit("color"), namedLit("limit"),
+	}})
+	registerSpec(&CommandSpec{Name: "pgraph", Params: []ParamSpec{namedLit("limit")}})
+	registerSpec(&CommandSpec{Name: "graphworld", Params: []ParamSpec{
+		namedField("lat"), namedField("lon"), namedField("label"), namedLit("limit"),
+	}}, "graphworld", "graphWorld", "worldmap")
+}

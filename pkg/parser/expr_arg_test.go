@@ -78,9 +78,9 @@ func TestExpressionsSurviveListSplitting(t *testing.T) {
 // asked for; every named-only command now says so instead.
 func TestStrayArgumentIsRejected(t *testing.T) {
 	cases := []struct{ query, want string }{
-		{`* | match(dict="d", field=f, column=k, include=c1,c2)`, "match(): unexpected argument"},
-		{`* | lookupIP(field=src_ip, include=country,city)`, "lookupIP(): unexpected argument"},
-		{`* | model_lookup(model="m", key=a,b)`, "model_lookup(): unexpected argument"},
+		{`* | match(dict="d", field=f, column=k, include=c1,c2)`, "match(): expects at most 0 positional"},
+		{`* | lookupIP(field=src_ip, include=country,city)`, "expects at most 0 positional"},
+		{`* | model_lookup(model="m", key=a,b)`, "expects at most 0 positional"},
 	}
 	for _, c := range cases {
 		pipeline, err := ParseQuery(c.query)

@@ -200,3 +200,11 @@ func joinSubqueryHint(sub *PipelineNode, joinKey string) string {
 func init() {
 	registerCommand(&joinHandler{}, "join")
 }
+
+func init() {
+	// Arguments[0] is the raw subquery body, so positional counting and unknown
+	// names cannot apply: the block carries the sub-pipeline's own syntax.
+	registerSpec(&CommandSpec{Name: "join", FreeForm: true, Params: []ParamSpec{
+		field("key"), namedLit("type"), namedLit("max"), namedList("include"),
+	}})
+}

@@ -131,3 +131,10 @@ func (p TLSHParams) validate() error {
 func unquoteArg(s string) string {
 	return strings.Trim(strings.TrimSpace(s), `"'`)
 }
+
+func init() {
+	registerSpec(&CommandSpec{Name: "tlsh", Params: []ParamSpec{
+		ParamSpec{Name: "field", Kind: ParamField, Required: true},
+		namedList("hash"), namedLit("dict"), namedLit("threshold"),
+	}})
+}

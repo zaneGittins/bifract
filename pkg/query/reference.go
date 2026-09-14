@@ -434,7 +434,6 @@ var bqlFunctionDocs = []FunctionDoc{
 		Syntax:      "| percentile(field, p)",
 		Parameters: []Param{
 			{Name: "field", Type: "numeric", Required: true, Description: "The field to calculate percentile for"},
-			{Name: "p", Type: "number", Required: false, Description: "Percentile value 0-100 (default: 95)"},
 		},
 		Examples: []string{
 			"| percentile(response_time)",
@@ -609,7 +608,6 @@ var bqlFunctionDocs = []FunctionDoc{
 			{Name: "pattern", Type: "regex", Required: true, Description: "Regex pattern to match"},
 			{Name: "replacement", Type: "string", Required: true, Description: "Replacement string"},
 			{Name: "field", Type: "string", Required: false, Description: "Field to replace in (default: norm_log)"},
-			{Name: "as", Type: "string", Required: false, Description: "Output field name"},
 		},
 		Examples: []string{
 			`| replace("password=\\S+", "password=***", norm_log)`,
@@ -1129,16 +1127,15 @@ var bqlFunctionDocs = []FunctionDoc{
 		Name:        "heatmap",
 		Category:    "Visualization",
 		Description: "Renders a 2D density heatmap with aggregated values",
-		Syntax:      "| heatmap(x=field, y=field, value=agg(), limit=N)",
+		Syntax:      "| heatmap(x=field, y=field, value=agg())",
 		Parameters: []Param{
 			{Name: "x", Type: "string", Required: true, Description: "Field for the X axis"},
 			{Name: "y", Type: "string", Required: true, Description: "Field for the Y axis"},
 			{Name: "value", Type: "string", Required: false, Description: "Aggregation function (default: count())"},
-			{Name: "limit", Type: "number", Required: false, Description: "Max distinct values per axis (default: 50)"},
 		},
 		Examples: []string{
 			"* | heatmap(x=src_ip, y=dst_port, value=count())",
-			"* | heatmap(x=user, y=action, value=sum(bytes), limit=20)",
+			"* | heatmap(x=user, y=action, value=sum(bytes))",
 		},
 	},
 }

@@ -116,7 +116,7 @@ Filter logs to only those that have comments. Optionally narrow by tag labels or
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `tags`    | No       | One or more tag labels (OR logic, case sensitive). Comma-separated. |
+| `tags`    | No       | One or more tag labels (OR logic, case sensitive): `tags=[a,b]` |
 | `keyword` | No       | Search term matched against comment text (case insensitive) |
 
 With no arguments, returns all logs that have at least one comment.
@@ -124,11 +124,13 @@ With no arguments, returns all logs that have at least one comment.
 ### Tag Filtering
 
 ```
-* | comment(tags=security)
-* | comment(tags=security,critical)
+* | comment(tags=[security])
+* | comment(tags=[security,critical])
 ```
 
 Multiple tags use OR logic. This matches logs with comments tagged `security` OR `critical`.
+
+Brackets match every other list parameter in BQL (`include=[...]`, `key=[...]`, `values=[...]`). The unbracketed `tags=security,critical` is still accepted so existing saved queries keep working.
 
 ### Keyword Filtering
 
@@ -141,7 +143,7 @@ Matches logs with comments containing "timeout" (case insensitive).
 ### Combined
 
 ```
-* | comment(keyword="error", tags=security)
+* | comment(keyword="error", tags=[security])
 ```
 
 Keyword AND at least one matching tag.
@@ -151,7 +153,7 @@ Keyword AND at least one matching tag.
 `comment()` can be combined with other pipeline commands:
 
 ```
-* | comment(tags=incident) | groupby(src_ip, function=count())
+* | comment(tags=[incident]) | groupby(src_ip, function=count())
 * | comment() | table(timestamp, norm_log, src_ip)
 ```
 
@@ -168,7 +170,7 @@ event_id=1 | tlsh(field=tlsh, dict="known_bad", threshold=30)
 | Parameter   | Required | Description |
 |-------------|----------|-------------|
 | `field`     | Yes      | Log field holding the TLSH digest. Must be a stored field, not one produced by an earlier command. |
-| `hash`      | One of   | Literal digest to compare against. Comma-separate for several. |
+| `hash`      | One of   | Literal digest to compare against: `hash=[d1,d2]` for several. |
 | `dict`      | One of   | Dictionary whose key column holds the digests to compare against. |
 | `threshold` | No       | Maximum TLSH distance. Defaults to 30. |
 

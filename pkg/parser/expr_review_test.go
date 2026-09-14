@@ -119,10 +119,19 @@ func TestExprCallAsNamedArgumentValue(t *testing.T) {
 			t.Errorf("expected ordering by the expression: %s", sql)
 		}
 	})
-	t.Run("dedup", func(t *testing.T) {
-		sql := revSQL(t, `* | dedup(field=lower(user))`)
-		if strings.Contains(sql, "fields.`field=`") {
-			t.Errorf("argument split at the '=': %s", sql)
+	t.Run("dedup takes its fields positionally", func(t *testing.T) {
+		sql := revSQL(t, `* | dedup(lower(user))`)
+		if strings.Contains(sql, "fields.`field=`") || !strings.Contains(sql, "lower(fields.`user`::String)") {
+			t.Errorf("expected dedup on the expression: %s", sql)
+		}
+		// dedup() has no field= parameter; the handler would read the whole
+		// "field=..." text as a column name.
+		pipeline, err := ParseQuery(`* | dedup(field=lower(user))`)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if _, err := TranslateToSQLWithOrder(pipeline, revOpts()); err == nil {
+			t.Error("expected dedup(field=) to be rejected")
 		}
 	})
 }
@@ -146,7 +155,7 @@ func TestExprCapturedCallKeepsWordOperators(t *testing.T) {
 // looks like one.
 func TestExprValidationIgnoresStringLiterals(t *testing.T) {
 	for _, q := range []string{
-		`* | regex(commandline, "powershell(.+)", as=ps)`,
+		`* | regex("powershell(?<ps>.+)", field=commandline)`,
 		`* | regex("foo, bar(?<baz>.+)", field=commandline)`,
 		`* | replace("user(\\d+)", "u", norm_log)`,
 		`* | table(a) | "some(text)"`,

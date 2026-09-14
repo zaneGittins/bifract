@@ -217,3 +217,44 @@ func TestEveryExpressionFunctionIsDocumented(t *testing.T) {
 		t.Errorf("expression functions missing from the reference: %s", strings.Join(missing, ", "))
 	}
 }
+
+// The built-in reference and the parser's command schemas describe the same
+// surface, so they must not drift. The reference is what the UI panel, the ?
+// hint and an agent read; the schema is what actually validates. A parameter in
+// one and not the other means somebody is being told the wrong thing.
+func TestReferenceParametersMatchCommandSchema(t *testing.T) {
+	specNames := map[string]bool{}
+	for _, n := range parser.CommandSpecNames() {
+		specNames[n] = true
+	}
+
+	var drift []string
+	for _, fn := range bqlFunctionDocs {
+		name := strings.ToLower(fn.Name)
+		spec, ok := parser.CommandSpecFor(name)
+		if !ok || !specNames[name] {
+			continue // an expression function or stats-only entry; covered elsewhere
+		}
+		declared := map[string]bool{}
+		for _, p := range spec.Params {
+			declared[strings.ToLower(p.Name)] = true
+		}
+		for _, p := range fn.Parameters {
+			pname := strings.ToLower(p.Name)
+			if pname == "" || declared[pname] {
+				continue
+			}
+			// The reference names a positional group loosely (fields, field1),
+			// which the schema models as one variadic parameter.
+			if spec.HasVariadicParam() {
+				continue
+			}
+			drift = append(drift, fn.Name+": reference documents parameter "+p.Name+" that the schema does not declare")
+		}
+	}
+	sort.Strings(drift)
+	if len(drift) > 0 {
+		t.Errorf("reference and command schema disagree in %d place(s):\n%s",
+			len(drift), strings.Join(drift, "\n"))
+	}
+}

@@ -260,3 +260,15 @@ func init() {
 	registerCommand(&tailHandler{}, "tail")
 	registerCommand(&dedupHandler{}, "dedup")
 }
+
+func init() {
+	// The direction is accepted either way: sort(bytes, desc) and sort(bytes, order=desc).
+	registerSpec(&CommandSpec{Name: "sort", Params: []ParamSpec{
+		reqField("field"),
+		ParamSpec{Name: "order", Kind: ParamLiteral, Positional: true},
+	}})
+	registerSpec(&CommandSpec{Name: "limit", Params: []ParamSpec{reqLit("n")}})
+	registerSpec(&CommandSpec{Name: "head", Params: []ParamSpec{lit("n")}})
+	registerSpec(&CommandSpec{Name: "tail", Params: []ParamSpec{lit("n")}})
+	registerSpec(&CommandSpec{Name: "dedup", Params: []ParamSpec{fields("fields")}})
+}

@@ -123,3 +123,11 @@ func init() {
 	registerCommand(&commentHandler{}, "comment")
 	registerCommand(&commentHandler{}, "comments")
 }
+
+func init() {
+	registerSpec(&CommandSpec{Name: "in", Params: []ParamSpec{
+		reqField("field"),
+		ParamSpec{Name: "values", Kind: ParamList, Positional: true, Required: true},
+	}})
+	registerSpec(&CommandSpec{Name: "cidr", Params: []ParamSpec{reqField("field"), reqLit("range")}})
+}

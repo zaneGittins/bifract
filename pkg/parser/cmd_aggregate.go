@@ -939,3 +939,37 @@ func init() {
 	registerAggregatingCommand(&bucketHandler{}, "bucket")
 	registerAggregatingCommand(&groupbyHandler{}, "groupby")
 }
+
+func init() {
+	registerSpec(&CommandSpec{Name: "count", Params: []ParamSpec{
+		field("field"), namedLit("unique"), namedLit("distinct"), as(),
+	}})
+	for _, n := range []string{"sum", "avg", "max", "min", "median", "percentile", "skewness", "kurtosis", "mad", "iqr", "stddev"} {
+		registerSpec(&CommandSpec{Name: n, Params: []ParamSpec{reqField("field"), as()}}, n)
+	}
+	registerSpec(commandSpecs["skewness"], "skew")
+	registerSpec(commandSpecs["kurtosis"], "kurt")
+	registerSpec(commandSpecs["stddev"], "stdDev")
+
+	registerSpec(&CommandSpec{Name: "frequency", Params: []ParamSpec{reqField("field")}})
+	// headTail(src_ip, 90) and headTail(src_ip, threshold=90) are both written.
+	registerSpec(&CommandSpec{Name: "headtail", Params: []ParamSpec{
+		reqField("field"),
+		ParamSpec{Name: "threshold", Kind: ParamLiteral, Positional: true},
+	}})
+	registerSpec(&CommandSpec{Name: "selectfirst", Params: []ParamSpec{reqField("field"), as()}})
+	registerSpec(&CommandSpec{Name: "selectlast", Params: []ParamSpec{reqField("field"), as()}})
+	registerSpec(&CommandSpec{Name: "top", Params: []ParamSpec{
+		field("field"), namedLit("percent"), namedLit("limit"), as(),
+	}})
+	// multi() holds aggregate specs, which processStatsFn validates.
+	registerSpec(&CommandSpec{Name: "multi", FreeForm: true, Params: []ParamSpec{fields("functions")}})
+	// bucket(1h, count()) and bucket(span=1h, function=count()) are both written.
+	registerSpec(&CommandSpec{Name: "bucket", Params: []ParamSpec{
+		reqLit("span"),
+		ParamSpec{Name: "function", Kind: ParamAggSpec, Positional: true},
+	}})
+	registerSpec(&CommandSpec{Name: "groupby", Params: []ParamSpec{
+		fields("fields"), namedAgg("function"), namedLit("limit"), namedLit("distinct"), namedLit("unique"),
+	}})
+}

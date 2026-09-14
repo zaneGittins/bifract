@@ -139,3 +139,15 @@ func init() {
 	registerAggregatingCommand(&madOutlierHandler{}, "madoutlier", "outlier")
 	registerAggregatingCommand(&histogramHandler{}, "histogram")
 }
+
+func init() {
+	modZ := &CommandSpec{Name: "modifiedzscore", Params: []ParamSpec{reqField("field")}}
+	registerSpec(modZ, "modifiedzscore", "modifiedz", "mzscore")
+	outlier := &CommandSpec{Name: "madoutlier", Params: []ParamSpec{
+		reqField("field"),
+		ParamSpec{Name: "threshold", Kind: ParamLiteral, Positional: true},
+	}}
+	registerSpec(outlier, "madoutlier", "outlier")
+	// The handler names the missing-field case precisely; the spec covers shape.
+	registerSpec(&CommandSpec{Name: "histogram", Params: []ParamSpec{field("field"), namedLit("buckets")}})
+}

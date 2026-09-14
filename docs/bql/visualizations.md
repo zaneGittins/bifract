@@ -84,7 +84,7 @@ Render a 2D density heatmap with aggregated values:
 
 ```
 * | heatmap(x=src_ip, y=dst_port, value=count())
-* | heatmap(x=user, y=action, value=sum(bytes), limit=20)
+* | heatmap(x=user, y=action, value=sum(bytes))
 ```
 
 ### Parameters

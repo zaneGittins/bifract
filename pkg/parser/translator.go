@@ -202,6 +202,10 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		}
 	}
 
+	if err := validateCommandSchemas(pipeline); err != nil {
+		return nil, err
+	}
+
 	if err := validateExprArgs(pipeline, registry); err != nil {
 		return nil, err
 	}

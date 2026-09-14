@@ -456,8 +456,6 @@ func parseModelLookupArgs(args []string) (modelName string, keyFields []string, 
 			default:
 				return "", nil, false, fmt.Errorf("model_lookup() strict= must be true or false")
 			}
-		} else {
-			return "", nil, false, fmt.Errorf("model_lookup(): unexpected argument %q; every parameter is named, and the key list goes in brackets: key=[a,b]", arg)
 		}
 	}
 	if modelName == "" {
@@ -485,4 +483,12 @@ func modelLookupFieldRef(field string) string {
 
 func init() {
 	registerCommand(&modelLookupHandler{}, "model_lookup")
+}
+
+func init() {
+	registerSpec(&CommandSpec{Name: "model_lookup", Params: []ParamSpec{
+		ParamSpec{Name: "model", Kind: ParamLiteral, Required: true},
+		ParamSpec{Name: "key", Kind: ParamList, Required: true},
+		namedLit("strict"),
+	}})
 }

@@ -967,3 +967,13 @@ const ipAbstractTmpl = `multiIf(` +
 
 // domainAbstractTmpl: %s is substituted once. Lowercase + strip the trailing FQDN root dot.
 const domainAbstractTmpl = `lower(replaceRegexpOne(%s, '\\.$', ''))`
+
+func init() {
+	// pgr() generates the pipeline source; its options are all named.
+	registerSpec(&CommandSpec{Name: "pgr", Params: []ParamSpec{
+		namedLit("start"), namedLit("depth"), namedLit("direction"), namedLit("limit"),
+		namedLit("threshold"), namedLit("lambda"), namedLit("diffuse"),
+		namedLit("reconnect"), namedLit("peers"),
+		namedList("include"), namedList("exclude"),
+	}})
+}

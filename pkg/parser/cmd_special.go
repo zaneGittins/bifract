@@ -721,3 +721,18 @@ func init() {
 	registerCommand(&chainHandler{}, "chain")
 	registerAggregatingCommand(&heatmapHandler{}, "heatmap")
 }
+
+func init() {
+	registerSpec(&CommandSpec{Name: "table", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
+	registerSpec(&CommandSpec{Name: "analyzefields", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
+	// chain(field, ...) { steps } and case { branches } carry a block the handler
+	// parses itself.
+	registerSpec(&CommandSpec{Name: "chain", FreeForm: true, Params: []ParamSpec{
+		fields("fields"), namedLit("within"), namedLit("order"),
+	}})
+	registerSpec(&CommandSpec{Name: "case", FreeForm: true, Params: []ParamSpec{reqLit("branches")}})
+	registerSpec(&CommandSpec{Name: "ptg", Params: []ParamSpec{
+		ParamSpec{Name: "start", Kind: ParamLiteral, Required: true},
+		namedLit("depth"), namedLit("direction"),
+	}})
+}
