@@ -75,3 +75,9 @@ playwright-report/
 blob-report/
 .playwright/
 test/e2e/.auth/
+
+# Scratch/probe tests written while investigating behaviour. These must not be
+# created in the tree at all (see CLAUDE.md, Testing); this is the backstop that
+# keeps one from being committed by accident, as has happened before. Already
+# tracked files, such as pkg/feeds/zz_synccpu_manual_test.go, are unaffected.
+zz*_test.go
