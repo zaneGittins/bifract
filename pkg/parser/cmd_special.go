@@ -39,126 +39,31 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Clear existing selects (table replaces default)
 	source.Layer.Selects = nil
 
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if n, err := validateInt(b.Str("limit", "")); err == nil {
+		source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+	}
+
 	var nonAggregateFields []string
 
-	for _, field := range cmd.Arguments {
-		if !strings.HasPrefix(field, "limit=") {
-			ctx.Plan.TableHasExplicitColumns = true
-		}
-		if strings.HasPrefix(field, "limit=") {
-			if n, err := validateInt(strings.TrimPrefix(field, "limit=")); err == nil {
-				source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
-			}
+	for _, arg := range b.Flat("fields") {
+		ctx.Plan.TableHasExplicitColumns = true
+		field := arg.FieldName()
+
+		if selects, ok, err := tableAggregateSelects(arg, ctx); err != nil {
+			return fmt.Errorf("table(): %w", err)
+		} else if ok {
+			source.Layer.Selects = append(source.Layer.Selects, selects...)
+			ctx.Plan.IsAggregated = true
 			continue
 		}
+
 		if field == "timestamp" {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "timestamp"})
 			nonAggregateFields = append(nonAggregateFields, "timestamp")
-		} else if field == "count" || strings.HasPrefix(field, "count(") {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _count"})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "sum(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "sum("), ")")
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("sum(%s) AS _sum", cast),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "avg(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "avg("), ")")
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("avg(%s) AS _avg", cast),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "max(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "max("), ")")
-			if innerField == "timestamp" {
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "max(timestamp) AS max_timestamp"})
-			} else {
-				cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-					Expr: fmt.Sprintf("max(%s) AS _max", cast),
-				})
-			}
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "min(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "min("), ")")
-			if innerField == "timestamp" {
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "min(timestamp) AS min_timestamp"})
-			} else {
-				cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-					Expr: fmt.Sprintf("min(%s) AS _min", cast),
-				})
-			}
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "percentile(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "percentile("), ")")
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(%s) AS percentile_%s", cast, escapeString(innerField)),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "stdDev(") || strings.HasPrefix(field, "stddev(") {
-			var innerField string
-			if strings.HasPrefix(field, "stdDev(") {
-				innerField = strings.TrimSuffix(strings.TrimPrefix(field, "stdDev("), ")")
-			} else {
-				innerField = strings.TrimSuffix(strings.TrimPrefix(field, "stddev("), ")")
-			}
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("stddevPop(%s) AS stddev_%s", cast, escapeString(innerField)),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "median(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "median("), ")")
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("median(%s) AS median_%s", cast, escapeString(innerField)),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "mad(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "mad("), ")")
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%s))), groupArray(%s))) AS mad_%s", cast, cast, escapeString(innerField)),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "skewness(") || strings.HasPrefix(field, "skew(") {
-			var innerField string
-			if strings.HasPrefix(field, "skewness(") {
-				innerField = strings.TrimSuffix(strings.TrimPrefix(field, "skewness("), ")")
-			} else {
-				innerField = strings.TrimSuffix(strings.TrimPrefix(field, "skew("), ")")
-			}
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("skewPop(%s) AS skewness_%s", cast, escapeString(innerField)),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "kurtosis(") || strings.HasPrefix(field, "kurt(") {
-			var innerField string
-			if strings.HasPrefix(field, "kurtosis(") {
-				innerField = strings.TrimSuffix(strings.TrimPrefix(field, "kurtosis("), ")")
-			} else {
-				innerField = strings.TrimSuffix(strings.TrimPrefix(field, "kurt("), ")")
-			}
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("kurtPop(%s) AS kurtosis_%s", cast, escapeString(innerField)),
-			})
-			ctx.Plan.IsAggregated = true
-		} else if strings.HasPrefix(field, "iqr(") {
-			innerField := strings.TrimSuffix(strings.TrimPrefix(field, "iqr("), ")")
-			cast := numericCast(innerField, resolveFieldRef(innerField, ctx.Registry), ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects,
-				SelectExpr{Expr: fmt.Sprintf("quantile(0.25)(%s) AS _q1", cast)},
-				SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(%s) AS _q3", cast)},
-				SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s) AS _iqr", cast, cast)},
-			)
-			ctx.Plan.IsAggregated = true
 		} else if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindJoined {
 			// Produced by a JOIN wrapper (model_lookup/join), not the source scan.
 			// Skip it here (projecting fields.`x` would be wrong and would shadow the
@@ -183,7 +88,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, field)
 			continue
 		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
-			safeAlias, err := outputAlias(field)
+			safeAlias, err := ArgAlias(arg)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
@@ -193,26 +98,31 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if ctx.Opts.SourceSubquery != "" {
 			// Over a subquery source (a source command like pgr()) every field is a flat
 			// column; resolve bare via the registry rather than as a fields.`x` JSON path.
-			safeAlias, err := outputAlias(field)
+			safeAlias, err := ArgAlias(arg)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", resolveFieldRef(field, ctx.Registry), safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
 		} else {
-			safeAlias, err := outputAlias(field)
+			safeAlias, err := ArgAlias(arg)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
 			ref := groupableCast(ctx.Registry.fieldRef(field))
-			if sql, ok := exprArgSQL(field, ctx.Registry); ok {
-				ref = sql
+			if field == "" {
+				if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
+					return fmt.Errorf("table(): %w", err)
+				}
 				// Register the derived alias, as groupby() does. Without it a later
 				// sort/dedup/filter on the name resolved it as a JSON sub-column
 				// that exists on no row.
 				alias := strings.Trim(safeAlias, "`")
 				ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
 				ctx.Registry.SetResolveExpr(alias, alias)
+				nonAggregateFields = append(nonAggregateFields, alias)
+				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", ref, safeAlias)})
+				continue
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", ref, safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
@@ -263,18 +173,19 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 
 	newStage := ctx.Plan.CurrentStage()
 	newStage.Layer.Selects = nil
-	for _, field := range cmd.Arguments {
-		if strings.HasPrefix(field, "limit=") {
-			if n, err := validateInt(strings.TrimPrefix(field, "limit=")); err == nil {
-				newStage.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
-			}
-			continue
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if n, err := validateInt(b.Str("limit", "")); err == nil {
+		newStage.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+	}
+	for _, arg := range b.Flat("fields") {
 		ctx.Plan.TableHasExplicitColumns = true
 
 		// The bare count keyword maps to the prior stage's default _count output.
-		name := strings.Trim(field, "`")
-		if name == "count" || name == "count()" {
+		name := strings.Trim(arg.Value(), "`")
+		if aggName, _, ok := aggregateCall(arg); ok && aggName == "count" {
 			name = "_count"
 		}
 		if prevOutputs[name] {
@@ -324,19 +235,15 @@ func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if ctx.Plan.ProcessTreeStart != "" {
 		return fmt.Errorf("cannot use multiple ptg() functions in the same query")
 	}
-	var start, direction string
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	start := b.Str("start", "")
+	direction := strings.ToLower(b.Str("direction", ""))
 	depth := 0
-	for _, arg := range cmd.Arguments {
-		switch {
-		case strings.HasPrefix(arg, "start="):
-			start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
-		case strings.HasPrefix(arg, "depth="):
-			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
-				depth = d
-			}
-		case strings.HasPrefix(arg, "direction="):
-			direction = strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "direction="), "\"'"))
-		}
+	if d := b.Int("depth", 0); d > 0 {
+		depth = d
 	}
 	if start == "" {
 		return fmt.Errorf("ptg() requires a start= parameter, e.g. ptg(start=\"<process_guid>\")")
@@ -362,6 +269,9 @@ func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// analyzeFieldsMaxScan caps the rows analyzeFields() samples, including limit=max.
+const analyzeFieldsMaxScan = 200000
+
 // analyzefieldsHandler handles analyzefields(field1, field2, limit=N)
 type analyzefieldsHandler struct{}
 
@@ -378,23 +288,30 @@ func (h *analyzefieldsHandler) Declare(cmd CommandNode, ctx *CommandContext) err
 
 func (h *analyzefieldsHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.IsAnalyze = true
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "limit=") {
-			limitVal := strings.TrimPrefix(arg, "limit=")
-			if strings.EqualFold(limitVal, "max") {
-				ctx.Plan.AnalyzeFieldsScanLimit = 200000
-			} else if n, err := strconv.Atoi(limitVal); err == nil && n > 0 {
-				if n > 200000 {
-					n = 200000
-				}
-				ctx.Plan.AnalyzeFieldsScanLimit = n
-			}
-		} else {
-			ctx.Plan.AnalyzeFieldsList = append(ctx.Plan.AnalyzeFieldsList, arg)
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if limitVal := b.Str("limit", ""); limitVal != "" {
+		if strings.EqualFold(limitVal, "max") {
+			ctx.Plan.AnalyzeFieldsScanLimit = analyzeFieldsMaxScan
+		} else if n, err := strconv.Atoi(limitVal); err == nil && n > 0 {
+			ctx.Plan.AnalyzeFieldsScanLimit = min(n, analyzeFieldsMaxScan)
 		}
 	}
+	ctx.Plan.AnalyzeFieldsList = append(ctx.Plan.AnalyzeFieldsList, b.Strings("fields")...)
 	return nil
+}
+
+// chainWithinSeconds is the chain's span, or 0 when no within= was given.
+// spanToSeconds defaults an empty span to an hour, which would silently impose a
+// window on every unwindowed chain.
+func chainWithinSeconds(b *Bound) int {
+	within := b.Str("within", "")
+	if within == "" {
+		return 0
+	}
+	return spanToSeconds(within)
 }
 
 // chainHandler handles chain(fields, steps, within=5m)
@@ -409,27 +326,27 @@ func (h *chainHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 // WindowContract reports that a matched sequence spans at most within=, and that
 // chainDoneColumn marks when it completed.
 func (h *chainHandler) WindowContract(cmd CommandNode) (int, string) {
-	within := 0
-	if len(cmd.Arguments) >= 2 && cmd.Arguments[1] != "" {
-		within = spanToSeconds(cmd.Arguments[1])
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return 0, chainDoneColumn
 	}
-	return within, chainDoneColumn
+	return chainWithinSeconds(b), chainDoneColumn
 }
 
 func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) < 1 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	chainFields := b.Strings("fields")
+	if len(chainFields) == 0 {
 		return fmt.Errorf("chain() requires grouping field(s) and step definitions")
 	}
 	source := ctx.Plan.CurrentStage()
 
-	chainFieldsStr := cmd.Arguments[0]
-	var withinSeconds int
-	if len(cmd.Arguments) >= 2 && cmd.Arguments[1] != "" {
-		withinSeconds = spanToSeconds(cmd.Arguments[1])
-	}
+	withinSeconds := chainWithinSeconds(b)
 	ordered := true
-	if len(cmd.Arguments) >= 3 && cmd.Arguments[2] != "" {
-		v := strings.ToLower(strings.Trim(cmd.Arguments[2], `"'`))
+	if v := strings.ToLower(b.Str("order", "")); v != "" {
 		switch v {
 		case "true", "1", "yes":
 			ordered = true
@@ -444,8 +361,6 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// no single aggregate expresses; approximating it drops real matches.
 		return fmt.Errorf("chain(): within= cannot be combined with order=false")
 	}
-
-	chainFields := listArg(chainFieldsStr)
 
 	steps, stepFields, err := parseChainSteps(cmd.BlockTokens, cmd.BlockSource, ctx.Opts, ctx.Registry)
 	if err != nil {
@@ -635,25 +550,23 @@ func (h *heatmapHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	var xField, yField, valueFunc string
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	xArg, hasX := b.First("x")
+	yArg, hasY := b.First("y")
+	xField, yField := xArg.Value(), yArg.Value()
+	if !hasX {
+		xField = ""
+	}
+	if !hasY {
+		yField = ""
+	}
+	value := b.Agg("value")
 	limit := 50
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "x=") {
-			xField = strings.TrimPrefix(arg, "x=")
-		} else if strings.HasPrefix(arg, "y=") {
-			yField = strings.TrimPrefix(arg, "y=")
-		} else if strings.HasPrefix(arg, "value=") {
-			valueFunc = strings.TrimPrefix(arg, "value=")
-		} else if strings.HasPrefix(arg, "limit=") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && n > 0 {
-				if n > 200 {
-					n = 200
-				}
-				limit = n
-			}
-		} else if strings.Contains(arg, "(") {
-			valueFunc = arg
-		}
+	if n := b.Int("limit", 0); n > 0 {
+		limit = min(n, 200)
 	}
 	if xField == "" || yField == "" {
 		return fmt.Errorf("heatmap() requires x= and y= parameters")
@@ -672,43 +585,39 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	// Standalone mode: heatmap does its own aggregation
-	xRef := resolveFieldRef(xField, ctx.Registry)
-	yRef := resolveFieldRef(yField, ctx.Registry)
+	xRef, err := ResolveArg(xArg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("heatmap(): %w", err)
+	}
+	yRef, err := ResolveArg(yArg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("heatmap(): %w", err)
+	}
 
 	source.Layer.Selects = append(source.Layer.Selects,
 		SelectExpr{Expr: fmt.Sprintf("%s AS _heatmap_x", xRef)},
 		SelectExpr{Expr: fmt.Sprintf("%s AS _heatmap_y", yRef)},
 	)
 
-	if valueFunc == "" || strings.Contains(valueFunc, "count()") {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _heatmap_value"})
-	} else if strings.Contains(valueFunc, "sum(") {
-		f := extractFunctionField(valueFunc, "sum")
-		cast := numericCast(f, resolveFieldRef(f, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("sum(%s) AS _heatmap_value", cast),
-		})
-	} else if strings.Contains(valueFunc, "avg(") {
-		f := extractFunctionField(valueFunc, "avg")
-		cast := numericCast(f, resolveFieldRef(f, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("avg(%s) AS _heatmap_value", cast),
-		})
-	} else if strings.Contains(valueFunc, "max(") {
-		f := extractFunctionField(valueFunc, "max")
-		cast := numericCast(f, resolveFieldRef(f, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("max(%s) AS _heatmap_value", cast),
-		})
-	} else if strings.Contains(valueFunc, "min(") {
-		f := extractFunctionField(valueFunc, "min")
-		cast := numericCast(f, resolveFieldRef(f, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("min(%s) AS _heatmap_value", cast),
-		})
-	} else {
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS _heatmap_value"})
+	valueExpr := "COUNT(*)"
+	if value != nil {
+		switch name := strings.ToLower(value.Name); name {
+		case "count":
+		case "sum", "avg", "max", "min":
+			if len(value.Args) == 0 {
+				return fmt.Errorf("heatmap(): %s() needs a field", name)
+			}
+			cast, err := aggOperandNumeric(value.Args[0], ctx.Registry)
+			if err != nil {
+				return fmt.Errorf("heatmap(): %w", err)
+			}
+			valueExpr = fmt.Sprintf("%s(%s)", name, cast)
+		default:
+			return fmt.Errorf("heatmap(): value= accepts count(), sum(), avg(), max() or min(), got %s()", value.Name)
+		}
 	}
+	source.Layer.Selects = append(source.Layer.Selects,
+		SelectExpr{Expr: valueExpr + " AS _heatmap_value"})
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, xRef, yRef)
 	source.Layer.OrderBy = append(source.Layer.OrderBy, "_heatmap_value DESC")
@@ -741,4 +650,111 @@ func init() {
 		ParamSpec{Name: "start", Kind: ParamLiteral, Required: true},
 		namedLit("depth"), namedLit("direction"),
 	}})
+}
+
+// tableAggregateSelects renders an aggregate written inside table(). These are
+// not scalar functions: each has its own alias shape, which is part of the
+// response contract, so they are spelled out rather than derived.
+func tableAggregateSelects(arg Argument, ctx *CommandContext) ([]SelectExpr, bool, error) {
+	name, operand, ok := aggregateCall(arg)
+	if !ok {
+		return nil, false, nil
+	}
+	if name == "count" {
+		return []SelectExpr{{Expr: "COUNT(*) AS _count"}}, true, nil
+	}
+	if operand == nil {
+		return nil, false, nil
+	}
+	inner := operand.FieldName()
+	cast, err := aggOperandNumeric(*operand, ctx.Registry)
+	if err != nil {
+		return nil, false, err
+	}
+	sel := func(format string, args ...any) ([]SelectExpr, bool, error) {
+		return []SelectExpr{{Expr: fmt.Sprintf(format, args...)}}, true, nil
+	}
+	// named renders an aggregate whose output column carries the operand's name.
+	// The alias is validated because it reaches SQL unquoted and a field name is
+	// user input: stddev("x, 1 AS y") would otherwise add a column of its own.
+	named := func(prefix, format string) ([]SelectExpr, bool, error) {
+		alias, err := aggOutputAlias(prefix, *operand)
+		if err != nil {
+			return nil, false, err
+		}
+		return sel(format, cast, alias)
+	}
+	switch name {
+	case "sum":
+		return sel("sum(%s) AS _sum", cast)
+	case "avg":
+		return sel("avg(%s) AS _avg", cast)
+	case "max":
+		if inner == "timestamp" {
+			return sel("max(timestamp) AS max_timestamp")
+		}
+		return sel("max(%s) AS _max", cast)
+	case "min":
+		if inner == "timestamp" {
+			return sel("min(timestamp) AS min_timestamp")
+		}
+		return sel("min(%s) AS _min", cast)
+	case "percentile":
+		return named("percentile_", "quantiles(0.5, 0.75, 0.99)(%s) AS %s")
+	case "stddev":
+		return named("stddev_", "stddevPop(%s) AS %s")
+	case "median":
+		return named("median_", "median(%s) AS %s")
+	case "mad":
+		alias, err := aggOutputAlias("mad_", *operand)
+		if err != nil {
+			return nil, false, err
+		}
+		return sel("arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%[1]s))), groupArray(%[1]s))) AS %[2]s", cast, alias)
+	case "skew", "skewness":
+		return named("skewness_", "skewPop(%s) AS %s")
+	case "kurt", "kurtosis":
+		return named("kurtosis_", "kurtPop(%s) AS %s")
+	case "iqr":
+		return []SelectExpr{
+			{Expr: fmt.Sprintf("quantile(0.25)(%s) AS _q1", cast)},
+			{Expr: fmt.Sprintf("quantile(0.75)(%s) AS _q3", cast)},
+			{Expr: fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s) AS _iqr", cast, cast)},
+		}, true, nil
+	}
+	return nil, false, nil
+}
+
+// aggregateCall reads an argument written as an aggregate call, returning its
+// lowercased name and first operand. The bare keyword "count" counts as count().
+func aggregateCall(arg Argument) (string, *Argument, bool) {
+	if arg.FieldName() == "count" {
+		return "count", nil, true
+	}
+	switch arg.Kind {
+	case ArgAggSpec:
+		if arg.Agg == nil {
+			return "", nil, false
+		}
+		if len(arg.Agg.Args) == 0 {
+			return strings.ToLower(arg.Agg.Name), nil, true
+		}
+		operand := arg.Agg.Args[0]
+		return strings.ToLower(arg.Agg.Name), &operand, true
+	case ArgExpr:
+		if arg.Expr == nil || arg.Expr.Kind != ExprCall {
+			return "", nil, false
+		}
+		if len(arg.Expr.Args) == 0 {
+			return strings.ToLower(arg.Expr.Value), nil, true
+		}
+		operand := Argument{Kind: ArgExpr, Expr: arg.Expr.Args[0]}
+		if inner := arg.Expr.Args[0]; inner.Kind == ExprString {
+			// sum("bytes") names the field, the same as sum(bytes): an aggregate's
+			// operand is a field position, so a quoted value is not a literal.
+			operand = Argument{Kind: ArgLiteral, Text: inner.Value, Quoted: true, Pos: inner.Pos}
+		}
+		return strings.ToLower(arg.Expr.Value), &operand, true
+	}
+	return "", nil, false
 }

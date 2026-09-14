@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -124,13 +125,8 @@ func TestExprCallAsNamedArgumentValue(t *testing.T) {
 		if strings.Contains(sql, "fields.`field=`") || !strings.Contains(sql, "lower(fields.`user`::String)") {
 			t.Errorf("expected dedup on the expression: %s", sql)
 		}
-		// dedup() has no field= parameter; the handler would read the whole
-		// "field=..." text as a column name.
-		pipeline, err := ParseQuery(`* | dedup(field=lower(user))`)
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if _, err := TranslateToSQLWithOrder(pipeline, revOpts()); err == nil {
+		// dedup() has no field= parameter, so naming one is a typo, not a column.
+		if _, err := ParseQuery(`* | dedup(field=lower(user))`); err == nil {
 			t.Error("expected dedup(field=) to be rejected")
 		}
 	})
@@ -178,29 +174,20 @@ func TestExprValidationIgnoresStringLiterals(t *testing.T) {
 	})
 }
 
-// listArg splits on top-level commas. An apostrophe inside a value opened a
-// quote that never closed, so the whole list collapsed into one value.
-func TestListArgHandlesApostrophes(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []string
-	}{
-		{`O'Brien,bob`, []string{"O'Brien", "bob"}},
-		{`foo(bar,baz`, []string{"foo(bar", "baz"}},
-		{`a),b`, []string{"a)", "b"}},
-		{`substr(b,1,2),c`, []string{"substr(b,1,2)", "c"}},
+// A value carrying an apostrophe used to open a quote that never closed, and
+// the whole list collapsed into one value.
+func TestListValuesWithApostrophes(t *testing.T) {
+	pipeline, err := ParseQuery(`* | in(user, ["O'Brien", "bob"])`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	for _, c := range cases {
-		got := listArg(c.in)
-		if len(got) != len(c.want) {
-			t.Errorf("listArg(%q) = %q, want %q", c.in, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("listArg(%q) = %q, want %q", c.in, got, c.want)
-				break
-			}
+	sql, err := TranslateToSQLWithOrder(pipeline, revOpts())
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	for _, want := range []string{`'O\'Brien'`, `'bob'`} {
+		if !strings.Contains(sql.SQL, want) {
+			t.Errorf("%s missing from the SQL: %s", want, sql.SQL)
 		}
 	}
 }
@@ -274,7 +261,7 @@ func mustParseRev(t *testing.T, q string) *PipelineNode {
 // eval() compiled only the first complete expression in its text and discarded
 // the rest with no diagnostic.
 func TestEvalRejectsTrailingText(t *testing.T) {
-	for _, q := range []string{`* | eval("x = a b")`, `* | eval(msg="hello world")`} {
+	for _, q := range []string{`* | eval("x = a b")`, `* | eval(x = a b)`} {
 		pipeline, err := ParseQuery(q)
 		if err != nil {
 			continue
@@ -463,5 +450,48 @@ func TestChainStepsAcceptExpressions(t *testing.T) {
 		if _, err := TranslateToSQLWithOrder(pipeline, revOpts()); err != nil {
 			t.Errorf("%q: %v", q, err)
 		}
+	}
+}
+
+// injectedColumn matches the payload appearing as a column of its own, rather
+// than inside the string literal an operand legitimately compiles to.
+var injectedColumn = regexp.MustCompile(`(?:SELECT|,)\s*injected\b`)
+
+// A generated alias carries the operand's name and reaches SQL unquoted, so a
+// field name containing a comma would add a column of its own.
+func TestAggregateAliasRejectsInjectedColumn(t *testing.T) {
+	reached := 0
+	for _, q := range []string{
+		`* | stddev("x, 1 AS injected")`,
+		`* | percentile("x, 1 AS injected")`,
+		`* | selectFirst("x, 1 AS injected")`,
+		`* | selectLast("x, 1 AS injected")`,
+		`* | multi(iqr("x, 1 AS injected"))`,
+		`* | multi(mad("x, 1 AS injected"))`,
+		`* | multi(median("x, 1 AS injected"))`,
+		`* | multi(top("x, 1 AS injected"))`,
+		`* | multi(collect("x, 1 AS injected"))`,
+		`* | multi(count("x, 1 AS injected", distinct=true))`,
+		// Renamed rather than rejected: the operand is an expression, so the alias
+		// is derived from it instead of carrying a field name through.
+		`* | table(user, stddev(concat(a, "x, 1 AS injected")))`,
+	} {
+		pipeline, err := ParseQuery(q)
+		if err != nil {
+			continue
+		}
+		sql, err := TranslateToSQLWithOrder(pipeline, revOpts())
+		if err != nil {
+			continue
+		}
+		reached++
+		if injectedColumn.MatchString(sql.SQL) {
+			t.Errorf("%s: alias injected a column: %s", q, sql.SQL)
+		}
+	}
+	// Rejection is a valid outcome, but not for every case: without this the test
+	// would pass vacuously if the queries stopped parsing for another reason.
+	if reached == 0 {
+		t.Error("no case reached translation; the guard is not being exercised")
 	}
 }

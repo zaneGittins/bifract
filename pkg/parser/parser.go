@@ -101,33 +101,22 @@ func (h HavingCondition) Type() string { return "having" }
 
 type CommandNode struct {
 	Name        string
-	Arguments   []string
 	Negate      bool    // True when command is prefixed with ! (e.g., !in())
 	BlockTokens []Token // Raw tokens from block body (used by chain to avoid double-tokenization)
+	// Args is the typed form of Arguments, parsed once against the command's
+	// schema. Handlers read only this: an argument is never reconstructed from
+	// text, so quoting, whitespace and structure all survive to the handler.
+	Args []Argument
+	// ArgsErr records why Args could not be built, so a migrated handler reports
+	// the parse failure instead of seeing no arguments.
+	ArgsErr error
+	// Block is the raw body of a { ... } subquery, kept out of Args so the
+	// sub-pipeline's own syntax is never read as this command's arguments.
+	Block string
 	// BlockSource is the original query text. BlockTokens carry absolute offsets
 	// into it, so a sub-parser over them can still read source-backed syntax such
 	// as an expression. Without it, chain steps could not use expressions at all.
 	BlockSource []rune
-	// QuotedArgs holds the indices of arguments that were written as quoted
-	// strings. Arguments are plain strings by the time a handler sees them, and a
-	// regex pattern such as "powershell(.+)" is indistinguishable from a call
-	// without this, so expression validation would reject it.
-	QuotedArgs []int
-}
-
-// markQuoted records that the argument just appended came from a string literal.
-func (c *CommandNode) markQuoted() {
-	c.QuotedArgs = append(c.QuotedArgs, len(c.Arguments)-1)
-}
-
-// IsQuotedArg reports whether the argument at index i was a quoted string.
-func (c CommandNode) IsQuotedArg(i int) bool {
-	for _, q := range c.QuotedArgs {
-		if q == i {
-			return true
-		}
-	}
-	return false
 }
 
 func (c CommandNode) Type() string { return "command" }
@@ -862,75 +851,6 @@ func (p *Parser) collectEqualityList(first string) ([]string, error) {
 	return values, nil
 }
 
-// captureCallText consumes a function call at the current position and returns
-// it as source text, e.g. "substr(image,1,10)". Command arguments are strings,
-// so a call in an argument position is carried through verbatim and resolved
-// later. Shared by every argument branch that can meet a call: a bare argument,
-// an element of a bracket list, and the value of a name=[...] parameter.
-func (p *Parser) captureCallText() string {
-	var b strings.Builder
-	b.WriteString(p.current().Value)
-	p.advance()
-	if p.current().Type != TokenLParen {
-		return b.String()
-	}
-	b.WriteString("(")
-	p.advance()
-	depth := 1
-	for depth > 0 && p.current().Type != TokenEOF {
-		tok := p.current()
-		switch tok.Type {
-		case TokenLParen:
-			depth++
-			b.WriteString("(")
-		case TokenRParen:
-			depth--
-			if depth > 0 {
-				b.WriteString(")")
-			}
-		case TokenLBracket:
-			b.WriteString("[")
-		case TokenRBracket:
-			b.WriteString("]")
-		case TokenComma:
-			b.WriteString(",")
-		case TokenEqual:
-			b.WriteString("=")
-		case TokenAnd, TokenOr, TokenNot:
-			// Word operators need their own space or they glue onto the
-			// neighbouring token: `"C:")ANDendsWith(` never re-parses.
-			b.WriteString(" " + tok.Value + " ")
-		case TokenString:
-			// Re-quote: the token carries the unquoted value, and the captured
-			// text is re-lexed later. Without this, splitAt(path, "/", 2) would
-			// come back as splitAt(path,/,2) and no longer parse.
-			b.WriteString(quoteCapturedString(tok.Value))
-		case TokenRegex:
-			b.WriteString("/" + tok.Value + "/")
-		default:
-			b.WriteString(tok.Value)
-		}
-		p.advance()
-	}
-	b.WriteString(")")
-	return b.String()
-}
-
-// quoteCapturedString renders a string literal so it survives re-lexing, using
-// the same backslash escaping the lexer consumes.
-func quoteCapturedString(v string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range v {
-		if r == '"' || r == '\\' {
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
 func (p *Parser) parseCommand() (*CommandNode, error) {
 	cmd := &CommandNode{}
 
@@ -960,162 +880,67 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 	if _, err := p.expect(TokenLParen); err != nil {
 		return nil, err
 	}
-
-	// Check if arguments are in array format [field1, field2] with no trailing args
-	if p.current().Type == TokenLBracket {
-		// Peek ahead: if after the ], there's a comma or more args, use the regular
-		// argument path which handles inline [...] arrays alongside key=value params.
-		useInlinePath := false
-		saved := p.pos
-		p.advance() // skip [
-		depth := 1
-		for depth > 0 && p.current().Type != TokenEOF {
-			if p.current().Type == TokenLBracket {
-				depth++
-			} else if p.current().Type == TokenRBracket {
-				depth--
+	// The arguments are parsed from these tokens by parseArguments, guided by the
+	// command's schema. Here we only need to find where they end: the first ')'
+	// that is not inside a nested call or list.
+	argStart := p.pos
+	parens, brackets := 0, 0
+scan:
+	for p.current().Type != TokenEOF {
+		if err := p.checkIterationLimit(); err != nil {
+			return nil, err
+		}
+		switch p.current().Type {
+		case TokenLParen:
+			parens++
+		case TokenRParen:
+			if parens == 0 && brackets == 0 {
+				break scan
 			}
-			if depth > 0 {
-				p.advance()
+			if parens > 0 {
+				parens--
+			}
+		case TokenLBracket:
+			brackets++
+		case TokenRBracket:
+			if brackets > 0 {
+				brackets--
 			}
 		}
-		if p.current().Type == TokenRBracket {
-			p.advance() // skip ]
-			if p.current().Type == TokenComma {
-				useInlinePath = true
-			}
-		}
-		p.pos = saved // restore position
-
-		if !useInlinePath {
-			p.advance() // skip [
-
-			// Parse array elements
-			for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
-				argTok := p.current()
-				if argTok.Type == TokenField || argTok.Type == TokenString || argTok.Type == TokenValue {
-					cmd.Arguments = append(cmd.Arguments, argTok.Value)
-					if argTok.Type == TokenString {
-						cmd.markQuoted()
-					}
-					p.advance()
-				} else if argTok.Type == TokenFunction {
-					cmd.Arguments = append(cmd.Arguments, p.captureCallText())
-				} else {
-					return nil, newPosError(argTok, "unexpected token in array: %s", argTok.Type)
-				}
-
-				// Check for comma
-				if p.current().Type == TokenComma {
-					p.advance()
-				}
-			}
-
-			// Expect ]
-			if _, err := p.expect(TokenRBracket); err != nil {
-				return nil, err
-			}
-		}
+		p.advance()
 	}
-
-	if len(cmd.Arguments) == 0 {
-		// Parse regular arguments (field1, field2, parameter=value, or function calls)
-		for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
-			if err := p.checkIterationLimit(); err != nil {
-				return nil, err
-			}
-			argTok := p.current()
-			if argTok.Type == TokenField || argTok.Type == TokenString || argTok.Type == TokenValue {
-				// Handle parameter=value syntax
-				paramName := argTok.Value
-				p.advance()
-
-				// Check if next token is =
-				if p.current().Type == TokenEqual {
-					paramName += "="
-					p.advance()
-					// Get the value after =
-					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
-						paramName += p.current().Value
-						p.advance()
-					} else if p.current().Type == TokenFunction {
-						// A call as the value: sort(field=lower(user)).
-						paramName += p.captureCallText()
-					} else if p.current().Type == TokenLBracket {
-						// Handle array syntax: param=[val1,val2,val3]
-						p.advance() // skip [
-						paramName += "["
-						for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
-							if err := p.checkIterationLimit(); err != nil {
-								return nil, err
-							}
-							if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
-								paramName += p.current().Value
-								p.advance()
-							} else if p.current().Type == TokenFunction {
-								paramName += p.captureCallText()
-							} else if p.current().Type == TokenComma {
-								paramName += ","
-								p.advance()
-							} else {
-								return nil, newPosError(p.current(), "unexpected token in array parameter: %s", p.current().Type)
-							}
-						}
-						if p.current().Type == TokenRBracket {
-							paramName += "]"
-							p.advance()
-						}
-					}
-				}
-
-				cmd.Arguments = append(cmd.Arguments, paramName)
-				if argTok.Type == TokenString && paramName == argTok.Value {
-					cmd.markQuoted()
-				}
-			} else if argTok.Type == TokenFunction {
-				// A call in an argument position, e.g. multi(count(), avg(field))
-				// or groupby(lower(user)).
-				cmd.Arguments = append(cmd.Arguments, p.captureCallText())
-			} else if argTok.Type == TokenLBracket {
-				// Handle bare array syntax: [val1,val2,val3]
-				p.advance() // skip [
-				var arrParts []string
-				for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
-					if err := p.checkIterationLimit(); err != nil {
-						return nil, err
-					}
-					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
-						arrParts = append(arrParts, p.current().Value)
-						p.advance()
-					} else if p.current().Type == TokenFunction {
-						arrParts = append(arrParts, p.captureCallText())
-					} else if p.current().Type == TokenComma {
-						p.advance()
-					} else {
-						return nil, newPosError(p.current(), "unexpected token in array: %s", p.current().Type)
-					}
-				}
-				if p.current().Type == TokenRBracket {
-					p.advance()
-				}
-				cmd.Arguments = append(cmd.Arguments, strings.Join(arrParts, ","))
-			} else {
-				return nil, newPosError(argTok, "unexpected token in function arguments: %s", argTok.Type)
-			}
-
-			// Check for comma
-			if p.current().Type == TokenComma {
-				p.advance()
-			}
-		}
-	}
-
-	// Expect )
+	argEnd := p.pos
 	if _, err := p.expect(TokenRParen); err != nil {
 		return nil, err
 	}
 
+	if err := p.attachArguments(cmd, argStart, argEnd); err != nil {
+		return nil, err
+	}
+
 	return cmd, nil
+}
+
+// attachArguments parses cmd.Args from the token span between the command's
+// parentheses. A command with no schema keeps no arguments: nothing can be said
+// about their shape, so ArgsErr records why rather than leaving a handler to
+// read an empty set as "none given".
+func (p *Parser) attachArguments(cmd *CommandNode, start, end int) error {
+	spec, ok := CommandSpecFor(cmd.Name)
+	if !ok {
+		cmd.ArgsErr = fmt.Errorf("%s(): no argument schema", cmd.Name)
+		return nil
+	}
+	if start > end || end > len(p.tokens) {
+		cmd.ArgsErr = fmt.Errorf("%s(): could not read arguments", cmd.Name)
+		return nil
+	}
+	args, err := parseArguments(p.tokens[start:end], p.input, spec)
+	if err != nil {
+		return err
+	}
+	cmd.Args = args
+	return nil
 }
 
 func (p *Parser) isHavingCondition() bool {
@@ -1548,9 +1373,9 @@ closed:
 	// Faithful capture: slice the original source between the braces (inclusive).
 	// rbrace.Pos is the index of '}', lbrace.Pos the index of '{'.
 	if p.input != nil && lbrace.Pos >= 0 && rbrace.Pos < len(p.input) && rbrace.Pos >= lbrace.Pos {
-		cmd.Arguments = []string{string(p.input[lbrace.Pos : rbrace.Pos+1])}
+		cmd.Block = string(p.input[lbrace.Pos : rbrace.Pos+1])
 	} else {
-		cmd.Arguments = []string{caseBody.String()}
+		cmd.Block = caseBody.String()
 	}
 
 	return cmd, nil
@@ -1629,12 +1454,43 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 		return nil, newPosError(p.current(), "expected '}' to close chain block, got %s", p.current().Type)
 	}
 
-	// Arguments: [0]=groupFields (comma-separated), [1]=within, [2]=order
-	cmd.Arguments = []string{strings.Join(groupFields, ","), withinValue, orderValue}
+	cmd.Args = chainArgs(groupFields, withinValue, orderValue)
 	cmd.BlockTokens = blockTokens
 	cmd.BlockSource = p.input
 
 	return cmd, nil
+}
+
+// chainArgs builds chain's typed arguments. Its block is parsed separately, so
+// the values are already in hand and need no re-parsing. The group fields are
+// raw token values, so a bracket list's brackets and a quoted "a,b" list are
+// unwrapped here rather than becoming field names of their own.
+func chainArgs(groupFields []string, within, order string) []Argument {
+	var args []Argument
+	for _, f := range chainGroupFields(groupFields) {
+		args = append(args, Argument{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: f}})
+	}
+	if within != "" {
+		args = append(args, Argument{Name: "within", Kind: ArgLiteral, Text: within})
+	}
+	if order != "" {
+		args = append(args, Argument{Name: "order", Kind: ArgLiteral, Text: order})
+	}
+	return args
+}
+
+// chainGroupFields flattens chain()'s grouping tokens into plain field names.
+func chainGroupFields(tokens []string) []string {
+	var out []string
+	for _, t := range tokens {
+		t = strings.Trim(strings.TrimSpace(t), "[]")
+		for _, part := range strings.Split(t, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
 
 // parseJoinCommand parses join(key, type=inner, max=10000, include=[f1,f2]) { subquery } syntax
@@ -1647,7 +1503,6 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	}
 
 	// Parse arguments: join key, optional type=, max=, include=[]
-	var args []string
 	for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
 		tok := p.current()
 		if tok.Type == TokenComma {
@@ -1655,42 +1510,46 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 			continue
 		}
 
-		val := tok.Value
+		name := tok.Value
 		p.advance()
-
-		// Handle param=value syntax
-		if p.current().Type == TokenEqual {
-			val += "="
-			p.advance()
-			if p.current().Type == TokenLBracket {
-				// Handle array: include=[f1,f2]
-				p.advance() // skip [
-				val += "["
-				for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
-					if err := p.checkIterationLimit(); err != nil {
-						return nil, err
-					}
-					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
-						val += p.current().Value
-						p.advance()
-					} else if p.current().Type == TokenComma {
-						val += ","
-						p.advance()
-					} else {
-						return nil, newPosError(p.current(), "unexpected token in array: %s", p.current().Type)
-					}
-				}
-				if p.current().Type == TokenRBracket {
-					val += "]"
-					p.advance()
-				}
-			} else if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
-				val += p.current().Value
-				p.advance()
-			}
+		if p.current().Type != TokenEqual {
+			cmd.Args = append(cmd.Args, Argument{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: name}, Pos: tok.Pos})
+			continue
 		}
 
-		args = append(args, val)
+		p.advance() // skip =
+		if p.current().Type == TokenLBracket {
+			p.advance() // skip [
+			list := Argument{Name: strings.ToLower(name), Kind: ArgList, Pos: tok.Pos}
+			for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
+				if err := p.checkIterationLimit(); err != nil {
+					return nil, err
+				}
+				switch p.current().Type {
+				case TokenField, TokenString, TokenValue:
+					list.List = append(list.List, Argument{Kind: ArgLiteral, Text: p.current().Value, Pos: p.current().Pos})
+				case TokenComma:
+				default:
+					return nil, newPosError(p.current(), "unexpected token in array: %s", p.current().Type)
+				}
+				p.advance()
+			}
+			if p.current().Type == TokenRBracket {
+				p.advance()
+			}
+			cmd.Args = append(cmd.Args, list)
+			continue
+		}
+		value := Argument{Name: strings.ToLower(name), Kind: ArgLiteral, Pos: tok.Pos}
+		switch p.current().Type {
+		case TokenField, TokenString, TokenValue:
+			value.Text = p.current().Value
+			value.Quoted = p.current().Type == TokenString
+			p.advance()
+		}
+		// An empty value is still bound, so the handler reports it rather than
+		// taking its default: join(user, max=) must not silently run unbounded.
+		cmd.Args = append(cmd.Args, value)
 	}
 
 	// Expect )
@@ -1730,8 +1589,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 		return nil, newPosError(p.current(), "expected '}' to close join block, got %s", p.current().Type)
 	}
 
-	// Arguments: [0]=block body, [1..N]=parsed params (key, type=, max=, include=)
-	cmd.Arguments = append([]string{body.String()}, args...)
+	cmd.Block = body.String()
 
 	return cmd, nil
 }

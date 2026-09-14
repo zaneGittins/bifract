@@ -179,18 +179,11 @@ func minLengthFromHaving(hv parser.HavingCondition) (int, string) {
 // lenCommandArgs returns the measured field and the output field name of a
 // len() command. The output defaults to _len, or the as= value when given.
 func lenCommandArgs(cmd parser.CommandNode) (field, outName, errMsg string) {
-	outName = "_len"
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		switch {
-		case strings.HasPrefix(arg, "as="):
-			outName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
-		case strings.HasPrefix(arg, "field="):
-			field = strings.TrimPrefix(arg, "field=")
-		case field == "":
-			field = strings.Trim(arg, `"'`)
-		}
+	b, err := parser.BindCommand(cmd)
+	if err != nil {
+		return "", "", err.Error()
 	}
+	field, outName = b.Str("field", ""), b.Str("as", "_len")
 	if field == "" {
 		return "", "", "len() requires a field, e.g. len(tld) | _len >= 4"
 	}
@@ -200,25 +193,18 @@ func lenCommandArgs(cmd parser.CommandNode) (field, outName, errMsg string) {
 // singleFieldArg returns the lone field argument of a command like lowercase(x),
 // rejecting an output rename (a second argument).
 func singleFieldArg(cmd parser.CommandNode, name string) (string, string) {
-	var fields []string
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "field=") {
-			arg = strings.TrimPrefix(arg, "field=")
-		} else if strings.HasPrefix(arg, "as=") {
-			return "", fmt.Sprintf("%s() output rename is not supported; apply it to a field in place", name)
-		}
-		if arg != "" {
-			fields = append(fields, strings.Trim(arg, `"'`))
-		}
+	b, err := parser.BindCommand(cmd)
+	if err != nil {
+		return "", err.Error()
 	}
-	if len(fields) == 0 {
-		return "", fmt.Sprintf("%s() requires a field", name)
-	}
-	if len(fields) > 1 {
+	if b.Has("output") || b.Has("as") {
 		return "", fmt.Sprintf("%s() output rename is not supported; apply it to a field in place", name)
 	}
-	return fields[0], ""
+	field := b.Str("field", "")
+	if field == "" {
+		return "", fmt.Sprintf("%s() requires a field", name)
+	}
+	return field, ""
 }
 
 // conditionToFilter maps a parsed filter condition to a model FilterCondition,
@@ -259,25 +245,11 @@ func conditionToFilter(c parser.ConditionNode) (FilterCondition, string) {
 // cidrArgs extracts the field and range from a cidr() command's arguments,
 // tolerating both positional and field=/range= forms.
 func cidrArgs(cmd parser.CommandNode) (field, value, errMsg string) {
-	var positional []string
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		switch {
-		case strings.HasPrefix(arg, "field="):
-			field = strings.Trim(strings.TrimPrefix(arg, "field="), `"'`)
-		case strings.HasPrefix(arg, "range="), strings.HasPrefix(arg, "cidr="):
-			value = strings.Trim(arg[strings.IndexByte(arg, '=')+1:], `"'`)
-		default:
-			positional = append(positional, strings.Trim(arg, `"'`))
-		}
+	b, err := parser.BindCommand(cmd)
+	if err != nil {
+		return "", "", err.Error()
 	}
-	if field == "" && len(positional) > 0 {
-		field = positional[0]
-		positional = positional[1:]
-	}
-	if value == "" && len(positional) > 0 {
-		value = positional[0]
-	}
+	field, value = b.Str("field", ""), b.Str("range", "")
 	if field == "" || value == "" {
 		return "", "", "cidr() requires a field and a CIDR range, e.g. cidr(src_ip, \"10.0.0.0/8\")"
 	}
@@ -288,27 +260,13 @@ func cidrArgs(cmd parser.CommandNode) (field, value, errMsg string) {
 // output name follows the engine's precedence: a named capture group wins over
 // as= (so the parsed OutputField matches the column the live preview produces).
 func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
-	from := "norm_log"
-	var pattern, asName string
-	patternSet := false
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		switch {
-		case strings.HasPrefix(arg, "field="):
-			from = strings.TrimPrefix(arg, "field=")
-		case strings.HasPrefix(arg, "regex="):
-			pattern = strings.Trim(strings.TrimPrefix(arg, "regex="), `"'`)
-			patternSet = true
-		case strings.HasPrefix(arg, "pattern="):
-			pattern = strings.Trim(strings.TrimPrefix(arg, "pattern="), `"'`)
-			patternSet = true
-		case strings.HasPrefix(arg, "as="):
-			asName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
-		case !patternSet:
-			pattern = strings.Trim(arg, `"'`)
-			patternSet = true
-		}
+	b, err := parser.BindCommand(cmd)
+	if err != nil {
+		return ExtractionStep{}, err.Error()
 	}
+	from := b.Str("field", "norm_log")
+	pattern := b.StrOf("pattern", "regex")
+	asName := b.Str("as", "")
 	if pattern == "" {
 		return ExtractionStep{}, "regex() requires a pattern"
 	}

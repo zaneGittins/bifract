@@ -849,13 +849,3 @@ func (p *QueryPlan) outerHasColumn(column string) bool {
 	}
 	return false
 }
-
-// selectFieldStrings converts the source stage Selects to a flat string slice for legacy functions.
-func (p *QueryPlan) selectFieldStrings() []string {
-	source := p.SourceStage()
-	result := make([]string, len(source.Layer.Selects))
-	for i, s := range source.Layer.Selects {
-		result[i] = s.String()
-	}
-	return result
-}

@@ -98,21 +98,6 @@ func CommandSpecNames() []string {
 	return names
 }
 
-// param returns the spec governing positional index i, following a variadic tail.
-func (s *CommandSpec) param(i int) (ParamSpec, bool) {
-	if i < 0 {
-		return ParamSpec{}, false
-	}
-	positional := s.positionalParams()
-	if i < len(positional) {
-		return positional[i], true
-	}
-	if n := len(positional); n > 0 && positional[n-1].Variadic {
-		return positional[n-1], true
-	}
-	return ParamSpec{}, false
-}
-
 func (s *CommandSpec) positionalParams() []ParamSpec {
 	var out []ParamSpec
 	for _, p := range s.Params {
@@ -161,62 +146,38 @@ func (s *CommandSpec) HasVariadicParam() bool {
 // present, and a command with no variadic tail must not be given more positional
 // arguments than it declares.
 //
-// It reports what the handler would otherwise ignore in silence. An argument
+// The first of those is enforced while parsing, which is where the position is
+// known; this reports the arity the parser cannot judge on its own. An argument
 // dropped without comment is how `include=a,b` lost its second column.
 func ValidateCommandArgs(cmd CommandNode) error {
 	spec, ok := CommandSpecFor(cmd.Name)
 	if !ok {
 		return nil
 	}
-
-	seen := map[string]bool{}
-	positional := 0
-	for i, arg := range cmd.Arguments {
-		// A quoted argument is data. A regex pattern routinely contains '=' and
-		// '(' and must never be read as a parameter binding or a call.
-		if cmd.IsQuotedArg(i) {
-			positional++
-			continue
-		}
-		name, _, named := namedArgument(arg)
-		if !named {
-			// An aggregate spec follows a bare "function=" as its own argument.
-			if i > 0 {
-				if prev, _, ok := namedArgument(cmd.Arguments[i-1]); ok && prev != "" &&
-					strings.TrimSpace(cmd.Arguments[i-1]) == prev+"=" {
-					continue
-				}
-			}
-			positional++
-			continue
-		}
-		p, known := spec.lookup(name)
-		if !known {
-			if spec.FreeForm {
-				continue // the handler parses this text itself
-			}
-			return fmt.Errorf("%s(): unknown parameter %s (accepts %s)", cmd.Name, name, spec.paramList())
-		}
-		seen[strings.ToLower(p.Name)] = true
+	if cmd.ArgsErr != nil {
+		return cmd.ArgsErr
 	}
-
-	if !spec.FreeForm && positional > 0 {
-		if _, ok := spec.param(positional - 1); !ok {
-			return fmt.Errorf("%s(): expects at most %d positional arguments, got %d (accepts %s)",
-				cmd.Name, len(spec.positionalParams()), positional, spec.paramList())
-		}
-	}
-
-	// A free-form command's arguments are text the handler parses, so the spec
-	// names its parameters for the reference without modelling their arity.
-	if spec.FreeForm && len(cmd.Arguments) > 0 {
+	// A free-form command's block is text the handler parses, so the spec names
+	// its parameters for the reference without modelling their arity.
+	if spec.FreeForm {
 		return nil
 	}
+
+	b, err := Bind(spec, cmd.Args)
+	if err != nil {
+		return err
+	}
 	for _, p := range spec.Params {
-		if !p.Required || seen[strings.ToLower(p.Name)] {
-			continue
+		if !p.Variadic && len(b.All(p.Name)) > 1 {
+			return fmt.Errorf("%s(): %s given more than once", cmd.Name, strings.ToLower(p.Name))
 		}
-		if p.Positional && positional > 0 {
+	}
+	if len(b.extra) > 0 {
+		return fmt.Errorf("%s(): %s fills no remaining parameter (accepts %s)",
+			cmd.Name, b.extra[0], spec.paramList())
+	}
+	for _, p := range spec.Params {
+		if !p.Required || b.Has(p.Name) {
 			continue
 		}
 		return fmt.Errorf("%s(): missing required argument %s", cmd.Name, p.Name)
@@ -233,24 +194,6 @@ func validateCommandSchemas(pipeline *PipelineNode) error {
 		}
 	})
 	return err
-}
-
-// namedArgument splits a name=value argument. The '=' must precede any '(' so a
-// comparison inside a call (count(field=x)) is not mistaken for a binding.
-func namedArgument(arg string) (name, value string, ok bool) {
-	arg = strings.TrimSpace(arg)
-	eq := strings.IndexByte(arg, '=')
-	if eq <= 0 {
-		return "", "", false
-	}
-	if open := strings.IndexByte(arg, '('); open >= 0 && open < eq {
-		return "", "", false
-	}
-	name = strings.ToLower(strings.TrimSpace(arg[:eq]))
-	if !isCallShaped(name) {
-		return "", "", false
-	}
-	return name, arg[eq+1:], true
 }
 
 // field, lit, list and friends keep the spec declarations readable.
@@ -293,4 +236,41 @@ func namedAgg(name string) ParamSpec {
 // as is the output-column parameter almost every projecting command accepts.
 func as() ParamSpec {
 	return ParamSpec{Name: "as", Kind: ParamLiteral}
+}
+
+// positionalCursor hands out positional parameters in order, skipping any that a
+// named argument already filled. A parameter may be written either way, so
+// sort(field=bytes, desc) has to mean the same as sort(bytes, desc): the bare
+// value fills the next parameter still open, not the one already given.
+type positionalCursor struct {
+	params []ParamSpec
+	filled map[string]bool
+	next   int
+}
+
+func newPositionalCursor(spec *CommandSpec) *positionalCursor {
+	return &positionalCursor{params: spec.positionalParams(), filled: map[string]bool{}}
+}
+
+// fill marks a parameter as given by name.
+func (c *positionalCursor) fill(name string) {
+	c.filled[strings.ToLower(name)] = true
+}
+
+// take returns the parameter the next bare argument fills. A variadic tail stays
+// open and absorbs the rest.
+func (c *positionalCursor) take() (ParamSpec, bool) {
+	for c.next < len(c.params) {
+		p := c.params[c.next]
+		if c.filled[strings.ToLower(p.Name)] {
+			c.next++
+			continue
+		}
+		if !p.Variadic {
+			c.next++
+			c.filled[strings.ToLower(p.Name)] = true
+		}
+		return p, true
+	}
+	return ParamSpec{}, false
 }

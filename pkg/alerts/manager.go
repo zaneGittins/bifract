@@ -1380,10 +1380,11 @@ func queryHasAggregation(pipeline *parser.PipelineNode) bool {
 		if aggregateCommands[cmd.Name] {
 			return true
 		}
-		// table() with aggregate arguments (count, sum, avg, etc.)
+		// table() with aggregate arguments (count, sum(bytes), avg(x), ...)
 		if cmd.Name == "table" {
-			for _, arg := range cmd.Arguments {
-				if aggregateCommands[arg] {
+			for _, arg := range cmd.Args {
+				name, _, _ := strings.Cut(strings.ToLower(arg.Value()), "(")
+				if aggregateCommands[name] {
 					return true
 				}
 			}

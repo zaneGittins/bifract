@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -18,22 +17,16 @@ func (h *countHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 
-	// Parse arguments: count(field, unique=true)
-	var field string
-	unique := false
-	for _, arg := range cmd.Arguments {
-		if arg == "unique=true" || arg == "distinct=true" {
-			unique = true
-		} else if arg == "unique=false" || arg == "distinct=false" {
-			// explicit false, ignore
-		} else if !strings.Contains(arg, "=") && field == "" {
-			field = arg
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	arg, hasField := b.First("field")
+	unique := b.Flag("unique", false) || b.Flag("distinct", false)
 
 	// Bare count() after groupby: push second stage to count the number of groups.
 	// count(field) or count(field, unique=true) still adds to the groupby stage.
-	if ctx.Plan.HasGroupBy && len(source.Layer.GroupBy) > 0 && field == "" && !unique {
+	if ctx.Plan.HasGroupBy && len(source.Layer.GroupBy) > 0 && !hasField && !unique {
 		if err := assembleGroupBySelects(ctx, source, nil); err != nil {
 			return fmt.Errorf("count (stage finalize): %w", err)
 		}
@@ -63,24 +56,17 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return nil
 	}
 
-	// count(field, unique=true) - count distinct values
-	if field != "" && unique {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		sqlExpr := fmt.Sprintf("uniqExact(%s)", fieldRef)
-		expr := fmt.Sprintf("%s AS _count", sqlExpr)
-		if !contains(selectExprStrings(source.Layer.Selects), expr) {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
+	// count(field) and count(field, unique=true). The operand may be an
+	// expression, which resolves to the SQL it compiles to rather than a field.
+	if hasField {
+		ref, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("count(): %w", err)
 		}
-		ctx.Plan.IsAggregated = true
-		ctx.Plan.aggregationOutputs["_count"] = sqlExpr
-		ctx.Registry.SetResolveExpr("_count", "_count")
-		return nil
-	}
-
-	// count(field) - count non-null values of field
-	if field != "" {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		sqlExpr := fmt.Sprintf("count(%s)", fieldRef)
+		sqlExpr := fmt.Sprintf("count(%s)", ref)
+		if unique {
+			sqlExpr = fmt.Sprintf("uniqExact(%s)", ref)
+		}
 		expr := fmt.Sprintf("%s AS _count", sqlExpr)
 		if !contains(selectExprStrings(source.Layer.Selects), expr) {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
@@ -101,8 +87,8 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	// When count() is used with case statements, GROUP BY the case-produced fields
 	for _, cmd2 := range ctx.Pipeline.Commands {
-		if cmd2.Name == "case" && len(cmd2.Arguments) > 0 {
-			caseExpr := cmd2.Arguments[0]
+		if cmd2.Name == "case" && cmd2.Block != "" {
+			caseExpr := cmd2.Block
 			compiled, err := compileCase(caseExpr, ctx.Registry, ctx.Opts)
 			if err != nil {
 				return err
@@ -115,9 +101,6 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				}
 			} else {
 				outputField := "case_result"
-				if len(cmd2.Arguments) > 1 {
-					outputField = cmd2.Arguments[1]
-				}
 				if !contains(source.Layer.GroupBy, outputField) {
 					source.Layer.GroupBy = append(source.Layer.GroupBy, outputField)
 				}
@@ -135,7 +118,7 @@ type simpleAggHandler struct {
 }
 
 func (h *simpleAggHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register(h.alias, FieldKindAggregate, h.alias, ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -143,10 +126,14 @@ func (h *simpleAggHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -161,8 +148,10 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs[alias] = fmt.Sprintf("%s(timestamp)", h.name)
 		ctx.Registry.SetResolveExpr(alias, alias)
 	} else {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		cast := numericCast(field, fieldRef, ctx.Registry)
+		cast, err := aggOperandNumeric(arg, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("%s(): %w", h.name, err)
+		}
 		sqlExpr := fmt.Sprintf("%s(%s)", h.chFunc, cast)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, h.alias)})
 		ctx.Plan.aggregationOutputs[h.alias] = sqlExpr
@@ -176,7 +165,7 @@ func (h *simpleAggHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type percentileHandler struct{}
 
 func (h *percentileHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_percentile", FieldKindAggregate, "_percentile", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -184,10 +173,14 @@ func (h *percentileHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 }
 
 func (h *percentileHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -197,9 +190,16 @@ func (h *percentileHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 		ctx.Plan.aggregationOutputs["_percentile"] = fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(toFloat64(%s))", field)
 		ctx.Registry.SetResolveExpr("_percentile", "_percentile")
 	} else {
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
+		cast, err := aggOperandNumeric(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
+		alias, err := aggOutputAlias("percentile_", arg)
+		if err != nil {
+			return fmt.Errorf("percentile(): %w", err)
+		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(%s) AS percentile_%s", cast, escapeString(field)),
+			Expr: fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(%s) AS %s", cast, alias),
 		})
 	}
 	ctx.Plan.IsAggregated = true
@@ -210,7 +210,7 @@ func (h *percentileHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 type stddevHandler struct{}
 
 func (h *stddevHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_stddev", FieldKindAggregate, "_stddev", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -218,10 +218,14 @@ func (h *stddevHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *stddevHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -231,9 +235,16 @@ func (h *stddevHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs["_stddev"] = fmt.Sprintf("stddevPop(toFloat64(%s))", field)
 		ctx.Registry.SetResolveExpr("_stddev", "_stddev")
 	} else {
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
+		cast, err := aggOperandNumeric(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
+		alias, err := aggOutputAlias("stddev_", arg)
+		if err != nil {
+			return fmt.Errorf("stdDev(): %w", err)
+		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("stddevPop(%s) AS stddev_%s", cast, escapeString(field)),
+			Expr: fmt.Sprintf("stddevPop(%s) AS %s", cast, alias),
 		})
 	}
 	ctx.Plan.IsAggregated = true
@@ -244,7 +255,7 @@ func (h *stddevHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type skewnessHandler struct{}
 
 func (h *skewnessHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_skewness", FieldKindAggregate, "_skewness", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -252,10 +263,14 @@ func (h *skewnessHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *skewnessHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -265,7 +280,10 @@ func (h *skewnessHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs["_skewness"] = fmt.Sprintf("skewPop(toFloat64(%s))", field)
 		ctx.Registry.SetResolveExpr("_skewness", "_skewness")
 	} else {
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
+		cast, err := aggOperandNumeric(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
 		sqlExpr := fmt.Sprintf("skewPop(%s)", cast)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS _skewness", sqlExpr)})
 		ctx.Plan.aggregationOutputs["_skewness"] = sqlExpr
@@ -279,7 +297,7 @@ func (h *skewnessHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type kurtosisHandler struct{}
 
 func (h *kurtosisHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_kurtosis", FieldKindAggregate, "_kurtosis", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -287,10 +305,14 @@ func (h *kurtosisHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *kurtosisHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -300,7 +322,10 @@ func (h *kurtosisHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs["_kurtosis"] = fmt.Sprintf("kurtPop(toFloat64(%s))", field)
 		ctx.Registry.SetResolveExpr("_kurtosis", "_kurtosis")
 	} else {
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
+		cast, err := aggOperandNumeric(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
 		sqlExpr := fmt.Sprintf("kurtPop(%s)", cast)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS _kurtosis", sqlExpr)})
 		ctx.Plan.aggregationOutputs["_kurtosis"] = sqlExpr
@@ -314,7 +339,7 @@ func (h *kurtosisHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type frequencyHandler struct{}
 
 func (h *frequencyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_count", FieldKindAggregate, "count(*)", ctx.CmdIndex)
 		ctx.Registry.Register("_percentage", FieldKindAggregate, "_percentage", ctx.CmdIndex)
 		ctx.Registry.Register("_cumulative_pct", FieldKindAggregate, "_cumulative_pct", ctx.CmdIndex)
@@ -325,11 +350,17 @@ func (h *frequencyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *frequencyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
-	fieldRef := resolveFieldRef(field, ctx.Registry)
+	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("frequency(): %w", err)
+	}
 	source := ctx.Plan.CurrentStage()
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
@@ -355,7 +386,7 @@ func (h *frequencyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type iqrHandler struct{}
 
 func (h *iqrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_q1", FieldKindAggregate, "_q1", ctx.CmdIndex)
 		ctx.Registry.Register("_q3", FieldKindAggregate, "_q3", ctx.CmdIndex)
 		ctx.Registry.Register("_iqr", FieldKindAggregate, "_iqr", ctx.CmdIndex)
@@ -365,10 +396,14 @@ func (h *iqrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -381,7 +416,10 @@ func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs["_q3"] = fmt.Sprintf("quantile(0.75)(toFloat64(%s))", field)
 		ctx.Plan.aggregationOutputs["_iqr"] = "_iqr"
 	} else {
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
+		cast, err := aggOperandNumeric(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
 		source.Layer.Selects = append(source.Layer.Selects,
 			SelectExpr{Expr: fmt.Sprintf("quantile(0.25)(%s) AS _q1", cast)},
 			SelectExpr{Expr: fmt.Sprintf("quantile(0.75)(%s) AS _q3", cast)},
@@ -399,7 +437,7 @@ func (h *iqrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type headtailHandler struct{}
 
 func (h *headtailHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_count", FieldKindAggregate, "count(*)", ctx.CmdIndex)
 		ctx.Registry.Register("_percentage", FieldKindAggregate, "_percentage", ctx.CmdIndex)
 		ctx.Registry.Register("_cumulative_pct", FieldKindAggregate, "_cumulative_pct", ctx.CmdIndex)
@@ -411,19 +449,21 @@ func (h *headtailHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	b, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
-	threshold := "80"
-	for _, arg := range cmd.Arguments[1:] {
-		if strings.HasPrefix(arg, "threshold=") {
-			threshold = strings.TrimPrefix(arg, "threshold=")
-		} else if !strings.Contains(arg, "=") {
-			threshold = arg
-		}
+	threshold := b.Str("threshold", "80")
+	if err := validateNumeric(threshold); err != nil {
+		return fmt.Errorf("headTail(): invalid threshold: %w", err)
 	}
-	fieldRef := resolveFieldRef(field, ctx.Registry)
+	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("headTail(): %w", err)
+	}
 	source := ctx.Plan.CurrentStage()
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
@@ -453,23 +493,35 @@ func (h *headtailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type selectfirstHandler struct{}
 
 func (h *selectfirstHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Plan.IsAggregated = true
 	}
 	return nil
 }
 
 func (h *selectfirstHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
+	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("selectFirst(): %w", err)
+	}
+	alias, err := aggOutputAlias("first_", arg)
+	if err != nil {
+		return fmt.Errorf("selectFirst(): %w", err)
+	}
 	source := ctx.Plan.CurrentStage()
 	if field == "timestamp" {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "min(timestamp) AS first_timestamp"})
 	} else {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("argMin(%s, timestamp) AS first_%s", resolveFieldRef(field, ctx.Registry), escapeString(field)),
+			Expr: fmt.Sprintf("argMin(%s, timestamp) AS %s", fieldRef, alias),
 		})
 	}
 	ctx.Plan.IsAggregated = true
@@ -480,23 +532,35 @@ func (h *selectfirstHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 type selectlastHandler struct{}
 
 func (h *selectlastHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Plan.IsAggregated = true
 	}
 	return nil
 }
 
 func (h *selectlastHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
+	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("selectLast(): %w", err)
+	}
+	alias, err := aggOutputAlias("last_", arg)
+	if err != nil {
+		return fmt.Errorf("selectLast(): %w", err)
+	}
 	source := ctx.Plan.CurrentStage()
 	if field == "timestamp" {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "max(timestamp) AS last_timestamp"})
 	} else {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("argMax(%s, timestamp) AS last_%s", resolveFieldRef(field, ctx.Registry), escapeString(field)),
+			Expr: fmt.Sprintf("argMax(%s, timestamp) AS %s", fieldRef, alias),
 		})
 	}
 	ctx.Plan.IsAggregated = true
@@ -507,18 +571,16 @@ func (h *selectlastHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 type topHandler struct{}
 
 func (h *topHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	alias := ""
-	field := ""
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "as=") {
-			alias = strings.TrimPrefix(arg, "as=")
-		} else if !strings.Contains(arg, "=") && field == "" {
-			field = arg
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
-	if field != "" {
+	alias := b.Str("as", "")
+	if a, ok := b.First("field"); ok {
 		if alias == "" {
-			alias = "top_" + field
+			if alias, err = aggOutputAlias("top_", a); err != nil {
+				return nil
+			}
 		}
 		ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
@@ -527,30 +589,30 @@ func (h *topHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *topHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	field := ""
-	showPercent := false
-	topN := 10
-	alias := ""
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "percent=") {
-			showPercent = strings.TrimPrefix(arg, "percent=") == "true"
-		} else if strings.HasPrefix(arg, "limit=") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && n > 0 {
-				topN = n
-			}
-		} else if strings.HasPrefix(arg, "as=") {
-			alias = strings.TrimPrefix(arg, "as=")
-		} else if !strings.Contains(arg, "=") && field == "" {
-			field = arg
-		}
+	b, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
 	}
-	if field == "" {
+	if !ok {
 		return nil
 	}
-	if alias == "" {
-		alias = "top_" + field
+	showPercent := b.Flag("percent", false)
+	topN := 10
+	if n := b.Int("limit", 0); n > 0 {
+		topN = n
 	}
-	fieldRef := resolveFieldRef(field, ctx.Registry)
+	alias := b.Str("as", "")
+	if alias == "" {
+		if alias, err = aggOutputAlias("top_", arg); err != nil {
+			return fmt.Errorf("top(): %w", err)
+		}
+	} else if _, err := sanitizeIdentifier(alias); err != nil {
+		return fmt.Errorf("top(): %w", err)
+	}
+	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("top(): %w", err)
+	}
 	source := ctx.Plan.CurrentStage()
 	if showPercent {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
@@ -570,7 +632,7 @@ func (h *topHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type multiHandler struct{}
 
 func (h *multiHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	for range cmd.Arguments {
+	for range cmd.Args {
 		ctx.Plan.IsAggregated = true
 	}
 	return nil
@@ -583,13 +645,14 @@ func (h *multiHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		prevAliases[extractFieldAlias(sel.String())] = true
 	}
 
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
 	selectFields := selectExprStrings(source.Layer.Selects)
 	computedFields := ctx.Registry.AllComputed()
-	for _, fn := range cmd.Arguments {
-		if !processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
-			return fmt.Errorf("unknown aggregation function in multi(): %q", fn)
-		}
-		ctx.Plan.IsAggregated = true
+	if err := applyAggSpecs(b.Flat("functions"), &selectFields, computedFields, ctx); err != nil {
+		return err
 	}
 	// Rebuild selects from the string slice
 	source.Layer.Selects = nil
@@ -611,7 +674,7 @@ func (h *multiHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type madHandler struct{}
 
 func (h *madHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_median", FieldKindAggregate, "_median", ctx.CmdIndex)
 		ctx.Registry.Register("_mad", FieldKindAggregate, "_mad", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
@@ -620,10 +683,14 @@ func (h *madHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
+	field := arg.FieldName()
 	source := ctx.Plan.CurrentStage()
 
 	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
@@ -638,7 +705,10 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs["_median"] = "any(_median_val)"
 		ctx.Plan.aggregationOutputs["_mad"] = fmt.Sprintf("median(abs(%s - _median_val))", numericExpr)
 	} else {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
+		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("mad(): %w", err)
+		}
 		numericExpr := fmt.Sprintf("toFloat64OrNull(%s)", fieldRef)
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS _mad_val", numericExpr)})
 		ctx.Plan.MADWindowExpr = "_mad_val"
@@ -659,34 +729,44 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type bucketHandler struct{}
 
 func (h *bucketHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 2 {
+	if len(cmd.Args) >= 2 {
 		ctx.Plan.IsAggregated = true
 	}
 	return nil
 }
 
 func (h *bucketHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) < 2 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	span := b.Str("span", "")
+	spec := b.Agg("function")
+	if span == "" || spec == nil {
 		return nil
 	}
-	span := cmd.Arguments[0]
-	function := cmd.Arguments[1]
 	source := ctx.Plan.CurrentStage()
 
 	n, unit := parseBucketSpan(span)
 	bucketExpr := getBucketExpression(n, unit, bucketTimezone(ctx))
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS time_bucket", bucketExpr)})
 
-	if strings.Contains(function, "count()") {
+	switch name := strings.ToLower(spec.Name); name {
+	case "count":
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*) AS bucket_count"})
 		ctx.Plan.IsAggregated = true
-	} else if strings.Contains(function, "sum(") {
-		f := extractFunctionField(function, "sum")
-		cast := numericCast(f, resolveFieldRef(f, ctx.Registry), ctx.Registry)
+	case "sum":
+		o := readAggOptions(spec)
+		cast, err := aggOperandNumeric(o.operand, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("bucket(): %w", err)
+		}
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
 			Expr: fmt.Sprintf("sum(%s) AS bucket_sum", cast),
 		})
 		ctx.Plan.IsAggregated = true
+	default:
+		return fmt.Errorf("bucket(): function= accepts count() or sum(), got %s()", spec.Name)
 	}
 	source.Layer.GroupBy = append(source.Layer.GroupBy, bucketExpr)
 	return nil
@@ -709,23 +789,6 @@ func exprAliasClash(stage *QueryStage, alias, sql string) (string, bool) {
 			continue
 		}
 		return s[:idx], true
-	}
-	return "", false
-}
-
-// aggregateSpecArg reads the function= spec at index *i, advancing past a second
-// argument when the spec was not folded into the first.
-func aggregateSpecArg(args []string, i *int) (string, bool) {
-	arg := args[*i]
-	if arg == "function=" {
-		if *i+1 < len(args) {
-			*i++
-			return args[*i], true
-		}
-		return "", true
-	}
-	if spec, ok := strings.CutPrefix(arg, "function="); ok {
-		return spec, true
 	}
 	return "", false
 }
@@ -776,116 +839,103 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	computedFields := ctx.Registry.AllComputed()
 	hasFunction := false
 
-	for i := 0; i < len(cmd.Arguments); i++ {
-		arg := cmd.Arguments[i]
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if n := b.Int("limit", 0); n > 0 {
+		source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+	}
 
-		// The spec arrives either as its own argument after a bare "function=", or
-		// folded into one argument when the value is a call that parseCommand
-		// captured whole.
-		if funcDef, isFunc := aggregateSpecArg(cmd.Arguments, &i); isFunc {
-			hasFunction = true
+	if spec := b.Agg("function"); spec != nil {
+		hasFunction = true
+		prevAliases := make(map[string]bool)
+		for _, sel := range source.Layer.Selects {
+			prevAliases[extractFieldAlias(sel.String())] = true
+		}
+		selectFields := selectExprStrings(source.Layer.Selects)
+		if err := applyAggSpecs([]Argument{{Kind: ArgAggSpec, Agg: spec}}, &selectFields, computedFields, ctx); err != nil {
+			return err
+		}
+		source.Layer.Selects = nil
+		for _, sf := range selectFields {
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: sf})
+		}
+		for _, sel := range source.Layer.Selects {
+			alias := extractFieldAlias(sel.String())
+			if alias != "" && !prevAliases[alias] {
+				ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
+				ctx.Plan.aggregationOutputs[alias] = alias
+			}
+		}
+	}
 
-			prevAliases := make(map[string]bool)
-			for _, sel := range source.Layer.Selects {
-				prevAliases[extractFieldAlias(sel.String())] = true
+	for _, keyArg := range b.Flat("fields") {
+		arg := keyArg.Value()
+		// A join-output column only exists per-row under the scan-level model
+		// join, which feeds the FIRST aggregation stage only; grouping it
+		// anywhere else would reference a column that scope does not have
+		// (ClickHouse code 47). In a later stage the entry was dropped by
+		// ScopeToOutputs (a carried group key re-registers as Base), so ask
+		// ModelLookupFields directly.
+		if e := ctx.Registry.Get(arg); e != nil && e.Kind == FieldKindJoined && !ctx.Plan.ModelLookupAtScan {
+			return fmt.Errorf("groupby(): %q is produced by a join and is not available here; model_lookup() outputs can be grouped by placing model_lookup() before the aggregation", arg)
+		} else if e == nil && isMultiStage && contains(ctx.Plan.ModelLookupOutputs, arg) {
+			return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
+		}
+		var fieldRef string
+		if keyArg.FieldName() == "" {
+			// An expression key is projected under a derived name and grouped by
+			// that alias, so the rest of the pipeline sees an ordinary column.
+			sql, err := ResolveArg(keyArg, ctx.Registry)
+			if err != nil {
+				return fmt.Errorf("groupby(): %w", err)
 			}
-
-			selectFields := selectExprStrings(source.Layer.Selects)
-			if strings.HasPrefix(funcDef, "multi(") {
-				inner := unwrapList(funcDef[len("multi(") : len(funcDef)-1])
-				for _, fn := range splitTopLevelArgs(inner) {
-					if !processStatsFn(fn, &selectFields, computedFields, ctx.Registry) {
-						return fmt.Errorf("unknown aggregation function in multi(): %q", fn)
-					}
-					ctx.Plan.IsAggregated = true
-				}
-			} else if strings.TrimSpace(funcDef) == "" {
-				selectFields = append(selectFields, "COUNT(*) AS _count")
-				ctx.Plan.IsAggregated = true
-			} else if processStatsFn(funcDef, &selectFields, computedFields, ctx.Registry) {
-				ctx.Plan.IsAggregated = true
-			} else {
-				// Reject unknown aggregation functions instead of silently degrading
-				// to COUNT(*), which would discard the user's entire spec and return
-				// a plausible-but-wrong result.
-				return fmt.Errorf("unknown aggregation function: %q (did you mean multi([...])?)", funcDef)
+			alias, err := ArgAlias(keyArg)
+			if err != nil {
+				return fmt.Errorf("groupby(): %w", err)
 			}
-			source.Layer.Selects = nil
-			for _, sf := range selectFields {
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: sf})
+			if prior, clash := exprAliasClash(source, alias, sql); clash {
+				return fmt.Errorf("groupby(): %s and %s both produce the column %s; name one with as=", arg, prior, alias)
 			}
-			// Register new aggregation outputs
-			for _, sel := range source.Layer.Selects {
-				alias := extractFieldAlias(sel.String())
-				if alias != "" && !prevAliases[alias] {
-					ctx.Registry.Register(alias, FieldKindAggregate, alias, ctx.CmdIndex)
-					ctx.Plan.aggregationOutputs[alias] = alias
-				}
-			}
-		} else if strings.HasPrefix(arg, "limit=") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && n > 0 {
-				source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
-			}
-		} else if arg == "distinct=true" {
-			if len(source.Layer.GroupBy) > 0 {
-				lastField := source.Layer.GroupBy[len(source.Layer.GroupBy)-1]
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-					Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", groupableCast(lastField)),
-				})
-				ctx.Plan.IsAggregated = true
-			}
-		} else if arg == "distinct=false" {
-			// Explicit non-distinct, ignore
+			source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sql, alias)})
+			ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+			ctx.Registry.SetResolveExpr(alias, alias)
+			fieldRef = alias
+		} else if computedFields[arg] {
+			fieldRef = arg
 		} else {
-			// A join-output column only exists per-row under the scan-level model
-			// join, which feeds the FIRST aggregation stage only; grouping it
-			// anywhere else would reference a column that scope does not have
-			// (ClickHouse code 47). In a later stage the entry was dropped by
-			// ScopeToOutputs (a carried group key re-registers as Base), so ask
-			// ModelLookupFields directly.
-			if e := ctx.Registry.Get(arg); e != nil && e.Kind == FieldKindJoined && !ctx.Plan.ModelLookupAtScan {
-				return fmt.Errorf("groupby(): %q is produced by a join and is not available here; model_lookup() outputs can be grouped by placing model_lookup() before the aggregation", arg)
-			} else if e == nil && isMultiStage && contains(ctx.Plan.ModelLookupOutputs, arg) {
-				return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
-			}
-			var fieldRef string
-			if sql, ok := exprArgSQL(arg, ctx.Registry); ok {
-				// An expression key is projected under a derived name and grouped by
-				// that alias, so the rest of the pipeline sees an ordinary column.
-				alias, err := outputAlias(arg)
-				if err != nil {
-					return fmt.Errorf("groupby(): %w", err)
-				}
-				if prior, clash := exprAliasClash(source, alias, sql); clash {
-					return fmt.Errorf("groupby(): %s and %s both produce the column %s; name one with as=", arg, prior, alias)
-				}
-				source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sql, alias)})
-				ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-				ctx.Registry.SetResolveExpr(alias, alias)
-				fieldRef = alias
-			} else if computedFields[arg] {
+			switch arg {
+			case "timestamp", normLogColumn, "log_id", "normalizer":
 				fieldRef = arg
-			} else {
-				switch arg {
-				case "timestamp", normLogColumn, "log_id", "normalizer":
+			default:
+				if isMultiStage {
+					// In multi-stage, fields reference previous stage output by alias
 					fieldRef = arg
-				default:
-					if isMultiStage {
-						// In multi-stage, fields reference previous stage output by alias
-						fieldRef = arg
-					} else {
-						fieldRef = ctx.Registry.fieldRef(arg)
-					}
+				} else {
+					fieldRef = ctx.Registry.fieldRef(arg)
 				}
 			}
-			if !contains(source.Layer.GroupBy, fieldRef) {
-				source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
-			}
-			// The key survives the aggregation, addressable by the alias it is
-			// projected under. Recorded here, where the name the query used is still
-			// known: by classify time the plan holds only the alias or the expression
-			// depending on what else ran, which is not enough to recover the name.
-			ctx.Registry.SetGroupKeyAlias(arg, sanitizedAlias(arg), ctx.CmdIndex)
+		}
+		if !contains(source.Layer.GroupBy, fieldRef) {
+			source.Layer.GroupBy = append(source.Layer.GroupBy, fieldRef)
+		}
+		// The key survives the aggregation, addressable by the alias it is
+		// projected under. Recorded here, where the name the query used is still
+		// known: by classify time the plan holds only the alias or the expression
+		// depending on what else ran, which is not enough to recover the name.
+		ctx.Registry.SetGroupKeyAlias(arg, sanitizedAlias(arg), ctx.CmdIndex)
+	}
+
+	// distinct= counts distinct values of the last group key, so it is applied
+	// after the keys are known.
+	if b.Flag("distinct", false) || b.Flag("unique", false) {
+		if len(source.Layer.GroupBy) > 0 {
+			lastField := source.Layer.GroupBy[len(source.Layer.GroupBy)-1]
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+				Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", groupableCast(lastField)),
+			})
+			ctx.Plan.IsAggregated = true
 		}
 	}
 
@@ -962,8 +1012,9 @@ func init() {
 	registerSpec(&CommandSpec{Name: "top", Params: []ParamSpec{
 		field("field"), namedLit("percent"), namedLit("limit"), as(),
 	}})
-	// multi() holds aggregate specs, which processStatsFn validates.
-	registerSpec(&CommandSpec{Name: "multi", FreeForm: true, Params: []ParamSpec{fields("functions")}})
+	registerSpec(&CommandSpec{Name: "multi", FreeForm: true, Params: []ParamSpec{
+		ParamSpec{Name: "functions", Kind: ParamAggSpec, Positional: true, Variadic: true},
+	}})
 	// bucket(1h, count()) and bucket(span=1h, function=count()) are both written.
 	registerSpec(&CommandSpec{Name: "bucket", Params: []ParamSpec{
 		reqLit("span"),
@@ -972,4 +1023,41 @@ func init() {
 	registerSpec(&CommandSpec{Name: "groupby", Params: []ParamSpec{
 		fields("fields"), namedAgg("function"), namedLit("limit"), namedLit("distinct"), namedLit("unique"),
 	}})
+}
+
+// applyAggSpecs renders aggregate specs into a stage's SELECT list, expanding a
+// multi(...) wrapper into its members.
+func applyAggSpecs(args []Argument, selectFields *[]string, computedFields map[string]bool, ctx *CommandContext) error {
+	for _, a := range args {
+		agg, ok := asAggSpec(a)
+		if !ok {
+			return fmt.Errorf("unknown aggregation function: %s (did you mean multi([...])?)", a)
+		}
+		specs := []*AggSpec{agg}
+		where := ""
+		if strings.EqualFold(agg.Name, "multi") {
+			specs, where = nil, " in multi()"
+			for _, member := range aggFields(agg) {
+				inner, ok := asAggSpec(member)
+				if !ok {
+					return fmt.Errorf("unknown aggregation function in multi(): %s", member)
+				}
+				specs = append(specs, inner)
+			}
+		}
+		for _, spec := range specs {
+			ok, err := processAggSpec(spec, selectFields, computedFields, ctx.Registry)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				// Reject unknown aggregation functions instead of silently degrading
+				// to COUNT(*), which would discard the spec and return a
+				// plausible-but-wrong result.
+				return fmt.Errorf("unknown aggregation function%s: %s()", where, spec.Name)
+			}
+			ctx.Plan.IsAggregated = true
+		}
+	}
+	return nil
 }

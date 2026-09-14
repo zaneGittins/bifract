@@ -73,63 +73,38 @@ func TestExpressionsSurviveListSplitting(t *testing.T) {
 	}
 }
 
-// A named list ends at its first comma unless bracketed, so `include=a,b` leaves
-// `b` as a stray argument. Silently ignoring it dropped a column the author
-// asked for; every named-only command now says so instead.
-func TestStrayArgumentIsRejected(t *testing.T) {
-	cases := []struct{ query, want string }{
-		{`* | match(dict="d", field=f, column=k, include=c1,c2)`, "match(): expects at most 0 positional"},
-		{`* | lookupIP(field=src_ip, include=country,city)`, "expects at most 0 positional"},
-		{`* | model_lookup(model="m", key=a,b)`, "expects at most 0 positional"},
+// A named list written without brackets used to end at its first comma, and the
+// rest of the values were dropped or rejected as stray arguments. The typed
+// parser reads the whole run, so every value the author asked for survives.
+func TestUnbracketedNamedListKeepsEveryValue(t *testing.T) {
+	cases := []struct {
+		query string
+		want  []string
+	}{
+		{`* | match(dict="d", field=f, column=k, include=c1,c2)`, []string{"c1", "c2"}},
+		{`* | model_lookup(model="m", key=a,b)`, []string{"_mlk_k0", "_mlk_k1"}},
 	}
 	for _, c := range cases {
 		pipeline, err := ParseQuery(c.query)
 		if err != nil {
 			t.Fatalf("parse %q: %v", c.query, err)
 		}
-		_, err = TranslateToSQLWithOrder(pipeline, listOpts())
-		if err == nil {
-			t.Errorf("%s: expected a rejection, got none", c.query)
+		sql, err := TranslateToSQLWithOrder(pipeline, listOpts())
+		if err != nil {
+			t.Errorf("%s: %v", c.query, err)
 			continue
 		}
-		if !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s\n  want %q, got: %v", c.query, c.want, err)
-		}
-	}
-}
-
-func TestListArgHelper(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []string
-	}{
-		{"a,b", []string{"a", "b"}},
-		{"[a,b]", []string{"a", "b"}},
-		{" [ a , b ] ", []string{"a", "b"}},
-		{"substr(b,1,2)", []string{"substr(b,1,2)"}},
-		{"a,substr(b,1,2),c", []string{"a", "substr(b,1,2)", "c"}},
-		{`"200","404"`, []string{"200", "404"}},
-		{"a,,b", []string{"a", "b"}},
-		{"", nil},
-	}
-	for _, c := range cases {
-		got := listArg(c.in)
-		if len(got) != len(c.want) {
-			t.Errorf("listArg(%q) = %q, want %q", c.in, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("listArg(%q) = %q, want %q", c.in, got, c.want)
-				break
+		for _, want := range c.want {
+			if !strings.Contains(sql.SQL, want) {
+				t.Errorf("%s: %q missing from the SQL", c.query, want)
 			}
 		}
 	}
 }
 
-// A command argument is captured as source text and re-lexed when it is resolved,
-// so a string literal inside it has to keep its quotes. Without that,
-// splitAt(path, "/", 2) came back as splitAt(path,/,2), which no longer parses.
+// A string literal inside a command argument keeps its quoting all the way to
+// the compiler. When arguments round-tripped through text, splitAt(path, "/", 2)
+// came back as splitAt(path,/,2), which no longer parses.
 func TestCapturedCallKeepsStringQuoting(t *testing.T) {
 	cases := []struct{ query, want string }{
 		{`* | groupby(splitAt(path, "/", 2))`, "splitByString('/', fields.`path`::String)"},

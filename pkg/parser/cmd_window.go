@@ -2,15 +2,13 @@ package parser
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 )
 
 // modifiedZScoreHandler handles modifiedzscore/modifiedz/mzscore(field)
 type modifiedZScoreHandler struct{}
 
 func (h *modifiedZScoreHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_median", FieldKindWindow, "_median", ctx.CmdIndex)
 		ctx.Registry.Register("_mad", FieldKindWindow, "_mad", ctx.CmdIndex)
 		ctx.Registry.Register("_modified_z", FieldKindWindow, "_modified_z", ctx.CmdIndex)
@@ -19,19 +17,16 @@ func (h *modifiedZScoreHandler) Declare(cmd CommandNode, ctx *CommandContext) er
 }
 
 func (h *modifiedZScoreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	arg, ok := b.First("field")
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
-	source := ctx.Plan.CurrentStage()
-
-	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
-		ctx.Plan.ModifiedZScoreExpr = fmt.Sprintf("toFloat64(%s)", field)
-	} else {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects,
-			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _mz_val", fieldRef)})
-		ctx.Plan.ModifiedZScoreExpr = "_mz_val"
+	if err := setWindowValue(arg, ctx); err != nil {
+		return fmt.Errorf("modifiedZScore(): %w", err)
 	}
 	ctx.Registry.SetResolveExpr("_modified_z", "_modified_z")
 	ctx.Registry.SetResolveExpr("_median", "_median")
@@ -39,11 +34,30 @@ func (h *modifiedZScoreHandler) Execute(cmd CommandNode, ctx *CommandContext) er
 	return nil
 }
 
+// setWindowValue points the plan's modified-z input at the argument's value: an
+// aggregate output is read by its alias, anything else is projected as _mz_val.
+func setWindowValue(arg Argument, ctx *CommandContext) error {
+	if name := arg.FieldName(); name != "" {
+		if _, isAggOutput := ctx.Plan.aggregationOutputs[name]; isAggOutput {
+			ctx.Plan.ModifiedZScoreExpr = fmt.Sprintf("toFloat64(%s)", name)
+			return nil
+		}
+	}
+	fieldRef, err := ResolveArg(arg, ctx.Registry)
+	if err != nil {
+		return err
+	}
+	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects,
+		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _mz_val", fieldRef)})
+	ctx.Plan.ModifiedZScoreExpr = "_mz_val"
+	return nil
+}
+
 // madOutlierHandler handles madoutlier/outlier(field, threshold)
 type madOutlierHandler struct{}
 
 func (h *madOutlierHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
+	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_median", FieldKindWindow, "_median", ctx.CmdIndex)
 		ctx.Registry.Register("_mad", FieldKindWindow, "_mad", ctx.CmdIndex)
 		ctx.Registry.Register("_modified_z", FieldKindWindow, "_modified_z", ctx.CmdIndex)
@@ -53,31 +67,22 @@ func (h *madOutlierHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 }
 
 func (h *madOutlierHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	arg, ok := b.First("field")
+	if !ok {
 		return nil
 	}
-	field := cmd.Arguments[0]
-	outlierThreshold := "3.5"
-	for _, arg := range cmd.Arguments[1:] {
-		if strings.HasPrefix(arg, "threshold=") {
-			outlierThreshold = strings.TrimPrefix(arg, "threshold=")
-		} else if !strings.Contains(arg, "=") {
-			outlierThreshold = arg
-		}
-	}
+	outlierThreshold := b.Str("threshold", "3.5")
 	if err := validateNumeric(outlierThreshold); err != nil {
 		return fmt.Errorf("madOutlier(): invalid threshold: %w", err)
 	}
 	ctx.Plan.OutlierThreshold = outlierThreshold
 
-	source := ctx.Plan.CurrentStage()
-	if _, isAggOutput := ctx.Plan.aggregationOutputs[field]; isAggOutput {
-		ctx.Plan.ModifiedZScoreExpr = fmt.Sprintf("toFloat64(%s)", field)
-	} else {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects,
-			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _mz_val", fieldRef)})
-		ctx.Plan.ModifiedZScoreExpr = "_mz_val"
+	if err := setWindowValue(arg, ctx); err != nil {
+		return fmt.Errorf("madOutlier(): %w", err)
 	}
 	ctx.Registry.SetResolveExpr("_modified_z", "_modified_z")
 	ctx.Registry.SetResolveExpr("_median", "_median")
@@ -94,24 +99,23 @@ func (h *histogramHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	arg, ok := b.First("field")
+	if !ok {
 		return fmt.Errorf("histogram() requires a field argument")
 	}
-	field := cmd.Arguments[0]
-	if strings.Contains(field, "=") {
-		return fmt.Errorf("histogram() first argument must be a field name, got %q", field)
+	field := arg.FieldName()
+	if field == "" {
+		return fmt.Errorf("histogram() first argument must be a field name, got %s", arg)
 	}
-	buckets := 20
-	for _, arg := range cmd.Arguments[1:] {
-		if strings.HasPrefix(arg, "buckets=") {
-			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "buckets=")); err == nil && n > 0 {
-				if n > 200 {
-					n = 200
-				}
-				buckets = n
-			}
-		}
+	buckets := b.Int("buckets", 20)
+	if buckets <= 0 {
+		buckets = 20
 	}
+	buckets = min(buckets, 200)
 
 	source := ctx.Plan.CurrentStage()
 	computedFields := ctx.Registry.AllComputed()

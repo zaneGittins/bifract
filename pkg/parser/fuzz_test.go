@@ -187,6 +187,23 @@ var bqlSeeds = []string{
 	`* | groupBy(service) | multi(count(), avg(response_time), percentile(response_time, 95), max(bytes))`,
 	// Comment command
 	`* | comment(log_id)`,
+	// Typed argument shapes: lists in both spellings, named values, aggregate
+	// specs, assignments and expressions in field positions.
+	`* | dedup([user, host])`,
+	`* | in(status, values=[200, 404])`,
+	`* | hash(user, host, as=k)`,
+	`* | tlsh(field=tlsh, hash=a,b, threshold=50)`,
+	`* | eval(total = bytes * 2)`,
+	`* | eval("total = bytes * 2")`,
+	`* | groupby(lower(user), function=multi(count(), avg(len(commandline))))`,
+	`* | bucket(span=1h, function=sum(bytes))`,
+	`* | bucket("1h", "count()")`,
+	`* | timechart(span=1d, function=groupby(user, distinct=true))`,
+	`* | split(path, "/", -1)`,
+	`* | replace("a", "b", message, as=redacted)`,
+	`* | levenshtein(user, "administrator")`,
+	`* | table(user, stddev(bytes), abs(a - b))`,
+	`* | mitre(tags=rule_tags, by=host, limit=10)`,
 }
 
 func FuzzParseQuery(f *testing.F) {

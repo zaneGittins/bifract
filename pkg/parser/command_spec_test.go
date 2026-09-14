@@ -123,16 +123,15 @@ func TestValidateCommandArgs(t *testing.T) {
 		{`* | sort(bytes, direction=desc)`, "unknown parameter direction"},
 		{`* | dedup(a, bogus=1)`, "unknown parameter bogus"},
 	}
+	// An unknown parameter is caught while parsing, where the position is known;
+	// the shape checks that remain run in ValidateCommandArgs.
 	for _, c := range reject {
-		pipeline, err := ParseQuery(c.query)
-		if err != nil {
-			t.Errorf("parse %q: %v", c.query, err)
-			continue
-		}
-		var got error
-		for _, cmd := range pipeline.Commands {
-			if err := ValidateCommandArgs(cmd); err != nil {
-				got = err
+		pipeline, got := ParseQuery(c.query)
+		if got == nil {
+			for _, cmd := range pipeline.Commands {
+				if err := ValidateCommandArgs(cmd); err != nil {
+					got = err
+				}
 			}
 		}
 		if got == nil {

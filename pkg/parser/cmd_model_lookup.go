@@ -15,7 +15,7 @@ import (
 type modelLookupHandler struct{}
 
 func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	modelName, _, _, err := parseModelLookupArgs(cmd.Arguments)
+	modelName, _, _, err := parseModelLookupArgs(cmd)
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		return fmt.Errorf("model_lookup() cannot be used more than once")
 	}
 
-	modelName, keyFields, strict, err := parseModelLookupArgs(cmd.Arguments)
+	modelName, keyFields, strict, err := parseModelLookupArgs(cmd)
 	if err != nil {
 		return err
 	}
@@ -439,29 +439,27 @@ WHERE n_buckets >= %d`,
 // strict defaults to true: a log the model never scored is dropped rather than carried
 // with the model's columns at their type defaults, which is what made `| percent < 0.1`
 // match every unscored log.
-func parseModelLookupArgs(args []string) (modelName string, keyFields []string, strict bool, err error) {
+func parseModelLookupArgs(cmd CommandNode) (modelName string, keyFields []string, strict bool, err error) {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return "", nil, false, err
+	}
 	strict = true
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "model=") {
-			modelName = strings.Trim(strings.TrimPrefix(arg, "model="), `"'`)
-		} else if strings.HasPrefix(arg, "key=") {
-			fields, _ := namedListArg(arg, "key")
-			keyFields = append(keyFields, fields...)
-		} else if strings.HasPrefix(arg, "strict=") {
-			switch strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "strict="), `"'`)) {
-			case "true":
-				strict = true
-			case "false":
-				strict = false
-			default:
-				return "", nil, false, fmt.Errorf("model_lookup() strict= must be true or false")
-			}
+	if raw := b.Str("strict", ""); raw != "" {
+		switch strings.ToLower(raw) {
+		case "true":
+			strict = true
+		case "false":
+			strict = false
+		default:
+			return "", nil, false, fmt.Errorf("model_lookup() strict= must be true or false")
 		}
 	}
+	modelName = b.Str("model", "")
 	if modelName == "" {
 		return "", nil, false, fmt.Errorf("model_lookup() requires model= parameter")
 	}
-	return modelName, keyFields, strict, nil
+	return modelName, b.Strings("key"), strict, nil
 }
 
 // resolveFieldRef converts a user field name to a ClickHouse expression reference.

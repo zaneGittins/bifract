@@ -3,7 +3,6 @@ package parser
 import (
 	"fmt"
 	"strconv"
-	"strings"
 )
 
 // mitreTagAlias is the output column holding one ATT&CK tag per row.
@@ -49,31 +48,19 @@ func (h *mitreHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("mitre() reads raw events and must come before groupby()/timechart()")
 	}
 
-	var tagField, byField string
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	tagField := b.StrOf("tags", "tag", "field")
+	byField := b.StrOf("groupby", "by")
 	limit := 5000
-
-	for _, arg := range cmd.Arguments {
-		value := strings.Trim(arg[strings.IndexByte(arg, '=')+1:], `"'`)
-		switch {
-		case strings.HasPrefix(arg, "tags="), strings.HasPrefix(arg, "tag="), strings.HasPrefix(arg, "field="):
-			tagField = value
-		case strings.HasPrefix(arg, "by="), strings.HasPrefix(arg, "groupby="):
-			byField = value
-		case strings.HasPrefix(arg, "limit="):
-			n, err := strconv.Atoi(value)
-			if err != nil || n <= 0 {
-				return fmt.Errorf("mitre(): limit must be a positive number, got %q", value)
-			}
-			if n > 50000 {
-				n = 50000
-			}
-			limit = n
-		case !strings.Contains(arg, "="):
-			// Bare first argument is the tag field: mitre(rule_tags).
-			tagField = strings.Trim(arg, `"'`)
-		default:
-			return fmt.Errorf("mitre(): unknown argument %q (supported: tags=, by=, limit=)", arg)
+	if raw := b.StrOf("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("mitre(): limit must be a positive number, got %q", raw)
 		}
+		limit = min(n, 50000)
 	}
 
 	if tagField == "" {

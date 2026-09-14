@@ -98,7 +98,7 @@ func TestValidateWindowContract(t *testing.T) {
 func TestContractSurvivesUntranslatableQueries(t *testing.T) {
 	for _, q := range []string{
 		`comment() | chain(user, within=5m) { a="x"; b="y" }`,
-		`* | chain(user, within=5m) { a="x"; b="y" } | model_lookup(m, on=user)`,
+		`* | chain(user, within=5m) { a="x"; b="y" } | model_lookup(model="m", key=[user])`,
 	} {
 		pl, err := parser.ParseQuery(q)
 		if err != nil {

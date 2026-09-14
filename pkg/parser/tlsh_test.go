@@ -49,6 +49,12 @@ func TestTLSHParams(t *testing.T) {
 			wantField: "tlsh", wantThr: DefaultTLSHThreshold, wantHash: 1},
 		{name: "two hashes", query: `* | tlsh(field=tlsh, hash="` + tlshTestDigestA + `,` + tlshTestDigestB + `")`,
 			wantField: "tlsh", wantThr: DefaultTLSHThreshold, wantHash: 2},
+		{name: "unbracketed hash list", query: `* | tlsh(field=tlsh, hash=` + tlshTestDigestA + `,` + tlshTestDigestB + `)`,
+			wantField: "tlsh", wantThr: DefaultTLSHThreshold, wantHash: 2},
+		{name: "bracketed hash list", query: `* | tlsh(field=tlsh, hash=["` + tlshTestDigestA + `","` + tlshTestDigestB + `"])`,
+			wantField: "tlsh", wantThr: DefaultTLSHThreshold, wantHash: 2},
+		{name: "list then named argument", query: `* | tlsh(field=tlsh, hash=` + tlshTestDigestA + `,` + tlshTestDigestB + `, threshold=50)`,
+			wantField: "tlsh", wantThr: 50, wantHash: 2},
 
 		{name: "missing field", query: `* | tlsh(hash="` + tlshTestDigestA + `")`, wantErr: "field="},
 		{name: "no needle", query: `* | tlsh(field=tlsh)`, wantErr: "hash="},
@@ -230,13 +236,12 @@ func TestTLSHNeverEmitsEmptyInList(t *testing.T) {
 	}
 }
 
-// A dropped argument is a silently different query: a typo'd threshold runs at the
-// default, and an unquoted multi-value hash list hunts for only the first digest.
+// A dropped argument is a silently different query: a typo'd threshold would
+// otherwise bind positionally and run at the default.
 func TestTLSHRejectsUnknownArguments(t *testing.T) {
 	cases := []struct{ name, query, want string }{
-		{"typo'd threshold", `* | tlsh(field=tlsh, dict="d", treshold=50)`, "unknown argument"},
-		{"typo'd dict", `* | tlsh(field=tlsh, dictionary="d")`, "unknown argument"},
-		{"unquoted hash list", `* | tlsh(field=tlsh, hash=` + tlshTestDigestA + `,` + tlshTestDigestB + `)`, "unexpected argument"},
+		{"typo'd threshold", `* | tlsh(field=tlsh, dict="d", treshold=50)`, "unknown parameter"},
+		{"typo'd dict", `* | tlsh(field=tlsh, dictionary="d")`, "unknown parameter"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

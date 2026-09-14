@@ -87,7 +87,7 @@ func TestMitreCommand(t *testing.T) {
 	})
 
 	t.Run("rejects unknown argument", func(t *testing.T) {
-		if _, err := TranslateToSQL(mustParse(t, `* | mitre(foo=bar)`), opts); err == nil {
+		if _, err := ParseQuery(`* | mitre(foo=bar)`); err == nil {
 			t.Error("expected an error for an unknown argument")
 		}
 	})

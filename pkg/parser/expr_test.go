@@ -528,17 +528,28 @@ func TestExprCommandArguments(t *testing.T) {
 		}
 	})
 
+	// A numeric expression is aggregated as it stands. The OrNull/OrZero casts
+	// take a String, so wrapping one is illegal (ClickHouse: "Illegal type UInt64
+	// of first argument of function toFloat64OrNull").
 	t.Run("aggregate input", func(t *testing.T) {
 		sql := translateExpr(t, `* | groupby(user, function=sum(len(commandline)))`)
-		if !strings.Contains(sql, "sum(toFloat64OrNull(length(fields.`commandline`::String)))") {
+		if !strings.Contains(sql, "sum(length(fields.`commandline`::String))") {
 			t.Errorf("expected the expression inside the aggregate, got: %s", sql)
 		}
 	})
 
 	t.Run("aggregate input inside multi", func(t *testing.T) {
 		sql := translateExpr(t, `* | groupby(user, function=multi(count(), avg(len(commandline))))`)
-		if !strings.Contains(sql, "avg(toFloat64OrNull(length(fields.`commandline`::String)))") {
+		if !strings.Contains(sql, "avg(length(fields.`commandline`::String))") {
 			t.Errorf("expected the expression inside multi(), got: %s", sql)
+		}
+	})
+
+	// A non-numeric expression still needs the cast, or the aggregate rejects it.
+	t.Run("string aggregate input keeps the cast", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(user, function=sum(lower(image)))`)
+		if !strings.Contains(sql, "sum(toFloat64OrNull(lower(fields.`image`::String)))") {
+			t.Errorf("expected a cast around the string expression, got: %s", sql)
 		}
 	})
 }

@@ -430,15 +430,14 @@ var bqlFunctionDocs = []FunctionDoc{
 	{
 		Name:        "percentile",
 		Category:    "Aggregation",
-		Description: "Calculates the specified percentile of a numeric field",
-		Syntax:      "| percentile(field, p)",
+		Description: "Returns the 50th, 75th and 99th percentiles of a numeric field as one column",
+		Syntax:      "| percentile(field)",
 		Parameters: []Param{
-			{Name: "field", Type: "numeric", Required: true, Description: "The field to calculate percentile for"},
+			{Name: "field", Type: "numeric", Required: true, Description: "The field to calculate percentiles for"},
 		},
 		Examples: []string{
 			"| percentile(response_time)",
-			"| groupby(service) | percentile(latency, 99)",
-			"| percentile(duration, 50)",
+			"| groupby(service) | percentile(latency)",
 		},
 	},
 	{
@@ -608,6 +607,7 @@ var bqlFunctionDocs = []FunctionDoc{
 			{Name: "pattern", Type: "regex", Required: true, Description: "Regex pattern to match"},
 			{Name: "replacement", Type: "string", Required: true, Description: "Replacement string"},
 			{Name: "field", Type: "string", Required: false, Description: "Field to replace in (default: norm_log)"},
+			{Name: "as", Type: "string", Required: false, Description: "Output column (default: the field replaced, rebound in place)"},
 		},
 		Examples: []string{
 			`| replace("password=\\S+", "password=***", norm_log)`,
@@ -821,12 +821,12 @@ var bqlFunctionDocs = []FunctionDoc{
 		Name:        "eval",
 		Category:    "Transformation",
 		Description: "Creates computed fields using mathematical expressions",
-		Syntax:      `| eval("field = expression")`,
+		Syntax:      `| eval(field = expression)`,
 		Parameters: []Param{
 			{Name: "expression", Type: "string", Required: true, Description: "Assignment expression (e.g., score = latency * priority)"},
 		},
 		Examples: []string{
-			`| eval("score = bytes + priority")`,
+			`| eval(score = bytes + priority)`,
 			`| eval("rate = requests / duration")`,
 		},
 	},

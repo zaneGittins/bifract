@@ -48,43 +48,21 @@ func ExtractTLSHParams(pipeline *PipelineNode) (TLSHParams, bool, error) {
 		found = true
 		p.Threshold = DefaultTLSHThreshold
 
-		for _, arg := range cmd.Arguments {
-			arg = strings.TrimSpace(arg)
-			switch {
-			case strings.HasPrefix(arg, "field="):
-				p.Field = unquoteArg(strings.TrimPrefix(arg, "field="))
-			case strings.HasPrefix(arg, "hash="):
-				p.Hashes = append(p.Hashes, listArg(strings.TrimPrefix(arg, "hash="))...)
-			case strings.HasPrefix(arg, "dict="):
-				p.Dict = unquoteArg(strings.TrimPrefix(arg, "dict="))
-			case strings.HasPrefix(arg, "threshold="):
-				raw := unquoteArg(strings.TrimPrefix(arg, "threshold="))
-				n, err := strconv.Atoi(raw)
-				if err != nil {
-					if firstErr == nil {
-						firstErr = fmt.Errorf("tlsh(): threshold must be a number, got %q", raw)
-					}
-					return
-				}
-				p.Threshold = n
-			case arg == "":
-			default:
-				// A bare first argument is the field, so tlsh(tlsh, hash="...") works.
-				if p.Field == "" && !strings.Contains(arg, "=") {
-					p.Field = unquoteArg(arg)
-					continue
-				}
-				// Anything else is a mistake worth reporting. Dropping it silently
-				// turned a typo'd `treshold=50` into a query that ran at the default,
-				// and an unquoted `hash=A,B` into a hunt for A alone.
-				if firstErr == nil {
-					if name, _, ok := strings.Cut(arg, "="); ok {
-						firstErr = fmt.Errorf("tlsh(): unknown argument %q; expected field=, hash=, dict= or threshold=", name)
-					} else {
-						firstErr = fmt.Errorf("tlsh(): unexpected argument %q; quote a multi-value hash list as hash=\"a,b\"", arg)
-					}
-				}
+		b, err := BindCommand(cmd)
+		if err != nil {
+			firstErr = err
+			return
+		}
+		p.Field = b.Str("field", "")
+		p.Hashes = b.CSV("hash")
+		p.Dict = b.Str("dict", "")
+		if raw := b.Str("threshold", ""); raw != "" {
+			n, convErr := strconv.Atoi(raw)
+			if convErr != nil {
+				firstErr = fmt.Errorf("tlsh(): threshold must be a number, got %q", raw)
+				return
 			}
+			p.Threshold = n
 		}
 
 		if firstErr == nil {
@@ -128,13 +106,9 @@ func (p TLSHParams) validate() error {
 	return nil
 }
 
-func unquoteArg(s string) string {
-	return strings.Trim(strings.TrimSpace(s), `"'`)
-}
-
 func init() {
 	registerSpec(&CommandSpec{Name: "tlsh", Params: []ParamSpec{
-		ParamSpec{Name: "field", Kind: ParamField, Required: true},
+		reqField("field"),
 		namedList("hash"), namedLit("dict"), namedLit("threshold"),
 	}})
 }

@@ -165,13 +165,16 @@ func normalizeEdgeType(s string) string {
 	return ""
 }
 
-// parseEdgeTypeList splits a comma/space-separated argument value into normalized event_types.
-func parseEdgeTypeList(v string) []string {
-	v = strings.Trim(v, "\"'[]")
+// edgeTypeList normalizes a list argument's values into event_types, dropping
+// anything unrecognised. A single value may still hold several types separated
+// by commas or spaces: include="spawn,file_write" is the documented spelling.
+func edgeTypeList(values []string) []string {
 	var out []string
-	for _, tok := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' }) {
-		if t := normalizeEdgeType(tok); t != "" {
-			out = append(out, t)
+	for _, v := range values {
+		for _, tok := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' }) {
+			if t := normalizeEdgeType(tok); t != "" {
+				out = append(out, t)
+			}
 		}
 	}
 	return out
@@ -182,51 +185,34 @@ func parseEdgeTypeList(v string) []string {
 // calls this, then orchestrates the two-pass query into a subquery source.
 func ParseProvenanceParams(cmd CommandNode) (ProvenanceParams, bool) {
 	p := ProvenanceParams{Depth: 10, Direction: "both", Threshold: 0.7, Reconnect: true, Diffuse: true, Limit: defaultPgrLimit, Lambda: defaultDiffuseLambda, MaxPeers: DefaultReconnectPeers}
-	var includeTypes, excludeTypes []string
-	for _, arg := range cmd.Arguments {
-		switch {
-		case strings.HasPrefix(arg, "start="):
-			p.Start = strings.Trim(strings.TrimPrefix(arg, "start="), "\"'")
-		case strings.HasPrefix(arg, "limit="):
-			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && n > 0 {
-				if n > maxPgrLimit {
-					n = maxPgrLimit
-				}
-				p.Limit = n
-			}
-		case strings.HasPrefix(arg, "peers="):
-			if n, err := strconv.Atoi(strings.TrimPrefix(arg, "peers=")); err == nil && n > 0 {
-				if n > maxReconnectPeersArg {
-					n = maxReconnectPeersArg
-				}
-				p.MaxPeers = n
-			}
-		case strings.HasPrefix(arg, "reconnect="):
-			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "reconnect="), "\"'"))
-			p.Reconnect = v != "false" && v != "0" && v != "no"
-		case strings.HasPrefix(arg, "diffuse="):
-			v := strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "diffuse="), "\"'"))
-			p.Diffuse = v != "false" && v != "0" && v != "no"
-		case strings.HasPrefix(arg, "lambda="):
-			if l, err := strconv.ParseFloat(strings.TrimPrefix(arg, "lambda="), 64); err == nil && l >= 0 && l <= 1 {
-				p.Lambda = l
-			}
-		case strings.HasPrefix(arg, "depth="):
-			if d, err := strconv.Atoi(strings.TrimPrefix(arg, "depth=")); err == nil && d > 0 {
-				p.Depth = d
-			}
-		case strings.HasPrefix(arg, "direction="):
-			p.Direction = strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "direction="), "\"'"))
-		case strings.HasPrefix(arg, "threshold="):
-			if t, err := strconv.ParseFloat(strings.TrimPrefix(arg, "threshold="), 64); err == nil && t >= 0 && t <= 1 {
-				p.Threshold = t
-			}
-		case strings.HasPrefix(arg, "include="):
-			includeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "include="))
-		case strings.HasPrefix(arg, "exclude="):
-			excludeTypes = parseEdgeTypeList(strings.TrimPrefix(arg, "exclude="))
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return p, false
 	}
+	p.Start = b.Str("start", "")
+	if n := b.Int("limit", p.Limit); n > 0 {
+		p.Limit = min(n, maxPgrLimit)
+	}
+	if n := b.Int("peers", p.MaxPeers); n > 0 {
+		p.MaxPeers = min(n, maxReconnectPeersArg)
+	}
+	p.Reconnect = b.Flag("reconnect", p.Reconnect)
+	p.Diffuse = b.Flag("diffuse", p.Diffuse)
+	if l := b.Float("lambda", p.Lambda); l >= 0 && l <= 1 {
+		p.Lambda = l
+	}
+	if d := b.Int("depth", p.Depth); d > 0 {
+		p.Depth = d
+	}
+	if v := b.Str("direction", ""); v != "" {
+		p.Direction = strings.ToLower(v)
+	}
+	if t := b.Float("threshold", p.Threshold); t >= 0 && t <= 1 {
+		p.Threshold = t
+	}
+	includeTypes := edgeTypeList(b.Strings("include"))
+	excludeTypes := edgeTypeList(b.Strings("exclude"))
+
 	// Resolve the non-spawn edge-type set: start from include= (or the default leaf types when no
 	// include= is given), then drop any exclude=. spawn is the backbone and is never filtered out
 	// here. The default omits remote_thread/process_access (see provenanceDefaultLeafTypes); an

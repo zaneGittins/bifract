@@ -107,7 +107,7 @@ func TestLoadRuleRejectsInvalidAndUnsupported(t *testing.T) {
 			wantErr: "cannot be tested offline",
 		},
 		"model_lookup": {
-			body:    "name: x\nqueryString: '* | model_lookup(name=m, field=image)'\n",
+			body:    "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
 			wantErr: "cannot be tested offline",
 		},
 	}

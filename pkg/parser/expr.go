@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -91,7 +92,7 @@ func ParseExpressionAtPrec(src []rune, start, minPrec int) (*ExprNode, int, erro
 	if err != nil {
 		return nil, 0, err
 	}
-	return expr, p.consumedEnd(), nil
+	return expr, clampEnd(p.consumedEnd(), start, len(src)), nil
 }
 
 func ParseExpressionAt(src []rune, start int) (*ExprNode, int, error) {
@@ -112,7 +113,14 @@ func ParseExpressionAt(src []rune, start int) (*ExprNode, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	return expr, p.consumedEnd(), nil
+	return expr, clampEnd(p.consumedEnd(), start, len(src)), nil
+}
+
+// clampEnd keeps the resync offset inside the source. An unterminated quote
+// produces a token whose End runs past the input, and every caller slices the
+// source with this offset.
+func clampEnd(end, start, length int) int {
+	return max(start, min(end, length))
 }
 
 // consumedEnd is the offset just past the last token the parser accepted.
@@ -365,8 +373,13 @@ func (e *ExprNode) String() string {
 		for _, a := range e.Args {
 			parts = append(parts, a.String())
 		}
-		for name, a := range e.Named {
-			parts = append(parts, name+"="+a.String())
+		named := make([]string, 0, len(e.Named))
+		for name := range e.Named {
+			named = append(named, name)
+		}
+		sort.Strings(named)
+		for _, name := range named {
+			parts = append(parts, name+"="+e.Named[name].String())
 		}
 		return e.Value + "(" + strings.Join(parts, ", ") + ")"
 	}

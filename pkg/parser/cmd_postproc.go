@@ -13,45 +13,46 @@ func (h *sortHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	source := ctx.Plan.CurrentStage()
-	if len(cmd.Arguments) == 0 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	arg, ok := b.First("field")
+	if !ok {
 		return nil
 	}
 
-	field := strings.TrimPrefix(cmd.Arguments[0], "field=")
 	direction := "ASC"
-
-	for _, arg := range cmd.Arguments[1:] {
-		argUpper := strings.ToUpper(arg)
-		if strings.HasPrefix(argUpper, "ORDER=") {
-			val := strings.TrimPrefix(argUpper, "ORDER=")
-			if val == "DESC" || val == "ASC" {
-				direction = val
-			}
-		} else if argUpper == "DESC" || argUpper == "ASC" {
-			direction = argUpper
-		}
+	if d := strings.ToUpper(b.Str("order", "")); d == "DESC" || d == "ASC" {
+		direction = d
 	}
 
-	var fieldRef string
-	if ctx.Registry.IsComputed(field) || ctx.Registry.Has(field) {
-		fieldRef = field
-	} else {
-		switch field {
-		case "timestamp", normLogColumn, "log_id", "normalizer":
-			fieldRef = field
-			if field == normLogColumn {
-				fieldRef = contentColMode(ctx.Opts.SourceMode)
-			}
-		default:
-			// Cast raw JSON subcolumns to ::String so ORDER BY works on paths
-			// stored as Dynamic (pre-type-hint rows); a bare Dynamic ref errors 44.
-			fieldRef = resolveFieldRef(field, ctx.Registry)
-		}
+	fieldRef, err := sortFieldRef(arg, ctx)
+	if err != nil {
+		return fmt.Errorf("sort(): %w", err)
 	}
-
+	source := ctx.Plan.CurrentStage()
 	source.Layer.OrderBy = append(source.Layer.OrderBy, fieldRef+" "+direction)
 	return nil
+}
+
+// sortFieldRef resolves the sort key. A computed column is ordered by its alias;
+// a raw JSON subcolumn is cast to ::String so a Dynamic-stored path is orderable
+// (a bare Dynamic ref errors 44).
+func sortFieldRef(arg Argument, ctx *CommandContext) (string, error) {
+	if arg.IsFieldName() {
+		name := arg.Expr.Value
+		if ctx.Registry.IsComputed(name) || ctx.Registry.Has(name) {
+			return name, nil
+		}
+		switch name {
+		case "timestamp", "log_id", "normalizer":
+			return name, nil
+		case normLogColumn:
+			return contentColMode(ctx.Opts.SourceMode), nil
+		}
+	}
+	return ResolveArg(arg, ctx.Registry)
 }
 
 // limitHandler handles limit(n)
@@ -62,10 +63,12 @@ func (h *limitHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *limitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		if n, err := validateInt(cmd.Arguments[0]); err == nil {
-			ctx.Plan.CurrentStage().Layer.Limit = fmt.Sprintf("LIMIT %d", n)
-		}
+	n, err := rowCount(cmd, 0)
+	if err != nil {
+		return fmt.Errorf("limit(): %w", err)
+	}
+	if n > 0 {
+		ctx.Plan.CurrentStage().Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	}
 	return nil
 }
@@ -79,11 +82,9 @@ func (h *headHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *headHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
-	n := 200
-	if len(cmd.Arguments) > 0 {
-		if parsed, err := validateInt(cmd.Arguments[0]); err == nil {
-			n = parsed
-		}
+	n, err := rowCount(cmd, 200)
+	if err != nil {
+		return fmt.Errorf("head(): %w", err)
 	}
 	// On aggregated stages timestamp is neither grouped nor aggregated, so
 	// ordering by it is invalid (ClickHouse error 215). Keep the existing
@@ -104,11 +105,9 @@ func (h *tailHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *tailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
-	n := 200
-	if len(cmd.Arguments) > 0 {
-		if parsed, err := validateInt(cmd.Arguments[0]); err == nil {
-			n = parsed
-		}
+	n, err := rowCount(cmd, 200)
+	if err != nil {
+		return fmt.Errorf("tail(): %w", err)
 	}
 	// On aggregated stages timestamp is neither grouped nor aggregated, so
 	// ordering by it is invalid (ClickHouse error 215). The "last N" rows are
@@ -120,6 +119,20 @@ func (h *tailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	return nil
+}
+
+// rowCount reads a row-count argument, rejecting a negative or non-numeric one
+// rather than letting it reach LIMIT verbatim.
+func rowCount(cmd CommandNode, def int) (int, error) {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return 0, err
+	}
+	raw := b.Str("n", "")
+	if raw == "" {
+		return def, nil
+	}
+	return validateInt(raw)
 }
 
 // isAggregatedStage reports whether the given stage produces aggregated rows,
@@ -206,7 +219,12 @@ func (h *dedupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	args := b.Flat("fields")
+	if len(args) == 0 {
 		return nil
 	}
 	stage := ctx.Plan.CurrentStage()
@@ -221,12 +239,26 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	outputs := stageOutputs(stage)
 
 	var dedupFields []string
-	for _, field := range cmd.Arguments {
+	for _, arg := range args {
+		field := arg.Value()
+		if !arg.IsFieldName() {
+			// A computed key exists only where its expression can be evaluated: on
+			// the scan. After an aggregation the columns it reads are gone.
+			if postAggregation {
+				return fmt.Errorf("dedup(%s): %q is computed from columns the preceding aggregation does not produce; dedup on a grouped field or move dedup() before the aggregation", argList(args), field)
+			}
+			sql, err := ResolveArg(arg, ctx.Registry)
+			if err != nil {
+				return fmt.Errorf("dedup(): %w", err)
+			}
+			dedupFields = append(dedupFields, sql)
+			continue
+		}
 		switch {
 		case postAggregation && outputs[field]:
 			dedupFields = append(dedupFields, field)
 		case postAggregation:
-			return fmt.Errorf("dedup(%s): %q is not produced by the preceding aggregation; dedup on a grouped field or move dedup() before the aggregation", strings.Join(cmd.Arguments, ", "), field)
+			return fmt.Errorf("dedup(%s): %q is not produced by the preceding aggregation; dedup on a grouped field or move dedup() before the aggregation", argList(args), field)
 		case !ctx.Registry.IsComputed(field):
 			// LIMIT BY is a grouping context: cast raw JSON subcolumns to
 			// ::String so Dynamic-stored paths don't trigger error 44.
@@ -238,7 +270,7 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		default:
 			expr := scanExprFor(field, ctx, stage)
 			if expr == "" {
-				return fmt.Errorf("dedup(%s): %q is computed after the scan and cannot be deduplicated before an aggregation; dedup on a log field instead", strings.Join(cmd.Arguments, ", "), field)
+				return fmt.Errorf("dedup(%s): %q is computed after the scan and cannot be deduplicated before an aggregation; dedup on a log field instead", argList(args), field)
 			}
 			dedupFields = append(dedupFields, expr)
 		}

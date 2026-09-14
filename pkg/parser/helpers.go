@@ -1355,10 +1355,6 @@ func contains(slice []string, item string) bool {
 // expression if one exists (e.g. from lowercase, eval) or falling back to
 // the JSON subcolumn reference.
 func resolveFieldRef(field string, registry *FieldRegistry) string {
-	// A field position may hold an expression: groupby(lower(user)).
-	if sql, ok := exprArgSQL(field, registry); ok {
-		return sql
-	}
 	return groupableCast(registry.Resolve(field))
 }
 
@@ -1409,12 +1405,16 @@ func lenientDateTime(ref string) string {
 // coercion, and its NULL (unparseable) result is collapsed to an empty string so
 // the row still comes back with a blank time. A Nullable(String) projection would
 // also break the generic row scanner, which reads String columns into a *string.
-func timeFormatExpr(field, chFormat, timezone string, registry *FieldRegistry) string {
-	if field == "timestamp" {
-		return fmt.Sprintf("formatDateTime(timestamp, '%s', '%s')", escapeString(chFormat), escapeString(timezone))
+func timeFormatExpr(field Argument, chFormat, timezone string, registry *FieldRegistry) (string, error) {
+	if field.FieldName() == "timestamp" {
+		return fmt.Sprintf("formatDateTime(timestamp, '%s', '%s')", escapeString(chFormat), escapeString(timezone)), nil
+	}
+	ref, err := ResolveArg(field, registry)
+	if err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("ifNull(formatDateTime(%s, '%s', '%s'), '')",
-		lenientDateTime(resolveFieldRef(field, registry)), escapeString(chFormat), escapeString(timezone))
+		lenientDateTime(ref), escapeString(chFormat), escapeString(timezone)), nil
 }
 
 // numericCast wraps a resolved field reference for use inside aggregate
@@ -1433,43 +1433,6 @@ func numericCast(fieldName, resolvedExpr string, registry *FieldRegistry) string
 		}
 	}
 	return fmt.Sprintf("toFloat64OrNull(%s)", resolvedExpr)
-}
-
-// extractFunctionField extracts field name from function calls like "avg(response_time)"
-func extractFunctionField(fn string, funcName string) string {
-	prefix := funcName + "("
-	if strings.HasPrefix(fn, prefix) && strings.HasSuffix(fn, ")") {
-		inner := fn[len(prefix) : len(fn)-1]
-		// Check for named params like field=name
-		if strings.Contains(inner, "field=") {
-			for _, part := range splitTopLevelArgs(inner) {
-				if strings.HasPrefix(part, "field=") {
-					return strings.TrimPrefix(part, "field=")
-				}
-			}
-		}
-		return inner
-	}
-	return ""
-}
-
-// parseStatsFunctionParams parses named params from a multi sub-function like top(percent=true, field=x, as=y)
-func parseStatsFunctionParams(fn string, funcName string) map[string]string {
-	params := make(map[string]string)
-	prefix := funcName + "("
-	if !strings.HasPrefix(fn, prefix) || !strings.HasSuffix(fn, ")") {
-		return params
-	}
-	inner := fn[len(prefix) : len(fn)-1]
-	for _, part := range splitTopLevelArgs(inner) {
-		part = strings.TrimSpace(part)
-		if eq := strings.IndexByte(part, '='); eq > 0 && !isExprArg(part) {
-			params[part[:eq]] = part[eq+1:]
-		} else if part != "" {
-			params["_positional"] = part
-		}
-	}
-	return params
 }
 
 // convertTimeFormat converts BQL time format to ClickHouse format
@@ -1802,10 +1765,15 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	// A condition command names its field first (cidr(dst_ip, ...), in(user, [...])).
 	var fields []string
 	for _, cmd := range pl.Commands {
-		if len(cmd.Arguments) > 0 {
-			if f := strings.TrimSpace(unwrapList(cmd.Arguments[0])); f != "" && isPlainFieldName(f) {
-				fields = append(fields, f)
-			}
+		if len(cmd.Args) == 0 {
+			continue
+		}
+		first := cmd.Args[0]
+		if first.Kind == ArgList && len(first.List) > 0 {
+			first = first.List[0]
+		}
+		if f := first.Value(); f != "" && isPlainFieldName(f) {
+			fields = append(fields, f)
 		}
 	}
 	return src.Where, fields, nil
@@ -1849,41 +1817,6 @@ func collectHavingFieldsOrdered(c HavingCondition, seen map[string]bool, out *[]
 	return *out
 }
 
-// splitTopLevelArgs splits a string by commas at parenthesis depth 0.
-// e.g. "count(a,b),sum(c)" -> ["count(a,b)", "sum(c)"]
-func splitTopLevelArgs(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	var quote rune
-	for i, ch := range s {
-		// Ignore separators inside quoted strings (e.g. sprintf("%d,%d", ...)).
-		if quote != 0 {
-			if ch == quote {
-				quote = 0
-			}
-			continue
-		}
-		switch ch {
-		case '\'', '"':
-			quote = ch
-		case '(', '[':
-			depth++
-		case ')', ']':
-			depth--
-		case ',':
-			if depth == 0 {
-				parts = append(parts, strings.TrimSpace(s[start:i]))
-				start = i + 1
-			}
-		}
-	}
-	if start < len(s) {
-		parts = append(parts, strings.TrimSpace(s[start:]))
-	}
-	return parts
-}
-
 // commandIndex returns the index of the first top-level command with the given
 // name, or -1 when absent.
 func commandIndex(commands []CommandNode, name string) int {
@@ -1905,326 +1838,4 @@ func firstAggregatingCommandIndex(commands []CommandNode) int {
 		}
 	}
 	return len(commands)
-}
-
-// unwrapList strips a single surrounding [ ... ] from a list-style argument and
-// returns the inner content. Function-call arguments preserve brackets verbatim
-// from the source, so the bracketed list form (e.g. multi([f1, f2])) and the
-// plain form (multi(f1, f2)) must both be accepted. Input that is not
-// bracket-wrapped is returned unchanged.
-func unwrapList(s string) string {
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
-		return strings.TrimSpace(s[1 : len(s)-1])
-	}
-	return s
-}
-
-// processStatsFn processes a single multi sub-function (e.g. "count(field=x,distinct=true,as=y)")
-// and returns true if it was recognized. Appends SQL expressions to selectFields.
-// registry is used to resolve computed fields (e.g. _time from strftime, _len from len);
-// pass nil to fall back to jsonFieldRef for all fields.
-func processStatsFn(fn string, selectFields *[]string, computedFields map[string]bool, registry *FieldRegistry) bool {
-	fn = strings.TrimSpace(fn)
-
-	// Normalize function name to lowercase for matching, while preserving
-	// the original for extractFunctionField (field names are case-sensitive).
-	fnLower := strings.ToLower(fn)
-
-	// resolveField resolves a field name using the registry when available,
-	// falling back to jsonFieldRef for plain fields.
-	resolveField := func(field string) string {
-		// Feeds stats sub-functions (uniq/values/first/last/group); cast raw JSON
-		// refs to ::String so Dynamic-stored paths are groupable/correct.
-		if registry != nil {
-			return resolveFieldRef(field, registry)
-		}
-		return groupableCast(jsonFieldRef(field))
-	}
-
-	// castNumeric wraps a resolved field expression with the correct numeric
-	// cast: toFloat64 for already-numeric fields, toFloat64OrNull for strings.
-	castNumeric := func(field string) string {
-		return numericCast(field, resolveField(field), registry)
-	}
-
-	if fnLower == "count()" || strings.HasPrefix(fnLower, "count(") {
-		countPrefix := fn[:strings.IndexByte(fn, '(')]
-		params := parseStatsFunctionParams(fn, countPrefix)
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		distinct := params["distinct"] == "true" || params["unique"] == "true"
-		if field != "" && distinct {
-			if alias == "" {
-				alias = "unique_" + field
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("uniqExact(%s) AS %s", resolveField(field), alias))
-			computedFields[alias] = true
-		} else if field != "" {
-			if alias == "" {
-				alias = "total"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("count(%s) AS %s", resolveField(field), alias))
-			computedFields[alias] = true
-		} else {
-			if alias == "" {
-				alias = "_count"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("COUNT(*) AS %s", alias))
-			computedFields[alias] = true
-		}
-		return true
-	}
-
-	// Extract function name from lowered string up to '(' for matching.
-	parenIdx := strings.IndexByte(fnLower, '(')
-	if parenIdx < 0 {
-		return false
-	}
-	funcName := fnLower[:parenIdx]
-
-	switch funcName {
-	case "avg":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "_avg"
-		}
-		*selectFields = append(*selectFields, fmt.Sprintf("avg(%s) AS %s", castNumeric(field), alias))
-		computedFields[alias] = true
-		return true
-	case "sum":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "_sum"
-		}
-		*selectFields = append(*selectFields, fmt.Sprintf("sum(%s) AS %s", castNumeric(field), alias))
-		computedFields[alias] = true
-		return true
-	case "max":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if field == "timestamp" {
-			if alias == "" {
-				alias = "max_timestamp"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("max(timestamp) AS %s", alias))
-		} else {
-			if alias == "" {
-				alias = "_max"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("max(%s) AS %s", castNumeric(field), alias))
-		}
-		computedFields[alias] = true
-		return true
-	case "min":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if field == "timestamp" {
-			if alias == "" {
-				alias = "min_timestamp"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("min(timestamp) AS %s", alias))
-		} else {
-			if alias == "" {
-				alias = "_min"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("min(%s) AS %s", castNumeric(field), alias))
-		}
-		computedFields[alias] = true
-		return true
-	case "percentile":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "percentile_" + escapeString(field)
-		}
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("quantiles(0.5, 0.75, 0.99)(%s) AS %s", cast, alias))
-		computedFields[alias] = true
-		return true
-	case "stddev":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "stddev_" + escapeString(field)
-		}
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("stddevPop(%s) AS %s", cast, alias))
-		computedFields[alias] = true
-		return true
-	case "skewness", "skew":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "skewness_" + escapeString(field)
-		}
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("skewPop(%s) AS %s", cast, alias))
-		computedFields[alias] = true
-		return true
-	case "kurtosis", "kurt":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "kurtosis_" + escapeString(field)
-		}
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("kurtPop(%s) AS %s", cast, alias))
-		computedFields[alias] = true
-		return true
-	case "iqr":
-		field := extractFunctionField(fn, fn[:parenIdx])
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields,
-			fmt.Sprintf("quantile(0.25)(%s) AS iqr_q1_%s", cast, escapeString(field)),
-			fmt.Sprintf("quantile(0.75)(%s) AS iqr_q3_%s", cast, escapeString(field)),
-			fmt.Sprintf("quantile(0.75)(%s) - quantile(0.25)(%s) AS iqr_%s", cast, cast, escapeString(field)))
-		computedFields["iqr_q1_"+escapeString(field)] = true
-		computedFields["iqr_q3_"+escapeString(field)] = true
-		computedFields["iqr_"+escapeString(field)] = true
-		return true
-	case "selectfirst":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if field == "timestamp" {
-			if alias == "" {
-				alias = "first_timestamp"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("min(timestamp) AS %s", alias))
-		} else {
-			if alias == "" {
-				alias = "first_" + escapeString(field)
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("argMin(%s, timestamp) AS %s", resolveField(field), alias))
-		}
-		computedFields[alias] = true
-		return true
-	case "selectlast":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if field == "timestamp" {
-			if alias == "" {
-				alias = "last_timestamp"
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("max(timestamp) AS %s", alias))
-		} else {
-			if alias == "" {
-				alias = "last_" + escapeString(field)
-			}
-			*selectFields = append(*selectFields, fmt.Sprintf("argMax(%s, timestamp) AS %s", resolveField(field), alias))
-		}
-		computedFields[alias] = true
-		return true
-	case "collect":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "collect_" + field
-		}
-		fieldRef := resolveField(field)
-		if field == "timestamp" {
-			fieldRef = "toString(timestamp)"
-		}
-		*selectFields = append(*selectFields, fmt.Sprintf("groupArray(%s) AS %s", fieldRef, alias))
-		computedFields[alias] = true
-		return true
-	case "top":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "top_" + field
-		}
-		fieldRef := resolveField(field)
-		if params["percent"] == "true" {
-			*selectFields = append(*selectFields, fmt.Sprintf(
-				"arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), topKWeightedWithCount(10)(%s, 1)) AS %s",
-				fieldRef, alias))
-		} else {
-			*selectFields = append(*selectFields, fmt.Sprintf("topK(10)(%s) AS %s", fieldRef, alias))
-		}
-		computedFields[alias] = true
-		return true
-	case "median":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "median_" + escapeString(field)
-		}
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("median(%s) AS %s", cast, alias))
-		computedFields[alias] = true
-		return true
-	case "mad":
-		params := parseStatsFunctionParams(fn, fn[:parenIdx])
-		field := params["field"]
-		if field == "" {
-			field = params["_positional"]
-		}
-		alias := params["as"]
-		if alias == "" {
-			alias = "mad_" + escapeString(field)
-		}
-		cast := castNumeric(field)
-		*selectFields = append(*selectFields, fmt.Sprintf("arrayReduce('median', arrayMap(x -> abs(x - arrayReduce('median', groupArray(%s))), groupArray(%s))) AS %s", cast, cast, alias))
-		computedFields[alias] = true
-		return true
-	}
-	return false
 }

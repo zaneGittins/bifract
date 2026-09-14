@@ -85,22 +85,6 @@ func TestReferencedFieldsRejectsNonFieldArgs(t *testing.T) {
 	}
 }
 
-func TestLooksLikeFieldRef(t *testing.T) {
-	for _, ok := range []string{"src_ip", "user", "dest_ip", "_internal"} {
-		if !looksLikeFieldRef(ok) {
-			t.Errorf("%q should be a field ref", ok)
-		}
-	}
-	for _, bad := range []string{
-		"", "by", "asc", "DESC", "count()", `start="W2"`, "diffuse=true",
-		"5m", "*", "a,b", "has space", "true",
-	} {
-		if looksLikeFieldRef(bad) {
-			t.Errorf("%q should not be a field ref", bad)
-		}
-	}
-}
-
 // TestSuggestableRejectsDeadEnds stops the list proposing fields the create path
 // would refuse. Real log data contains keys like "content-_security-_policy"
 // that validFieldName rejects; offering an Add button that always errors is

@@ -98,8 +98,21 @@ func TestAbstractExpr(t *testing.T) {
 	}
 }
 
-// pgrCmd builds a CommandNode for pgr() with the given args (helper for parse tests).
-func pgrCmd(args ...string) CommandNode { return CommandNode{Name: "pgr", Arguments: args} }
+// pgrCmd parses a real pgr() query and returns its command node, so these tests
+// exercise the same typed arguments the translator sees.
+func pgrCmd(args ...string) CommandNode {
+	pipeline, err := ParseQuery("* | pgr(" + strings.Join(args, ", ") + ")")
+	if err != nil {
+		panic("pgrCmd: " + err.Error())
+	}
+	var found CommandNode
+	ForEachCommand(pipeline, func(cmd CommandNode) {
+		if strings.EqualFold(cmd.Name, "pgr") {
+			found = cmd
+		}
+	})
+	return found
+}
 
 func TestParseProvenanceReconnect(t *testing.T) {
 	if p, ok := ParseProvenanceParams(pgrCmd(`start="W1"`)); !ok || !p.Reconnect {
@@ -125,8 +138,9 @@ func TestParseProvenancePeers(t *testing.T) {
 	if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, "peers=99999")); p.MaxPeers != maxReconnectPeersArg {
 		t.Errorf("peers should clamp to %d, got %d", maxReconnectPeersArg, p.MaxPeers)
 	}
-	// Junk and zero must fall back to the default, never to "unbounded".
-	for _, bad := range []string{"peers=0", "peers=-5", "peers=abc"} {
+	// Junk, zero and a negative must fall back to the default, never to
+	// "unbounded".
+	for _, bad := range []string{"peers=0", "peers=-5", `peers="abc"`, "peers=abc"} {
 		if p, _ := ParseProvenanceParams(pgrCmd(`start="W1"`, bad)); p.MaxPeers != DefaultReconnectPeers {
 			t.Errorf("%q should keep the default, got %d", bad, p.MaxPeers)
 		}

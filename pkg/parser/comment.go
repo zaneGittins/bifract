@@ -13,20 +13,13 @@ func ExtractCommentParams(pipeline *PipelineNode) (tags []string, keyword string
 		}
 		found = true
 
-		for _, arg := range cmd.Arguments {
-			arg = strings.TrimSpace(arg)
-
-			if strings.HasPrefix(arg, "tags=") || strings.HasPrefix(arg, "tag=") {
-				val := strings.TrimPrefix(strings.TrimPrefix(arg, "tags="), "tag=")
-				tags = append(tags, listArg(val)...)
-			} else if strings.HasPrefix(arg, "keyword=") {
-				keyword = strings.TrimPrefix(arg, "keyword=")
-				keyword = strings.Trim(keyword, `"'`)
-			} else if arg != "" {
-				// A trailing tag from the unbracketed tags=a,b form.
-				tags = append(tags, arg)
-			}
+		b, err := BindCommand(cmd)
+		if err != nil {
+			return
 		}
+		tags = append(tags, b.Strings("tags")...)
+		tags = append(tags, b.Strings("tag")...)
+		keyword = b.Str("keyword", "")
 	})
 	return
 }

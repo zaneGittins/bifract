@@ -13,32 +13,35 @@ func (h *inHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) < 2 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	fieldArg, ok := b.First("field")
+	if !ok {
 		return nil
 	}
 
-	field := cmd.Arguments[0]
+	field := fieldArg.FieldName()
 	var fieldRef string
-	if ctx.Registry.IsComputed(field) {
-		fieldRef = field
-	} else {
-		switch field {
-		case "timestamp", normLogColumn, "log_id", "normalizer":
-			fieldRef = field
-		default:
-			// IN / NOT IN reject a bare Dynamic subcolumn (error 43); cast raw JSON
-			// refs to ::String for mixed-history safety (index preserved).
-			fieldRef = groupableCast(jsonFieldRef(field))
+	switch {
+	case field == "":
+		if fieldRef, err = ResolveArg(fieldArg, ctx.Registry); err != nil {
+			return fmt.Errorf("in(): %w", err)
 		}
+	case ctx.Registry.IsComputed(field):
+		fieldRef = field
+	case field == "timestamp" || field == normLogColumn || field == "log_id" || field == "normalizer":
+		fieldRef = field
+	default:
+		// IN / NOT IN reject a bare Dynamic subcolumn (error 43); cast raw JSON
+		// refs to ::String for mixed-history safety (index preserved).
+		fieldRef = groupableCast(jsonFieldRef(field))
 	}
 
-	// Parse values from remaining arguments
 	var values []string
-	for _, arg := range cmd.Arguments[1:] {
-		arg = strings.TrimPrefix(strings.TrimSpace(arg), "values=")
-		for _, v := range listArg(arg) {
-			values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
-		}
+	for _, v := range b.CSV("values") {
+		values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
 	}
 
 	if len(values) > 0 {
@@ -59,17 +62,25 @@ func (h *cidrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 2 {
-		field := cmd.Arguments[0]
-		cidrRange := strings.Trim(cmd.Arguments[1], "\"'")
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
-		if cmd.Negate {
-			ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, "NOT "+cidrExpr)
-		} else {
-			ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, cidrExpr)
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	fieldArg, hasField := b.First("field")
+	rangeArg, hasRange := b.First("range")
+	if !hasField || !hasRange {
+		return nil
+	}
+	cidrRange := rangeArg.Value()
+	fieldRef, err := ResolveArg(fieldArg, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("cidr(): %w", err)
+	}
+	cidrExpr := cidrPredicateSQL(fieldRef, "'"+escapeString(cidrRange)+"'")
+	if cmd.Negate {
+		cidrExpr = "NOT " + cidrExpr
+	}
+	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, cidrExpr)
 	return nil
 }
 

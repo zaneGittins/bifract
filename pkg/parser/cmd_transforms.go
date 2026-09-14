@@ -10,135 +10,130 @@ import (
 type strftimeHandler struct{}
 
 func (h *strftimeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	alias := "_time"
-	field := "timestamp"
-	timezone := "UTC"
-	var formatStr string
-	for _, arg := range cmd.Arguments {
-		a := strings.TrimSpace(arg)
-		if strings.HasPrefix(a, "as=") {
-			alias = strings.TrimPrefix(a, "as=")
-		} else if strings.HasPrefix(a, "field=") {
-			field = strings.TrimPrefix(a, "field=")
-		} else if strings.HasPrefix(a, "timezone=") {
-			timezone = strings.Trim(strings.TrimPrefix(a, "timezone="), "\"'")
-		} else if formatStr == "" {
-			formatStr = strings.Trim(a, "\"'")
-		}
+	p, err := strftimeParams(cmd)
+	if err != nil {
+		return nil
 	}
-	if formatStr != "" {
-		expr := timeFormatExpr(field, convertTimeFormat(formatStr), timezone, ctx.Registry)
-		ctx.Registry.Register(alias, FieldKindPerRow, expr, ctx.CmdIndex)
+	if p.format != "" {
+		expr, err := timeFormatExpr(p.field, convertTimeFormat(p.format), p.timezone, ctx.Registry)
+		if err != nil {
+			return nil
+		}
+		ctx.Registry.Register(p.alias, FieldKindPerRow, expr, ctx.CmdIndex)
 	} else {
-		ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+		ctx.Registry.Register(p.alias, FieldKindPerRow, p.alias, ctx.CmdIndex)
 	}
 	return nil
 }
 
 func (h *strftimeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	p, err := strftimeParams(cmd)
+	if err != nil {
+		return err
+	}
+	if p.format == "" {
 		return fmt.Errorf("strftime() requires a format string")
 	}
-	field := "timestamp"
-	timezone := "UTC"
-	alias := "_time"
-	var formatStr string
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "as=") {
-			alias = strings.TrimPrefix(arg, "as=")
-		} else if strings.HasPrefix(arg, "field=") {
-			field = strings.TrimPrefix(arg, "field=")
-		} else if strings.HasPrefix(arg, "timezone=") {
-			timezone = strings.Trim(strings.TrimPrefix(arg, "timezone="), "\"'")
-		} else if formatStr == "" {
-			formatStr = strings.Trim(arg, "\"'")
-		}
-	}
-	if formatStr == "" {
-		return fmt.Errorf("strftime() requires a format string")
-	}
-	safeAlias, err := sanitizeIdentifier(alias)
+	safeAlias, err := sanitizeIdentifier(p.alias)
 	if err != nil {
 		return fmt.Errorf("strftime(): invalid alias: %w", err)
 	}
-	formatted := timeFormatExpr(field, convertTimeFormat(formatStr), timezone, ctx.Registry)
+	formatted, err := timeFormatExpr(p.field, convertTimeFormat(p.format), p.timezone, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("strftime(): %w", err)
+	}
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", formatted, safeAlias)})
 	ctx.Registry.SetResolveExpr(safeAlias, formatted)
 	return nil
+}
+
+type strftimeArgs struct {
+	format, timezone, alias string
+	field                   Argument
+}
+
+// strftimeParams reads strftime()'s arguments once, so Declare and Execute agree.
+func strftimeParams(cmd CommandNode) (strftimeArgs, error) {
+	p := strftimeArgs{
+		timezone: "UTC",
+		alias:    "_time",
+		field:    Argument{Kind: ArgLiteral, Text: "timestamp"},
+	}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return p, err
+	}
+	p.format = b.Str("format", "")
+	if a, ok := b.First("field"); ok {
+		p.field = a
+	}
+	p.timezone = b.Str("timezone", p.timezone)
+	p.alias = b.Str("as", p.alias)
+	return p, nil
 }
 
 // lowercaseHandler handles lowercase(field, output_field)
 type lowercaseHandler struct{}
 
 func (h *lowercaseHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		outputField := cmd.Arguments[0]
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
-		ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
-	}
-	return nil
+	return declareCaseFold(cmd, ctx)
 }
 
 func (h *lowercaseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		field := cmd.Arguments[0]
-		outputField := field
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
-		safeOutput, err := sanitizeIdentifier(outputField)
-		if err != nil {
-			return fmt.Errorf("lowercase(): invalid output field: %w", err)
-		}
-		var expr string
-		if field == "timestamp" {
-			expr = fmt.Sprintf("lower(toString(timestamp)) AS %s", safeOutput)
-		} else {
-			expr = fmt.Sprintf("lower(%s) AS %s", resolveFieldRef(field, ctx.Registry), safeOutput)
-		}
-		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr(outputField, expr)
-	}
-	return nil
+	return executeCaseFold(cmd, ctx, "lowercase", "lower")
 }
 
 // uppercaseHandler handles uppercase(field, output_field)
 type uppercaseHandler struct{}
 
 func (h *uppercaseHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		outputField := cmd.Arguments[0]
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
-		ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
+	return declareCaseFold(cmd, ctx)
+}
+
+func (h *uppercaseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	return executeCaseFold(cmd, ctx, "uppercase", "upper")
+}
+
+// caseFoldOutput is the column lowercase()/uppercase() writes: the output= name
+// when given, otherwise the input field rebound in place.
+func caseFoldOutput(cmd CommandNode) (arg Argument, output string, ok bool) {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return Argument{}, "", false
+	}
+	arg, ok = b.First("field")
+	if !ok {
+		return Argument{}, "", false
+	}
+	output = b.Str("output", arg.Value())
+	return arg, output, output != ""
+}
+
+func declareCaseFold(cmd CommandNode, ctx *CommandContext) error {
+	if _, output, ok := caseFoldOutput(cmd); ok {
+		ctx.Registry.Register(output, FieldKindPerRow, output, ctx.CmdIndex)
 	}
 	return nil
 }
 
-func (h *uppercaseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		field := cmd.Arguments[0]
-		outputField := field
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
-		safeOutput, err := sanitizeIdentifier(outputField)
-		if err != nil {
-			return fmt.Errorf("uppercase(): invalid output field: %w", err)
-		}
-		var expr string
-		if field == "timestamp" {
-			expr = fmt.Sprintf("upper(toString(timestamp)) AS %s", safeOutput)
-		} else {
-			expr = fmt.Sprintf("upper(%s) AS %s", resolveFieldRef(field, ctx.Registry), safeOutput)
-		}
-		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr(outputField, expr)
+func executeCaseFold(cmd CommandNode, ctx *CommandContext, name, chFunc string) error {
+	arg, output, ok := caseFoldOutput(cmd)
+	if !ok {
+		return nil
 	}
+	safeOutput, err := sanitizeIdentifier(output)
+	if err != nil {
+		return fmt.Errorf("%s(): invalid output field: %w", name, err)
+	}
+	ref := "toString(timestamp)"
+	if arg.FieldName() != "timestamp" {
+		if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
+			return fmt.Errorf("%s(): %w", name, err)
+		}
+	}
+	expr := fmt.Sprintf("%s(%s) AS %s", chFunc, ref, safeOutput)
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
+	ctx.Registry.SetResolveExpr(output, expr)
 	return nil
 }
 
@@ -146,193 +141,219 @@ func (h *uppercaseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type evalHandler struct{}
 
 func (h *evalHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	for _, arg := range cmd.Arguments {
-		if strings.Contains(arg, "=") {
-			parts := strings.SplitN(arg, "=", 2)
-			if len(parts) == 2 {
-				fieldName := strings.TrimSpace(parts[0])
-				ctx.Registry.Register(fieldName, FieldKindPerRow, fieldName, ctx.CmdIndex)
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return nil
+	}
+	for _, a := range b.Positional() {
+		name := a.Name
+		if name == "" {
+			if before, _, found := strings.Cut(a.Value(), "="); found {
+				name = strings.TrimSpace(before)
 			}
+		}
+		if name != "" {
+			ctx.Registry.Register(name, FieldKindPerRow, name, ctx.CmdIndex)
 		}
 	}
 	return nil
 }
 
 func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	for _, arg := range cmd.Arguments {
-		fieldName, expression, found := strings.Cut(arg, "=")
-		if !found {
-			continue
-		}
-		fieldName = strings.TrimSpace(fieldName)
-		safeFieldName, err := sanitizeIdentifier(fieldName)
-		if err != nil {
-			return fmt.Errorf("eval(): invalid field name: %w", err)
-		}
-		// No selfField: unlike `x := x * 100`, where x means the log field, eval()
-		// assigns into the same SELECT, so total=total*3 must read the column the
-		// previous eval produced.
-		sqlExpr, err := compileExpressionText(strings.TrimSpace(expression), ctx.Registry, "")
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	for _, a := range b.Positional() {
+		// eval(name = expr) parses as a named expression; eval("name = expr") is one
+		// quoted assignment, so its text is split here.
+		name, sqlExpr, err := evalAssignment(a, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("eval(): %w", err)
 		}
+		if name == "" {
+			continue
+		}
+		safeFieldName, err := sanitizeIdentifier(name)
+		if err != nil {
+			return fmt.Errorf("eval(): invalid field name: %w", err)
+		}
 		expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr(fieldName, expr)
+		ctx.Registry.SetResolveExpr(name, expr)
 	}
 	return nil
+}
+
+// evalAssignment compiles one eval() assignment. No selfField: unlike
+// `x := x * 100`, where x means the log field, eval() assigns into the same
+// SELECT, so total=total*3 must read the column the previous eval produced.
+func evalAssignment(a Argument, registry *FieldRegistry) (name, sql string, err error) {
+	if a.Name != "" {
+		sql, err = ResolveArg(a, registry)
+		return a.Name, sql, err
+	}
+	name, expression, found := strings.Cut(a.Value(), "=")
+	if !found {
+		return "", "", nil
+	}
+	// Name the column before compiling, so an assignment with no target is
+	// reported as such rather than as whatever its right-hand side does.
+	name = strings.TrimSpace(name)
+	if _, err := sanitizeIdentifier(name); err != nil {
+		return "", "", fmt.Errorf("invalid field name: %w", err)
+	}
+	sql, err = compileExpressionText(strings.TrimSpace(expression), registry, "")
+	return name, sql, err
 }
 
 // regexHandler handles regex(pattern, field=norm_log)
 type regexHandler struct{}
 
 func (h *regexHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		var pattern, asName string
-		for _, arg := range cmd.Arguments {
-			arg = strings.TrimSpace(arg)
-			if strings.HasPrefix(arg, "regex=") {
-				pattern = strings.Trim(strings.TrimPrefix(arg, "regex="), `"'`)
-			} else if strings.HasPrefix(arg, "pattern=") {
-				pattern = strings.Trim(strings.TrimPrefix(arg, "pattern="), `"'`)
-			} else if strings.HasPrefix(arg, "as=") {
-				asName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
-			} else if !strings.HasPrefix(arg, "field=") && pattern == "" {
-				pattern = arg
-			}
+	p, err := regexParams(cmd)
+	if err != nil || p.pattern == "" {
+		return nil
+	}
+	names := NamedCaptureGroups(p.pattern)
+	switch {
+	case len(names) > 0:
+		// Named capture groups take precedence over as=.
+		for _, name := range names {
+			ctx.Registry.Register(name, FieldKindPerRow, name, ctx.CmdIndex)
 		}
-		names := NamedCaptureGroups(pattern)
-		if len(names) > 0 {
-			// Named capture groups take precedence over as=.
-			for _, name := range names {
-				ctx.Registry.Register(name, FieldKindPerRow, name, ctx.CmdIndex)
-			}
-		} else if asName != "" {
-			ctx.Registry.Register(asName, FieldKindPerRow, asName, ctx.CmdIndex)
-		} else {
-			ctx.Registry.Register("regex_match", FieldKindPerRow, "regex_match", ctx.CmdIndex)
-		}
+	case p.asName != "":
+		ctx.Registry.Register(p.asName, FieldKindPerRow, p.asName, ctx.CmdIndex)
+	default:
+		ctx.Registry.Register("regex_match", FieldKindPerRow, "regex_match", ctx.CmdIndex)
 	}
 	return nil
 }
 
 func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		var pattern, field, asName string
-		field = normLogColumn
-		for _, arg := range cmd.Arguments {
-			arg = strings.TrimSpace(arg)
-			if strings.HasPrefix(arg, "field=") {
-				field = strings.TrimPrefix(arg, "field=")
-			} else if strings.HasPrefix(arg, "regex=") {
-				pattern = strings.TrimPrefix(arg, "regex=")
-				pattern = strings.Trim(pattern, `"'`)
-			} else if strings.HasPrefix(arg, "pattern=") {
-				pattern = strings.TrimPrefix(arg, "pattern=")
-				pattern = strings.Trim(pattern, `"'`)
-			} else if strings.HasPrefix(arg, "as=") {
-				asName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
-			} else if pattern == "" {
-				pattern = arg
-			} else if field == normLogColumn {
-				field = arg
-			}
+	p, err := regexParams(cmd)
+	if err != nil {
+		return err
+	}
+	if p.pattern == "" {
+		if len(cmd.Args) == 0 {
+			return nil
 		}
-		if pattern == "" {
-			return fmt.Errorf("regex() requires a pattern")
-		}
+		return fmt.Errorf("regex() requires a pattern")
+	}
 
-		fieldRef := normLogColumn
-		if field != normLogColumn && field != "timestamp" {
-			fieldRef = resolveFieldRef(field, ctx.Registry)
-		} else if field == "timestamp" {
-			fieldRef = "toString(timestamp)"
-		}
+	fieldRef := normLogColumn
+	if p.field == "timestamp" {
+		fieldRef = "toString(timestamp)"
+	} else if p.field != normLogColumn {
+		fieldRef = resolveFieldRef(p.field, ctx.Registry)
+	}
 
-		sqlPattern, names := rewriteCaptureGroups(pattern)
+	sqlPattern, names := rewriteCaptureGroups(p.pattern)
 
-		if len(names) > 0 {
-			for i, name := range names {
-				safeName, err := sanitizeIdentifier(name)
-				if err != nil {
-					return fmt.Errorf("regex(): invalid capture name %q: %w", name, err)
-				}
-				scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1)
-				ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
-				ctx.Registry.SetResolveExpr(safeName, scalarExpr)
-			}
-		} else if asName != "" {
-			// Single unnamed capture group aliased via as=. Use extract(), which
-			// returns the first capturing group as a scalar string, matching the
-			// model materialized-view semantics in pkg/models/ddl.go.
-			safeName, err := sanitizeIdentifier(asName)
+	switch {
+	case len(names) > 0:
+		for i, name := range names {
+			safeName, err := sanitizeIdentifier(name)
 			if err != nil {
-				return fmt.Errorf("regex(): invalid as name %q: %w", asName, err)
+				return fmt.Errorf("regex(): invalid capture name %q: %w", name, err)
 			}
-			scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(sqlPattern))
+			scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')[1][%d]", fieldRef, escapeString(sqlPattern), i+1)
 			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
 			ctx.Registry.SetResolveExpr(safeName, scalarExpr)
-		} else {
-			// extractAllGroups requires at least one capturing group; without a name
-			// or as= there is also nothing to call the output but regex_match.
-			if captureGroupCount(sqlPattern) == 0 {
-				return fmt.Errorf("regex(): pattern has no capture group; wrap the part to extract in (?<name>...)")
-			}
-			scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')", fieldRef, escapeString(sqlPattern))
-			ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS regex_match", scalarExpr)})
-			ctx.Registry.SetResolveExpr("regex_match", scalarExpr)
 		}
+	case p.asName != "":
+		// Single unnamed capture group aliased via as=. extract() returns the first
+		// capturing group as a scalar string, matching the model materialized-view
+		// semantics in pkg/models/ddl.go.
+		safeName, err := sanitizeIdentifier(p.asName)
+		if err != nil {
+			return fmt.Errorf("regex(): invalid as name %q: %w", p.asName, err)
+		}
+		scalarExpr := fmt.Sprintf("extract(%s, '%s')", fieldRef, escapeString(sqlPattern))
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeName)})
+		ctx.Registry.SetResolveExpr(safeName, scalarExpr)
+	default:
+		// extractAllGroups requires at least one capturing group; without a name
+		// or as= there is also nothing to call the output but regex_match.
+		if captureGroupCount(sqlPattern) == 0 {
+			return fmt.Errorf("regex(): pattern has no capture group; wrap the part to extract in (?<name>...)")
+		}
+		scalarExpr := fmt.Sprintf("extractAllGroups(%s, '%s')", fieldRef, escapeString(sqlPattern))
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS regex_match", scalarExpr)})
+		ctx.Registry.SetResolveExpr("regex_match", scalarExpr)
 	}
 	return nil
+}
+
+type regexArgs struct{ pattern, field, asName string }
+
+// regexParams reads regex()'s arguments once, so Declare and Execute agree on
+// which columns the command produces.
+func regexParams(cmd CommandNode) (regexArgs, error) {
+	p := regexArgs{field: normLogColumn}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return p, err
+	}
+	p.pattern = b.StrOf("pattern", "regex")
+	p.field = b.Str("field", p.field)
+	p.asName = b.Str("as", "")
+	return p, nil
 }
 
 // replaceHandler handles replace(regex, with, field, output_field)
 type replaceHandler struct{}
 
 func (h *replaceHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	outputField := ""
-	if len(cmd.Arguments) > 2 {
-		outputField = cmd.Arguments[2]
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return nil
 	}
-	if len(cmd.Arguments) > 3 {
-		outputField = cmd.Arguments[3]
-	}
-	if outputField != "" {
-		ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
+	if output := replaceOutput(b); output != normLogColumn {
+		ctx.Registry.Register(output, FieldKindPerRow, output, ctx.CmdIndex)
 	}
 	return nil
 }
 
-func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 2 {
-		pattern := cmd.Arguments[0]
-		replacement := cmd.Arguments[1]
-		field := normLogColumn
-		outputField := field
-		if len(cmd.Arguments) > 2 {
-			field = cmd.Arguments[2]
-		}
-		if len(cmd.Arguments) > 3 {
-			outputField = cmd.Arguments[3]
-		}
-
-		fieldRef := normLogColumn
-		if field != normLogColumn && field != "timestamp" {
-			fieldRef = resolveFieldRef(field, ctx.Registry)
-		} else if field == "timestamp" {
-			fieldRef = "toString(timestamp)"
-		}
-
-		safeOutput, err := sanitizeIdentifier(outputField)
-		if err != nil {
-			return fmt.Errorf("replace(): invalid output field: %w", err)
-		}
-
-		expr := fmt.Sprintf("replaceRegexpAll(%s, '%s', '%s') AS %s",
-			fieldRef, escapeString(pattern), escapeString(replacement), safeOutput)
-		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-		ctx.Registry.SetResolveExpr(outputField, expr)
+// replaceOutput returns the column replace() writes: the one it was named, or
+// the field it reads, rebound in place.
+func replaceOutput(b *Bound) string {
+	if output := b.StrOf("as", "outputField"); output != "" {
+		return output
 	}
+	return b.Str("field", normLogColumn)
+}
+
+func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	pattern, hasPattern := b.First("pattern")
+	replacement, hasReplacement := b.First("replacement")
+	if !hasPattern || !hasReplacement {
+		return nil
+	}
+	field := b.Str("field", normLogColumn)
+	outputField := replaceOutput(b)
+
+	fieldRef := normLogColumn
+	if field == "timestamp" {
+		fieldRef = "toString(timestamp)"
+	} else if field != normLogColumn {
+		fieldRef = resolveFieldRef(field, ctx.Registry)
+	}
+
+	safeOutput, err := sanitizeIdentifier(outputField)
+	if err != nil {
+		return fmt.Errorf("replace(): invalid output field: %w", err)
+	}
+
+	expr := fmt.Sprintf("replaceRegexpAll(%s, '%s', '%s') AS %s",
+		fieldRef, escapeString(pattern.Value()), escapeString(replacement.Value()), safeOutput)
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
+	ctx.Registry.SetResolveExpr(outputField, expr)
 	return nil
 }
 
@@ -340,39 +361,13 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type concatHandler struct{}
 
 func (h *concatHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	alias := "_concat"
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "as=") {
-			alias = strings.TrimPrefix(arg, "as=")
-		}
-	}
-	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-	return nil
+	return declareFieldListAlias(cmd, ctx, "_concat")
 }
 
 func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
-		return fmt.Errorf("concat() requires at least one argument with fields in brackets, e.g. concat([field1,field2])")
-	}
-	alias := "_concat"
-	var fields []string
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "as=") {
-			alias = strings.TrimPrefix(arg, "as=")
-			continue
-		}
-		for _, f := range listArg(arg) {
-			if f == "timestamp" {
-				fields = append(fields, "toString(timestamp)")
-			} else {
-				fields = append(fields, resolveFieldRef(f, ctx.Registry))
-			}
-		}
-	}
-	if len(fields) == 0 {
-		return fmt.Errorf("concat() requires at least one field")
+	alias, fields, err := fieldListArgs(cmd, ctx, "concat", "_concat")
+	if err != nil {
+		return err
 	}
 	safeOutput, err := sanitizeIdentifier(alias)
 	if err != nil {
@@ -388,51 +383,81 @@ func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type hashHandler struct{}
 
 func (h *hashHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	alias := "hash_key"
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(strings.TrimSpace(arg), "as=") {
-			alias = strings.TrimPrefix(strings.TrimSpace(arg), "as=")
-		}
-	}
-	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-	return nil
+	return declareFieldListAlias(cmd, ctx, "hash_key")
 }
 
 func (h *hashHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
-		return fmt.Errorf("hash() requires at least one field")
-	}
-	var hashFields []string
-	alias := "hash_key"
-	for _, raw := range cmd.Arguments {
-		raw = strings.TrimSpace(raw)
-		if strings.HasPrefix(raw, "as=") {
-			alias = strings.TrimPrefix(raw, "as=")
-			continue
-		}
-		// A bracket list reaches here as one comma-joined argument (see
-		// parseCommand), so split it and hash each field. Without this,
-		// hash([a,b]) hashed a single field literally named "a,b", which exists
-		// on no row: every row got the same constant digest.
-		for _, arg := range listArg(strings.TrimPrefix(raw, "field=")) {
-			if arg == "timestamp" {
-				hashFields = append(hashFields, "toString(timestamp)")
-			} else {
-				hashFields = append(hashFields, resolveFieldRef(arg, ctx.Registry))
-			}
-		}
-	}
-	if len(hashFields) == 0 {
-		return fmt.Errorf("hash() requires at least one field")
+	alias, fields, err := fieldListArgs(cmd, ctx, "hash", "hash_key")
+	if err != nil {
+		return err
 	}
 	safeAlias, err := sanitizeIdentifier(alias)
 	if err != nil {
 		return fmt.Errorf("hash(): invalid alias: %w", err)
 	}
-	expr := fmt.Sprintf("hex(cityHash64(%s)) AS %s", strings.Join(hashFields, ", "), safeAlias)
-	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("hex(cityHash64(%s))", strings.Join(hashFields, ", ")))
+	sqlExpr := fmt.Sprintf("hex(cityHash64(%s))", strings.Join(fields, ", "))
+	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeAlias)})
+	ctx.Registry.SetResolveExpr(safeAlias, sqlExpr)
 	return nil
+}
+
+// declareFieldListAlias registers the single column a field-list command emits.
+func declareFieldListAlias(cmd CommandNode, ctx *CommandContext, defaultAlias string) error {
+	alias := defaultAlias
+	if b, err := BindCommand(cmd); err == nil {
+		alias = b.Str("as", defaultAlias)
+	}
+	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+	return nil
+}
+
+// csvArguments splits a quoted comma-separated value into one argument per
+// field. concat("a,b") has always meant two fields, not a field named "a,b".
+func csvArguments(args []Argument) []Argument {
+	var out []Argument
+	for _, a := range args {
+		if !a.Quoted || !strings.Contains(a.Text, ",") {
+			out = append(out, a)
+			continue
+		}
+		for _, part := range strings.Split(a.Text, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, Argument{Kind: ArgLiteral, Text: part, Quoted: true, Pos: a.Pos})
+			}
+		}
+	}
+	return out
+}
+
+// fieldListArgs reads the alias and resolved field references of a command that
+// combines several fields into one column (concat, hash).
+func fieldListArgs(cmd CommandNode, ctx *CommandContext, name, defaultAlias string) (string, []string, error) {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return "", nil, err
+	}
+	args := csvArguments(b.FlatOrdered("fields", "field"))
+	if len(args) == 0 {
+		return "", nil, fmt.Errorf("%s() requires at least one field", name)
+	}
+	for _, a := range args {
+		if a.Value() == "" {
+			return "", nil, fmt.Errorf("%s() requires at least one field", name)
+		}
+	}
+	fields := make([]string, 0, len(args))
+	for _, a := range args {
+		if a.FieldName() == "timestamp" {
+			fields = append(fields, "toString(timestamp)")
+			continue
+		}
+		ref, err := ResolveArg(a, ctx.Registry)
+		if err != nil {
+			return "", nil, fmt.Errorf("%s(): %w", name, err)
+		}
+		fields = append(fields, ref)
+	}
+	return b.Str("as", defaultAlias), fields, nil
 }
 
 // nowHandler handles now(output_field)
@@ -440,18 +465,19 @@ type nowHandler struct{}
 
 func (h *nowHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	outputField := "_now"
-	if len(cmd.Arguments) > 0 {
-		outputField = cmd.Arguments[0]
+	if b, err := BindCommand(cmd); err == nil {
+		outputField = b.Str("outputField", outputField)
 	}
 	ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
 	return nil
 }
 
 func (h *nowHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	outputField := "_now"
-	if len(cmd.Arguments) > 0 {
-		outputField = cmd.Arguments[0]
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	outputField := b.Str("outputField", "_now")
 	safeOutput, err := sanitizeIdentifier(outputField)
 	if err != nil {
 		return fmt.Errorf("now(): invalid output field: %w", err)
@@ -462,18 +488,18 @@ func (h *nowHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// caseOutputColumn is the column the bare-result form of case { ... } writes.
+const caseOutputColumn = "case_result"
+
 // caseHandler handles case { condition | result ; ... }
 type caseHandler struct{}
 
 func (h *caseHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		outputField := "case_result"
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
+	if cmd.Block != "" {
+		outputField := caseOutputColumn
 		ctx.Registry.Register(outputField, FieldKindPerRow, outputField, ctx.CmdIndex)
 
-		compiled, err := compileCase(cmd.Arguments[0], ctx.Registry, ctx.Opts)
+		compiled, err := compileCase(cmd.Block, ctx.Registry, ctx.Opts)
 		if err != nil {
 			return err
 		}
@@ -491,13 +517,10 @@ func (h *caseHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		outputField := "case_result"
-		if len(cmd.Arguments) > 1 {
-			outputField = cmd.Arguments[1]
-		}
+	if cmd.Block != "" {
+		outputField := caseOutputColumn
 
-		compiled, err := compileCase(cmd.Arguments[0], ctx.Registry, ctx.Opts)
+		compiled, err := compileCase(cmd.Block, ctx.Registry, ctx.Opts)
 		if err != nil {
 			return err
 		}
@@ -541,25 +564,19 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type lenHandler struct{}
 
 // lenArgs returns the source field and output name for a len() command.
-func lenArgs(cmd CommandNode) (field, outName string) {
-	outName = "_len"
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "as=") {
-			outName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
-		} else if strings.HasPrefix(arg, "field=") {
-			field = strings.TrimPrefix(arg, "field=")
-		} else if field == "" {
-			field = arg
-		}
+func lenArgs(cmd CommandNode) (field Argument, outName string, ok bool) {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return Argument{}, "_len", false
 	}
-	return field, outName
+	field, ok = b.First("field")
+	return field, b.Str("as", "_len"), ok
 }
 
 func (h *lenHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	// The numeric SELECT alias is registered as FieldKindAssignment so condition
 	// routing can reference it by name without wrapping in toFloat64OrZero.
-	_, outName := lenArgs(cmd)
+	_, outName, _ := lenArgs(cmd)
 	if outName != "" {
 		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)
 	}
@@ -567,9 +584,12 @@ func (h *lenHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *lenHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	field, outName := lenArgs(cmd)
-	if field != "" && outName != "" {
-		fieldRef := resolveFieldRef(field, ctx.Registry)
+	field, outName, ok := lenArgs(cmd)
+	if ok && outName != "" {
+		fieldRef, err := ResolveArg(field, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("len(): %w", err)
+		}
 		safeName, err := sanitizeIdentifier(outName)
 		if err != nil {
 			return fmt.Errorf("len(): invalid as name %q: %w", outName, err)
@@ -590,23 +610,16 @@ type logSizeHandler struct{}
 
 // logSizeArgs returns the source field and output name for a logSize() command.
 // The field defaults to norm_log (the normalized event text).
-func logSizeArgs(cmd CommandNode) (field, outName string) {
-	field = normLogColumn
-	outName = "_size"
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if arg == "" {
-			continue
-		}
-		if strings.HasPrefix(arg, "as=") {
-			outName = strings.Trim(strings.TrimPrefix(arg, "as="), `"'`)
-		} else if strings.HasPrefix(arg, "field=") {
-			field = strings.TrimPrefix(arg, "field=")
-		} else {
-			field = arg
-		}
+func logSizeArgs(cmd CommandNode) (field Argument, outName string) {
+	field = Argument{Kind: ArgLiteral, Text: normLogColumn}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return field, "_size"
 	}
-	return field, outName
+	if a, ok := b.First("field"); ok {
+		field = a
+	}
+	return field, b.Str("as", "_size")
 }
 
 func (h *logSizeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -621,10 +634,13 @@ func (h *logSizeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *logSizeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	field, outName := logSizeArgs(cmd)
-	if field == "" || outName == "" {
+	if outName == "" {
 		return nil
 	}
-	fieldRef := resolveFieldRef(field, ctx.Registry)
+	fieldRef, err := ResolveArg(field, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("logSize(): %w", err)
+	}
 	safeName, err := sanitizeIdentifier(outName)
 	if err != nil {
 		return fmt.Errorf("logSize(): invalid as name %q: %w", outName, err)
@@ -646,25 +662,35 @@ func (h *levenshteinHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 }
 
 func (h *levenshteinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 2 {
-		arg1 := cmd.Arguments[0]
-		arg2 := cmd.Arguments[1]
-		var ref1, ref2 string
-		if strings.HasPrefix(arg1, "\"") && strings.HasSuffix(arg1, "\"") {
-			ref1 = fmt.Sprintf("'%s'", escapeString(strings.Trim(arg1, "\"")))
-		} else {
-			ref1 = resolveFieldRef(arg1, ctx.Registry)
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	a1, ok1 := b.First("s1")
+	a2, ok2 := b.First("s2")
+	if ok1 && ok2 {
+		ref1, err := levenshteinOperand(a1, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("levenshtein(): %w", err)
 		}
-		if strings.HasPrefix(arg2, "\"") && strings.HasSuffix(arg2, "\"") {
-			ref2 = fmt.Sprintf("'%s'", escapeString(strings.Trim(arg2, "\"")))
-		} else {
-			ref2 = resolveFieldRef(arg2, ctx.Registry)
+		ref2, err := levenshteinOperand(a2, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("levenshtein(): %w", err)
 		}
 		expr := fmt.Sprintf("damerauLevenshteinDistance(%s, %s) AS _distance", ref1, ref2)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_distance", fmt.Sprintf("damerauLevenshteinDistance(%s, %s)", ref1, ref2))
 	}
 	return nil
+}
+
+// levenshteinOperand resolves one side of levenshtein(): a quoted value is the
+// string to compare against, anything else is a field or an expression over one.
+func levenshteinOperand(a Argument, registry *FieldRegistry) (string, error) {
+	if a.Quoted {
+		return fmt.Sprintf("'%s'", escapeString(a.Text)), nil
+	}
+	return ResolveArg(a, registry)
 }
 
 // base64decodeHandler handles base64decode(field)
@@ -676,9 +702,15 @@ func (h *base64decodeHandler) Declare(cmd CommandNode, ctx *CommandContext) erro
 }
 
 func (h *base64decodeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		field := cmd.Arguments[0]
-		fieldRef := resolveFieldRef(field, ctx.Registry)
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if ok {
+		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
 		expr := fmt.Sprintf("tryBase64Decode(%s) AS _decoded", fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_decoded", fmt.Sprintf("tryBase64Decode(%s)", fieldRef))
@@ -695,15 +727,19 @@ func (h *splitHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *splitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 3 {
-		field := cmd.Arguments[0]
-		delimiter := strings.Trim(cmd.Arguments[1], "\"'")
-		indexStr := cmd.Arguments[2]
+	b, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if delimiter, indexStr := b.Str("delimiter", ""), b.Str("index", ""); ok && indexStr != "" {
 		index, err := strconv.Atoi(indexStr)
 		if err != nil {
 			return fmt.Errorf("split(): index must be numeric, got %q", indexStr)
 		}
-		fieldRef := resolveFieldRef(field, ctx.Registry)
+		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("split(): %w", err)
+		}
 		expr := fmt.Sprintf("splitByString('%s', %s)[%d] AS _split", escapeString(delimiter), fieldRef, index)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_split", fmt.Sprintf("splitByString('%s', %s)[%d]", escapeString(delimiter), fieldRef, index))
@@ -720,16 +756,20 @@ func (h *substrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *substrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 2 {
-		field := cmd.Arguments[0]
-		startStr := cmd.Arguments[1]
+	b, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if startStr := b.Str("start", ""); ok && startStr != "" {
 		start, err := strconv.Atoi(startStr)
 		if err != nil {
 			return fmt.Errorf("substr(): start must be numeric, got %q", startStr)
 		}
-		fieldRef := resolveFieldRef(field, ctx.Registry)
-		if len(cmd.Arguments) >= 3 {
-			lengthStr := cmd.Arguments[2]
+		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("substr(): %w", err)
+		}
+		if lengthStr := b.Str("length", ""); lengthStr != "" {
 			length, err := strconv.Atoi(lengthStr)
 			if err != nil {
 				return fmt.Errorf("substr(): length must be numeric, got %q", lengthStr)
@@ -755,9 +795,15 @@ func (h *urldecodeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *urldecodeHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		field := cmd.Arguments[0]
-		fieldRef := resolveFieldRef(field, ctx.Registry)
+	_, arg, ok, err := firstFieldArg(cmd, "field")
+	if err != nil {
+		return err
+	}
+	if ok {
+		fieldRef, err := ResolveArg(arg, ctx.Registry)
+		if err != nil {
+			return err
+		}
 		expr := fmt.Sprintf("decodeURLComponent(%s) AS _urldecoded", fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr("_urldecoded", fmt.Sprintf("decodeURLComponent(%s)", fieldRef))
@@ -774,10 +820,17 @@ func (h *coalesceHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *coalesceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) >= 2 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if args := b.Flat("fields"); len(args) >= 2 {
 		var conditions []string
-		for _, field := range cmd.Arguments {
-			ref := resolveFieldRef(field, ctx.Registry)
+		for _, a := range args {
+			ref, err := ResolveArg(a, ctx.Registry)
+			if err != nil {
+				return fmt.Errorf("coalesce(): %w", err)
+			}
 			conditions = append(conditions, fmt.Sprintf("%s != '' AND %s IS NOT NULL, %s", ref, ref, ref))
 		}
 		expr := fmt.Sprintf("multiIf(%s, '') AS _coalesced", strings.Join(conditions, ", "))
@@ -791,34 +844,25 @@ func (h *coalesceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type sprintfHandler struct{}
 
 func (h *sprintfHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	alias := "_sprintf"
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(strings.TrimSpace(arg), "as=") {
-			alias = strings.Trim(strings.TrimPrefix(strings.TrimSpace(arg), "as="), "\"'")
-		}
-	}
-	ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
-	return nil
+	return declareFieldListAlias(cmd, ctx, "_sprintf")
 }
 
 func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) == 0 {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	formatStr := b.Str("format", "")
+	if formatStr == "" {
 		return fmt.Errorf("sprintf() requires a format string")
 	}
-	alias := "_sprintf"
-	formatStr := strings.Trim(cmd.Arguments[0], "\"'")
+	alias := b.Str("as", "_sprintf")
 	var fieldRefs []string
-	for _, arg := range cmd.Arguments[1:] {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "as=") {
-			alias = strings.Trim(strings.TrimPrefix(arg, "as="), "\"'")
-			continue
+	for _, a := range b.FlatOrdered("fields", "field") {
+		ref, err := ResolveArg(a, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("sprintf(): %w", err)
 		}
-		// Accept an optional field= prefix on positional args (by analogy with
-		// avg(field=x) etc.) so it resolves the column rather than a literal
-		// field named "field=x".
-		arg = strings.TrimPrefix(arg, "field=")
-		ref := resolveFieldRef(arg, ctx.Registry)
 		fieldRefs = append(fieldRefs, fmt.Sprintf("ifNull(%s, '')", ref))
 	}
 	safeAlias, err := sanitizeIdentifier(alias)
@@ -871,20 +915,14 @@ func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string) strin
 type matchHandler struct{}
 
 func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	var logField, keyColumn, dictName string
-	var includeColumns []string
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "include=") {
-			cols, _ := namedListArg(arg, "include")
-			includeColumns = append(includeColumns, cols...)
-		} else if strings.HasPrefix(arg, "field=") {
-			logField = strings.TrimPrefix(arg, "field=")
-		} else if strings.HasPrefix(arg, "column=") {
-			keyColumn = strings.TrimPrefix(arg, "column=")
-		} else if strings.HasPrefix(arg, "dict=") {
-			dictName = strings.Trim(strings.TrimPrefix(arg, "dict="), `"'`)
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return nil
 	}
+	logField := b.Str("field", "")
+	keyColumn := b.Str("column", "")
+	dictName := b.Str("dict", "")
+	includeColumns := b.Strings("include")
 
 	// Resolve the ClickHouse dictionary name so we can build the real expression.
 	chLookupName := ""
@@ -914,24 +952,15 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	var dictName, logField, keyColumn string
-	var includeColumns []string
-	strict := false
-
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "dict=") {
-			dictName = strings.Trim(strings.TrimPrefix(arg, "dict="), `"'`)
-		} else if strings.HasPrefix(arg, "field=") {
-			logField = strings.TrimPrefix(arg, "field=")
-		} else if strings.HasPrefix(arg, "column=") {
-			keyColumn = strings.TrimPrefix(arg, "column=")
-		} else if strings.HasPrefix(arg, "include=") {
-			cols, _ := namedListArg(arg, "include")
-			includeColumns = append(includeColumns, cols...)
-		} else if strings.HasPrefix(arg, "strict=") {
-			strict = strings.ToLower(strings.TrimPrefix(arg, "strict=")) == "true"
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	dictName := b.Str("dict", "")
+	logField := b.Str("field", "")
+	keyColumn := b.Str("column", "")
+	includeColumns := b.Strings("include")
+	strict := b.Flag("strict", false)
 
 	if dictName == "" {
 		return fmt.Errorf("match() requires dict= parameter")
@@ -1051,16 +1080,12 @@ func geoipLookupExpr(db, field, fieldRef string) string {
 }
 
 func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	var ipField string
-	var includeColumns []string
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "include=") {
-			cols, _ := namedListArg(arg, "include")
-			includeColumns = append(includeColumns, cols...)
-		} else if strings.HasPrefix(arg, "field=") {
-			ipField = strings.TrimPrefix(arg, "field=")
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return nil
 	}
+	ipField := b.Str("field", "")
+	includeColumns := b.Strings("include")
 
 	var fieldRef string
 	if ipField != "" {
@@ -1081,17 +1106,12 @@ func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	var ipField string
-	var includeColumns []string
-
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "field=") {
-			ipField = strings.TrimPrefix(arg, "field=")
-		} else if strings.HasPrefix(arg, "include=") {
-			cols, _ := namedListArg(arg, "include")
-			includeColumns = append(includeColumns, cols...)
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	ipField := b.Str("field", "")
+	includeColumns := b.Strings("include")
 
 	if ipField == "" {
 		return fmt.Errorf("lookupIP() requires field= parameter specifying the IP address field")
@@ -1166,8 +1186,10 @@ func init() {
 	registerSpec(&CommandSpec{Name: "regex", Params: []ParamSpec{
 		lit("pattern"), namedLit("regex"), namedField("field"), as(),
 	}})
+	// replace("p", "r", field, out) and replace("p", "r", field, as=out) both name
+	// the output column.
 	registerSpec(&CommandSpec{Name: "replace", Params: []ParamSpec{
-		reqLit("pattern"), reqLit("replacement"), field("field"), lit("outputField"),
+		reqLit("pattern"), reqLit("replacement"), field("field"), lit("outputField"), as(),
 	}})
 	registerSpec(&CommandSpec{Name: "concat", Params: []ParamSpec{fields("fields"), as()}})
 	registerSpec(&CommandSpec{Name: "hash", Params: []ParamSpec{fields("fields"), namedField("field"), as()}})

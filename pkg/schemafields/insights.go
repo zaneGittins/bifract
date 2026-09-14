@@ -289,50 +289,17 @@ func referencedFields(bql string) []string {
 		add(hc.Field)
 	}
 
-	// Commands reference fields too: `table(src_ip, user)` and `stats count() by
-	// user` are every bit as much "this field is queried" as a filter is, and
-	// counting only filters under-reports the fields people actually work with.
-	//
-	// Arguments are accepted conservatively, since the slice is untyped and holds
-	// whatever a command takes: anything with an operator, quote, or call syntax
-	// is a value or expression rather than a field, and clause keywords are
-	// skipped by name.
+	// Commands reference fields too: `table(src_ip, user)` and `groupby(user)`
+	// are every bit as much "this field is queried" as a filter is, and counting
+	// only filters under-reports the fields people actually work with. The parser
+	// reports them from its typed arguments, so literals and options are already
+	// excluded.
 	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
-		for _, arg := range cmd.Arguments {
-			if looksLikeFieldRef(arg) {
-				add(arg)
-			}
+		for _, name := range cmd.FieldNames() {
+			add(name)
 		}
 	})
 	return out
-}
-
-// commandArgKeywords are clause words that appear in an argument slice but name
-// no field.
-var commandArgKeywords = map[string]bool{
-	"by": true, "asc": true, "desc": true, "as": true, "with": true,
-	"true": true, "false": true, "and": true, "or": true, "not": true,
-}
-
-// looksLikeFieldRef reports whether a raw command argument is a bare field
-// reference rather than a literal, expression, or named parameter.
-func looksLikeFieldRef(arg string) bool {
-	arg = strings.TrimSpace(arg)
-	if arg == "" || len(arg) > 255 {
-		return false
-	}
-	if commandArgKeywords[strings.ToLower(arg)] {
-		return false
-	}
-	// Operators, quotes, calls, and wildcards all mean this is not a bare name.
-	if strings.ContainsAny(arg, "=<>!\"'()*,|+/ \t") {
-		return false
-	}
-	// A leading digit means a number or duration, not an identifier.
-	if arg[0] >= '0' && arg[0] <= '9' {
-		return false
-	}
-	return true
 }
 
 // systemColumns are the table's own columns. They are always addressable and can

@@ -24,53 +24,36 @@ func (h *joinHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) < 2 {
-		return fmt.Errorf("join() requires a join key and a subquery block")
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
-
-	// Arguments layout from parser:
-	// [0] = subquery block body (raw BQL text)
-	// [1..N] = parsed params: first positional is the join key, then type=, max=, include=
-	blockBody := strings.TrimSpace(cmd.Arguments[0])
+	blockBody := strings.TrimSpace(cmd.Block)
 	if blockBody == "" {
 		return fmt.Errorf("join() subquery cannot be empty")
 	}
 
-	var joinKey string
+	joinKey := b.Str("key", "")
 	joinType := "inner"
-	maxRows := joinDefaultMaxRows
-	var includeFields []string
-
-	for _, arg := range cmd.Arguments[1:] {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "type=") {
-			val := strings.TrimPrefix(arg, "type=")
-			switch val {
-			case "inner", "left":
-				joinType = val
-			default:
-				return fmt.Errorf("join() type must be 'inner' or 'left', got '%s'", val)
-			}
-		} else if strings.HasPrefix(arg, "max=") {
-			val := strings.TrimPrefix(arg, "max=")
-			n, err := strconv.Atoi(val)
-			if err != nil || n <= 0 {
-				return fmt.Errorf("join() max must be a positive integer, got '%s'", val)
-			}
-			if n > joinHardMaxRows {
-				n = joinHardMaxRows
-			}
-			maxRows = n
-		} else if strings.HasPrefix(arg, "include=") {
-			fields, _ := namedListArg(arg, "include")
-			includeFields = append(includeFields, fields...)
-		} else if joinKey == "" {
-			// First positional argument is the join key
-			joinKey = arg
-		} else {
-			return fmt.Errorf("join() unexpected argument: '%s'", arg)
+	if a, given := b.First("type"); given {
+		val := a.Value()
+		switch val {
+		case "inner", "left":
+			joinType = val
+		default:
+			return fmt.Errorf("join() type must be 'inner' or 'left', got '%s'", val)
 		}
 	}
+	maxRows := joinDefaultMaxRows
+	if a, given := b.First("max"); given {
+		val := a.Value()
+		n, err := strconv.Atoi(val)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("join() max must be a positive integer, got '%s'", val)
+		}
+		maxRows = min(n, joinHardMaxRows)
+	}
+	includeFields := b.Strings("include")
 
 	if joinKey == "" {
 		return fmt.Errorf("join() requires a join key field, e.g. join(user) { ... }")
@@ -190,7 +173,7 @@ func joinDisplayNames(plan *QueryPlan) []string {
 // joinSubqueryHint points at the usual cause when a subquery drops its group key.
 func joinSubqueryHint(sub *PipelineNode, joinKey string) string {
 	for _, c := range sub.Commands {
-		if strings.EqualFold(c.Name, "count") && len(c.Arguments) == 0 {
+		if strings.EqualFold(c.Name, "count") && len(c.Args) == 0 {
 			return fmt.Sprintf(" -- a bare count() after groupby(%s) counts the groups and drops %s; groupby() already returns a count, so drop the count()", joinKey, joinKey)
 		}
 	}

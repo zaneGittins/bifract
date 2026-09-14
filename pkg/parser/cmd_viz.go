@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -23,14 +22,11 @@ func (h *piechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.IsAggregated = true
 	}
 	ctx.Plan.ChartType = "piechart"
-	ctx.Plan.ChartConfig["limit"] = 10
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "limit=") {
-			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
-				ctx.Plan.ChartConfig["limit"] = limit
-			}
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 10, 0)
 	return nil
 }
 
@@ -51,14 +47,11 @@ func (h *barchartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.IsAggregated = true
 	}
 	ctx.Plan.ChartType = "barchart"
-	ctx.Plan.ChartConfig["limit"] = 10
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "limit=") {
-			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
-				ctx.Plan.ChartConfig["limit"] = limit
-			}
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 10, 0)
 	return nil
 }
 
@@ -71,27 +64,14 @@ func (h *graphHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartType = "graph"
-	ctx.Plan.ChartConfig["limit"] = 100
-	var childField, parentField string
-	var labelFields []string
-
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "child=") {
-			childField = strings.TrimPrefix(arg, "child=")
-		} else if strings.HasPrefix(arg, "parent=") {
-			parentField = strings.TrimPrefix(arg, "parent=")
-		} else if strings.HasPrefix(arg, "labels=") {
-			fields, _ := namedListArg(arg, "labels")
-			labelFields = append(labelFields, fields...)
-		} else if strings.HasPrefix(arg, "limit=") {
-			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
-				if limit > 500 {
-					limit = 500
-				}
-				ctx.Plan.ChartConfig["limit"] = limit
-			}
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	childField := b.Str("child", "")
+	parentField := b.Str("parent", "")
+	labelFields := b.Strings("labels")
+	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 100, 500)
 
 	if childField == "" || parentField == "" {
 		return fmt.Errorf("graph() requires both child= and parent= parameters, e.g. graph(child=process_guid, parent=parent_process_guid)")
@@ -116,14 +96,11 @@ func (h *pgraphHandler) Declare(cmd CommandNode, ctx *CommandContext) error { re
 
 func (h *pgraphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartType = "pgraph"
-	ctx.Plan.ChartConfig["limit"] = 3000
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "limit=") {
-			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
-				ctx.Plan.ChartConfig["limit"] = limit
-			}
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 3000, 0)
 	return nil
 }
 
@@ -140,37 +117,18 @@ func (h *meshHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartType = "mesh"
-	ctx.Plan.ChartConfig["limit"] = 100
-	ctx.Plan.ChartConfig["directed"] = false
-	var srcField, dstField, weightField, sizeField, colorField string
-	var labelFields []string
-
-	for _, arg := range cmd.Arguments {
-		switch {
-		case strings.HasPrefix(arg, "src="):
-			srcField = strings.TrimPrefix(arg, "src=")
-		case strings.HasPrefix(arg, "dst="):
-			dstField = strings.TrimPrefix(arg, "dst=")
-		case strings.HasPrefix(arg, "weight="):
-			weightField = strings.TrimPrefix(arg, "weight=")
-		case strings.HasPrefix(arg, "size="):
-			sizeField = strings.TrimPrefix(arg, "size=")
-		case strings.HasPrefix(arg, "color="):
-			colorField = strings.TrimPrefix(arg, "color=")
-		case strings.HasPrefix(arg, "directed="):
-			v := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(arg, "directed=")))
-			ctx.Plan.ChartConfig["directed"] = v == "true" || v == "1" || v == "yes"
-		case strings.HasPrefix(arg, "labels="), strings.HasPrefix(arg, "label="):
-			labelFields = append(labelFields, listArg(arg[strings.IndexByte(arg, '=')+1:])...)
-		case strings.HasPrefix(arg, "limit="):
-			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
-				if limit > 500 {
-					limit = 500
-				}
-				ctx.Plan.ChartConfig["limit"] = limit
-			}
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	srcField := b.Str("src", "")
+	dstField := b.Str("dst", "")
+	weightField := b.Str("weight", "")
+	sizeField := b.Str("size", "")
+	colorField := b.Str("color", "")
+	labelFields := append(b.Strings("labels"), b.Strings("label")...)
+	ctx.Plan.ChartConfig["directed"] = b.Flag("directed", false)
+	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 100, 500)
 
 	if srcField == "" || dstField == "" {
 		return fmt.Errorf("mesh() requires both src= and dst= parameters, e.g. mesh(src=src_ip, dst=dst_ip)")
@@ -219,12 +177,12 @@ func (h *singlevalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("singleval() cannot be used with groupBy() - it displays a single value only")
 	}
 	ctx.Plan.ChartType = "singleval"
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "label=") {
-			label := strings.TrimPrefix(arg, "label=")
-			label = strings.Trim(label, `"'`)
-			ctx.Plan.ChartConfig["label"] = label
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if label := b.Str("label", ""); label != "" {
+		ctx.Plan.ChartConfig["label"] = label
 	}
 	return nil
 }
@@ -240,56 +198,45 @@ func (h *timechartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
-	var span, function string
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "span=") {
-			span = strings.TrimPrefix(arg, "span=")
-		} else if strings.HasPrefix(arg, "function=") {
-			val := strings.TrimPrefix(arg, "function=")
-			if val != "" {
-				function = val
-			}
-		} else if strings.Contains(arg, "(") {
-			function = arg
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
-
-	if span == "" {
-		span = "1h"
-	}
-	if function == "" {
-		function = "count()"
+	span := b.Str("span", "1h")
+	fn := b.Agg("function")
+	if fn == nil {
+		fn = &AggSpec{Name: "count"}
 	}
 
 	n, unit := parseBucketSpan(span)
 	bucketExpr := getBucketExpression(n, unit, bucketTimezone(ctx))
 	source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: bucketExpr, Alias: "time_bucket"})
 
-	if strings.Contains(function, "count()") {
+	switch fn.Name {
+	case "count":
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
-	} else if strings.Contains(function, "sum(") {
-		field := extractFunctionField(function, "sum")
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("sum(%s)", cast), Alias: "_sum"})
-	} else if strings.Contains(function, "avg(") {
-		field := extractFunctionField(function, "avg")
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("avg(%s)", cast), Alias: "_avg"})
-	} else if strings.Contains(function, "max(") {
-		field := extractFunctionField(function, "max")
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("max(%s)", cast), Alias: "_max"})
-	} else if strings.Contains(function, "min(") {
-		field := extractFunctionField(function, "min")
-		cast := numericCast(field, resolveFieldRef(field, ctx.Registry), ctx.Registry)
-		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("min(%s)", cast), Alias: "_min"})
-	} else if strings.Contains(function, "percent(") {
-		// percent(f1, f2, ...): one series per field giving the share of rows in
-		// each bucket where that (boolean) field is truthy. Fields resolve through
-		// the registry so case()/computed boolean columns are inlined.
-		fields := parseTimechartFieldList(function, "percent")
+	case "sum", "avg", "max", "min":
+		if len(fn.Args) == 0 {
+			return fmt.Errorf("timechart %s(): needs a field, e.g. timechart(span=1h, %s(bytes))", fn.Name, fn.Name)
+		}
+		operand, err := aggOperandNumeric(fn.Args[0], ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("timechart %s(): %w", fn.Name, err)
+		}
+		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+			Expr:  fmt.Sprintf("%s(%s)", fn.Name, operand),
+			Alias: "_" + fn.Name,
+		})
+	case "percent":
+		// One series per field: the share of rows in each bucket where that
+		// (boolean) field is truthy. Fields resolve through the registry so a
+		// case()/computed boolean column is inlined.
 		var percentFields []string
-		for _, f := range fields {
+		for _, a := range aggFields(fn) {
+			f := a.FieldName()
+			if f == "" {
+				return fmt.Errorf("timechart percent(): %s is not a field", a)
+			}
 			safe, err := sanitizeIdentifier(f)
 			if err != nil {
 				return fmt.Errorf("timechart percent(): %w", err)
@@ -311,28 +258,41 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.ChartConfig["valueFields"] = percentFields
 		ctx.Plan.ChartConfig["unit"] = "percent"
 		ctx.Plan.ChartConfig["yLabel"] = "Percent"
-	} else if strings.Contains(function, "groupby(") {
-		fields, distinct := parseTimechartGroupBy(function)
-		if distinct && len(fields) > 0 {
+	case "groupby":
+		fields := aggFields(fn)
+		if len(fields) == 0 {
+			return fmt.Errorf("timechart groupby(): needs a field")
+		}
+		refs := make([]string, len(fields))
+		aliases := make([]string, len(fields))
+		for i, a := range fields {
+			ref, err := ResolveArg(a, ctx.Registry)
+			if err != nil {
+				return fmt.Errorf("timechart groupby(): %w", err)
+			}
+			alias, err := ArgAlias(a)
+			if err != nil {
+				return fmt.Errorf("timechart groupby(): %w", err)
+			}
+			refs[i], aliases[i] = ref, alias
+		}
+		if aggFlag(fn, false, "distinct", "unique") {
 			// Cardinality over time: count distinct values (or tuples) of the
 			// field(s) within each bucket as a single series.
-			refs := make([]string, len(fields))
-			for i, f := range fields {
-				refs[i] = resolveFieldRef(f, ctx.Registry)
-			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
 				Expr:  fmt.Sprintf("uniqExact(%s)", strings.Join(refs, ", ")),
 				Alias: "_count",
 			})
 		} else {
-			for _, f := range fields {
-				ref := resolveFieldRef(f, ctx.Registry)
-				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: f})
+			for i, ref := range refs {
+				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: ref, Alias: aliases[i]})
 				source.Layer.GroupBy = append(source.Layer.GroupBy, ref)
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
 		}
 		source.Layer.OrderBy = append([]string{"_count DESC"}, source.Layer.OrderBy...)
+	default:
+		return fmt.Errorf("timechart(): unknown function %s()", fn.Name)
 	}
 
 	source.Layer.GroupBy = append(source.Layer.GroupBy, bucketExpr)
@@ -341,44 +301,6 @@ func (h *timechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartType = "timechart"
 	ctx.Plan.ChartConfig["span"] = span
 	return nil
-}
-
-// parseTimechartFieldList extracts the comma-separated field list from a
-// timechart function spec like name(field[,field...]). A leading field= prefix
-// on any entry is stripped.
-func parseTimechartFieldList(function, name string) []string {
-	prefix := name + "("
-	start := strings.Index(function, prefix)
-	if start < 0 {
-		return nil
-	}
-	inner := function[start+len(prefix):]
-	if i := strings.LastIndex(inner, ")"); i >= 0 {
-		inner = inner[:i]
-	}
-	var fields []string
-	for _, part := range listArg(inner) {
-		fields = append(fields, strings.TrimPrefix(part, "field="))
-	}
-	return fields
-}
-
-// parseTimechartGroupBy extracts the field list and distinct flag from a
-// timechart function=groupby(field[,field...][,distinct=true]) spec. With
-// distinct, the result is a single cardinality series; otherwise rows are
-// grouped by the field(s) and counted per bucket.
-func parseTimechartGroupBy(function string) (fields []string, distinct bool) {
-	for _, part := range parseTimechartFieldList(function, "groupby") {
-		switch part {
-		case "distinct=true", "unique=true":
-			distinct = true
-		case "distinct=false", "unique=false":
-			distinct = false
-		default:
-			fields = append(fields, part)
-		}
-	}
-	return fields, distinct
 }
 
 // graphWorldHandler handles graphWorld(lat=field, lon=field, label=field, limit=N)
@@ -390,26 +312,15 @@ func (h *graphWorldHandler) Declare(cmd CommandNode, ctx *CommandContext) error 
 
 func (h *graphWorldHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartType = "worldmap"
-	ctx.Plan.ChartConfig["limit"] = 5000
 
-	var latField, lonField, labelField string
-
-	for _, arg := range cmd.Arguments {
-		if strings.HasPrefix(arg, "lat=") {
-			latField = strings.TrimPrefix(arg, "lat=")
-		} else if strings.HasPrefix(arg, "lon=") {
-			lonField = strings.TrimPrefix(arg, "lon=")
-		} else if strings.HasPrefix(arg, "label=") {
-			labelField = strings.TrimPrefix(arg, "label=")
-		} else if strings.HasPrefix(arg, "limit=") {
-			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
-				if limit > 50000 {
-					limit = 50000
-				}
-				ctx.Plan.ChartConfig["limit"] = limit
-			}
-		}
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
 	}
+	latField := b.Str("lat", "")
+	lonField := b.Str("lon", "")
+	labelField := b.Str("label", "")
+	ctx.Plan.ChartConfig["limit"] = chartLimit(b, 5000, 50000)
 
 	if latField == "" {
 		latField = "latitude"
@@ -441,8 +352,10 @@ func init() {
 func init() {
 	registerSpec(&CommandSpec{Name: "piechart", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
 	registerSpec(&CommandSpec{Name: "barchart", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
+	// heatmap(x=a, y=b, count()) puts the aggregate positionally, as timechart does.
 	registerSpec(&CommandSpec{Name: "heatmap", Params: []ParamSpec{
-		namedField("x"), namedField("y"), namedAgg("value"),
+		ParamSpec{Name: "value", Kind: ParamAggSpec, Positional: true},
+		namedField("x"), namedField("y"), namedLit("limit"),
 	}})
 	registerSpec(&CommandSpec{Name: "singleval", Params: []ParamSpec{field("field"), namedLit("label")}})
 	// timechart(span=1d, count()) puts the aggregate positionally.
@@ -462,4 +375,52 @@ func init() {
 	registerSpec(&CommandSpec{Name: "graphworld", Params: []ParamSpec{
 		namedField("lat"), namedField("lon"), namedField("label"), namedLit("limit"),
 	}}, "graphworld", "graphWorld", "worldmap")
+}
+
+// chartLimit reads a chart command's limit=, keeping the default when it is
+// absent, unparseable or not positive, and clamping to maxLimit when one is set.
+func chartLimit(b *Bound, def, maxLimit int) int {
+	n := b.Int("limit", def)
+	if n <= 0 {
+		return def
+	}
+	if maxLimit > 0 {
+		n = min(n, maxLimit)
+	}
+	return n
+}
+
+// aggFields returns an aggregate spec's field arguments, ignoring its named
+// options (distinct=, unique=).
+func aggFields(spec *AggSpec) []Argument {
+	var out []Argument
+	for _, a := range spec.Args {
+		if a.Name != "" {
+			continue
+		}
+		if a.Kind == ArgList {
+			out = append(out, a.List...)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// aggFlag reads a boolean option of an aggregate spec, under any of its names.
+func aggFlag(spec *AggSpec, def bool, names ...string) bool {
+	for _, a := range spec.Args {
+		for _, n := range names {
+			if !strings.EqualFold(a.Name, n) {
+				continue
+			}
+			switch strings.ToLower(a.Value()) {
+			case "false", "0", "no":
+				return false
+			case "true", "1", "yes":
+				return true
+			}
+		}
+	}
+	return def
 }
