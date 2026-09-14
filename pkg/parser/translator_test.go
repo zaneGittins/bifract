@@ -5430,3 +5430,32 @@ func mustTranslate(t *testing.T, q string, opts QueryOptions) string {
 	}
 	return sql
 }
+
+// A bracket list reaches a handler as one comma-joined argument. hash() used to
+// take that whole string as a single field name, so hash([a,b]) hashed a field
+// literally called "a,b" which exists on no row: every row got the same constant
+// digest, silently collapsing anything throttled on it into one bucket.
+func TestHashBracketListHashesEachField(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:   1000,
+	}
+	want := "hex(cityHash64(fields.`member_name`::String, fields.`group_name`::String))"
+	for _, q := range []string{
+		`* | hash([member_name,group_name], as=k)`,
+		`* | hash(member_name, group_name, as=k)`,
+	} {
+		sql := mustTranslate(t, q, opts)
+		if !strings.Contains(sql, want) {
+			t.Errorf("%s\n  want %q in: %s", q, want, sql)
+		}
+	}
+
+	t.Run("nested expression argument survives the split", func(t *testing.T) {
+		sql := mustTranslate(t, `* | hash(substr(image,1,10), user, as=k)`, opts)
+		if !strings.Contains(sql, "cityHash64(substring(fields.`image`::String, 1, 10), fields.`user`::String)") {
+			t.Errorf("commas inside a call must not split the argument: %s", sql)
+		}
+	})
+}

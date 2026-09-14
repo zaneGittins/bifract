@@ -408,20 +408,30 @@ func (h *hashHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	var hashFields []string
 	alias := "hash_key"
-	for _, arg := range cmd.Arguments {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "as=") {
-			alias = strings.TrimPrefix(arg, "as=")
+	for _, raw := range cmd.Arguments {
+		raw = strings.TrimSpace(raw)
+		if strings.HasPrefix(raw, "as=") {
+			alias = strings.TrimPrefix(raw, "as=")
 			continue
 		}
-		if strings.HasPrefix(arg, "field=") {
-			arg = strings.TrimPrefix(arg, "field=")
+		// A bracket list reaches here as one comma-joined argument (see
+		// parseCommand), so split it and hash each field. Without this,
+		// hash([a,b]) hashed a single field literally named "a,b", which exists
+		// on no row: every row got the same constant digest.
+		for _, arg := range splitTopLevelArgs(strings.TrimPrefix(raw, "field=")) {
+			arg = strings.TrimSpace(arg)
+			if arg == "" {
+				continue
+			}
+			if arg == "timestamp" {
+				hashFields = append(hashFields, "toString(timestamp)")
+			} else {
+				hashFields = append(hashFields, resolveFieldRef(arg, ctx.Registry))
+			}
 		}
-		if arg == "timestamp" {
-			hashFields = append(hashFields, "toString(timestamp)")
-		} else {
-			hashFields = append(hashFields, resolveFieldRef(arg, ctx.Registry))
-		}
+	}
+	if len(hashFields) == 0 {
+		return fmt.Errorf("hash() requires at least one field")
 	}
 	safeAlias, err := sanitizeIdentifier(alias)
 	if err != nil {
