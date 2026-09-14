@@ -560,3 +560,67 @@ func TestExprArgumentsDoNotBreakBrackets(t *testing.T) {
 		}
 	}
 }
+
+// TestExprNetworkAndTimeFunctions covers the network and time additions. Every
+// network function guards its input: ClickHouse throws CANNOT_PARSE_IPV4 on a
+// value that is not an address, and one bad row would abort the whole query.
+func TestExprNetworkAndTimeFunctions(t *testing.T) {
+	t.Run("isPrivateIP covers every non-routable range", func(t *testing.T) {
+		sql := translateExpr(t, `* | isPrivateIP(dst_ip) = false`)
+		for _, r := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+			"127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "fc00::/7", "::1/128", "fe80::/10"} {
+			if !strings.Contains(sql, "'"+r+"'") {
+				t.Errorf("range %s missing from: %s", r, sql)
+			}
+		}
+		if !strings.Contains(sql, "'0.0.0.0'") {
+			t.Errorf("no sentinel guarding the address conversion: %s", sql)
+		}
+	})
+
+	t.Run("ipPrefix handles both families and guards conversion", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(ipPrefix(src_ip, 24))`)
+		if !strings.Contains(sql, "IPv4CIDRToRange") || !strings.Contains(sql, "IPv6CIDRToRange") {
+			t.Errorf("expected both address families, got: %s", sql)
+		}
+		if !strings.Contains(sql, "toIPv4(if(isIPv4String(") || !strings.Contains(sql, "toIPv6(if(isIPv6String(") {
+			t.Errorf("conversion is not guarded by a validity check: %s", sql)
+		}
+		if !strings.Contains(sql, "AS ipPrefix_src_ip_24") {
+			t.Errorf("expected a derived group key, got: %s", sql)
+		}
+	})
+
+	t.Run("isIPv4 and isIPv6", func(t *testing.T) {
+		if sql := translateExpr(t, `* | isIPv4(src_ip)`); !strings.Contains(sql, "isIPv4String(fields.`src_ip`::String)") {
+			t.Errorf("got: %s", sql)
+		}
+		if sql := translateExpr(t, `* | isIPv6(src_ip)`); !strings.Contains(sql, "isIPv6String(fields.`src_ip`::String)") {
+			t.Errorf("got: %s", sql)
+		}
+	})
+
+	t.Run("dateDiff coerces both sides leniently", func(t *testing.T) {
+		sql := translateExpr(t, `* | age := dateDiff("second", first_seen, last_seen)`)
+		if !strings.Contains(sql, "dateDiff('second'") {
+			t.Errorf("expected dateDiff, got: %s", sql)
+		}
+		if strings.Count(sql, "parseDateTime64BestEffortOrNull") < 2 && !strings.Contains(sql, "toDateTime64") {
+			t.Errorf("time arguments are not leniently parsed, a bad row would abort: %s", sql)
+		}
+	})
+}
+
+// Without boolean literals, isPrivateIP(ip) = false compared the condition to a
+// log field named "false", which exists on no row.
+func TestExprBooleanLiterals(t *testing.T) {
+	for _, q := range []string{`* | isPrivateIP(dst_ip) = false`, `* | isIPv4(src_ip) = true`} {
+		sql := translateExpr(t, q)
+		if strings.Contains(sql, "fields.`false`") || strings.Contains(sql, "fields.`true`") {
+			t.Errorf("%s: boolean literal resolved as a field: %s", q, sql)
+		}
+	}
+	if sql := translateExpr(t, `* | isIPv4(src_ip) = true`); !strings.Contains(sql, "isIPv4String(fields.`src_ip`::String) = 1") {
+		t.Errorf("expected a boolean literal, got: %s", sql)
+	}
+}

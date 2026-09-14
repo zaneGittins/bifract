@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -120,4 +121,125 @@ func namedListArg(arg, name string) ([]string, bool) {
 		return nil, false
 	}
 	return listArg(strings.TrimPrefix(arg, prefix)), true
+}
+
+// validateExprArgs rejects a command argument that is written as an expression
+// but cannot be compiled.
+//
+// Resolution happens in resolveFieldRef, which returns only a string and so
+// cannot report an error: a broken expression there falls back to a field
+// reference, and a field nothing produced matches nothing. That is the silent
+// failure this pass exists to prevent, so it runs before Execute, where an
+// error can still be returned.
+func validateExprArgs(pipeline *PipelineNode, registry *FieldRegistry) error {
+	var err error
+	ForEachCommand(pipeline, func(cmd CommandNode) {
+		if err != nil {
+			return
+		}
+		for i, arg := range cmd.Arguments {
+			// An aggregate spec (the value of function=) is the handler's to
+			// validate: it reports an unknown name with aggregate-specific advice.
+			// Its arguments are still checked, since nothing else checks them.
+			inAggregate := i > 0 && strings.TrimSpace(cmd.Arguments[i-1]) == "function="
+			if e := validateExprArg(arg, registry, inAggregate); e != nil {
+				err = fmt.Errorf("%s(): %w", cmd.Name, e)
+				return
+			}
+		}
+	})
+	return err
+}
+
+// statsSubFunctions are the aggregate spec names processStatsFn dispatches, which
+// appear in a command argument (function=, multi()) without being scalar
+// functions. Listed so a call-shaped argument that is neither can be reported as
+// a typo rather than resolving to a field nothing produces.
+var statsSubFunctions = map[string]bool{
+	"count": true, "avg": true, "sum": true, "max": true, "min": true,
+	"percentile": true, "stddev": true, "skewness": true, "kurtosis": true,
+	"iqr": true, "selectfirst": true, "selectlast": true, "collect": true,
+	"top": true, "median": true, "mad": true, "multi": true,
+}
+
+// validateExprArg checks one argument. deferUnknown leaves an unrecognised call
+// name to the handler that owns the argument, while still checking what is
+// nested inside it.
+func validateExprArg(arg string, registry *FieldRegistry, deferUnknown bool) error {
+	arg = strings.TrimSpace(arg)
+	open := strings.IndexByte(arg, '(')
+	if open < 0 {
+		return nil
+	}
+	// Strip a leading name=, which handlers do before resolving: field=lower(x).
+	if eq := strings.IndexByte(arg, '='); eq >= 0 && eq < open {
+		arg = strings.TrimSpace(arg[eq+1:])
+		open = strings.IndexByte(arg, '(')
+		if open < 0 {
+			return nil
+		}
+	}
+
+	if !isCallShaped(arg[:open]) || !strings.HasSuffix(arg, ")") {
+		// Not a call. It may still be a list whose elements are, since a bracket
+		// list arrives as one comma-joined argument.
+		if elements := listArg(arg); len(elements) > 1 {
+			for _, e := range elements {
+				if err := validateExprArg(e, registry, deferUnknown); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	name := strings.ToLower(arg[:open])
+	_, isExprFunc := exprFuncs[name]
+
+	// An aggregate spec (sum(len(x)), multi(count(), avg(len(x)))) is not itself a
+	// scalar function, but its arguments may be.
+	if !isExprFunc && (statsSubFunctions[name] || deferUnknown) {
+		// multi() holds further aggregate specs, so an unrecognised name inside it
+		// is still the handler's to report. Anywhere else the arguments are field
+		// positions, where an unrecognised name is a typo.
+		nested := name == "multi"
+		for _, inner := range listArg(arg[open+1 : len(arg)-1]) {
+			if e := validateExprArg(inner, registry, nested); e != nil {
+				return e
+			}
+		}
+		return nil
+	}
+	if !isExprFunc {
+		return unknownFunctionError(arg[:open])
+	}
+
+	expr, ok := parseExprArg(arg)
+	if !ok {
+		// Written as a call to a known function but unparseable: say so rather
+		// than letting it resolve as a field name nothing produces.
+		if _, _, perr := ParseExpressionAt([]rune(arg), 0); perr != nil {
+			return perr
+		}
+		return fmt.Errorf("%s is not a valid expression", arg)
+	}
+	_, _, cerr := compileExpr(expr, registry, "")
+	return cerr
+}
+
+// isCallShaped reports whether the text before "(" is a plain identifier, which
+// is what distinguishes a function call from an argument that merely contains a
+// parenthesis.
+func isCallShaped(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }

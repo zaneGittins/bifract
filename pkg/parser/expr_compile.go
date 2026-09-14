@@ -40,6 +40,11 @@ func compileIn(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 		return "'" + escapeString(e.Value) + "'", TypeString, nil
 	case ExprNumber:
 		return e.Value, TypeNumber, nil
+	case ExprBoolean:
+		if strings.EqualFold(e.Value, "true") {
+			return "1", TypeBool, nil
+		}
+		return "0", TypeBool, nil
 	case ExprField:
 		return compileFieldRef(e.Value, ctx)
 	case ExprUnary:

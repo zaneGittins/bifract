@@ -126,3 +126,70 @@ func TestListArgHelper(t *testing.T) {
 		}
 	}
 }
+
+// A command argument is captured as source text and re-lexed when it is resolved,
+// so a string literal inside it has to keep its quotes. Without that,
+// splitAt(path, "/", 2) came back as splitAt(path,/,2), which no longer parses.
+func TestCapturedCallKeepsStringQuoting(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`* | groupby(splitAt(path, "/", 2))`, "splitByString('/', fields.`path`::String)"},
+		{`* | table(splitAt(email, "@", 2))`, "splitByString('@', fields.`email`::String)"},
+		{`* | table(replaceRegex(message, "a b", "c"))`, "replaceRegexpAll(fields.`message`::String, 'a b', 'c')"},
+		{`* | concat([a, lower("x y")], as=k)`, "lower('x y')"},
+	}
+	for _, c := range cases {
+		if sql := listSQL(t, c.query); !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  want %q in: %s", c.query, c.want, sql)
+		}
+	}
+}
+
+// Resolution returns only a string, so a broken expression there would fall back
+// to a field reference and match nothing. validateExprArgs runs first so the
+// author is told instead, in every position an expression can appear.
+func TestBrokenExpressionArgumentIsRejected(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`* | groupby(lowr(user))`, "unknown function lowr(); did you mean lower()?"},
+		{`* | table(lowr(user))`, "unknown function lowr()"},
+		{`* | sort(lowr(user))`, "unknown function lowr()"},
+		{`* | dedup(lowr(user))`, "unknown function lowr()"},
+		{`* | concat([a, lowr(b)], as=k)`, "unknown function lowr()"},
+		{`* | hash([a, lowr(b)], as=k)`, "unknown function lowr()"},
+		{`* | groupby(user, function=sum(lowr(x)))`, "unknown function lowr()"},
+		{`* | groupby(substr(image))`, "missing required argument start"},
+		{`* | table(len(a, b))`, "expects at most 1 arguments"},
+	}
+	for _, c := range cases {
+		pipeline, err := ParseQuery(c.query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", c.query, err)
+		}
+		_, err = TranslateToSQLWithOrder(pipeline, listOpts())
+		if err == nil {
+			t.Errorf("%s: expected a rejection, got none", c.query)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s\n  want %q, got: %v", c.query, c.want, err)
+		}
+	}
+}
+
+// The aggregate handlers report an unknown spec with advice of their own, so
+// validation must not pre-empt them.
+func TestAggregateSpecErrorsStayWithTheHandler(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`a=x | groupby(h, function=stats([avg(c,as=ac)]))`, "unknown aggregation function"},
+		{`a=x | groupby(h, function=multi([avg(c,as=ac),bogus(c)]))`, "unknown aggregation function in multi()"},
+	}
+	for _, c := range cases {
+		pipeline, err := ParseQuery(c.query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", c.query, err)
+		}
+		_, err = TranslateToSQLWithOrder(pipeline, listOpts())
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s\n  want %q, got: %v", c.query, c.want, err)
+		}
+	}
+}

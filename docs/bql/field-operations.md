@@ -53,7 +53,31 @@ substr(commandline, length=50, start=1)
 |---|---|
 | Text | `lower`, `upper`, `length`, `substring`, `concat`, `coalesce`, `splitAt`, `replaceRegex`, `trim`, `base64Decode`, `urlDecode`, `hash`, `toString` |
 | Numbers | `abs`, `floor`, `ceil`, `round`, `editDistance`, `toNumber` |
+| Network | `isPrivateIP`, `isIPv4`, `isIPv6`, `ipPrefix`, `cidr` |
+| Time | `dateDiff` |
 | Conditions | `isEmpty`, `startsWith`, `endsWith`, `contains`, `if` |
+
+`true` and `false` are boolean literals, so a condition can be compared to one:
+
+```
+event_id=3 | isPrivateIP(dst_ip) = false
+event_id=3 | NOT isPrivateIP(dst_ip)
+```
+
+`isPrivateIP()` covers RFC1918, loopback, link-local, CGNAT and the IPv6 equivalents, replacing a chain of `!cidr()` calls. A value that is not an address is not private.
+
+`ipPrefix(field, bits)` returns the enclosing network as `network/bits`. Group by it to find which subnets are active, which a membership test cannot answer:
+
+```
+event_id=3 | groupby(ipPrefix(src_ip, 24), function=count(dst_port, unique=true)) | _count > 50
+```
+
+`dateDiff("unit", start, end)` counts whole units between two times. Either side may be a log field holding a time in any of the usual shapes; a row whose value cannot be parsed yields no result rather than failing the query.
+
+```
+* | age := dateDiff("second", first_seen, last_seen)
+* | dateDiff("hour", process_start, timestamp) > 24
+```
 
 Where a pipeline command of the same name exists (`len`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`), the name means the same thing in either position. As a stage it binds its documented output column; inside an expression it returns a value.
 

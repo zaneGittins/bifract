@@ -9,12 +9,13 @@ import (
 type ExprKind int
 
 const (
-	ExprString ExprKind = iota // quoted literal
-	ExprNumber                 // numeric literal, kept as text so it round-trips exactly
-	ExprField                  // bare identifier: a log field or a computed column
-	ExprCall                   // function call
-	ExprBinary                 // a <op> b
-	ExprUnary                  // <op> a
+	ExprString  ExprKind = iota // quoted literal
+	ExprNumber                  // numeric literal, kept as text so it round-trips exactly
+	ExprField                   // bare identifier: a log field or a computed column
+	ExprCall                    // function call
+	ExprBinary                  // a <op> b
+	ExprUnary                   // <op> a
+	ExprBoolean                 // true / false
 )
 
 // ExprNode is a scalar expression. It replaces the flat expression string the
@@ -176,8 +177,13 @@ func (p *exprParser) parsePrimary() (*ExprNode, error) {
 	case TokenField, TokenValue:
 		p.advance()
 		kind := ExprField
-		if isNumericLiteral(tok.Value) {
+		switch {
+		case isNumericLiteral(tok.Value):
 			kind = ExprNumber
+		case strings.EqualFold(tok.Value, "true"), strings.EqualFold(tok.Value, "false"):
+			// Without this, isPrivateIP(ip) = false compares the condition to a log
+			// field named "false", which exists on no row.
+			kind = ExprBoolean
 		}
 		return &ExprNode{Kind: kind, Value: tok.Value, Pos: tok.Pos}, nil
 	}
@@ -263,7 +269,7 @@ func (e *ExprNode) String() string {
 	switch e.Kind {
 	case ExprString:
 		return `"` + e.Value + `"`
-	case ExprNumber, ExprField:
+	case ExprNumber, ExprField, ExprBoolean:
 		return e.Value
 	case ExprUnary:
 		return e.Value + e.Arg.String()

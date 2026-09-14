@@ -202,6 +202,10 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		}
 	}
 
+	if err := validateExprArgs(pipeline, registry); err != nil {
+		return nil, err
+	}
+
 	// tlsh() used as a boolean operand never reaches its handler, so its projected
 	// columns are declared here instead. See DeclareTLSHOperandColumns.
 	if err := DeclareTLSHOperandColumns(pipeline, ctx); err != nil {

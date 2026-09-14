@@ -24,6 +24,12 @@ var bqlExpressionFunctionDocs = []FunctionDoc{
 	numFn("round", "Round to the given number of decimal places, or to a whole number.", "round(value, digits)", `* | mb := round(bytes / 1048576, 2)`),
 	numFn("toNumber", "Convert a value to a number, or nothing when it is not numeric.", "toNumber(value)", `* | p := toNumber(port)`),
 
+	boolFn("isIPv4", "True when a value is a valid IPv4 address.", "isIPv4(field)", `* | isIPv4(src_ip)`),
+	boolFn("isIPv6", "True when a value is a valid IPv6 address.", "isIPv6(field)", `* | isIPv6(src_ip)`),
+	boolFn("isPrivateIP", "True when an address is in a private or non-routable range: RFC1918, loopback, link-local, CGNAT, and the IPv6 equivalents. A value that is not an address is not private.", "isPrivateIP(field)", `event_id=3 | isPrivateIP(dst_ip) = false`),
+	strFn("ipPrefix", "The enclosing network of an address as \"network/bits\", or empty when the value is not an address. Group by it to find which subnets are active, which a membership test cannot answer.", "ipPrefix(field, bits)", `event_id=3 | groupby(ipPrefix(src_ip, 24), function=count())`),
+	numFn("dateDiff", "Whole units between two times. Units follow ClickHouse: second, minute, hour, day, week, month, quarter, year. Either side may be a log field holding a time in any of the usual shapes.", `dateDiff("unit", start, end)`, `* | age := dateDiff("second", first_seen, last_seen)`),
+
 	boolFn("isEmpty", "True when a field is missing or empty. Missing fields read as empty text.", "isEmpty(field)", `* | known := if(isEmpty(user), "no", "yes")`),
 	boolFn("startsWith", "True when a value begins with the given text, case sensitive.", "startsWith(field, prefix)", `* | sys := if(startsWith(image, "C:\\Windows"), "system", "other")`),
 	boolFn("endsWith", "True when a value ends with the given text, case sensitive.", "endsWith(field, suffix)", `* | dll := if(endsWith(image, ".dll"), "yes", "no")`),

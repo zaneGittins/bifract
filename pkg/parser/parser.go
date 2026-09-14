@@ -870,12 +870,34 @@ func (p *Parser) captureCallText() string {
 			b.WriteString(",")
 		case TokenEqual:
 			b.WriteString("=")
+		case TokenString:
+			// Re-quote: the token carries the unquoted value, and the captured
+			// text is re-lexed later. Without this, splitAt(path, "/", 2) would
+			// come back as splitAt(path,/,2) and no longer parse.
+			b.WriteString(quoteCapturedString(tok.Value))
+		case TokenRegex:
+			b.WriteString("/" + tok.Value + "/")
 		default:
 			b.WriteString(tok.Value)
 		}
 		p.advance()
 	}
 	b.WriteString(")")
+	return b.String()
+}
+
+// quoteCapturedString renders a string literal so it survives re-lexing, using
+// the same backslash escaping the lexer consumes.
+func quoteCapturedString(v string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range v {
+		if r == '"' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
 	return b.String()
 }
 

@@ -301,6 +301,38 @@ func init() {
 		Render:  func(a []string) string { return cidrPredicateSQL(a[0], a[1]) },
 	})
 
+	// Network. Every one guards its input: ClickHouse throws CANNOT_PARSE_IPV4 on a
+	// value that is not an address, and a single bad row would abort the query, so
+	// the conversion is only ever handed a real address (a sentinel otherwise).
+	registerExprFunc(&exprFunc{
+		Name: "isipv4", Params: []exprParam{str("field")}, Returns: TypeBool,
+		Render: func(a []string) string { return "isIPv4String(" + a[0] + ")" },
+	})
+	registerExprFunc(&exprFunc{
+		Name: "isipv6", Params: []exprParam{str("field")}, Returns: TypeBool,
+		Render: func(a []string) string { return "isIPv6String(" + a[0] + ")" },
+	})
+	registerExprFunc(&exprFunc{
+		Name: "isprivateip", Params: []exprParam{str("field")}, Returns: TypeBool,
+		Render: func(a []string) string { return privateIPPredicateSQL(a[0]) },
+	})
+	registerExprFunc(&exprFunc{
+		Name:    "ipprefix",
+		Params:  []exprParam{str("field"), num("bits")},
+		Returns: TypeString,
+		Render:  func(a []string) string { return ipPrefixSQL(a[0], a[1]) },
+	})
+
+	// Time.
+	registerExprFunc(&exprFunc{
+		Name:    "datediff",
+		Params:  []exprParam{str("unit"), str("start"), str("end")},
+		Returns: TypeNumber,
+		Render: func(a []string) string {
+			return fmt.Sprintf("dateDiff(%s, %s, %s)", a[0], lenientDateTime(a[1]), lenientDateTime(a[2]))
+		},
+	})
+
 	// Numeric.
 	registerExprFunc(&exprFunc{
 		Name: "abs", Params: []exprParam{num("value")}, Returns: TypeNumber,
@@ -341,4 +373,40 @@ func init() {
 			return fmt.Sprintf("if(%s, %s, %s)", a[0], a[1], a[2])
 		},
 	})
+}
+
+// privateIPRanges are the non-routable and carrier-internal ranges isPrivateIP
+// treats as private: RFC1918, loopback, link-local, CGNAT, and their IPv6
+// equivalents (unique-local, loopback, link-local).
+var privateIPRanges = []string{
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+	"127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10",
+	"fc00::/7", "::1/128", "fe80::/10",
+}
+
+// privateIPPredicateSQL tests membership of any private range. The address is
+// validity-checked and a sentinel substituted, so isIPAddressInRange is never
+// handed a value it would throw on.
+func privateIPPredicateSQL(fieldRef string) string {
+	valid := fmt.Sprintf("(isIPv4String(%[1]s) OR isIPv6String(%[1]s))", fieldRef)
+	safeAddr := fmt.Sprintf("if(%s, %s, '0.0.0.0')", valid, fieldRef)
+	tests := make([]string, len(privateIPRanges))
+	for i, r := range privateIPRanges {
+		tests[i] = fmt.Sprintf("isIPAddressInRange(%s, '%s')", safeAddr, r)
+	}
+	return fmt.Sprintf("((%s) AND %s)", strings.Join(tests, " OR "), valid)
+}
+
+// ipPrefixSQL returns the network address of the field's enclosing block as
+// "network/bits", or empty for a value that is not an address. Grouping by it
+// answers questions no membership test can, such as which source subnets are
+// sweeping ports.
+func ipPrefixSQL(fieldRef, bits string) string {
+	v4 := fmt.Sprintf("toIPv4(if(isIPv4String(%s), %s, '0.0.0.0'))", fieldRef, fieldRef)
+	v6 := fmt.Sprintf("toIPv6(if(isIPv6String(%s), %s, '::'))", fieldRef, fieldRef)
+	width := fmt.Sprintf("toUInt8(%s)", bits)
+	v4Prefix := fmt.Sprintf("concat(toString(IPv4CIDRToRange(%s, %s).1), '/', toString(%s))", v4, width, bits)
+	v6Prefix := fmt.Sprintf("concat(toString(IPv6CIDRToRange(%s, %s).1), '/', toString(%s))", v6, width, bits)
+	return fmt.Sprintf("multiIf(isIPv4String(%s), %s, isIPv6String(%s), %s, '')",
+		fieldRef, v4Prefix, fieldRef, v6Prefix)
 }
