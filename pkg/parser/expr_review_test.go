@@ -287,3 +287,43 @@ func TestExprAliasCollisionRejected(t *testing.T) {
 		t.Error("colliding derived aliases accepted, one group key is silently dropped")
 	}
 }
+
+// Only top-level expression leaves were compiled, so one nested inside a
+// parenthesised group reached materialisation with no PredicateSQL and no Field
+// and was dropped, taking the whole group with it. Adding brackets to a rule
+// silently widened it to every row.
+func TestExprLeafInsideCompoundSurvives(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`* | (lower(a)="x" OR b="y") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
+		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, "NOT (positionCaseInsensitive("},
+		{`* | c="z" AND (contains(a,"b") OR b="y")`, "positionCaseInsensitive(fields.`a`::String, 'b')"},
+		{`* | (lower(a)="x") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
+	}
+	for _, c := range cases {
+		sql := revSQL(t, c.query)
+		if !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  group dropped, want %q in: %s", c.query, c.want, sql)
+		}
+		// The rest of the conjunction must survive too.
+		if !strings.Contains(sql, "fields.`c`::String = 'z'") && !strings.Contains(sql, "fields.`image`::String = 'p'") {
+			t.Errorf("%s: the neighbouring conjunct was lost: %s", c.query, sql)
+		}
+	}
+}
+
+// extractFieldAlias returns the whole string for a carried column with no
+// " AS ", and slicing on the missing separator panicked the translator on query
+// text a user controls: a 500 rather than a query error.
+func TestExprAliasClashDoesNotPanicOnCarriedColumn(t *testing.T) {
+	for _, q := range []string{
+		`* | groupby(lower(user)) | table(lower_user) | groupby(lower(user))`,
+		`* | groupby(upper(host)) | table(upper_host) | groupby(upper(host), function=count())`,
+	} {
+		pipeline, err := ParseQuery(q)
+		if err != nil {
+			continue
+		}
+		// Must not panic; an error is an acceptable outcome.
+		_, _ = TranslateToSQLWithOrder(pipeline, revOpts())
+	}
+}

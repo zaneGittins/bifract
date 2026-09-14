@@ -54,6 +54,15 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			if err := validateCompoundOperandStages(cond, registry, plan, willHaveAggregation); err != nil {
 				return err
 			}
+			// Compile the expression leaves nested in this compound. Only top-level
+			// leaves were compiled, so a nested one reached materialisation with no
+			// PredicateSQL and no Field and was dropped, taking the whole
+			// parenthesised group with it: adding brackets silently widened a rule
+			// to every row. The compound binds to one stage, so its leaves compile
+			// at the compound's priority, not their own.
+			if err := compileNestedExprLeaves(&cond, subtreePriority(cond, registry, plan, willHaveAggregation), registry, plan); err != nil {
+				return err
+			}
 			target := classifyCompoundTarget(cond, registry, plan, willHaveAggregation)
 			*target = append(*target, cond)
 			continue
@@ -153,6 +162,34 @@ func describeCondition(c HavingCondition) string {
 		return c.Field
 	}
 	return "that condition"
+}
+
+// compileNestedExprLeaves fills in PredicateSQL for every expression leaf beneath
+// a compound, at the stage the compound as a whole binds to.
+func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *FieldRegistry, plan *QueryPlan) error {
+	if cond.IsCompound {
+		for i := range cond.Children {
+			if err := compileNestedExprLeaves(&cond.Children[i], priority, registry, plan); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if cond.Expr == nil || cond.PredicateSQL != "" {
+		return nil
+	}
+	var sql string
+	var err error
+	if priority == 1 {
+		sql, err = exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
+	} else {
+		sql, err = exprConditionSQL(cond.Expr, registry, cond.Negate)
+	}
+	if err != nil {
+		return err
+	}
+	cond.PredicateSQL = sql
+	return nil
 }
 
 // classifyExprCondition compiles an expression filter and reports the stage it
@@ -306,7 +343,7 @@ func fieldPriority(field string, registry *FieldRegistry, plan *QueryPlan, willH
 // subtreePriority returns the highest leafPriority within a condition subtree.
 func subtreePriority(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	if !cond.IsCompound {
-		return leafPriority(cond, registry, plan, willHaveAggregation)
+		return stagePriority(cond, registry, plan, willHaveAggregation)
 	}
 	highest := 0
 	for _, child := range cond.Children {

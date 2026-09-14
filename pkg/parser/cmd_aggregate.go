@@ -698,9 +698,17 @@ func exprAliasClash(stage *QueryStage, alias, sql string) (string, bool) {
 	want := sql + " AS " + alias
 	for _, sel := range stage.Layer.Selects {
 		s := sel.String()
-		if strings.Trim(extractFieldAlias(s), "`") == alias && s != want {
-			return s[:strings.LastIndex(s, " AS ")], true
+		if strings.Trim(extractFieldAlias(s), "`") != alias || s == want {
+			continue
 		}
+		// A select with no " AS " is the column carried forward from an earlier
+		// stage, not a competing expression. Slicing on the missing separator
+		// panicked the translator on query text a user controls.
+		idx := strings.LastIndex(s, " AS ")
+		if idx < 0 {
+			continue
+		}
+		return s[:idx], true
 	}
 	return "", false
 }
