@@ -25,10 +25,17 @@ type caseAgg struct {
 // Structural commands (groupby/sort/limit/join/chain/window/viz) cannot be
 // branch-local in one SQL pass and are rejected with a clear error.
 type compiledCase struct {
-	assignments   []AssignmentNode // per-row output fields; Expression is a CASE ... END
-	whenClauses   []string         // legacy bare-result WHEN arms
-	defaultClause string           // legacy bare-result ELSE value (already quoted), or ""
-	aggregates    []caseAgg        // conditional aggregations (-If combinators)
+	assignments   []caseColumn // per-row output fields, each a CASE ... END
+	whenClauses   []string     // legacy bare-result WHEN arms
+	defaultClause string       // legacy bare-result ELSE value (already quoted), or ""
+	aggregates    []caseAgg    // conditional aggregations (-If combinators)
+}
+
+// caseColumn is a column a case block produces: the output field and the
+// CASE ... END that computes it.
+type caseColumn struct {
+	Field string
+	SQL   string
 }
 
 // caseDisallowedCommands are commands whose effect is whole-result/structural and
@@ -382,11 +389,11 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 			b.WriteString(" ELSE NULL")
 		}
 		b.WriteString(" END")
-		out.assignments = append(out.assignments, AssignmentNode{Field: field, Expression: b.String()})
+		out.assignments = append(out.assignments, caseColumn{Field: field, SQL: b.String()})
 	}
 	for field, def := range fieldDefaults {
 		if _, hasArms := fieldArms[field]; !hasArms {
-			out.assignments = append(out.assignments, AssignmentNode{Field: field, Expression: def})
+			out.assignments = append(out.assignments, caseColumn{Field: field, SQL: def})
 		}
 	}
 

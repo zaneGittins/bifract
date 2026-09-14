@@ -1464,63 +1464,6 @@ func parseStatsFunctionParams(fn string, funcName string) map[string]string {
 	return params
 }
 
-// convertMathExprToSQL converts a math expression string to SQL, resolving field references.
-// Known computed fields (from aggregations) are referenced by alias; other identifiers become JSON subcolumn refs.
-// selfField optionally names the assignment being defined; if an identifier matches it the registry is bypassed
-// so that self-referential assignments (e.g. x := x * 100) resolve x as a JSON field rather than a nonexistent alias.
-func convertMathExprToSQL(expr string, registry *FieldRegistry, selfField ...string) string {
-	currentField := ""
-	if len(selfField) > 0 {
-		currentField = selfField[0]
-	}
-	var result strings.Builder
-	i := 0
-	runes := []rune(expr)
-	for i < len(runes) {
-		ch := runes[i]
-		if ch == '(' || ch == ')' || ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == ' ' {
-			result.WriteRune(ch)
-			i++
-		} else if ch >= '0' && ch <= '9' || ch == '.' {
-			// Numeric literal
-			start := i
-			for i < len(runes) && (runes[i] >= '0' && runes[i] <= '9' || runes[i] == '.') {
-				i++
-			}
-			result.WriteString(string(runes[start:i]))
-		} else if ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
-			// Identifier
-			start := i
-			for i < len(runes) && (runes[i] == '_' || (runes[i] >= 'a' && runes[i] <= 'z') || (runes[i] >= 'A' && runes[i] <= 'Z') || (runes[i] >= '0' && runes[i] <= '9')) {
-				i++
-			}
-			ident := string(runes[start:i])
-			if registry.Has(ident) && ident != currentField {
-				if registry.IsInline(ident) {
-					// Inline-only field (e.g. a pre-aggregation assignment): fold in
-					// its expression, which is already numeric.
-					result.WriteString(fmt.Sprintf("(%s)", registry.Resolve(ident)))
-				} else {
-					// Known column (aggregate output, group key, carried column) used
-					// in arithmetic. It may be String -- selectFirst/selectLast of a JSON
-					// field yield argMin/argMax over fields.`x`::String -- so coerce to
-					// Float64. toString() first keeps toFloat64OrNull well-typed whether
-					// the column is already numeric or a string.
-					result.WriteString(fmt.Sprintf("toFloat64OrNull(toString(%s))", ident))
-				}
-			} else if registry != nil {
-				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", groupableCast(registry.fieldRef(ident))))
-			} else {
-				result.WriteString(fmt.Sprintf("toFloat64OrNull(%s)", groupableCast(jsonFieldRef(ident))))
-			}
-		} else {
-			result.WriteRune(ch)
-			i++
-		}
-	}
-	return result.String()
-}
-
 // convertTimeFormat converts BQL time format to ClickHouse format
 func convertTimeFormat(bqlFormat string) string {
 	// Convert common format patterns to ClickHouse

@@ -249,17 +249,20 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			return nil, fmt.Errorf("invalid assignment field: %w", err)
 		}
 
-		expr := assignment.Expression
-		isMathExpr := assignment.ExpressionType == TokenValue &&
-			(strings.ContainsAny(expr, "+*/()") || strings.Contains(expr, " - ") || strings.Contains(expr, " -") || strings.Contains(expr, "- "))
-		if isMathExpr {
+		// A computed assignment binds to a pipeline stage, because where it is
+		// evaluated decides what it can see. A bare field or literal has nothing
+		// to compute and is materialized straight away.
+		if isComputedExpr(assignment.Expr) {
 			switch {
 			case hasAggregation && assignment.CmdIndex <= firstAgg:
 				// Pre-aggregation: inline so aggregations/filters reference the
 				// computed value, and so later pre-aggregation assignments
 				// referencing this one fold in the full expression (it is never
 				// materialized as a column).
-				sqlExpr := convertMathExprToSQL(expr, registry, assignment.Field)
+				sqlExpr, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+				if err != nil {
+					return nil, assignmentError(assignment.Field, err)
+				}
 				registry.RegisterInlineExpr(safeField, sqlExpr, -1)
 			case hasAggregation:
 				// Post-aggregation: materialized as a stage at its pipeline position
@@ -273,34 +276,10 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			continue
 		}
 
-		var expression string
-		switch assignment.ExpressionType {
-		case TokenString:
-			expression = fmt.Sprintf("'%s'", escapeString(assignment.Expression))
-		case TokenValue:
-			if err := validateNumeric(assignment.Expression); err != nil {
-				return nil, fmt.Errorf("invalid numeric assignment: %w", err)
-			}
-			expression = fmt.Sprintf("toString(%s)", assignment.Expression)
-		case TokenField:
-			if assignment.Expression == "timestamp" {
-				expression = "timestamp"
-			} else {
-				// Materialized as a column and referenced downstream (possibly in
-				// GROUP BY via its alias); cast raw JSON refs to ::String so a
-				// Dynamic-stored path stays groupable.
-				expression = groupableCast(jsonFieldRef(assignment.Expression))
-			}
-		case TokenFunction:
-			expression = fmt.Sprintf("'%s'", escapeString(assignment.Expression))
-		default:
-			if assignment.Expression == "timestamp" {
-				expression = "timestamp"
-			} else {
-				expression = groupableCast(jsonFieldRef(assignment.Expression))
-			}
+		expression, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+		if err != nil {
+			return nil, assignmentError(assignment.Field, err)
 		}
-
 		af := fmt.Sprintf("%s AS %s", expression, safeField)
 		assignmentFields = append(assignmentFields, af)
 		ctx.Registry.SetResolveExpr(safeField, af)
@@ -892,7 +871,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		fieldOrder = plan.outerAggFieldOrder
 	} else {
 		// Standard: build outer SELECT with timestamp formatting + deferred math
-		plan.Formatters = buildFormatters(selectStrings, ctx.Registry, deferredAssignments)
+		formatters, err := buildFormatters(selectStrings, ctx.Registry, deferredAssignments)
+		if err != nil {
+			return nil, err
+		}
+		plan.Formatters = formatters
 		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
 		// Columns exported purely to make deferred expressions resolvable are
 		// stripped from the SQL result, so they must not be listed for display.
@@ -1041,7 +1024,10 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 	}
 	// Compute against the current registry (aggregate aliases are columns now),
 	// before scoping replaces them with bare-alias entries.
-	sqlExpr := convertMathExprToSQL(a.Expression, ctx.Registry, a.Field)
+	sqlExpr, _, err := compileExpr(a.Expr, ctx.Registry, a.Field)
+	if err != nil {
+		return assignmentError(a.Field, err)
+	}
 
 	if _, err := pushCarryForwardStage(ctx); err != nil {
 		return fmt.Errorf("assignment %q stage finalize: %w", a.Field, err)
@@ -1594,13 +1580,13 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 
 // buildFormatters creates the outer SELECT expressions for timestamp formatting
 // and deferred math assignments.
-func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAssignments []AssignmentNode) []SelectExpr {
+func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAssignments []AssignmentNode) ([]SelectExpr, error) {
 	if len(selectFields) == 0 {
 		return []SelectExpr{
 			{Expr: "toString(timestamp) as timestamp"},
 			{Expr: "log_id"},
 			{Expr: "norm_log AS fields"},
-		}
+		}, nil
 	}
 
 	var formatters []SelectExpr
@@ -1631,12 +1617,15 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 		}
 		for _, da := range deferredAssignments {
 			safeName, _ := sanitizeIdentifier(da.Field)
-			sqlExpr := convertMathExprToSQL(da.Expression, registry, da.Field)
+			sqlExpr, _, err := compileExpr(da.Expr, registry, da.Field)
+			if err != nil {
+				return nil, assignmentError(da.Field, err)
+			}
 			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeName)})
 		}
 	}
 
-	return formatters
+	return formatters, nil
 }
 
 // computeFieldOrder extracts the field order from SELECT expressions.

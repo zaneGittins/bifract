@@ -102,10 +102,9 @@ type CommandNode struct {
 func (c CommandNode) Type() string { return "command" }
 
 type AssignmentNode struct {
-	Field          string
-	Expression     string    // Right side of the := operator
-	ExpressionType TokenType // Type of the expression token
-	CmdIndex       int       // number of pipeline commands that precede this assignment
+	Field    string
+	Expr     *ExprNode // right side of :=
+	CmdIndex int       // number of pipeline commands that precede this assignment
 }
 
 func (a AssignmentNode) Type() string { return "assignment" }
@@ -1369,15 +1368,35 @@ func (p *Parser) parseAssignment() (*AssignmentNode, error) {
 	}
 	p.advance()
 
-	// Parse mathematical expression (could be simple value or complex expression like 1+2)
-	expr, exprType, err := p.parseExpression()
+	expr, end, err := p.parseExprHere()
 	if err != nil {
 		return nil, err
 	}
-	assignment.Expression = expr
-	assignment.ExpressionType = exprType
+	assignment.Expr = expr
+	p.syncTo(end)
 
 	return assignment, nil
+}
+
+// parseExprHere parses a scalar expression starting at the current token,
+// returning it and the source offset just past it. Expressions are lexed
+// separately (see ParseExpressionAt) because the filter lexer folds '*' and '-'
+// into identifiers.
+func (p *Parser) parseExprHere() (*ExprNode, int, error) {
+	if p.input == nil {
+		// The only input-less parse is a chain step, whose contract is a row
+		// condition. Say that rather than reporting a missing-source internal.
+		return nil, 0, newPosError(p.current(), "field assignment (:=) is not supported here; assign before the block instead")
+	}
+	return ParseExpressionAt(p.input, p.current().Pos)
+}
+
+// syncTo advances the main token stream past every token the expression
+// consumed, so parsing continues at the pipe or command that follows.
+func (p *Parser) syncTo(offset int) {
+	for p.pos < len(p.tokens) && p.tokens[p.pos].Type != TokenEOF && p.tokens[p.pos].End <= offset {
+		p.pos++
+	}
 }
 
 // parseCaseCommand parses case { condition | result ; condition2 | result2 ; * | default } syntax
@@ -1605,82 +1624,6 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	cmd.Arguments = append([]string{body.String()}, args...)
 
 	return cmd, nil
-}
-
-// parseExpression parses mathematical expressions like "1+2", "field*3", "((a - b) / c) * 0.95", etc.
-func (p *Parser) parseExpression() (string, TokenType, error) {
-	var expr strings.Builder
-	firstType, err := p.parseExprAtom(&expr)
-	if err != nil {
-		return "", TokenEOF, err
-	}
-
-	// Check for mathematical operators and continue parsing
-	for {
-		opTok := p.current()
-		if opTok.Type != TokenPlus && opTok.Type != TokenMinus &&
-			opTok.Type != TokenMultiply && opTok.Type != TokenDivide {
-			break
-		}
-
-		expr.WriteString(opTok.Value)
-		p.advance()
-
-		if _, err := p.parseExprAtom(&expr); err != nil {
-			return "", TokenEOF, err
-		}
-		firstType = TokenValue
-	}
-
-	return expr.String(), firstType, nil
-}
-
-// parseExprAtom parses a single atom in an expression: literal, field, function call, or parenthesized sub-expression.
-func (p *Parser) parseExprAtom(expr *strings.Builder) (TokenType, error) {
-	tok := p.current()
-
-	// Parenthesized sub-expression
-	if tok.Type == TokenLParen {
-		expr.WriteString("(")
-		p.advance()
-		sub, _, err := p.parseExpression()
-		if err != nil {
-			return TokenEOF, err
-		}
-		expr.WriteString(sub)
-		if p.current().Type != TokenRParen {
-			return TokenEOF, newPosError(p.current(), "expected ')' in expression, got %s", p.current().Type)
-		}
-		expr.WriteString(")")
-		p.advance()
-		return TokenValue, nil
-	}
-
-	switch tok.Type {
-	case TokenString:
-		expr.WriteString(tok.Value)
-		p.advance()
-		return tok.Type, nil
-	case TokenValue, TokenField:
-		expr.WriteString(tok.Value)
-		p.advance()
-		return tok.Type, nil
-	case TokenFunction:
-		expr.WriteString(tok.Value + "()")
-		p.advance()
-		if p.current().Type == TokenLParen {
-			p.advance()
-			for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
-				p.advance()
-			}
-			if p.current().Type == TokenRParen {
-				p.advance()
-			}
-		}
-		return tok.Type, nil
-	default:
-		return TokenEOF, newPosError(tok, "expected value, field, string or function in expression, got %s", tok.Type)
-	}
 }
 
 func ParseQuery(query string) (*PipelineNode, error) {

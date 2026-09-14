@@ -7,19 +7,66 @@ Assign computed values to new fields using `:=`:
 ```
 severity := "high"
 score := bytes * 2
-sum := field1 + 5
 label := status
+tag := substr(lower(image), 1, 10)
 ```
 
-Supports complex math with parentheses and division. When used after aggregations, references the computed aliases:
+The right-hand side is a full expression: functions nest, arithmetic follows normal precedence, and parentheses group.
+
+```
+* | mb := round(bytes / 1048576, 2)
+* | user_host := concat(user, "@", hostname)
+* | zone := if(cidr(src_ip, "10.0.0.0/8"), "internal", "external")
+```
+
+After an aggregation, an assignment references the computed aliases:
 
 ```
 * | groupby(user) | multi(count(field=event_id, distinct=true, as=unique), count(field=event_id, as=total)) | confidence := ((total - unique) / total) * 0.95
 ```
 
+### Types
+
+A field has no declared type, so it coerces to whatever an expression needs: `bytes * 2` works whether or not `bytes` carries a type hint. What is rejected is an operand that is definitely text.
+
+```
+score := bytes * 2              ok
+name  := concat(user, "@", domain)   ok
+name  := user + "@" + domain    error: + expects numbers, use concat()
+```
+
+A missing field reads as empty text, so `length()` of one is 0 and `isEmpty()` is true.
+
+### Named arguments
+
+Every function accepts its parameter names. Positional arguments come first, named ones after, and a parameter cannot be given both ways.
+
+```
+substr(commandline, 1, 50)
+substr(field=commandline, start=1, length=50)
+substr(commandline, length=50, start=1)
+```
+
+### Functions
+
+| Category | Functions |
+|---|---|
+| Text | `lower`, `upper`, `length`, `substring`, `concat`, `coalesce`, `splitAt`, `replaceRegex`, `trim`, `base64Decode`, `urlDecode`, `hash`, `toString` |
+| Numbers | `abs`, `floor`, `ceil`, `round`, `editDistance`, `toNumber` |
+| Conditions | `isEmpty`, `startsWith`, `endsWith`, `contains`, `if` |
+
+Where a pipeline command of the same name exists (`len`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`), the name means the same thing in either position. As a stage it binds its documented output column; inside an expression it returns a value.
+
+```
+* | len(commandline) | _len > 500
+* | n := len(commandline) | n > 500
+```
+
+An unknown function name is an error, never a field reference, so a typo cannot quietly match nothing.
+
 ### Eval
 
-Alternative syntax for field assignments inside a pipeline:
+Alternative syntax for field assignments inside a pipeline. The quoted text is the same expression language:
 
 ```
 * | eval("score = bytes + priority")

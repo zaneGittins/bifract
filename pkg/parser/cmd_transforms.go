@@ -159,39 +159,23 @@ func (h *evalHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Arguments) > 0 {
-		for _, arg := range cmd.Arguments {
-			if strings.Contains(arg, "=") {
-				parts := strings.SplitN(arg, "=", 2)
-				if len(parts) == 2 {
-					fieldName := strings.TrimSpace(parts[0])
-					expression := strings.TrimSpace(parts[1])
-
-					safeFieldName, err := sanitizeIdentifier(fieldName)
-					if err != nil {
-						return fmt.Errorf("eval(): invalid field name: %w", err)
-					}
-
-					var sqlExpr string
-					if expression == "timestamp" {
-						sqlExpr = "timestamp"
-					} else if strings.ContainsAny(expression, "+-*/()") {
-						sqlExpr = convertMathExprToSQL(expression, ctx.Registry)
-					} else {
-						if strings.HasPrefix(expression, "\"") && strings.HasSuffix(expression, "\"") {
-							inner := expression[1 : len(expression)-1]
-							sqlExpr = fmt.Sprintf("'%s'", escapeString(inner))
-						} else {
-							sqlExpr = resolveFieldRef(expression, ctx.Registry)
-						}
-					}
-
-					expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
-					ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
-					ctx.Registry.SetResolveExpr(fieldName, expr)
-				}
-			}
+	for _, arg := range cmd.Arguments {
+		fieldName, expression, found := strings.Cut(arg, "=")
+		if !found {
+			continue
 		}
+		fieldName = strings.TrimSpace(fieldName)
+		safeFieldName, err := sanitizeIdentifier(fieldName)
+		if err != nil {
+			return fmt.Errorf("eval(): invalid field name: %w", err)
+		}
+		sqlExpr, err := compileExpressionText(strings.TrimSpace(expression), ctx.Registry, fieldName)
+		if err != nil {
+			return fmt.Errorf("eval(): %w", err)
+		}
+		expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
+		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
+		ctx.Registry.SetResolveExpr(fieldName, expr)
 	}
 	return nil
 }
@@ -518,10 +502,10 @@ func (h *caseHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source := ctx.Plan.CurrentStage()
 
 		// Per-row field assignments: each becomes a CASE ... END column.
-		for _, assignment := range compiled.assignments {
-			expr := fmt.Sprintf("%s AS %s", assignment.Expression, assignment.Field)
+		for _, col := range compiled.assignments {
+			expr := fmt.Sprintf("%s AS %s", col.SQL, col.Field)
 			source.Layer.UpsertSelect(SelectExpr{Expr: expr})
-			ctx.Registry.SetResolveExpr(assignment.Field, expr)
+			ctx.Registry.SetResolveExpr(col.Field, expr)
 		}
 
 		// Legacy bare-result form: a single output field.

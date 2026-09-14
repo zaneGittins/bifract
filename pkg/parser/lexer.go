@@ -56,6 +56,10 @@ type Lexer struct {
 	pos      int
 	ch       rune
 	lastType TokenType
+	// exprMode excludes '*' and '-' from identifiers so arithmetic splits into
+	// its own tokens. Filter syntax needs them folded in (a wildcard value, a
+	// hyphenated field name); expression syntax never does.
+	exprMode bool
 }
 
 func NewLexer(input string) *Lexer {
@@ -154,7 +158,8 @@ func (l *Lexer) readRegex() string {
 
 func (l *Lexer) readIdentifier() string {
 	var result strings.Builder
-	for unicode.IsLetter(l.ch) || unicode.IsDigit(l.ch) || l.ch == '_' || l.ch == '-' || l.ch == '.' || l.ch == '*' {
+	for unicode.IsLetter(l.ch) || unicode.IsDigit(l.ch) || l.ch == '_' || l.ch == '.' ||
+		(!l.exprMode && (l.ch == '-' || l.ch == '*')) {
 		result.WriteRune(l.ch)
 		l.readChar()
 	}

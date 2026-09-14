@@ -5304,11 +5304,11 @@ func TestAggregationPipelineFixes(t *testing.T) {
 
 	t.Run("pre-aggregation assignment is inlined into aggregate and filter", func(t *testing.T) {
 		sql := mustTranslate(t, `a=x | cpu := cpu * 100 | cpu > 0 | groupby(host,function=avg(cpu,as=avg_cpu))`, opts)
-		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String)*100") {
+		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String) * 100") {
 			t.Errorf("assignment not inlined into aggregate: %s", sql)
 		}
 		// The scaled value must appear in the WHERE, not be deferred post-aggregation.
-		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String)*100 > 0") {
+		if !strings.Contains(sql, "toFloat64OrNull(fields.`cpu`::String) * 100 > 0") {
 			t.Errorf("assignment not applied in filter: %s", sql)
 		}
 	})
@@ -5325,7 +5325,7 @@ func TestAggregationPipelineFixes(t *testing.T) {
 
 	t.Run("chained pre-aggregation assignments fold in transitively", func(t *testing.T) {
 		sql := mustTranslate(t, `a=x | cpu := cpu * 100 | scaled := cpu * 2 | groupby(host,function=avg(scaled,as=avg_scaled))`, opts)
-		if !strings.Contains(sql, "avg(toFloat64((toFloat64OrNull(fields.`cpu`::String)*100)*2)) AS avg_scaled") {
+		if !strings.Contains(sql, "avg(toFloat64((toFloat64OrNull(fields.`cpu`::String) * 100) * 2)) AS avg_scaled") {
 			t.Errorf("chained pre-agg assignment not folded: %s", sql)
 		}
 	})

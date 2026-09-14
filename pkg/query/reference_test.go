@@ -77,13 +77,18 @@ func TestEveryRegisteredCommandIsDocumented(t *testing.T) {
 // The reverse guard: an entry naming a command the parser does not accept is a
 // documented function nobody can run, which is worse than an undocumented one.
 func TestReferenceDocumentsNoUnknownCommands(t *testing.T) {
-	registered := registeredCommands()
+	dispatchable := registeredCommands()
+	// Scalar functions are dispatched by the expression compiler rather than the
+	// command registry, but they are just as real to someone typing a query.
+	for _, n := range parser.ExprFunctionNames() {
+		dispatchable[strings.ToLower(n)] = true
+	}
 
 	var unknown []string
 	for _, fn := range bqlFunctionDocs {
 		for _, n := range append([]string{fn.Name}, fn.Aliases...) {
 			lower := strings.ToLower(n)
-			if !registered[lower] && !statsOnlyFunctions[lower] && !syntaxFunctions[lower] {
+			if !dispatchable[lower] && !statsOnlyFunctions[lower] && !syntaxFunctions[lower] {
 				unknown = append(unknown, n)
 			}
 		}
@@ -191,5 +196,24 @@ func TestReferenceDescriptionExamplesParse(t *testing.T) {
 				t.Errorf("%s: embedded example does not parse: %q\n  %v", fn.Name, snippet, err)
 			}
 		}
+	}
+}
+
+// Every scalar function the expression compiler accepts must appear in the
+// built-in reference, for the same reason commands must: the reference drives
+// the query UI's documentation panel and is what an agent reads. A function the
+// parser accepts but nothing documents is a function nobody finds.
+func TestEveryExpressionFunctionIsDocumented(t *testing.T) {
+	documented := referenceNames()
+
+	var missing []string
+	for _, name := range parser.ExprFunctionNames() {
+		if !documented[strings.ToLower(name)] {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("expression functions missing from the reference: %s", strings.Join(missing, ", "))
 	}
 }
