@@ -46,7 +46,7 @@ func (h *sortHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		default:
 			// Cast raw JSON subcolumns to ::String so ORDER BY works on paths
 			// stored as Dynamic (pre-type-hint rows); a bare Dynamic ref errors 44.
-			fieldRef = groupableCast(ctx.Registry.fieldRef(field))
+			fieldRef = resolveFieldRef(field, ctx.Registry)
 		}
 	}
 
@@ -230,7 +230,7 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		case !ctx.Registry.IsComputed(field):
 			// LIMIT BY is a grouping context: cast raw JSON subcolumns to
 			// ::String so Dynamic-stored paths don't trigger error 44.
-			dedupFields = append(dedupFields, groupableCast(ctx.Registry.fieldRef(field)))
+			dedupFields = append(dedupFields, resolveFieldRef(field, ctx.Registry))
 		case !beforeAggregation:
 			// Rendered on the same SELECT that computes the column, so its alias
 			// resolves.

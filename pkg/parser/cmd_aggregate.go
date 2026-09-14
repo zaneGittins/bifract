@@ -810,7 +810,18 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
 			}
 			var fieldRef string
-			if computedFields[arg] {
+			if sql, ok := exprArgSQL(arg, ctx.Registry); ok {
+				// An expression key is projected under a derived name and grouped by
+				// that alias, so the rest of the pipeline sees an ordinary column.
+				alias, err := outputAlias(arg)
+				if err != nil {
+					return fmt.Errorf("groupby(): %w", err)
+				}
+				source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sql, alias)})
+				ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
+				ctx.Registry.SetResolveExpr(alias, alias)
+				fieldRef = alias
+			} else if computedFields[arg] {
 				fieldRef = arg
 			} else {
 				switch arg {

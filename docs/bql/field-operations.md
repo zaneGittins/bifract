@@ -86,6 +86,23 @@ Names shared with a pipeline command keep their command meaning unless a compari
 
 Filtering on an expression computes it per row, so it cannot prune through a skip index. Put a time range or a selective indexed filter in front of it.
 
+### Expressions in command arguments
+
+A field position accepts an expression, so a derived value can be grouped, sorted, projected or aggregated without materialising it first:
+
+```
+* | groupby(lower(user))
+* | groupby(substr(image, 1, 10), function=count())
+* | sort(len(commandline), order=desc)
+* | table(user, len(commandline))
+* | dedup(lower(user))
+* | groupby(user, function=sum(len(commandline)))
+```
+
+The output column is named after the expression, so `groupby(lower(user))` produces `lower_user`, addressable downstream like any other column.
+
+Bracket lists stay argument syntax rather than array values, so `table([a,b,c])`, `concat([a,b], as=x)` and `in(f, values=[...])` are unchanged.
+
 ### Eval
 
 Alternative syntax for field assignments inside a pipeline. The quoted text is the same expression language:

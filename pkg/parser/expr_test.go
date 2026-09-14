@@ -480,3 +480,83 @@ func TestExprFilterOverDeferredColumns(t *testing.T) {
 		}
 	})
 }
+
+// TestExprCommandArguments covers phase 3: an expression in a field position.
+func TestExprCommandArguments(t *testing.T) {
+	t.Run("group key", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(lower(user))`)
+		if !strings.Contains(sql, "lower(fields.`user`::String) AS lower_user") {
+			t.Errorf("expected the key projected under a derived name, got: %s", sql)
+		}
+		if !strings.Contains(sql, "GROUP BY lower_user") {
+			t.Errorf("expected grouping by the alias, got: %s", sql)
+		}
+	})
+
+	t.Run("multi-argument group key", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(substr(image,1,10), function=count())`)
+		if !strings.Contains(sql, "substring(fields.`image`::String, 1, 10) AS substr_image_1_10") {
+			t.Errorf("commas inside the call must not split the argument: %s", sql)
+		}
+	})
+
+	t.Run("derived alias is addressable downstream", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(lower(user)) | lower_user = "admin"`)
+		if !strings.Contains(sql, "lower_user") {
+			t.Errorf("expected the alias usable downstream, got: %s", sql)
+		}
+	})
+
+	t.Run("sort key", func(t *testing.T) {
+		sql := translateExpr(t, `* | sort(len(commandline), order=desc)`)
+		if !strings.Contains(sql, "ORDER BY length(fields.`commandline`::String) DESC") {
+			t.Errorf("expected ordering by the expression, got: %s", sql)
+		}
+	})
+
+	t.Run("table column", func(t *testing.T) {
+		sql := translateExpr(t, `* | table(user, len(commandline))`)
+		if !strings.Contains(sql, "AS len_commandline") {
+			t.Errorf("expected a derived column, got: %s", sql)
+		}
+	})
+
+	t.Run("dedup key", func(t *testing.T) {
+		sql := translateExpr(t, `* | dedup(lower(user))`)
+		if !strings.Contains(sql, "lower(fields.`user`::String)") {
+			t.Errorf("expected dedup on the expression, got: %s", sql)
+		}
+	})
+
+	t.Run("aggregate input", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(user, function=sum(len(commandline)))`)
+		if !strings.Contains(sql, "sum(toFloat64OrNull(length(fields.`commandline`::String)))") {
+			t.Errorf("expected the expression inside the aggregate, got: %s", sql)
+		}
+	})
+
+	t.Run("aggregate input inside multi", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(user, function=multi(count(), avg(len(commandline))))`)
+		if !strings.Contains(sql, "avg(toFloat64OrNull(length(fields.`commandline`::String)))") {
+			t.Errorf("expected the expression inside multi(), got: %s", sql)
+		}
+	})
+}
+
+// TestExprArgumentsDoNotBreakBrackets pins the corpus constraint: a bracket list
+// is command-argument syntax, not an array literal, and must keep working.
+func TestExprArgumentsDoNotBreakBrackets(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`* | table([timestamp,user,image])`, "AS image"},
+		{`* | concat([user, host], as=uh)`, "AS uh"},
+		{`* | in(status, values=[200,404])`, "IN ('200', '404')"},
+		{`* | groupby(computer_name, function=count(field=user, unique=true))`, "uniqExact("},
+		{`* | groupby(user, function=count())`, "COUNT(*)"},
+	}
+	for _, c := range cases {
+		sql := translateExpr(t, c.query)
+		if !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  want %q in: %s", c.query, c.want, sql)
+		}
+	}
+}

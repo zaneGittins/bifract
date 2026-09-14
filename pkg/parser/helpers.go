@@ -1355,6 +1355,10 @@ func contains(slice []string, item string) bool {
 // expression if one exists (e.g. from lowercase, eval) or falling back to
 // the JSON subcolumn reference.
 func resolveFieldRef(field string, registry *FieldRegistry) string {
+	// A field position may hold an expression: groupby(lower(user)).
+	if sql, ok := exprArgSQL(field, registry); ok {
+		return sql
+	}
 	return groupableCast(registry.Resolve(field))
 }
 
@@ -1458,9 +1462,9 @@ func parseStatsFunctionParams(fn string, funcName string) map[string]string {
 		return params
 	}
 	inner := fn[len(prefix) : len(fn)-1]
-	for _, part := range strings.Split(inner, ",") {
+	for _, part := range splitTopLevelArgs(inner) {
 		part = strings.TrimSpace(part)
-		if eq := strings.IndexByte(part, '='); eq > 0 {
+		if eq := strings.IndexByte(part, '='); eq > 0 && !isExprArg(part) {
 			params[part[:eq]] = part[eq+1:]
 		} else if part != "" {
 			params["_positional"] = part
@@ -1929,7 +1933,7 @@ func processStatsFn(fn string, selectFields *[]string, computedFields map[string
 		// Feeds stats sub-functions (uniq/values/first/last/group); cast raw JSON
 		// refs to ::String so Dynamic-stored paths are groupable/correct.
 		if registry != nil {
-			return groupableCast(registry.Resolve(field))
+			return resolveFieldRef(field, registry)
 		}
 		return groupableCast(jsonFieldRef(field))
 	}

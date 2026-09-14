@@ -183,7 +183,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, field)
 			continue
 		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
-			safeAlias, err := sanitizeIdentifier(field)
+			safeAlias, err := outputAlias(field)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
@@ -193,14 +193,14 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if ctx.Opts.SourceSubquery != "" {
 			// Over a subquery source (a source command like pgr()) every field is a flat
 			// column; resolve bare via the registry rather than as a fields.`x` JSON path.
-			safeAlias, err := sanitizeIdentifier(field)
+			safeAlias, err := outputAlias(field)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", resolveFieldRef(field, ctx.Registry), safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
 		} else {
-			safeAlias, err := sanitizeIdentifier(field)
+			safeAlias, err := outputAlias(field)
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
