@@ -38771,6 +38771,15 @@
           "HelloRetryRequest": {
             "type": "boolean"
           },
+          "LocalCertificate": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          },
           "NegotiatedProtocol": {
             "type": "string"
           },
@@ -38835,7 +38844,8 @@
           "OCSPResponse",
           "TLSUnique",
           "ECHAccepted",
-          "HelloRetryRequest"
+          "HelloRetryRequest",
+          "LocalCertificate"
         ]
       },
       "url.URL": {
@@ -39084,6 +39094,12 @@
               "type": "integer"
             }
           },
+          "RawSignatureAlgorithm": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
           "RawSubject": {
             "type": "array",
             "items": {
@@ -39163,6 +39179,7 @@
           "RawSubjectPublicKeyInfo",
           "RawSubject",
           "RawIssuer",
+          "RawSignatureAlgorithm",
           "Signature",
           "SignatureAlgorithm",
           "PublicKeyAlgorithm",
