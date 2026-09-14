@@ -326,3 +326,91 @@ func TestExprEvalCommand(t *testing.T) {
 		}
 	})
 }
+
+// TestExprFilters covers phase 2: an expression used as a condition.
+func TestExprFilters(t *testing.T) {
+	t.Run("after a pipe", func(t *testing.T) {
+		sql := translateExpr(t, `* | lower(image) = "cmd.exe"`)
+		if !strings.Contains(sql, "lower(fields.`image`::String) = 'cmd.exe'") {
+			t.Errorf("expected the expression in the WHERE, got: %s", sql)
+		}
+	})
+
+	t.Run("as the leading filter", func(t *testing.T) {
+		sql := translateExpr(t, `lower(image) = "cmd.exe"`)
+		if !strings.Contains(sql, "lower(fields.`image`::String) = 'cmd.exe'") {
+			t.Errorf("expected the expression in the WHERE, got: %s", sql)
+		}
+	})
+
+	t.Run("numeric comparison", func(t *testing.T) {
+		sql := translateExpr(t, `* | len(commandline) > 500`)
+		if !strings.Contains(sql, "length(fields.`commandline`::String) > 500") {
+			t.Errorf("expected a length comparison, got: %s", sql)
+		}
+	})
+
+	t.Run("boolean function needs no comparison", func(t *testing.T) {
+		sql := translateExpr(t, `* | startsWith(image, "C:\\Windows")`)
+		if !strings.Contains(sql, "startsWith(fields.`image`::String, 'C:\\\\Windows')") {
+			t.Errorf("expected startsWith in the WHERE, got: %s", sql)
+		}
+	})
+
+	t.Run("negated", func(t *testing.T) {
+		sql := translateExpr(t, `* | !contains(commandline, "-enc")`)
+		if !strings.Contains(sql, "NOT (positionCaseInsensitive(") {
+			t.Errorf("expected a negated predicate, got: %s", sql)
+		}
+	})
+
+	t.Run("combines with ordinary conditions", func(t *testing.T) {
+		sql := translateExpr(t, `event_id=1 | lower(image) = "cmd.exe" | groupby(user)`)
+		if !strings.Contains(sql, "fields.`event_id`::String = '1'") ||
+			!strings.Contains(sql, "lower(fields.`image`::String) = 'cmd.exe'") {
+			t.Errorf("expected both conditions, got: %s", sql)
+		}
+	})
+
+	t.Run("a value is not a condition", func(t *testing.T) {
+		msg := exprError(t, `* | lower(image)`)
+		if !strings.Contains(msg, "not a condition") {
+			t.Errorf("expected a clear rejection, got: %v", msg)
+		}
+	})
+}
+
+// TestExprFilterDoesNotHijackCommands pins the conservative dispatch rule: an
+// existing query must keep meaning exactly what it meant.
+func TestExprFilterDoesNotHijackCommands(t *testing.T) {
+	t.Run("condition functions keep the boolean-operand path", func(t *testing.T) {
+		sql := translateExpr(t, `cidr(dst_ip, "10.0.0.0/8") OR cidr(dst_ip, "192.168.0.0/16")`)
+		if !strings.Contains(sql, " OR ") {
+			t.Errorf("OR between condition functions was lost: %s", sql)
+		}
+		if strings.Count(sql, "isIPAddressInRange") != 2 {
+			t.Errorf("expected both ranges, got: %s", sql)
+		}
+	})
+
+	t.Run("a command call stays a command", func(t *testing.T) {
+		sql := translateExpr(t, `* | len(commandline) | _len > 500`)
+		if !strings.Contains(sql, "AS _len") {
+			t.Errorf("len() stopped binding its output column: %s", sql)
+		}
+	})
+
+	t.Run("in() is still dispatched as a command", func(t *testing.T) {
+		sql := translateExpr(t, `* | in(status, "200,404")`)
+		if !strings.Contains(sql, "IN ('200', '404')") {
+			t.Errorf("in() stopped working: %s", sql)
+		}
+	})
+
+	t.Run("groupby is not read as an expression", func(t *testing.T) {
+		sql := translateExpr(t, `* | groupby(user)`)
+		if !strings.Contains(sql, "GROUP BY user") {
+			t.Errorf("groupby() stopped working: %s", sql)
+		}
+	})
+}

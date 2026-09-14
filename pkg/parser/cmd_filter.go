@@ -86,7 +86,7 @@ func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 // cidr() expression function. quotedRange is already SQL-quoted.
 //
 // isIPAddressInRange throws CANNOT_PARSE_TEXT on any value that is not a valid IP
-// literal. Type-hinted JSON fields default missing values to '', and some sources
+// literal. Type-hinted JSON fields default missing values to ”, and some sources
 // store non-IP values, so a single bad row would abort the whole query. Guard both
 // ends without relying on short-circuit evaluation: feed the function a real
 // address only (sentinel otherwise), and AND the validity check so non-IP rows are

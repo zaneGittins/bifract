@@ -45,10 +45,13 @@ type ConditionNode struct {
 	Children   []ConditionNode
 
 	// Command holds a condition function used as a boolean operand, e.g.
-	// a="x" OR cidr(ip, "10.0.0.0/8"). CommandSQL is filled in at translation
-	// time, where the handler and its options are available.
-	Command    *CommandNode
-	CommandSQL string
+	// a="x" OR cidr(ip, "10.0.0.0/8").
+	Command *CommandNode
+	// Expr holds a scalar expression used as a filter, e.g. lower(image)="cmd.exe".
+	Expr *ExprNode
+	// PredicateSQL is the compiled form of Command or Expr, filled in during
+	// translation once the handler options and the field registry exist.
+	PredicateSQL string
 }
 
 func (c ConditionNode) Type() string { return "condition" }
@@ -84,10 +87,14 @@ type HavingCondition struct {
 
 	// Command holds a condition function used as a boolean operand, e.g.
 	// cidr(a) OR cidr(b). Such a function contributes a predicate like any other
-	// leaf rather than an independent conjunct. CommandSQL is filled in at
-	// translation time, where the handler and its options are available.
-	Command    *CommandNode
-	CommandSQL string
+	// leaf rather than an independent conjunct.
+	Command *CommandNode
+	// Expr holds a scalar expression used as a filter, e.g. lower(image)="cmd.exe".
+	// It must type as a condition.
+	Expr *ExprNode
+	// PredicateSQL is the compiled form of Command or Expr, filled in during
+	// translation once the handler options and the field registry exist.
+	PredicateSQL string
 }
 
 func (h HavingCondition) Type() string { return "having" }
@@ -218,6 +225,16 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		pipelineNegate := false
 		if p.current().Type == TokenNot {
 			p.advance()
+			// A negated expression filter, e.g. !contains(commandline, "-enc").
+			if p.atExprFilter() {
+				expr, err := p.parseExprFilter()
+				if err != nil {
+					return nil, err
+				}
+				pipeline.HavingConditions = append(pipeline.HavingConditions,
+					HavingCondition{Expr: expr, Negate: true})
+				continue
+			}
 			// Negated function call (e.g., !in()) produces a Command, not a condition
 			if p.current().Type == TokenFunction {
 				cmd, err := p.parseCommand()
@@ -327,6 +344,13 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 			}
 			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+		} else if p.atExprFilter() {
+			expr, err := p.parseExprFilter()
+			if err != nil {
+				return nil, err
+			}
+			pipeline.HavingConditions = append(pipeline.HavingConditions,
+				HavingCondition{Expr: expr, Negate: pipelineNegate})
 		} else {
 			// It's a command
 			cmd, err := p.parseCommand()
@@ -358,8 +382,10 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 }
 
 func (p *Parser) parseFilter() (*FilterNode, error) {
-	// If we immediately see a pipe, EOF, or function, there's no filter
-	if p.current().Type == TokenPipe || p.current().Type == TokenEOF || p.current().Type == TokenFunction {
+	// If we immediately see a pipe, EOF, or function, there's no filter. An
+	// expression filter is the exception: it is a condition, not a command.
+	if p.current().Type == TokenPipe || p.current().Type == TokenEOF ||
+		(p.current().Type == TokenFunction && !p.atExprFilter()) {
 		return nil, nil
 	}
 
@@ -643,9 +669,17 @@ func (p *Parser) fieldOperandUnsupported(operator string) error {
 func (p *Parser) parseCondition() (*ConditionNode, error) {
 	cond := &ConditionNode{}
 
-	// A condition function is an operand like any other leaf, e.g.
-	// a="x" OR cidr(ip, "10.0.0.0/8").
+	// A condition function or an expression is an operand like any other leaf,
+	// e.g. a="x" OR cidr(ip, "10.0.0.0/8"), or lower(image)="cmd.exe".
 	if p.current().Type == TokenFunction {
+		if p.atExprFilter() {
+			expr, err := p.parseExprFilter()
+			if err != nil {
+				return nil, err
+			}
+			cond.Expr = expr
+			return cond, nil
+		}
 		cmd, err := p.parseCommand()
 		if err != nil {
 			return nil, err

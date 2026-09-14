@@ -477,12 +477,17 @@ func buildWhereClauseCtx(conditions []ConditionNode, registry *FieldRegistry) (s
 }
 
 func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string, error) {
+	// An expression filter compiles here, where the registry is final.
+	if cond.Expr != nil {
+		return exprConditionSQL(cond.Expr, registry, cond.Negate)
+	}
+
 	// A condition function was compiled to SQL before materialization.
-	if cond.CommandSQL != "" {
+	if cond.PredicateSQL != "" {
 		if cond.Negate {
-			return "NOT (" + cond.CommandSQL + ")", nil
+			return "NOT (" + cond.PredicateSQL + ")", nil
 		}
-		return cond.CommandSQL, nil
+		return cond.PredicateSQL, nil
 	}
 
 	// Handle compound nodes by recursively building the inner SQL.

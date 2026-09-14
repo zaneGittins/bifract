@@ -59,6 +59,21 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 			continue
 		}
 
+		if cond.Expr != nil {
+			compiled, priority, err := classifyExprCondition(cond, registry, plan, willHaveAggregation)
+			if err != nil {
+				return err
+			}
+			cond.PredicateSQL = compiled
+			switch priority {
+			case 2:
+				plan.pendingHavingConditions = append(plan.pendingHavingConditions, cond)
+			default:
+				plan.pendingWhereConditions = append(plan.pendingWhereConditions, cond)
+			}
+			continue
+		}
+
 		if err := validateOperandStages(cond, registry, plan, willHaveAggregation); err != nil {
 			return err
 		}
@@ -78,6 +93,22 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		*target = append(*target, cond)
 	}
 	return nil
+}
+
+// classifyExprCondition compiles an expression filter and reports the stage it
+// binds to. A deferred stage (a window or join output) is rejected rather than
+// bound: those columns exist only after an outer wrap, and reaching one from an
+// expression needs the deferredScope export that plain conditions get.
+func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
+	priority := exprPriority(cond.Expr, registry, plan, willHaveAggregation)
+	if priority == 1 {
+		return "", 0, fmt.Errorf("%s reads a value produced after the aggregation, which an expression filter cannot reach yet; filter on it with a plain comparison instead", cond.Expr.String())
+	}
+	sql, err := exprConditionSQL(cond.Expr, registry, cond.Negate)
+	if err != nil {
+		return "", 0, err
+	}
+	return sql, priority, nil
 }
 
 // validateCompoundOperandStages checks every leaf of a compound that binds as one
@@ -457,8 +488,8 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry,
 			} else {
 				condSQL = "(" + inner + ")"
 			}
-		} else if cond.CommandSQL != "" {
-			condSQL = cond.CommandSQL
+		} else if cond.PredicateSQL != "" {
+			condSQL = cond.PredicateSQL
 		} else {
 			condSQL = buildConditionSQL(cond, registry, scope)
 			if condSQL == "" {
@@ -676,7 +707,7 @@ func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) e
 		if conditions[i].Command.Negate {
 			sql = "NOT (" + sql + ")"
 		}
-		conditions[i].CommandSQL = sql
+		conditions[i].PredicateSQL = sql
 	}
 	return nil
 }
@@ -700,7 +731,7 @@ func resolveCommandConditionNodes(conditions []ConditionNode, opts QueryOptions)
 		if conditions[i].Command.Negate {
 			sql = "NOT (" + sql + ")"
 		}
-		conditions[i].CommandSQL = sql
+		conditions[i].PredicateSQL = sql
 	}
 	return nil
 }

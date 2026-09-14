@@ -64,6 +64,28 @@ Where a pipeline command of the same name exists (`len`, `substr`, `concat`, `ha
 
 An unknown function name is an error, never a field reference, so a typo cannot quietly match nothing.
 
+### Expressions as filters
+
+An expression that reads as a condition can be a filter on its own, with no assignment:
+
+```
+* | lower(image) = "cmd.exe"
+* | len(commandline) > 500
+* | startsWith(image, "C:\\Windows")
+* | !contains(commandline, "-enc")
+```
+
+An expression that produces a value rather than a condition is an error, so `| lower(image)` on its own is rejected instead of filtering on whatever that string became.
+
+Names shared with a pipeline command keep their command meaning unless a comparison follows, so `| len(commandline)` still binds `_len` and `cidr(a) OR cidr(b)` still behaves as it always has.
+
+```
+* | len(commandline) | _len > 500      the command, binding _len
+* | len(commandline) > 500             the expression, as a filter
+```
+
+Filtering on an expression computes it per row, so it cannot prune through a skip index. Put a time range or a selective indexed filter in front of it.
+
 ### Eval
 
 Alternative syntax for field assignments inside a pipeline. The quoted text is the same expression language:
