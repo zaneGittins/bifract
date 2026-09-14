@@ -35,18 +35,9 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Parse values from remaining arguments
 	var values []string
 	for _, arg := range cmd.Arguments[1:] {
-		arg = strings.TrimSpace(arg)
-		if strings.HasPrefix(arg, "values=") {
-			arg = strings.TrimPrefix(arg, "values=")
-		}
-		// Strip surrounding brackets if present
-		arg = strings.Trim(arg, "[]")
-		for _, v := range strings.Split(arg, ",") {
-			v = strings.TrimSpace(v)
-			v = strings.Trim(v, "\"'")
-			if v != "" {
-				values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
-			}
+		arg = strings.TrimPrefix(strings.TrimSpace(arg), "values=")
+		for _, v := range listArg(arg) {
+			values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
 		}
 	}
 

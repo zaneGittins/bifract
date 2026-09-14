@@ -62,14 +62,8 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			}
 			maxRows = n
 		} else if strings.HasPrefix(arg, "include=") {
-			val := strings.TrimPrefix(arg, "include=")
-			val = strings.Trim(val, "[]")
-			for _, f := range strings.Split(val, ",") {
-				f = strings.TrimSpace(f)
-				if f != "" {
-					includeFields = append(includeFields, f)
-				}
-			}
+			fields, _ := namedListArg(arg, "include")
+			includeFields = append(includeFields, fields...)
 		} else if joinKey == "" {
 			// First positional argument is the join key
 			joinKey = arg

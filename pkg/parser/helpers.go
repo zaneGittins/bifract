@@ -1442,8 +1442,7 @@ func extractFunctionField(fn string, funcName string) string {
 		inner := fn[len(prefix) : len(fn)-1]
 		// Check for named params like field=name
 		if strings.Contains(inner, "field=") {
-			for _, part := range strings.Split(inner, ",") {
-				part = strings.TrimSpace(part)
+			for _, part := range splitTopLevelArgs(inner) {
 				if strings.HasPrefix(part, "field=") {
 					return strings.TrimPrefix(part, "field=")
 				}

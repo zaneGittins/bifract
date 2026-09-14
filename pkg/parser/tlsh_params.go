@@ -54,11 +54,7 @@ func ExtractTLSHParams(pipeline *PipelineNode) (TLSHParams, bool, error) {
 			case strings.HasPrefix(arg, "field="):
 				p.Field = unquoteArg(strings.TrimPrefix(arg, "field="))
 			case strings.HasPrefix(arg, "hash="):
-				for _, h := range strings.Split(strings.TrimPrefix(arg, "hash="), ",") {
-					if h = unquoteArg(h); h != "" {
-						p.Hashes = append(p.Hashes, h)
-					}
-				}
+				p.Hashes = append(p.Hashes, listArg(strings.TrimPrefix(arg, "hash="))...)
 			case strings.HasPrefix(arg, "dict="):
 				p.Dict = unquoteArg(strings.TrimPrefix(arg, "dict="))
 			case strings.HasPrefix(arg, "threshold="):

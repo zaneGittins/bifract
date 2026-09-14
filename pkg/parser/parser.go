@@ -836,6 +836,49 @@ func (p *Parser) collectEqualityList(first string) ([]string, error) {
 	return values, nil
 }
 
+// captureCallText consumes a function call at the current position and returns
+// it as source text, e.g. "substr(image,1,10)". Command arguments are strings,
+// so a call in an argument position is carried through verbatim and resolved
+// later. Shared by every argument branch that can meet a call: a bare argument,
+// an element of a bracket list, and the value of a name=[...] parameter.
+func (p *Parser) captureCallText() string {
+	var b strings.Builder
+	b.WriteString(p.current().Value)
+	p.advance()
+	if p.current().Type != TokenLParen {
+		return b.String()
+	}
+	b.WriteString("(")
+	p.advance()
+	depth := 1
+	for depth > 0 && p.current().Type != TokenEOF {
+		tok := p.current()
+		switch tok.Type {
+		case TokenLParen:
+			depth++
+			b.WriteString("(")
+		case TokenRParen:
+			depth--
+			if depth > 0 {
+				b.WriteString(")")
+			}
+		case TokenLBracket:
+			b.WriteString("[")
+		case TokenRBracket:
+			b.WriteString("]")
+		case TokenComma:
+			b.WriteString(",")
+		case TokenEqual:
+			b.WriteString("=")
+		default:
+			b.WriteString(tok.Value)
+		}
+		p.advance()
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
 func (p *Parser) parseCommand() (*CommandNode, error) {
 	cmd := &CommandNode{}
 
@@ -901,6 +944,8 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 				if argTok.Type == TokenField || argTok.Type == TokenString || argTok.Type == TokenValue {
 					cmd.Arguments = append(cmd.Arguments, argTok.Value)
 					p.advance()
+				} else if argTok.Type == TokenFunction {
+					cmd.Arguments = append(cmd.Arguments, p.captureCallText())
 				} else {
 					return nil, newPosError(argTok, "unexpected token in array: %s", argTok.Type)
 				}
@@ -949,6 +994,8 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 							if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
 								paramName += p.current().Value
 								p.advance()
+							} else if p.current().Type == TokenFunction {
+								paramName += p.captureCallText()
 							} else if p.current().Type == TokenComma {
 								paramName += ","
 								p.advance()
@@ -965,44 +1012,9 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 
 				cmd.Arguments = append(cmd.Arguments, paramName)
 			} else if argTok.Type == TokenFunction {
-				// Handle function calls as arguments (e.g., for multi(count(), avg(field)))
-				funcCall := argTok.Value
-				p.advance()
-
-				// Expect opening parenthesis
-				if p.current().Type == TokenLParen {
-					funcCall += "("
-					p.advance()
-					// Collect everything inside balanced parens/brackets
-					depth := 1
-					for depth > 0 && p.current().Type != TokenEOF {
-						tok := p.current()
-						switch tok.Type {
-						case TokenLParen:
-							depth++
-							funcCall += "("
-						case TokenRParen:
-							depth--
-							if depth > 0 {
-								funcCall += ")"
-							}
-						case TokenLBracket:
-							funcCall += "["
-						case TokenRBracket:
-							funcCall += "]"
-						case TokenComma:
-							funcCall += ","
-						case TokenEqual:
-							funcCall += "="
-						default:
-							funcCall += tok.Value
-						}
-						p.advance()
-					}
-					funcCall += ")"
-				}
-
-				cmd.Arguments = append(cmd.Arguments, funcCall)
+				// A call in an argument position, e.g. multi(count(), avg(field))
+				// or groupby(lower(user)).
+				cmd.Arguments = append(cmd.Arguments, p.captureCallText())
 			} else if argTok.Type == TokenLBracket {
 				// Handle bare array syntax: [val1,val2,val3]
 				p.advance() // skip [
@@ -1014,6 +1026,8 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
 						arrParts = append(arrParts, p.current().Value)
 						p.advance()
+					} else if p.current().Type == TokenFunction {
+						arrParts = append(arrParts, p.captureCallText())
 					} else if p.current().Type == TokenComma {
 						p.advance()
 					} else {

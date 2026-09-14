@@ -92,3 +92,32 @@ func outputAlias(arg string) (string, error) {
 	}
 	return sanitizeIdentifier(arg)
 }
+
+// listArg normalises a command argument that carries a list.
+//
+// A bracket list reaches a handler as ONE comma-joined argument (parseCommand
+// joins the elements), so every handler taking a list must split it. hash() did
+// not, and hashed a field literally named "a,b" that existed on no row. The
+// split is top-level only, so a nested call such as substr(image, 1, 10)
+// survives it intact, which matters now that a field position accepts an
+// expression.
+func listArg(raw string) []string {
+	var out []string
+	for _, part := range splitTopLevelArgs(strings.Trim(strings.TrimSpace(raw), "[]")) {
+		part = strings.Trim(strings.TrimSpace(part), `"'`)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// namedListArg returns the list held by a name=[...] or name=a,b argument, and
+// whether the argument carried that name at all.
+func namedListArg(arg, name string) ([]string, bool) {
+	prefix := name + "="
+	if !strings.HasPrefix(arg, prefix) {
+		return nil, false
+	}
+	return listArg(strings.TrimPrefix(arg, prefix)), true
+}

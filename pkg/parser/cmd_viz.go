@@ -81,14 +81,8 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if strings.HasPrefix(arg, "parent=") {
 			parentField = strings.TrimPrefix(arg, "parent=")
 		} else if strings.HasPrefix(arg, "labels=") {
-			labelsArg := strings.TrimPrefix(arg, "labels=")
-			labelsArg = strings.Trim(labelsArg, "[]")
-			for _, f := range strings.Split(labelsArg, ",") {
-				f = strings.TrimSpace(f)
-				if f != "" {
-					labelFields = append(labelFields, f)
-				}
-			}
+			fields, _ := namedListArg(arg, "labels")
+			labelFields = append(labelFields, fields...)
 		} else if strings.HasPrefix(arg, "limit=") {
 			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
 				if limit > 500 {
@@ -167,14 +161,7 @@ func (h *meshHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			v := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(arg, "directed=")))
 			ctx.Plan.ChartConfig["directed"] = v == "true" || v == "1" || v == "yes"
 		case strings.HasPrefix(arg, "labels="), strings.HasPrefix(arg, "label="):
-			labelsArg := arg[strings.IndexByte(arg, '=')+1:]
-			labelsArg = strings.Trim(labelsArg, "[]")
-			for _, f := range strings.Split(labelsArg, ",") {
-				f = strings.TrimSpace(f)
-				if f != "" {
-					labelFields = append(labelFields, f)
-				}
-			}
+			labelFields = append(labelFields, listArg(arg[strings.IndexByte(arg, '=')+1:])...)
 		case strings.HasPrefix(arg, "limit="):
 			if limit, err := strconv.Atoi(strings.TrimPrefix(arg, "limit=")); err == nil && limit > 0 {
 				if limit > 500 {
@@ -370,11 +357,7 @@ func parseTimechartFieldList(function, name string) []string {
 		inner = inner[:i]
 	}
 	var fields []string
-	for _, part := range strings.Split(inner, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
+	for _, part := range listArg(inner) {
 		fields = append(fields, strings.TrimPrefix(part, "field="))
 	}
 	return fields

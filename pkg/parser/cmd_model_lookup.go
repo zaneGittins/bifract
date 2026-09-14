@@ -445,14 +445,8 @@ func parseModelLookupArgs(args []string) (modelName string, keyFields []string, 
 		if strings.HasPrefix(arg, "model=") {
 			modelName = strings.Trim(strings.TrimPrefix(arg, "model="), `"'`)
 		} else if strings.HasPrefix(arg, "key=") {
-			val := strings.TrimPrefix(arg, "key=")
-			val = strings.Trim(val, "[]")
-			for _, f := range strings.Split(val, ",") {
-				f = strings.TrimSpace(f)
-				if f != "" {
-					keyFields = append(keyFields, f)
-				}
-			}
+			fields, _ := namedListArg(arg, "key")
+			keyFields = append(keyFields, fields...)
 		} else if strings.HasPrefix(arg, "strict=") {
 			switch strings.ToLower(strings.Trim(strings.TrimPrefix(arg, "strict="), `"'`)) {
 			case "true":
@@ -462,6 +456,8 @@ func parseModelLookupArgs(args []string) (modelName string, keyFields []string, 
 			default:
 				return "", nil, false, fmt.Errorf("model_lookup() strict= must be true or false")
 			}
+		} else {
+			return "", nil, false, fmt.Errorf("model_lookup(): unexpected argument %q; every parameter is named, and the key list goes in brackets: key=[a,b]", arg)
 		}
 	}
 	if modelName == "" {

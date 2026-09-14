@@ -17,16 +17,8 @@ func ExtractCommentParams(pipeline *PipelineNode) (tags []string, keyword string
 			arg = strings.TrimSpace(arg)
 
 			if strings.HasPrefix(arg, "tags=") || strings.HasPrefix(arg, "tag=") {
-				val := arg
-				val = strings.TrimPrefix(val, "tags=")
-				val = strings.TrimPrefix(val, "tag=")
-				val = strings.Trim(val, "[]")
-				for _, t := range strings.Split(val, ",") {
-					t = strings.TrimSpace(t)
-					if t != "" {
-						tags = append(tags, t)
-					}
-				}
+				val := strings.TrimPrefix(strings.TrimPrefix(arg, "tags="), "tag=")
+				tags = append(tags, listArg(val)...)
 			} else if strings.HasPrefix(arg, "keyword=") {
 				keyword = strings.TrimPrefix(arg, "keyword=")
 				keyword = strings.Trim(keyword, `"'`)

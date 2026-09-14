@@ -360,14 +360,7 @@ func (h *concatHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			alias = strings.TrimPrefix(arg, "as=")
 			continue
 		}
-		// Strip brackets if present, then split on commas to handle
-		// both bracket syntax [field1,field2] and bare comma-separated fields.
-		inner := strings.Trim(arg, "[]")
-		for _, f := range strings.Split(inner, ",") {
-			f = strings.TrimSpace(f)
-			if f == "" {
-				continue
-			}
+		for _, f := range listArg(arg) {
 			if f == "timestamp" {
 				fields = append(fields, "toString(timestamp)")
 			} else {
@@ -418,11 +411,7 @@ func (h *hashHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// parseCommand), so split it and hash each field. Without this,
 		// hash([a,b]) hashed a single field literally named "a,b", which exists
 		// on no row: every row got the same constant digest.
-		for _, arg := range splitTopLevelArgs(strings.TrimPrefix(raw, "field=")) {
-			arg = strings.TrimSpace(arg)
-			if arg == "" {
-				continue
-			}
+		for _, arg := range listArg(strings.TrimPrefix(raw, "field=")) {
 			if arg == "timestamp" {
 				hashFields = append(hashFields, "toString(timestamp)")
 			} else {
@@ -883,14 +872,8 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	var includeColumns []string
 	for _, arg := range cmd.Arguments {
 		if strings.HasPrefix(arg, "include=") {
-			val := strings.TrimPrefix(arg, "include=")
-			val = strings.Trim(val, "[]")
-			for _, c := range strings.Split(val, ",") {
-				c = strings.TrimSpace(c)
-				if c != "" {
-					includeColumns = append(includeColumns, c)
-				}
-			}
+			cols, _ := namedListArg(arg, "include")
+			includeColumns = append(includeColumns, cols...)
 		} else if strings.HasPrefix(arg, "field=") {
 			logField = strings.TrimPrefix(arg, "field=")
 		} else if strings.HasPrefix(arg, "column=") {
@@ -940,16 +923,12 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if strings.HasPrefix(arg, "column=") {
 			keyColumn = strings.TrimPrefix(arg, "column=")
 		} else if strings.HasPrefix(arg, "include=") {
-			val := strings.TrimPrefix(arg, "include=")
-			val = strings.Trim(val, "[]")
-			for _, c := range strings.Split(val, ",") {
-				c = strings.TrimSpace(c)
-				if c != "" {
-					includeColumns = append(includeColumns, c)
-				}
-			}
+			cols, _ := namedListArg(arg, "include")
+			includeColumns = append(includeColumns, cols...)
 		} else if strings.HasPrefix(arg, "strict=") {
 			strict = strings.ToLower(strings.TrimPrefix(arg, "strict=")) == "true"
+		} else {
+			return fmt.Errorf("match(): unexpected argument %q; every parameter is named, and a list goes in brackets: include=[a,b]", arg)
 		}
 	}
 
@@ -1075,14 +1054,8 @@ func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	var includeColumns []string
 	for _, arg := range cmd.Arguments {
 		if strings.HasPrefix(arg, "include=") {
-			val := strings.TrimPrefix(arg, "include=")
-			val = strings.Trim(val, "[]")
-			for _, c := range strings.Split(val, ",") {
-				c = strings.TrimSpace(c)
-				if c != "" {
-					includeColumns = append(includeColumns, c)
-				}
-			}
+			cols, _ := namedListArg(arg, "include")
+			includeColumns = append(includeColumns, cols...)
 		} else if strings.HasPrefix(arg, "field=") {
 			ipField = strings.TrimPrefix(arg, "field=")
 		}
@@ -1114,14 +1087,10 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if strings.HasPrefix(arg, "field=") {
 			ipField = strings.TrimPrefix(arg, "field=")
 		} else if strings.HasPrefix(arg, "include=") {
-			val := strings.TrimPrefix(arg, "include=")
-			val = strings.Trim(val, "[]")
-			for _, c := range strings.Split(val, ",") {
-				c = strings.TrimSpace(c)
-				if c != "" {
-					includeColumns = append(includeColumns, c)
-				}
-			}
+			cols, _ := namedListArg(arg, "include")
+			includeColumns = append(includeColumns, cols...)
+		} else {
+			return fmt.Errorf("lookupIP(): unexpected argument %q; every parameter is named, and a list goes in brackets: include=[country,city]", arg)
 		}
 	}
 

@@ -204,7 +204,11 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if err != nil {
 				return fmt.Errorf("table(): %w", err)
 			}
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", groupableCast(ctx.Registry.fieldRef(field)), safeAlias)})
+			ref := groupableCast(ctx.Registry.fieldRef(field))
+			if sql, ok := exprArgSQL(field, ctx.Registry); ok {
+				ref = sql
+			}
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", ref, safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
 		}
 	}
@@ -435,10 +439,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("chain(): within= cannot be combined with order=false")
 	}
 
-	chainFields := strings.Split(chainFieldsStr, ",")
-	for i, f := range chainFields {
-		chainFields[i] = strings.TrimSpace(f)
-	}
+	chainFields := listArg(chainFieldsStr)
 
 	steps, stepFields, err := parseChainSteps(cmd.BlockTokens, ctx.Opts, ctx.Registry)
 	if err != nil {
