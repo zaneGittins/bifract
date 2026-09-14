@@ -412,7 +412,7 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 		}
 	}
 
-	where := strings.Join(plan.SourceStage().Layer.Where, " AND ")
+	where := andJoin(plan.SourceStage().Layer.Where)
 	tbl := opts.EffectiveTableName()
 
 	tsCol := "timestamp"
@@ -598,7 +598,7 @@ func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsP
 		}
 	}
 
-	where := strings.Join(plan.SourceStage().Layer.Where, " AND ")
+	where := andJoin(plan.SourceStage().Layer.Where)
 	if where == "" {
 		where = "1 = 1"
 	}
@@ -714,7 +714,7 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) (string, 
 	// helperPlan.SourceStage().Layer.Where; aggregate and window conditions are ignored.
 	materializeConditions(registry, helperPlan)
 
-	return strings.Join(helperPlan.SourceStage().Layer.Where, " AND "), true
+	return andJoin(helperPlan.SourceStage().Layer.Where), true
 }
 
 // chTimeLiteral renders a time as a ClickHouse datetime literal for comparison

@@ -356,7 +356,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 
 	whereSQL := ""
 	if len(source.Layer.Where) > 0 {
-		whereSQL = " WHERE " + strings.Join(source.Layer.Where, " AND ")
+		whereSQL = " WHERE " + andJoin(source.Layer.Where)
 	}
 	outerWhere := whereSQL
 
@@ -413,7 +413,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		}
 		rowSource += p.scanModelJoin()
 		if len(p.PostJoinWhere) > 0 {
-			pj := strings.Join(p.PostJoinWhere, " AND ")
+			pj := andJoin(p.PostJoinWhere)
 			if outerWhere == "" {
 				outerWhere = " WHERE " + pj
 			} else {
@@ -438,7 +438,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// HAVING
 	if len(source.Layer.Having) > 0 {
 		sql.WriteString(" HAVING ")
-		sql.WriteString(strings.Join(source.Layer.Having, " AND "))
+		sql.WriteString(andJoin(source.Layer.Having))
 	}
 
 	// ORDER BY
@@ -533,7 +533,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		outer.WriteString(")")
 		if len(p.DeferredWhere) > 0 {
 			outer.WriteString(" WHERE ")
-			outer.WriteString(strings.Join(p.DeferredWhere, " AND "))
+			outer.WriteString(andJoin(p.DeferredWhere))
 		}
 		if len(p.DeferredOrder) > 0 {
 			outer.WriteString(" ORDER BY ")
@@ -647,7 +647,7 @@ func wrapWithLayer(innerSQL string, layer QueryLayer) string {
 	outer.WriteString(")")
 	if len(layer.Where) > 0 {
 		outer.WriteString(" WHERE ")
-		outer.WriteString(strings.Join(layer.Where, " AND "))
+		outer.WriteString(andJoin(layer.Where))
 	}
 	if len(layer.GroupBy) > 0 {
 		outer.WriteString(" GROUP BY ")
@@ -655,7 +655,7 @@ func wrapWithLayer(innerSQL string, layer QueryLayer) string {
 	}
 	if len(layer.Having) > 0 {
 		outer.WriteString(" HAVING ")
-		outer.WriteString(strings.Join(layer.Having, " AND "))
+		outer.WriteString(andJoin(layer.Having))
 	}
 	if len(layer.OrderBy) > 0 {
 		outer.WriteString(" ORDER BY ")

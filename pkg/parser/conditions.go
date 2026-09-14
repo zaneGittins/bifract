@@ -802,3 +802,45 @@ func resolveCommandConditionNodes(conditions []ConditionNode, opts QueryOptions)
 	}
 	return nil
 }
+
+// andJoin combines WHERE parts with AND, bracketing any part that carries a
+// top-level OR.
+//
+// The time-range and fractal_id guards are just entries in this list, and AND
+// binds tighter than OR, so an unbracketed `a OR b` would leave the right
+// disjunct outside them and read every fractal at any time. Each condition
+// producer already brackets its own output, but that was an unwritten invariant
+// with nothing enforcing it: a new producer that forgot re-opened the hole.
+// Enforcing it here makes the guarantee structural.
+func andJoin(parts []string) string {
+	safe := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if hasTopLevelOR(p) {
+			p = "(" + p + ")"
+		}
+		safe = append(safe, p)
+	}
+	return strings.Join(safe, " AND ")
+}
+
+// hasTopLevelOR reports whether the clause contains an OR outside every bracket
+// and string literal.
+func hasTopLevelOR(clause string) bool {
+	depth := 0
+	inString := false
+	for i := 0; i < len(clause); i++ {
+		switch c := clause[i]; {
+		case c == '\'' && (i == 0 || clause[i-1] != '\\'):
+			inString = !inString
+		case inString:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case depth == 0 && (c == 'O' || c == 'o') && i > 0 && clause[i-1] == ' ' &&
+			i+2 < len(clause) && (clause[i+1] == 'R' || clause[i+1] == 'r') && clause[i+2] == ' ':
+			return true
+		}
+	}
+	return false
+}
