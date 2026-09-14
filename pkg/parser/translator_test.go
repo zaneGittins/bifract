@@ -5441,10 +5441,10 @@ func TestHashBracketListHashesEachField(t *testing.T) {
 		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MaxRows:   1000,
 	}
-	want := "hex(cityHash64(fields.`member_name`::String, fields.`group_name`::String))"
+	want := "hex(cityHash64(fields.`alpha`::String, fields.`beta`::String))"
 	for _, q := range []string{
-		`* | hash([member_name,group_name], as=k)`,
-		`* | hash(member_name, group_name, as=k)`,
+		`* | hash([alpha,beta], as=k)`,
+		`* | hash(alpha, beta, as=k)`,
 	} {
 		sql := mustTranslate(t, q, opts)
 		if !strings.Contains(sql, want) {
