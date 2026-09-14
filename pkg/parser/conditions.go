@@ -825,14 +825,34 @@ func andJoin(parts []string) string {
 
 // hasTopLevelOR reports whether the clause contains an OR outside every bracket
 // and string literal.
+//
+// A string literal is skipped whole, honouring backslash escapes: escapeString
+// doubles backslashes, so a Windows path ends 'C:\\' and a naive "is the
+// previous byte a backslash" test reads the closing quote as escaped, never
+// leaves the string, and misses every OR after it.
 func hasTopLevelOR(clause string) bool {
 	depth := 0
-	inString := false
 	for i := 0; i < len(clause); i++ {
-		switch c := clause[i]; {
-		case c == '\'' && (i == 0 || clause[i-1] != '\\'):
-			inString = !inString
-		case inString:
+		c := clause[i]
+		if c == '\'' {
+			i++
+			for ; i < len(clause); i++ {
+				if clause[i] == '\\' {
+					i++ // whatever follows is escaped, quote included
+					continue
+				}
+				if clause[i] == '\'' {
+					break
+				}
+			}
+			if i >= len(clause) {
+				// Unterminated: the clause is not shaped as expected, so bracket it
+				// rather than risk letting an OR past the scope guards.
+				return true
+			}
+			continue
+		}
+		switch {
 		case c == '(':
 			depth++
 		case c == ')':

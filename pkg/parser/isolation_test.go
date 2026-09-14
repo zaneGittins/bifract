@@ -133,6 +133,14 @@ func TestHasTopLevelOr(t *testing.T) {
 		{"multiIf(a OR b, 1, 0)", false},    // wholly inside a call
 		{"a = '1'", false},
 		{"", false},
+		// escapeString doubles backslashes, so a Windows path ends 'C:\\'. Reading
+		// that closing quote as escaped loses the string and misses the OR.
+		{`a = 'C:\\' OR b = '1'`, true},
+		{`a = 'C:\\Windows\\' AND (b = '1' OR c = '2')`, false},
+		{`a = 'it\'s' OR b = '1'`, true},
+		{`a = 'it\'s OR nothing'`, false},
+		// Unterminated: bracket rather than risk letting an OR past the guards.
+		{`a = 'unterminated OR b`, true},
 	}
 	for _, c := range cases {
 		if got := hasTopLevelOR(c.clause); got != c.want {
