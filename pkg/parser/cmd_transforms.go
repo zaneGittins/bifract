@@ -242,11 +242,9 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("regex() requires a pattern")
 	}
 
-	fieldRef := normLogColumn
-	if p.field == "timestamp" {
-		fieldRef = "toString(timestamp)"
-	} else if p.field != normLogColumn {
-		fieldRef = resolveFieldRef(p.field, ctx.Registry)
+	fieldRef, err := contentFieldRef(p.field, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("regex(): %w", err)
 	}
 
 	sqlPattern, names := rewriteCaptureGroups(p.pattern)
@@ -286,18 +284,23 @@ func (h *regexHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-type regexArgs struct{ pattern, field, asName string }
+type regexArgs struct {
+	pattern, asName string
+	field           Argument
+}
 
 // regexParams reads regex()'s arguments once, so Declare and Execute agree on
 // which columns the command produces.
 func regexParams(cmd CommandNode) (regexArgs, error) {
-	p := regexArgs{field: normLogColumn}
+	p := regexArgs{field: Argument{Kind: ArgLiteral, Text: normLogColumn}}
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return p, err
 	}
 	p.pattern = b.StrOf("pattern", "regex")
-	p.field = b.Str("field", p.field)
+	if a, ok := b.First("field"); ok {
+		p.field = a
+	}
 	p.asName = b.Str("as", "")
 	return p, nil
 }
@@ -310,19 +313,48 @@ func (h *replaceHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return nil
 	}
-	if output := replaceOutput(b); output != normLogColumn {
+	if output := replaceOutput(b); output != "" && output != normLogColumn {
 		ctx.Registry.Register(output, FieldKindPerRow, output, ctx.CmdIndex)
 	}
 	return nil
 }
 
+// replaceField is the column replace() reads, defaulting to the event text.
+func replaceField(b *Bound) Argument {
+	if a, ok := b.First("field"); ok {
+		return a
+	}
+	return Argument{Kind: ArgLiteral, Text: normLogColumn}
+}
+
 // replaceOutput returns the column replace() writes: the one it was named, or
-// the field it reads, rebound in place.
+// the field it reads, rebound in place. A computed source has no name to rebind,
+// so it gets a derived one.
 func replaceOutput(b *Bound) string {
 	if output := b.StrOf("as", "outputField"); output != "" {
 		return output
 	}
-	return b.Str("field", normLogColumn)
+	field := replaceField(b)
+	if name := field.FieldName(); name != "" {
+		return name
+	}
+	alias, err := ArgAlias(field)
+	if err != nil {
+		return normLogColumn
+	}
+	return strings.Trim(alias, "`")
+}
+
+// contentFieldRef resolves a field position whose default is the event text.
+// timestamp is rendered as text because these commands match or rewrite strings.
+func contentFieldRef(a Argument, registry *FieldRegistry) (string, error) {
+	switch a.FieldName() {
+	case normLogColumn:
+		return normLogColumn, nil
+	case "timestamp":
+		return "toString(timestamp)", nil
+	}
+	return ResolveArg(a, registry)
 }
 
 func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
@@ -335,14 +367,11 @@ func (h *replaceHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if !hasPattern || !hasReplacement {
 		return nil
 	}
-	field := b.Str("field", normLogColumn)
 	outputField := replaceOutput(b)
 
-	fieldRef := normLogColumn
-	if field == "timestamp" {
-		fieldRef = "toString(timestamp)"
-	} else if field != normLogColumn {
-		fieldRef = resolveFieldRef(field, ctx.Registry)
+	fieldRef, err := contentFieldRef(replaceField(b), ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("replace(): %w", err)
 	}
 
 	safeOutput, err := sanitizeIdentifier(outputField)
@@ -881,6 +910,19 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// matchFieldRef renders the value a dictionary lookup is made with. dictGet
+// compares against a String key, so the reference is cast either way.
+func matchFieldRef(a Argument, registry *FieldRegistry) string {
+	if a.FieldName() == "timestamp" {
+		return "toString(timestamp)"
+	}
+	ref, err := ResolveArg(a, registry)
+	if err != nil {
+		return ""
+	}
+	return "toString(" + ref + ")"
+}
+
 // matchLookupExpr returns the value expression for one include column. dictRef is the
 // already-escaped dictionary name.
 //
@@ -919,7 +961,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return nil
 	}
-	logField := b.Str("field", "")
+	fieldArg, hasField := b.First("field")
 	keyColumn := b.Str("column", "")
 	dictName := b.Str("dict", "")
 	includeColumns := b.Strings("include")
@@ -932,16 +974,11 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 
-	var fieldRef string
-	if logField == "timestamp" {
-		fieldRef = "toString(timestamp)"
-	} else if logField != "" {
-		fieldRef = "toString(" + resolveFieldRef(logField, ctx.Registry) + ")"
-	}
+	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
 
 	for _, c := range includeColumns {
-		if chLookupName != "" && fieldRef != "" {
+		if chLookupName != "" && hasField && fieldRef != "" {
 			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
@@ -957,7 +994,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return err
 	}
 	dictName := b.Str("dict", "")
-	logField := b.Str("field", "")
+	fieldArg, hasField := b.First("field")
 	keyColumn := b.Str("column", "")
 	includeColumns := b.Strings("include")
 	strict := b.Flag("strict", false)
@@ -965,7 +1002,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if dictName == "" {
 		return fmt.Errorf("match() requires dict= parameter")
 	}
-	if logField == "" {
+	if !hasField {
 		return fmt.Errorf("match() requires field= parameter")
 	}
 	if len(includeColumns) == 0 {
@@ -992,12 +1029,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
-	var fieldRef string
-	if logField == "timestamp" {
-		fieldRef = "toString(timestamp)"
-	} else {
-		fieldRef = "toString(" + resolveFieldRef(logField, ctx.Registry) + ")"
-	}
+	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
 
 	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
@@ -1084,14 +1116,16 @@ func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return nil
 	}
-	ipField := b.Str("field", "")
+	ipField, hasField := b.First("field")
 	includeColumns := b.Strings("include")
 
 	var fieldRef string
-	if ipField != "" {
+	if hasField {
 		// geoip wraps the value in IP functions (isIPv4String/IPv4StringToNum)
-		// that reject a bare Dynamic subcolumn; resolveFieldRef casts to ::String.
-		fieldRef = resolveFieldRef(ipField, ctx.Registry)
+		// that reject a bare Dynamic subcolumn; ResolveArg casts to ::String.
+		if ref, err := ResolveArg(ipField, ctx.Registry); err == nil {
+			fieldRef = ref
+		}
 	}
 
 	for _, c := range includeColumns {
@@ -1110,10 +1144,10 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	ipField := b.Str("field", "")
+	ipField, hasField := b.First("field")
 	includeColumns := b.Strings("include")
 
-	if ipField == "" {
+	if !hasField {
 		return fmt.Errorf("lookupIP() requires field= parameter specifying the IP address field")
 	}
 	if len(includeColumns) == 0 {
@@ -1123,7 +1157,10 @@ func (h *lookupIPHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("lookupIP() requires MaxMind GeoLite2 configuration (set MAXMIND_LICENSE_KEY and MAXMIND_ACCOUNT_ID)")
 	}
 
-	fieldRef := resolveFieldRef(ipField, ctx.Registry)
+	fieldRef, err := ResolveArg(ipField, ctx.Registry)
+	if err != nil {
+		return fmt.Errorf("lookupIP(): %w", err)
+	}
 
 	for _, col := range includeColumns {
 		if _, okCity := geoIPCityFields[col]; !okCity {

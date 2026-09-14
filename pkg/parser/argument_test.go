@@ -135,3 +135,33 @@ func TestListAndFilterValuesSurvive(t *testing.T) {
 		}
 	}
 }
+
+// A field position takes an expression wherever it resolves to SQL. The three
+// commands that refuse one need a nameable column: histogram and mitre name
+// their output after it, and tlsh reads a per-field analytics model.
+func TestExpressionAcceptedInEverySQLFieldPosition(t *testing.T) {
+	for _, q := range []string{
+		`* | sort(lower(user))`, `* | dedup(lower(user))`, `* | groupby(lower(user))`,
+		`* | table(lower(user))`, `* | len(lower(user))`, `* | sum(lower(bytes))`,
+		`* | top(lower(user))`, `* | frequency(lower(user))`, `* | headTail(lower(user))`,
+		`* | mzscore(lower(bytes))`, `* | outlier(lower(bytes))`, `* | in(lower(user), ["a"])`,
+		`* | cidr(lower(src_ip), "10.0.0.0/8")`, `* | heatmap(x=lower(user), y=host)`,
+		`* | regex(field=lower(msg), pattern="a(b)")`, `* | replace("a", "b", lower(msg))`,
+		`* | logSize(lower(user))`, `* | levenshtein(lower(user), "admin")`,
+		`* | strftime("%Y-%m-%d", field=lower(ts))`, `* | count(lower(user), unique=true)`,
+	} {
+		pipeline, err := ParseQuery(q)
+		if err != nil {
+			t.Errorf("parse %q: %v", q, err)
+			continue
+		}
+		sql, err := TranslateToSQLWithOrder(pipeline, revOpts())
+		if err != nil {
+			t.Errorf("translate %q: %v", q, err)
+			continue
+		}
+		if !strings.Contains(sql.SQL, "lower(fields.") {
+			t.Errorf("%s: the expression was read as a field name: %s", q, sql.SQL)
+		}
+	}
+}
