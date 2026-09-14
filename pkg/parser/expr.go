@@ -68,6 +68,32 @@ type exprParser struct {
 // ParseExpressionAt lexes and parses one expression starting at the given offset
 // in src. It returns the expression and the offset just past it, so the caller
 // can resynchronise its own token stream.
+// booleanChainPrecedence is the binding power at and below which AND/OR live.
+// Parsing above it yields a single comparison-level expression, which is what a
+// negated filter needs: BQL binds NOT to the first leaf, not to the whole chain.
+const booleanChainPrecedence = 2
+
+// ParseExpressionAtPrec is ParseExpressionAt bounded to operators binding more
+// tightly than minPrec.
+func ParseExpressionAtPrec(src []rune, start, minPrec int) (*ExprNode, int, error) {
+	lexer := NewLexer(string(src[start:]))
+	lexer.exprMode = true
+	tokens, err := lexer.Tokenize()
+	if err != nil {
+		return nil, 0, err
+	}
+	for i := range tokens {
+		tokens[i].Pos += start
+		tokens[i].End += start
+	}
+	p := &exprParser{tokens: tokens}
+	expr, err := p.parse(minPrec)
+	if err != nil {
+		return nil, 0, err
+	}
+	return expr, p.consumedEnd(), nil
+}
+
 func ParseExpressionAt(src []rune, start int) (*ExprNode, int, error) {
 	lexer := NewLexer(string(src[start:]))
 	lexer.exprMode = true
@@ -202,12 +228,19 @@ func (p *exprParser) parseCall() (*ExprNode, error) {
 		if p.current().Type == TokenEOF {
 			return nil, newPosError(p.current(), "unclosed call to %s()", call.Value)
 		}
-		name, arg, err := p.parseCallArg()
+		name, arg, err := p.parseCallArg(call.Value)
 		if err != nil {
 			return nil, err
 		}
 		if name == "" {
 			if len(call.Named) > 0 {
+				// A bare `x = y` here was read as a comparison because x is not a
+				// parameter of this function, which is almost always a misspelled
+				// parameter name rather than an intentional comparison.
+				if attempted := attemptedParamName(arg); attempted != "" {
+					return nil, newPosError(p.current(), "%s(): unknown parameter %s (accepts %s)",
+						call.Value, attempted, paramNamesOf(call.Value))
+				}
 				return nil, newPosError(p.current(), "%s(): positional arguments must come before named ones", call.Value)
 			}
 			call.Args = append(call.Args, arg)
@@ -232,15 +265,39 @@ func (p *exprParser) parseCall() (*ExprNode, error) {
 
 // parseCallArg reads one argument, returning a non-empty name when it was
 // written name=value.
-func (p *exprParser) parseCallArg() (string, *ExprNode, error) {
+//
+// `name = value` is ambiguous: it is a named argument in substr(field=x) and a
+// comparison in if(status="500", ...). It binds as a name only when the
+// identifier is a declared parameter of the function being called; otherwise it
+// is a field being compared.
+func (p *exprParser) parseCallArg(fnName string) (string, *ExprNode, error) {
 	if p.current().Type == TokenField && p.peek().Type == TokenEqual {
-		name := p.advance().Value
-		p.advance() // '='
-		arg, err := p.parse(0)
-		return strings.ToLower(name), arg, err
+		if fn, ok := exprFuncs[fnName]; ok && fn.hasParam(strings.ToLower(p.current().Value)) {
+			name := p.advance().Value
+			p.advance() // '='
+			arg, err := p.parse(0)
+			return strings.ToLower(name), arg, err
+		}
 	}
 	arg, err := p.parse(0)
 	return "", arg, err
+}
+
+// attemptedParamName returns the left-hand identifier of a bare `field = value`
+// argument, which is what a misspelled parameter name parses as.
+func attemptedParamName(arg *ExprNode) string {
+	if arg != nil && arg.Kind == ExprBinary && arg.Value == "=" &&
+		arg.Left != nil && arg.Left.Kind == ExprField {
+		return arg.Left.Value
+	}
+	return ""
+}
+
+func paramNamesOf(fnName string) string {
+	if fn, ok := exprFuncs[fnName]; ok {
+		return fn.paramList()
+	}
+	return "no named parameters"
 }
 
 func isNumericLiteral(s string) bool {

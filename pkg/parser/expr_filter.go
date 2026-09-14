@@ -83,6 +83,20 @@ func (p *Parser) parseExprFilter() (*ExprNode, error) {
 	return expr, nil
 }
 
+// parseExprFilterPrec parses an expression filter bounded to operators binding
+// more tightly than minPrec, so a caller can stop before an AND/OR chain.
+func (p *Parser) parseExprFilterPrec(minPrec int) (*ExprNode, error) {
+	if p.input == nil {
+		return nil, newPosError(p.current(), "expressions are not supported here")
+	}
+	expr, end, err := ParseExpressionAtPrec(p.input, p.current().Pos, minPrec)
+	if err != nil {
+		return nil, err
+	}
+	p.syncTo(end)
+	return expr, nil
+}
+
 // exprConditionSQL compiles an expression used as a filter. The expression must
 // type as a condition: `| lower(image)` on its own is a value, not a test, and
 // letting it through would filter on whatever ClickHouse made of a string.
@@ -125,10 +139,14 @@ func exprConditionSQLIn(expr *ExprNode, ctx exprCtx, negate bool) (string, error
 		return "", fmt.Errorf("%s is a %s, not a condition; compare it to something (for example %s = \"value\")",
 			expr.String(), typ, expr.String())
 	}
+	// Always bracketed: the predicate is spliced into an AND chain that carries the
+	// fractal and time-range guards, and a top-level OR inside it would re-associate
+	// with that chain. `a OR b` would become `(guards AND a) OR b`, and the right
+	// disjunct would read every fractal at any time.
 	if negate {
 		return "NOT (" + sql + ")", nil
 	}
-	return sql, nil
+	return "(" + sql + ")", nil
 }
 
 // exprFieldNames lists the log fields and computed columns an expression reads,

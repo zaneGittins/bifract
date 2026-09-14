@@ -33,7 +33,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
 
-	for _, cond := range conditions {
+	for i, cond := range conditions {
 		// Compound nodes: inspect all leaf fields to determine the highest-priority
 		// target. A compound normally stays a unit, since its children are connected
 		// by AND/OR and the operators bind them together.
@@ -62,6 +62,9 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		if cond.Expr != nil {
 			compiled, priority, err := classifyExprCondition(cond, registry, plan, willHaveAggregation)
 			if err != nil {
+				return err
+			}
+			if err := checkDisjunctionStages(conditions, i, priority, registry, plan, willHaveAggregation); err != nil {
 				return err
 			}
 			cond.PredicateSQL = compiled
@@ -95,6 +98,61 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		*target = append(*target, cond)
 	}
 	return nil
+}
+
+// checkDisjunctionStages rejects an expression OR-ed with a neighbour that binds
+// to a different pipeline stage. Each condition is materialised into the clause
+// its stage owns, so an OR split across WHERE and HAVING is evaluated as AND and
+// silently returns fewer rows than asked for.
+func checkDisjunctionStages(conditions []HavingCondition, i, priority int, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) error {
+	neighbour := func(j int) (HavingCondition, bool) {
+		if j < 0 || j >= len(conditions) {
+			return HavingCondition{}, false
+		}
+		return conditions[j], true
+	}
+	// Logic sits on the condition to the LEFT of the operator.
+	if prev, ok := neighbour(i - 1); ok && strings.EqualFold(prev.Logic, "OR") {
+		if p := stagePriority(prev, registry, plan, willHaveAggregation); p != priority {
+			return disjunctionStageError(conditions[i], prev)
+		}
+	}
+	if strings.EqualFold(conditions[i].Logic, "OR") {
+		if next, ok := neighbour(i + 1); ok {
+			if p := stagePriority(next, registry, plan, willHaveAggregation); p != priority {
+				return disjunctionStageError(conditions[i], next)
+			}
+		}
+	}
+	return nil
+}
+
+func stagePriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	if c.Expr != nil {
+		return exprPriority(c.Expr, registry, plan, willHaveAggregation)
+	}
+	if c.IsCompound {
+		return subtreePriority(c, registry, plan, willHaveAggregation)
+	}
+	return leafPriority(c, registry, plan, willHaveAggregation)
+}
+
+func disjunctionStageError(a, b HavingCondition) error {
+	return fmt.Errorf("cannot OR %s with %s: they are evaluated at different stages of the pipeline (one before the aggregation, one after), so the result would not be a disjunction. Filter them separately, or move the aggregation",
+		describeCondition(a), describeCondition(b))
+}
+
+func describeCondition(c HavingCondition) string {
+	if c.Expr != nil {
+		return c.Expr.String()
+	}
+	if c.Command != nil {
+		return c.Command.Name + "()"
+	}
+	if c.Field != "" {
+		return c.Field
+	}
+	return "that condition"
 }
 
 // classifyExprCondition compiles an expression filter and reports the stage it
@@ -669,6 +727,12 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 // sense is inverted (e.g. ">" becomes "<=").
 func negateHavingCondition(h *HavingCondition) {
 	if h.IsCompound {
+		h.Negate = !h.Negate
+		return
+	}
+	if h.Expr != nil {
+		// An expression carries no Operator to invert, so the negation lives on the
+		// condition. Without this, !(expr) silently became expr.
 		h.Negate = !h.Negate
 		return
 	}

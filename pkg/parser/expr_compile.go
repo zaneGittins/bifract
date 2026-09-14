@@ -63,6 +63,12 @@ func compileIn(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 	registry, selfField := ctx.registry, ctx.selfField
 	if registry == nil {
+		// No registry, but the base columns are base columns regardless: resolving
+		// norm_log as a JSON path makes this clause disagree with the one the same
+		// query builds with a registry.
+		if isBaseColumn(name) {
+			return name, TypeAny, nil
+		}
 		return ctx.export(groupableCast(jsonFieldRef(name)), name), TypeAny, nil
 	}
 	if ctx.deferredFields[name] {
@@ -83,6 +89,16 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 	return ctx.export(groupableCast(registry.fieldRef(name)), name), TypeAny, nil
 }
 
+// isBaseColumn reports whether a name is a column of the logs table itself
+// rather than a JSON field inside it.
+func isBaseColumn(name string) bool {
+	switch name {
+	case "timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer":
+		return true
+	}
+	return false
+}
+
 // export routes a source-scope reference through the deferred scope when the
 // expression is being built above the scan, and is a no-op otherwise.
 func (c exprCtx) export(sql, label string) string {
@@ -96,6 +112,12 @@ func compileUnary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 	sql, typ, err := compileIn(e.Arg, ctx)
 	if err != nil {
 		return "", TypeAny, err
+	}
+	// A unary operator binds tighter than every infix one, so a compound operand
+	// must be bracketed or the operator rebinds to its left half: -(a + b) would
+	// emit (-a) + b.
+	if e.Arg.Kind == ExprBinary {
+		sql = "(" + sql + ")"
 	}
 	switch e.Value {
 	case "-":
@@ -392,9 +414,15 @@ func assignmentError(field string, err error) error {
 // compileExpressionText parses and compiles an expression given as raw text,
 // for callers that hold a string rather than a parsed pipeline (eval()).
 func compileExpressionText(text string, registry *FieldRegistry, selfField string) (string, error) {
-	expr, _, err := ParseExpressionAt([]rune(text), 0)
+	runes := []rune(text)
+	expr, end, err := ParseExpressionAt(runes, 0)
 	if err != nil {
 		return "", err
+	}
+	// Anything after the first complete expression was silently discarded, so the
+	// column held whatever the leading fragment resolved to.
+	if trailing := strings.TrimSpace(string(runes[end:])); trailing != "" {
+		return "", fmt.Errorf("unexpected %q after the expression", trailing)
 	}
 	sql, _, err := compileExpr(expr, registry, selfField)
 	return sql, err

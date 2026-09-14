@@ -104,6 +104,26 @@ type CommandNode struct {
 	Arguments   []string
 	Negate      bool    // True when command is prefixed with ! (e.g., !in())
 	BlockTokens []Token // Raw tokens from block body (used by chain to avoid double-tokenization)
+	// QuotedArgs holds the indices of arguments that were written as quoted
+	// strings. Arguments are plain strings by the time a handler sees them, and a
+	// regex pattern such as "powershell(.+)" is indistinguishable from a call
+	// without this, so expression validation would reject it.
+	QuotedArgs []int
+}
+
+// markQuoted records that the argument just appended came from a string literal.
+func (c *CommandNode) markQuoted() {
+	c.QuotedArgs = append(c.QuotedArgs, len(c.Arguments)-1)
+}
+
+// IsQuotedArg reports whether the argument at index i was a quoted string.
+func (c CommandNode) IsQuotedArg(i int) bool {
+	for _, q := range c.QuotedArgs {
+		if q == i {
+			return true
+		}
+	}
+	return false
 }
 
 func (c CommandNode) Type() string { return "command" }
@@ -226,8 +246,10 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		if p.current().Type == TokenNot {
 			p.advance()
 			// A negated expression filter, e.g. !contains(commandline, "-enc").
+			// Parsed above AND/OR so the NOT binds to this leaf alone, matching how
+			// a negated plain condition behaves.
 			if p.atExprFilter() {
-				expr, err := p.parseExprFilter()
+				expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
 				if err != nil {
 					return nil, err
 				}
@@ -870,6 +892,10 @@ func (p *Parser) captureCallText() string {
 			b.WriteString(",")
 		case TokenEqual:
 			b.WriteString("=")
+		case TokenAnd, TokenOr, TokenNot:
+			// Word operators need their own space or they glue onto the
+			// neighbouring token: `"C:")ANDendsWith(` never re-parses.
+			b.WriteString(" " + tok.Value + " ")
 		case TokenString:
 			// Re-quote: the token carries the unquoted value, and the captured
 			// text is re-lexed later. Without this, splitAt(path, "/", 2) would
@@ -965,6 +991,9 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 				argTok := p.current()
 				if argTok.Type == TokenField || argTok.Type == TokenString || argTok.Type == TokenValue {
 					cmd.Arguments = append(cmd.Arguments, argTok.Value)
+					if argTok.Type == TokenString {
+						cmd.markQuoted()
+					}
 					p.advance()
 				} else if argTok.Type == TokenFunction {
 					cmd.Arguments = append(cmd.Arguments, p.captureCallText())
@@ -1005,6 +1034,9 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 					if p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenValue {
 						paramName += p.current().Value
 						p.advance()
+					} else if p.current().Type == TokenFunction {
+						// A call as the value: sort(field=lower(user)).
+						paramName += p.captureCallText()
 					} else if p.current().Type == TokenLBracket {
 						// Handle array syntax: param=[val1,val2,val3]
 						p.advance() // skip [
@@ -1033,6 +1065,9 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 				}
 
 				cmd.Arguments = append(cmd.Arguments, paramName)
+				if argTok.Type == TokenString && paramName == argTok.Value {
+					cmd.markQuoted()
+				}
 			} else if argTok.Type == TokenFunction {
 				// A call in an argument position, e.g. multi(count(), avg(field))
 				// or groupby(lower(user)).
@@ -1292,6 +1327,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 func havingFromCondition(cond ConditionNode) HavingCondition {
 	return HavingCondition{
 		Command:     cond.Command,
+		Expr:        cond.Expr,
 		Field:       cond.Field,
 		Operator:    cond.Operator,
 		Value:       cond.Value,
@@ -1299,6 +1335,7 @@ func havingFromCondition(cond ConditionNode) HavingCondition {
 		ValueField:  cond.ValueField,
 		IsRegex:     cond.IsRegex,
 		LiteralTerm: cond.LiteralTerm,
+		Negate:      cond.Negate,
 	}
 }
 

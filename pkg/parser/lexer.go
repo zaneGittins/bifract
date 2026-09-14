@@ -159,11 +159,20 @@ func (l *Lexer) readRegex() string {
 func (l *Lexer) readIdentifier() string {
 	var result strings.Builder
 	for unicode.IsLetter(l.ch) || unicode.IsDigit(l.ch) || l.ch == '_' || l.ch == '.' ||
-		(!l.exprMode && (l.ch == '-' || l.ch == '*')) {
+		(!l.exprMode && (l.ch == '-' || l.ch == '*')) ||
+		(l.exprMode && l.ch == '-' && isHyphenatedName(l.peekChar())) {
 		result.WriteRune(l.ch)
 		l.readChar()
 	}
 	return result.String()
+}
+
+// isHyphenatedName reports whether a '-' continues an identifier rather than
+// starting a subtraction. A hyphen wedged directly between two words is part of
+// the name (user-agent); one before a digit, or with a space on either side, is
+// the operator.
+func isHyphenatedName(next rune) bool {
+	return unicode.IsLetter(next) || next == '_'
 }
 
 func (l *Lexer) NextToken() Token {

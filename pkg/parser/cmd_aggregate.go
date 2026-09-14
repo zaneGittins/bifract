@@ -692,6 +692,36 @@ func (h *bucketHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// exprAliasClash reports whether the stage already projects this alias from a
+// different expression, which UpsertSelect would silently replace.
+func exprAliasClash(stage *QueryStage, alias, sql string) (string, bool) {
+	want := sql + " AS " + alias
+	for _, sel := range stage.Layer.Selects {
+		s := sel.String()
+		if strings.Trim(extractFieldAlias(s), "`") == alias && s != want {
+			return s[:strings.LastIndex(s, " AS ")], true
+		}
+	}
+	return "", false
+}
+
+// aggregateSpecArg reads the function= spec at index *i, advancing past a second
+// argument when the spec was not folded into the first.
+func aggregateSpecArg(args []string, i *int) (string, bool) {
+	arg := args[*i]
+	if arg == "function=" {
+		if *i+1 < len(args) {
+			*i++
+			return args[*i], true
+		}
+		return "", true
+	}
+	if spec, ok := strings.CutPrefix(arg, "function="); ok {
+		return spec, true
+	}
+	return "", false
+}
+
 // groupbyHandler handles groupby(field1, field2, ...)
 type groupbyHandler struct{}
 
@@ -741,9 +771,10 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	for i := 0; i < len(cmd.Arguments); i++ {
 		arg := cmd.Arguments[i]
 
-		if arg == "function=" && i+1 < len(cmd.Arguments) {
-			funcDef := cmd.Arguments[i+1]
-			i++
+		// The spec arrives either as its own argument after a bare "function=", or
+		// folded into one argument when the value is a call that parseCommand
+		// captured whole.
+		if funcDef, isFunc := aggregateSpecArg(cmd.Arguments, &i); isFunc {
 			hasFunction = true
 
 			prevAliases := make(map[string]bool)
@@ -816,6 +847,9 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				alias, err := outputAlias(arg)
 				if err != nil {
 					return fmt.Errorf("groupby(): %w", err)
+				}
+				if prior, clash := exprAliasClash(source, alias, sql); clash {
+					return fmt.Errorf("groupby(): %s and %s both produce the column %s; name one with as=", arg, prior, alias)
 				}
 				source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sql, alias)})
 				ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)

@@ -104,13 +104,43 @@ func outputAlias(arg string) (string, error) {
 // expression.
 func listArg(raw string) []string {
 	var out []string
-	for _, part := range splitTopLevelArgs(strings.Trim(strings.TrimSpace(raw), "[]")) {
+	for _, part := range splitNestedArgs(strings.Trim(strings.TrimSpace(raw), "[]")) {
 		part = strings.Trim(strings.TrimSpace(part), `"'`)
 		if part != "" {
 			out = append(out, part)
 		}
 	}
 	return out
+}
+
+// splitNestedArgs splits on commas outside parentheses and brackets. Unlike
+// splitTopLevelArgs it does not track quotes: parseCommand has already stripped
+// them, so a value containing an apostrophe (O'Brien) would otherwise open a
+// string that never closes and swallow the rest of the list.
+func splitNestedArgs(s string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i, ch := range s {
+		switch ch {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if depth != 0 {
+		// The brackets do not balance, so they were never grouping: a value simply
+		// contains one. Splitting on depth here would swallow the rest of the list.
+		return strings.Split(s, ",")
+	}
+	return append(parts, s[start:])
 }
 
 // namedListArg returns the list held by a name=[...] or name=a,b argument, and
@@ -138,10 +168,18 @@ func validateExprArgs(pipeline *PipelineNode, registry *FieldRegistry) error {
 			return
 		}
 		for i, arg := range cmd.Arguments {
+			// A quoted literal is data, not code. A regex pattern is routinely
+			// call-shaped, so reading one as a call rejects valid queries.
+			if cmd.IsQuotedArg(i) {
+				continue
+			}
 			// An aggregate spec (the value of function=) is the handler's to
 			// validate: it reports an unknown name with aggregate-specific advice.
 			// Its arguments are still checked, since nothing else checks them.
 			inAggregate := i > 0 && strings.TrimSpace(cmd.Arguments[i-1]) == "function="
+			if spec, ok := strings.CutPrefix(arg, "function="); ok {
+				arg, inAggregate = spec, true
+			}
 			if e := validateExprArg(arg, registry, inAggregate); e != nil {
 				err = fmt.Errorf("%s(): %w", cmd.Name, e)
 				return
