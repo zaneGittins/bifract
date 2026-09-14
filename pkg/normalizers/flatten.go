@@ -280,7 +280,7 @@ func stringifyValue(v interface{}) string {
 // FieldsWithNested holds a flat field map and tracks which keys were serialized
 // from nested objects (and are therefore safe to expand during flattening).
 type FieldsWithNested struct {
-	Fields    map[string]string
+	Fields     map[string]string
 	NestedKeys map[string]bool // keys whose values are serialized nested objects
 }
 

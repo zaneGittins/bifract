@@ -167,7 +167,6 @@ func WriteAllFiles(cfg *SetupConfig) error {
 		}
 	}
 
-
 	initPG, err := RenderInitPostgres(cfg)
 	if err != nil {
 		return fmt.Errorf("render init-postgres: %w", err)

@@ -84,8 +84,8 @@ type UpdateRequest struct {
 	RepoURL      string `json:"repo_url"`
 	Branch       string `json:"branch"`
 	Path         string `json:"path"`
-	AuthToken    string `json:"auth_token"`     // empty string = no change
-	ClearToken   bool   `json:"clear_token"`    // explicitly clear the token
+	AuthToken    string `json:"auth_token"`  // empty string = no change
+	ClearToken   bool   `json:"clear_token"` // explicitly clear the token
 	NormalizerID string `json:"normalizer_id"`
 	SyncSchedule string `json:"sync_schedule"`
 	MinLevel     string `json:"min_level"`

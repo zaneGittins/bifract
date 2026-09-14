@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/storage"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
-	"bifract/pkg/storage"
 )
 
 // Config holds OIDC provider configuration loaded from environment variables.
@@ -283,10 +283,10 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Extract claims
 	var claims struct {
-		Sub              string `json:"sub"`
-		Email            string `json:"email"`
-		EmailVerified    bool   `json:"email_verified"`
-		Name             string `json:"name"`
+		Sub               string `json:"sub"`
+		Email             string `json:"email"`
+		EmailVerified     bool   `json:"email_verified"`
+		Name              string `json:"name"`
 		PreferredUsername string `json:"preferred_username"`
 	}
 	if err := idToken.Claims(&claims); err != nil {

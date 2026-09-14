@@ -153,13 +153,13 @@ func TestScoreLongConn_BucketBoundaries(t *testing.T) {
 		wantLow  float64
 		wantHigh float64
 	}{
-		{dur: 1800, wantLow: 0, wantHigh: 0},            // below base
-		{dur: 3600, wantLow: 0, wantHigh: 0.001},        // exactly base -> ~0
-		{dur: 14400, wantLow: 0.25, wantHigh: 0.25},     // low boundary
-		{dur: 28800, wantLow: 0.5, wantHigh: 0.5},       // med boundary
-		{dur: 43200, wantLow: 0.75, wantHigh: 0.75},     // high boundary
-		{dur: 86400, wantLow: 1.0, wantHigh: 1.0},       // saturates at 2x high
-		{dur: 500000, wantLow: 1.0, wantHigh: 1.0},      // clamped
+		{dur: 1800, wantLow: 0, wantHigh: 0},        // below base
+		{dur: 3600, wantLow: 0, wantHigh: 0.001},    // exactly base -> ~0
+		{dur: 14400, wantLow: 0.25, wantHigh: 0.25}, // low boundary
+		{dur: 28800, wantLow: 0.5, wantHigh: 0.5},   // med boundary
+		{dur: 43200, wantLow: 0.75, wantHigh: 0.75}, // high boundary
+		{dur: 86400, wantLow: 1.0, wantHigh: 1.0},   // saturates at 2x high
+		{dur: 500000, wantLow: 1.0, wantHigh: 1.0},  // clamped
 	}
 	for _, c := range cases {
 		got := ScoreLongConn(c.dur, p)
