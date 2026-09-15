@@ -154,7 +154,8 @@ const AlertPolicy = {
             query_string: 'editorQueryInput',
             severity: 'editorAlertSeverity',
             throttle_time_seconds: 'editorThrottleTime',
-            throttle_field: 'editorThrottleField'
+            throttle_field: 'editorThrottleField',
+            max_event_lag_seconds: 'editorMaxEventLag'
         };
         return ids[field] ? document.getElementById(ids[field]) : null;
     },

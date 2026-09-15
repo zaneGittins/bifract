@@ -256,7 +256,8 @@ const AlertEngine = {
         const span = this.interval(Number(sum.window_minutes || 60) * 60);
         this.setText('aeTileFiresSub', Number(sum.fires)
             ? `${this.number(sum.firing_alerts)} alerts · ${this.number(sum.logs_matched)} logs matched` +
-              (Number(sum.throttled) ? ` · ${this.number(sum.throttled)} throttled` : '')
+              (Number(sum.throttled) ? ` · ${this.number(sum.throttled)} throttled` : '') +
+              (Number(sum.logs_suppressed) ? ` · ${this.number(sum.logs_suppressed)} logs suppressed` : '')
             : `nothing fired in ${span}`);
         this.setText('aeModeWindow', `last ${span}`);
 
@@ -484,16 +485,19 @@ const AlertEngine = {
             return '<span class="ae-act ae-act-thr"><i></i>throttled' +
                 (f.throttle_key ? ` on ${this.esc(f.throttle_key)}` : '') + '</span>';
         }
+        // A throttle suppresses per key, so a fire can be partly delivered.
+        const held = Number(f.suppressed || 0)
+            ? `<span class="ae-act ae-act-thr"><i></i>${this.number(f.suppressed)} suppressed</span>` : '';
         const actions = f.actions || [];
-        if (!actions.length) return '<span class="ae-act ae-act-none"><i></i>no actions</span>';
+        if (!actions.length) return held || '<span class="ae-act ae-act-none"><i></i>no actions</span>';
         const failed = actions.filter(a => !a.ok);
         if (failed.length) {
             const first = failed[0];
             return `<span class="ae-act ae-act-bad"><i></i>${this.esc(first.kind)} ${this.esc(first.name)}` +
                 (first.detail ? ` &rarr; ${this.esc(first.detail)}` : ' failed') +
-                (failed.length > 1 ? ` &middot; +${failed.length - 1} more` : '') + '</span>';
+                (failed.length > 1 ? ` &middot; +${failed.length - 1} more` : '') + '</span>' + held;
         }
-        return `<span class="ae-act ae-act-ok"><i></i>${actions.map(a => this.esc(a.name)).join(', ')}</span>`;
+        return `<span class="ae-act ae-act-ok"><i></i>${actions.map(a => this.esc(a.name)).join(', ')}</span>` + held;
     },
 
     scopeName(row) {

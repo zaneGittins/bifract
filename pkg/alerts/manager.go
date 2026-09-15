@@ -75,6 +75,7 @@ type YAMLAlert struct {
 	Enabled             bool     `yaml:"enabled"`
 	ThrottleTimeSeconds int      `yaml:"throttleTimeSeconds"`
 	ThrottleField       string   `yaml:"throttleField"`
+	MaxEventLagSeconds  int      `yaml:"maxEventLagSeconds,omitempty"`
 	WindowDuration      *int     `yaml:"windowDuration,omitempty"`
 	ScheduleCron        *string  `yaml:"scheduleCron,omitempty"`
 	QueryWindowSeconds  *int     `yaml:"queryWindowSeconds,omitempty"`
@@ -96,6 +97,7 @@ type AlertCreateRequest struct {
 	Enabled             bool      `json:"enabled"`
 	ThrottleTimeSeconds int       `json:"throttle_time_seconds"`
 	ThrottleField       string    `json:"throttle_field"`
+	MaxEventLagSeconds  int       `json:"max_event_lag_seconds"`
 	WindowDuration      *int      `json:"window_duration,omitempty"`
 	ScheduleCron        *string   `json:"schedule_cron,omitempty"`
 	QueryWindowSeconds  *int      `json:"query_window_seconds,omitempty"`
@@ -121,6 +123,7 @@ type AlertUpdateRequest struct {
 	Enabled             bool      `json:"enabled"`
 	ThrottleTimeSeconds int       `json:"throttle_time_seconds"`
 	ThrottleField       string    `json:"throttle_field"`
+	MaxEventLagSeconds  int       `json:"max_event_lag_seconds"`
 	WindowDuration      *int      `json:"window_duration,omitempty"`
 	ScheduleCron        *string   `json:"schedule_cron,omitempty"`
 	QueryWindowSeconds  *int      `json:"query_window_seconds,omitempty"`
@@ -297,6 +300,7 @@ func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID,
 			References:          yamlAlert.References,
 			Enabled:             yamlAlert.Enabled,
 			ThrottleTimeSeconds: yamlAlert.ThrottleTimeSeconds,
+			MaxEventLagSeconds:  yamlAlert.MaxEventLagSeconds,
 			ThrottleField:       yamlAlert.ThrottleField,
 			WindowDuration:      yamlAlert.WindowDuration,
 			ScheduleCron:        yamlAlert.ScheduleCron,
@@ -381,6 +385,15 @@ func (m *Manager) ProposeFromYAML(ctx context.Context, yamlContent, summary, use
 // (see the alert branch of translator.go), and throttleKey then falls back to
 // throttling the alert globally instead of per value -- suppressing firings with no
 // error anywhere.
+// validateMaxEventLag rejects a negative lag. Zero is off; any positive value is a
+// real threshold, so there is no upper bound to enforce.
+func validateMaxEventLag(seconds int) error {
+	if seconds < 0 {
+		return fmt.Errorf("%w: max event lag cannot be negative", ErrInvalidAlert)
+	}
+	return nil
+}
+
 func validateThrottleField(field string) error {
 	if field == "" || parser.IsPlainFieldName(field) {
 		return nil
@@ -396,6 +409,10 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 	}
 
 	if err := validateThrottleField(req.ThrottleField); err != nil {
+		return nil, err
+	}
+
+	if err := validateMaxEventLag(req.MaxEventLagSeconds); err != nil {
 		return nil, err
 	}
 
@@ -491,13 +508,13 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 	}
 
 	query := `
-		INSERT INTO alerts (name, description, query_string, alert_type, enabled, throttle_time_seconds, throttle_field, labels, "references", severity, created_by, fractal_id, prism_id, window_duration, schedule_cron, query_window_seconds)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		INSERT INTO alerts (name, description, query_string, alert_type, enabled, throttle_time_seconds, throttle_field, max_event_lag_seconds, labels, "references", severity, created_by, fractal_id, prism_id, window_duration, schedule_cron, query_window_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		RETURNING id
 	`
 	err = tx.QueryRow(ctx, query,
 		req.Name, req.Description, req.QueryString, alertType, req.Enabled,
-		req.ThrottleTimeSeconds, req.ThrottleField, pq.Array(req.Labels), pq.Array(req.References), severity, storage.NullableUser(createdBy), fractalIDPtr, prismIDPtr, req.WindowDuration,
+		req.ThrottleTimeSeconds, req.ThrottleField, req.MaxEventLagSeconds, pq.Array(req.Labels), pq.Array(req.References), severity, storage.NullableUser(createdBy), fractalIDPtr, prismIDPtr, req.WindowDuration,
 		req.ScheduleCron, req.QueryWindowSeconds,
 	).Scan(&alertID)
 	if err != nil {
@@ -574,6 +591,11 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 	if err := validateThrottleField(req.ThrottleField); err != nil {
 		return nil, err
 	}
+
+	if err := validateMaxEventLag(req.MaxEventLagSeconds); err != nil {
+		return nil, err
+	}
+
 	// Validate query syntax
 	parsedQuery, err := parser.ParseQuery(req.QueryString)
 	if err != nil {
@@ -717,6 +739,7 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		    "references" = $9, severity = $10, updated_by = $11,
 		    alert_type = $12, window_duration = $13,
 		    schedule_cron = $14, query_window_seconds = $15,
+		    max_event_lag_seconds = $16,
 		    disabled_reason = CASE WHEN $5 = true THEN NULL ELSE disabled_reason END,
 		    last_evaluated_at = CASE WHEN $5 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END,
 		    updated_at = NOW()
@@ -726,7 +749,7 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		alertID, req.Name, req.Description, req.QueryString, req.Enabled,
 		req.ThrottleTimeSeconds, req.ThrottleField, pq.Array(req.Labels),
 		pq.Array(req.References), severity, storage.NullableUser(username), alertType, req.WindowDuration,
-		req.ScheduleCron, req.QueryWindowSeconds,
+		req.ScheduleCron, req.QueryWindowSeconds, req.MaxEventLagSeconds,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update alert: %w", err)
@@ -883,7 +906,8 @@ const (
 func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) {
 	query := `
 		SELECT a.id, a.name, COALESCE(a.description, ''), a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
-		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels, a."references",
+		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''),
+		       COALESCE(a.max_event_lag_seconds, 0), a.labels, a."references",
 		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
 		       COALESCE(a.feed_id::text, ''), COALESCE(a.feed_rule_path, ''),
 		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
@@ -905,7 +929,7 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 
 	err := m.pg.QueryRow(ctx, query, alertID).Scan(
 		&alert.ID, &alert.Name, &alert.Description, &alert.QueryString, &alert.AlertType,
-		&alert.Enabled, &alert.ThrottleTimeSeconds, &alert.ThrottleField,
+		&alert.Enabled, &alert.ThrottleTimeSeconds, &alert.ThrottleField, &alert.MaxEventLagSeconds,
 		pq.Array(&alert.Labels), pq.Array(&alert.References), &alert.Severity, &alert.FractalID, &alert.PrismID,
 		&alert.FeedID, &alert.FeedRulePath, &alert.CreatedBy, &alert.UpdatedBy,
 		&alert.CreatedAt, &alert.UpdatedAt,
@@ -965,7 +989,8 @@ func (m *Manager) GetAlertByName(ctx context.Context, name string) (*Alert, erro
 func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, prismID string) ([]*Alert, error) {
 	baseQuery := `
 		SELECT a.id, a.name, a.description, a.query_string, COALESCE(a.alert_type, 'event'), a.enabled,
-		       a.throttle_time_seconds, a.throttle_field, a.labels, a."references",
+		       a.throttle_time_seconds, a.throttle_field,
+		       COALESCE(a.max_event_lag_seconds, 0), a.labels, a."references",
 		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
 		       COALESCE(a.created_by, ''), COALESCE(a.updated_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       COALESCE(a.disabled_reason, ''),
@@ -1032,7 +1057,7 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 
 		err := rows.Scan(
 			&alert.ID, &alert.Name, &alert.Description, &alert.QueryString, &alert.AlertType,
-			&alert.Enabled, &alert.ThrottleTimeSeconds, &alert.ThrottleField,
+			&alert.Enabled, &alert.ThrottleTimeSeconds, &alert.ThrottleField, &alert.MaxEventLagSeconds,
 			pq.Array(&alert.Labels), pq.Array(&alert.References), &alert.Severity, &alert.FractalID, &alert.PrismID,
 			&alert.CreatedBy, &alert.UpdatedBy, &alert.CreatedAt, &alert.UpdatedAt,
 			&alert.LastTriggered, &alert.DisabledReason, &alert.LastExecutionTimeMs,
@@ -2428,6 +2453,7 @@ func (m *Manager) DuplicateAlert(ctx context.Context, alertID, createdBy string)
 		References:          source.References,
 		Enabled:             false,
 		ThrottleTimeSeconds: source.ThrottleTimeSeconds,
+		MaxEventLagSeconds:  source.MaxEventLagSeconds,
 		ThrottleField:       source.ThrottleField,
 		WindowDuration:      source.WindowDuration,
 		ScheduleCron:        source.ScheduleCron,

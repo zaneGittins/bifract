@@ -123,6 +123,7 @@ const AlertDrafts = {
             name: s.name, description: s.description, query_string: s.query_string,
             alert_type: s.alert_type, severity: s.severity,
             throttle_time_seconds: s.throttle_time_seconds, throttle_field: s.throttle_field,
+            max_event_lag_seconds: s.max_event_lag_seconds,
             labels: s.labels, references: s.references,
             window_duration: s.window_duration, schedule_cron: s.schedule_cron,
             query_window_seconds: s.query_window_seconds,
@@ -204,6 +205,7 @@ const AlertDrafts = {
         set('editorAlertDescription', c.description);
         set('editorThrottleTime', c.throttle_time_seconds);
         set('editorThrottleField', c.throttle_field);
+        set('editorMaxEventLag', c.max_event_lag_seconds);
 
         if (c.alert_type) {
             const sel = document.getElementById('alertTypeSelect');

@@ -47,6 +47,7 @@ var policyFields = map[string]PolicyField{
 
 	"throttle_time_seconds": {Name: "throttle_time_seconds", Type: FieldNumber, Label: "Throttle (seconds)", Help: "0 means no throttle"},
 	"throttle_field":        {Name: "throttle_field", Type: FieldString, Label: "Throttle field", Help: "Field the throttle groups on"},
+	"max_event_lag_seconds": {Name: "max_event_lag_seconds", Type: FieldNumber, Label: "Max event lag (seconds)", Help: "0 means late logs still alert"},
 	"window_duration":       {Name: "window_duration", Type: FieldNumber, Label: "Window (seconds)", Help: "Compound correlation window"},
 	"query_window_seconds":  {Name: "query_window_seconds", Type: FieldNumber, Label: "Query window (seconds)", Help: "Scheduled alert lookback"},
 	"schedule_cron":         {Name: "schedule_cron", Type: FieldString, Label: "Schedule", Help: "Cron expression"},

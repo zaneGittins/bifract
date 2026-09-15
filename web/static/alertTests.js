@@ -418,7 +418,7 @@ const AlertTests = {
     // in, exactly as it does for a real ingested event. Stringifying them here would
     // produce one opaque field instead of the ones a rule matches on.
     stripBookkeeping(fields, timestamp) {
-        const drop = new Set(['log_id', 'fractal_id', 'ingest_timestamp', 'norm_log', 'raw_log', 'normalizer', '_shard_num']);
+        const drop = new Set(['log_id', 'fractal_id', 'ingest_timestamp', '_ingest_timestamp', 'norm_log', 'raw_log', 'normalizer', '_shard_num']);
         const out = {};
         for (const [k, v] of Object.entries(fields)) {
             if (drop.has(k) || v === null || v === undefined || v === '') continue;

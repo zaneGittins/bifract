@@ -193,6 +193,7 @@ func subqueryOptions(ctx *CommandContext, maxRows int) QueryOptions {
 		DictionaryDatabase:    ctx.Opts.DictionaryDatabase,
 		TableName:             ctx.Opts.TableName,
 		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
+		MaxEventLagSeconds:    ctx.Opts.MaxEventLagSeconds,
 		DisplayTimezone:       ctx.Opts.DisplayTimezone,
 	}
 }

@@ -47,7 +47,6 @@ type Engine struct {
 	webhookClient       *WebhookClient
 	emailClient         *EmailClient
 	fractalActionClient *FractalActionClient
-	throttleCache       *ThrottleCache
 
 	// Alert cache with TTL-based refresh.
 	alertsCache      map[string]*Alert
@@ -157,6 +156,7 @@ type Alert struct {
 	Enabled              bool                             `json:"enabled"`
 	ThrottleTimeSeconds  int                              `json:"throttle_time_seconds"`
 	ThrottleField        string                           `json:"throttle_field"`
+	MaxEventLagSeconds   int                              `json:"max_event_lag_seconds"`
 	Labels               []string                         `json:"labels"`
 	References           []string                         `json:"references"`
 	Severity             string                           `json:"severity"`
@@ -210,7 +210,6 @@ func NewEngineWithDicts(pg *storage.PostgresClient, ch *storage.ClickHouseClient
 		webhookClient:       NewWebhookClient(baseURL),
 		emailClient:         NewEmailClient(pg, baseURL),
 		fractalActionClient: NewFractalActionClient(ch, pg),
-		throttleCache:       NewThrottleCache(),
 		alertsCache:         make(map[string]*Alert),
 	}
 }
@@ -569,6 +568,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 		EndTime:            to,
 		MaxRows:            10000,
 		UseIngestTimestamp: true,
+		MaxEventLagSeconds: alert.MaxEventLagSeconds,
 		TableName:          tableName,
 	}
 	if alert.PrismID != "" {
@@ -963,18 +963,23 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 // processAlertResults handles post-query logic: throttle checking, action
 // execution, and audit recording. Only records an execution when results
 // are found (or throttled) to prevent table bloat at scale.
+//
+// Throttling is applied per suppression key rather than to the batch, so a
+// result set spanning several values of the throttle field delivers the values
+// whose window has elapsed and withholds only the rest.
 func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results []map[string]interface{}, opts parser.QueryOptions, executionTimeMs int) error {
 	if len(results) == 0 {
 		return nil
 	}
 
-	throttled, throttleKey := e.isThrottled(alert, results)
-	if throttled {
+	thr := e.applyThrottle(ctx, alert, results)
+	if len(thr.deliver) == 0 {
 		if err := e.updateLastTriggered(ctx, alert.ID); err != nil {
 			log.Printf("[Alert Engine] Failed to update last triggered for throttled alert %s: %v", alert.Name, err)
 		}
-		return e.recordExecution(ctx, alert.ID, alert.FractalID, alert.PrismID, len(results), true, throttleKey, executionTimeMs, []WebhookResult{}, []FractalResult{}, []EmailResult{})
+		return e.recordExecution(ctx, alert.ID, alert.FractalID, alert.PrismID, len(results), thr.suppressed, true, thr.auditKey, executionTimeMs, []WebhookResult{}, []FractalResult{}, []EmailResult{})
 	}
+	results = thr.deliver
 
 	resolvedName := ResolveTemplateName(alert.Name, results)
 
@@ -1085,13 +1090,13 @@ func (e *Engine) processAlertResults(ctx context.Context, alert *Alert, results 
 		fractalResults = append(fractalResults, result)
 	}
 
-	e.updateThrottle(alert, results)
+	e.openThrottleWindows(ctx, alert, thr.keys)
 
 	if err := e.updateLastTriggered(ctx, alert.ID); err != nil {
 		log.Printf("[Alert Engine] Failed to update last triggered for alert %s: %v", alert.Name, err)
 	}
 
-	return e.recordExecution(ctx, alert.ID, alert.FractalID, alert.PrismID, len(results), false, throttleKey, executionTimeMs, webhookResults, fractalResults, emailResults)
+	return e.recordExecution(ctx, alert.ID, alert.FractalID, alert.PrismID, len(results)+thr.suppressed, thr.suppressed, false, thr.auditKey, executionTimeMs, webhookResults, fractalResults, emailResults)
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,7 +1131,8 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 	query := `
 		SELECT a.id, a.name, a.description, a.query_string,
 		       COALESCE(a.alert_type, 'event'), a.enabled,
-		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''), a.labels,
+		       COALESCE(a.throttle_time_seconds, 0), COALESCE(a.throttle_field, ''),
+		       COALESCE(a.max_event_lag_seconds, 0), a.labels,
 		       COALESCE(a.severity, 'medium'), COALESCE(a.fractal_id::text, ''), COALESCE(a.prism_id::text, ''),
 		       COALESCE(a.created_by, ''), a.created_at, a.updated_at, a.last_triggered,
 		       a.last_evaluated_at, COALESCE(a.disabled_reason, ''), a.window_duration,
@@ -1159,6 +1165,7 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 		err := rows.Scan(
 			&alert.ID, &alert.Name, &alert.Description, &alert.QueryString,
 			&alert.AlertType, &alert.Enabled, &alert.ThrottleTimeSeconds, &alert.ThrottleField,
+			&alert.MaxEventLagSeconds,
 			pq.Array(&alert.Labels), &alert.Severity, &alert.FractalID, &alert.PrismID,
 			&alert.CreatedBy, &alert.CreatedAt, &alert.UpdatedAt,
 			&alert.LastTriggered, &alert.LastEvaluatedAt, &alert.DisabledReason, &alert.WindowDuration,
@@ -1234,37 +1241,6 @@ func (e *Engine) RefreshAlerts(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
-// Throttle helpers
-// ---------------------------------------------------------------------------
-
-func (e *Engine) isThrottled(alert *Alert, results []map[string]interface{}) (bool, string) {
-	if alert.ThrottleTimeSeconds <= 0 {
-		return false, ""
-	}
-	key := e.throttleKey(alert, results)
-	return e.throttleCache.IsThrottled(key, time.Duration(alert.ThrottleTimeSeconds)*time.Second), key
-}
-
-func (e *Engine) updateThrottle(alert *Alert, results []map[string]interface{}) {
-	if alert.ThrottleTimeSeconds <= 0 {
-		return
-	}
-	e.throttleCache.Set(
-		e.throttleKey(alert, results),
-		time.Duration(alert.ThrottleTimeSeconds)*time.Second,
-	)
-}
-
-func (e *Engine) throttleKey(alert *Alert, results []map[string]interface{}) string {
-	if alert.ThrottleField != "" && len(results) > 0 {
-		if val, ok := results[0][alert.ThrottleField]; ok {
-			return fmt.Sprintf("%s:%s:%v", alert.ID, alert.ThrottleField, val)
-		}
-	}
-	return fmt.Sprintf("%s:global", alert.ID)
-}
-
-// ---------------------------------------------------------------------------
 // Database helpers
 // ---------------------------------------------------------------------------
 
@@ -1296,10 +1272,12 @@ func (e *Engine) getAlertsFractalID(ctx context.Context) string {
 	return e.alertsFractalID
 }
 
-// recordExecution writes an alert execution audit row. Exactly one of fractalID
+// recordExecution writes an alert execution audit row. logCount is every row the
+// query matched and suppressedCount how many of those a throttle withheld, so
+// the rows that reached actions are the difference. Exactly one of fractalID
 // or prismID must be non-empty - this mirrors the parent alert's scope. Passing
 // both or neither will be rejected by alert_executions_scope_check.
-func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID string, prismID string, logCount int, throttled bool, throttleKey string, executionTimeMs int, webhookResults []WebhookResult, fractalResults []FractalResult, emailResults []EmailResult) error {
+func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID string, prismID string, logCount int, suppressedCount int, throttled bool, throttleKey string, executionTimeMs int, webhookResults []WebhookResult, fractalResults []FractalResult, emailResults []EmailResult) error {
 	webhookResultsJSON, err := json.Marshal(webhookResults)
 	if err != nil {
 		return fmt.Errorf("failed to marshal webhook results: %w", err)
@@ -1324,9 +1302,9 @@ func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID 
 	}
 
 	_, err = e.pg.Exec(ctx,
-		`INSERT INTO alert_executions (alert_id, fractal_id, prism_id, log_count, throttled, throttle_key, execution_time_ms, webhook_results, fractal_results, email_results)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		alertID, fractalIDPtr, prismIDPtr, logCount, throttled, throttleKey, executionTimeMs, string(webhookResultsJSON), string(fractalResultsJSON), string(emailResultsJSON),
+		`INSERT INTO alert_executions (alert_id, fractal_id, prism_id, log_count, suppressed_count, throttled, throttle_key, execution_time_ms, webhook_results, fractal_results, email_results)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		alertID, fractalIDPtr, prismIDPtr, logCount, suppressedCount, throttled, throttleKey, executionTimeMs, string(webhookResultsJSON), string(fractalResultsJSON), string(emailResultsJSON),
 	)
 	if err != nil {
 		var pgErr *pq.Error
@@ -1354,7 +1332,8 @@ func (e *Engine) disableAlertWithReason(ctx context.Context, alertID string, rea
 // Retention cleanup
 // ---------------------------------------------------------------------------
 
-// maybeRunRetention deletes old alert_executions rows once per hour.
+// maybeRunRetention deletes old alert_executions rows and expired throttle
+// windows once per hour.
 func (e *Engine) maybeRunRetention() {
 	if time.Since(e.lastCleanupAt) < retentionInterval {
 		return
@@ -1375,60 +1354,8 @@ func (e *Engine) maybeRunRetention() {
 	if count, _ := result.RowsAffected(); count > 0 {
 		log.Printf("[Alert Engine] Retention cleanup removed %d old executions", count)
 	}
-}
 
-// ---------------------------------------------------------------------------
-// ThrottleCache
-// ---------------------------------------------------------------------------
-
-type ThrottleCache struct {
-	entries map[string]time.Time
-	mu      sync.RWMutex
-}
-
-func NewThrottleCache() *ThrottleCache {
-	cache := &ThrottleCache{
-		entries: make(map[string]time.Time),
-	}
-	go cache.cleanupLoop()
-	return cache
-}
-
-func (tc *ThrottleCache) IsThrottled(key string, duration time.Duration) bool {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-
-	if expiry, exists := tc.entries[key]; exists {
-		return time.Now().Before(expiry)
-	}
-	return false
-}
-
-func (tc *ThrottleCache) Set(key string, duration time.Duration) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	tc.entries[key] = time.Now().Add(duration)
-}
-
-func (tc *ThrottleCache) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		tc.cleanup()
-	}
-}
-
-func (tc *ThrottleCache) cleanup() {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	now := time.Now()
-	for key, expiry := range tc.entries {
-		if now.After(expiry) {
-			delete(tc.entries, key)
-		}
-	}
+	e.cleanupThrottles(ctx)
 }
 
 // dropAlreadyReported removes rows whose evidence completed before the window

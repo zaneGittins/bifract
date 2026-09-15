@@ -423,6 +423,8 @@ func subjectNumber(name string, s PolicySubject) float64 {
 	switch name {
 	case "throttle_time_seconds":
 		return float64(s.Content.ThrottleTimeSeconds)
+	case "max_event_lag_seconds":
+		return float64(s.Content.MaxEventLagSeconds)
 	case "window_duration":
 		if s.Content.WindowDuration != nil {
 			return float64(*s.Content.WindowDuration)

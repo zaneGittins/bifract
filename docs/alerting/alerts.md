@@ -15,7 +15,8 @@ Re-enabling a previously disabled alert resets its cursor to a few minutes befor
 | Severity | Severity label carried through to actions |
 | Labels | Tags for organization and filtering (e.g. `sigma:high`, `product:windows`) |
 | References | External links for context (e.g. MITRE ATT&CK URLs) |
-| Throttle | Suppression window in seconds, optionally per-value via a **throttle field** (e.g. throttle per `src_ip` rather than globally) |
+| Throttle | Suppression window in seconds, optionally per value via a **throttle field** (see [Throttling](#throttling)) |
+| Max event lag | Ignore matches that arrived more than this many seconds after their event time, 0 to accept any (see [Late logs](#late-logs)) |
 | Actions | One or more actions to run on a hit (see below) |
 
 An alert has no single "webhook URL" field. Actions are defined once and attached to any number of alerts.
@@ -30,6 +31,34 @@ An alert has no single "webhook URL" field. Actions are defined once and attache
 | **Dictionary** | Upserts matched values into a [context list](../features/dictionaries.md), building a live watchlist (e.g. accumulating suspicious IPs for later enrichment) |
 
 Actions are managed from the fractal's **Alerts** tab and can be attached to multiple alerts.
+
+## Throttling
+
+A throttle suppresses repeat firings for a window. Suppression is per key: the key is the value of the throttle field on the matched row, or the alert itself when no field is set. With a throttle field of `host`, a hit on a host whose window has elapsed is delivered while another host in the same result set stays suppressed. Withheld rows reach no action, including the system `alerts` fractal.
+
+Open windows are stored in PostgreSQL, so a restart or a change of which replica holds the evaluation lock does not release them.
+
+An execution records `log_count` (every row matched) and `suppressed_count` (how many of those were withheld), so a partly suppressed firing is visible under **System &rarr; Alerts**.
+
+## Late Logs
+
+Alerts evaluate on arrival, not event time, so a source that reconnects and flushes a buffered backlog presents week-old events as new and the alert fires on all of them. **Max event lag** bounds that: a match whose event time trails its arrival by more than the configured number of seconds is dropped. 0, the default, alerts on everything.
+
+The comparison is one-sided. An event dated ahead of its arrival, which is what a fast clock produces, is never dropped.
+
+The filter runs in ClickHouse as part of the alert query, before any row is returned:
+
+| Consequence | |
+|---|---|
+| Aggregation | A compound alert counts only timely events, so a backlog cannot trip a threshold |
+| Correlation | `join()` carries the same filter, so a late event cannot serve as the other side of a match |
+| Row budget | An alert reads at most 10,000 rows per evaluation; filtering server-side keeps a backlog from consuming that budget and starving genuinely new matches |
+
+Dropped rows are not counted anywhere: they never reach the engine. An alert's execution history shows what fired, not what the lag filter excluded.
+
+Restored archive data keeps its original ingest timestamp, so it lands behind every alert cursor and is never evaluated. This setting is not needed for restores.
+
+Alert tests ignore the setting: a test corpus is a frozen sample whose timestamps are historical by nature, so enforcing it would fail cases for the age of the sample rather than for anything about the rule.
 
 ## Auto-Projection
 

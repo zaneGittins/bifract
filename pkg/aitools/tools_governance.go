@@ -88,6 +88,7 @@ type proposeAlertChangeArgs struct {
 	References          []string `json:"references,omitempty" jsonschema:"Reference URLs."`
 	ThrottleTimeSeconds int      `json:"throttle_time_seconds,omitempty" jsonschema:"Minimum seconds between repeat firings."`
 	ThrottleField       string   `json:"throttle_field,omitempty" jsonschema:"Re-fire only when this field's value changes."`
+	MaxEventLagSeconds  int      `json:"max_event_lag_seconds,omitempty" jsonschema:"Ignore matches whose event time trails their arrival by more than this many seconds. 0 means late logs still alert."`
 	ScheduleCron        string   `json:"schedule_cron,omitempty" jsonschema:"Five-field cron. Required for alert_type scheduled."`
 	QueryWindowSeconds  int      `json:"query_window_seconds,omitempty" jsonschema:"Scheduled lookback in seconds."`
 	WindowDuration      int      `json:"window_duration,omitempty" jsonschema:"Compound correlation window in seconds."`
@@ -139,6 +140,7 @@ func proposeAlertChange(ctx context.Context, c Client, in proposeAlertChangeArgs
 			"references":            orEmpty(in.References),
 			"throttle_time_seconds": in.ThrottleTimeSeconds,
 			"throttle_field":        in.ThrottleField,
+			"max_event_lag_seconds": in.MaxEventLagSeconds,
 			"webhook_action_ids":    []string{},
 			"fractal_action_ids":    []string{},
 			"dictionary_action_ids": []string{},

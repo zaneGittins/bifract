@@ -193,6 +193,10 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS labels TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS "references" TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity VARCHAR(20) NOT NULL DEFAULT 'medium';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_execution_time_ms INTEGER;
+-- Ignore matches whose event time trails their arrival by more than this many
+-- seconds (0 = off), so a backlog flush from a reconnected agent does not alert
+-- on last week's activity.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS max_event_lag_seconds INTEGER NOT NULL DEFAULT 0;
 
 -- Alert definition history. Holds the last N revisions per alert (retention is a
 -- live admin setting); enable/disable is deliberately not part of the content, so
@@ -273,6 +277,21 @@ CREATE TABLE IF NOT EXISTS alert_executions (
     webhook_results JSONB DEFAULT '[]',
     fractal_results JSONB DEFAULT '[]'
 );
+-- log_count is every row the query matched; suppressed_count how many of those a
+-- throttle withheld, so an execution can be partly delivered.
+ALTER TABLE alert_executions ADD COLUMN IF NOT EXISTS suppressed_count INTEGER NOT NULL DEFAULT 0;
+
+-- Open throttle windows, one row per (alert, suppression key). Held here rather
+-- than in the engine's memory so a restart or a change of evaluation leader does
+-- not release every window at once. Expired rows are deleted by the engine's
+-- hourly retention pass.
+CREATE TABLE IF NOT EXISTS alert_throttles (
+    alert_id     UUID NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+    throttle_key VARCHAR(255) NOT NULL,
+    expires_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (alert_id, throttle_key)
+);
+CREATE INDEX IF NOT EXISTS idx_alert_throttles_expires ON alert_throttles(expires_at);
 
 -- Indexes for alert system
 CREATE INDEX IF NOT EXISTS idx_alerts_enabled ON alerts(enabled) WHERE enabled = true;

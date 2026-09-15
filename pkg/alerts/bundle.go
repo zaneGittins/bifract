@@ -202,6 +202,7 @@ func alertToYAML(alert *Alert, names map[string]string) YAMLAlert {
 		References:          alert.References,
 		Enabled:             alert.Enabled,
 		ThrottleTimeSeconds: alert.ThrottleTimeSeconds,
+		MaxEventLagSeconds:  alert.MaxEventLagSeconds,
 		ThrottleField:       alert.ThrottleField,
 		WindowDuration:      window,
 		ScheduleCron:        cron,

@@ -150,18 +150,20 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 
 	// What actually fired in the range.
 	var fires, firingAlerts, throttled int64
-	var logsMatched sql.NullInt64
+	var logsMatched, logsSuppressed sql.NullInt64
 	if err := h.pg.QueryRow(ctx, `
-		SELECT count(*), count(DISTINCT alert_id), COALESCE(SUM(log_count), 0), count(*) FILTER (WHERE throttled)
+		SELECT count(*), count(DISTINCT alert_id), COALESCE(SUM(log_count), 0),
+		       count(*) FILTER (WHERE throttled), COALESCE(SUM(suppressed_count), 0)
 		FROM alert_executions
 		WHERE triggered_at > NOW() - make_interval(mins => $1)`, mins,
-	).Scan(&fires, &firingAlerts, &logsMatched, &throttled); err != nil {
+	).Scan(&fires, &firingAlerts, &logsMatched, &throttled, &logsSuppressed); err != nil {
 		log.Printf("[AlertEngine] fires: %v", err)
 	}
 	summary["fires"] = fires
 	summary["firing_alerts"] = firingAlerts
 	summary["logs_matched"] = logsMatched.Int64
 	summary["throttled"] = throttled
+	summary["logs_suppressed"] = logsSuppressed.Int64
 
 	// Action delivery. A webhook that has been failing all day is invisible
 	// anywhere else in the product.
@@ -392,7 +394,8 @@ func (h *PerformanceHandler) respondAlertFires(ctx context.Context, w http.Respo
 	rows, err := h.pg.Query(ctx, `
 		SELECT ae.triggered_at, a.name, COALESCE(NULLIF(a.severity, ''), 'medium'),
 		       COALESCE(ae.fractal_id::text, ''), COALESCE(ae.prism_id::text, ''),
-		       ae.log_count, COALESCE(ae.throttled, false), COALESCE(ae.throttle_key, ''),
+		       ae.log_count, COALESCE(ae.suppressed_count, 0),
+		       COALESCE(ae.throttled, false), COALESCE(ae.throttle_key, ''),
 		       COALESCE(ae.execution_time_ms, 0),
 		       COALESCE(ae.webhook_results, '[]'::jsonb)::text,
 		       COALESCE(ae.fractal_results, '[]'::jsonb)::text,
@@ -414,10 +417,10 @@ func (h *PerformanceHandler) respondAlertFires(ctx context.Context, w http.Respo
 	for rows.Next() {
 		var at time.Time
 		var name, severity, fractalID, prismID, throttleKey string
-		var logCount, execMs int64
+		var logCount, suppressed, execMs int64
 		var throttled bool
 		var webhookJSON, fractalJSON, emailJSON string
-		if err := rows.Scan(&at, &name, &severity, &fractalID, &prismID, &logCount,
+		if err := rows.Scan(&at, &name, &severity, &fractalID, &prismID, &logCount, &suppressed,
 			&throttled, &throttleKey, &execMs, &webhookJSON, &fractalJSON, &emailJSON); err != nil {
 			continue
 		}
@@ -430,7 +433,8 @@ func (h *PerformanceHandler) respondAlertFires(ctx context.Context, w http.Respo
 		out = append(out, map[string]interface{}{
 			"time": at.UTC().Format(time.RFC3339), "name": name, "severity": severity,
 			"fractal_id": fractalID, "prism_id": prismID,
-			"logs": logCount, "throttled": throttled, "throttle_key": throttleKey,
+			"logs": logCount, "suppressed": suppressed,
+			"throttled": throttled, "throttle_key": throttleKey,
 			"exec_ms": execMs, "actions": actions,
 		})
 	}

@@ -1661,7 +1661,8 @@ ${this.yamlList('labels', alert.labels)}${(alert.references && alert.references.
 ${this.yamlList('references', alert.references)}` : ''}
 enabled: ${alert.enabled}
 throttleTimeSeconds: ${alert.throttle_time_seconds || 0}${alert.throttle_field ? `
-${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
+${this.yamlField('throttleField', alert.throttle_field)}` : ''}${alert.max_event_lag_seconds ? `
+maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         if (alertType === 'compound' && alert.window_duration) {
             yaml += `\nwindowDuration: ${alert.window_duration}`;
         }
@@ -1719,6 +1720,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
                     enabled: enabled,
                     throttle_time_seconds: alert.throttle_time_seconds || 0,
                     throttle_field: alert.throttle_field || '',
+                    max_event_lag_seconds: alert.max_event_lag_seconds || 0,
                     window_duration: alert.window_duration || null,
                     schedule_cron: alert.schedule_cron || null,
                     query_window_seconds: alert.query_window_seconds || null
@@ -2610,6 +2612,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         const referencesField = document.getElementById('editorAlertReferences');
         const throttleTimeField = document.getElementById('editorThrottleTime');
         const throttleFieldField = document.getElementById('editorThrottleField');
+        const maxEventLagField = document.getElementById('editorMaxEventLag');
         const enabledField = document.getElementById('editorAlertEnabled');
 
         if (nameField) nameField.value = '';
@@ -2624,6 +2627,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         if (referencesField) referencesField.value = '';
         if (throttleTimeField) throttleTimeField.value = '0';
         if (throttleFieldField) throttleFieldField.value = '';
+        if (maxEventLagField) maxEventLagField.value = '0';
         if (enabledField) enabledField.checked = true;
 
         // Reset severity
@@ -3264,6 +3268,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             const referencesField = document.getElementById('editorAlertReferences');
             const throttleTimeField = document.getElementById('editorThrottleTime');
             const throttleFieldField = document.getElementById('editorThrottleField');
+            const maxEventLagField = document.getElementById('editorMaxEventLag');
             const enabledField = document.getElementById('editorAlertEnabled');
 
             if (nameField) nameField.value = alert.name || '';
@@ -3282,6 +3287,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             this.setSeverity(alert.severity || 'medium');
             if (throttleTimeField) throttleTimeField.value = alert.throttle_time_seconds || 0;
             if (throttleFieldField) throttleFieldField.value = alert.throttle_field || '';
+            if (maxEventLagField) maxEventLagField.value = alert.max_event_lag_seconds || 0;
             if (enabledField) enabledField.checked = alert.enabled;
 
             // Set alert type dropdown and card
@@ -3806,6 +3812,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             severity: formData.severity,
             throttle_time_seconds: formData.throttle_time_seconds,
             throttle_field: formData.throttle_field,
+            max_event_lag_seconds: formData.max_event_lag_seconds,
             labels: formData.labels,
             references: formData.references,
             window_duration: formData.window_duration,
@@ -4222,6 +4229,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             severity: value('editorAlertSeverity') || 'medium',
             throttle_time_seconds: parseInt(value('editorThrottleTime'), 10) || 0,
             throttle_field: value('editorThrottleField').trim(),
+            max_event_lag_seconds: parseInt(value('editorMaxEventLag'), 10) || 0,
             labels: listFrom('editorAlertLabels', ','),
             references: listFrom('editorAlertReferences', '\n'),
             webhook_action_ids: actionIds.webhook,
@@ -4241,6 +4249,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         const labelsElement = document.getElementById('editorAlertLabels');
         const throttleTimeElement = document.getElementById('editorThrottleTime');
         const throttleFieldElement = document.getElementById('editorThrottleField');
+        const maxEventLagElement = document.getElementById('editorMaxEventLag');
         const enabledElement = document.getElementById('editorAlertEnabled');
         const severityElement = document.getElementById('editorAlertSeverity');
 
@@ -4257,6 +4266,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
         const severity = severityElement?.value || 'medium';
         const throttleTime = parseInt(throttleTimeElement?.value) || 0;
         const throttleField = throttleFieldElement?.value?.trim() || '';
+        const maxEventLag = parseInt(maxEventLagElement?.value) || 0;
         const enabled = enabledElement?.checked || false;
 
         // Get selected actions from the unified list
@@ -4307,6 +4317,7 @@ ${this.yamlField('throttleField', alert.throttle_field)}` : ''}`;
             references,
             throttle_time_seconds: throttleTime,
             throttle_field: throttleField,
+            max_event_lag_seconds: maxEventLag,
             enabled,
             webhook_action_ids: webhookActionIDs,
             fractal_action_ids: fractalActionIDs,

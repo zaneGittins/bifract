@@ -5694,6 +5694,13 @@ body.alert-editor-active {
     width: 150px;
 }
 
+.ae-note {
+    margin-top: 2px;
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-muted);
+}
+
 .ae-rail .alert-type-cards {
     display: grid;
     grid-template-columns: repeat(3, 1fr);

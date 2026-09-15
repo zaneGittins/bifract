@@ -422,7 +422,7 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 
 	// Query executions
 	query := `
-		SELECT id, triggered_at, log_count, throttled, throttle_key, execution_time_ms, webhook_results, fractal_results
+		SELECT id, triggered_at, log_count, suppressed_count, throttled, throttle_key, execution_time_ms, webhook_results, fractal_results
 		FROM alert_executions
 		WHERE alert_id = $1
 		ORDER BY triggered_at DESC
@@ -443,6 +443,7 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 			ID              string `json:"id"`
 			TriggeredAt     string `json:"triggered_at"`
 			LogCount        int    `json:"log_count"`
+			SuppressedCount int    `json:"suppressed_count"`
 			Throttled       bool   `json:"throttled"`
 			ThrottleKey     string `json:"throttle_key"`
 			ExecutionTimeMs int    `json:"execution_time_ms"`
@@ -451,7 +452,7 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		err := rows.Scan(
-			&execution.ID, &execution.TriggeredAt, &execution.LogCount,
+			&execution.ID, &execution.TriggeredAt, &execution.LogCount, &execution.SuppressedCount,
 			&execution.Throttled, &execution.ThrottleKey, &execution.ExecutionTimeMs,
 			&execution.WebhookResults, &execution.FractalResults,
 		)
@@ -477,6 +478,7 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 			"id":                execution.ID,
 			"triggered_at":      execution.TriggeredAt,
 			"log_count":         execution.LogCount,
+			"suppressed_count":  execution.SuppressedCount,
 			"throttled":         execution.Throttled,
 			"throttle_key":      execution.ThrottleKey,
 			"execution_time_ms": execution.ExecutionTimeMs,

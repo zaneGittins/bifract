@@ -32,6 +32,7 @@ type RevisionContent struct {
 	Severity            string   `json:"severity"`
 	ThrottleTimeSeconds int      `json:"throttle_time_seconds"`
 	ThrottleField       string   `json:"throttle_field"`
+	MaxEventLagSeconds  int      `json:"max_event_lag_seconds"`
 	Labels              []string `json:"labels"`
 	References          []string `json:"references"`
 	WindowDuration      *int     `json:"window_duration"`
@@ -118,6 +119,7 @@ func revisionContentFromRequest(req AlertUpdateRequest, alertType, severity stri
 		AlertType:           alertType,
 		Severity:            severity,
 		ThrottleTimeSeconds: req.ThrottleTimeSeconds,
+		MaxEventLagSeconds:  req.MaxEventLagSeconds,
 		ThrottleField:       req.ThrottleField,
 		Labels:              req.Labels,
 		References:          req.References,
@@ -145,6 +147,7 @@ func (c RevisionContent) ToUpdateRequest(enabled bool) AlertUpdateRequest {
 		Severity:            Severity(c.Severity),
 		Enabled:             enabled,
 		ThrottleTimeSeconds: c.ThrottleTimeSeconds,
+		MaxEventLagSeconds:  c.MaxEventLagSeconds,
 		ThrottleField:       c.ThrottleField,
 		Labels:              c.Labels,
 		References:          c.References,
@@ -168,11 +171,12 @@ func loadRevisionContentTx(ctx context.Context, tx storage.Tx, alertID string) (
 	err := tx.QueryRow(ctx, `
 		SELECT name, COALESCE(description, ''), query_string, COALESCE(alert_type, 'event'),
 		       COALESCE(severity, 'medium'), COALESCE(throttle_time_seconds, 0),
+		       COALESCE(max_event_lag_seconds, 0),
 		       COALESCE(throttle_field, ''), labels, "references",
 		       window_duration, schedule_cron, query_window_seconds
 		  FROM alerts WHERE id = $1`, alertID,
 	).Scan(&c.Name, &c.Description, &c.QueryString, &c.AlertType, &c.Severity,
-		&c.ThrottleTimeSeconds, &c.ThrottleField, pq.Array(&c.Labels), pq.Array(&c.References),
+		&c.ThrottleTimeSeconds, &c.MaxEventLagSeconds, &c.ThrottleField, pq.Array(&c.Labels), pq.Array(&c.References),
 		&c.WindowDuration, &c.ScheduleCron, &c.QueryWindowSeconds)
 	if err != nil {
 		return c, fmt.Errorf("load alert definition: %w", err)
@@ -324,6 +328,7 @@ func summarizeChange(before, after RevisionContent) string {
 	add("type", before.AlertType != after.AlertType)
 	add("severity", before.Severity != after.Severity)
 	add("throttle", before.ThrottleTimeSeconds != after.ThrottleTimeSeconds || before.ThrottleField != after.ThrottleField)
+	add("max event lag", before.MaxEventLagSeconds != after.MaxEventLagSeconds)
 	add("labels", !equalStrings(before.Labels, after.Labels))
 	add("references", !equalStrings(before.References, after.References))
 	add("window", !equalIntPtr(before.WindowDuration, after.WindowDuration))
@@ -654,6 +659,7 @@ func alertRevisionContent(a *Alert) RevisionContent {
 		AlertType:           a.AlertType,
 		Severity:            a.Severity,
 		ThrottleTimeSeconds: a.ThrottleTimeSeconds,
+		MaxEventLagSeconds:  a.MaxEventLagSeconds,
 		ThrottleField:       a.ThrottleField,
 		Labels:              a.Labels,
 		References:          a.References,

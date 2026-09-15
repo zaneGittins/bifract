@@ -11,6 +11,7 @@ const AlertHistory = {
         { key: 'severity', label: 'Severity' },
         { key: 'throttle_time_seconds', label: 'Throttle (seconds)' },
         { key: 'throttle_field', label: 'Throttle field' },
+        { key: 'max_event_lag_seconds', label: 'Max event lag (seconds)' },
         { key: 'labels', label: 'Labels', list: true },
         { key: 'references', label: 'References', list: true },
         { key: 'window_duration', label: 'Window (seconds)' },

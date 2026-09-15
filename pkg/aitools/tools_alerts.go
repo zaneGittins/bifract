@@ -18,7 +18,7 @@ import (
 // severity became 'medium', an omitted schedule_cron made the alert unsaveable.
 var carried = []string{
 	"name", "query_string", "description", "alert_type", "severity", "enabled",
-	"labels", "references", "throttle_time_seconds", "throttle_field",
+	"labels", "references", "throttle_time_seconds", "throttle_field", "max_event_lag_seconds",
 	"window_duration", "schedule_cron", "query_window_seconds",
 	// Read and written under the same name, unlike the actions below.
 	"dictionary_action_ids",
@@ -204,6 +204,7 @@ type createAlertArgs struct {
 	References          []string `json:"references,omitempty" jsonschema:"Reference URLs."`
 	ThrottleTimeSeconds int      `json:"throttle_time_seconds,omitempty" jsonschema:"Minimum seconds between repeat firings. 0 means none."`
 	ThrottleField       string   `json:"throttle_field,omitempty" jsonschema:"Re-fire only when this field's value changes, for example 'src_ip'."`
+	MaxEventLagSeconds  int      `json:"max_event_lag_seconds,omitempty" jsonschema:"Ignore matches whose event time trails their arrival by more than this many seconds. 0 means late logs still alert."`
 	ScheduleCron        string   `json:"schedule_cron,omitempty" jsonschema:"Five-field cron for a scheduled alert, for example '*/15 * * * *'. Required for alert_type scheduled."`
 	QueryWindowSeconds  int      `json:"query_window_seconds,omitempty" jsonschema:"How far back a scheduled run looks, in seconds. Required for alert_type scheduled."`
 	WindowDuration      int      `json:"window_duration,omitempty" jsonschema:"Correlation window for a compound alert, in seconds. Required for alert_type compound."`
@@ -236,6 +237,7 @@ func createAlert(ctx context.Context, c Client, in createAlertArgs) (any, error)
 		"references":            orEmpty(in.References),
 		"throttle_time_seconds": in.ThrottleTimeSeconds,
 		"throttle_field":        in.ThrottleField,
+		"max_event_lag_seconds": in.MaxEventLagSeconds,
 	}
 	// Sent only when set: the API reads their absence as "not applicable to this
 	// type", and a zero would fail the positive-value check instead.
@@ -265,6 +267,7 @@ type updateAlertArgs struct {
 	Labels              []string `json:"labels,omitempty" jsonschema:"New label list, replacing the current one. Omit to keep it."`
 	ThrottleTimeSeconds *int     `json:"throttle_time_seconds,omitempty" jsonschema:"New throttle window in seconds. Omit to keep the current one."`
 	ThrottleField       *string  `json:"throttle_field,omitempty" jsonschema:"New throttle field. Omit to keep the current one."`
+	MaxEventLagSeconds  *int     `json:"max_event_lag_seconds,omitempty" jsonschema:"New max event lag in seconds, 0 to accept late logs. Omit to keep the current one."`
 
 	Tests []AlertTestArg `json:"tests,omitempty" jsonschema:"Replace the alert's test cases with these. Omit to keep the existing ones; send an empty list to remove them."`
 }
@@ -303,6 +306,9 @@ func updateAlert(ctx context.Context, c Client, in updateAlertArgs) (any, error)
 	}
 	if in.ThrottleField != nil {
 		body["throttle_field"] = *in.ThrottleField
+	}
+	if in.MaxEventLagSeconds != nil {
+		body["max_event_lag_seconds"] = *in.MaxEventLagSeconds
 	}
 	if tests := testsBody(in.Tests); tests != nil {
 		body["tests"] = tests

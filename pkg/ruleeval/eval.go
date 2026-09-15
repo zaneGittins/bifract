@@ -147,6 +147,11 @@ func (s *Scratch) WaitVisible(ctx context.Context, units []Unit, w Window) error
 
 // QueryOptions mirrors alerts.Engine.buildQueryOpts: alerts filter on ingest_timestamp,
 // so an event whose own timestamp is months old is still evaluated when it arrives.
+//
+// An alert's max_event_lag_seconds is deliberately not applied here. It filters on how
+// late an event arrived, and a test corpus is a frozen sample whose timestamps are
+// historical by nature; enforcing it would fail cases for the age of the sample rather
+// than for anything about the rule.
 func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 	return parser.QueryOptions{
 		StartTime:          w.Start,

@@ -3399,6 +3399,18 @@
                             </div>
                         </div>
 
+                        <div class="ae-sec" id="alertEventLagSection">
+                            <div class="ae-sec-label">Late logs</div>
+                            <div class="ae-row">
+                                <label class="ae-row-key" for="editorMaxEventLag">Ignore matches older than</label>
+                                <div class="window-duration-input ae-row-val">
+                                    <input type="number" id="editorMaxEventLag" class="alert-form-input" value="0" min="0" max="31536000">
+                                    <span class="throttle-unit-label">s</span>
+                                </div>
+                            </div>
+                            <div class="ae-note">Compares each match's event time against when it arrived, so a reconnected source flushing a backlog does not alert on old activity. 0 alerts on late logs.</div>
+                        </div>
+
                         <div class="ae-sec" id="alertActionsSection">
                             <div class="ae-sec-label">Actions <span class="ae-sec-count" id="actionCountBadge" style="display:none;">0</span></div>
                             <select id="editorActionsSelect" class="alert-form-input">

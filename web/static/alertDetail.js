@@ -76,6 +76,10 @@ const AlertDetail = {
             if (alert.throttle_field) throttle += ` per ${Utils.escapeHtml(alert.throttle_field)}`;
         }
 
+        const maxEventLag = alert.max_event_lag_seconds > 0
+            ? `Ignored past ${this.formatThrottle(alert.max_event_lag_seconds)}`
+            : 'Alerted on';
+
         const labels = opts.labels || alert.labels || [];
         const renderLabel = opts.renderLabel
             || (l => `<span class="label" style="--chip-color:${Utils.tagColorFor(l)}">${Utils.escapeHtml(l)}</span>`);
@@ -118,6 +122,10 @@ const AlertDetail = {
                 <div class="alert-meta-cell">
                     <span class="alert-detail-label">Throttle</span>
                     <span class="alert-meta-value">${throttle}</span>
+                </div>
+                <div class="alert-meta-cell">
+                    <span class="alert-detail-label">Late logs</span>
+                    <span class="alert-meta-value">${maxEventLag}</span>
                 </div>
                 ${(opts.metaExtra || []).map(f => `
                     <div class="alert-meta-cell">

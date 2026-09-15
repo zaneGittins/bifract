@@ -29909,6 +29909,9 @@
             "type": "string",
             "format": "date-time"
           },
+          "max_event_lag_seconds": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -29965,6 +29968,7 @@
           "enabled",
           "throttle_time_seconds",
           "throttle_field",
+          "max_event_lag_seconds",
           "labels",
           "references",
           "severity",
@@ -30067,6 +30071,9 @@
               "type": "string"
             }
           },
+          "max_event_lag_seconds": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -30131,7 +30138,8 @@
           "severity",
           "enabled",
           "throttle_time_seconds",
-          "throttle_field"
+          "throttle_field",
+          "max_event_lag_seconds"
         ]
       },
       "alerts.AlertTest": {
@@ -30207,6 +30215,9 @@
               "type": "string"
             }
           },
+          "max_event_lag_seconds": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -30271,7 +30282,8 @@
           "severity",
           "enabled",
           "throttle_time_seconds",
-          "throttle_field"
+          "throttle_field",
+          "max_event_lag_seconds"
         ]
       },
       "alerts.AttackCoverage": {
@@ -30849,6 +30861,9 @@
               "type": "string"
             }
           },
+          "max_event_lag_seconds": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -30905,6 +30920,7 @@
           "alert_type",
           "severity",
           "throttle_time_seconds",
+          "max_event_lag_seconds",
           "throttle_field",
           "labels",
           "references",
@@ -31610,6 +31626,9 @@
               "type": "string"
             }
           },
+          "max_event_lag_seconds": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -31655,6 +31674,7 @@
           "severity",
           "throttle_time_seconds",
           "throttle_field",
+          "max_event_lag_seconds",
           "labels",
           "references",
           "window_duration",

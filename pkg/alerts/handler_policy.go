@@ -25,6 +25,7 @@ type EvaluatePolicyRequest struct {
 	AlertType           string      `json:"alert_type"`
 	Severity            string      `json:"severity"`
 	ThrottleTimeSeconds int         `json:"throttle_time_seconds"`
+	MaxEventLagSeconds  int         `json:"max_event_lag_seconds"`
 	ThrottleField       string      `json:"throttle_field"`
 	Labels              []string    `json:"labels"`
 	References          []string    `json:"references"`
@@ -49,7 +50,8 @@ func (r EvaluatePolicyRequest) subject() PolicySubject {
 			Name: r.Name, Description: r.Description, QueryString: r.QueryString,
 			AlertType: r.AlertType, Severity: r.Severity,
 			ThrottleTimeSeconds: r.ThrottleTimeSeconds, ThrottleField: r.ThrottleField,
-			Labels: r.Labels, References: r.References,
+			MaxEventLagSeconds: r.MaxEventLagSeconds,
+			Labels:             r.Labels, References: r.References,
 			WindowDuration: r.WindowDuration, ScheduleCron: r.ScheduleCron,
 			QueryWindowSeconds:  r.QueryWindowSeconds,
 			WebhookActionIDs:    r.WebhookActionIDs,

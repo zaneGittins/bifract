@@ -47,8 +47,16 @@ type QueryOptions struct {
 	HasTLSHFilter        bool                          // True when query uses tlsh() and the digest match has been resolved
 	TLSHMatches          []TLSHMatch                   // Digests within threshold of a needle, resolved server-side against the tlsh model index
 	UseIngestTimestamp   bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
-	AlertExtraFields     []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
-	GeoIPEnabled         bool                          // True when MaxMind GeoLite2 dictionaries are loaded
+	// MaxEventLagSeconds drops rows whose event time trails their ingest time by
+	// more than this many seconds (0 = keep every row). Alerts read forward on
+	// ingest_timestamp, so a source flushing a backlog presents week-old events as
+	// new; this keeps them out of the result set rather than filtering afterwards,
+	// where they would consume the row budget and starve genuinely new matches.
+	// One-sided on purpose: an event dated ahead of its arrival (a fast clock) is
+	// never dropped.
+	MaxEventLagSeconds int
+	AlertExtraFields   []string // Additional fields to project in alert auto-projection (throttle field, template fields)
+	GeoIPEnabled       bool     // True when MaxMind GeoLite2 dictionaries are loaded
 	// NetworkDicts marks dictionaries built as an IP_TRIE. Their keys are CIDR
 	// ranges, so a lookup probes an address and matches the longest range holding
 	// it; probing one with a string is rejected by the server.
@@ -781,6 +789,11 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 		fmt.Sprintf("%s >= '%s'", tsCol, chTimeLiteral(opts.StartTime)),
 		fmt.Sprintf("%s %s '%s'", tsCol, endOp, chTimeLiteral(opts.EndTime)),
 	)
+
+	if opts.MaxEventLagSeconds > 0 {
+		source.Layer.Where = append(source.Layer.Where,
+			fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds))
+	}
 
 	if len(opts.FractalIDs) > 0 {
 		quoted := make([]string, len(opts.FractalIDs))
