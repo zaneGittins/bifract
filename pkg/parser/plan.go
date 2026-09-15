@@ -110,6 +110,14 @@ type QueryPlan struct {
 	AnalyzeFieldsList      []string
 	AnalyzeFieldsScanLimit int
 
+	// usesBindingSet records that a result-set binding was rendered. Like join(),
+	// its subquery carries its own copy of the time bounds, so a caller must not
+	// re-translate the query over a narrower window.
+	usesBindingSet bool
+
+	// bindingCTEs holds the result-set bindings this query reads more than once.
+	bindingCTEs []bindingCTE
+
 	// Histogram-specific fields
 	HistogramField   string
 	HistogramBuckets int
@@ -282,6 +290,16 @@ func (p *QueryPlan) PushStage() {
 
 // Render converts the QueryPlan into a final SQL string.
 func (p *QueryPlan) Render(opts QueryOptions) (string, error) {
+	sql, err := p.render(opts)
+	if err != nil {
+		return "", err
+	}
+	// A binding the query uses more than once is materialised once, ahead of
+	// everything, instead of having its subquery pasted in at each use.
+	return p.withClause() + sql, nil
+}
+
+func (p *QueryPlan) render(opts QueryOptions) (string, error) {
 	if p.IsProcessTree {
 		return p.renderProcessTree(opts)
 	}
@@ -291,6 +309,37 @@ func (p *QueryPlan) Render(opts QueryOptions) (string, error) {
 	// Chain queries use the normal rendering path (chainHandler populates
 	// source stage with sequenceMatch/sequenceCount SQL during Execute).
 	return p.renderStandard(opts)
+}
+
+// bindingCTE is one result-set binding materialised as a common table
+// expression, because more than one place in the query reads it.
+type bindingCTE struct {
+	Name string
+	SQL  string
+}
+
+// withClause renders the query's materialised bindings, or "" when it has none.
+func (p *QueryPlan) withClause() string {
+	if len(p.bindingCTEs) == 0 {
+		return ""
+	}
+	parts := make([]string, len(p.bindingCTEs))
+	for i, c := range p.bindingCTEs {
+		parts[i] = fmt.Sprintf("%s AS (%s)", c.Name, c.SQL)
+	}
+	return "WITH " + strings.Join(parts, ", ") + " "
+}
+
+// addBindingCTE registers a materialised binding once, however many places read
+// it, and reports the name they read it by.
+func (p *QueryPlan) addBindingCTE(name, sql string) string {
+	for _, c := range p.bindingCTEs {
+		if c.Name == name {
+			return name
+		}
+	}
+	p.bindingCTEs = append(p.bindingCTEs, bindingCTE{Name: name, SQL: sql})
+	return name
 }
 
 func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {

@@ -234,8 +234,9 @@ The column tested is the one named after the field, which is how a `join()` bloc
 A binding returning exactly one column needs no name match; one returning several unrelated
 columns is an error naming them.
 
-A result-set binding is scoped exactly like the query around it: same fractal, same time range.
-It may be used once per query, and may build on a binding declared before it.
+A result-set binding is scoped exactly like the query around it: same fractal, same time range,
+and it may build on a binding declared before it. Read it in more than one place and the query
+builds it once and reads it twice, rather than running the same subquery again.
 
 ## Boolean parameters
 

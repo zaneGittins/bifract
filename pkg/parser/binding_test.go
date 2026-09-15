@@ -271,3 +271,42 @@ func TestBindingStatementEndIsDepthAware(t *testing.T) {
 		t.Errorf("want the chain body carried into the block, got: %s", sql)
 	}
 }
+
+// A binding read in two places is materialised once instead of having its
+// subquery pasted in at each use.
+func TestResultSetUsedTwiceIsMaterialisedOnce(t *testing.T) {
+	sql := bindingSQL(t, `let &a = * | groupby(image) | table(image); * | in(image, &a) | in(parent_image, &a)`)
+	if !strings.HasPrefix(sql, "WITH _b_a AS (") {
+		t.Errorf("want a WITH clause, got: %s", sql)
+	}
+	if n := strings.Count(sql, "IN (SELECT image FROM _b_a)"); n != 2 {
+		t.Errorf("want two reads of the materialised binding, got %d: %s", n, sql)
+	}
+	if n := strings.Count(sql, "GROUP BY image"); n != 1 {
+		t.Errorf("want the subquery built once, got %d: %s", n, sql)
+	}
+}
+
+// One use stays inline: a WITH clause would buy nothing.
+func TestResultSetUsedOnceStaysInline(t *testing.T) {
+	sql := bindingSQL(t, `let &a = * | groupby(image) | table(image); * | in(image, &a)`)
+	if strings.Contains(sql, "WITH ") {
+		t.Errorf("want no WITH clause for a single use, got: %s", sql)
+	}
+}
+
+// A binding set carries its own time bounds, so a caller must not re-translate
+// the query over a narrower window. Same contract as join().
+func TestResultSetMarksTheQueryTimeScoped(t *testing.T) {
+	pipeline, err := ParseQuery(`let &a = * | groupby(image) | table(image); * | in(image, &a)`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, serverOpts())
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if !result.TimeScopedSubquery {
+		t.Error("a query reading a binding set must be marked time-scoped")
+	}
+}

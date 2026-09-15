@@ -54,7 +54,11 @@ type BindingNode struct {
 	Cond *HavingCondition // BindingCondition
 	Body string           // BindingPipeline: the source, as written
 	Pipe *PipelineNode    // BindingPipeline
-	Pos  int
+	// SetRefs counts the places that read this binding as a set. More than one
+	// means the query materialises it once rather than pasting the subquery in
+	// at each use.
+	SetRefs int
+	Pos     int
 }
 
 // atLetStatement reports whether a `let &name =` statement starts here. The
@@ -308,6 +312,7 @@ func (p *Parser) substituteArg(a *Argument, cmdName string, whole bool) error {
 				return fmt.Errorf("%s(): %s is a result set; only in() and a join() block take one", cmdName, b.Name)
 			}
 			a.Kind, a.Binding, a.Expr = ArgBinding, b, nil
+			b.SetRefs++
 			return nil
 		}
 	}
@@ -504,11 +509,26 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", b.Name, err)
 	}
+	ctx.Plan.usesBindingSet = true
 	column, err := bindingSetColumn(b, result.FieldOrder, field)
 	if err != nil {
 		return "", err
 	}
+	if b.SetRefs > 1 {
+		name, err := bindingCTEName(b.Name)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("SELECT %s FROM %s", column, ctx.Plan.addBindingCTE(name, result.SQL)), nil
+	}
 	return fmt.Sprintf("SELECT %s FROM (%s)", column, result.SQL), nil
+}
+
+// bindingCTEName is the SQL identifier a materialised binding is read by. The
+// _b_ prefix keeps it clear of the _dfr_, _join_ and _mlk_ columns the translator
+// generates, and of any log field, which cannot start with an underscore here.
+func bindingCTEName(name string) (string, error) {
+	return sanitizeIdentifier("_b_" + strings.TrimPrefix(name, "&"))
 }
 
 func bindingSetColumn(b *BindingNode, outputs []string, field string) (string, error) {

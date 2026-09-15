@@ -990,7 +990,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		ChartType:          plan.ChartType,
 		ChartConfig:        plan.ChartConfig,
 		DefaultTimeOrder:   defaultTimeOrder,
-		TimeScopedSubquery: plan.IsJoin || plan.ModelLookupSQL != "",
+		TimeScopedSubquery: plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
 		Chain:              plan.Chain,
 	}, nil
 }
