@@ -30,6 +30,8 @@ const (
 	ArgAggSpec
 	// ArgRegex is a /pattern/flags literal.
 	ArgRegex
+	// ArgBinding is a reference to a let binding that names a result set.
+	ArgBinding
 )
 
 // Argument is one parsed command argument.
@@ -43,6 +45,8 @@ type Argument struct {
 	Text string
 	Agg  *AggSpec   // ArgAggSpec
 	List []Argument // ArgList
+	// Binding is the result-set binding this argument names. ArgBinding only.
+	Binding *BindingNode
 	// Quoted records that the text was written in quotes. Structural, so a value
 	// that happens to look like code is never read as code.
 	Quoted bool

@@ -213,7 +213,29 @@ use one declared before it; referencing itself or a later one is an error.
 A column a command produces is named after the binding, so `table(&cmdlen)` returns a column
 called `cmdlen`.
 
-A binding holds an expression or a filter, not a pipeline.
+### Result sets
+
+A binding whose value is a pipeline names a set of rows. Use it in `in()` or as a `join()` block:
+
+```
+let &admins  = user_type="admin" | groupby(user);
+let &servers = role="server"     | groupby(computer_name);
+
+event_id="4624"
+  | in(user, &admins)
+  | in(computer_name, &servers)
+  | groupby(user, computer_name) | count()
+```
+
+`join()` takes no nested joins, so two set memberships against two subqueries can only be
+written this way.
+
+The column tested is the one named after the field, which is how a `join()` block names its key.
+A binding returning exactly one column needs no name match; one returning several unrelated
+columns is an error naming them.
+
+A result-set binding is scoped exactly like the query around it: same fractal, same time range.
+It may be used once per query, and may build on a binding declared before it.
 
 ## Boolean parameters
 

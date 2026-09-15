@@ -1718,7 +1718,11 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 		return nil, newPosError(p.current(), "expected '}' to close join block, got %s", p.current().Type)
 	}
 
-	cmd.Block = body.String()
+	block, err := p.resolveBlockBinding(body.String())
+	if err != nil {
+		return nil, err
+	}
+	cmd.Block = block
 
 	return cmd, nil
 }

@@ -77,24 +77,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 
-	// Translate subquery with the same security context (fractal, time range)
-	subOpts := QueryOptions{
-		StartTime:             ctx.Opts.StartTime,
-		EndTime:               ctx.Opts.EndTime,
-		MaxRows:               maxRows,
-		FractalID:             ctx.Opts.FractalID,
-		FractalIDs:            ctx.Opts.FractalIDs,
-		IncludeEmptyFractalID: ctx.Opts.IncludeEmptyFractalID,
-		Dictionaries:          ctx.Opts.Dictionaries,
-		CaseInsensitiveDicts:  ctx.Opts.CaseInsensitiveDicts,
-		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
-		DictionaryDatabase:    ctx.Opts.DictionaryDatabase,
-		TableName:             ctx.Opts.TableName,
-		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
-		DisplayTimezone:       ctx.Opts.DisplayTimezone,
-	}
-
-	subResult, err := TranslateToSQLWithOrder(subPipeline, subOpts)
+	subResult, err := TranslateToSQLWithOrder(subPipeline, subqueryOptions(ctx, maxRows))
 	if err != nil {
 		return fmt.Errorf("join() subquery translation error: %w", err)
 	}
@@ -190,4 +173,25 @@ func init() {
 	registerSpec(&CommandSpec{Name: "join", FreeForm: true, Params: []ParamSpec{
 		field("key"), namedLit("type"), namedLit("max"), namedList("include"),
 	}})
+}
+
+// subqueryOptions is the context a nested pipeline is translated in. Every field
+// is listed rather than copying ctx.Opts wholesale: the scope guards live here,
+// and a field added later must be considered rather than inherited by accident.
+func subqueryOptions(ctx *CommandContext, maxRows int) QueryOptions {
+	return QueryOptions{
+		StartTime:             ctx.Opts.StartTime,
+		EndTime:               ctx.Opts.EndTime,
+		MaxRows:               maxRows,
+		FractalID:             ctx.Opts.FractalID,
+		FractalIDs:            ctx.Opts.FractalIDs,
+		IncludeEmptyFractalID: ctx.Opts.IncludeEmptyFractalID,
+		Dictionaries:          ctx.Opts.Dictionaries,
+		CaseInsensitiveDicts:  ctx.Opts.CaseInsensitiveDicts,
+		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
+		DictionaryDatabase:    ctx.Opts.DictionaryDatabase,
+		TableName:             ctx.Opts.TableName,
+		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
+		DisplayTimezone:       ctx.Opts.DisplayTimezone,
+	}
 }

@@ -31,13 +31,29 @@ const (
 	// BindingCondition is an expression followed by one of the filter-only match
 	// operators (=~, =^, =$), which the expression grammar has no place for.
 	BindingCondition
+	// BindingPipeline is a whole query. It names a set of rows, usable where a
+	// subquery goes: in() and a join() block.
+	BindingPipeline
 )
+
+// describeKind names a binding's kind in the voice of an error message.
+func (k BindingKind) describeKind() string {
+	switch k {
+	case BindingCondition:
+		return "a filter"
+	case BindingPipeline:
+		return "a result set"
+	}
+	return "a value"
+}
 
 type BindingNode struct {
 	Name string // with the sigil, e.g. "&lolbin"
 	Kind BindingKind
 	Expr *ExprNode        // BindingValue
 	Cond *HavingCondition // BindingCondition
+	Body string           // BindingPipeline: the source, as written
+	Pipe *PipelineNode    // BindingPipeline
 	Pos  int
 }
 
@@ -79,32 +95,16 @@ func (p *Parser) parseLetStatement() error {
 		return newPosError(nameTok, "let %s: has no value", name)
 	}
 
-	expr, err := p.parseExprFilterPrec(0)
+	end, err := p.findStatementEnd()
 	if err != nil {
 		return fmt.Errorf("let %s: %w", name, err)
 	}
-	if err := p.substituteExpr(expr); err != nil {
-		return fmt.Errorf("let %s: %w", name, err)
-	}
 
-	binding := &BindingNode{Name: name, Kind: BindingValue, Expr: expr, Pos: nameTok.Pos}
-	if p.atExprMatchOperator() {
-		cond := HavingCondition{Expr: expr}
-		if err := p.readExprMatchOperator(&cond); err != nil {
-			return fmt.Errorf("let %s: %w", name, err)
-		}
-		binding.Kind, binding.Cond = BindingCondition, &cond
+	binding, err := p.parseBindingValue(name, nameTok, end)
+	if err != nil {
+		return err
 	}
-
-	switch p.current().Type {
-	case TokenSemicolon:
-		p.advance()
-	case TokenPipe:
-		// Phase 2. Saying so beats "expected ';'", which reads as a typo.
-		return newPosError(p.current(), "let %s: a binding cannot be a pipeline yet; it holds an expression or a filter", name)
-	default:
-		return newPosError(p.current(), "let %s: expected ';' after the value", name)
-	}
+	p.pos = end + 1
 
 	if p.bindings == nil {
 		p.bindings = map[string]*BindingNode{}
@@ -139,6 +139,9 @@ func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
 	b, err := p.lookupBinding(p.current())
 	if err != nil {
 		return nil, err
+	}
+	if b.Kind == BindingPipeline {
+		return nil, newPosError(p.current(), "%s is a result set, not a filter: use it in in(field, %s) or a join() block", b.Name, b.Name)
 	}
 	p.advance()
 	var cond HavingCondition
@@ -176,7 +179,7 @@ func (p *Parser) substituteExpr(e *ExprNode) error {
 			return err
 		}
 		if b.Kind != BindingValue {
-			return fmt.Errorf("%s is a filter, not a value: use it on its own (`| %s`), not inside an expression", b.Name, b.Name)
+			return fmt.Errorf("%s is %s, not a value: it cannot be used inside an expression", b.Name, b.Kind.describeKind())
 		}
 		*e = *cloneExpr(b.Expr)
 		return nil
@@ -281,30 +284,61 @@ func (p *Parser) substitutePipeline(pipeline *PipelineNode) error {
 
 func (p *Parser) substituteCommand(cmd *CommandNode) error {
 	for i := range cmd.Args {
-		if err := p.substituteArg(&cmd.Args[i]); err != nil {
+		if err := p.substituteArg(&cmd.Args[i], cmd.Name, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (p *Parser) substituteArg(a *Argument) error {
+// substituteArg resolves the bindings one argument names. whole says the argument
+// is the command's own, not a member of a list: a result set is a whole argument
+// or nothing, since a list of them has no meaning.
+func (p *Parser) substituteArg(a *Argument, cmdName string, whole bool) error {
+	if name, ok := bareBindingRef(a); ok {
+		b, err := p.lookupBinding(Token{Value: name, Pos: a.Pos})
+		if err != nil {
+			return err
+		}
+		if b.Kind == BindingPipeline {
+			switch {
+			case !whole:
+				return fmt.Errorf("%s(): %s is a result set and cannot be a member of a list", cmdName, b.Name)
+			case !strings.EqualFold(cmdName, "in"):
+				return fmt.Errorf("%s(): %s is a result set; only in() and a join() block take one", cmdName, b.Name)
+			}
+			a.Kind, a.Binding, a.Expr = ArgBinding, b, nil
+			return nil
+		}
+	}
 	if err := p.substituteExpr(a.Expr); err != nil {
 		return err
 	}
 	for i := range a.List {
-		if err := p.substituteArg(&a.List[i]); err != nil {
+		if err := p.substituteArg(&a.List[i], cmdName, false); err != nil {
 			return err
 		}
 	}
 	if a.Agg != nil {
 		for i := range a.Agg.Args {
-			if err := p.substituteArg(&a.Agg.Args[i]); err != nil {
+			if err := p.substituteArg(&a.Agg.Args[i], cmdName, false); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// bareBindingRef reports the binding an argument names when the argument is
+// nothing but that reference, as in in(user, &admins).
+func bareBindingRef(a *Argument) (string, bool) {
+	if a.Kind != ArgExpr || a.Expr == nil || a.Expr.Kind != ExprField {
+		return "", false
+	}
+	if !strings.HasPrefix(a.Expr.Value, "&") {
+		return "", false
+	}
+	return a.Expr.Value, true
 }
 
 func (p *Parser) substituteHavingCondition(c *HavingCondition) error {
@@ -360,4 +394,158 @@ func (p *Parser) atBindingExpr() bool {
 		return true
 	}
 	return false
+}
+
+// parseBindingValue reads the right-hand side of one let statement. A top-level
+// pipe means it names a set of rows; anything else is an expression, optionally
+// closed by a match operator the expression grammar does not have.
+func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*BindingNode, error) {
+	if p.spanHasTopLevelPipe(p.pos, end) {
+		body := strings.TrimSpace(string(p.input[p.tokens[p.pos].Pos:p.tokens[end].Pos]))
+		sub, err := p.parseSubPipeline(body)
+		if err != nil {
+			return nil, fmt.Errorf("let %s: %w", name, err)
+		}
+		return &BindingNode{Name: name, Kind: BindingPipeline, Body: body, Pipe: sub, Pos: nameTok.Pos}, nil
+	}
+
+	expr, err := p.parseExprFilterPrec(0)
+	if err != nil {
+		return nil, fmt.Errorf("let %s: %w", name, err)
+	}
+	if err := p.substituteExpr(expr); err != nil {
+		return nil, fmt.Errorf("let %s: %w", name, err)
+	}
+	binding := &BindingNode{Name: name, Kind: BindingValue, Expr: expr, Pos: nameTok.Pos}
+	if p.atExprMatchOperator() {
+		cond := HavingCondition{Expr: expr}
+		if err := p.readExprMatchOperator(&cond); err != nil {
+			return nil, fmt.Errorf("let %s: %w", name, err)
+		}
+		binding.Kind, binding.Cond = BindingCondition, &cond
+	}
+	if p.pos != end {
+		return nil, newPosError(p.current(), "let %s: unexpected %q", name, p.current().Value)
+	}
+	return binding, nil
+}
+
+// findStatementEnd returns the index of the ';' closing the statement that starts
+// at the current position. Depth-aware, because chain() and case() bodies carry
+// their own ';' inside braces.
+func (p *Parser) findStatementEnd() (int, error) {
+	depth := 0
+	for i := p.pos; i < len(p.tokens); i++ {
+		switch p.tokens[i].Type {
+		case TokenLParen, TokenLBracket, TokenLBrace:
+			depth++
+		case TokenRParen, TokenRBracket, TokenRBrace:
+			depth--
+		case TokenSemicolon:
+			if depth == 0 {
+				return i, nil
+			}
+		case TokenEOF:
+			return 0, newPosError(p.tokens[i], "expected ';' to end the binding")
+		}
+	}
+	return 0, newPosError(p.current(), "expected ';' to end the binding")
+}
+
+// spanHasTopLevelPipe reports whether the token range carries a pipe outside any
+// bracket, which is what separates a pipeline binding from an expression one.
+func (p *Parser) spanHasTopLevelPipe(start, end int) bool {
+	depth := 0
+	for i := start; i < end && i < len(p.tokens); i++ {
+		switch p.tokens[i].Type {
+		case TokenLParen, TokenLBracket, TokenLBrace:
+			depth++
+		case TokenRParen, TokenRBracket, TokenRBrace:
+			depth--
+		case TokenPipe:
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// parseSubPipeline parses a binding's pipeline body. The bindings declared so far
+// are in scope, so one binding can build on another.
+func (p *Parser) parseSubPipeline(body string) (*PipelineNode, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("the pipeline is empty")
+	}
+	lexer := NewLexer(body)
+	tokens, err := lexer.Tokenize()
+	if err != nil {
+		return nil, err
+	}
+	sub := NewParser(tokens)
+	sub.input = []rune(body)
+	sub.bindings = p.bindings
+	return sub.Parse()
+}
+
+// bindingSetMaxRows caps the rows a result-set binding contributes to an IN
+// list. IN materialises the whole set in memory, so it is bounded like join().
+const bindingSetMaxRows = 50000
+
+// bindingSubquerySQL renders a result-set binding as a single-column subquery for
+// an IN test. The column is the one named after the field being tested, matching
+// how a join() block names its key; a binding that returns exactly one column
+// needs no name at all.
+func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (string, error) {
+	if b == nil || b.Pipe == nil {
+		return "", fmt.Errorf("%s is not a result set", bindingName(b))
+	}
+	result, err := TranslateToSQLWithOrder(b.Pipe, subqueryOptions(ctx, bindingSetMaxRows))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", b.Name, err)
+	}
+	column, err := bindingSetColumn(b, result.FieldOrder, field)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("SELECT %s FROM (%s)", column, result.SQL), nil
+}
+
+func bindingSetColumn(b *BindingNode, outputs []string, field string) (string, error) {
+	if field != "" && contains(outputs, field) {
+		return field, nil
+	}
+	if len(outputs) == 1 {
+		return outputs[0], nil
+	}
+	if len(outputs) == 0 {
+		return "", fmt.Errorf("%s returns no columns", b.Name)
+	}
+	return "", fmt.Errorf("%s returns [%s]; name the column to test by making the binding return only it, or test a field one of them is named after",
+		b.Name, strings.Join(outputs, ", "))
+}
+
+func bindingName(b *BindingNode) string {
+	if b == nil {
+		return "the binding"
+	}
+	return b.Name
+}
+
+// resolveBlockBinding expands a join block written as nothing but a binding
+// reference. The block becomes that binding's own source, which already parsed as
+// a pipeline, so the handler reads exactly what the author wrote under the name.
+func (p *Parser) resolveBlockBinding(body string) (string, error) {
+	name := strings.TrimSpace(body)
+	if !strings.HasPrefix(name, "&") {
+		return body, nil
+	}
+	b, err := p.lookupBinding(Token{Value: name})
+	if err != nil {
+		return "", err
+	}
+	if b.Kind != BindingPipeline {
+		return "", fmt.Errorf("%s is %s, not a result set: a join() block needs a pipeline", b.Name, b.Kind.describeKind())
+	}
+	return b.Body, nil
 }

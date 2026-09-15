@@ -146,6 +146,12 @@ func (p *argParser) valueMissing() bool {
 
 // parseValue reads one value in the shape the schema declares.
 func (p *argParser) parseValue(kind ParamKind) (Argument, error) {
+	// A binding reads the same in every parameter position. Letting a list or a
+	// literal parameter take it as text made in(user, &admins) compile to
+	// IN ('&admins'), a filter that matches nothing and says nothing.
+	if p.current().Type == TokenBinding {
+		return p.parseBindingRef(), nil
+	}
 	if p.current().Type == TokenLBracket {
 		return p.parseList(elementKind(kind))
 	}
@@ -349,4 +355,17 @@ func quotedAggSpec(text string) (*AggSpec, bool) {
 		return nil, false
 	}
 	return arg.Agg, true
+}
+
+// parseBindingRef reads a binding reference written as a whole argument. The
+// parser substitutes it once the pipeline is built; what it becomes depends on
+// the binding's kind.
+func (p *argParser) parseBindingRef() Argument {
+	tok := p.advance()
+	return Argument{
+		Kind: ArgExpr,
+		Expr: &ExprNode{Kind: ExprField, Value: tok.Value, Pos: tok.Pos},
+		Text: tok.Value,
+		Pos:  tok.Pos,
+	}
 }

@@ -40,6 +40,20 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		fieldRef = groupableCast(jsonFieldRef(field))
 	}
 
+	if set, ok := b.First("values"); ok && set.Kind == ArgBinding {
+		sub, err := bindingSubquerySQL(set.Binding, ctx, field)
+		if err != nil {
+			return fmt.Errorf("in(): %w", err)
+		}
+		op := "IN"
+		if cmd.Negate {
+			op = "NOT IN"
+		}
+		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
+			fmt.Sprintf("%s %s (%s)", fieldRef, op, sub))
+		return nil
+	}
+
 	var values []string
 	for _, v := range b.CSV("values") {
 		values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
