@@ -128,7 +128,7 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 		d := &Dictionary{}
 		var colsJSON []byte
 		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(colsJSON, &d.Columns); err != nil {
@@ -149,7 +149,7 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 		`SELECT `+dictColumns+`
 		 FROM dictionaries WHERE id = $1`, id).
 		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
+			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 // Scan calls expect. It is one constant because it was two: adding a column to the
 // list query and the by-name query separately left the by-name SELECT one short,
 // which Scan (being variadic) reports only at runtime, on every call.
-const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, case_insensitive_keys, COALESCE(created_by, ''), created_at, updated_at`
+const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, case_insensitive_keys, COALESCE(kind, 'value'), COALESCE(created_by, ''), created_at, updated_at`
 
 // GetDictionaryByName returns a dictionary by name within a fractal or prism scope.
 // Pass fractalID or prismID (not both). The matching scope column is used for the lookup.
@@ -242,7 +242,7 @@ func (m *Manager) dictionaryByName(ctx context.Context, fractalID, prismID, name
 	}
 	err := m.pg.QueryRow(ctx, q, arg, name).
 		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
+			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +259,32 @@ func (m *Manager) dictionaryByName(ctx context.Context, fractalID, prismID, name
 // CreateDictionary creates a new dictionary scoped to a fractal or prism (pass one, leave other empty).
 // If columns is empty, the dictionary starts with no columns and no CH objects; the first column
 // added via AddColumn becomes the key and triggers CH table/dictionary creation.
-func (m *Manager) CreateDictionary(ctx context.Context, fractalID, prismID, name, description, keyColumn string, columns []DictionaryColumn, createdBy string, isGlobal bool) (*Dictionary, error) {
+// CreateOptions is what a new dictionary is made from. A struct rather than a
+// parameter list: the list had reached nine, and a tenth positional argument is
+// how a caller silently passes the wrong one.
+type CreateOptions struct {
+	FractalID   string
+	PrismID     string
+	Name        string
+	Description string
+	KeyColumn   string
+	Columns     []DictionaryColumn
+	CreatedBy   string
+	IsGlobal    bool
+	// Kind is KindValue or KindNetwork; empty means a value list.
+	Kind string
+}
+
+func (m *Manager) CreateDictionary(ctx context.Context, opts CreateOptions) (*Dictionary, error) {
+	fractalID, prismID := opts.FractalID, opts.PrismID
+	name, description := opts.Name, opts.Description
+	keyColumn, columns, createdBy, isGlobal := opts.KeyColumn, opts.Columns, opts.CreatedBy, opts.IsGlobal
+
+	kind := NormalizeKind(opts.Kind)
+	if !ValidKind(kind) {
+		return nil, fmt.Errorf("unknown list kind %q; expected %q or %q", opts.Kind, KindValue, KindNetwork)
+	}
+
 	// When columns are provided (e.g. from ExecuteDictionaryAction), ensure the key column is set.
 	if len(columns) > 0 {
 		if keyColumn == "" {
@@ -291,9 +316,9 @@ func (m *Manager) CreateDictionary(ctx context.Context, fractalID, prismID, name
 
 	var id string
 	err = m.pg.QueryRow(ctx,
-		`INSERT INTO dictionaries (name, description, fractal_id, prism_id, key_column, columns, is_global, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		name, description, fractalIDPtr, prismIDPtr, keyColumn, colsJSON, isGlobal, storage.NullableUser(createdBy)).Scan(&id)
+		`INSERT INTO dictionaries (name, description, fractal_id, prism_id, key_column, columns, is_global, kind, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		name, description, fractalIDPtr, prismIDPtr, keyColumn, colsJSON, isGlobal, kind, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert dictionary: %w", err)
 	}
@@ -796,9 +821,18 @@ func (m *Manager) UpsertRows(ctx context.Context, id string, rows []DictionaryRo
 
 	// A blank key is not addressable: it cannot be looked up (the dictionary source
 	// drops it) or deleted, so it would only ever be a junk row in the editor.
+	isNetwork := NormalizeKind(dict.Kind) == KindNetwork
 	for _, row := range rows {
 		if row.Fields[dict.KeyColumn] == "" {
 			return badInput("column %q is the key and cannot be empty", dict.KeyColumn)
+		}
+		// An IP_TRIE silently drops a key it cannot parse as a range, so the
+		// dictionary would load fewer rows than were saved with nothing to say
+		// which. Refuse the row instead.
+		if isNetwork {
+			if err := ValidateNetworkKey(row.Fields[dict.KeyColumn]); err != nil {
+				return badInput("%s", err.Error())
+			}
 		}
 	}
 
@@ -1480,8 +1514,9 @@ func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []Dictio
 	// attributes, and every lookup misses.
 	refs := make([]string, 0, len(cols)+1)
 	// A HASHED dictionary probes exact bytes, so ignoring case has to happen when the
-	// keys are hashed: lower() here is what makes lower() at lookup time hit.
-	if dict.CaseInsensitiveKeys {
+	// keys are hashed: lower() here is what makes lower() at lookup time hit. An
+	// IP_TRIE parses its key as a range, where case does not arise.
+	if dict.CaseInsensitiveKeys && NormalizeKind(dict.Kind) != KindNetwork {
 		refs = append(refs, fmt.Sprintf("lower(`%s`)", escCH(keyCol)))
 	} else {
 		refs = append(refs, fmt.Sprintf("`%s`", escCH(keyCol)))
@@ -1573,7 +1608,7 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 	}
 
 	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
+		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(%s)",
 		escCH(dict.CHDictName),
 		escCH(dict.KeyColumn),
 		attrsStr,
@@ -1581,6 +1616,7 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
 		m.dictSourceQuery(dict, dict.KeyColumn, cols),
+		dictLayout(dict.Kind),
 	)
 	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
 }
@@ -1633,6 +1669,16 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
+// dictLayout is the ClickHouse layout a kind is built with. A network list is an
+// IP_TRIE, whose key is a CIDR range and whose lookup resolves an address to the
+// longest range containing it. Anything else probes the key byte for byte.
+func dictLayout(kind string) string {
+	if NormalizeKind(kind) == KindNetwork {
+		return "IP_TRIE()"
+	}
+	return "HASHED()"
+}
+
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
 	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(m.rowTable(dict)))
 	rows, err := m.ch.QuerySchema(ctx, countSQL)
@@ -1662,30 +1708,33 @@ func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
 // dictionary object would silently miss, so the two cannot be allowed to disagree.
 // Postgres is read per query rather than cached, so a toggle applies to every
 // replica at once.
-func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool, error) {
+func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (Scope, error) {
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, key_column, columns, case_insensitive_keys FROM dictionaries WHERE prism_id = $1 OR is_global = true`
+		q = `SELECT id, name, key_column, columns, case_insensitive_keys, COALESCE(kind, 'value') FROM dictionaries WHERE prism_id = $1 OR is_global = true`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, key_column, columns, case_insensitive_keys FROM dictionaries WHERE fractal_id = $1 OR is_global = true`
+		q = `SELECT id, name, key_column, columns, case_insensitive_keys, COALESCE(kind, 'value') FROM dictionaries WHERE fractal_id = $1 OR is_global = true`
 		arg = fractalID
 	}
 	rows, err := m.pg.Query(ctx, q, arg)
 	if err != nil {
-		return nil, nil, err
+		return Scope{}, err
 	}
 	defer rows.Close()
 
-	mappings := make(map[string]map[string]string)
-	caseInsensitive := make(map[string]bool)
+	scope := Scope{
+		Mappings:        make(map[string]map[string]string),
+		CaseInsensitive: make(map[string]bool),
+		Network:         make(map[string]bool),
+	}
 	for rows.Next() {
-		var id, name, keyCol string
+		var id, name, keyCol, kind string
 		var colsJSON []byte
 		var ci bool
-		if err := rows.Scan(&id, &name, &keyCol, &colsJSON, &ci); err != nil {
-			return nil, nil, err
+		if err := rows.Scan(&id, &name, &keyCol, &colsJSON, &ci, &kind); err != nil {
+			return Scope{}, err
 		}
 
 		inner := make(map[string]string)
@@ -1699,13 +1748,14 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 				}
 			}
 		}
-		// Last write wins, and both must come from the SAME row: a scope-owned
-		// dictionary and a global can share a name, and a lookup that probed
-		// lower() against a dictionary hashed on exact bytes would silently miss.
-		mappings[name] = inner
-		caseInsensitive[name] = ci
+		// Last write wins, and every field must come from the SAME row: a
+		// scope-owned dictionary and a global can share a name, and a lookup that
+		// probed the wrong shape would silently miss rather than fail.
+		scope.Mappings[name] = inner
+		scope.CaseInsensitive[name] = ci
+		scope.Network[name] = NormalizeKind(kind) == KindNetwork
 	}
-	return mappings, caseInsensitive, rows.Err()
+	return scope, rows.Err()
 }
 
 // ---- Dictionary Actions ----
@@ -1862,7 +1912,10 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 		if creator == "" {
 			creator = "admin"
 		}
-		dict, err = m.CreateDictionary(ctx, fractalID, prismID, action.DictionaryName, "", keyCol, cols, creator, false)
+		dict, err = m.CreateDictionary(ctx, CreateOptions{
+			FractalID: fractalID, PrismID: prismID, Name: action.DictionaryName,
+			KeyColumn: keyCol, Columns: cols, CreatedBy: creator,
+		})
 		if err != nil {
 			return 0, fmt.Errorf("failed to create dictionary %q: %w", action.DictionaryName, err)
 		}

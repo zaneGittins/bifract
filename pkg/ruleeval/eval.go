@@ -161,6 +161,7 @@ func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 		// CLICKHOUSE_DB (see NewScratch and ClickHouseClient.LogsDatabase).
 		Dictionaries:         s.dictionaries,
 		CaseInsensitiveDicts: s.dictCaseInsensitive,
+		NetworkDicts:         s.dictNetwork,
 		DictionaryDatabase:   s.database,
 	}
 }

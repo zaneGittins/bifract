@@ -587,9 +587,10 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	// Dictionary mappings for match(). Resolved against the alert's own scope, so a
 	// prism-scoped alert sees the prism's dictionaries and the global ones.
 	if e.dictManager != nil {
-		if mappings, ci, derr := e.dictManager.ListDictionaryMappings(ctx, alert.FractalID, alert.PrismID); derr == nil {
-			opts.Dictionaries = mappings
-			opts.CaseInsensitiveDicts = ci
+		if scope, derr := e.dictManager.ListDictionaryMappings(ctx, alert.FractalID, alert.PrismID); derr == nil {
+			opts.Dictionaries = scope.Mappings
+			opts.CaseInsensitiveDicts = scope.CaseInsensitive
+			opts.NetworkDicts = scope.Network
 		}
 	}
 	// Qualifies every dictGet with its database. A shard running the remote half of a

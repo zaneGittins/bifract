@@ -1014,7 +1014,17 @@ func matchFieldRef(a Argument, registry *FieldRegistry) string {
 // dictionary hashed lower(key), so the probe has to be lowered to meet it; an
 // unlowered probe would simply miss every mixed-case key.
 func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
-	if fieldRef == "" || !opts.CaseInsensitiveDicts[dictName] {
+	if fieldRef == "" {
+		return fieldRef
+	}
+	// A network list is an IP_TRIE, whose key is a range: it is probed with an
+	// address, and the server rejects a string outright. OrDefault rather than a
+	// plain cast, because the field is whatever the log carried and an
+	// unparseable value has to miss rather than fail the query.
+	if opts.NetworkDicts[dictName] {
+		return "toIPv6OrDefault(" + fieldRef + ")"
+	}
+	if !opts.CaseInsensitiveDicts[dictName] {
 		return fieldRef
 	}
 	return "lower(" + fieldRef + ")"
@@ -1025,6 +1035,8 @@ func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
 // column, which is echoed back rather than read from the dictionary: echoing the
 // probe would show a lowercased value the event never contained.
 func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string) string {
+	// dictHas works on a HASHED and on an IP_TRIE dictionary alike, so asking for
+	// the key column still reports membership either way.
 	if col == keyColumn {
 		return fmt.Sprintf("if(dictHas('%s', %s), %s, '')", dictRef, probeRef, displayRef)
 	}

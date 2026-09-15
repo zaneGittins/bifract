@@ -1,6 +1,7 @@
 package query
 
 import (
+	"bifract/pkg/dictionaries"
 	"context"
 	"fmt"
 	"log"
@@ -120,16 +121,15 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	}
 
 	// Dictionary mappings for match() resolution.
-	var dictMappings map[string]map[string]string
-	var dictCaseInsensitive map[string]bool
+	var dictScope dictionaries.Scope
 	if h.dictionaryManager != nil {
 		if isPrismContext {
-			if m, ci, derr := h.dictionaryManager.ListDictionaryMappings(ctx, "", prismID); derr == nil {
-				dictMappings, dictCaseInsensitive = m, ci
+			if sc, derr := h.dictionaryManager.ListDictionaryMappings(ctx, "", prismID); derr == nil {
+				dictScope = sc
 			}
 		} else if fractalID != "" {
-			if m, ci, derr := h.dictionaryManager.ListDictionaryMappings(ctx, fractalID, ""); derr == nil {
-				dictMappings, dictCaseInsensitive = m, ci
+			if sc, derr := h.dictionaryManager.ListDictionaryMappings(ctx, fractalID, ""); derr == nil {
+				dictScope = sc
 			}
 		}
 	}
@@ -216,8 +216,9 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		FractalID:             fractalIDForQuery,
 		FractalIDs:            prismFractalIDs,
 		IncludeEmptyFractalID: includeEmptyFractalID,
-		Dictionaries:          dictMappings,
-		CaseInsensitiveDicts:  dictCaseInsensitive,
+		Dictionaries:          dictScope.Mappings,
+		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
+		NetworkDicts:          dictScope.Network,
 		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,

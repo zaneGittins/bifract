@@ -633,6 +633,23 @@
     letter-spacing: 0.03em;
 }
 
+/* A list whose kind changes what a lookup means. The Global badge's shape in a
+   quieter colour: the kind qualifies the list, it does not announce reach. */
+.dict-kind-badge {
+    display: inline-block;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 0 5px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-left: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
 .dict-meta-global {
     display: flex;
     align-items: center;

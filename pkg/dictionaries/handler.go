@@ -63,6 +63,8 @@ type CreateDictionaryRequest struct {
 	KeyColumn   string             `json:"key_column"`
 	Columns     []DictionaryColumn `json:"columns"`
 	IsGlobal    bool               `json:"is_global"`
+	// Kind is "value" (the default) or "network" for a CIDR list.
+	Kind string `json:"kind"`
 }
 
 func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +89,11 @@ func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request)
 	}
 
 	username := auth.AttributionUsername(r.Context())
-	dict, err := h.manager.CreateDictionary(r.Context(), fractalID, prismID, req.Name, req.Description, req.KeyColumn, req.Columns, username, req.IsGlobal)
+	dict, err := h.manager.CreateDictionary(r.Context(), CreateOptions{
+		FractalID: fractalID, PrismID: prismID, Name: req.Name, Description: req.Description,
+		KeyColumn: req.KeyColumn, Columns: req.Columns, CreatedBy: username,
+		IsGlobal: req.IsGlobal, Kind: req.Kind,
+	})
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to create dictionary: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to create dictionary")

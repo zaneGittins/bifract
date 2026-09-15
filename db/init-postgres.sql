@@ -517,6 +517,7 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     row_count BIGINT DEFAULT 0,
     is_global BOOLEAN NOT NULL DEFAULT false,
     case_insensitive_keys BOOLEAN NOT NULL DEFAULT false,
+    kind VARCHAR(16) NOT NULL DEFAULT 'value',
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -524,6 +525,7 @@ CREATE TABLE IF NOT EXISTS dictionaries (
 );
 
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS case_insensitive_keys BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'value';
 
 CREATE INDEX IF NOT EXISTS idx_dictionaries_fractal_id ON dictionaries(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_dictionaries_name ON dictionaries(name);
@@ -871,6 +873,7 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     row_count BIGINT DEFAULT 0,
     is_global BOOLEAN NOT NULL DEFAULT false,
     case_insensitive_keys BOOLEAN NOT NULL DEFAULT false,
+    kind VARCHAR(16) NOT NULL DEFAULT 'value',
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),

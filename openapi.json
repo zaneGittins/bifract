@@ -33778,6 +33778,9 @@
           "key_column": {
             "type": "string"
           },
+          "kind": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           }
@@ -33787,7 +33790,8 @@
           "description",
           "key_column",
           "columns",
-          "is_global"
+          "is_global",
+          "kind"
         ]
       },
       "dictionaries.Dictionary": {
@@ -33830,6 +33834,9 @@
           "key_column": {
             "type": "string"
           },
+          "kind": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -33854,6 +33861,7 @@
           "columns",
           "row_count",
           "case_insensitive_keys",
+          "kind",
           "created_by",
           "created_at",
           "updated_at"

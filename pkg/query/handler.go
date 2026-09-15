@@ -854,17 +854,16 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	}
 
 	// Load dictionary mappings for match() resolution
-	var dictMappings map[string]map[string]string
-	var dictCaseInsensitive map[string]bool
+	var dictScope dictionaries.Scope
 	if h.dictionaryManager != nil {
 		selectedPrismID, _ := r.Context().Value("selected_prism").(string)
 		if selectedPrismID != "" {
-			if mappings, ci, err := h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID); err == nil {
-				dictMappings, dictCaseInsensitive = mappings, ci
+			if sc, err := h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID); err == nil {
+				dictScope = sc
 			}
 		} else if selectedIndex != "" {
-			if mappings, ci, err := h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, ""); err == nil {
-				dictMappings, dictCaseInsensitive = mappings, ci
+			if sc, err := h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, ""); err == nil {
+				dictScope = sc
 			}
 		}
 	}
@@ -975,8 +974,9 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		FractalID:             fractalIDForQuery,
 		FractalIDs:            prismFractalIDs,
 		IncludeEmptyFractalID: includeEmptyFractalID,
-		Dictionaries:          dictMappings,
-		CaseInsensitiveDicts:  dictCaseInsensitive,
+		Dictionaries:          dictScope.Mappings,
+		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
+		NetworkDicts:          dictScope.Network,
 		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,
@@ -1295,13 +1295,12 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		prismFractalIDs, _ = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
 	}
 
-	var dictMappings map[string]map[string]string
-	var dictCaseInsensitive map[string]bool
+	var dictScope dictionaries.Scope
 	if h.dictionaryManager != nil {
 		if isPrismContext {
-			dictMappings, dictCaseInsensitive, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID)
+			dictScope, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID)
 		} else if selectedIndex != "" {
-			dictMappings, dictCaseInsensitive, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, "")
+			dictScope, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, "")
 		}
 	}
 
@@ -1358,8 +1357,9 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		FractalID:             fractalIDForQuery,
 		FractalIDs:            prismFractalIDs,
 		IncludeEmptyFractalID: false,
-		Dictionaries:          dictMappings,
-		CaseInsensitiveDicts:  dictCaseInsensitive,
+		Dictionaries:          dictScope.Mappings,
+		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
+		NetworkDicts:          dictScope.Network,
 		Models:                modelInfos,
 		HasCommentFilter:      hasComment,
 		HasTLSHFilter:         hasTLSH,

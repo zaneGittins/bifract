@@ -4,6 +4,7 @@
 package ruleeval
 
 import (
+	"bifract/pkg/dictionaries"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -35,6 +36,9 @@ type Scratch struct {
 	dictionaries map[string]map[string]string
 	// dictCaseInsensitive names the dictionaries whose keys were hashed lowercased.
 	dictCaseInsensitive map[string]bool
+	// dictNetwork names the IP_TRIE dictionaries, which match() probes with an
+	// address rather than a string.
+	dictNetwork map[string]bool
 
 	// tlsh resolves tlsh() against the scratch table itself. A rule under test runs
 	// over the events its case inserted, not over a fractal's indexed history, so the
@@ -167,10 +171,11 @@ func (s *Scratch) Drop(ctx context.Context) error {
 // A copy rather than a setter: one editor session's scratch is shared by whatever runs
 // overlap on it, and mutating the mappings underneath a run in flight is a data race.
 // The copy shares the table; only the mappings differ.
-func (s *Scratch) WithDictionaries(mappings map[string]map[string]string, caseInsensitive map[string]bool) *Scratch {
+func (s *Scratch) WithDictionaries(scope dictionaries.Scope) *Scratch {
 	clone := *s
-	clone.dictionaries = mappings
-	clone.dictCaseInsensitive = caseInsensitive
+	clone.dictionaries = scope.Mappings
+	clone.dictCaseInsensitive = scope.CaseInsensitive
+	clone.dictNetwork = scope.Network
 	return &clone
 }
 

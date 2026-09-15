@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"bifract/pkg/dictionaries"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -89,7 +90,7 @@ type TestRunner struct {
 
 // dictionaryResolver is the slice of the dictionary manager the runner needs.
 type dictionaryResolver interface {
-	ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool, error)
+	ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (dictionaries.Scope, error)
 }
 
 // SetDictionaryResolver wires in dictionary lookups. Without it, a rule using match()
@@ -142,16 +143,16 @@ func (r *TestRunner) tlshResolver() *tlshresolve.Resolver {
 	return &tlshresolve.Resolver{Dicts: reader, DB: db}
 }
 
-func (r *TestRunner) dictionariesFor(ctx context.Context, fractalID, prismID string) (map[string]map[string]string, map[string]bool) {
+func (r *TestRunner) dictionariesFor(ctx context.Context, fractalID, prismID string) dictionaries.Scope {
 	if r.dicts == nil || (fractalID == "" && prismID == "") {
-		return nil, nil
+		return dictionaries.Scope{}
 	}
-	mappings, caseInsensitive, err := r.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
+	scope, err := r.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
 	if err != nil {
 		log.Printf("[Alerts] test run: resolve dictionaries for scope: %v", err)
-		return nil, nil
+		return dictionaries.Scope{}
 	}
-	return mappings, caseInsensitive
+	return scope
 }
 
 // NewTestRunner starts a runner and its idle-session sweeper.

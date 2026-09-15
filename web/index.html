@@ -3835,6 +3835,14 @@ throttleTimeSeconds: 3600"></textarea>
                     <input type="text" id="dictNewDesc" class="form-input" placeholder="Enter description">
                 </div>
                 <div class="form-group">
+                    <label for="dictNewKind">Kind</label>
+                    <select id="dictNewKind" class="form-input">
+                        <option value="value" selected>Values &mdash; match a key exactly</option>
+                        <option value="network">Networks &mdash; match an address to a CIDR range</option>
+                    </select>
+                    <span class="form-hint" id="dictNewKindHint">Keys are matched byte for byte. Use this for names, hashes and indicators.</span>
+                </div>
+                <div class="form-group">
                     <label class="dict-global-label">
                         <input type="checkbox" id="dictNewGlobal"> Global
                         <span class="form-hint">Available to all fractals</span>

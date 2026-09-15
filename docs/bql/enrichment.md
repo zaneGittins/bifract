@@ -41,6 +41,36 @@ Combine with other pipeline stages:
   | groupBy(department, function=count())
 ```
 
+### List kinds
+
+A context list is one of two kinds, chosen when it is created. `match()` is written the same
+way for both: the list's kind decides how the key is compared.
+
+| Kind | Keys hold | A lookup matches |
+|------|-----------|------------------|
+| Values | names, hashes, indicators | the key, byte for byte |
+| Networks | CIDR ranges | an address to the narrowest range holding it |
+
+A Networks list is looked up with an address rather than a string, so `10.1.2.3` finds a row
+keyed `10.1.0.0/16` in preference to one keyed `10.0.0.0/8`:
+
+```
+* | match(dict="corp_ranges", field=src_ip, column=network, include=[site,owner])
+```
+
+IPv4 and IPv6 ranges live in the same list. A field carrying something that is not an address
+misses rather than failing the query, and a row whose key is not a CIDR range is refused when
+it is saved.
+
+Asking for the key column reports membership: it returns the looked-up value on a hit and an
+empty string on a miss, so `strict=true` keeps only the rows inside one of the ranges.
+
+```
+* | match(dict="corp_ranges", field=src_ip, column=network, include=[network], strict=true)
+```
+
+Ignoring case applies to a Values list only. A CIDR range has no casing to ignore.
+
 ## modelLookup()
 
 Enrich rows with the baseline an analytics [model](../features/models.md) has built, so a query can score each event against learned history.

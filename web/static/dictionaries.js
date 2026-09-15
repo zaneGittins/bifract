@@ -50,6 +50,7 @@ const Dictionaries = {
         document.getElementById('dictCreateBtn')?.addEventListener('click', () => this.showCreateForm());
         document.getElementById('dictCreateSaveBtn')?.addEventListener('click', () => this.saveCreateDictionary());
         document.getElementById('dictCreateCancelBtn')?.addEventListener('click', () => this.hideCreateForm());
+        document.getElementById('dictNewKind')?.addEventListener('change', () => this.updateKindHint());
         document.getElementById('dictNewName')?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') this.saveCreateDictionary();
             if (e.key === 'Escape') this.hideCreateForm();
@@ -139,7 +140,7 @@ const Dictionaries = {
 
         tbody.innerHTML = dicts.map(d => `
 <tr class="dict-list-row">
-    <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}${d.is_global ? ' <span class="dict-global-badge">Global</span>' : ''}</a></td>
+    <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}${this.kindBadge(d)}${d.is_global ? ' <span class="dict-global-badge">Global</span>' : ''}</a></td>
     <td style="color:var(--text-secondary);font-size:0.88rem;">${this.esc(d.description || '')}</td>
     <td style="color:var(--text-secondary);">${d.columns ? d.columns.length : 0}</td>
     <td style="color:var(--text-secondary);">${(d.row_count || 0).toLocaleString()}</td>
@@ -180,9 +181,38 @@ const Dictionaries = {
         if (nameInput) nameInput.value = '';
         if (descInput) descInput.value = '';
         if (globalCb) globalCb.checked = false;
+        const kind = document.getElementById('dictNewKind');
+        if (kind) { kind.value = 'value'; this.updateKindHint(); }
         if (err) err.style.display = 'none';
         modal.style.display = 'flex';
         setTimeout(() => nameInput?.focus(), 100);
+    },
+
+    // KINDS is the one place a list's kind is described. The label is what the
+    // listing and the editor show; the hint is what the create form explains.
+    KINDS: {
+        value: { label: 'Values', hint: 'Keys are matched byte for byte. Use this for names, hashes and indicators.' },
+        network: { label: 'Networks', hint: 'Keys are CIDR ranges. A lookup matches an address to the narrowest range holding it.' },
+    },
+
+    kindOf(d) {
+        const k = (d && d.kind) || 'value';
+        return this.KINDS[k] ? k : 'value';
+    },
+
+    // A Values list is the default and carries no badge: badging every row would
+    // say nothing. Anything else is called out, because it changes what a lookup means.
+    kindBadge(d) {
+        const k = this.kindOf(d);
+        if (k === 'value') return '';
+        return ` <span class="dict-kind-badge">${this.esc(this.KINDS[k].label)}</span>`;
+    },
+
+    updateKindHint() {
+        const sel = document.getElementById('dictNewKind');
+        const hint = document.getElementById('dictNewKindHint');
+        if (!sel || !hint) return;
+        hint.textContent = (this.KINDS[sel.value] || this.KINDS.value).hint;
     },
 
     hideCreateForm() {
@@ -194,6 +224,7 @@ const Dictionaries = {
         const name = (document.getElementById('dictNewName')?.value || '').trim();
         const desc = (document.getElementById('dictNewDesc')?.value || '').trim();
         const isGlobal = document.getElementById('dictNewGlobal')?.checked || false;
+        const kind = document.getElementById('dictNewKind')?.value || 'value';
         const err = document.getElementById('dictCreateError');
 
         if (!name) {
@@ -208,7 +239,7 @@ const Dictionaries = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, description: desc, columns: [], is_global: isGlobal }),
+                body: JSON.stringify({ name, description: desc, columns: [], is_global: isGlobal, kind }),
             });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
@@ -268,7 +299,9 @@ const Dictionaries = {
 <div class="dict-meta-bar">
     <span class="dict-meta-pill" id="dictMetaRows"></span>
     <label class="dict-meta-global"><input type="checkbox" id="dictGlobalToggle"${d.is_global ? ' checked' : ''}> Global</label>
-    <label class="dict-meta-global" title="Lookups match the key whatever its casing"><input type="checkbox" id="dictCaseToggle"${d.case_insensitive_keys ? ' checked' : ''}> Ignore case</label>
+    ${this.kindOf(d) === 'value'
+        ? `<label class="dict-meta-global" title="Lookups match the key whatever its casing"><input type="checkbox" id="dictCaseToggle"${d.case_insensitive_keys ? ' checked' : ''}> Ignore case</label>`
+        : `<span class="dict-meta-pill" title="${this.esc(this.KINDS[this.kindOf(d)].hint)}">${this.esc(this.KINDS[this.kindOf(d)].label)}</span>`}
     <span class="dict-meta-syntax" id="dictMetaSyntax"></span>
 </div>
 
@@ -301,7 +334,8 @@ const Dictionaries = {
         document.getElementById('dictDetailName').textContent = d.name;
         document.getElementById('dictDetailDesc').textContent = d.description || '';
         document.getElementById('dictMetaRows').textContent = (d.row_count || 0).toLocaleString() + ' rows';
-        document.getElementById('dictMetaSyntax').textContent = `match(dict="${d.name}", field=…, column=${d.key_column}, include=[…])`;
+        const probeField = this.kindOf(d) === 'network' ? 'src_ip' : '…';
+        document.getElementById('dictMetaSyntax').textContent = `match(dict="${d.name}", field=${probeField}, column=${d.key_column}, include=[…])`;
 
         this._bindDetailEvents();
         this.loadRows();

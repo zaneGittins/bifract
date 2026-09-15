@@ -49,13 +49,17 @@ type QueryOptions struct {
 	UseIngestTimestamp   bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
 	AlertExtraFields     []string                      // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled         bool                          // True when MaxMind GeoLite2 dictionaries are loaded
-	DictionaryDatabase   string                        // ClickHouse database holding the dictionary objects; qualifies every dictGet
-	TableName            string                        // Override source table (default "logs", use "logs_distributed" in cluster mode)
-	ProcLineageTable     string                        // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
-	ProcFreqTable        string                        // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
-	ProcEdgesTable       string                        // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
-	IncludeShardNum      bool                          // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
-	SourceMode           SourceMode                    // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
+	// NetworkDicts marks dictionaries built as an IP_TRIE. Their keys are CIDR
+	// ranges, so a lookup probes an address and matches the longest range holding
+	// it; probing one with a string is rejected by the server.
+	NetworkDicts       map[string]bool
+	DictionaryDatabase string     // ClickHouse database holding the dictionary objects; qualifies every dictGet
+	TableName          string     // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	ProcLineageTable   string     // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
+	ProcFreqTable      string     // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
+	ProcEdgesTable     string     // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
+	IncludeShardNum    bool       // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
+	SourceMode         SourceMode // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 	// IcePromoted lists the field names whose `_ice_` promoted column exists on
 	// the Iceberg table this query targets. Iceberg mode only. Leave nil when the
 	// target table's schema is unknown: pruning is skipped, results stay correct.
