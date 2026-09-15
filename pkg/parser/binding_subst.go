@@ -73,6 +73,18 @@ func (p *Parser) substituteArg(a *Argument, cmdName string, whole bool) error {
 			b.SetRefs++
 			return nil
 		}
+		// A literal becomes a literal argument, text and all. Substituting only the
+		// expression left Text reading "&name", and a handler that takes its value
+		// from the text (in(), and every list parameter) compiled the sigil into
+		// the query as if it were the value.
+		if b.Kind == BindingValue && b.Expr != nil {
+			switch b.Expr.Kind {
+			case ExprString, ExprNumber, ExprBoolean:
+				a.Kind, a.Expr, a.List, a.Agg = ArgLiteral, nil, nil, nil
+				a.Text, a.Quoted = b.Expr.Value, b.Expr.Kind == ExprString
+				return nil
+			}
+		}
 	}
 	if err := p.substituteExpr(a.Expr); err != nil {
 		return err

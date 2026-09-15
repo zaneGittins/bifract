@@ -827,7 +827,13 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	}
 
 	valTok := p.current()
-	if valTok.Type == TokenString {
+	if valTok.Type == TokenBinding {
+		v, err := p.bindingValueLiteral()
+		if err != nil {
+			return nil, err
+		}
+		cond.Value = v
+	} else if valTok.Type == TokenString {
 		cond.Value = valTok.Value
 		p.advance()
 	} else if valTok.Type == TokenRegex {
@@ -1365,7 +1371,13 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 	}
 
 	valTok := p.current()
-	if valTok.Type == TokenField || valTok.Type == TokenValue || valTok.Type == TokenString {
+	if valTok.Type == TokenBinding {
+		v, err := p.bindingValueLiteral()
+		if err != nil {
+			return nil, err
+		}
+		having.Value = v
+	} else if valTok.Type == TokenField || valTok.Type == TokenValue || valTok.Type == TokenString {
 		having.Value = valTok.Value
 		p.advance()
 	} else if valTok.Type == TokenRegex {

@@ -405,3 +405,40 @@ func TestBindingCTENameIsSafe(t *testing.T) {
 		t.Errorf("want a prefixed, validated CTE name, got: %s", sql)
 	}
 }
+
+// A binding stands where a value goes: `user = &tUser`. The sigil is what makes
+// that unambiguous, since a bare word on the right of an operator is a literal.
+func TestBindingAsAValue(t *testing.T) {
+	cases := []struct{ bound, inline string }{
+		{`let &u = "CORP\\rpatel"; * | user=&u`, `* | user="CORP\\rpatel"`},
+		{`let &u = "bob"; user=&u | table(user)`, `user="bob" | table(user)`},
+		{`let &n = 500; * | bytes > &n`, `* | bytes > 500`},
+		{`let &u = "bob"; * | user != &u`, `* | user != "bob"`},
+		{`let &u = "bob"; * | in(user, &u)`, `* | in(user, "bob")`},
+	}
+	for _, tc := range cases {
+		if got, want := bindingSQL(t, tc.bound), bindingSQL(t, tc.inline); got != want {
+			t.Errorf("%s\n got: %s\nwant: %s", tc.bound, got, want)
+		}
+	}
+}
+
+// Only a literal has a value to stand in. A filter has none, and an expression
+// would be a comparison against another column, which a condition cannot carry.
+func TestNonLiteralBindingIsRejectedAsAValue(t *testing.T) {
+	cases := map[string]string{
+		`let &l = lower(image) =~ "cmd.exe"; * | user = &l`: "not a value",
+		`let &x = lower(image); * | user = &x`:              "not a literal",
+		`* | user = &nope`:                                  "unknown binding",
+	}
+	for query, want := range cases {
+		_, err := ParseQuery(query)
+		if err == nil {
+			t.Errorf("%s: expected an error", query)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want an error mentioning %q, got: %v", query, want, err)
+		}
+	}
+}

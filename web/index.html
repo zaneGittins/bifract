@@ -421,7 +421,7 @@
                         <div id="perfPaneArchive" class="perf-pane" style="display:none;">
                             <div id="archiveSpoolBanner" class="system-pressure-banner" style="display:none;">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                                <span>Archive spool near capacity &mdash; ingestion is applying backpressure (429) until the archiver drains it.</span>
+                                <span>Archive spool near capacity: ingestion is applying backpressure (429) until the archiver drains it.</span>
                             </div>
 
                             <div class="perf-section">
@@ -589,7 +589,7 @@
                                         </div>
                                     </div>
                                     <div class="restore-field">
-                                        <label class="restore-label">Ingested between <span class="restore-sublabel">ingest time, shown in your display timezone &mdash; matches the archive's partitioning, so only the days you select are read</span></label>
+                                        <label class="restore-label">Ingested between <span class="restore-sublabel">ingest time, shown in your display timezone, matching the archive's partitioning, so only the days you select are read</span></label>
                                         <div class="restore-range-row">
                                             <input type="datetime-local" id="restoreFrom" class="restore-input" step="1">
                                             <span class="restore-range-sep">to</span>
@@ -3837,9 +3837,9 @@ throttleTimeSeconds: 3600"></textarea>
                 <div class="form-group">
                     <label for="dictNewKind">Kind</label>
                     <select id="dictNewKind" class="form-input">
-                        <option value="value" selected>Values &mdash; match a key exactly</option>
-                        <option value="network">Networks &mdash; match an address to a CIDR range</option>
-                        <option value="pattern">Patterns &mdash; match a string against regular expressions</option>
+                        <option value="value" selected>Values: match a key exactly</option>
+                        <option value="network">Networks: match an address to a CIDR range</option>
+                        <option value="pattern">Patterns: match a string against regular expressions</option>
                     </select>
                     <span class="form-hint" id="dictNewKindHint">Keys are matched byte for byte. Use this for names, hashes and indicators.</span>
                 </div>
@@ -4145,9 +4145,9 @@ throttleTimeSeconds: 3600"></textarea>
                     <div class="form-group" style="margin-top: 0.75rem;">
                         <label for="inlineApiKeyRole">Role</label>
                         <select id="inlineApiKeyRole" class="form-control">
-                            <option value="viewer">Viewer &mdash; read only</option>
-                            <option value="analyst" selected>Analyst &mdash; read and write</option>
-                            <option value="admin">Admin &mdash; manage this scope</option>
+                            <option value="viewer">Viewer: read only</option>
+                            <option value="analyst" selected>Analyst: read and write</option>
+                            <option value="admin">Admin: manage this scope</option>
                         </select>
                         <p class="admin-panel-desc" style="margin-top:0.35rem;">The key is authorized exactly like a person holding this role on this scope.</p>
                     </div>
@@ -4185,9 +4185,9 @@ throttleTimeSeconds: 3600"></textarea>
                     <div class="form-group" style="margin-top: 0.75rem;">
                         <label for="prismInlineApiKeyRole">Role</label>
                         <select id="prismInlineApiKeyRole" class="form-control">
-                            <option value="viewer">Viewer &mdash; read only</option>
-                            <option value="analyst" selected>Analyst &mdash; read and write</option>
-                            <option value="admin">Admin &mdash; manage this scope</option>
+                            <option value="viewer">Viewer: read only</option>
+                            <option value="analyst" selected>Analyst: read and write</option>
+                            <option value="admin">Admin: manage this scope</option>
                         </select>
                         <p class="admin-panel-desc" style="margin-top:0.35rem;">The key is authorized exactly like a person holding this role on this prism.</p>
                     </div>

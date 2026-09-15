@@ -331,3 +331,28 @@ func (p *Parser) resolveBlockBinding(body string) (string, error) {
 	}
 	return b.Body, nil
 }
+
+// bindingValueLiteral reads a binding used where a value goes, as in
+// `user = &tUser`. The sigil is what makes this unambiguous: without it a bare
+// word on the right of an operator is a literal, which is why a binding could not
+// be read here before one existed.
+//
+// Only a literal binding has a value to stand in. A filter has no value at all,
+// and an expression would be a comparison against another column, which a
+// condition has no room to carry.
+func (p *Parser) bindingValueLiteral() (string, error) {
+	tok := p.current()
+	b, err := p.lookupBinding(tok)
+	if err != nil {
+		return "", err
+	}
+	if b.Kind != BindingValue || b.Expr == nil {
+		return "", newPosError(tok, "%s is %s, not a value: it cannot stand where a value goes", b.Name, b.Kind.describe())
+	}
+	switch b.Expr.Kind {
+	case ExprString, ExprNumber, ExprBoolean:
+		p.advance()
+		return b.Expr.Value, nil
+	}
+	return "", newPosError(tok, "%s holds an expression, not a literal: compare it on its own (`| %s = ...`) rather than using it as a value", b.Name, b.Name)
+}
