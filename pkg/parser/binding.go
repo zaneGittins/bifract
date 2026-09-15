@@ -9,7 +9,7 @@ import (
 // A let binding names an expression, a filter, or a whole pipeline so a query can
 // state it once and use it in several places:
 //
-//	let &lolbin = lower(image) =~ "rundll32.exe","mshta.exe";
+//	let &lolbin := lower(image) =~ "rundll32.exe","mshta.exe";
 //	* | &lolbin AND parent_image = "winword.exe"
 //
 // The & sigil is mandatory and is part of the name. BQL resolves an unknown
@@ -106,10 +106,17 @@ func (p *Parser) parseLetStatement() error {
 	}
 	p.advance()
 
-	if p.current().Type != TokenEqual {
-		return newPosError(p.current(), "let %s: expected '=' after the name", name)
+	// := , not =. At pipeline level := assigns and = compares, and a let statement
+	// sits at that level, so binding a name with = would be the one place in BQL
+	// where the equality operator assigns outside a command's parentheses.
+	switch p.current().Type {
+	case TokenAssign:
+		p.advance()
+	case TokenEqual:
+		return newPosError(p.current(), "let %s: use := to bind a name, not =; = compares", name)
+	default:
+		return newPosError(p.current(), "let %s: expected := after the name", name)
 	}
-	p.advance()
 	if p.current().Type == TokenSemicolon || p.current().Type == TokenEOF {
 		return newPosError(nameTok, "let %s: has no value", name)
 	}

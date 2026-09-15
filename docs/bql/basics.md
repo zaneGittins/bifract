@@ -193,11 +193,11 @@ A `let` statement names an expression, a filter, or a pipeline so a query states
 uses it in several places. Unlike an `@variable`, which a dashboard or notebook supplies, a
 binding belongs to the query that declares it.
 
-Statements come before the query, separated by `;`, and a reference carries the `&` sigil:
+Statements come before the query, separated by `;`. A binding is made with `:=`, the assignment operator, and a reference carries the `&` sigil:
 
 ```
-let &lolbin = lower(image) =~ "rundll32.exe","regsvr32.exe","mshta.exe";
-let &officey = lower(parent_image) =~ "winword.exe","excel.exe";
+let &lolbin := lower(image) =~ "rundll32.exe","regsvr32.exe","mshta.exe";
+let &officey := lower(parent_image) =~ "winword.exe","excel.exe";
 
 * | &lolbin AND &officey | table(computer_name, user, image, commandline)
 ```
@@ -207,9 +207,9 @@ field, or a whole filter:
 
 | Binding | Used as |
 |---|---|
-| `let &n = 500;` | `len(commandline) > &n` |
-| `let &cmdlen = len(commandline);` | `&cmdlen > 500 AND &cmdlen < 4000`, `table(&cmdlen)` |
-| `let &lolbin = lower(image) =~ "mshta.exe";` | `&lolbin`, `NOT &lolbin`, `&lolbin AND user="bob"` |
+| `let &n := 500;` | `len(commandline) > &n` |
+| `let &cmdlen := len(commandline);` | `&cmdlen > 500 AND &cmdlen < 4000`, `table(&cmdlen)` |
+| `let &lolbin := lower(image) =~ "mshta.exe";` | `&lolbin`, `NOT &lolbin`, `&lolbin AND user="bob"` |
 
 The `&` is part of the name, so a binding never collides with a log field, and a misspelled
 reference is an error rather than a field lookup that quietly matches nothing. A binding may
@@ -223,8 +223,8 @@ called `cmdlen`.
 A binding whose value is a pipeline names a set of rows. Use it in `in()` or as a `join()` block:
 
 ```
-let &admins  = user_type="admin" | groupby(user);
-let &servers = role="server"     | groupby(computer_name);
+let &admins  := user_type="admin" | groupby(user);
+let &servers := role="server"     | groupby(computer_name);
 
 event_id="4624"
   | in(user, &admins)

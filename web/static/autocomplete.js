@@ -297,7 +297,7 @@ const Autocomplete = {
 
         // A let statement is only legal ahead of the pipeline: at the very start of
         // the query, or after the ';' that closed the statement before it.
-        const canStartStatement = !insideParens && /^\s*(?:(?:^|;)\s*let\s+&\w+\s*=[^;]*;\s*)*$/.test(value.substring(0, start));
+        const canStartStatement = !insideParens && /^\s*(?:(?:^|;)\s*let\s+&\w+\s*:=[^;]*;\s*)*$/.test(value.substring(0, start));
         return { kind: 'token', partial, start, end: cursorPos, insideParens, afterPipe, canStartStatement };
     },
 
@@ -317,7 +317,7 @@ const Autocomplete = {
     // The kind mirrors how the parser reads the right-hand side.
     _declaredBindings(text) {
         const out = [];
-        const re = /(?:^|[;\s])let\s+(&[a-zA-Z_]\w*)\s*=\s*([^;]*)/g;
+        const re = /(?:^|[;\s])let\s+(&[a-zA-Z_]\w*)\s*:=\s*([^;]*)/g;
         let m;
         while ((m = re.exec(text)) !== null) {
             const body = m[2] || '';
@@ -433,7 +433,7 @@ const Autocomplete = {
             if (ctx.canStartStatement) {
                 const m = this._match('let', partial);
                 if (m.ok) {
-                    out.push({ kind: 'keyword', label: 'let', insert: 'let &', detail: 'binding', desc: 'Name an expression, a filter or a pipeline', matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix });
+                    out.push({ kind: 'keyword', label: 'let', insert: 'let &', detail: 'binding', desc: 'Name an expression, a filter or a pipeline with :=', matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix });
                 }
             }
             if (!ctx.insideParens) {
