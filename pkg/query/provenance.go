@@ -103,9 +103,9 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// anomExpr). Fetched ONCE per call and passed as a literal so it is not silently re-scanned
 	// if the scoring SQL gets rebuilt within this same call (the diffuse-fallback path below
 	// calls BuildProvenanceScoringSQL again). Never cached across separate pgr() calls -- always
-	// fresh per call. On failure, totalHosts stays 0, which the anomaly expression already
-	// treats as "no baseline" (global-rarity term forced to 0) -- a safe, pre-existing fallback.
-	var totalHosts int64
+	// fresh per call. On failure it stays 0, which the anomaly expression already treats as
+	// "no baseline" (global-rarity term forced to 0) -- a safe, pre-existing fallback.
+	var baseline parser.ProvenanceBaseline
 	if ctx.Err() == nil {
 		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
 			if ctx.Err() != nil {
@@ -113,7 +113,28 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			}
 			log.Printf("[pgr] total-hosts lookup failed, scoring with global-rarity term forced to 0: %v", tErr)
 		} else if len(totRows) > 0 {
-			totalHosts = reconInt64(totRows[0]["total_hosts"])
+			baseline.TotalHosts = reconInt64(totRows[0]["total_hosts"])
+		}
+	}
+
+	// The tree's own edge keys, which scope every proc_freq CTE in the scoring SQL to the rows its
+	// joins can match (see parser.ProvenanceBaseline). Without them each CTE aggregates the
+	// fractal's entire proc_freq, which grows with the retention window rather than with the tree.
+	// Failure or overflow is non-fatal and leaves the keys empty: scoring then runs against the
+	// unrestricted baseline, which is slower but returns the same scores.
+	if ctx.Err() == nil {
+		keySQL, kErr := parser.BuildProvenanceEdgeKeysSQL(combined, p.EdgeTypes, opts)
+		if kErr != nil {
+			log.Printf("[pgr] build edge-key query: %v", kErr)
+		} else if keyRows, qErr := h.db.QueryProvenance(ctx, keySQL); qErr != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			log.Printf("[pgr] edge-key lookup failed, scoring against the unrestricted baseline: %v", qErr)
+		} else if len(keyRows) > parser.MaxProvenanceEdgeKeys {
+			log.Printf("[pgr] tree has more than %d distinct edge keys; scoring against the unrestricted baseline", parser.MaxProvenanceEdgeKeys)
+		} else {
+			baseline.SrcKeys, baseline.TgtKeys = provenanceEdgeKeys(keyRows)
 		}
 	}
 
@@ -126,7 +147,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		scoreOpts.MaxRows = p.Limit
 	}
 
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, totalHosts, scoreOpts)
+	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, baseline, scoreOpts)
 	if err != nil {
 		return "", fmt.Errorf("pgr: build scoring query: %w", err)
 	}
@@ -156,7 +177,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			return "", ctx.Err()
 		}
 		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", qErr)
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, scoreOpts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, baseline, scoreOpts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -175,7 +196,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
 		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
 		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, totalHosts, scoreOpts)
+		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, baseline, scoreOpts)
 		if ferr != nil {
 			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
 		}
@@ -495,6 +516,25 @@ const (
 	reconnectExpandMaxGuids = 2000 // hard cap on total guids after expansion
 	reconnectHighAnomaly    = 0.8  // only peers at/above this bridge severity expand
 )
+
+// provenanceEdgeKeys splits the (fkey_src, fkey_tgt) pair rows into the two deduplicated key
+// sets the scoring CTEs are scoped by. Every value is kept, empty ones included: an empty key
+// joins nothing in practice, but carrying it costs one IN-list entry and keeps the restricted
+// baseline provably identical to the unrestricted one rather than identical-in-the-cases-checked.
+func provenanceEdgeKeys(rows []map[string]interface{}) (src, tgt []string) {
+	seenSrc, seenTgt := map[string]bool{}, map[string]bool{}
+	for _, r := range rows {
+		if v := reconString(r["fkey_src"]); !seenSrc[v] {
+			seenSrc[v] = true
+			src = append(src, v)
+		}
+		if v := reconString(r["fkey_tgt"]); !seenTgt[v] {
+			seenTgt[v] = true
+			tgt = append(tgt, v)
+		}
+	}
+	return src, tgt
+}
 
 // parseReconnectPeers converts the reverse-lookup rows into typed peers, dropping any
 // without a peer guid.

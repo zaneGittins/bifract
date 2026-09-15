@@ -158,7 +158,7 @@ func reconOpts() QueryOptions {
 func TestScoringSQLCarriesParentLabel(t *testing.T) {
 	opts := reconOpts()
 	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, map[string]bool{"file_write": true, "remote_thread": true}, false, 10, opts)
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, map[string]bool{"file_write": true, "remote_thread": true}, false, ProvenanceBaseline{TotalHosts: 10}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestInternalDomainExpr(t *testing.T) {
 func TestScoringSQLGhostRootScoresZero(t *testing.T) {
 	opts := reconOpts()
 	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, 10, opts)
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestScoringSQLGhostRootScoresZero(t *testing.T) {
 func TestScoringSQLUsesNodeStabilityFactors(t *testing.T) {
 	opts := reconOpts()
 	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, 10, opts)
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,5 +321,58 @@ func TestScoringSQLUsesNodeStabilityFactors(t *testing.T) {
 		if strings.Contains(anom[i:], "gf.hostct") {
 			t.Error("anomaly_score must not combine the transition term with global rarity")
 		}
+	}
+}
+
+// ClickHouse inlines CTEs, so each proc_freq-reading CTE in the scoring SQL is its own table
+// scan. Every one must therefore be scoped to the keys its join can match, or pgr() aggregates
+// the fractal's whole proc_freq once per CTE -- work that grows with the retention window rather
+// than with the tree, and what exhausts the query memory cap on an aged fractal.
+func TestScoringSQLScopesBaselineToEdgeKeys(t *testing.T) {
+	opts := reconOpts()
+	opts.MaxRows = 100
+	bl := ProvenanceBaseline{TotalHosts: 10, SrcKeys: []string{"c:\\a.exe"}, TgtKeys: []string{"1.2.3.4", "d.example"}}
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, bl, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Which COLUMN each key set applies to depends on the CTE, and crossing them changes scores
+	// without erroring: fe/ft join src_image to the edge source, ins is grouped by the
+	// target_norm that IS that source node, gf joins target_norm to the edge target, and outs is
+	// grouped by the src_image that IS that target node.
+	srcKeys, tgtKeys := `('c:\\a.exe')`, `('1.2.3.4', 'd.example')`
+	for _, c := range []struct {
+		cte, cond string
+	}{
+		{"fe", "src_image IN " + srcKeys},
+		{"ins", "target_norm IN " + srcKeys},
+		{"gf", "target_norm IN " + tgtKeys},
+		{"outs", "src_image IN " + tgtKeys},
+	} {
+		// Exactly once: a crossed pair shows up as a duplicate here and a zero elsewhere.
+		if got := strings.Count(sql, c.cond); got != 1 {
+			t.Errorf("%s scoped by %q %d times, want 1", c.cte, c.cond, got)
+		}
+	}
+	// span measures the age of the whole baseline, so it alone stays unrestricted.
+	span := sql[strings.Index(sql, "span AS ("):]
+	span = span[:strings.Index(span, "), ")]
+	if strings.Contains(span, "IN (") {
+		t.Errorf("span must not be key-restricted: %s", span)
+	}
+}
+
+// An empty key set means the lookup failed or overflowed. Scoring must then fall back to the
+// unrestricted baseline: a partial key set would turn real baseline rows into missed joins and
+// silently change scores.
+func TestScoringSQLUnrestrictedWithoutEdgeKeys(t *testing.T) {
+	opts := reconOpts()
+	opts.MaxRows = 100
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sql, "src_image IN (") || strings.Contains(sql, "target_norm IN (") {
+		t.Error("no edge keys must leave every proc_freq CTE unrestricted")
 	}
 }

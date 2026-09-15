@@ -434,6 +434,56 @@ func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 		procFreqHostsCap, procFreq, where)
 }
 
+// ProvenanceBaseline holds the per-call inputs BuildProvenanceScoringSQL scores against. All of
+// it is fetched once per pgr() call and substituted as literals rather than left as live scalar
+// subqueries, so nothing is re-scanned when the scoring SQL is rebuilt within the same call (the
+// diffuse-fallback path builds it twice). Never cached across calls.
+type ProvenanceBaseline struct {
+	// TotalHosts is the global-rarity denominator (BuildProvenanceTotalHostsSQL).
+	TotalHosts int64
+	// SrcKeys/TgtKeys are the DISTINCT fkey_src / fkey_tgt of the tree's own edges
+	// (BuildProvenanceEdgeKeysSQL), scoping every proc_freq CTE to rows its join can match.
+	// Unscoped, each CTE aggregates the fractal's whole proc_freq, which holds one row per
+	// relationship per day and so grows with the retention window, not with the tree.
+	//
+	// Empty leaves the CTEs that depend on it unrestricted: slower, same scores. That is the
+	// fallback when the lookup fails or overflows MaxProvenanceEdgeKeys, because a TRUNCATED
+	// key set would turn real baseline rows into missed joins and change scores.
+	SrcKeys []string
+	TgtKeys []string
+}
+
+// MaxProvenanceEdgeKeys caps each edge key set. Past it the query layer drops both sets and
+// scores against the unrestricted baseline rather than risk a truncated one. Sized so the
+// literals stay well inside the raised max_query_size (storage.maxGeneratedQuerySize, 16MB):
+// each set is substituted into at most two CTEs.
+const MaxProvenanceEdgeKeys = 20000
+
+// BuildProvenanceEdgeKeysSQL returns the DISTINCT (fkey_src, fkey_tgt) pairs of the tree's edges,
+// which is what ProvenanceBaseline's key sets are collected from. It reads the same bounded edge
+// union pass 2 scores (guid-keyed rollup + proc_lineage lookups), so it adds an indexed keyhole
+// read, not a scan. One row over the cap is returned so the caller can detect overflow.
+func BuildProvenanceEdgeKeysSQL(guids []string, edgeTypes map[string]bool, opts QueryOptions) (string, error) {
+	edges, err := buildProvenanceEdgeUnion(guids, edgeTypes, opts)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("SELECT DISTINCT fkey_src, fkey_tgt FROM (%s) AS ev LIMIT %d", edges, MaxProvenanceEdgeKeys+1), nil
+}
+
+// keyInCond renders `col IN ('a', 'b')` for a non-empty key set, or "" to leave the caller's
+// CTE unrestricted (see ProvenanceBaseline).
+func keyInCond(col string, keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(keys))
+	for i, k := range keys {
+		quoted[i] = "'" + escapeString(k) + "'"
+	}
+	return fmt.Sprintf("%s IN (%s)", col, strings.Join(quoted, ", "))
+}
+
 // BuildProvenanceScoringSQL is pass 2: given the tree's guids, assemble every edge
 // (spawn from proc_lineage; file/net/injection/handle-access leaf edges from logs, bounded
 // by time + guid + category), score each against proc_freq (anomaly = 1 - freq(edge)/freq(src,rel,*)),
@@ -442,13 +492,9 @@ func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 // edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
 // always included as the tree backbone.
 //
-// totalHosts (from BuildProvenanceTotalHostsSQL, computed once per pgr() call -- see
-// provenanceScoreSQL) is the global-rarity denominator, substituted as a literal instead of a
-// live scalar subquery so it is not silently re-scanned if this SQL is rebuilt within the same
-// call (the diffuse-fallback path calls this twice). Always fresh per call; never cached across
-// separate pgr() calls, so this is byte-identical to what the inline subquery would have
-// returned at call time.
-func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, totalHosts int64, opts QueryOptions) (string, error) {
+// bl carries the per-call baseline inputs: the global-rarity denominator and the tree's edge
+// key sets. See ProvenanceBaseline.
+func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, bl ProvenanceBaseline, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
 	}
@@ -491,10 +537,28 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	}
 	inList := strings.Join(quoted, ", ")
 
-	freqWhere := ""
-	if fractal != "" {
-		freqWhere = " WHERE " + fractal
+	// freqWhere composes a proc_freq WHERE from the fractal scope plus the caller's key
+	// restriction (empty conditions drop out).
+	freqWhere := func(extra string) string {
+		var conds []string
+		if fractal != "" {
+			conds = append(conds, fractal)
+		}
+		if extra != "" {
+			conds = append(conds, extra)
+		}
+		if len(conds) == 0 {
+			return ""
+		}
+		return " WHERE " + strings.Join(conds, " AND ")
 	}
+	// Four restrictions, not two: which COLUMN a key set applies to depends on the CTE. fe/ft and
+	// ins are keyed by the edge's source (fe joins src_image, ins is grouped by the target_norm
+	// that IS that source node); gf and outs by its target. Crossing them silently changes scores.
+	feSrc := keyInCond("src_image", bl.SrcKeys)
+	gfTgt := keyInCond("target_norm", bl.TgtKeys)
+	insTgt := keyInCond("target_norm", bl.SrcKeys)
+	outsSrc := keyInCond("src_image", bl.TgtKeys)
 
 	// Aggregate raw per-event leaf edges to one row per (src,dst,event_type). Without this a
 	// beaconing process (e.g. 10k connections to one C2) emits 10k identical edges that all get
@@ -520,7 +584,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	// Empty fkey_src scores 0: ghost roots (no parent_image) can never match a proc_freq row,
 	// whose MVs all require parent_image != '', so ft.tot=0 there is a failed join rather than a
 	// measurement. With no source there is nothing for the child to be unusual FOR.
-	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]d = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]d))", procFreqHostsCap, totalHosts)
+	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]d = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]d))", procFreqHostsCap, bl.TotalHosts)
 	// m = NoDoze Eq.1, the transition probability Freq(src,rel,target)/Freq(src,rel,*). A source
 	// with no baseline at all yields 0, which is the paper's never-seen case.
 	m := "if(coalesce(ft.tot, 0) = 0, 0.0, coalesce(fe.cnt, 0) / ft.tot)"
@@ -535,37 +599,47 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		"if(fe.first_seen = toDate(0), '', toString(fe.first_seen)) AS first_seen "
 
 	var b strings.Builder
-	// fe is the only full pass over proc_freq that carries counts and dates: ft, rel, span, ins and
-	// outs are all regroupings of it, so they cost a re-aggregation of an already-materialised
-	// result rather than another table scan. gf stays separate because it merges the hosts
-	// aggregate state, which fe does not carry.
+	// ClickHouse INLINES a CTE at each reference, so each proc_freq CTE below is its own
+	// ReadFromMergeTree in the plan (five of them), and each carries its own key scope (see
+	// ProvenanceBaseline). fe/ft and outs restrict src_image, a PRIMARY-KEY prefix, so they prune
+	// granules; gf and ins restrict target_norm, which prunes none but collapses the GROUP BY --
+	// gf merges a 256-host aggregate state per group, and doing that fractal-wide is what
+	// exhausts the query memory cap. rel is inlined per CTE rather than shared because ins and
+	// outs need different restrictions, and span reads first_day directly instead of through it.
 	//
 	// first_seen is the earliest day a relationship was ever observed. Rows written before
 	// proc_freq gained first_day carry the column default (1970-01-01); day is what a backfill
 	// would have set, so substitute it and let the value self-correct as new rows arrive.
-	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt, min(if(first_day = toDate(0), day, first_day)) AS first_seen FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
-		procFreq, freqWhere))
+	firstSeen := "min(if(first_day = toDate(0), day, first_day))"
+	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt, %[3]s AS first_seen FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
+		procFreq, freqWhere(feSrc), firstSeen))
 	b.WriteString("ft AS (SELECT src_image, event_type, sum(cnt) AS tot FROM fe GROUP BY src_image, event_type), ")
 	b.WriteString(fmt.Sprintf("gf AS (SELECT event_type, target_norm, length(groupUniqArrayMerge(%[3]d)(hosts)) AS hostct FROM %[1]s%[2]s GROUP BY event_type, target_norm), ",
-		procFreq, freqWhere, procFreqHostsCap))
-	// NoDoze Eq.4/Eq.5 node stability: a day is STABLE for a node when it gained no new edge, and
-	// stability is the share of stable days over the node's observed lifetime. rel collapses fe to
-	// one first_seen per relationship, so counting distinct dates per node counts the days that
-	// node gained an edge. Long-established nodes score ~1 (regular); one sprouting new
-	// relationships daily scores ~0. nodeStabilityFloor stops a node observed on a single day from
-	// scoring a hard 0 and zeroing the whole Eq.2 product.
-	b.WriteString("rel AS (SELECT src_image, target_norm, min(first_seen) AS fd FROM fe GROUP BY src_image, target_norm), ")
+		procFreq, freqWhere(gfTgt), procFreqHostsCap))
 	// The observed window ends at the QUERY's end, not today(): a historical investigation must not
 	// be credited with stable days that postdate what it is looking at.
 	asOf := fmt.Sprintf("toDate('%s')", opts.EndTime.UTC().Format("2006-01-02"))
-	// span = days the baseline covers, gating the stability terms (see minStabilityDays).
-	b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', min(fd), %s) + 1 AS days FROM rel), ", asOf))
-	stab := func(key string) string {
-		return fmt.Sprintf("SELECT %[1]s AS node, if((SELECT days FROM span) < %[4]d, 1.0, greatest(%[2]s, 1 - uniqExact(fd) / greatest(1, dateDiff('day', min(fd), %[3]s) + 1))) AS stab FROM rel GROUP BY node",
-			key, nodeStabilityFloor, asOf, minStabilityDays)
+	// span = days the baseline covers, gating the stability terms (see minStabilityDays). It is the
+	// age of the WHOLE baseline, so it is never key-restricted.
+	b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', %[3]s, %[4]s) + 1 AS days FROM %[1]s%[2]s), ",
+		procFreq, freqWhere(""), firstSeen, asOf))
+	// NoDoze Eq.4/Eq.5 node stability: a day is STABLE for a node when it gained no new edge, and
+	// stability is the share of stable days over the node's observed lifetime. rel holds one
+	// first-seen day per relationship, so counting distinct dates per node counts the days that
+	// node gained an edge. Long-established nodes score ~1 (regular); one sprouting new
+	// relationships daily scores ~0. nodeStabilityFloor stops a node observed on a single day from
+	// scoring a hard 0 and zeroing the whole Eq.2 product.
+	//
+	// The restriction is on the grouping column itself, so every surviving group keeps all of its
+	// rows and the stability values are identical to the unrestricted form.
+	stab := func(key, restrict string) string {
+		rel := fmt.Sprintf("SELECT %[1]s AS node, %[4]s AS fd FROM %[2]s%[3]s GROUP BY src_image, target_norm",
+			key, procFreq, freqWhere(restrict), firstSeen)
+		return fmt.Sprintf("SELECT node, if((SELECT days FROM span) < %[4]d, 1.0, greatest(%[2]s, 1 - uniqExact(fd) / greatest(1, dateDiff('day', min(fd), %[3]s) + 1))) AS stab FROM (%[1]s) GROUP BY node",
+			rel, nodeStabilityFloor, asOf, minStabilityDays)
 	}
-	b.WriteString("outs AS (" + stab("src_image") + "), ")
-	b.WriteString("ins AS (" + stab("target_norm") + "), ")
+	b.WriteString("outs AS (" + stab("src_image", outsSrc) + "), ")
+	b.WriteString("ins AS (" + stab("target_norm", insTgt) + "), ")
 	// pm = per-process command line + user, read query-only from the process_creation logs of
 	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.

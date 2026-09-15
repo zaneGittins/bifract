@@ -97,7 +97,7 @@ func TestScoringSQLProjectsExactlyProvenanceColumns(t *testing.T) {
 		EndTime:   time.Now(),
 		MaxRows:   100,
 	}
-	sql, err := parser.BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, 10, opts)
+	sql, err := parser.BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, parser.ProvenanceBaseline{TotalHosts: 10}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
