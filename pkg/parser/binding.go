@@ -67,8 +67,11 @@ type BindingNode struct {
 	Kind BindingKind
 	Expr *ExprNode        // BindingValue
 	Cond *HavingCondition // BindingCondition
-	Body string           // BindingPipeline: the source, as written
-	Pipe *PipelineNode    // BindingPipeline
+	// Regex marks a value binding whose literal is a /pattern/. The expression
+	// grammar has no regex literal, so the statement reads it directly.
+	Regex bool
+	Body  string        // BindingPipeline: the source, as written
+	Pipe  *PipelineNode // BindingPipeline
 	// SetRefs counts the places that read this binding as a set. More than one
 	// means the query materialises it once rather than pasting the subquery in
 	// at each use.
@@ -151,6 +154,19 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 			return nil, fmt.Errorf("let %s: %w", name, err)
 		}
 		return &BindingNode{Name: name, Kind: BindingPipeline, Body: body, Pipe: sub, Pos: nameTok.Pos}, nil
+	}
+
+	// A regex is a literal BQL already has, and the expression grammar has no
+	// place for one, so it is read here rather than left as the only literal a
+	// binding cannot hold.
+	if p.current().Type == TokenRegex && p.pos+1 == end {
+		tok := p.current()
+		p.advance()
+		return &BindingNode{
+			Name: name, Kind: BindingValue, Regex: true,
+			Expr: &ExprNode{Kind: ExprString, Value: tok.Value, Pos: tok.Pos},
+			Pos:  nameTok.Pos,
+		}, nil
 	}
 
 	expr, err := p.parseExprFilterPrec(0)
@@ -347,19 +363,36 @@ func (p *Parser) resolveBlockBinding(body string) (string, error) {
 // Only a literal binding has a value to stand in. A filter has no value at all,
 // and an expression would be a comparison against another column, which a
 // condition has no room to carry.
-func (p *Parser) bindingValueLiteral() (string, error) {
+func (p *Parser) bindingValueLiteral() (value string, isRegex bool, err error) {
 	tok := p.current()
 	b, err := p.lookupBinding(tok)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if b.Kind != BindingValue || b.Expr == nil {
-		return "", newPosError(tok, "%s is %s, not a value: it cannot stand where a value goes", b.Name, b.Kind.describe())
+		return "", false, newPosError(tok, "%s is %s, not a value: it cannot stand where a value goes", b.Name, b.Kind.describe())
 	}
-	switch b.Expr.Kind {
-	case ExprString, ExprNumber, ExprBoolean:
+	if lit, ok := bindingLiteralText(b.Expr); ok {
 		p.advance()
-		return b.Expr.Value, nil
+		return lit, b.Regex, nil
 	}
-	return "", newPosError(tok, "%s holds an expression, not a literal: compare it on its own (`| %s = ...`) rather than using it as a value", b.Name, b.Name)
+	return "", false, newPosError(tok, "%s holds an expression, not a literal: compare it on its own (`| %s := ...`) rather than using it as a value", b.Name, b.Name)
+}
+
+// bindingLiteralText is the value a binding stands for where a value goes, or
+// false when it holds something with no literal form. A leading minus belongs to
+// the number it negates: `let &floor := -5` is a constant, not arithmetic.
+func bindingLiteralText(e *ExprNode) (string, bool) {
+	if e == nil {
+		return "", false
+	}
+	switch e.Kind {
+	case ExprString, ExprNumber, ExprBoolean:
+		return e.Value, true
+	case ExprUnary:
+		if e.Value == "-" && e.Arg != nil && e.Arg.Kind == ExprNumber {
+			return "-" + e.Arg.Value, true
+		}
+	}
+	return "", false
 }

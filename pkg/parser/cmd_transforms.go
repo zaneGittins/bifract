@@ -1056,8 +1056,19 @@ func matchFieldRef(a Argument, registry *FieldRegistry) string {
 // dictProbe is the value a match() lookup is made with. A case-insensitive
 // dictionary hashed lower(key), so the probe has to be lowered to meet it; an
 // unlowered probe would simply miss every mixed-case key.
-func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
+// dictProbe is the value a lookup is made with, in the shape the dictionary's
+// layout needs. isPattern is passed rather than read from the name because
+// pattern-ness belongs to the ClickHouse object: a secondary key column on a
+// pattern list resolves to an ordinary HASHED dictionary.
+func dictProbe(fieldRef, dictName string, isPattern bool, opts QueryOptions) string {
 	if fieldRef == "" {
+		return fieldRef
+	}
+	// A pattern is matched against the value as the log carries it. The
+	// expressions are stored as written, so lowering the probe would stop every
+	// one carrying an upper-case letter from ever matching; a pattern says it for
+	// itself with (?i).
+	if isPattern {
 		return fieldRef
 	}
 	// A network list is an IP_TRIE, whose key is a range: it is probed with an
@@ -1072,11 +1083,6 @@ func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
 	}
 	return "lower(" + fieldRef + ")"
 }
-
-// patternProbe is dictProbe for a pattern dictionary: the value as the log carries
-// it, never lowered. The expressions are stored as written, so lowering the probe
-// would stop every expression carrying an upper-case letter from ever matching.
-func patternProbe(fieldRef string) string { return fieldRef }
 
 // probeRef is the value looked up (lowercased for a case-insensitive dictionary);
 // displayRef is the value as the log carries it. They differ only for the key
@@ -1131,10 +1137,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
-	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
-	if ctx.Opts.PatternDicts[chLookupName] {
-		probeRef = patternProbe(fieldRef)
-	}
+	probeRef := dictProbe(fieldRef, dictName, ctx.Opts.PatternDicts[chLookupName], ctx.Opts)
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && hasField && fieldRef != "" {
@@ -1191,10 +1194,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
 	isPattern := ctx.Opts.PatternDicts[chLookupName]
-	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
-	if isPattern {
-		probeRef = patternProbe(fieldRef)
-	}
+	probeRef := dictProbe(fieldRef, dictName, isPattern, ctx.Opts)
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {

@@ -682,6 +682,19 @@ func (p *Parser) parseValueList() ([]string, error) {
 		switch tok.Type {
 		case TokenString, TokenField, TokenValue:
 			val = tok.Value
+		case TokenBinding:
+			// A literal stands here as it does anywhere else a value goes, so
+			// `image =~ &lolbin,"cmd.exe"` mixes a named value with a written one.
+			v, _, err := p.bindingValueLiteral()
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, v)
+			if p.current().Type != TokenComma {
+				return values, nil
+			}
+			p.advance()
+			continue
 		default:
 			if len(values) == 0 {
 				return nil, newPosError(tok, "expected value in list, got %s", tok.Type)
@@ -828,11 +841,11 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 
 	valTok := p.current()
 	if valTok.Type == TokenBinding {
-		v, err := p.bindingValueLiteral()
+		v, isRegex, err := p.bindingValueLiteral()
 		if err != nil {
 			return nil, err
 		}
-		cond.Value = v
+		cond.Value, cond.IsRegex = v, isRegex
 	} else if valTok.Type == TokenString {
 		cond.Value = valTok.Value
 		p.advance()
@@ -1372,11 +1385,11 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 
 	valTok := p.current()
 	if valTok.Type == TokenBinding {
-		v, err := p.bindingValueLiteral()
+		v, isRegex, err := p.bindingValueLiteral()
 		if err != nil {
 			return nil, err
 		}
-		having.Value = v
+		having.Value, having.IsRegex = v, isRegex
 	} else if valTok.Type == TokenField || valTok.Type == TokenValue || valTok.Type == TokenString {
 		having.Value = valTok.Value
 		p.advance()

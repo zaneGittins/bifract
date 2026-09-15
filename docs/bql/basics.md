@@ -202,14 +202,17 @@ let &officey := lower(parent_image) =~ "winword.exe","excel.exe";
 * | &lolbin AND &officey | table(computer_name, user, image, commandline)
 ```
 
-A binding holds anything the expression grammar accepts, so it can be a value, a computed
-field, or a whole filter:
+A binding holds anything the expression grammar accepts, plus the string, number and regex
+literals BQL already has, so it can be a value, a computed field, or a whole filter. A literal
+binding stands wherever a value goes; a computed one is used on its own:
 
 | Binding | Used as |
 |---|---|
 | `let &n := 500;` | `len(commandline) > &n` |
 | `let &cmdlen := len(commandline);` | `&cmdlen > 500 AND &cmdlen < 4000`, `table(&cmdlen)` |
 | `let &lolbin := lower(image) =~ "mshta.exe";` | `&lolbin`, `NOT &lolbin`, `&lolbin AND user="bob"` |
+| `let &user := "CORP\\rpatel";` | `user=&user`, `user =~ &user,"other"`, `in(user, &user)` |
+| `let &enc := /-enc(odedcommand)?\s/;` | `commandline=&enc` |
 
 The `&` is part of the name, so a binding never collides with a log field, and a misspelled
 reference is an error rather than a field lookup that quietly matches nothing. A binding may

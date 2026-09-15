@@ -443,3 +443,48 @@ func TestNonLiteralBindingIsRejectedAsAValue(t *testing.T) {
 		}
 	}
 }
+
+// A binding stands for a literal wherever BQL takes one, not only on the right
+// of a comparison. Each of these was a parse error until the positional rule the
+// sigil replaced was removed from the last places it survived.
+func TestBindingStandsForEveryLiteralForm(t *testing.T) {
+	cases := []struct{ bound, inline string }{
+		{`let &r := /powershell.*-enc/; * | commandline = &r`, `* | commandline = /powershell.*-enc/`},
+		{`let &n := -5; * | bytes > &n`, `* | bytes > -5`},
+		{`let &u := "bob"; * | user =~ &u`, `* | user =~ "bob"`},
+		{`let &u := "bob"; * | user =~ &u,"carol"`, `* | user =~ "bob","carol"`},
+		{`let &u := "bob"; * | user =^ &u`, `* | user =^ "bob"`},
+		{`let &b := true; * | flag = &b`, `* | flag = true`},
+		{`let &e := ""; * | user = &e`, `* | user = ""`},
+		{`let &u := "bob"; let &v := &u; * | user = &v`, `* | user = "bob"`},
+	}
+	for _, tc := range cases {
+		if got, want := bindingSQL(t, tc.bound), bindingSQL(t, tc.inline); got != want {
+			t.Errorf("%s\n got: %s\nwant: %s", tc.bound, got, want)
+		}
+	}
+}
+
+// A regex binding carries its regex-ness, so `=` means match rather than equals.
+func TestRegexBindingMatchesRatherThanEquals(t *testing.T) {
+	sql := bindingSQL(t, `let &r := /powershell/; * | image = &r`)
+	if !strings.Contains(sql, "match(fields.`image`::String, 'powershell')") {
+		t.Errorf("want a regex match, got: %s", sql)
+	}
+}
+
+// A value a binding holds is escaped the way any other value is.
+func TestBindingValueIsEscaped(t *testing.T) {
+	for _, q := range []string{
+		`let &u := "'; DROP TABLE logs --"; * | user = &u`,
+		`let &u := "a'b"; * | user = &u`,
+	} {
+		sql := bindingSQL(t, q)
+		if strings.Contains(sql, "DROP TABLE logs --'") && !strings.Contains(sql, `\'; DROP TABLE logs --'`) {
+			t.Errorf("%s: value is not escaped: %s", q, sql)
+		}
+		if strings.Count(sql, "SELECT") != strings.Count(bindingSQL(t, `* | user = "x"`), "SELECT") {
+			t.Errorf("%s: the value changed the query's shape: %s", q, sql)
+		}
+	}
+}
