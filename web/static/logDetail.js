@@ -5,7 +5,24 @@
 // a panel root element plus its associated results-table container. All DOM
 // access goes through the active host's elements rather than fixed IDs, so the
 // two surfaces never collide even though both live in the DOM at once.
+
+// Icons are parsed once and cloned per use. The fields grid builds a copy button
+// per field, and re-parsing the same SVG markup for each one was a real part of
+// the panel's render cost.
+const _icon = (markup) => {
+    const t = document.createElement('template');
+    t.innerHTML = markup;
+    return t.content.firstElementChild;
+};
+const ICON_COPY = _icon('<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 5v8a1 1 0 001 1h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>');
+const ICON_CHECK = _icon('<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8.5L6.5 12L13 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+const ICON_CONTEXT_LINK = _icon('<svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M7 13L3.5 9.5M3.5 9.5L7 6M3.5 9.5H10.5C11.6 9.5 12.5 8.6 12.5 7.5V3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+
 const LogDetail = {
+    // Hidden column the server projects ingest_timestamp under (see the Go
+    // ingestTimeColumn). Carried as row data, never a result column.
+    INGEST_FIELD: '_ingest_timestamp',
+
     results: null,
     currentIndex: -1,
     isAggregated: false,
@@ -194,9 +211,6 @@ const LogDetail = {
             startX = e.clientX;
             startWidth = panel.offsetWidth;
             handle.classList.add('dragging');
-            // The width transition applies to inline styles too, so without this
-            // the panel eases toward the cursor over 250ms instead of tracking it.
-            panel.classList.add('resizing');
             document.body.style.userSelect = 'none';
 
             const onMove = (e) => {
@@ -208,7 +222,6 @@ const LogDetail = {
 
             const onUp = () => {
                 handle.classList.remove('dragging');
-                panel.classList.remove('resizing');
                 document.body.style.userSelect = '';
                 localStorage.setItem(host.storageKey, panel.offsetWidth);
                 panel.style.width = '';
@@ -643,7 +656,7 @@ const LogDetail = {
         const copyBtn = document.createElement('button');
         copyBtn.className = 'raw-log-copy-btn';
         copyBtn.title = 'Copy raw log';
-        copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 5v8a1 1 0 001 1h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+        copyBtn.appendChild(ICON_COPY.cloneNode(true));
 
         let copyText = rawValue;
         try {
@@ -673,18 +686,16 @@ const LogDetail = {
     copyToClipboard(text, btn) {
         navigator.clipboard.writeText(text).then(() => {
             btn.classList.add('copied');
-            btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 8.5L6.5 12L13 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            btn.replaceChildren(ICON_CHECK.cloneNode(true));
             setTimeout(() => {
                 btn.classList.remove('copied');
-                btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 5v8a1 1 0 001 1h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+                btn.replaceChildren(ICON_COPY.cloneNode(true));
             }, 1500);
         });
     },
 
     renderFields(logData, container, filterTerm = '') {
-        container.innerHTML = '';
-
-        let flattenedData = {};
+        const flattenedData = {};
 
         if (logData.timestamp) {
             flattenedData.timestamp = logData.timestamp;
@@ -700,7 +711,7 @@ const LogDetail = {
 
         for (const key of Object.keys(logData)) {
             // _chain_ts / _chain_events back the Chain tab; they are internal keys,
-            // not log fields.
+            // not log fields. raw_log has its own tab.
             if (key.startsWith('_chain_')) continue;
             if (key === LogDetail.INGEST_FIELD) continue;
             if (key !== 'fields' && key !== '_all_fields' && key !== 'timestamp' && key !== 'raw_log' && key !== 'norm_log') {
@@ -708,14 +719,27 @@ const LogDetail = {
             }
         }
 
-        // raw_log is in its own tab, skip it here
+        // Held on the container rather than on the controller: the delegated click
+        // handler and the filter both read it, and two panels can be open at once.
+        container._logFields = flattenedData;
 
-        const fields = Object.keys(flattenedData);
-        const sortedFields = fields.sort((a, b) => {
+        // Wired here rather than at the call site because the commented-logs and
+        // notebook views render fields into their own containers too. Guarded so a
+        // re-render does not stack handlers.
+        if (!container._fieldActionsWired) {
+            container._fieldActionsWired = true;
+            container.addEventListener('click', (e) => this._onFieldAction(e, container));
+        }
+
+        const sortedFields = Object.keys(flattenedData).sort((a, b) => {
             if (a === 'timestamp') return -1;
             if (b === 'timestamp') return 1;
             return a.localeCompare(b);
         });
+
+        // Built off-document and attached in one go: appending each row straight to
+        // the live container cost a layout per field.
+        const frag = document.createDocumentFragment();
 
         sortedFields.forEach(key => {
             const value = flattenedData[key];
@@ -725,20 +749,6 @@ const LogDetail = {
                 return;
             }
 
-            if (filterTerm) {
-                const term = filterTerm.toLowerCase();
-                const nameMatch = this.filterMode.fields && key.toLowerCase().includes(term);
-                let valueMatch = false;
-                if (this.filterMode.values) {
-                    const valStr = (typeof value === 'object' && value !== null)
-                        ? JSON.stringify(value)
-                        : String(value);
-                    valueMatch = valStr.toLowerCase().includes(term);
-                }
-                if (!nameMatch && !valueMatch) {
-                    return;
-                }
-            }
             const fieldDiv = document.createElement('div');
             fieldDiv.className = 'log-field';
             fieldDiv.dataset.fieldName = key;
@@ -750,75 +760,33 @@ const LogDetail = {
             const valueDiv = document.createElement('div');
             valueDiv.className = 'log-field-value';
 
-            const isTimestamp = key === 'timestamp' && value;
-            const shownValue = isTimestamp ? TZ.format(value, 'full') : value;
-            // Copying a timestamp yields the zone-qualified form: an unlabelled
-            // wall clock pasted into a ticket is how zone mistakes propagate.
-            const copyText = typeof value === 'object' && value !== null
-                ? JSON.stringify(value, null, 2)
-                : String(shownValue || '');
-
             if (typeof value === 'object' && value !== null) {
-                const jsonStr = JSON.stringify(value, null, 2);
                 valueDiv.classList.add('json');
-                const jsonCopyBtn = document.createElement('button');
-                jsonCopyBtn.className = 'log-field-copy-btn json-copy-btn';
-                jsonCopyBtn.title = 'Copy value';
-                jsonCopyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 5v8a1 1 0 001 1h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
-                jsonCopyBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.copyToClipboard(copyText, jsonCopyBtn);
-                });
                 const pre = document.createElement('pre');
-                pre.innerHTML = Utils.escapeHtml(jsonStr);
+                pre.textContent = JSON.stringify(value, null, 2);
                 valueDiv.appendChild(pre);
-                valueDiv.appendChild(jsonCopyBtn);
+                valueDiv.appendChild(this._copyButton('log-field-copy-btn json-copy-btn'));
             } else {
                 const row = document.createElement('div');
                 row.className = 'log-field-value-row';
 
+                const isTimestamp = key === 'timestamp' && value;
                 const textSpan = document.createElement('span');
                 textSpan.className = 'log-field-value-text';
-                textSpan.textContent = String(shownValue || '-');
+                textSpan.textContent = String((isTimestamp ? TZ.format(value, 'full') : value) || '-');
                 if (isTimestamp) textSpan.title = TZ.title(value);
 
                 const actions = document.createElement('span');
                 actions.className = 'log-field-actions';
 
-                const filterInBtn = document.createElement('button');
-                filterInBtn.className = 'fs-action-btn fs-filter-in';
-                filterInBtn.title = 'Filter in';
+                const filterInBtn = this._actionButton('filter-in', 'Filter in', 'fs-action-btn fs-filter-in');
                 filterInBtn.textContent = '+';
-                filterInBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    if (window.FieldStats) {
-                        FieldStats.addFilter(key, String(value), false);
-                    }
-                });
-
-                const filterOutBtn = document.createElement('button');
-                filterOutBtn.className = 'fs-action-btn fs-filter-out';
-                filterOutBtn.title = 'Filter out';
-                filterOutBtn.innerHTML = '&minus;';
-                filterOutBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    if (window.FieldStats) {
-                        FieldStats.addFilter(key, String(value), true);
-                    }
-                });
-
-                const copyBtn = document.createElement('button');
-                copyBtn.className = 'log-field-copy-btn';
-                copyBtn.title = 'Copy value';
-                copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M3 5v8a1 1 0 001 1h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
-                copyBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this.copyToClipboard(copyText, copyBtn);
-                });
+                const filterOutBtn = this._actionButton('filter-out', 'Filter out', 'fs-action-btn fs-filter-out');
+                filterOutBtn.textContent = '\u2212';
 
                 actions.appendChild(filterInBtn);
                 actions.appendChild(filterOutBtn);
-                actions.appendChild(copyBtn);
+                actions.appendChild(this._copyButton('log-field-copy-btn'));
 
                 row.appendChild(textSpan);
                 row.appendChild(actions);
@@ -835,33 +803,112 @@ const LogDetail = {
                 if (matchingLinks.length > 0) {
                     const linksContainer = document.createElement('div');
                     linksContainer.className = 'context-links-icons';
-                    matchingLinks.forEach(link => {
-                        const btn = document.createElement('button');
-                        btn.className = 'context-link-icon';
-                        btn.title = link.short_name;
-                        btn.innerHTML = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M7 13L3.5 9.5M3.5 9.5L7 6M3.5 9.5H10.5C11.6 9.5 12.5 8.6 12.5 7.5V3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>${Utils.escapeHtml(link.short_name)}`;
-                        btn.addEventListener('click', (e) => {
-                            e.stopPropagation();
-                            ContextLinks.openLink(link, strValue);
-                        });
+                    matchingLinks.forEach((link, i) => {
+                        const btn = this._actionButton('context-link', link.short_name, 'context-link-icon');
+                        btn.dataset.linkIndex = String(i);
+                        btn.appendChild(ICON_CONTEXT_LINK.cloneNode(true));
+                        btn.appendChild(document.createTextNode(link.short_name));
                         linksContainer.appendChild(btn);
                     });
                     fieldDiv.appendChild(linksContainer);
                 }
             }
 
-            container.appendChild(fieldDiv);
+            frag.appendChild(fieldDiv);
         });
+
+        container.replaceChildren(frag);
+        this._applyFilter(container, filterTerm);
+    },
+
+    // Buttons carry only their action; one delegated listener on the grid reads it.
+    _actionButton(act, title, className) {
+        const btn = document.createElement('button');
+        btn.className = className;
+        btn.title = title;
+        btn.dataset.act = act;
+        return btn;
+    },
+
+    _copyButton(className) {
+        const btn = this._actionButton('copy', 'Copy value', className);
+        btn.appendChild(ICON_COPY.cloneNode(true));
+        return btn;
+    },
+
+    // One handler for the whole fields grid. A button per action per field meant
+    // roughly 180 listeners on a typical event, all wired on every panel open.
+    _onFieldAction(e, container) {
+        const btn = e.target.closest('[data-act]');
+        if (!btn || !container.contains(btn)) return;
+        e.stopPropagation();
+        const fieldEl = btn.closest('.log-field');
+        if (!fieldEl) return;
+        const key = fieldEl.dataset.fieldName;
+        const value = (container._logFields || {})[key];
+
+        switch (btn.dataset.act) {
+            case 'filter-in':
+                if (window.FieldStats) FieldStats.addFilter(key, String(value), false);
+                break;
+            case 'filter-out':
+                if (window.FieldStats) FieldStats.addFilter(key, String(value), true);
+                break;
+            case 'copy':
+                this.copyToClipboard(this._copyTextFor(key, value), btn);
+                break;
+            case 'context-link': {
+                if (!window.ContextLinks) break;
+                const strValue = String(value || '');
+                const link = ContextLinks.getMatchingLinks(key, strValue)[Number(btn.dataset.linkIndex)];
+                if (link) ContextLinks.openLink(link, strValue);
+                break;
+            }
+        }
+    },
+
+    // Copying a timestamp yields the zone-qualified form: an unlabelled wall clock
+    // pasted into a ticket is how zone mistakes propagate.
+    _copyTextFor(key, value) {
+        if (typeof value === 'object' && value !== null) return JSON.stringify(value, null, 2);
+        const shown = (key === 'timestamp' && value) ? TZ.format(value, 'full') : value;
+        return String(shown || '');
+    },
+
+    _fieldMatches(key, value, term) {
+        if (this.filterMode.fields && key.toLowerCase().includes(term)) return true;
+        if (this.filterMode.values) {
+            const valStr = (typeof value === 'object' && value !== null)
+                ? JSON.stringify(value)
+                : String(value);
+            if (valStr.toLowerCase().includes(term)) return true;
+        }
+        return false;
+    },
+
+    // Show and hide rows that are already rendered. Filtering used to rebuild every
+    // node on each keystroke, though the rows never change, only which of them show.
+    _applyFilter(container, filterTerm) {
+        const data = container._logFields || {};
+        const term = (filterTerm || '').toLowerCase();
+        let lastVisible = null;
+        container.querySelectorAll('.log-field').forEach(el => {
+            const key = el.dataset.fieldName;
+            const visible = !term || this._fieldMatches(key, data[key], term);
+            el.hidden = !visible;
+            el.classList.remove('is-last-visible');
+            if (visible) lastVisible = el;
+        });
+        // :last-child can land on a hidden row, which leaves the last visible one
+        // carrying a trailing divider.
+        if (lastVisible) lastVisible.classList.add('is-last-visible');
     },
 
     filterFields(filterTerm) {
-        if (!this.currentLogData) return;
-
         const scope = (this.activeHost && this.activeHost.content) || document;
         const container = scope.querySelector('.log-fields-container');
         if (!container) return;
-
-        this.renderFields(this.currentLogData, container, filterTerm);
+        this._applyFilter(container, filterTerm);
     },
 
     _makeModeToggle(mode, label, title) {

@@ -243,11 +243,16 @@ const ContextLinks = {
             const fieldsMatch = (link.match_fields || []).some(f => f.toLowerCase() === lowerField);
             if (!fieldsMatch) return false;
             if (link.validation_regex) {
-                try {
-                    return new RegExp(link.validation_regex).test(strValue);
-                } catch {
-                    return false;
+                // Compiled once per link. This runs for every field of every log
+                // detail opened, and again on each keystroke of the field filter.
+                if (link._validationRe === undefined) {
+                    try {
+                        link._validationRe = new RegExp(link.validation_regex);
+                    } catch {
+                        link._validationRe = null;
+                    }
                 }
+                return link._validationRe ? link._validationRe.test(strValue) : false;
             }
             return true;
         });

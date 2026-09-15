@@ -753,7 +753,6 @@
     border: 1px solid var(--border-color);
     border-radius: 6px;
     box-shadow: var(--shadow-sm);
-    transition: width 0.25s ease, margin-left 0.25s ease;
 }
 
 .log-detail-panel.open {
@@ -1043,7 +1042,6 @@ body.recall-active {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     box-shadow: var(--shadow-sm);
-    transition: width 0.25s ease, margin-left 0.25s ease;
 }
 
 .comment-detail-panel.open {
@@ -1123,10 +1121,35 @@ body.recall-active {
     opacity: 0.5;
 }
 
-/* Held only while the resize handle is being dragged: the panel must follow the
-   cursor exactly, not ease toward it. */
-.log-detail-panel.resizing {
-    transition: none;
+/* The panel takes its width in one frame rather than easing into it: width is a
+   layout property on a flex sibling, so animating it relaid out and repainted the
+   whole results table on every frame of the transition. The open still reads as
+   motion because the contents slide and fade in on the compositor instead. */
+.log-detail-panel .panel-header,
+.log-detail-panel .panel-body,
+.comment-detail-panel .panel-header,
+.comment-detail-panel .panel-body {
+    opacity: 0;
+    transform: translateX(10px);
+    transition: opacity 0.16s ease, transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.log-detail-panel.open .panel-header,
+.log-detail-panel.open .panel-body,
+.comment-detail-panel.open .panel-header,
+.comment-detail-panel.open .panel-body {
+    opacity: 1;
+    transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .log-detail-panel .panel-header,
+    .log-detail-panel .panel-body,
+    .comment-detail-panel .panel-header,
+    .comment-detail-panel .panel-body {
+        transition: none;
+        transform: none;
+    }
 }
 
 /* Panel header: context info + actions */
@@ -1348,7 +1371,8 @@ body.recall-active {
     position: relative;
 }
 
-.log-field:last-child {
+.log-field:last-child,
+.log-field.is-last-visible {
     border-bottom: none;
 }
 
