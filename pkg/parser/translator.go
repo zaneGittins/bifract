@@ -267,11 +267,14 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 				// computed value, and so later pre-aggregation assignments
 				// referencing this one fold in the full expression (it is never
 				// materialized as a column).
-				sqlExpr, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+				sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
 				if err != nil {
 					return nil, assignmentError(assignment.Field, err)
 				}
 				registry.RegisterInlineExpr(safeField, sqlExpr, -1)
+				if exprType == TypeNumber {
+					registry.SetNumeric(safeField)
+				}
 			case hasAggregation:
 				// Post-aggregation: materialized as a stage at its pipeline position
 				// (not the outermost formatter) so commands after it -- table, sort,
@@ -282,12 +285,15 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 				// a downstream filter folds in the expression. Without this the
 				// filter referenced a column the inner scan does not have and
 				// silently matched nothing.
-				sqlExpr, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+				sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
 				if err != nil {
 					return nil, assignmentError(assignment.Field, err)
 				}
 				registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
 				registry.SetResolveExpr(safeField, sqlExpr)
+				if exprType == TypeNumber {
+					registry.SetNumeric(safeField)
+				}
 				deferredAssignments = append(deferredAssignments, assignment)
 			}
 			continue
@@ -1557,18 +1563,17 @@ func buildZScoreWindowLayers(plan *QueryPlan) {
 // Layer 1: compute val, min, max using window functions
 // Layer 2: bucket, aggregate, and order
 func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
-	computedFields := ctx.Registry.AllComputed()
-
-	var valExpr string
-	if _, ok := computedFields["_hist_val"]; ok {
+	valExpr := plan.HistogramValueExpr
+	if valExpr == "" {
 		valExpr = "_hist_val"
-	} else {
-		valExpr = fmt.Sprintf("toFloat64OrNull(toString(%s))", plan.HistogramField)
 	}
 
 	buckets := plan.HistogramBuckets
+	// A range of zero (one row, or every value the same) put every row in bucket
+	// 0 via a division that the server rejected as inf/nan, so the degenerate
+	// case is branched on rather than divided through.
 	bucketExpr := fmt.Sprintf(
-		"least(toUInt32(floor((_val - _min_val) / nullIf(_max_val - _min_val, 0) * %d)), %d)",
+		"least(toUInt32(if(_max_val = _min_val, 0, floor((_val - _min_val) / (_max_val - _min_val) * %d))), %d)",
 		buckets, buckets-1,
 	)
 	lowerExpr := fmt.Sprintf("round(_min_val + _bucket * (_max_val - _min_val) / %d, 4)", buckets)

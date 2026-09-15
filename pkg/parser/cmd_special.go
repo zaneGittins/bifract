@@ -156,12 +156,7 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 			return fmt.Errorf("table (stage finalize): %w", err)
 		}
 	}
-	prevOutputs := make(map[string]bool)
-	for _, sel := range prevStage.Layer.Selects {
-		if alias := strings.Trim(extractFieldAlias(sel.String()), "`"); alias != "" {
-			prevOutputs[alias] = true
-		}
-	}
+	prevOutputs := stageOutputAliases(prevStage)
 
 	ctx.Plan.PushStage()
 	ctx.Plan.IsAggregated = false

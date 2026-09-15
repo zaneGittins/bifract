@@ -109,9 +109,10 @@ func (p *argParser) parseOne() (Argument, error) {
 			read = func() (Argument, error) { return p.parseValue(param.Kind) }
 		}
 		if p.valueMissing() {
-			// name= with nothing after it. Parsing from here would read the next
-			// argument, or the query text beyond this command, as the value.
-			return Argument{Name: strings.ToLower(name), Kind: ArgLiteral, Pos: start.Pos}, nil
+			// name= with nothing after it. Parsing on would read the next argument,
+			// or the query text beyond this command, as the value; defaulting would
+			// run a different query than the one written.
+			return Argument{}, newPosError(start, "%s(): %s= has no value", p.spec.Name, strings.ToLower(name))
 		}
 		value, err := read()
 		if err != nil {

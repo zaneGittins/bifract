@@ -113,6 +113,10 @@ type QueryPlan struct {
 	// Histogram-specific fields
 	HistogramField   string
 	HistogramBuckets int
+	// HistogramValueExpr is the numeric expression the buckets are computed from,
+	// resolved while the registry still knows the field. Rebuilding it at window
+	// layer time emitted a bare identifier the scan never projected (code 47).
+	HistogramValueExpr string
 
 	// Z-score/MAD window-specific fields
 	ModifiedZScoreExpr string

@@ -2933,8 +2933,21 @@ func TestMADFunction(t *testing.T) {
 		}
 	})
 
-	t.Run("grouped mad", func(t *testing.T) {
+	// mad() needs one value per row. After a groupby() the rows are groups and a
+	// log field is gone, which reached ClickHouse as "not under aggregate
+	// function and not in GROUP BY" (code 215).
+	t.Run("mad on a log field after groupby is rejected", func(t *testing.T) {
 		pipeline, err := ParseQuery("* | groupBy(host) | mad(latency)")
+		if err != nil {
+			t.Fatalf("Failed to parse: %v", err)
+		}
+		if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil {
+			t.Error("expected a rejection; the column does not survive the aggregation")
+		}
+	})
+
+	t.Run("mad on an aggregate output after groupby", func(t *testing.T) {
+		pipeline, err := ParseQuery("* | groupBy(host) | count() | mad(_count)")
 		if err != nil {
 			t.Fatalf("Failed to parse: %v", err)
 		}
@@ -2944,9 +2957,6 @@ func TestMADFunction(t *testing.T) {
 		}
 		if !strings.Contains(result.SQL, "median(abs(") {
 			t.Errorf("Expected median(abs(...)) MAD expression in SQL, got: %s", result.SQL)
-		}
-		if !strings.Contains(result.SQL, "GROUP BY") {
-			t.Errorf("Expected GROUP BY, got: %s", result.SQL)
 		}
 	})
 
@@ -3349,8 +3359,10 @@ func TestTopFunction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to translate: %v", err)
 		}
-		if !strings.Contains(result.SQL, "topKWeightedWithCount") {
-			t.Errorf("Expected topKWeightedWithCount in SQL, got: %s", result.SQL)
+		// approx_top_k returns (value, count, error) triples; topKWeightedWithCount,
+		// which this used to emit, exists in no ClickHouse release.
+		if !strings.Contains(result.SQL, "approx_top_k(") {
+			t.Errorf("Expected approx_top_k in SQL, got: %s", result.SQL)
 		}
 	})
 

@@ -201,7 +201,7 @@ func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[st
 		return render("collect", "groupArray(%s)", ref)
 	case "top":
 		if o.percent {
-			return render("top", "arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), topKWeightedWithCount(10)(%s, 1))", ref)
+			return render("top", topPercentSQL(10), ref)
 		}
 		return render("top", "topK(10)(%s)", ref)
 	}
@@ -225,6 +225,14 @@ func asAggSpec(a Argument) (*AggSpec, bool) {
 		return spec, true
 	}
 	return nil, false
+}
+
+// topPercentSQL renders top(percent=true): the n most frequent values with the
+// share of rows each accounts for. approx_top_k returns (value, count, error)
+// triples; topKWeightedWithCount, which this used to call, exists in no
+// ClickHouse release.
+func topPercentSQL(n int) string {
+	return fmt.Sprintf("arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), approx_top_k(%d)(%%s))", n)
 }
 
 // aggAliasClash rejects a second aggregate that would project a column an

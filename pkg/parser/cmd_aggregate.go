@@ -34,13 +34,7 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if err := assembleGroupBySelects(ctx, source, nil); err != nil {
 			return fmt.Errorf("count (stage finalize): %w", err)
 		}
-		prevOutputs := make(map[string]bool)
-		for _, sel := range source.Layer.Selects {
-			alias := extractFieldAlias(sel.String())
-			if alias != "" {
-				prevOutputs[alias] = true
-			}
-		}
+		prevOutputs := stageOutputAliases(source)
 		ctx.Plan.PushStage()
 		ctx.Plan.IsAggregated = false
 		ctx.Plan.aggregationOutputs = make(map[string]string)
@@ -201,8 +195,8 @@ type frequencyHandler struct{}
 func (h *frequencyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_count", FieldKindAggregate, "count(*)", ctx.CmdIndex)
-		ctx.Registry.Register("_percentage", FieldKindAggregate, "_percentage", ctx.CmdIndex)
-		ctx.Registry.Register("_cumulative_pct", FieldKindAggregate, "_cumulative_pct", ctx.CmdIndex)
+		ctx.Registry.Register("_percentage", FieldKindWindow, "_percentage", ctx.CmdIndex)
+		ctx.Registry.Register("_cumulative_pct", FieldKindWindow, "_cumulative_pct", ctx.CmdIndex)
 		ctx.Registry.Register("_value", FieldKindAggregate, "_value", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -303,9 +297,9 @@ type headtailHandler struct{}
 func (h *headtailHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	if len(cmd.Args) > 0 {
 		ctx.Registry.Register("_count", FieldKindAggregate, "count(*)", ctx.CmdIndex)
-		ctx.Registry.Register("_percentage", FieldKindAggregate, "_percentage", ctx.CmdIndex)
-		ctx.Registry.Register("_cumulative_pct", FieldKindAggregate, "_cumulative_pct", ctx.CmdIndex)
-		ctx.Registry.Register("_segment", FieldKindAggregate, "_segment", ctx.CmdIndex)
+		ctx.Registry.Register("_percentage", FieldKindWindow, "_percentage", ctx.CmdIndex)
+		ctx.Registry.Register("_cumulative_pct", FieldKindWindow, "_cumulative_pct", ctx.CmdIndex)
+		ctx.Registry.Register("_segment", FieldKindWindow, "_segment", ctx.CmdIndex)
 		ctx.Registry.Register("_value", FieldKindAggregate, "_value", ctx.CmdIndex)
 		ctx.Plan.IsAggregated = true
 	}
@@ -479,7 +473,7 @@ func (h *topHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 	if showPercent {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-			Expr: fmt.Sprintf("arrayMap(x -> (x.1, round(x.2 * 100 / count(*), 2)), topKWeightedWithCount(%d)(%s, 1)) AS %s", topN, fieldRef, alias),
+			Expr: fmt.Sprintf(topPercentSQL(topN), fieldRef) + " AS " + alias,
 		})
 	} else {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
@@ -537,11 +531,18 @@ func (h *multiHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 type madHandler struct{}
 
 func (h *madHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
-	if len(cmd.Args) > 0 {
-		ctx.Registry.Register("_median", FieldKindAggregate, "_median", ctx.CmdIndex)
-		ctx.Registry.Register("_mad", FieldKindAggregate, "_mad", ctx.CmdIndex)
-		ctx.Plan.IsAggregated = true
+	if len(cmd.Args) == 0 {
+		return nil
 	}
+	// The alias, not the default name: registering _mad for mad(x, as=spread)
+	// left a later _mad filter pointing at a column the stage never projects.
+	alias, err := commandAggAlias(cmd, "mad")
+	if err != nil {
+		return nil
+	}
+	ctx.Registry.Register("_median", FieldKindWindow, "_median", ctx.CmdIndex)
+	ctx.Registry.Register(alias, FieldKindWindow, alias, ctx.CmdIndex)
+	ctx.Plan.IsAggregated = true
 	return nil
 }
 
@@ -552,6 +553,9 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	if !ok {
 		return nil
+	}
+	if err := rejectMeasureAfterAggregation(arg, ctx, "mad"); err != nil {
+		return err
 	}
 	field := arg.FieldName()
 	madAlias, err := aggregateAlias(b.Str("as", ""), "mad")
@@ -588,6 +592,10 @@ func (h *madHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Plan.aggregationOutputs["_median"] = "any(_median_val)"
 		ctx.Plan.aggregationOutputs[madAlias] = "median(abs(_mad_val - _median_val))"
 	}
+	// Declare's registrations are gone if an earlier aggregation pushed a stage,
+	// which left a later _mad filter classified as a log field and pushed into the
+	// scan's WHERE, where the column does not exist.
+	registerWindowOutputs(ctx, "_median", madAlias)
 	ctx.Plan.IsAggregated = true
 	return nil
 }
@@ -634,13 +642,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("groupby (stage finalize): %w", err)
 		}
 		// Record what the previous stage outputs so the new stage can reference them.
-		prevOutputs := make(map[string]bool)
-		for _, sel := range prevStage.Layer.Selects {
-			alias := extractFieldAlias(sel.String())
-			if alias != "" {
-				prevOutputs[alias] = true
-			}
-		}
+		prevOutputs := stageOutputAliases(prevStage)
 
 		ctx.Plan.PushStage()
 
@@ -874,4 +876,18 @@ func applyAggSpecs(args []Argument, selectFields *[]string, computedFields map[s
 		}
 	}
 	return nil
+}
+
+// stageOutputAliases is the set of column names a stage projects, as a later
+// stage addresses them. The backticks a dotted name carries in SQL are not part
+// of the name: keying them in meant `a.b` was scoped out of the registry and the
+// next stage re-resolved it as a JSON path the stage does not have.
+func stageOutputAliases(stage *QueryStage) map[string]bool {
+	out := make(map[string]bool)
+	for _, sel := range stage.Layer.Selects {
+		if alias := strings.Trim(extractFieldAlias(sel.String()), "`"); alias != "" {
+			out[alias] = true
+		}
+	}
+	return out
 }

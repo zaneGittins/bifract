@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -72,6 +73,9 @@ func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return nil
 	}
 	cidrRange := rangeArg.Value()
+	if err := validateCIDR(cidrRange); err != nil {
+		return fmt.Errorf("cidr(): %w", err)
+	}
 	fieldRef, err := ResolveArg(fieldArg, ctx.Registry)
 	if err != nil {
 		return fmt.Errorf("cidr(): %w", err)
@@ -81,6 +85,19 @@ func (h *cidrHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		cidrExpr = "NOT " + cidrExpr
 	}
 	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, cidrExpr)
+	return nil
+}
+
+// validateCIDR rejects a range ClickHouse cannot parse. isIPAddressInRange
+// throws on anything without a prefix length, so an empty or malformed range
+// failed at the server with "The text does not contain '/'".
+func validateCIDR(s string) error {
+	if s == "" {
+		return fmt.Errorf("needs a CIDR range, e.g. \"10.0.0.0/8\"")
+	}
+	if _, _, err := net.ParseCIDR(s); err != nil {
+		return fmt.Errorf("%q is not a CIDR range; it needs an address and a prefix length, e.g. \"10.0.0.0/8\"", s)
+	}
 	return nil
 }
 

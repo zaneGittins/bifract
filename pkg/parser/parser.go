@@ -360,12 +360,31 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			}
 			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
 		} else if p.atExprFilter() {
-			expr, err := p.parseExprFilter()
+			// A whole stage that is one expression stays one expression, brackets and
+			// all. Only when the expression grammar cannot take the stage on its own
+			// does the chain parser split it into leaves: `lower(a)="x" AND b=/foo/`
+			// mixes expression and filter syntax, and `lower(x) =~ "a","b"` ends on a
+			// filter operator the expression grammar does not have.
+			saved := p.pos
+			expr, exprErr := p.parseExprFilter()
+			if exprErr == nil && !p.atExprMatchOperator() {
+				pipeline.HavingConditions = append(pipeline.HavingConditions,
+					HavingCondition{Expr: expr, Negate: pipelineNegate})
+				continue
+			}
+			p.pos = saved
+			conditions, err := p.parseCompoundHavingConditions()
 			if err != nil {
 				return nil, err
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions,
-				HavingCondition{Expr: expr, Negate: pipelineNegate})
+			if pipelineNegate && len(conditions) > 0 {
+				if conditions[0].IsCompound {
+					conditions[0].Negate = !conditions[0].Negate
+				} else {
+					negateHavingCondition(&conditions[0])
+				}
+			}
+			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
 		} else {
 			// It's a command
 			cmd, err := p.parseCommand()
@@ -1096,15 +1115,32 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			currentConditions = []HavingCondition{cond}
 		} else {
 			// Parse a single condition (field op value)
+			saved := p.pos
 			cond, err := p.parseCondition()
+			// Succeeding but stopping on a match operator means the leaf was read as
+			// something smaller than it is: lower(x) =~ "a" parses lower(x) alone.
+			if err == nil && p.atExprMatchOperator() {
+				err = newPosError(p.current(), "unexpected %q", p.current().Value)
+			}
 			if err != nil {
-				return nil, err
+				// A leaf the filter grammar cannot take may still be an expression
+				// one: `lower(a)="x" AND b=/foo/` mixes the two, and
+				// `lower(x) =~ "a","b"` ends on an operator only the filter grammar
+				// has. Tried in this order so every leaf the filter grammar already
+				// handles is built exactly as it was.
+				p.pos = saved
+				exprCond, exprErr := p.parseExprLeaf(negate)
+				if exprErr != nil {
+					return nil, err
+				}
+				currentConditions = []HavingCondition{*exprCond}
+			} else {
+				having := havingFromCondition(*cond)
+				if negate {
+					negateHavingCondition(&having)
+				}
+				currentConditions = []HavingCondition{having}
 			}
-			having := havingFromCondition(*cond)
-			if negate {
-				negateHavingCondition(&having)
-			}
-			currentConditions = []HavingCondition{having}
 		}
 
 		conditions = append(conditions, currentConditions...)
@@ -1141,13 +1177,68 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			conditions[len(conditions)-1].Logic = operator
 		}
 
-		// Check for end of expression
-		if p.current().Type == TokenPipe || p.current().Type == TokenEOF || p.current().Type == TokenFunction {
+		// Check for end of expression. A command after AND/OR ends the chain and is
+		// handled by the command path; an expression function continues it, so
+		// `a="x" OR lower(image)="y"` means what the mirrored order means.
+		if p.current().Type == TokenPipe || p.current().Type == TokenEOF ||
+			(p.current().Type == TokenFunction && !p.atExprFilter()) {
 			break
 		}
 	}
 
 	return conditions, nil
+}
+
+// parseExprLeaf parses one expression used as a filter leaf, plus the trailing
+// match operator the expression grammar has no place for.
+func (p *Parser) parseExprLeaf(negate bool) (*HavingCondition, error) {
+	if !p.atExprFilter() {
+		return nil, newPosError(p.current(), "not an expression")
+	}
+	expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
+	if err != nil {
+		return nil, err
+	}
+	cond := HavingCondition{Expr: expr, Negate: negate}
+	if err := p.readExprMatchOperator(&cond); err != nil {
+		return nil, err
+	}
+	return &cond, nil
+}
+
+// atExprMatchOperator reports whether the current token is one of the filter
+// operators the expression grammar does not have.
+func (p *Parser) atExprMatchOperator() bool {
+	switch p.current().Type {
+	case TokenContainsAny, TokenStartsWithAny, TokenEndsWithAny:
+		return true
+	}
+	return false
+}
+
+// readExprMatchOperator attaches a multi-value match operator to an expression
+// leaf, when one follows it.
+func (p *Parser) readExprMatchOperator(cond *HavingCondition) error {
+	switch p.current().Type {
+	case TokenContainsAny:
+		cond.Operator = "=~"
+	case TokenStartsWithAny:
+		cond.Operator = "=^"
+	case TokenEndsWithAny:
+		cond.Operator = "=$"
+	default:
+		return nil
+	}
+	p.advance()
+	values, err := p.parseValueList()
+	if err != nil {
+		return err
+	}
+	cond.Values = values
+	if len(values) > 0 {
+		cond.Value = values[0]
+	}
+	return nil
 }
 
 // havingFromCondition converts a parsed filter leaf into its pipeline-stage

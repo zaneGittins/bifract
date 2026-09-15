@@ -114,7 +114,6 @@ func TestListAndFilterValuesSurvive(t *testing.T) {
 	cases := []struct{ query, want string }{
 		{`* | hash("a,b")`, "cityHash64(fields.`a`::String, fields.`b`::String)"},
 		{`* | concat("a,b")`, "concat(fields.`a`::String, fields.`b`::String)"},
-		{`* | cidr(src_ip, "")`, "isIPAddressInRange"},
 		{`* | chain([user,host], within=5m) { a="x"; b="y" }`, "[fields.`user`::String, fields.`host`::String]"},
 		{`* | chain("user,host", within=5m) { a="x"; b="y" }`, "[fields.`user`::String, fields.`host`::String]"},
 	}

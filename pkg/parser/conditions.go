@@ -180,9 +180,12 @@ func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *Fiel
 	}
 	var sql string
 	var err error
-	if priority == 1 {
+	switch {
+	case cond.Operator != "":
+		sql, err = exprMatchSQL(*cond, registry)
+	case priority == 1:
 		sql, err = exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
-	} else {
+	default:
 		sql, err = exprConditionSQL(cond.Expr, registry, cond.Negate)
 	}
 	if err != nil {
@@ -198,6 +201,12 @@ func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *Fiel
 // expression needs the deferredScope export that plain conditions get.
 func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
 	priority := exprPriority(cond.Expr, registry, plan, willHaveAggregation)
+	// A match operator makes the expression the left operand of a comparison
+	// rather than a condition in its own right.
+	if cond.Operator != "" {
+		sql, err := exprMatchSQL(cond, registry)
+		return sql, priority, err
+	}
 	// A deferred filter sits above the source scan, so its source-scope leaves are
 	// exported through the plan's scope as they compile. Classification runs before
 	// exportDeferredColumns, so the aliases allocated here are projected.
@@ -741,11 +750,13 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		if err := validateNumeric(cond.Value); err != nil {
 			return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
 		}
-		isPerRow := entry != nil && entry.Kind == FieldKindPerRow
+		// An assignment that compiles to a number needs no coercion; wrapping one
+		// in toFloat64OrZero is rejected by the server (illegal type UInt64).
+		isPerRow := entry != nil && entry.Kind == FieldKindPerRow && !entry.Numeric
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
 		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
 		isAggFallback := entry == nil && isBareAggregate(cond.Field)
-		isComputed := isAggFallback || (entry != nil && (entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
+		isComputed := isAggFallback || (entry != nil && (entry.Numeric || entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
 		if isPerRow {
 			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
 		}

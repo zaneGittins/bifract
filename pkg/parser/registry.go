@@ -30,6 +30,10 @@ type FieldEntry struct {
 	ProducedBy int    // command index (-1 for base fields)
 	ResolveAs  string // Override for Resolve(); when set, returned instead of Expr
 	Inline     bool   // when true, references are folded in as the expression, never an alias
+	// Numeric marks an expression that already compiles to a number. The string
+	// coercions a filter applies (toFloat64OrZero) take a String, so applying one
+	// to an already-numeric expression is rejected by the server.
+	Numeric bool
 	// OriginKind preserves the field's identity BEFORE any stage-scoping downgrade.
 	// ScopeToOutputs re-registers an aggregate/window output as FieldKindAssignment
 	// (a plain column of the new stage) for expression resolution, which loses the
@@ -224,6 +228,21 @@ func (r *FieldRegistry) RegisterInlineExpr(name, expr string, producedBy int) {
 	entry := r.fields[name]
 	entry.ResolveAs = expr
 	entry.Inline = true
+}
+
+// SetNumeric records that a field's expression is already a number.
+func (r *FieldRegistry) SetNumeric(name string) {
+	if entry, ok := r.fields[name]; ok {
+		entry.Numeric = true
+	}
+}
+
+// IsNumeric reports whether a field's expression needs no numeric coercion.
+func (r *FieldRegistry) IsNumeric(name string) bool {
+	if entry, ok := r.fields[name]; ok {
+		return entry.Numeric
+	}
+	return false
 }
 
 // IsInline reports whether references to the field should be folded in as its

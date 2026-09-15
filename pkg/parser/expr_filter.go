@@ -192,3 +192,28 @@ func exprPriority(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHav
 	}
 	return best
 }
+
+// exprMatchSQL compiles a multi-value match whose left operand is an expression:
+// `lower(image) =~ "cmd","ps"`. The operators =~, =^ and =$ belong to the filter
+// grammar rather than the expression grammar, so the expression is compiled to a
+// reference and handed to the same builders a field condition uses.
+func exprMatchSQL(cond HavingCondition, registry *FieldRegistry) (string, error) {
+	ref, _, err := compileExpr(cond.Expr, registry, "")
+	if err != nil {
+		return "", err
+	}
+	values := cond.Values
+	if len(values) == 0 && cond.Value != "" {
+		values = []string{cond.Value}
+	}
+	mode := sourceModeOf(registry)
+	switch cond.Operator {
+	case "=~":
+		return buildContainsAnySQL(ref, values, cond.Negate, mode), nil
+	case "=^":
+		return buildStartsWithAnySQL(ref, values, cond.Negate, mode), nil
+	case "=$":
+		return buildEndsWithAnySQL(ref, values, cond.Negate, mode), nil
+	}
+	return "", fmt.Errorf("operator %s is not supported on an expression", cond.Operator)
+}

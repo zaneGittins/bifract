@@ -164,47 +164,74 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
+	source := ctx.Plan.CurrentStage()
 	for _, a := range b.Positional() {
-		// eval(name = expr) parses as a named expression; eval("name = expr") is one
-		// quoted assignment, so its text is split here.
-		name, sqlExpr, err := evalAssignment(a, ctx.Registry)
-		if err != nil {
-			return fmt.Errorf("eval(): %w", err)
-		}
+		name := evalTarget(a)
 		if name == "" {
 			continue
+		}
+		// Assigning a column this stage already computes replaces that SELECT, so
+		// a self-reference would end up pointing at itself. Inline what the column
+		// currently is instead: eval(t = b*2) | eval(t = t*3) is (b*2)*3.
+		if prior := stageSelectExpr(source, name); prior != "" {
+			ctx.Registry.RegisterInlineExpr(name, prior, ctx.CmdIndex)
+		}
+		sqlExpr, err := evalAssignmentSQL(a, ctx.Registry)
+		if err != nil {
+			return fmt.Errorf("eval(): %w", err)
 		}
 		safeFieldName, err := sanitizeIdentifier(name)
 		if err != nil {
 			return fmt.Errorf("eval(): invalid field name: %w", err)
 		}
 		expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
-		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
+		source.Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(name, expr)
 	}
 	return nil
 }
 
-// evalAssignment compiles one eval() assignment. No selfField: unlike
-// `x := x * 100`, where x means the log field, eval() assigns into the same
-// SELECT, so total=total*3 must read the column the previous eval produced.
-func evalAssignment(a Argument, registry *FieldRegistry) (name, sql string, err error) {
+// evalTarget is the column one eval() assignment writes. eval(name = expr)
+// parses as a named expression; eval("name = expr") is one quoted assignment,
+// so its text is split here.
+func evalTarget(a Argument) string {
 	if a.Name != "" {
-		sql, err = ResolveArg(a, registry)
-		return a.Name, sql, err
+		return a.Name
 	}
-	name, expression, found := strings.Cut(a.Value(), "=")
+	name, _, found := strings.Cut(a.Value(), "=")
 	if !found {
-		return "", "", nil
+		return ""
 	}
-	// Name the column before compiling, so an assignment with no target is
-	// reported as such rather than as whatever its right-hand side does.
-	name = strings.TrimSpace(name)
-	if _, err := sanitizeIdentifier(name); err != nil {
-		return "", "", fmt.Errorf("invalid field name: %w", err)
+	return strings.TrimSpace(name)
+}
+
+// evalAssignmentSQL compiles the right-hand side of one eval() assignment. No
+// selfField: unlike `x := x * 100`, where x means the log field, eval() assigns
+// into the same SELECT.
+func evalAssignmentSQL(a Argument, registry *FieldRegistry) (string, error) {
+	if a.Name != "" {
+		return ResolveArg(a, registry)
 	}
-	sql, err = compileExpressionText(strings.TrimSpace(expression), registry, "")
-	return name, sql, err
+	_, expression, found := strings.Cut(a.Value(), "=")
+	if !found {
+		return "", nil
+	}
+	return compileExpressionText(strings.TrimSpace(expression), registry, "")
+}
+
+// stageSelectExpr is the expression a stage already projects under alias, or ""
+// when it projects none.
+func stageSelectExpr(stage *QueryStage, alias string) string {
+	for _, sel := range stage.Layer.Selects {
+		s := sel.String()
+		if strings.Trim(extractFieldAlias(s), "`") != alias {
+			continue
+		}
+		if idx := strings.LastIndex(s, " AS "); idx >= 0 {
+			return s[:idx]
+		}
+	}
+	return ""
 }
 
 // regexDefaultColumn holds the match when the pattern names no capture group

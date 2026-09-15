@@ -15,7 +15,7 @@ func (h *piechartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *piechartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 	if len(source.Layer.GroupBy) == 0 && !ctx.Plan.HasGroupBy {
-		return fmt.Errorf("piechart() requires groupby() - cannot create pie chart without grouped data")
+		return fmt.Errorf("piechart() needs grouped rows: put it straight after groupby(), e.g. groupby(level) | piechart(). A bare count() in between collapses the groups to a single row.")
 	}
 	if !ctx.Plan.IsAggregated {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})
@@ -43,7 +43,7 @@ func (h *barchartHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 func (h *barchartHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	source := ctx.Plan.CurrentStage()
 	if len(source.Layer.GroupBy) == 0 && !ctx.Plan.HasGroupBy {
-		return fmt.Errorf("barchart() requires groupby() - cannot create bar chart without grouped data")
+		return fmt.Errorf("barchart() needs grouped rows: put it straight after groupby(), e.g. groupby(level) | barchart(). A bare count() in between collapses the groups to a single row.")
 	}
 	if !ctx.Plan.IsAggregated {
 		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "COUNT(*)", Alias: "_count"})

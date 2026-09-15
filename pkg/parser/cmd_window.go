@@ -25,23 +25,63 @@ func (h *modifiedZScoreHandler) Execute(cmd CommandNode, ctx *CommandContext) er
 	if !ok {
 		return nil
 	}
-	if err := setWindowValue(arg, ctx); err != nil {
-		return fmt.Errorf("modifiedZScore(): %w", err)
+	if err := setWindowValue(arg, ctx, "modifiedZScore"); err != nil {
+		return err
 	}
-	ctx.Registry.SetResolveExpr("_modified_z", "_modified_z")
-	ctx.Registry.SetResolveExpr("_median", "_median")
-	ctx.Registry.SetResolveExpr("_mad", "_mad")
+	registerWindowOutputs(ctx, "_modified_z", "_median", "_mad")
 	return nil
+}
+
+// registerWindowOutputs re-registers a window command's output columns after any
+// stage push. A pushed stage scopes the registry to that stage's outputs, so
+// the entries Declare made are gone by the time a later filter or sort is
+// classified, and the column reads as an ordinary log field.
+func registerWindowOutputs(ctx *CommandContext, names ...string) {
+	for _, n := range names {
+		ctx.Registry.Register(n, FieldKindWindow, n, ctx.CmdIndex)
+		ctx.Registry.SetResolveExpr(n, n)
+	}
+}
+
+// measuresAggregateOutput reports whether a window command's operand is a column
+// the preceding aggregation produced.
+func measuresAggregateOutput(arg Argument, ctx *CommandContext) bool {
+	name := arg.FieldName()
+	if name == "" {
+		return false
+	}
+	_, ok := ctx.Plan.aggregationOutputs[name]
+	return ok
+}
+
+// rejectMeasureAfterAggregation reports the case where a window command is asked
+// to measure a log field the preceding aggregation collapsed. These commands
+// need one value per row; after a GROUP BY the rows are groups and the field is
+// gone, which reached the server as "not under aggregate function and not in
+// GROUP BY".
+func rejectMeasureAfterAggregation(arg Argument, ctx *CommandContext, name string) error {
+	if measuresAggregateOutput(arg, ctx) {
+		return nil
+	}
+	if len(ctx.Plan.CurrentStage().Layer.GroupBy) == 0 && !ctx.Plan.HasGroupBy {
+		return nil
+	}
+	if f := arg.FieldName(); f != "" && ctx.Registry.IsComputed(f) {
+		return nil
+	}
+	return fmt.Errorf("%s(%s): the preceding aggregation does not produce that column; measure one of its outputs, or put %s() before the aggregation",
+		name, arg, name)
 }
 
 // setWindowValue points the plan's modified-z input at the argument's value: an
 // aggregate output is read by its alias, anything else is projected as _mz_val.
-func setWindowValue(arg Argument, ctx *CommandContext) error {
-	if name := arg.FieldName(); name != "" {
-		if _, isAggOutput := ctx.Plan.aggregationOutputs[name]; isAggOutput {
-			ctx.Plan.ModifiedZScoreExpr = fmt.Sprintf("toFloat64(%s)", name)
-			return nil
-		}
+func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
+	if err := rejectMeasureAfterAggregation(arg, ctx, name); err != nil {
+		return err
+	}
+	if measuresAggregateOutput(arg, ctx) {
+		ctx.Plan.ModifiedZScoreExpr = fmt.Sprintf("toFloat64(%s)", arg.FieldName())
+		return nil
 	}
 	fieldRef, err := ResolveArg(arg, ctx.Registry)
 	if err != nil {
@@ -81,13 +121,10 @@ func (h *madOutlierHandler) Execute(cmd CommandNode, ctx *CommandContext) error 
 	}
 	ctx.Plan.OutlierThreshold = outlierThreshold
 
-	if err := setWindowValue(arg, ctx); err != nil {
-		return fmt.Errorf("madOutlier(): %w", err)
+	if err := setWindowValue(arg, ctx, "madOutlier"); err != nil {
+		return err
 	}
-	ctx.Registry.SetResolveExpr("_modified_z", "_modified_z")
-	ctx.Registry.SetResolveExpr("_median", "_median")
-	ctx.Registry.SetResolveExpr("_mad", "_mad")
-	ctx.Registry.SetResolveExpr("_is_outlier", "_is_outlier")
+	registerWindowOutputs(ctx, "_modified_z", "_median", "_mad", "_is_outlier")
 	return nil
 }
 
@@ -117,17 +154,29 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	buckets = min(buckets, 200)
 
+	if err := rejectMeasureAfterAggregation(arg, ctx, "histogram"); err != nil {
+		return err
+	}
 	source := ctx.Plan.CurrentStage()
 	computedFields := ctx.Registry.AllComputed()
 
-	// For raw fields, add a computed column so the value is available by alias
-	if _, ok := computedFields[field]; !ok {
-		if _, ok2 := ctx.Plan.aggregationOutputs[field]; !ok2 {
-			fieldRef := resolveFieldRef(field, ctx.Registry)
-			source.Layer.Selects = append(source.Layer.Selects,
-				SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _hist_val", fieldRef)})
-			ctx.Registry.SetResolveExpr("_hist_val", fmt.Sprintf("toFloat64OrNull(%s)", fieldRef))
-		}
+	// The bucketing layers read one numeric column. Which expression produces it
+	// depends on where the field comes from, and only this phase knows: the
+	// window layers run after the registry has been scoped to stage outputs.
+	switch {
+	case ctx.Plan.aggregationOutputs[field] != "":
+		// An aggregate's output column is already numeric.
+		ctx.Plan.HistogramValueExpr = fmt.Sprintf("toFloat64(%s)", field)
+	case computedFields[field]:
+		// A computed column is projected by this stage under its own alias.
+		ctx.Plan.HistogramValueExpr = fmt.Sprintf("toFloat64OrNull(toString(%s))", field)
+	default:
+		// A raw log field has to be projected before the window layers can see it.
+		fieldRef := resolveFieldRef(field, ctx.Registry)
+		source.Layer.Selects = append(source.Layer.Selects,
+			SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _hist_val", fieldRef)})
+		ctx.Registry.SetResolveExpr("_hist_val", fmt.Sprintf("toFloat64OrNull(%s)", fieldRef))
+		ctx.Plan.HistogramValueExpr = "_hist_val"
 	}
 
 	ctx.Plan.HistogramField = field

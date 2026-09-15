@@ -420,7 +420,8 @@ var bqlFunctionDocs = []FunctionDoc{
 			{Name: "lat", Type: "string", Required: false, Description: "Latitude field (default: latitude)"},
 			{Name: "lon", Type: "string", Required: false, Description: "Longitude field (default: longitude)"},
 			{Name: "label", Type: "string", Required: false, Description: "Field to display as marker label in popups"},
-			{Name: "limit", Type: "number", Required: false, Description: "Maximum number of points to render (default: 5000, max: 50000)"},
+			{Name: "render", Type: "number", Required: false, Description: "Maximum points to draw (default: 5000, max: 50000)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows the query returns"},
 		},
 		Examples: []string{
 			`| lookupIP(field=src_ip, include=[latitude,longitude,country]) | graphWorld(label=country)`,
@@ -919,11 +920,12 @@ var bqlFunctionDocs = []FunctionDoc{
 		Description: "Renders results as a pie chart. Requires groupby with aggregation.",
 		Syntax:      "| piechart(limit=N)",
 		Parameters: []Param{
-			{Name: "limit", Type: "number", Required: false, Description: "Maximum number of slices"},
+			{Name: "render", Type: "number", Required: false, Description: "Maximum number of slices to draw (default: 10)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows the query returns"},
 		},
 		Examples: []string{
-			"| groupby(level) | count() | piechart()",
-			"| groupby(service) | count() | piechart(limit=10)",
+			"| groupby(level) | piechart()",
+			"| groupby(service) | piechart(render=10)",
 		},
 	},
 	{
@@ -932,11 +934,12 @@ var bqlFunctionDocs = []FunctionDoc{
 		Description: "Renders results as a bar chart. Requires groupby with aggregation.",
 		Syntax:      "| barchart(limit=N)",
 		Parameters: []Param{
-			{Name: "limit", Type: "number", Required: false, Description: "Maximum number of bars"},
+			{Name: "render", Type: "number", Required: false, Description: "Maximum number of bars to draw (default: 10)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows the query returns"},
 		},
 		Examples: []string{
-			"| groupby(status) | count() | barchart()",
-			"| groupby(host) | sum(bytes) | barchart(limit=15)",
+			"| groupby(status) | barchart()",
+			"| groupby(host) | sum(bytes) | barchart(render=15)",
 		},
 	},
 	{
@@ -948,7 +951,8 @@ var bqlFunctionDocs = []FunctionDoc{
 			{Name: "child", Type: "string", Required: true, Description: "Field for child nodes"},
 			{Name: "parent", Type: "string", Required: true, Description: "Field for parent nodes"},
 			{Name: "labels", Type: "string", Required: false, Description: "Comma-separated fields to display as node labels (default: all non-key fields)"},
-			{Name: "limit", Type: "number", Required: false, Description: "Maximum results to render (default: 100, max: 500)"},
+			{Name: "render", Type: "number", Required: false, Description: "Maximum nodes to draw (default: 100, max: 500)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows the query returns"},
 		},
 		Examples: []string{
 			"| graph(child=process, parent=parent_process)",
@@ -969,7 +973,8 @@ var bqlFunctionDocs = []FunctionDoc{
 			{Name: "color", Type: "string", Required: false, Description: "Coloring mode. Default 'auto': color by IP subnet when nodes look like IPs, else by degree. Options: 'subnet' (or 'subnet/16' for a wider block), 'degree' (connection-count intensity), 'role' (src/dst two-tone), or a field name (top-8 palette)"},
 			{Name: "labels", Type: "string", Required: false, Description: "Comma-separated fields to display as node labels"},
 			{Name: "directed", Type: "boolean", Required: false, Description: "Show src to dst arrows (default: false, undirected)"},
-			{Name: "limit", Type: "number", Required: false, Description: "Maximum edges to render (default: 100, max: 500)"},
+			{Name: "render", Type: "number", Required: false, Description: "Maximum edges to draw (default: 100, max: 500)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows the query returns"},
 		},
 		Examples: []string{
 			"| groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip)",
@@ -983,7 +988,8 @@ var bqlFunctionDocs = []FunctionDoc{
 		Description: "Renders a process map from pgr() or ptg(). With pgr(): processes are boxes, files ellipses, network destinations diamonds, and DNS domains triangles; edges are colored by anomaly_score (red = high, orange = elevated, muted = common) and injection/handle-access edges are dashed. With ptg(): the same map, process creation only -- no anomaly scoring, no file/network/DNS activity, no cross-tree reconnection -- the cheap way to look at a spawn tree. Click any node to open its originating log. Reads the source command's fixed output columns, so it takes no field arguments -- only an optional limit=. Without pgraph(), pgr()/ptg() return their rows as a table (for export, an LLM, or further piping).",
 		Syntax:      `| pgr(...) | pgraph(limit=N)`,
 		Parameters: []Param{
-			{Name: "limit", Type: "number", Required: false, Description: "Maximum number of edges to render (default: 3000)"},
+			{Name: "render", Type: "number", Required: false, Description: "Maximum edges to draw (default: 3000)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum rows the query returns"},
 		},
 		Examples: []string{
 			`pgr(start="{GUID}") | pgraph()`,
