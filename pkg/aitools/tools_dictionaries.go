@@ -26,13 +26,24 @@ func registerDictionaryTools(d *set) {
 			"touching a query.\n\n" +
 			"Read one before writing a detection that refers to it: the key column is what a " +
 			"lookup matches on, and the other columns are what a match returns.\n\n" +
-			"Returns each dictionary's id, name, key column and row count.",
+			"Each has a kind, which decides what a lookup means and cannot be inferred from " +
+			"the rows: \"value\" compares the key byte for byte; \"network\" holds CIDR ranges " +
+			"and resolves an address to the narrowest range containing it; \"pattern\" holds " +
+			"regular expressions and returns the first one matching the value. Writing a " +
+			"detection against the wrong assumption yields a query that runs and matches " +
+			"nothing.\n\n" +
+			"Returns each dictionary's id, name, kind, key column and row count.",
 	}, listDictionaries)
 
 	add(d, &mcp.Tool{
 		Name:        "get_dictionary",
 		Annotations: readOnly(),
-		Description: "Get one dictionary's definition: its columns, key, and how it is populated.\n\n" +
+		Description: "Get one dictionary's definition: its kind, columns, key, and how it is " +
+			"populated.\n\n" +
+			"The kind decides what a lookup means. A \"network\" list is keyed by CIDR range and " +
+			"looked up with an address; a \"pattern\" list is keyed by regular expression, tried " +
+			"in row order with the first match winning, and is case-sensitive unless an " +
+			"expression starts with (?i).\n\n" +
 			"This is the definition only; use search_dictionary to read the rows.",
 	}, getDictionary)
 
@@ -78,6 +89,10 @@ func registerDictionaryTools(d *set) {
 			"Each row is written by column name, so call get_dictionary first if the columns " +
 			"are not already known; a row missing the key column, or naming a column that " +
 			"does not exist, is rejected here rather than stored and never matched.\n\n" +
+			"The key has to suit the list's kind: a \"network\" list needs a CIDR range with a " +
+			"prefix length (10.0.0.0/8, not 10.0.0.0), and a \"pattern\" list needs a regular " +
+			"expression that compiles. A key that does not is rejected here, because the " +
+			"dictionary would otherwise drop it or fail to load entirely.\n\n" +
 			"Returns how many rows were written.",
 	}, addDictionaryRows)
 }
@@ -90,7 +105,7 @@ func listDictionaries(ctx context.Context, c Client, _ noArgs) (any, error) {
 	if _, ok := payload.([]any); !ok {
 		return payload, nil
 	}
-	summaries := summarize(payload, "id", "name", "description", "key_column", "row_count", "is_global", "case_insensitive_keys")
+	summaries := summarize(payload, "id", "name", "description", "kind", "key_column", "row_count", "is_global", "case_insensitive_keys")
 	return map[string]any{"count": len(summaries), "dictionaries": summaries}, nil
 }
 

@@ -43,13 +43,16 @@ Combine with other pipeline stages:
 
 ### List kinds
 
-A context list is one of two kinds, chosen when it is created. `match()` is written the same
-way for both: the list's kind decides how the key is compared.
+A context list is one of three kinds, chosen when it is created. `match()` is written the same
+way for all of them: the list's kind decides how the key is compared.
 
 | Kind | Keys hold | A lookup matches |
 |------|-----------|------------------|
 | Values | names, hashes, indicators | the key, byte for byte |
 | Networks | CIDR ranges | an address to the narrowest range holding it |
+| Patterns | regular expressions | the first expression matching the value |
+
+#### Networks
 
 A Networks list is looked up with an address rather than a string, so `10.1.2.3` finds a row
 keyed `10.1.0.0/16` in preference to one keyed `10.0.0.0/8`:
@@ -69,7 +72,36 @@ empty string on a miss, so `strict=true` keeps only the rows inside one of the r
 * | match(dict="corp_ranges", field=src_ip, column=network, include=[network], strict=true)
 ```
 
-Ignoring case applies to a Values list only. A CIDR range has no casing to ignore.
+#### Patterns
+
+A Patterns list holds regular expressions, matched against the value rather than compared to it:
+
+```
+* | match(dict="tooling", field=commandline, column=pattern, include=[tool,risk])
+```
+
+Expressions are tried in the order the rows are listed and the first one that matches answers,
+so put the specific expressions above the general ones. A list holding `mimikatz` above
+`\.exe$` reports `mimikatz.exe` as Mimikatz; reverse the two and it reports it as an
+executable.
+
+Matching is case-sensitive. Write `(?i)` at the front of an expression that should ignore case:
+`(?i)powershell` matches `POWERSHELL.EXE`.
+
+Asking for the key column reports membership here too, and does so correctly even when the
+matched row's other columns are empty.
+
+```
+* | match(dict="tooling", field=commandline, column=pattern, include=[pattern], strict=true)
+```
+
+An expression that does not compile is refused when the row is saved, because a list holding one
+fails to load and takes every lookup against it with it.
+
+#### Ignoring case
+
+Ignoring case is a Values list setting. A CIDR range has no casing, and a Patterns list says it
+per expression with `(?i)`.
 
 ## modelLookup()
 

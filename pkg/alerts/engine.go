@@ -591,6 +591,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 			opts.Dictionaries = scope.Mappings
 			opts.CaseInsensitiveDicts = scope.CaseInsensitive
 			opts.NetworkDicts = scope.Network
+			opts.PatternDicts = scope.Pattern
 		}
 	}
 	// Qualifies every dictGet with its database. A shard running the remote half of a

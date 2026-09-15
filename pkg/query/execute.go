@@ -219,6 +219,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		Dictionaries:          dictScope.Mappings,
 		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
 		NetworkDicts:          dictScope.Network,
+		PatternDicts:          dictScope.Pattern,
 		Models:                modelInfos,
 		HasCommentFilter:      hasCommentFilter,
 		CommentLogIDs:         commentLogIDs,

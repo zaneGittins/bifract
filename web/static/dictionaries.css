@@ -650,6 +650,11 @@
     letter-spacing: 0.03em;
 }
 
+.dict-kind-note {
+    margin: -4px 0 10px;
+    color: var(--text-secondary);
+}
+
 .dict-meta-global {
     display: flex;
     align-items: center;

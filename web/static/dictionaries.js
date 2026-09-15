@@ -193,6 +193,15 @@ const Dictionaries = {
     KINDS: {
         value: { label: 'Values', hint: 'Keys are matched byte for byte. Use this for names, hashes and indicators.' },
         network: { label: 'Networks', hint: 'Keys are CIDR ranges. A lookup matches an address to the narrowest range holding it.' },
+        pattern: { label: 'Patterns', hint: 'Keys are regular expressions. A lookup returns the first one that matches, so row order decides which wins.' },
+    },
+
+    // Order is part of what a Patterns list means: the first expression that
+    // matches is the one that answers. Say so where the rows are edited.
+    kindNote(d) {
+        return this.kindOf(d) === 'pattern'
+            ? 'Patterns are tried from the top. The first one that matches is the one that answers, so put the specific ones above the general ones.'
+            : '';
     },
 
     kindOf(d) {
@@ -304,6 +313,7 @@ const Dictionaries = {
         : `<span class="dict-meta-pill" title="${this.esc(this.KINDS[this.kindOf(d)].hint)}">${this.esc(this.KINDS[this.kindOf(d)].label)}</span>`}
     <span class="dict-meta-syntax" id="dictMetaSyntax"></span>
 </div>
+${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNote(d))}</p>` : ''}
 
 <div id="dictImportPanel" class="dict-import-panel" style="display:none;">
     <div class="dict-import-inner">
@@ -334,7 +344,7 @@ const Dictionaries = {
         document.getElementById('dictDetailName').textContent = d.name;
         document.getElementById('dictDetailDesc').textContent = d.description || '';
         document.getElementById('dictMetaRows').textContent = (d.row_count || 0).toLocaleString() + ' rows';
-        const probeField = this.kindOf(d) === 'network' ? 'src_ip' : '…';
+        const probeField = { network: 'src_ip', pattern: 'commandline' }[this.kindOf(d)] || '…';
         document.getElementById('dictMetaSyntax').textContent = `match(dict="${d.name}", field=${probeField}, column=${d.key_column}, include=[…])`;
 
         this._bindDetailEvents();

@@ -821,18 +821,16 @@ func (m *Manager) UpsertRows(ctx context.Context, id string, rows []DictionaryRo
 
 	// A blank key is not addressable: it cannot be looked up (the dictionary source
 	// drops it) or deleted, so it would only ever be a junk row in the editor.
-	isNetwork := NormalizeKind(dict.Kind) == KindNetwork
 	for _, row := range rows {
 		if row.Fields[dict.KeyColumn] == "" {
 			return badInput("column %q is the key and cannot be empty", dict.KeyColumn)
 		}
-		// An IP_TRIE silently drops a key it cannot parse as a range, so the
-		// dictionary would load fewer rows than were saved with nothing to say
-		// which. Refuse the row instead.
-		if isNetwork {
-			if err := ValidateNetworkKey(row.Fields[dict.KeyColumn]); err != nil {
-				return badInput("%s", err.Error())
-			}
+		// A structured kind parses its key. An IP_TRIE silently drops a range it
+		// cannot read and a REGEXP_TREE fails to load on a pattern it cannot
+		// compile, taking every lookup against the list with it. Refuse the row
+		// instead, where the author can see which one.
+		if err := ValidateKeyFor(dict.Kind, row.Fields[dict.KeyColumn]); err != nil {
+			return badInput("%s", err.Error())
 		}
 	}
 
@@ -1595,6 +1593,9 @@ func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
 
 func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols []DictionaryColumn) error {
 	var attrDefs []string
+	if NormalizeKind(dict.Kind) == KindPattern {
+		attrDefs = append(attrDefs, fmt.Sprintf("    `%s` String DEFAULT ''", PatternMatchAttr))
+	}
 	for _, c := range cols {
 		if c.Name == dict.KeyColumn {
 			continue
@@ -1615,7 +1616,7 @@ func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols
 		escCH(dict.KeyColumn),
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
-		m.dictSourceQuery(dict, dict.KeyColumn, cols),
+		m.primarySourceQuery(dict, cols),
 		dictLayout(dict.Kind),
 	)
 	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
@@ -1669,12 +1670,55 @@ func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary
 	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
 }
 
+// primarySourceQuery is the source for a list's own dictionary. A pattern list
+// needs the shape REGEXP_TREE reads; every other kind reads its columns straight.
+func (m *Manager) primarySourceQuery(dict *Dictionary, cols []DictionaryColumn) string {
+	if NormalizeKind(dict.Kind) != KindPattern {
+		return m.dictSourceQuery(dict, dict.KeyColumn, cols)
+	}
+	return m.patternSourceQuery(dict, cols)
+}
+
+// patternSourceQuery projects a list's rows into the five columns REGEXP_TREE
+// reads: an id, a parent, the expression, and the attribute names and values as
+// parallel arrays.
+//
+// The id is the row's own sequence, so the order rows were added is the order
+// patterns are tried, and the first match wins. parent_id is 0 throughout: the
+// list is flat, not a hierarchy.
+func (m *Manager) patternSourceQuery(dict *Dictionary, cols []DictionaryColumn) string {
+	keys := []string{quoteCHStr(PatternMatchAttr)}
+	values := []string{quoteCHStr("1")}
+	for _, c := range cols {
+		if c.Name == dict.KeyColumn {
+			continue
+		}
+		keys = append(keys, quoteCHStr(c.Name))
+		values = append(values, fmt.Sprintf("`%s`", escCH(c.Name)))
+	}
+	q := fmt.Sprintf(
+		"SELECT `%s` AS id, toUInt64(0) AS parent_id, `%s` AS regexp, [%s] AS keys, [%s] AS values FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`) ORDER BY `%s`",
+		escCH(seqColumn), escCH(dict.KeyColumn),
+		strings.Join(keys, ", "), strings.Join(values, ", "),
+		escCH(m.chDB), escCH(m.rowTable(dict)), escCH(dict.KeyColumn), escCH(seqColumn))
+	return escCHStr(q)
+}
+
+// quoteCHStr renders a Go string as a ClickHouse string literal for embedding in
+// a source query, which is itself already a quoted string.
+func quoteCHStr(s string) string {
+	return "'" + escCHStr(s) + "'"
+}
+
 // dictLayout is the ClickHouse layout a kind is built with. A network list is an
 // IP_TRIE, whose key is a CIDR range and whose lookup resolves an address to the
 // longest range containing it. Anything else probes the key byte for byte.
 func dictLayout(kind string) string {
-	if NormalizeKind(kind) == KindNetwork {
+	switch NormalizeKind(kind) {
+	case KindNetwork:
 		return "IP_TRIE()"
+	case KindPattern:
+		return "REGEXP_TREE"
 	}
 	return "HASHED()"
 }
@@ -1728,6 +1772,7 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 		Mappings:        make(map[string]map[string]string),
 		CaseInsensitive: make(map[string]bool),
 		Network:         make(map[string]bool),
+		Pattern:         make(map[string]bool),
 	}
 	for rows.Next() {
 		var id, name, keyCol, kind string
@@ -1754,6 +1799,7 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 		scope.Mappings[name] = inner
 		scope.CaseInsensitive[name] = ci
 		scope.Network[name] = NormalizeKind(kind) == KindNetwork
+		scope.Pattern[name] = NormalizeKind(kind) == KindPattern
 	}
 	return scope, rows.Err()
 }

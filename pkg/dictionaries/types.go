@@ -3,6 +3,7 @@ package dictionaries
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -16,13 +17,23 @@ const (
 	// probes an address and resolves to the longest range containing it, so one
 	// row covers every address in it.
 	KindNetwork = "network"
+	// KindPattern is a REGEXP_TREE dictionary whose keys are regular expressions.
+	// A lookup probes a string and returns the first pattern that matches it, in
+	// the order the rows were added, so order is part of what the list means.
+	KindPattern = "pattern"
 )
+
+// PatternMatchAttr is a constant attribute every pattern list carries, set on
+// every row. REGEXP_TREE does not support dictHas, and asking whether some other
+// attribute came back non-empty cannot tell a row that matched but holds an empty
+// value from a row that did not match at all.
+const PatternMatchAttr = "_match"
 
 // ValidKind reports whether a kind is one this build knows how to create. An
 // unknown kind must never fall back to a layout the author did not ask for: the
 // lookups would all miss and nothing would say why.
 func ValidKind(kind string) bool {
-	return kind == KindValue || kind == KindNetwork
+	return kind == KindValue || kind == KindNetwork || kind == KindPattern
 }
 
 // NormalizeKind fills in the default for a dictionary stored before kinds
@@ -122,4 +133,34 @@ type Scope struct {
 	// Network marks IP_TRIE dictionaries, probed with an address rather than a
 	// string and matched on the longest prefix.
 	Network map[string]bool
+	// Pattern marks REGEXP_TREE dictionaries, whose keys are expressions matched
+	// against the probe, first match winning.
+	Pattern map[string]bool
+}
+
+// ValidatePatternKey rejects a key a REGEXP_TREE cannot compile. ClickHouse
+// matches with RE2, which is the syntax Go's regexp implements, so a pattern that
+// compiles here compiles there. Rejecting at save time beats a dictionary that
+// fails to load and takes every lookup against it down with it.
+func ValidatePatternKey(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("a pattern list needs a regular expression, not an empty key")
+	}
+	if _, err := regexp.Compile(key); err != nil {
+		return fmt.Errorf("%q is not a valid regular expression: %s", key, err)
+	}
+	return nil
+}
+
+// ValidateKeyFor applies the key rule a kind carries. A value list takes any
+// non-empty key, so only the two structured kinds have one.
+func ValidateKeyFor(kind, key string) error {
+	switch NormalizeKind(kind) {
+	case KindNetwork:
+		return ValidateNetworkKey(key)
+	case KindPattern:
+		return ValidatePatternKey(key)
+	}
+	return nil
 }

@@ -39,6 +39,8 @@ type Scratch struct {
 	// dictNetwork names the IP_TRIE dictionaries, which match() probes with an
 	// address rather than a string.
 	dictNetwork map[string]bool
+	// dictPattern names the REGEXP_TREE dictionaries, which have no dictHas.
+	dictPattern map[string]bool
 
 	// tlsh resolves tlsh() against the scratch table itself. A rule under test runs
 	// over the events its case inserted, not over a fractal's indexed history, so the
@@ -176,6 +178,7 @@ func (s *Scratch) WithDictionaries(scope dictionaries.Scope) *Scratch {
 	clone.dictionaries = scope.Mappings
 	clone.dictCaseInsensitive = scope.CaseInsensitive
 	clone.dictNetwork = scope.Network
+	clone.dictPattern = scope.Pattern
 	return &clone
 }
 

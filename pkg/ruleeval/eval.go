@@ -162,6 +162,7 @@ func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 		Dictionaries:         s.dictionaries,
 		CaseInsensitiveDicts: s.dictCaseInsensitive,
 		NetworkDicts:         s.dictNetwork,
+		PatternDicts:         s.dictPattern,
 		DictionaryDatabase:   s.database,
 	}
 }

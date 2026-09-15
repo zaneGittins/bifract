@@ -52,7 +52,11 @@ type QueryOptions struct {
 	// NetworkDicts marks dictionaries built as an IP_TRIE. Their keys are CIDR
 	// ranges, so a lookup probes an address and matches the longest range holding
 	// it; probing one with a string is rejected by the server.
-	NetworkDicts       map[string]bool
+	NetworkDicts map[string]bool
+	// PatternDicts marks dictionaries built as a REGEXP_TREE. Their keys are
+	// regular expressions matched against the probe, first match wins, and the
+	// server has no dictHas for them.
+	PatternDicts       map[string]bool
 	DictionaryDatabase string     // ClickHouse database holding the dictionary objects; qualifies every dictGet
 	TableName          string     // Override source table (default "logs", use "logs_distributed" in cluster mode)
 	ProcLineageTable   string     // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")

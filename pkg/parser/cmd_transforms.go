@@ -1034,14 +1034,27 @@ func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
 // displayRef is the value as the log carries it. They differ only for the key
 // column, which is echoed back rather than read from the dictionary: echoing the
 // probe would show a lowercased value the event never contained.
-func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string) string {
-	// dictHas works on a HASHED and on an IP_TRIE dictionary alike, so asking for
-	// the key column still reports membership either way.
+func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string, pattern bool) string {
 	if col == keyColumn {
+		// A REGEXP_TREE has no dictHas at all ("does not support method hasKeys"),
+		// so membership is read from the marker attribute every pattern list
+		// carries. Reading some other attribute instead could not tell a row that
+		// matched but holds an empty value from a row that did not match.
+		if pattern {
+			return fmt.Sprintf("if(dictGetOrDefault('%s', '%s', %s, '') = '1', %s, '')",
+				dictRef, PatternMatchAttr, probeRef, displayRef)
+		}
+		// dictHas works on a HASHED and on an IP_TRIE dictionary alike, so asking
+		// for the key column reports membership either way.
 		return fmt.Sprintf("if(dictHas('%s', %s), %s, '')", dictRef, probeRef, displayRef)
 	}
 	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictRef, escapeString(col), probeRef)
 }
+
+// PatternMatchAttr mirrors dictionaries.PatternMatchAttr. Named here rather than
+// imported because the parser cannot depend on the dictionary package without a
+// cycle; pkg/query sees both and asserts they agree.
+const PatternMatchAttr = "_match"
 
 // matchHandler handles match(dict="name", field=logfield, column=keycolumn, include=[col1,col2])
 type matchHandler struct{}
@@ -1069,7 +1082,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && hasField && fieldRef != "" {
-			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef)
+			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef, ctx.Opts.PatternDicts[dictName])
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -1128,7 +1141,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if colErr != nil {
 			return fmt.Errorf("match(): invalid include column: %w", colErr)
 		}
-		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, probeRef, fieldRef)
+		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, probeRef, fieldRef, ctx.Opts.PatternDicts[dictName])
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeCol)})
 		ctx.Registry.SetResolveExpr(col, scalarExpr)
 	}
