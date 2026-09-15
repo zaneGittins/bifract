@@ -432,6 +432,7 @@
 .ac-icon-field { color: var(--info); }
 .ac-icon-value { color: var(--text-primary); }
 .ac-icon-kw { color: var(--syntax-keyword); }
+.ac-icon-binding { color: var(--syntax-binding); }
 
 .ac-label {
     flex-shrink: 0;
@@ -1997,6 +1998,14 @@ body.recall-active {
     font-weight: 600;
 }
 
+/* A let binding. Distinct from @variable: one is a name the query defines, the
+   other a value the dashboard or notebook supplies. */
+.query-highlight .hl-binding,
+.model-query-highlight .hl-binding {
+    color: var(--syntax-binding);
+    font-weight: 600;
+}
+
 .query-highlight .hl-comment,
 .model-query-highlight .hl-comment {
     color: var(--syntax-comment);
@@ -2046,6 +2055,9 @@ body.recall-active {
 .palette-query .hl-wildcard,
 .ahd-code .hl-wildcard,
 .alert-query-highlight .hl-wildcard  { color: var(--warning); font-weight: 600; }
+.palette-query .hl-binding,
+.ahd-code .hl-binding,
+.alert-query-highlight .hl-binding   { color: var(--syntax-binding); font-weight: 600; }
 .palette-query .hl-variable,
 .ahd-code .hl-variable,
 .alert-query-highlight .hl-variable  { color: var(--syntax-variable); font-weight: 600; }

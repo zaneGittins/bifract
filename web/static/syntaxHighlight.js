@@ -423,6 +423,16 @@ const SyntaxHighlight = {
                     matched = true;
                 }
             }
+            // Bindings: &name. The sigil is part of the name, so a binding is never
+            // confused with a field, exactly as the backend reads it.
+            else if (line[i] === '&') {
+                const bindMatch = line.substring(i).match(/^&[a-zA-Z_][a-zA-Z0-9_]*/);
+                if (bindMatch) {
+                    result.push({ t: bindMatch[0], c: 'hl-binding' });
+                    i += bindMatch[0].length;
+                    matched = true;
+                }
+            }
             // Identifiers: functions, field names, booleans, keywords, or bare values
             else if (/[a-zA-Z_]/.test(line[i])) {
                 const ident = line.substring(i).match(/^[a-zA-Z_][a-zA-Z0-9_.]*/)[0];
@@ -432,6 +442,10 @@ const SyntaxHighlight = {
                 // must win over the "identifier(" rule (e.g. NOT (a=1) is a keyword
                 // before a group, not a function call).
                 if (/^(?:AND|OR|NOT)$/i.test(ident)) {
+                    result.push({ t: ident, c: 'hl-keyword' });
+                } else if (/^let$/i.test(ident) && /^\s*&[a-zA-Z_]/.test(rest)) {
+                    // let is a keyword only ahead of a binding, which is the rule the
+                    // backend parser uses, so a field called "let" still reads as one.
                     result.push({ t: ident, c: 'hl-keyword' });
                 } else if (/^\s*\(/.test(rest) || ident.toLowerCase() === 'case') {
                     // Function call: an identifier immediately followed by "(" (mirrors

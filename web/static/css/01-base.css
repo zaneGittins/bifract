@@ -54,6 +54,7 @@
     --syntax-comment: #6272a4;
     --syntax-key: #8be9fd;
     --syntax-variable: #5ad1c8;
+    --syntax-binding: #ffb86c;
     --json-number: #f0a060;
     --json-boolean: #b08ecc;
 
@@ -174,6 +175,7 @@
     --syntax-comment: #6f685c;
     --syntax-key: #0e6478;
     --syntax-variable: #0f766e;
+    --syntax-binding: #9a3412;
     --json-number: #a34d07;
     --json-boolean: #7a4fb5;
 

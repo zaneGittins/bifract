@@ -280,6 +280,13 @@ const Autocomplete = {
             return { kind: 'value', field: vc.field, partial: vc.partial, quoted: vc.quoted, start: vc.start, end: cursorPos };
         }
 
+        // A binding reference under the caret. Its own context, because the sigil
+        // is part of the name and the candidates come from the query itself.
+        const bindMatch = before.match(/&[a-zA-Z_]\w*$|&$/);
+        if (bindMatch) {
+            return { kind: 'binding', partial: bindMatch[0], start: cursorPos - bindMatch[0].length, end: cursorPos };
+        }
+
         // Token being typed (identifier under the caret).
         const tokenMatch = before.match(/[a-zA-Z_][\w.]*$/);
         const partial = tokenMatch ? tokenMatch[0] : '';
@@ -288,7 +295,10 @@ const Autocomplete = {
         // Empty token only opens the palette at the start of a pipeline segment.
         const afterPipe = /(^|\|)\s*$/.test(before) || (insideParens && /[(,\s]\s*$/.test(before));
 
-        return { kind: 'token', partial, start, end: cursorPos, insideParens, afterPipe };
+        // A let statement is only legal ahead of the pipeline: at the very start of
+        // the query, or after the ';' that closed the statement before it.
+        const canStartStatement = !insideParens && /^\s*(?:(?:^|;)\s*let\s+&\w+\s*=[^;]*;\s*)*$/.test(value.substring(0, start));
+        return { kind: 'token', partial, start, end: cursorPos, insideParens, afterPipe, canStartStatement };
     },
 
     // ===================== candidate building =====================
@@ -302,7 +312,64 @@ const Autocomplete = {
         return { ok: true, prefix: idx === 0, index: idx };
     },
 
+    // _declaredBindings reads the let statements out of the query being typed.
+    // Bindings are query-local, so the query is the only place they can come from.
+    // The kind mirrors how the parser reads the right-hand side.
+    _declaredBindings(text) {
+        const out = [];
+        const re = /(?:^|[;\s])let\s+(&[a-zA-Z_]\w*)\s*=\s*([^;]*)/g;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            const body = m[2] || '';
+            let detail = 'value';
+            if (this._hasTopLevelPipe(body)) detail = 'result set';
+            else if (/=~|=\^|=\$/.test(body)) detail = 'filter';
+            out.push({ name: m[1], detail, desc: body.trim().slice(0, 80) });
+        }
+        return out;
+    },
+
+    // _hasTopLevelPipe mirrors the parser: a pipe outside brackets and quotes is
+    // what makes a binding name a set of rows rather than an expression.
+    _hasTopLevelPipe(text) {
+        let depth = 0, quote = '';
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (quote) {
+                if (c === '\\') i++;
+                else if (c === quote) quote = '';
+                continue;
+            }
+            if (c === '"' || c === "'") { quote = c; continue; }
+            if (c === '(' || c === '[' || c === '{') depth++;
+            else if (c === ')' || c === ']' || c === '}') depth--;
+            else if (c === '|' && depth === 0) return true;
+        }
+        return false;
+    },
+
     _buildItems(ctx) {
+        if (ctx.kind === 'binding') {
+            const partial = ctx.partial.slice(1);
+            const out = [];
+            for (const b of this._declaredBindings(this._acAnchor ? this._acAnchor.value : '')) {
+                const m = this._match(b.name.slice(1), partial);
+                if (!m.ok) continue;
+                out.push({
+                    kind: 'binding',
+                    label: b.name,
+                    insert: b.name,
+                    detail: b.detail,
+                    desc: b.desc,
+                    matchIndex: m.index + 1,
+                    matchLen: partial.length,
+                    _prefix: m.prefix,
+                });
+            }
+            out.sort((a, b) => (a._prefix === b._prefix ? a.label.localeCompare(b.label) : (a._prefix ? -1 : 1)));
+            return out;
+        }
+
         if (ctx.kind === 'value') {
             const values = this._getFieldValues(ctx.field);
             const out = [];
@@ -363,6 +430,12 @@ const Autocomplete = {
                     _prefix: m.prefix,
                 });
             }
+            if (ctx.canStartStatement) {
+                const m = this._match('let', partial);
+                if (m.ok) {
+                    out.push({ kind: 'keyword', label: 'let', insert: 'let &', detail: 'binding', desc: 'Name an expression, a filter or a pipeline', matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix });
+                }
+            }
             if (!ctx.insideParens) {
                 for (const kw of BQLLang.keywords) {
                     const m = this._match(kw.name, partial);
@@ -374,7 +447,7 @@ const Autocomplete = {
 
         // Rank: prefix matches first, then field < function < keyword, then earlier
         // match position, then shorter label, then alphabetical.
-        const order = { field: 0, function: 1, keyword: 2 };
+        const order = { binding: 0, field: 1, function: 2, keyword: 3 };
         out.sort((a, b) => {
             if (a._prefix !== b._prefix) return a._prefix ? -1 : 1;
             if (order[a.kind] !== order[b.kind]) return order[a.kind] - order[b.kind];
@@ -590,6 +663,7 @@ const Autocomplete = {
             case 'field': return { glyph: '#', cls: 'ac-icon-field' };
             case 'value': return { glyph: '"', cls: 'ac-icon-value' };
             case 'keyword': return { glyph: '&&', cls: 'ac-icon-kw' };
+            case 'binding': return { glyph: '&', cls: 'ac-icon-binding' };
             default: return { glyph: '*', cls: '' };
         }
     },

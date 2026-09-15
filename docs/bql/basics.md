@@ -184,11 +184,16 @@ user=@target_user AND image=@process
 
 When the query runs, `@target_user` and `@process` are replaced with the values set in the variables bar. Variables default to `*` if no value is set, so a notebook or dashboard is reused across investigations by changing values instead of editing every query.
 
+A variable is supplied from outside the query. A name the query defines for itself is a
+[binding](#bindings-let), written `&name`.
+
 ## Bindings (`let`)
 
-A `let` statement names an expression or a filter so a query states it once and uses it in
-several places. Statements come before the query, separated by `;`, and a reference carries the
-`&` sigil:
+A `let` statement names an expression, a filter, or a pipeline so a query states it once and
+uses it in several places. Unlike an `@variable`, which a dashboard or notebook supplies, a
+binding belongs to the query that declares it.
+
+Statements come before the query, separated by `;`, and a reference carries the `&` sigil:
 
 ```
 let &lolbin = lower(image) =~ "rundll32.exe","regsvr32.exe","mshta.exe";
