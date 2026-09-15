@@ -100,8 +100,10 @@ fails to load and takes every lookup against it with it.
 
 #### Ignoring case
 
-Ignoring case is a Values list setting. A CIDR range has no casing, and a Patterns list says it
-per expression with `(?i)`.
+Ignoring case is a Values list setting, and turning it on for another kind is refused. A CIDR
+range has no casing, and a Patterns list says it per expression with `(?i)`; lowering the value
+a pattern is matched against would stop every expression carrying an upper-case letter from
+matching at all.
 
 ## modelLookup()
 

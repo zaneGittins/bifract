@@ -5358,7 +5358,9 @@ func TestAggregationPipelineFixes(t *testing.T) {
 		sql := mustTranslate(t, `a=x | groupby(h,function=avg(c,as=ac)) | sprintf("%.1f", ac, as=fmtd) | table([h,ac,fmtd])`, opts)
 		// sprintf must reference the aggregate column ac, not raw JSON, and the
 		// fmtd column must survive (it ran on a post-aggregation projection stage).
-		if !strings.Contains(sql, "printf('%.1f', ifNull(ac, '')) AS fmtd") {
+		// %.1f is a numeric conversion, so the argument is cast to a number: printf
+		// rejects a String there.
+		if !strings.Contains(sql, "printf('%.1f', toFloat64OrZero(ifNull(toString(ac), ''))) AS fmtd") {
 			t.Errorf("post-agg sprintf not staged/resolved: %s", sql)
 		}
 		if strings.Contains(sql, "fields.`ac`::String") {

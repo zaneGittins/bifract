@@ -133,8 +133,10 @@ type Scope struct {
 	// Network marks IP_TRIE dictionaries, probed with an address rather than a
 	// string and matched on the longest prefix.
 	Network map[string]bool
-	// Pattern marks REGEXP_TREE dictionaries, whose keys are expressions matched
-	// against the probe, first match winning.
+	// Pattern marks the ClickHouse dictionary OBJECTS built as a REGEXP_TREE,
+	// keyed by object name rather than list name: only a pattern list's own
+	// dictionary has that layout, while a secondary key column on the same list
+	// gets an ordinary HASHED one.
 	Pattern map[string]bool
 }
 
@@ -149,6 +151,21 @@ func ValidatePatternKey(key string) error {
 	}
 	if _, err := regexp.Compile(key); err != nil {
 		return fmt.Errorf("%q is not a valid regular expression: %s", key, err)
+	}
+	return nil
+}
+
+// ValidateColumnsFor rejects a column a kind cannot carry. A pattern list declares
+// PatternMatchAttr itself, so a user column of that name would be declared twice
+// and the dictionary would fail to create with nothing pointing at the cause.
+func ValidateColumnsFor(kind string, cols []DictionaryColumn) error {
+	if NormalizeKind(kind) != KindPattern {
+		return nil
+	}
+	for _, c := range cols {
+		if c.Name == PatternMatchAttr {
+			return fmt.Errorf("%q is reserved on a pattern list: it is how a lookup reports whether an expression matched", PatternMatchAttr)
+		}
 	}
 	return nil
 }

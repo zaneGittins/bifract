@@ -282,7 +282,10 @@ func (m *Manager) CreateDictionary(ctx context.Context, opts CreateOptions) (*Di
 
 	kind := NormalizeKind(opts.Kind)
 	if !ValidKind(kind) {
-		return nil, fmt.Errorf("unknown list kind %q; expected %q or %q", opts.Kind, KindValue, KindNetwork)
+		return nil, badInput("unknown list kind %q; expected %q, %q or %q", opts.Kind, KindValue, KindNetwork, KindPattern)
+	}
+	if err := ValidateColumnsFor(kind, opts.Columns); err != nil {
+		return nil, badInput("%s", err.Error())
 	}
 
 	// When columns are provided (e.g. from ExecuteDictionaryAction), ensure the key column is set.
@@ -379,6 +382,9 @@ func (m *Manager) AddColumn(ctx context.Context, id, colName string) (*Dictionar
 
 	if !isValidIdentifier(colName) || reservedColumn(colName) {
 		return nil, badInput("invalid column name %q: must start with a letter or underscore, contain only alphanumeric, underscore, or hyphen characters, and not begin with _bf_", colName)
+	}
+	if err := ValidateColumnsFor(dict.Kind, []DictionaryColumn{{Name: colName}}); err != nil {
+		return nil, badInput("%s", err.Error())
 	}
 
 	isFirstColumn := len(dict.Columns) == 0
@@ -609,6 +615,9 @@ func (m *Manager) SetCaseInsensitiveKeys(ctx context.Context, id string, enabled
 	if dict.CaseInsensitiveKeys == enabled {
 		return dict, nil
 	}
+	if enabled && NormalizeKind(dict.Kind) != KindValue {
+		return nil, badInput("ignoring case applies to a Values list only: a CIDR range has no casing, and a pattern says it for itself with (?i)")
+	}
 
 	if enabled && !confirmCollisions {
 		report, err := m.KeyCollisions(ctx, id)
@@ -821,17 +830,8 @@ func (m *Manager) UpsertRows(ctx context.Context, id string, rows []DictionaryRo
 
 	// A blank key is not addressable: it cannot be looked up (the dictionary source
 	// drops it) or deleted, so it would only ever be a junk row in the editor.
-	for _, row := range rows {
-		if row.Fields[dict.KeyColumn] == "" {
-			return badInput("column %q is the key and cannot be empty", dict.KeyColumn)
-		}
-		// A structured kind parses its key. An IP_TRIE silently drops a range it
-		// cannot read and a REGEXP_TREE fails to load on a pattern it cannot
-		// compile, taking every lookup against the list with it. Refuse the row
-		// instead, where the author can see which one.
-		if err := ValidateKeyFor(dict.Kind, row.Fields[dict.KeyColumn]); err != nil {
-			return badInput("%s", err.Error())
-		}
+	if err := validateRowKeys(dict, rows); err != nil {
+		return err
 	}
 
 	seqs, err := m.assignSeq(ctx, dict, rows)
@@ -875,6 +875,24 @@ func (m *Manager) maxSeq(ctx context.Context, dict *Dictionary) (uint64, error) 
 
 // assignSeq returns each row's ordinal: a key already in the table keeps the position
 // it has, so editing a row never moves it; anything new is appended in the order given.
+// validateRowKeys applies the key rules a list's kind carries to every row about
+// to be written. Called from every path that writes rows, not just the editor: an
+// IP_TRIE silently drops a range it cannot read, and a REGEXP_TREE fails to load
+// on one expression it cannot compile, taking every lookup against the list with
+// it. Refusing the row is where the author can see which one.
+func validateRowKeys(dict *Dictionary, rows []DictionaryRow) error {
+	for _, row := range rows {
+		key := row.Fields[dict.KeyColumn]
+		if key == "" {
+			return badInput("column %q is the key and cannot be empty", dict.KeyColumn)
+		}
+		if err := ValidateKeyFor(dict.Kind, key); err != nil {
+			return badInput("%s", err.Error())
+		}
+	}
+	return nil
+}
+
 func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []DictionaryRow) ([]uint64, error) {
 	next, err := m.maxSeq(ctx, dict)
 	if err != nil {
@@ -1051,6 +1069,11 @@ func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader, opts Im
 
 	imported, err := streamCSVBatches(reader, headers, dict.KeyColumn, next, csvImportBatchSize,
 		func(batch []DictionaryRow, seqs []uint64) error {
+			// An imported row reaches the same table the editor writes to, so it
+			// meets the same key rule. Without this a CSV was the way around it.
+			if err := validateRowKeys(dict, batch); err != nil {
+				return err
+			}
 			return m.batchInsertRows(ctx, dict, batch, seqs)
 		})
 	if err != nil {
@@ -1799,7 +1822,12 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 		scope.Mappings[name] = inner
 		scope.CaseInsensitive[name] = ci
 		scope.Network[name] = NormalizeKind(kind) == KindNetwork
-		scope.Pattern[name] = NormalizeKind(kind) == KindPattern
+		// Keyed by the ClickHouse object, not the list: only a pattern list's own
+		// dictionary is a REGEXP_TREE. A secondary key column gets an ordinary
+		// HASHED one, which has neither the marker attribute nor the layout.
+		if NormalizeKind(kind) == KindPattern {
+			scope.Pattern[chDictName(id)] = true
+		}
 	}
 	return scope, rows.Err()
 }

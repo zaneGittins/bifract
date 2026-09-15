@@ -18,8 +18,10 @@ func networkDictOpts() QueryOptions {
 			"names": {"name": "dict_names_name"},
 			"tools": {"pattern": "dict_tools_pattern"},
 		},
-		NetworkDicts:         map[string]bool{"corp": true},
-		PatternDicts:         map[string]bool{"tools": true},
+		NetworkDicts: map[string]bool{"corp": true},
+		// Keyed by the ClickHouse object, not the list: only a pattern list's own
+		// dictionary is a REGEXP_TREE.
+		PatternDicts:         map[string]bool{"dict_tools_pattern": true},
 		CaseInsensitiveDicts: map[string]bool{"names": true},
 	}
 }
@@ -102,5 +104,102 @@ func TestPatternDictionaryProbesWithAString(t *testing.T) {
 	}
 	if strings.Contains(sql, "toIPv6") {
 		t.Errorf("a pattern list must not be probed with an address: %s", sql)
+	}
+}
+
+// strict= emitted dictHas unconditionally, which a REGEXP_TREE refuses outright
+// ("does not support method hasKeys"), so every strict lookup against a pattern
+// list failed at the server. Membership has to go through one expression.
+func TestPatternStrictDoesNotUseDictHas(t *testing.T) {
+	sql := networkSQL(t, `* | match(dict="tools", field=commandline, column=pattern, include=[tool], strict=true)`)
+	if strings.Contains(sql, "dictHas(") {
+		t.Errorf("a pattern list cannot take dictHas anywhere: %s", sql)
+	}
+	if !strings.Contains(sql, `dictGetOrDefault('bifract.dict_tools_pattern', '_match'`) {
+		t.Errorf("want strict to test the marker, got: %s", sql)
+	}
+}
+
+// Every other kind keeps dictHas, which is cheaper and is what an IP_TRIE and a
+// HASHED dictionary both support.
+func TestNonPatternStrictStillUsesDictHas(t *testing.T) {
+	for _, q := range []string{
+		`* | match(dict="corp", field=src_ip, column=network, include=[owner], strict=true)`,
+		`* | match(dict="names", field=user, column=name, include=[tier], strict=true)`,
+	} {
+		if sql := networkSQL(t, q); !strings.Contains(sql, "dictHas(") {
+			t.Errorf("%s: want dictHas, got: %s", q, sql)
+		}
+	}
+}
+
+// Only a pattern list's own dictionary is a REGEXP_TREE. A secondary key column
+// resolves to an ordinary HASHED one, which carries no marker attribute, so
+// reading the marker there reported every row as a miss.
+func TestSecondaryKeyOnAPatternListIsNotTreatedAsAPattern(t *testing.T) {
+	opts := networkDictOpts()
+	opts.Dictionaries["tools"]["tool"] = "dict_tools_by_tool"
+	pipeline, err := ParseQuery(`* | match(dict="tools", field=commandline, column=tool, include=[tool])`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if strings.Contains(result.SQL, "'_match'") {
+		t.Errorf("a secondary key column has no marker attribute: %s", result.SQL)
+	}
+	if !strings.Contains(result.SQL, "dictHas('bifract.dict_tools_by_tool'") {
+		t.Errorf("want an ordinary membership test, got: %s", result.SQL)
+	}
+}
+
+// Expressions are stored as written, so lowering the probe would stop every one
+// carrying an upper-case letter from ever matching. A pattern says it for itself
+// with (?i).
+func TestPatternProbeIsNeverLowered(t *testing.T) {
+	opts := networkDictOpts()
+	opts.CaseInsensitiveDicts["tools"] = true
+	pipeline, err := ParseQuery(`* | match(dict="tools", field=commandline, column=pattern, include=[tool])`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	result, err := TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if strings.Contains(result.SQL, "lower(toString(fields.`commandline`") {
+		t.Errorf("a pattern probe must not be lowered: %s", result.SQL)
+	}
+}
+
+// Every field resolves to a String, and ClickHouse's printf rejects a String for
+// a numeric conversion, so a format using %d failed at the server for every row.
+func TestSprintfCastsArgumentsToTheirConversion(t *testing.T) {
+	sql := networkSQL(t, `* | sprintf("https://%s:%d/%.2f", host, port, latency, as=u)`)
+	for _, want := range []string{
+		"ifNull(fields.`host`::String, '')",
+		"toInt64OrZero(ifNull(toString(fields.`port`::String), ''))",
+		"toFloat64OrZero(ifNull(toString(fields.`latency`::String), ''))",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("want %s, got: %s", want, sql)
+		}
+	}
+}
+
+func TestPrintfVerbsSkipsEscapedPercent(t *testing.T) {
+	cases := map[string]string{
+		"%s:%d":        "sd",
+		"100%% of %s":  "s",
+		"%-10.3f|%05d": "fd",
+		"no verbs":     "",
+		"trailing %":   "",
+	}
+	for format, want := range cases {
+		if got := string(printfVerbs(format)); got != want {
+			t.Errorf("printfVerbs(%q) = %q, want %q", format, got, want)
+		}
 	}
 }

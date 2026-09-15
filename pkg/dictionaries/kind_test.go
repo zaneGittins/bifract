@@ -144,3 +144,45 @@ func TestPatternLayoutIsRegexpTree(t *testing.T) {
 		t.Errorf("dictLayout(pattern) = %q", got)
 	}
 }
+
+// A pattern list declares the marker attribute itself. A user column of that name
+// would be declared twice and the dictionary would fail to create, with nothing
+// pointing at the cause.
+func TestPatternMarkerColumnIsReserved(t *testing.T) {
+	cols := []DictionaryColumn{{Name: "pattern"}, {Name: PatternMatchAttr}}
+	if err := ValidateColumnsFor(KindPattern, cols); err == nil {
+		t.Error("a pattern list must reserve its marker column")
+	} else if !strings.Contains(err.Error(), PatternMatchAttr) {
+		t.Errorf("the error must name the column, got: %v", err)
+	}
+	// Only a pattern list declares it, so it is an ordinary name anywhere else.
+	for _, kind := range []string{KindValue, KindNetwork} {
+		if err := ValidateColumnsFor(kind, cols); err != nil {
+			t.Errorf("%s: %q is an ordinary column name here: %v", kind, PatternMatchAttr, err)
+		}
+	}
+}
+
+// Every path that writes rows shares the key rule. A CSV import was once the way
+// around it.
+func TestValidateRowKeys(t *testing.T) {
+	dict := &Dictionary{KeyColumn: "network", Kind: KindNetwork}
+	good := []DictionaryRow{{Fields: map[string]string{"network": "10.0.0.0/8"}}}
+	if err := validateRowKeys(dict, good); err != nil {
+		t.Errorf("a valid range must be accepted: %v", err)
+	}
+	for _, bad := range []string{"", "10.0.0.0", "nonsense"} {
+		rows := []DictionaryRow{{Fields: map[string]string{"network": bad}}}
+		if err := validateRowKeys(dict, rows); err == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	// One bad row in a batch refuses the batch, rather than loading part of it.
+	mixed := []DictionaryRow{
+		{Fields: map[string]string{"network": "10.0.0.0/8"}},
+		{Fields: map[string]string{"network": "not-a-range"}},
+	}
+	if err := validateRowKeys(dict, mixed); err == nil {
+		t.Error("a batch carrying a bad key must be refused whole")
+	}
+}

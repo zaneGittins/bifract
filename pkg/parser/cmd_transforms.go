@@ -964,13 +964,18 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("sprintf() requires a format string")
 	}
 	alias := b.Str("as", "_sprintf")
+	verbs := printfVerbs(formatStr)
 	var fieldRefs []string
-	for _, a := range b.Flat("fields") {
+	for i, a := range b.Flat("fields") {
 		ref, err := ResolveArg(a, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("sprintf(): %w", err)
 		}
-		fieldRefs = append(fieldRefs, fmt.Sprintf("ifNull(%s, '')", ref))
+		verb := byte('s')
+		if i < len(verbs) {
+			verb = verbs[i]
+		}
+		fieldRefs = append(fieldRefs, printfArg(ref, verb))
 	}
 	safeAlias, err := sanitizeIdentifier(alias)
 	if err != nil {
@@ -986,6 +991,44 @@ func (h *sprintfHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: expr})
 	ctx.Registry.SetResolveExpr(safeAlias, fmt.Sprintf("printf(%s)", printfArgs))
 	return nil
+}
+
+// printfVerbs lists the conversions a format string asks for, in order, skipping
+// the %% escape. Flags, width and precision sit between the % and the verb.
+func printfVerbs(format string) []byte {
+	var out []byte
+	for i := 0; i < len(format); i++ {
+		if format[i] != '%' {
+			continue
+		}
+		j := i + 1
+		for j < len(format) && strings.IndexByte("-+ #0123456789.", format[j]) >= 0 {
+			j++
+		}
+		if j >= len(format) {
+			break
+		}
+		if format[j] != '%' {
+			out = append(out, format[j])
+		}
+		i = j
+	}
+	return out
+}
+
+// printfArg casts one argument to the type its conversion needs. Every field
+// resolves to a String, and ClickHouse's printf rejects a String for a numeric
+// conversion ("Bad format %d"), so a query using %d failed at the server for
+// every row. OrZero rather than a plain cast: the value is whatever the log
+// carried, and a non-numeric one has to print as 0 rather than fail the query.
+func printfArg(ref string, verb byte) string {
+	switch verb {
+	case 'd', 'i', 'u', 'x', 'X', 'o', 'b', 'c':
+		return fmt.Sprintf("toInt64OrZero(ifNull(toString(%s), ''))", ref)
+	case 'f', 'F', 'e', 'E', 'g', 'G':
+		return fmt.Sprintf("toFloat64OrZero(ifNull(toString(%s), ''))", ref)
+	}
+	return fmt.Sprintf("ifNull(%s, '')", ref)
 }
 
 // matchFieldRef renders the value a dictionary lookup is made with. dictGet
@@ -1030,25 +1073,35 @@ func dictProbe(fieldRef, dictName string, opts QueryOptions) string {
 	return "lower(" + fieldRef + ")"
 }
 
+// patternProbe is dictProbe for a pattern dictionary: the value as the log carries
+// it, never lowered. The expressions are stored as written, so lowering the probe
+// would stop every expression carrying an upper-case letter from ever matching.
+func patternProbe(fieldRef string) string { return fieldRef }
+
 // probeRef is the value looked up (lowercased for a case-insensitive dictionary);
 // displayRef is the value as the log carries it. They differ only for the key
 // column, which is echoed back rather than read from the dictionary: echoing the
 // probe would show a lowercased value the event never contained.
 func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string, pattern bool) string {
 	if col == keyColumn {
-		// A REGEXP_TREE has no dictHas at all ("does not support method hasKeys"),
-		// so membership is read from the marker attribute every pattern list
-		// carries. Reading some other attribute instead could not tell a row that
-		// matched but holds an empty value from a row that did not match.
-		if pattern {
-			return fmt.Sprintf("if(dictGetOrDefault('%s', '%s', %s, '') = '1', %s, '')",
-				dictRef, PatternMatchAttr, probeRef, displayRef)
-		}
-		// dictHas works on a HASHED and on an IP_TRIE dictionary alike, so asking
-		// for the key column reports membership either way.
-		return fmt.Sprintf("if(dictHas('%s', %s), %s, '')", dictRef, probeRef, displayRef)
+		return fmt.Sprintf("if(%s, %s, '')", dictMembershipSQL(dictRef, probeRef, pattern), displayRef)
 	}
 	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictRef, escapeString(col), probeRef)
+}
+
+// dictMembershipSQL tests whether a lookup hits. Every caller has to use this:
+// a REGEXP_TREE supports no dictHas at all ("does not support method hasKeys"),
+// so emitting one anywhere fails the whole query at the server.
+//
+// For a pattern dictionary the answer comes from the marker attribute every
+// pattern list carries, set on every row. Reading an ordinary attribute instead
+// could not tell a row that matched but holds an empty value from one that did
+// not match at all.
+func dictMembershipSQL(dictRef, probeRef string, pattern bool) string {
+	if pattern {
+		return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '') = '1'", dictRef, PatternMatchAttr, probeRef)
+	}
+	return fmt.Sprintf("dictHas('%s', %s)", dictRef, probeRef)
 }
 
 // PatternMatchAttr mirrors dictionaries.PatternMatchAttr. Named here rather than
@@ -1079,10 +1132,13 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
+	if ctx.Opts.PatternDicts[chLookupName] {
+		probeRef = patternProbe(fieldRef)
+	}
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && hasField && fieldRef != "" {
-			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef, ctx.Opts.PatternDicts[dictName])
+			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef, ctx.Opts.PatternDicts[chLookupName])
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -1133,22 +1189,25 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
-	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
-
 	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
+	isPattern := ctx.Opts.PatternDicts[chLookupName]
+	probeRef := dictProbe(fieldRef, dictName, ctx.Opts)
+	if isPattern {
+		probeRef = patternProbe(fieldRef)
+	}
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {
 			return fmt.Errorf("match(): invalid include column: %w", colErr)
 		}
-		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, probeRef, fieldRef, ctx.Opts.PatternDicts[dictName])
+		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, probeRef, fieldRef, isPattern)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeCol)})
 		ctx.Registry.SetResolveExpr(col, scalarExpr)
 	}
 
 	if strict {
 		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-			fmt.Sprintf("dictHas('%s', %s)", chDictRef, probeRef))
+			dictMembershipSQL(chDictRef, probeRef, isPattern))
 	}
 	return nil
 }
