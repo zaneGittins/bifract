@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -43,6 +44,9 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if set, ok := b.First("values"); ok && set.Kind == ArgBinding {
 		sub, err := bindingSubquerySQL(set.Binding, ctx, field)
 		if err != nil {
+			if errors.Is(err, errBindingWorkExhausted) {
+				return err
+			}
 			return fmt.Errorf("in(): %w", err)
 		}
 		op := "IN"

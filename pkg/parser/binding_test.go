@@ -1,8 +1,10 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func bindingSQL(t *testing.T, query string) string {
@@ -103,10 +105,10 @@ func TestUnknownBindingIsAnError(t *testing.T) {
 
 func TestBindingStatementErrors(t *testing.T) {
 	cases := map[string]string{
-		`let &a = 1; let &a = 2; * | &a > 1`:                        "already declared",
-		`let &a = ; * | &a > 1`:                                     "has no value",
-		`let &a = 1 * | &a > 1`:                                     "let &a",
-		`let &a 1; * | &a > 1`:                                      "expected '='",
+		`let &a = 1; let &a = 2; * | &a > 1`: "already declared",
+		`let &a = ; * | &a > 1`:              "has no value",
+		`let &a = 1 * | &a > 1`:              "let &a",
+		`let &a 1; * | &a > 1`:               "expected '='",
 	}
 	for query, want := range cases {
 		_, err := ParseQuery(query)
@@ -308,5 +310,98 @@ func TestResultSetMarksTheQueryTimeScoped(t *testing.T) {
 	}
 	if !result.TimeScopedSubquery {
 		t.Error("a query reading a binding set must be marked time-scoped")
+	}
+}
+
+// Bindings compose, so one that references another more than once doubles at
+// every level. Twenty-four such lines is a 500-byte query that expanded to
+// sixteen million nodes and never returned.
+func TestBindingExpansionIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("let &b0 = len(commandline); ")
+	for i := 1; i < 24; i++ {
+		fmt.Fprintf(&b, "let &b%d = &b%d + &b%d; ", i, i-1, i-1)
+	}
+	b.WriteString("* | &b23 > 1")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ParseQuery(b.String())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the expansion to be refused")
+		}
+		if !strings.Contains(err.Error(), "too large an expression") {
+			t.Errorf("want a size error, got: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("parsing did not finish; the expansion is unbounded")
+	}
+}
+
+// The same doubling through result-set bindings costs translations rather than
+// nodes: the SQL stays small because each is materialised once, but every
+// reference re-translates.
+func TestResultSetBindingWorkIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("let &s0 = * | groupby(image) | table(image); ")
+	for i := 1; i < 20; i++ {
+		fmt.Fprintf(&b, "let &s%d = * | in(image, &s%d) | in(parent_image, &s%d) | groupby(image) | table(image); ", i, i-1, i-1)
+	}
+	b.WriteString("* | in(image, &s19)")
+
+	pipeline, err := ParseQuery(b.String())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := TranslateToSQLWithOrder(pipeline, serverOpts())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the work to be refused")
+		}
+		if !strings.Contains(err.Error(), "too many result-set bindings") {
+			t.Errorf("want a work error, got: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("translation did not finish; the work is unbounded")
+	}
+}
+
+// A binding cannot be a way around the rules a nested pipeline already has.
+func TestBindingIsNotABackdoor(t *testing.T) {
+	cases := map[string]string{
+		`let &a = pgr(start="x") | groupby(image) | table(image); * | in(image, &a)`:                                       "pgr",
+		`let &a = * | join(user) { event_id="1" | groupby(user) } | groupby(image) | table(image); * | join(image) { &a }`: "nested joins",
+	}
+	for query, want := range cases {
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			continue
+		}
+		_, err = TranslateToSQLWithOrder(pipeline, serverOpts())
+		if err == nil {
+			t.Errorf("%s: expected a rejection", query)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want an error mentioning %q, got: %v", query, want, err)
+		}
+	}
+}
+
+// A binding name reaches SQL as a CTE name, so it is validated like every other
+// generated identifier.
+func TestBindingCTENameIsSafe(t *testing.T) {
+	sql := bindingSQL(t, `let &drop_table = * | groupby(image) | table(image); * | in(image, &drop_table) | in(parent_image, &drop_table)`)
+	if !strings.HasPrefix(sql, "WITH _b_drop_table AS (") {
+		t.Errorf("want a prefixed, validated CTE name, got: %s", sql)
 	}
 }

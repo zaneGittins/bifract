@@ -144,6 +144,9 @@ type Parser struct {
 	// name with the sigil. Substitution happens as each reference is parsed.
 	bindings     map[string]*BindingNode
 	bindingOrder []*BindingNode
+	// bindingBudget bounds how much expression the bindings may expand to, shared
+	// with any sub-pipeline parsed from a binding body.
+	bindingBudget *int
 }
 
 func NewParser(tokens []Token) *Parser {

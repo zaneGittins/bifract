@@ -23,6 +23,13 @@ type AnalyticsModelInfo struct {
 }
 
 type QueryOptions struct {
+	// bindingWork bounds how many result-set bindings one query may translate.
+	// Bindings compose, so a binding read twice by a binding read twice doubles
+	// the work at every level: twenty such lines is a 1.7KB query that takes the
+	// translator minutes. Carried through subqueryOptions so nested translations
+	// share one allowance. Unexported: a caller never sets it.
+	bindingWork *int
+
 	StartTime             time.Time
 	EndTime               time.Time
 	EndExclusive          bool // emit "timestamp < EndTime" instead of "<="; lets adjacent chunks abut without dropping or duplicating a row

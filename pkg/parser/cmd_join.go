@@ -180,6 +180,7 @@ func init() {
 // and a field added later must be considered rather than inherited by accident.
 func subqueryOptions(ctx *CommandContext, maxRows int) QueryOptions {
 	return QueryOptions{
+		bindingWork:           ctx.Opts.bindingWork,
 		StartTime:             ctx.Opts.StartTime,
 		EndTime:               ctx.Opts.EndTime,
 		MaxRows:               maxRows,

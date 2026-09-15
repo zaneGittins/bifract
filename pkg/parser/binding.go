@@ -6,6 +6,21 @@ import (
 	"strings"
 )
 
+// A let binding names an expression, a filter, or a whole pipeline so a query can
+// state it once and use it in several places:
+//
+//	let &lolbin = lower(image) =~ "rundll32.exe","mshta.exe";
+//	* | &lolbin AND parent_image = "winword.exe"
+//
+// The & sigil is mandatory and is part of the name. BQL resolves an unknown
+// identifier to an empty JSON field rather than erroring, so a binding sharing a
+// namespace with log fields would turn a typo into a query that silently matches
+// nothing. The sigil keeps the two apart, and an unresolved reference is a hard
+// error (see compileFieldRef).
+//
+// This file reads the statements. binding_subst.go puts what they name into the
+// tree; binding_sql.go renders the ones that name a set of rows.
+
 // A let binding names an expression so a query can state it once and use it in
 // several places:
 //
@@ -37,7 +52,7 @@ const (
 )
 
 // describeKind names a binding's kind in the voice of an error message.
-func (k BindingKind) describeKind() string {
+func (k BindingKind) describe() string {
 	switch k {
 	case BindingCondition:
 		return "a filter"
@@ -116,289 +131,6 @@ func (p *Parser) parseLetStatement() error {
 	p.bindings[name] = binding
 	p.bindingOrder = append(p.bindingOrder, binding)
 	return nil
-}
-
-// lookupBinding resolves a reference, reporting what is declared when it misses.
-func (p *Parser) lookupBinding(tok Token) (*BindingNode, error) {
-	if b, ok := p.bindings[tok.Value]; ok {
-		return b, nil
-	}
-	return nil, newPosError(tok, "unknown binding %s%s", tok.Value, p.declaredBindings())
-}
-
-func (p *Parser) declaredBindings() string {
-	if len(p.bindings) == 0 {
-		return "; no bindings are declared (write `let " + "&name = ...;` before the query)"
-	}
-	names := make([]string, 0, len(p.bindings))
-	for n := range p.bindings {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return " (declared: " + strings.Join(names, ", ") + ")"
-}
-
-// parseBindingCondition reads a binding used as a filter leaf.
-func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
-	b, err := p.lookupBinding(p.current())
-	if err != nil {
-		return nil, err
-	}
-	if b.Kind == BindingPipeline {
-		return nil, newPosError(p.current(), "%s is a result set, not a filter: use it in in(field, %s) or a join() block", b.Name, b.Name)
-	}
-	p.advance()
-	var cond HavingCondition
-	if b.Kind == BindingCondition {
-		cond = *cloneCondition(b.Cond)
-	} else {
-		cond = HavingCondition{Expr: cloneExpr(b.Expr)}
-		// `&susp =~ "a","b"`: the match operators are filter syntax, so they
-		// follow the substituted expression exactly as they follow a written one.
-		if p.atExprMatchOperator() {
-			if err := p.readExprMatchOperator(&cond); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if negate {
-		cond.Negate = !cond.Negate
-	}
-	return &cond, nil
-}
-
-// substituteExpr replaces every binding reference in an expression with a copy of
-// what it names.
-func (p *Parser) substituteExpr(e *ExprNode) error {
-	if e == nil {
-		return nil
-	}
-	switch e.Kind {
-	case ExprField:
-		if !strings.HasPrefix(e.Value, "&") {
-			return nil
-		}
-		b, err := p.lookupBinding(Token{Value: e.Value, Pos: e.Pos})
-		if err != nil {
-			return err
-		}
-		if b.Kind != BindingValue {
-			return fmt.Errorf("%s is %s, not a value: it cannot be used inside an expression", b.Name, b.Kind.describeKind())
-		}
-		*e = *cloneExpr(b.Expr)
-		return nil
-	case ExprUnary:
-		return p.substituteExpr(e.Arg)
-	case ExprBinary:
-		if err := p.substituteExpr(e.Left); err != nil {
-			return err
-		}
-		return p.substituteExpr(e.Right)
-	case ExprCall:
-		for _, a := range e.Args {
-			if err := p.substituteExpr(a); err != nil {
-				return err
-			}
-		}
-		for _, a := range e.Named {
-			if err := p.substituteExpr(a); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// cloneExpr deep-copies an expression so one binding used twice never shares a
-// node with itself.
-func cloneExpr(e *ExprNode) *ExprNode {
-	if e == nil {
-		return nil
-	}
-	out := *e
-	out.Left = cloneExpr(e.Left)
-	out.Right = cloneExpr(e.Right)
-	out.Arg = cloneExpr(e.Arg)
-	if e.Args != nil {
-		out.Args = make([]*ExprNode, len(e.Args))
-		for i, a := range e.Args {
-			out.Args[i] = cloneExpr(a)
-		}
-	}
-	if e.Named != nil {
-		out.Named = make(map[string]*ExprNode, len(e.Named))
-		for k, v := range e.Named {
-			out.Named[k] = cloneExpr(v)
-		}
-	}
-	return &out
-}
-
-func cloneCondition(c *HavingCondition) *HavingCondition {
-	if c == nil {
-		return nil
-	}
-	out := *c
-	out.Expr = cloneExpr(c.Expr)
-	if c.Values != nil {
-		out.Values = append([]string(nil), c.Values...)
-	}
-	if c.Children != nil {
-		out.Children = make([]HavingCondition, len(c.Children))
-		for i := range c.Children {
-			out.Children[i] = *cloneCondition(&c.Children[i])
-		}
-	}
-	return &out
-}
-
-// substitutePipeline resolves every binding reference left in the tree after the
-// pipeline is parsed. Filter leaves and expression stage heads substitute as they
-// are read; this covers the rest, chiefly command arguments and := assignments.
-// Anything it misses is caught at compile time, where an unresolved & is an
-// error rather than a JSON field that matches nothing.
-func (p *Parser) substitutePipeline(pipeline *PipelineNode) error {
-	if len(p.bindings) == 0 || pipeline == nil {
-		return nil
-	}
-	if pipeline.Filter != nil {
-		for i := range pipeline.Filter.Conditions {
-			if err := p.substituteFilterCondition(&pipeline.Filter.Conditions[i]); err != nil {
-				return err
-			}
-		}
-	}
-	for i := range pipeline.Assignments {
-		if err := p.substituteExpr(pipeline.Assignments[i].Expr); err != nil {
-			return err
-		}
-	}
-	for i := range pipeline.HavingConditions {
-		if err := p.substituteHavingCondition(&pipeline.HavingConditions[i]); err != nil {
-			return err
-		}
-	}
-	for i := range pipeline.Commands {
-		if err := p.substituteCommand(&pipeline.Commands[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (p *Parser) substituteCommand(cmd *CommandNode) error {
-	for i := range cmd.Args {
-		if err := p.substituteArg(&cmd.Args[i], cmd.Name, true); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// substituteArg resolves the bindings one argument names. whole says the argument
-// is the command's own, not a member of a list: a result set is a whole argument
-// or nothing, since a list of them has no meaning.
-func (p *Parser) substituteArg(a *Argument, cmdName string, whole bool) error {
-	if name, ok := bareBindingRef(a); ok {
-		b, err := p.lookupBinding(Token{Value: name, Pos: a.Pos})
-		if err != nil {
-			return err
-		}
-		if b.Kind == BindingPipeline {
-			switch {
-			case !whole:
-				return fmt.Errorf("%s(): %s is a result set and cannot be a member of a list", cmdName, b.Name)
-			case !strings.EqualFold(cmdName, "in"):
-				return fmt.Errorf("%s(): %s is a result set; only in() and a join() block take one", cmdName, b.Name)
-			}
-			a.Kind, a.Binding, a.Expr = ArgBinding, b, nil
-			b.SetRefs++
-			return nil
-		}
-	}
-	if err := p.substituteExpr(a.Expr); err != nil {
-		return err
-	}
-	for i := range a.List {
-		if err := p.substituteArg(&a.List[i], cmdName, false); err != nil {
-			return err
-		}
-	}
-	if a.Agg != nil {
-		for i := range a.Agg.Args {
-			if err := p.substituteArg(&a.Agg.Args[i], cmdName, false); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// bareBindingRef reports the binding an argument names when the argument is
-// nothing but that reference, as in in(user, &admins).
-func bareBindingRef(a *Argument) (string, bool) {
-	if a.Kind != ArgExpr || a.Expr == nil || a.Expr.Kind != ExprField {
-		return "", false
-	}
-	if !strings.HasPrefix(a.Expr.Value, "&") {
-		return "", false
-	}
-	return a.Expr.Value, true
-}
-
-func (p *Parser) substituteHavingCondition(c *HavingCondition) error {
-	if err := p.substituteExpr(c.Expr); err != nil {
-		return err
-	}
-	for i := range c.Children {
-		if err := p.substituteHavingCondition(&c.Children[i]); err != nil {
-			return err
-		}
-	}
-	if c.Command != nil {
-		return p.substituteCommand(c.Command)
-	}
-	return nil
-}
-
-func (p *Parser) substituteFilterCondition(c *ConditionNode) error {
-	if err := p.substituteExpr(c.Expr); err != nil {
-		return err
-	}
-	for i := range c.Children {
-		if err := p.substituteFilterCondition(&c.Children[i]); err != nil {
-			return err
-		}
-	}
-	if c.Command != nil {
-		return p.substituteCommand(c.Command)
-	}
-	return nil
-}
-
-// atBindingChain reports whether the binding at the current position is one leaf
-// of a boolean chain rather than a whole stage on its own.
-func (p *Parser) atBindingChain() bool {
-	switch p.peek().Type {
-	case TokenAnd, TokenOr:
-		return true
-	}
-	return false
-}
-
-// atBindingExpr reports whether the binding at the current position continues
-// into an expression, as `&cmdlen > 500` does, rather than standing alone as a
-// filter. The operator set mirrors atExprFilter's.
-func (p *Parser) atBindingExpr() bool {
-	if p.current().Type != TokenBinding {
-		return false
-	}
-	switch p.peek().Type {
-	case TokenEqual, TokenNotEqual, TokenGreater, TokenLess, TokenGreaterEqual, TokenLessEqual,
-		TokenPlus, TokenMinus, TokenMultiply, TokenDivide:
-		return true
-	}
-	return false
 }
 
 // parseBindingValue reads the right-hand side of one let statement. A top-level
@@ -489,67 +221,97 @@ func (p *Parser) parseSubPipeline(body string) (*PipelineNode, error) {
 	}
 	sub := NewParser(tokens)
 	sub.input = []rune(body)
-	sub.bindings = p.bindings
+	// A copy, not the map itself: a body cannot declare a binding today, since
+	// the statement ends at the first ';', but sharing the map would make it leak
+	// into the outer query the day that changes.
+	sub.bindings = make(map[string]*BindingNode, len(p.bindings))
+	for k, v := range p.bindings {
+		sub.bindings[k] = v
+	}
+	sub.bindingBudget = p.budget()
 	return sub.Parse()
 }
 
-// bindingSetMaxRows caps the rows a result-set binding contributes to an IN
-// list. IN materialises the whole set in memory, so it is bounded like join().
-const bindingSetMaxRows = 50000
+// lookupBinding resolves a reference, reporting what is declared when it misses.
+func (p *Parser) lookupBinding(tok Token) (*BindingNode, error) {
+	if b, ok := p.bindings[tok.Value]; ok {
+		return b, nil
+	}
+	return nil, newPosError(tok, "unknown binding %s%s", tok.Value, p.declaredBindings())
+}
 
-// bindingSubquerySQL renders a result-set binding as a single-column subquery for
-// an IN test. The column is the one named after the field being tested, matching
-// how a join() block names its key; a binding that returns exactly one column
-// needs no name at all.
-func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (string, error) {
-	if b == nil || b.Pipe == nil {
-		return "", fmt.Errorf("%s is not a result set", bindingName(b))
+func (p *Parser) declaredBindings() string {
+	if len(p.bindings) == 0 {
+		return "; no bindings are declared (write `let " + "&name = ...;` before the query)"
 	}
-	result, err := TranslateToSQLWithOrder(b.Pipe, subqueryOptions(ctx, bindingSetMaxRows))
+	names := make([]string, 0, len(p.bindings))
+	for n := range p.bindings {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return " (declared: " + strings.Join(names, ", ") + ")"
+}
+
+// atBindingChain reports whether the binding at the current position is one leaf
+// of a boolean chain rather than a whole stage on its own.
+func (p *Parser) atBindingChain() bool {
+	switch p.peek().Type {
+	case TokenAnd, TokenOr:
+		return true
+	}
+	return false
+}
+
+// atBindingExpr reports whether the binding at the current position continues
+// into an expression, as `&cmdlen > 500` does, rather than standing alone as a
+// filter. The operator set mirrors atExprFilter's.
+func (p *Parser) atBindingExpr() bool {
+	if p.current().Type != TokenBinding {
+		return false
+	}
+	switch p.peek().Type {
+	case TokenEqual, TokenNotEqual, TokenGreater, TokenLess, TokenGreaterEqual, TokenLessEqual,
+		TokenPlus, TokenMinus, TokenMultiply, TokenDivide:
+		return true
+	}
+	return false
+}
+
+// parseBindingCondition reads a binding used as a filter leaf.
+func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
+	b, err := p.lookupBinding(p.current())
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", b.Name, err)
+		return nil, err
 	}
-	ctx.Plan.usesBindingSet = true
-	column, err := bindingSetColumn(b, result.FieldOrder, field)
-	if err != nil {
-		return "", err
+	if b.Kind == BindingPipeline {
+		return nil, newPosError(p.current(), "%s is a result set, not a filter: use it in in(field, %s) or a join() block", b.Name, b.Name)
 	}
-	if b.SetRefs > 1 {
-		name, err := bindingCTEName(b.Name)
+	p.advance()
+	var cond HavingCondition
+	if b.Kind == BindingCondition {
+		clone, err := cloneCondition(b.Cond, p.budget())
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return fmt.Sprintf("SELECT %s FROM %s", column, ctx.Plan.addBindingCTE(name, result.SQL)), nil
+		cond = *clone
+	} else {
+		clone, err := cloneExpr(b.Expr, p.budget())
+		if err != nil {
+			return nil, err
+		}
+		cond = HavingCondition{Expr: clone}
+		// `&susp =~ "a","b"`: the match operators are filter syntax, so they
+		// follow the substituted expression exactly as they follow a written one.
+		if p.atExprMatchOperator() {
+			if err := p.readExprMatchOperator(&cond); err != nil {
+				return nil, err
+			}
+		}
 	}
-	return fmt.Sprintf("SELECT %s FROM (%s)", column, result.SQL), nil
-}
-
-// bindingCTEName is the SQL identifier a materialised binding is read by. The
-// _b_ prefix keeps it clear of the _dfr_, _join_ and _mlk_ columns the translator
-// generates, and of any log field, which cannot start with an underscore here.
-func bindingCTEName(name string) (string, error) {
-	return sanitizeIdentifier("_b_" + strings.TrimPrefix(name, "&"))
-}
-
-func bindingSetColumn(b *BindingNode, outputs []string, field string) (string, error) {
-	if field != "" && contains(outputs, field) {
-		return field, nil
+	if negate {
+		cond.Negate = !cond.Negate
 	}
-	if len(outputs) == 1 {
-		return outputs[0], nil
-	}
-	if len(outputs) == 0 {
-		return "", fmt.Errorf("%s returns no columns", b.Name)
-	}
-	return "", fmt.Errorf("%s returns [%s]; name the column to test by making the binding return only it, or test a field one of them is named after",
-		b.Name, strings.Join(outputs, ", "))
-}
-
-func bindingName(b *BindingNode) string {
-	if b == nil {
-		return "the binding"
-	}
-	return b.Name
+	return &cond, nil
 }
 
 // resolveBlockBinding expands a join block written as nothing but a binding
@@ -565,7 +327,7 @@ func (p *Parser) resolveBlockBinding(body string) (string, error) {
 		return "", err
 	}
 	if b.Kind != BindingPipeline {
-		return "", fmt.Errorf("%s is %s, not a result set: a join() block needs a pipeline", b.Name, b.Kind.describeKind())
+		return "", fmt.Errorf("%s is %s, not a result set: a join() block needs a pipeline", b.Name, b.Kind.describe())
 	}
 	return b.Body, nil
 }
