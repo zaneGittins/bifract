@@ -1044,7 +1044,7 @@ const Chat = {
         const seen = [];
         for (const row of rows.slice(0, 5)) {
             if (!row || typeof row !== 'object') continue;
-            for (const key of Object.keys(row)) {
+            for (const key of Utils.visibleFields(Object.keys(row))) {
                 if (!seen.includes(key)) seen.push(key);
             }
         }
@@ -1053,7 +1053,7 @@ const Chat = {
 
     renderMiniTable(rows, fieldOrder, totalCount, truncated) {
         const displayRows = rows.slice(0, 5);
-        const cols = fieldOrder.length > 0 ? fieldOrder : Object.keys(displayRows[0] || {});
+        const cols = fieldOrder.length > 0 ? fieldOrder : Utils.visibleFields(Object.keys(displayRows[0] || {}));
         const displayCols = cols.slice(0, 6); // Max 6 columns
 
         const header = displayCols.map(c => `<th>${Utils.escapeHtml(c)}</th>`).join('');

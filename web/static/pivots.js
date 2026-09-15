@@ -21,7 +21,7 @@ window.Pivots = {
         try { rd = typeof widget.last_results === 'string' ? JSON.parse(widget.last_results) : widget.last_results; }
         catch (e) { return []; }
         if (Array.isArray(rd.field_order) && rd.field_order.length) return rd.field_order.slice();
-        if (Array.isArray(rd.results) && rd.results.length) return Object.keys(rd.results[0]);
+        if (Array.isArray(rd.results) && rd.results.length) return Utils.visibleFields(Object.keys(rd.results[0]));
         return [];
     },
 

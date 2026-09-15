@@ -19,6 +19,41 @@ const LogDetail = {
     filterTerm: '',
     filterMode: { fields: true, values: false },
 
+    // The ingest chip is built here rather than in markup: five panel headers share
+    // this controller, and a sixth would otherwise silently lack it.
+    _ensureIngestEl(panelEl) {
+        const ts = panelEl.querySelector('.panel-timestamp');
+        if (!ts) return null;
+        let el = panelEl.querySelector('.panel-ingest');
+        if (!el) {
+            el = document.createElement('span');
+            el.className = 'panel-ingest';
+            ts.insertAdjacentElement('afterend', el);
+        }
+        return el;
+    },
+
+    // Ingest lag as a compact duration. Rounds to two units, which is as much as
+    // the header has room for and as much precision as the number is worth.
+    _formatLag(ms) {
+        const sign = ms < 0 ? '-' : '+';
+        const n = Math.abs(ms);
+        if (n < 1000) return `${sign}${n}ms`;
+        // Each tier rounds into the next unit before choosing a tier, so a value
+        // just under a boundary reads "1h" rather than "59m 60s".
+        const secs = Math.round(n / 1000);
+        if (secs < 60) {
+            const s = n / 1000;
+            return `${sign}${s < 10 ? s.toFixed(1).replace(/\.0$/, '') : secs}s`;
+        }
+        const pair = (big, unit, rem, remUnit) => `${sign}${big}${unit}` + (rem ? ` ${rem}${remUnit}` : '');
+        if (secs < 3600) return pair(Math.floor(secs / 60), 'm', secs % 60, 's');
+        const mins = Math.round(secs / 60);
+        if (mins < 1440) return pair(Math.floor(mins / 60), 'h', mins % 60, 'm');
+        const hrs = Math.round(mins / 60);
+        return pair(Math.floor(hrs / 24), 'd', hrs % 24, 'h');
+    },
+
     // Resolve a host's element references from its panel root (class-based, so
     // each surface can reuse the same markup without duplicate IDs).
     _resolveHost(panelEl, opts) {
@@ -29,6 +64,7 @@ const LogDetail = {
             resizeHandle: panelEl.querySelector('.panel-resize-handle'),
             levelBadge: panelEl.querySelector('.log-level-badge'),
             timestamp: panelEl.querySelector('.panel-timestamp'),
+            ingest: this._ensureIngestEl(panelEl),
             source: panelEl.querySelector('.panel-source'),
             prevBtn: panelEl.querySelector('.panel-prev-btn'),
             nextBtn: panelEl.querySelector('.panel-next-btn'),
@@ -128,7 +164,8 @@ const LogDetail = {
                 timestamp: logData.timestamp,
                 log_id: logData.log_id,
                 fractal_id: logData.fractal_id,
-                _shard_num: logData._shard_num
+                _shard_num: logData._shard_num,
+                [LogDetail.INGEST_FIELD]: logData[LogDetail.INGEST_FIELD]
             };
         }
         this._updateSelectedRow(index);
@@ -210,6 +247,27 @@ const LogDetail = {
         if (tsSpan) {
             tsSpan.textContent = logData.timestamp ? TZ.format(logData.timestamp, 'full') : '';
             tsSpan.title = logData.timestamp ? TZ.title(logData.timestamp) : '';
+        }
+
+        // Ingest time sits beside the event time as the lag between them, which is
+        // what the pair is read for: how late this log arrived. The absolute value
+        // is on the tooltip. Absent for aggregated rows and for any query shape that
+        // does not project it, in which case the chip stays hidden.
+        const ingestEl = host.ingest;
+        if (ingestEl) {
+            const ingestTs = logData[LogDetail.INGEST_FIELD];
+            const lag = (ingestTs && logData.timestamp)
+                ? TZ.toEpoch(ingestTs) - TZ.toEpoch(logData.timestamp)
+                : NaN;
+            if (Number.isFinite(lag)) {
+                ingestEl.textContent = `ingested ${this._formatLag(lag)}`;
+                ingestEl.title = `Ingested ${TZ.title(ingestTs)}`;
+                ingestEl.hidden = false;
+            } else {
+                ingestEl.textContent = '';
+                ingestEl.title = '';
+                ingestEl.hidden = true;
+            }
         }
 
         if (srcSpan) {
@@ -445,6 +503,13 @@ const LogDetail = {
                 // The fields endpoint also returns the original raw_log; stash it so the
                 // Raw tab renders without a second round-trip.
                 if (data.raw_log !== undefined) logData.raw_log = data.raw_log;
+                // Shapes that reach the panel through this fetch (aggregated rows, a
+                // pgr() subquery source) never carried the projected column, so the
+                // header is filled in from here.
+                if (data.ingest_timestamp) {
+                    logData[LogDetail.INGEST_FIELD] = data.ingest_timestamp;
+                    this._updateHeaderContext(logData);
+                }
                 this.currentLogData = logData;
                 this.renderFields(logData, fieldsContainer, this.filterTerm || '');
             } else {
@@ -637,6 +702,7 @@ const LogDetail = {
             // _chain_ts / _chain_events back the Chain tab; they are internal keys,
             // not log fields.
             if (key.startsWith('_chain_')) continue;
+            if (key === LogDetail.INGEST_FIELD) continue;
             if (key !== 'fields' && key !== '_all_fields' && key !== 'timestamp' && key !== 'raw_log' && key !== 'norm_log') {
                 flattenedData[key] = logData[key];
             }

@@ -232,6 +232,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
+		IncludeIngestTime:     true,
 		DisplayTimezone:       scope.Timezone,
 	}
 

@@ -264,7 +264,7 @@ const SharedRender = {
         const rows = results.results || [];
         if (!rows.length) return '<div style="padding:20px;text-align:center;color:var(--text-muted);">No results</div>';
         const esc = (window.Utils && Utils.escapeHtml) ? Utils.escapeHtml : (s => String(s));
-        const systemFields = ['_all_fields', 'raw_log', 'log_id'];
+        const systemFields = ['_all_fields', 'raw_log', 'log_id', ...((window.Utils && Utils.HIDDEN_ROW_FIELDS) || [])];
         const headers = (results.field_order && results.field_order.length)
             ? results.field_order
             : Object.keys(rows[0]).filter(h => !systemFields.includes(h));

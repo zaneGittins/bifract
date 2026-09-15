@@ -60,9 +60,17 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			continue
 		}
 
-		if field == "timestamp" {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "timestamp"})
-			nonAggregateFields = append(nonAggregateFields, "timestamp")
+		if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindBase {
+			// A base column is a real column, not a fields.`x` sub-path: as JSON it read
+			// empty on every row, and aliasing that empty over the column's own name
+			// shadowed the column for anything selecting it later in the same SELECT.
+			// An eval() rebinding the name re-registers it as per-row, so it lands below.
+			expr := entry.Expr
+			if expr != field {
+				expr = fmt.Sprintf("%s AS %s", expr, field)
+			}
+			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
+			nonAggregateFields = append(nonAggregateFields, field)
 		} else if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindJoined {
 			// Produced by a JOIN wrapper (model_lookup/join), not the source scan.
 			// Skip it here (projecting fields.`x` would be wrong and would shadow the

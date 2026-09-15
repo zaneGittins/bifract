@@ -1,5 +1,15 @@
 // Utility functions
 const Utils = {
+    // Columns the server attaches to a result row for the detail panel's benefit
+    // rather than for display: they are excluded from field_order, so they must
+    // also be excluded wherever a column list is derived from row keys instead.
+    HIDDEN_ROW_FIELDS: ['_ingest_timestamp'],
+
+    // Filter a derived column list down to what a user should see or pick from.
+    visibleFields(names) {
+        return (names || []).filter(n => !Utils.HIDDEN_ROW_FIELDS.includes(n));
+    },
+
     formatDateTimeLocal(date) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');

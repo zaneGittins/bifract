@@ -108,7 +108,7 @@ const BifractWorldMap = {
                 lat.toFixed(4) + ', ' + lon.toFixed(4) + '</div>';
 
             // Include other fields from the row
-            const skipFields = new Set([latField, lonField, labelField, 'timestamp', 'log_line']);
+            const skipFields = new Set([latField, lonField, labelField, 'timestamp', 'log_line', ...((window.Utils && Utils.HIDDEN_ROW_FIELDS) || [])]);
             const extraFields = Object.keys(row).filter(k => !skipFields.has(k) && row[k] !== '' && row[k] != null);
             if (extraFields.length > 0) {
                 popupContent += '<div style="margin-top:4px;border-top:1px solid var(--border-color);padding-top:4px;">';

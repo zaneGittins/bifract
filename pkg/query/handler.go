@@ -990,6 +990,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
+		IncludeIngestTime:     true,
 		// An ad-hoc query has one viewer and no cache to share, so its time
 		// buckets snap to that person's zone. An API key resolves to empty
 		// here, which is UTC. A request that pins a zone (a notebook section,
@@ -1372,6 +1373,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		ProcFreqTable:         h.procFreqTableName(),
 		ProcEdgesTable:        h.procEdgesTableName(),
 		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
+		IncludeIngestTime:     true,
 		// An ad-hoc query has one viewer and no cache to share, so its time
 		// buckets snap to that person's zone. An API key resolves to empty
 		// here, which is UTC. A request that pins a zone (a notebook section,
@@ -2426,10 +2428,16 @@ func (h *QueryHandler) HandleGetLogFields(w http.ResponseWriter, r *http.Request
 	// every search result row.
 	rawLog, _ := logEntry["raw_log"].(string)
 
+	// Ingest time for the panel header. The result rows of an ordinary search carry
+	// it already; this serves the shapes that do not project it (aggregated rows, a
+	// pgr() subquery source) and so reach the panel through this fetch.
+	ingestTS, _ := logEntry["ingest_timestamp"].(string)
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"fields":  fields,
-		"raw_log": rawLog,
+		"success":          true,
+		"fields":           fields,
+		"raw_log":          rawLog,
+		"ingest_timestamp": ingestTS,
 	})
 }
 

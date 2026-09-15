@@ -1290,7 +1290,8 @@ const QueryExecutor = {
                         timestamp: row.timestamp,
                         log_id: row.log_id,
                         fractal_id: row.fractal_id,
-                        _shard_num: row._shard_num
+                        _shard_num: row._shard_num,
+                        _ingest_timestamp: row._ingest_timestamp
                     };
                 }
                 if (window.LogDetail) {
@@ -1319,7 +1320,7 @@ const QueryExecutor = {
     // notebook kept fractal_id and denied norm_log, the exact inverse of this,
     // which left an evidence lookup rendering two columns of nothing.
     baseDisplayFields(results, fieldOrder) {
-        const skip = new Set(['_all_fields', 'fractal_id']);
+        const skip = new Set(['_all_fields', 'fractal_id', ...Utils.HIDDEN_ROW_FIELDS]);
         if (fieldOrder && fieldOrder.length) return fieldOrder.filter(f => !skip.has(f));
         if (!results || !results.length) return [];
         return Object.keys(results[0]).filter(f => !skip.has(f));
@@ -1856,7 +1857,7 @@ const QueryExecutor = {
         if (fieldOrder && fieldOrder.length > 0) {
             fields = fieldOrder.filter(f => f !== 'fractal_id');
         } else {
-            for (const key of Object.keys(results[0])) {
+            for (const key of Utils.visibleFields(Object.keys(results[0]))) {
                 if (key !== '_all_fields' && key !== 'fractal_id') fields.push(key);
             }
         }
@@ -1892,7 +1893,8 @@ const QueryExecutor = {
                         timestamp: row.timestamp,
                         log_id: row.log_id,
                         fractal_id: row.fractal_id,
-                        _shard_num: row._shard_num
+                        _shard_num: row._shard_num,
+                        _ingest_timestamp: row._ingest_timestamp
                     };
                 }
                 const hostRef = options.detailHost || 'search';

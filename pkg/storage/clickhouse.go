@@ -2336,7 +2336,7 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	// PREWHERE on (log_id, timestamp): timestamp is the leading primary-key column, so
 	// this prunes granules before reading norm_log. Matches GetLogFieldsByIDDirect.
 	query := fmt.Sprintf(
-		"SELECT log_id, fractal_id, norm_log AS fields, normalizer FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
+		"SELECT log_id, fractal_id, norm_log AS fields, normalizer, ingest_timestamp FROM %s PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')",
 		c.ReadTable())
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
@@ -2359,7 +2359,8 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	}
 
 	var resLogID, logFractalID, fieldsStr, normalizer string
-	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &normalizer); err != nil {
+	var ingestTS time.Time
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &normalizer, &ingestTS); err != nil {
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
 	flds := c.parseLogFields(ctx, fieldsStr)
@@ -2368,7 +2369,13 @@ func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, t
 	if normalizer != "" {
 		flds["_normalizer"] = normalizer
 	}
-	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": c.fetchRawLog(ctx, logID, ts, fractalID), "fields": flds}
+	entry := map[string]interface{}{
+		"log_id":           resLogID,
+		"fractal_id":       logFractalID,
+		"raw_log":          c.fetchRawLog(ctx, logID, ts, fractalID),
+		"fields":           flds,
+		"ingest_timestamp": ingestTS.UTC().Format(chRowTimeLayout),
+	}
 	return entry, nil
 }
 
@@ -2692,7 +2699,7 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		return c.GetLogFieldsByID(ctx, logID, ts, fractalID)
 	}
 
-	query := "SELECT log_id, fractal_id, norm_log AS fields, normalizer FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
+	query := "SELECT log_id, fractal_id, norm_log AS fields, normalizer, ingest_timestamp FROM logs PREWHERE log_id = ? AND timestamp = toDateTime64(?, 3, 'UTC')"
 	args := []interface{}{logID, ts.UTC().Format("2006-01-02 15:04:05.000")}
 	if fractalID != "" {
 		query += " AND fractal_id = ?"
@@ -2715,7 +2722,8 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 	}
 
 	var resLogID, logFractalID, fieldsStr, normalizer string
-	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &normalizer); err != nil {
+	var ingestTS time.Time
+	if err := rows.Scan(&resLogID, &logFractalID, &fieldsStr, &normalizer, &ingestTS); err != nil {
 		return nil, fmt.Errorf("failed to scan log fields row: %w", err)
 	}
 	flds := c.parseLogFields(ctx, fieldsStr)
@@ -2725,7 +2733,13 @@ func (c *ClickHouseClient) GetLogFieldsByIDDirect(ctx context.Context, logID str
 		flds["_normalizer"] = normalizer
 	}
 	// raw_log is not on this shard's logs table anymore; read it from logs_raw (fan-out).
-	entry := map[string]interface{}{"log_id": resLogID, "fractal_id": logFractalID, "raw_log": c.fetchRawLog(ctx, logID, ts, fractalID), "fields": flds}
+	entry := map[string]interface{}{
+		"log_id":           resLogID,
+		"fractal_id":       logFractalID,
+		"raw_log":          c.fetchRawLog(ctx, logID, ts, fractalID),
+		"fields":           flds,
+		"ingest_timestamp": ingestTS.UTC().Format(chRowTimeLayout),
+	}
 	return entry, nil
 }
 

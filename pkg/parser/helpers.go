@@ -1091,6 +1091,11 @@ func extractLiteralTokens(pattern string) []string {
 // (raw_log is a demoted, non-BQL-addressable troubleshooting column.)
 const normLogColumn = "norm_log"
 
+// ingestTimeColumn is the hidden alias ingest_timestamp is projected under for the
+// detail panel. Dropped from the field order like _shard_num, so it is row data and
+// not a result column; the unprefixed name stays free for | table(ingest_timestamp).
+const ingestTimeColumn = "_ingest_timestamp"
+
 // caseInsensitiveFlag is RE2's inline case-insensitivity flag, prepended to a
 // pattern by the lexer for /regex/i and by the parser for bare-term searches.
 const caseInsensitiveFlag = "(?i)"

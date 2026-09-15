@@ -86,7 +86,7 @@ const FieldStats = {
     indexNames() {
         const results = (window.QueryExecutor && QueryExecutor.currentResults) || [];
         const names = new Set();
-        const skip = new Set(['raw_log', '_all_fields', 'fields', 'norm_log', 'log_id', 'fractal_id']);
+        const skip = new Set(['raw_log', '_all_fields', 'fields', 'norm_log', 'log_id', 'fractal_id', ...Utils.HIDDEN_ROW_FIELDS]);
         for (let i = 0; i < results.length && i < 200; i++) {
             const row = results[i];
             for (const key of Object.keys(row)) {

@@ -37,6 +37,31 @@ Limit number of rows:
 * | table(timestamp, image, user, limit=5)
 ```
 
+### Built-in columns
+
+Alongside the fields a log carries, every event has these columns. They can be
+selected, sorted and matched for equality like any other name.
+
+| Column | Meaning |
+|--------|---------|
+| `timestamp` | When the event happened, parsed from the log by the normalizer |
+| `ingest_timestamp` | When Bifract received it |
+| `log_id` | The event's identifier, used by permalinks and comments |
+| `fractal_id` | The fractal the event belongs to |
+| `norm_log` | The canonical normalized event text |
+| `normalizer` | The normalizer that shaped the event, as `name@version` |
+
+The gap between the two times is ingest lag, which the log detail panel shows
+beside the event time:
+
+```
+* | table(timestamp, ingest_timestamp, image)
+* | sort(ingest_timestamp)
+```
+
+An `eval()` that binds one of these names shadows the column for the rest of the
+pipeline, so pick a different name unless you mean to replace it.
+
 ## Sort
 
 ```

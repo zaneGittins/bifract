@@ -1040,7 +1040,7 @@ const Dashboards = {
         }
 
         const tableColumns = resultMetadata?.table_columns || resultMetadata?.columns || resultMetadata?.field_order;
-        const systemFields = ['_all_fields', 'raw_log', 'log_id'];
+        const systemFields = ['_all_fields', 'raw_log', 'log_id', ...Utils.HIDDEN_ROW_FIELDS];
         const headers = (tableColumns && tableColumns.length > 0)
             ? tableColumns
             : Object.keys(results[0]).filter(h => !systemFields.includes(h));

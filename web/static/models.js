@@ -867,7 +867,7 @@ ${m.description ? `<div class="me-sec">
         // entity_key and entity_val pack the key fields with a record separator,
         // which prints as a control character when dumped raw.
         const packed = new Set(['entity_key', 'entity_val']);
-        const skip = new Set(['days', 'fractal_id']);
+        const skip = new Set(['days', 'fractal_id', ...Utils.HIDDEN_ROW_FIELDS]);
         const fields = Object.keys(row).filter(k => !skip.has(k)).map(k => {
             const val = packed.has(k)
                 ? _esc(String(row[k] ?? '').split('\x1e').join(' / '))
@@ -2298,7 +2298,7 @@ ${isBeacon ? `
         if (queryData.field_order && queryData.field_order.length) {
             queryData.field_order.forEach(add);
         } else {
-            (queryData.results || []).slice(0, 50).forEach(r => Object.keys(r || {}).forEach(add));
+            (queryData.results || []).slice(0, 50).forEach(r => Utils.visibleFields(Object.keys(r || {})).forEach(add));
         }
         return fields;
     },

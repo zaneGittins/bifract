@@ -98,6 +98,7 @@ func (c *Catalog) Search(ctx context.Context, ch *storage.ClickHouseClient, obj 
 		MaxRows:            maxRows,
 		SourceMode:         parser.SourceIceberg,
 		UseIngestTimestamp: true, // archive is partitioned by ingest_date; prune on it
+		IncludeIngestTime:  true, // recall rows open in the same detail panel as hot search
 		TableName:          tf,
 		IcePromoted:        promoted,
 	})

@@ -1188,6 +1188,18 @@ body.recall-active {
     flex-shrink: 1;
 }
 
+.panel-ingest {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    opacity: 0.8;
+}
+
 .panel-source {
     font-size: 0.7rem;
     color: var(--text-muted);

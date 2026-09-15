@@ -65,13 +65,17 @@ type QueryOptions struct {
 	// regular expressions matched against the probe, first match wins, and the
 	// server has no dictHas for them.
 	PatternDicts       map[string]bool
-	DictionaryDatabase string     // ClickHouse database holding the dictionary objects; qualifies every dictGet
-	TableName          string     // Override source table (default "logs", use "logs_distributed" in cluster mode)
-	ProcLineageTable   string     // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
-	ProcFreqTable      string     // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
-	ProcEdgesTable     string     // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
-	IncludeShardNum    bool       // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
-	SourceMode         SourceMode // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
+	DictionaryDatabase string // ClickHouse database holding the dictionary objects; qualifies every dictGet
+	TableName          string // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	ProcLineageTable   string // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
+	ProcFreqTable      string // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
+	ProcEdgesTable     string // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
+	IncludeShardNum    bool   // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
+	// IncludeIngestTime projects ingest_timestamp as the hidden _ingest_timestamp
+	// column for the detail panel. Set by the paths feeding it (search, recall); off
+	// for alerts and the rule tester, whose rows are matched rather than displayed.
+	IncludeIngestTime bool
+	SourceMode        SourceMode // Hot (default, JSON logs) vs Iceberg (MAP archive); gates iceberg field-access codegen
 	// IcePromoted lists the field names whose `_ice_` promoted column exists on
 	// the Iceberg table this query targets. Iceberg mode only. Leave nil when the
 	// target table's schema is unknown: pruning is skipped, results stay correct.
@@ -1226,6 +1230,27 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 	return nil
 }
 
+// appendIngestTime projects ingest_timestamp under its hidden alias, once. Only the
+// non-aggregated logs-source paths call it: after a GROUP BY the column is neither
+// grouped nor aggregated (code 215), and a pgr() subquery source lacks it (code 47).
+func appendIngestTime(ctx *CommandContext, source *QueryStage) {
+	if !ctx.Opts.IncludeIngestTime {
+		return
+	}
+	for _, sel := range source.Layer.Selects {
+		// Already added, or the query binds the bare name itself (an explicit
+		// | table(ingest_timestamp), or an eval() that rebinds it). A second
+		// reference would resolve to that alias rather than to the column, so
+		// leave it out rather than carry a value that is not the ingest time.
+		switch extractFieldAlias(sel.String()) {
+		case ingestTimeColumn, "ingest_timestamp":
+			return
+		}
+	}
+	source.Layer.Selects = append(source.Layer.Selects,
+		SelectExpr{Expr: "ingest_timestamp AS " + ingestTimeColumn})
+}
+
 // assembleNonGroupBySelects handles SELECT assembly for queries without GROUP BY.
 func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentFields []string) {
 	plan := ctx.Plan
@@ -1301,6 +1326,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		if ctx.Opts.IncludeShardNum {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
 		}
+		appendIngestTime(ctx, source)
 		return
 	}
 
@@ -1313,6 +1339,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		if ctx.Opts.IncludeShardNum {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
 		}
+		appendIngestTime(ctx, source)
 		return
 	}
 
@@ -1403,6 +1430,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: "toString(_shard_num) AS _shard_num"})
 			}
 		}
+		appendIngestTime(ctx, source)
 	}
 }
 
@@ -1692,7 +1720,7 @@ func computeFieldOrder(selectFields []string, deferredAssignments []AssignmentNo
 	fieldOrder := make([]string, 0, len(selectFields))
 	for _, field := range selectFields {
 		alias := extractFieldAlias(field)
-		if alias != "_all_fields" && alias != "fields" && alias != "_shard_num" {
+		if alias != "_all_fields" && alias != "fields" && alias != "_shard_num" && alias != ingestTimeColumn {
 			fieldOrder = append(fieldOrder, strings.Trim(alias, "`"))
 		}
 	}
