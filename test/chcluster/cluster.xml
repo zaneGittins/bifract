@@ -1,11 +1,15 @@
 <clickhouse>
     <remote_servers>
         <bftest>
+            <!-- The shards carry credentials because the nodes require a password.
+                 Without them no Distributed read works at all, which silently made
+                 every cross-shard path here untestable. In k8s the ClickHouse
+                 operator generates remote_servers and supplies these itself. -->
             <shard><internal_replication>true</internal_replication>
-                <replica><host>ch1</host><port>9000</port></replica>
+                <replica><host>ch1</host><port>9000</port><user>default</user><password>bifract</password></replica>
             </shard>
             <shard><internal_replication>true</internal_replication>
-                <replica><host>ch2</host><port>9000</port></replica>
+                <replica><host>ch2</host><port>9000</port><user>default</user><password>bifract</password></replica>
             </shard>
         </bftest>
     </remote_servers>
