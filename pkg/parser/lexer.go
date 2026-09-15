@@ -42,6 +42,7 @@ const (
 	TokenContainsAny   // =~ (substring match any, case-insensitive)
 	TokenStartsWithAny // =^ (prefix match any, case-insensitive)
 	TokenEndsWithAny   // =$ (suffix match any, case-insensitive)
+	TokenBinding       // &name, a reference to a let binding
 )
 
 type Token struct {
@@ -154,6 +155,19 @@ func (l *Lexer) readRegex() string {
 	}
 
 	return pattern
+}
+
+// readBindingName reads a binding's name. Deliberately stricter than
+// readIdentifier, which also takes '.', '-' and '*': a binding is a name the
+// author chose, not a JSON path or a wildcard, and &a.b reading as one name
+// would make the column it produces depend on punctuation.
+func (l *Lexer) readBindingName() string {
+	var result strings.Builder
+	for unicode.IsLetter(l.ch) || unicode.IsDigit(l.ch) || l.ch == '_' {
+		result.WriteRune(l.ch)
+		l.readChar()
+	}
+	return result.String()
 }
 
 func (l *Lexer) readIdentifier() string {
@@ -293,6 +307,17 @@ func (l *Lexer) NextToken() Token {
 	case '-':
 		tok = Token{Type: TokenMinus, Value: "-"}
 		l.readChar()
+	case '&':
+		// &name is a let binding. The sigil is kept in the token value so a
+		// binding and a log field of the same name can never collide.
+		l.readChar()
+		if !unicode.IsLetter(l.ch) && l.ch != '_' {
+			tok = Token{Type: TokenError, Value: "&"}
+			l.readChar()
+			break
+		}
+		tok = Token{Type: TokenBinding, Value: "&" + l.readBindingName()}
+		endPos = l.pos - 1
 	default:
 		if unicode.IsLetter(l.ch) || l.ch == '_' {
 			ident := l.readIdentifier()
@@ -402,6 +427,7 @@ func (t TokenType) String() string {
 		TokenContainsAny:   "CONTAINSANY",
 		TokenStartsWithAny: "STARTSWITHANY",
 		TokenEndsWithAny:   "ENDSWITHANY",
+		TokenBinding:       "BINDING",
 	}
 	if name, ok := names[t]; ok {
 		return name

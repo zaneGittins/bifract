@@ -184,6 +184,37 @@ user=@target_user AND image=@process
 
 When the query runs, `@target_user` and `@process` are replaced with the values set in the variables bar. Variables default to `*` if no value is set, so a notebook or dashboard is reused across investigations by changing values instead of editing every query.
 
+## Bindings (`let`)
+
+A `let` statement names an expression or a filter so a query states it once and uses it in
+several places. Statements come before the query, separated by `;`, and a reference carries the
+`&` sigil:
+
+```
+let &lolbin = lower(image) =~ "rundll32.exe","regsvr32.exe","mshta.exe";
+let &officey = lower(parent_image) =~ "winword.exe","excel.exe";
+
+* | &lolbin AND &officey | table(computer_name, user, image, commandline)
+```
+
+A binding holds anything the expression grammar accepts, so it can be a value, a computed
+field, or a whole filter:
+
+| Binding | Used as |
+|---|---|
+| `let &n = 500;` | `len(commandline) > &n` |
+| `let &cmdlen = len(commandline);` | `&cmdlen > 500 AND &cmdlen < 4000`, `table(&cmdlen)` |
+| `let &lolbin = lower(image) =~ "mshta.exe";` | `&lolbin`, `NOT &lolbin`, `&lolbin AND user="bob"` |
+
+The `&` is part of the name, so a binding never collides with a log field, and a misspelled
+reference is an error rather than a field lookup that quietly matches nothing. A binding may
+use one declared before it; referencing itself or a later one is an error.
+
+A column a command produces is named after the binding, so `table(&cmdlen)` returns a column
+called `cmdlen`.
+
+A binding holds an expression or a filter, not a pipeline.
+
 ## Boolean parameters
 
 Most switches are off by default and turned on: `strict=true`, `distinct=true`,

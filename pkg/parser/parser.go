@@ -61,6 +61,9 @@ type PipelineNode struct {
 	Commands         []CommandNode
 	Assignments      []AssignmentNode
 	HavingConditions []HavingCondition
+	// Bindings records the let statements in written order. They are already
+	// substituted into the tree above; this is for reporting, not resolution.
+	Bindings []*BindingNode
 }
 
 func (p PipelineNode) Type() string { return "pipeline" }
@@ -137,6 +140,10 @@ type Parser struct {
 	groupIDCounter int    // Tracks parenthetical group IDs
 	iterations     int    // Safety counter to prevent infinite loops
 	input          []rune // original source, for faithful raw-text capture (case blocks)
+	// bindings holds the let statements declared ahead of the pipeline, keyed by
+	// name with the sigil. Substitution happens as each reference is parsed.
+	bindings     map[string]*BindingNode
+	bindingOrder []*BindingNode
 }
 
 func NewParser(tokens []Token) *Parser {
@@ -192,6 +199,13 @@ func (p *Parser) expect(tokenType TokenType) (Token, error) {
 func (p *Parser) Parse() (*PipelineNode, error) {
 	pipeline := &PipelineNode{}
 
+	// let statements come first and are substituted as they are referenced, so
+	// nothing after this point has to know a binding existed.
+	if err := p.parseLetStatements(); err != nil {
+		return nil, err
+	}
+	pipeline.Bindings = p.bindingOrder
+
 	// Parse filter expression (before first pipe or EOF)
 	filter, err := p.parseFilter()
 	if err != nil {
@@ -203,7 +217,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 
 	// Parse pipeline commands, assignments, and HAVING conditions
 	// Commands/assignments can start with a pipe OR start directly (when no filter)
-	for p.current().Type == TokenPipe || p.current().Type == TokenFunction || p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenRegex || p.current().Type == TokenAnd || p.current().Type == TokenOr || p.current().Type == TokenNot || p.current().Type == TokenLParen {
+	for p.current().Type == TokenPipe || p.current().Type == TokenFunction || p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenRegex || p.current().Type == TokenAnd || p.current().Type == TokenOr || p.current().Type == TokenNot || p.current().Type == TokenLParen || p.current().Type == TokenBinding {
 		if err := p.checkIterationLimit(); err != nil {
 			return nil, err
 		}
@@ -359,7 +373,22 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 			}
 			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
-		} else if p.atExprFilter() {
+		} else if p.current().Type == TokenBinding && !p.atBindingChain() && !p.atBindingExpr() {
+			cond, err := p.parseBindingCondition(pipelineNegate)
+			if err != nil {
+				return nil, err
+			}
+			pipeline.HavingConditions = append(pipeline.HavingConditions, *cond)
+		} else if p.current().Type == TokenBinding && p.atBindingChain() {
+			conditions, err := p.parseCompoundHavingConditions()
+			if err != nil {
+				return nil, err
+			}
+			if pipelineNegate && len(conditions) > 0 {
+				negateHavingCondition(&conditions[0])
+			}
+			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+		} else if p.atExprFilter() || p.atBindingExpr() {
 			// A whole stage that is one expression stays one expression, brackets and
 			// all. Only when the expression grammar cannot take the stage on its own
 			// does the chain parser split it into leaves: `lower(a)="x" AND b=/foo/`
@@ -412,6 +441,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		return nil, newPosError(cur, "unexpected %q", cur.Value)
 	}
 
+	if err := p.substitutePipeline(pipeline); err != nil {
+		return nil, err
+	}
 	return pipeline, nil
 }
 
@@ -1113,6 +1145,12 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			}
 			p.advance()
 			currentConditions = []HavingCondition{cond}
+		} else if p.current().Type == TokenBinding {
+			cond, err := p.parseBindingCondition(negate)
+			if err != nil {
+				return nil, err
+			}
+			currentConditions = []HavingCondition{*cond}
 		} else {
 			// Parse a single condition (field op value)
 			saved := p.pos

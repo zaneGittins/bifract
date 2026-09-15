@@ -208,6 +208,13 @@ func (p *exprParser) parsePrimary() (*ExprNode, error) {
 	case TokenFunction:
 		return p.parseCall()
 
+	case TokenBinding:
+		// The sigil stays in the name. Substitution happens in the parser, which
+		// is where the bindings are; anything still carrying one at compile time
+		// is an unknown binding, not a field.
+		p.advance()
+		return &ExprNode{Kind: ExprField, Value: tok.Value, Pos: tok.Pos}, nil
+
 	case TokenField, TokenValue:
 		p.advance()
 		kind := ExprField

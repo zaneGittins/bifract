@@ -61,6 +61,12 @@ func compileIn(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 // field resolves to its alias (or is folded in when the registry marks it
 // inline); anything else is a JSON sub-column of the log.
 func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
+	// A binding reference the parser did not substitute. Resolving it as a JSON
+	// field would make a typo'd name a query that silently matches nothing, which
+	// is the whole reason bindings carry a sigil.
+	if strings.HasPrefix(name, "&") {
+		return "", TypeAny, fmt.Errorf("unknown binding %s", name)
+	}
 	registry, selfField := ctx.registry, ctx.selfField
 	if registry == nil {
 		// No registry, but the base columns are base columns regardless: resolving
