@@ -49,7 +49,7 @@ func TestModelStateWritersAreExplicitAboutTheirSource(t *testing.T) {
 		}
 	}
 	for _, mt := range []ModelType{ModelTypeBeacon, ModelTypeLongConnection} {
-		parsed := ParseSourceQuery(`channel="conn.log" src_ip="1.2.3.4" dst_ip="5.6.7.8"`, mt)
+		parsed := ParseSourceQuery(`channel="conn.log" src_ip="1.2.3.4" dst_ip="5.6.7.8"`)
 		if len(parsed.Errors) != 0 {
 			t.Fatalf("%s: parse: %v", mt, parsed.Errors)
 		}

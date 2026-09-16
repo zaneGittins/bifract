@@ -16,23 +16,30 @@ type ParsedSource struct {
 	// SourceBQL is the query as written. It is compiled by the translator at
 	// render time, which is every filter BQL has rather than the handful the
 	// structured fields below can carry.
-	SourceBQL       string            `json:"source_bql,omitempty"`
+	SourceBQL string `json:"source_bql,omitempty"`
+	// FilterComplete says the Filter list describes the whole query. When it is
+	// false the editor must not present the chips as the model's filter: the
+	// query carries conditions the structured form has no shape for.
+	FilterComplete  bool              `json:"filter_complete"`
 	Filter          []FilterCondition `json:"filter"`
 	Extractions     []ExtractionStep  `json:"extractions"`
 	CandidateFields []string          `json:"candidate_fields"`
-	Errors          []string          `json:"errors"`
-	Warnings        []string          `json:"warnings"`
+	// ComputedFields names the columns the source query computes. They appear in a
+	// preview's results but not in the model's state, so the editor must not offer
+	// them as keys.
+	ComputedFields []string `json:"computed_fields"`
+	Errors         []string `json:"errors"`
+	Warnings       []string `json:"warnings"`
 }
 
-// ParseSourceQuery lowers a BQL source query into a model's Filter + Extractions.
-// It accepts only the model-expressible subset of BQL (flat-AND inline filters,
-// cidr() filter commands, and regex(... as=) extractions) and rejects anything
-// else with a friendly, specific message. It is the inverse of GenerateSourceQuery.
+// ParseSourceQuery validates a BQL source query and lowers what it can into a
+// model's Filter + Extractions. The query itself is what runs (SourceBQL), so a
+// construct the structured form cannot hold is kept rather than refused; only a
+// query that cannot mean anything as a model source is an error.
 //
-// Per-extraction lowercase and minimum-length are intentionally NOT parsed from
-// the query (they are configured as adornments in the builder UI), so a query
-// containing lowercase()/len() is rejected with guidance.
-func ParseSourceQuery(query string, mt ModelType) ParsedSource {
+// Extractions are the exception: they are columns the model renders itself, so a
+// regex() the structured form cannot carry warns rather than passing silently.
+func ParseSourceQuery(query string) ParsedSource {
 	res := ParsedSource{
 		Filter:      []FilterCondition{},
 		Extractions: []ExtractionStep{},
@@ -42,7 +49,8 @@ func ParseSourceQuery(query string, mt ModelType) ParsedSource {
 
 	if strings.TrimSpace(query) == "" {
 		// An empty source query is valid: the model consumes all logs in the fractal.
-		res.CandidateFields = res.candidateFields()
+		res.FilterComplete = true
+		res.CandidateFields = res.candidateFields(nil, nil)
 		return res
 	}
 
@@ -61,30 +69,26 @@ func ParseSourceQuery(query string, mt ModelType) ParsedSource {
 		return res
 	}
 	res.SourceBQL = query
+	res.FilterComplete = true
 
-	// Constructs that have no representation in a model definition.
-	if len(ast.Assignments) > 0 {
-		res.Errors = append(res.Errors, "field assignments (:=) are not supported in a model source query")
-	}
+	var referenced []string
 
-	// Filter expression: flat AND only.
+	// Filter expression. Lowering is best effort from here on: SourceBQL is what
+	// runs, so a condition the structured form cannot hold is skipped rather than
+	// refused. Its fields still reach CandidateFields so the editor can offer them.
 	if ast.Filter != nil {
+		flatAnd := func(c parser.ConditionNode) bool {
+			return !c.IsCompound && c.GroupID == 0 && !c.GroupNegate && !strings.EqualFold(c.Logic, "OR")
+		}
 		for _, c := range ast.Filter.Conditions {
-			if c.IsCompound || c.GroupID != 0 || c.GroupNegate {
-				res.Errors = append(res.Errors, "grouped/parenthesized filters are not supported; use a flat list of AND conditions")
-				continue
-			}
-			if strings.EqualFold(c.Logic, "OR") {
-				res.Errors = append(res.Errors, "OR is not supported in a model source query; use separate AND conditions")
-				continue
-			}
-			if c.Field == "" {
-				res.Errors = append(res.Errors, "every filter needs a field, e.g. raw_log = /pattern/")
+			collectConditionFields(c, &referenced)
+			if !flatAnd(c) || c.Field == "" {
+				res.FilterComplete = false
 				continue
 			}
 			fc, perr := conditionToFilter(c)
 			if perr != "" {
-				res.Errors = append(res.Errors, perr)
+				res.FilterComplete = false
 				continue
 			}
 			res.Filter = append(res.Filter, fc)
@@ -98,13 +102,14 @@ func ParseSourceQuery(query string, mt ModelType) ParsedSource {
 	// measures, so the following comparison (e.g. tld_len >= 4) recovers MinLength.
 	lenOutputs := map[string]string{}
 
-	// Pipeline commands, in order.
+	// Pipeline commands, in order. Only these four have a structured shape; any
+	// other command runs in the source without appearing in Filter.
 	for _, cmd := range ast.Commands {
 		switch strings.ToLower(cmd.Name) {
 		case "cidr":
 			field, value, perr := cidrArgs(cmd)
 			if perr != "" {
-				res.Errors = append(res.Errors, perr)
+				res.FilterComplete = false
 				continue
 			}
 			op := "cidr"
@@ -115,35 +120,31 @@ func ParseSourceQuery(query string, mt ModelType) ParsedSource {
 		case "regex":
 			ext, perr := regexCommandToExtraction(cmd)
 			if perr != "" {
-				res.Errors = append(res.Errors, perr)
+				// The command still runs in the source, but its column is not one the
+				// model can key on, so say so rather than letting the author pick it.
+				res.Warnings = append(res.Warnings, "regex() filters the source but does not give the model a field to key on: "+perr)
+				res.FilterComplete = false
 				continue
 			}
 			extIndex[ext.OutputField] = len(res.Extractions)
 			res.Extractions = append(res.Extractions, ext)
 		case "lowercase":
 			field, perr := singleFieldArg(cmd, "lowercase")
-			if perr != "" {
-				res.Errors = append(res.Errors, perr)
+			idx, ok := extIndex[field]
+			if perr != "" || !ok {
+				res.FilterComplete = false
 				continue
 			}
-			if idx, ok := extIndex[field]; ok {
-				res.Extractions[idx].Lowercase = true
-			} else {
-				res.Errors = append(res.Errors, fmt.Sprintf("lowercase(%s) must target a field produced by a preceding regex()", field))
-			}
+			res.Extractions[idx].Lowercase = true
 		case "len", "length":
 			field, outName, perr := lenCommandArgs(cmd)
 			if perr != "" {
-				res.Errors = append(res.Errors, perr)
+				res.FilterComplete = false
 				continue
 			}
 			lenOutputs[outName] = field
-		case "uppercase":
-			res.Errors = append(res.Errors, "uppercase is not supported in a model source query")
-		case "in":
-			res.Errors = append(res.Errors, "in() is not supported in a model source query; use separate filters")
 		default:
-			res.Errors = append(res.Errors, fmt.Sprintf("%s() is not supported in a model source query", cmd.Name))
+			res.FilterComplete = false
 		}
 	}
 
@@ -153,24 +154,42 @@ func ParseSourceQuery(query string, mt ModelType) ParsedSource {
 	for _, hv := range ast.HavingConditions {
 		field, ok := lenOutputs[hv.Field]
 		if !ok {
-			res.Errors = append(res.Errors, fmt.Sprintf("comparison on %q after extraction is not supported in a model source query", hv.Field))
+			res.FilterComplete = false
 			continue
 		}
 		idx, ok := extIndex[field]
 		if !ok {
-			res.Errors = append(res.Errors, fmt.Sprintf("len(%s) must target a field produced by a preceding regex()", field))
+			res.FilterComplete = false
 			continue
 		}
 		min, perr := minLengthFromHaving(hv)
 		if perr != "" {
-			res.Errors = append(res.Errors, perr)
+			res.FilterComplete = false
 			continue
 		}
 		res.Extractions[idx].MinLength = min
 	}
 
-	res.CandidateFields = res.candidateFields()
+	res.ComputedFields = computedFields(query, res.Extractions)
+	res.CandidateFields = res.candidateFields(referenced, res.ComputedFields)
 	return res
+}
+
+// collectConditionFields appends every field a condition references, walking
+// compound children so a grouped or OR filter still offers its fields.
+func collectConditionFields(c parser.ConditionNode, out *[]string) {
+	if c.IsCompound {
+		for _, child := range c.Children {
+			collectConditionFields(child, out)
+		}
+		return
+	}
+	if c.Field != "" {
+		*out = append(*out, c.Field)
+	}
+	if c.ValueField != "" {
+		*out = append(*out, c.ValueField)
+	}
 }
 
 // minLengthFromHaving converts a `_len <op> n` comparison to a MinLength value.
@@ -309,10 +328,14 @@ func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
 
 // candidateFields returns the fields available for shaping a model: every field
 // referenced in filters plus every extraction output, de-duplicated in order,
-// always including norm_log (the canonical normalized text). The frontend may
-// additionally merge its own list of known log fields.
-func (p *ParsedSource) candidateFields() []string {
+// always including norm_log (the canonical normalized text), and never a column
+// the source query computes. The frontend may additionally merge its own list of
+// known log fields.
+func (p *ParsedSource) candidateFields(referenced, computed []string) []string {
 	seen := map[string]bool{}
+	for _, f := range computed {
+		seen[f] = true // exists only inside the source query, never in the model's state
+	}
 	var out []string
 	add := func(f string) {
 		if f == "" || seen[f] {
@@ -324,6 +347,9 @@ func (p *ParsedSource) candidateFields() []string {
 	add("norm_log")
 	for _, fc := range p.Filter {
 		add(fc.Field)
+	}
+	for _, f := range referenced {
+		add(f)
 	}
 	for _, ext := range p.Extractions {
 		add(ext.FromField)

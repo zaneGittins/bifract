@@ -104,6 +104,10 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	if !ok {
 		return nil, fmt.Errorf("invalid preview window: %s", window)
 	}
+	def, err := m.ResolveSource(ctx, def, fractalID, "")
+	if err != nil {
+		return nil, err
+	}
 
 	// Network models score in Go over a one-off raw-log aggregation (no state table
 	// exists yet), reusing the same scoring core as the scorer so preview == warmed.

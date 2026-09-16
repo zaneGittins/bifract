@@ -902,3 +902,27 @@ func (p *QueryPlan) outerHasColumn(column string) bool {
 	}
 	return false
 }
+
+// sourceWhereComplete reports whether the source stage's WHERE is the query's
+// whole row selection. Every construct that selects rows somewhere else is
+// listed: another stage, a GROUP BY or HAVING, a wrapper layer, a predicate
+// deferred above the scan, a dedup, or a subquery carrying its own scope.
+func (p *QueryPlan) sourceWhereComplete() bool {
+	if len(p.Stages) != 1 || len(p.WindowLayers) > 0 {
+		return false
+	}
+	src := p.SourceStage().Layer
+	if len(src.GroupBy) > 0 || len(src.Having) > 0 || src.LimitBy != "" || src.ScanLimitBy != "" {
+		return false
+	}
+	if len(p.DeferredWhere) > 0 || len(p.PostJoinWhere) > 0 {
+		return false
+	}
+	if p.IsAggregated || p.HasGroupBy || p.IsAnalyze || p.IsChain || p.IsProcessTree {
+		return false
+	}
+	if p.IsJoin || p.ModelLookupSQL != "" || p.usesBindingSet {
+		return false
+	}
+	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == ""
+}

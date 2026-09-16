@@ -31,7 +31,7 @@ func TestFilterConditionWildcard(t *testing.T) {
 // filter uses src/dst wildcards does not emit a literal `= '*'` predicate.
 func TestBuildNetStateMVWildcard(t *testing.T) {
 	q := `channel="conn-json.log" src_ip="*" dst_ip="*" | !cidr(dst_ip,"10.0.0.0/8")`
-	parsed := ParseSourceQuery(q, ModelTypeBeacon)
+	parsed := ParseSourceQuery(q)
 	if len(parsed.Errors) != 0 {
 		t.Fatalf("unexpected parse errors: %v", parsed.Errors)
 	}
@@ -102,5 +102,45 @@ func TestUpdateValidatesDefinitionFieldNames(t *testing.T) {
 	}
 	if err := validateDefinitionShape(ModelTypeFirstSeen, hostile); err == nil {
 		t.Fatal("a definition carrying SQL in a field name must be rejected on the shape check every writer runs")
+	}
+}
+
+// Every builder joins its scan predicates onto their own line. A literal "\n"
+// where a newline was meant is invalid SQL that only ClickHouse would catch, and
+// it broke every model's state insert once.
+func TestGeneratedSQLJoinsPredicatesWithRealNewlines(t *testing.T) {
+	def := ModelDefinition{
+		Filter: []FilterCondition{
+			{Field: "level", Op: "=", Value: "dns"},
+			{Field: "env", Op: "=", Value: "prod"},
+		},
+		PartitionKey: "level",
+		ValueKey:     "env",
+		KeyFields:    []string{"level", "env"},
+		Network:      &NetworkFieldMap{SrcField: "src_ip", DstField: "dst_ip", PortField: "dst_port"},
+	}
+	built := map[string]func() (string, error){
+		"net state insert": func() (string, error) {
+			return BuildNetStateInsert(def, "state_tbl", "logs", "", "f1")
+		},
+	}
+	for _, mt := range []ModelType{ModelTypeRarity, ModelTypeFirstSeen, ModelTypeVolumeBaseline} {
+		mt := mt
+		built["backfill "+string(mt)] = func() (string, error) {
+			return BuildBackfillInsert(def, mt, "target_tbl", "logs", "", "f1")
+		}
+	}
+	for name, build := range built {
+		sql, err := build()
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if strings.Contains(sql, `\n`) {
+			t.Errorf("%s: SQL carries a literal \\n escape:\n%s", name, sql)
+		}
+		if !strings.Contains(sql, "\nAND ") && !strings.Contains(sql, "\n    AND ") {
+			t.Errorf("%s: predicates were not joined onto their own lines:\n%s", name, sql)
+		}
 	}
 }

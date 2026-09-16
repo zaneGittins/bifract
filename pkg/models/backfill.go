@@ -259,6 +259,13 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 		m.finishBackfill(id, "failed", "invalid backfill window")
 		return
 	}
+	// Resolved once: every chunk renders the same predicates, and compiling per
+	// chunk would re-read the scope's dictionaries on each pass.
+	def, err := m.ResolveSource(context.Background(), model.Definition, model.FractalID, "")
+	if err != nil {
+		m.finishBackfill(id, "failed", fmt.Sprintf("source query: %v", err))
+		return
+	}
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
@@ -296,7 +303,7 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 			ch.end.UTC().Format("2006-01-02 15:04:05"),
 			anchorLit)
 
-		sqlStr, err := BuildBackfillInsert(model.Definition, model.ModelType, targetTable, sourceTable, whereExtra, model.FractalID)
+		sqlStr, err := BuildBackfillInsert(def, model.ModelType, targetTable, sourceTable, whereExtra, model.FractalID)
 		if err != nil {
 			m.finishBackfill(id, "failed", fmt.Sprintf("build query: %v", err))
 			return

@@ -199,7 +199,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 			return "", err
 		}
 		for _, p := range preds {
-			b.WriteString(fmt.Sprintf("\\n    AND %s", p))
+			b.WriteString(fmt.Sprintf("\n    AND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\n    AND %s", whereExtra))
@@ -332,7 +332,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			return "", err
 		}
 		for _, p := range preds {
-			b.WriteString(fmt.Sprintf("\\nAND %s", p))
+			b.WriteString(fmt.Sprintf("\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -357,7 +357,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			return "", err
 		}
 		for _, p := range preds {
-			b.WriteString(fmt.Sprintf("\\nAND %s", p))
+			b.WriteString(fmt.Sprintf("\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -373,7 +373,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			return "", err
 		}
 		for _, p := range preds {
-			b.WriteString(fmt.Sprintf("\\nAND %s", p))
+			b.WriteString(fmt.Sprintf("\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -398,7 +398,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			return "", err
 		}
 		for _, p := range preds {
-			b.WriteString(fmt.Sprintf("\\nAND %s", p))
+			b.WriteString(fmt.Sprintf("\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -644,7 +644,7 @@ func buildNetStateSelect(def ModelDefinition, sourceTable, whereExtra, fractalID
 		return "", err
 	}
 	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
+		b.WriteString(fmt.Sprintf("\n    AND %s", p))
 	}
 	b.WriteString("\nGROUP BY fractal_id, src, dst, port, day")
 	return b.String(), nil
@@ -758,7 +758,7 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 		return "", err
 	}
 	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
+		b.WriteString(fmt.Sprintf("\n    AND %s", p))
 	}
 	b.WriteString("\nGROUP BY src, dst, port\n")
 	b.WriteString(having)
@@ -781,7 +781,7 @@ func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID strin
 		return "", err
 	}
 	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
+		b.WriteString(fmt.Sprintf("\n    AND %s", p))
 	}
 	b.WriteString("\nGROUP BY dst")
 	return b.String(), nil
@@ -802,7 +802,7 @@ func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID stri
 		return "", err
 	}
 	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
+		b.WriteString(fmt.Sprintf("\n    AND %s", p))
 	}
 	return b.String(), nil
 }

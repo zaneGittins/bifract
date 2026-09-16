@@ -8,22 +8,11 @@ import (
 // GenerateQuery generates a BQL alert query string from a ModelDefinition.
 // The returned string is suitable for use as an alert's query_string.
 func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
-	lines := filterLines(def.Filter)
-
-	// Extraction steps
-	for _, ext := range def.Extractions {
-		from := ext.FromField
-		// regex() BQL command
-		lines = append(lines, fmt.Sprintf("| regex(field=%s, regex=%s, as=%s)",
-			from, escapeBQLString(ext.Pattern), ext.OutputField))
-		if ext.MinLength > 0 {
-			lenName := ext.OutputField + "_len"
-			lines = append(lines, fmt.Sprintf("| len(%s, as=%s) | %s >= %d", ext.OutputField, lenName, lenName, ext.MinLength))
-		}
-		if ext.Lowercase {
-			lines = append(lines, fmt.Sprintf("| lowercase(%s)", ext.OutputField))
-		}
-	}
+	// The alert must read the same rows the model scored. When the author wrote a
+	// source query it is emitted verbatim: re-rendering it from def.Filter would
+	// drop every filter the structured form cannot hold, and the alert would then
+	// fire on rows outside the model's source.
+	lines := sourceLines(def)
 
 	// model_lookup
 	switch mt {
@@ -71,21 +60,25 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 	return strings.Join(lines, "\n")
 }
 
-// GenerateSourceQuery generates the BQL "source query" for a model: the filter
-// and extraction half of the definition only, stopping before model_lookup and
-// alert thresholds. This is the canonical authoring form shown in the model
-// builder's query editor and the inverse of ParseSourceQuery.
-//
-// Unlike GenerateQuery (the alert query), this emits only constructs the BQL
-// parser accepts: inline filters (=, !=, regex via /.../), cidr() commands,
-// regex(field=, regex=, as=) extractions, and per-extraction refinements
-// (len(x, as=name) | name >= n for minimum length, lowercase(x)).
+// GenerateSourceQuery returns the BQL source query for a model: what the author
+// wrote, or, for a model stored before source queries were kept verbatim, the
+// filter and extraction half rendered from the structured definition. It is the
+// authoring form shown in the builder's query editor, and it stops before
+// model_lookup and the alert thresholds GenerateQuery adds.
 func GenerateSourceQuery(def ModelDefinition) string {
-	lines := filterLines(def.Filter)
+	return strings.Join(sourceLines(def), "\n")
+}
 
-	// Extraction steps, with optional minimum-length and lowercase refinements.
-	// Minimum length is expressed as `len(x, as=name) | name >= n` -- len()
-	// registers the numeric field, which a following bare comparison filters on.
+// sourceLines is the source half of a model's query: the author's own source
+// query when there is one, otherwise the filter and extraction commands rendered
+// from the structured definition. Minimum length is expressed as
+// `len(x, as=name) | name >= n` -- len() registers the numeric field, which a
+// following bare comparison filters on.
+func sourceLines(def ModelDefinition) []string {
+	if bql := strings.TrimSpace(def.SourceBQL); bql != "" {
+		return []string{bql}
+	}
+	lines := filterLines(def.Filter)
 	for _, ext := range def.Extractions {
 		from := ext.FromField
 		if from == "" {
@@ -101,8 +94,7 @@ func GenerateSourceQuery(def ModelDefinition) string {
 			lines = append(lines, fmt.Sprintf("| lowercase(%s)", ext.OutputField))
 		}
 	}
-
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 // sourceFilterLine renders an inline (non-cidr) filter condition as a BQL line.

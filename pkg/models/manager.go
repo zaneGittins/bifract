@@ -241,6 +241,11 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	if err := validateCreateRequest(req); err != nil {
 		return nil, err
 	}
+	// Compile the source here so a query the translator refuses is a rejected
+	// request, not a stored model that fails later in the background.
+	if _, err := m.ResolveSource(ctx, req.Definition, fractalID, ""); err != nil {
+		return nil, err
+	}
 	// A type that raises no alerts is stored as such rather than rejected. The
 	// editor sends its default mode ("paused") for every type, so rejecting here
 	// made an index model impossible to create at all.
@@ -330,6 +335,9 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 	if err := validateDefinitionShape(existing.ModelType, req.Definition); err != nil {
 		return nil, err
 	}
+	if _, err := m.ResolveSource(ctx, req.Definition, existing.FractalID, existing.PrismID); err != nil {
+		return nil, err
+	}
 
 	rebuild := detectionChanged(existing.Definition, req.Definition)
 
@@ -390,7 +398,8 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 // query time and never alter the stored table, so they are intentionally
 // excluded -- changing only those must not drop the model's data.
 func detectionChanged(a, b ModelDefinition) bool {
-	return !reflect.DeepEqual(a.Filter, b.Filter) ||
+	return a.SourceBQL != b.SourceBQL ||
+		!reflect.DeepEqual(a.Filter, b.Filter) ||
 		!reflect.DeepEqual(a.Extractions, b.Extractions) ||
 		a.PartitionKey != b.PartitionKey ||
 		a.ValueKey != b.ValueKey ||
@@ -591,6 +600,10 @@ func (m *Manager) dropStateMV(ctx context.Context, mvName string) error {
 }
 
 func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
+	def, err := m.ResolveSource(ctx, def, fractalID, "")
+	if err != nil {
+		return err
+	}
 	if mt.IsScheduled() {
 		return m.createNetworkCHObjects(ctx, id, fractalID, def, mt, tableName, mvName)
 	}
@@ -1407,6 +1420,9 @@ func scanModelRow(row modelScannable) (*Model, error) {
 // reject the same invalid definitions with identical messages.
 func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 	if err := validateDefinitionFieldNames(def); err != nil {
+		return err
+	}
+	if err := validateSourceProducedKeys(def); err != nil {
 		return err
 	}
 	switch mt {

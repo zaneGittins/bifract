@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,7 +51,42 @@ func compileSourcePredicates(bql string, dicts parser.QueryOptions) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
-	return stripScopeGuards(res.SourceWhere)
+	// A model reads only the scan predicates, so anything that selects rows above
+	// the scan would be silently dropped and the model would aggregate more rows
+	// than the author asked for.
+	if !res.SourceWhereComplete {
+		return nil, fmt.Errorf("source query: this query selects rows after the scan " +
+			"(an aggregation, a window, a dedup or a subquery), and a model reads only " +
+			"the filter its source applies to each log")
+	}
+	preds, err := stripScopeGuards(res.SourceWhere)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkNoScopeLeak(preds); err != nil {
+		return nil, err
+	}
+	return preds, nil
+}
+
+// checkNoScopeLeak refuses predicates that still carry the compile-time scope.
+// stripScopeGuards only removes the translator's own top-level guards; a
+// construct that embeds a subquery (a result-set binding) carries a second copy
+// inside it, which would pin the model's scan to a sentinel fractal and match
+// nothing.
+func checkNoScopeLeak(preds []string) error {
+	for _, p := range preds {
+		switch {
+		case strings.Contains(p, sourceScopeFractal):
+			return fmt.Errorf("source query: a subquery in this source carries its own fractal scope, "+
+				"which a model cannot re-scope; predicate was %q", p)
+		case strings.Contains(p, sourceScopeStart.Format(chTimeLayout)),
+			strings.Contains(p, sourceScopeEnd.Format(chTimeLayout)):
+			return fmt.Errorf("source query: a subquery in this source carries its own time window, "+
+				"which a model reads one window at a time; predicate was %q", p)
+		}
+	}
+	return nil
 }
 
 // stripScopeGuards removes the three predicates the translator adds for its own
@@ -120,4 +156,93 @@ var windowUnsafeCommands = map[string]string{
 // rowChanging commands reorder or truncate, which the model's own aggregation owns.
 var rowChanging = map[string]bool{
 	"sort": true, "head": true, "tail": true, "limit": true, "dedup": true, "table": true,
+}
+
+// sourceProducedFields names the columns a source query introduces: assignment
+// targets and command outputs. They live only inside the translated query, and a
+// model builds its own SELECT from the scan predicates, so keying on one would
+// read an absent log field and index empty values.
+func sourceProducedFields(bql string) map[string]bool {
+	out := map[string]bool{}
+	if strings.TrimSpace(bql) == "" {
+		return out
+	}
+	pipeline, err := parser.ParseQuery(bql)
+	if err != nil {
+		return out
+	}
+	for _, a := range pipeline.Assignments {
+		if a.Field != "" {
+			out[a.Field] = true
+		}
+	}
+	for _, cmd := range pipeline.Commands {
+		b, err := parser.BindCommand(cmd)
+		if err != nil {
+			continue
+		}
+		// as=/output= name a single output; include= names one per entry, which is
+		// how match(), geoip() and lookupIP() add their enrichment columns.
+		for _, name := range append(b.Strings("include"), b.Str("as", ""), b.Str("output", "")) {
+			if name != "" {
+				out[name] = true
+			}
+		}
+		if p := b.StrOf("pattern", "regex"); p != "" {
+			for _, g := range parser.NamedCaptureGroups(p) {
+				out[g] = true
+			}
+		}
+	}
+	return out
+}
+
+// validateSourceProducedKeys rejects a definition that shapes its state around a
+// column only the source query computes.
+func validateSourceProducedKeys(def ModelDefinition) error {
+	produced := map[string]bool{}
+	for _, f := range computedFields(def.SourceBQL, def.Extractions) {
+		produced[f] = true
+	}
+	if len(produced) == 0 {
+		return nil
+	}
+	nf := def.Network.WithDefaults()
+	named := []struct{ what, value string }{
+		{"partition_key", def.PartitionKey},
+		{"value_key", def.ValueKey},
+		{"src_field", nf.SrcField},
+		{"dst_field", nf.DstField},
+		{"port_field", nf.PortField},
+		{"duration_field", nf.DurationField},
+		{"bytes_field", nf.BytesField},
+	}
+	for _, kf := range def.KeyFields {
+		named = append(named, struct{ what, value string }{"key_fields", kf})
+	}
+	for _, ext := range def.Extractions {
+		named = append(named, struct{ what, value string }{"extraction from_field", ext.FromField})
+	}
+	for _, n := range named {
+		if n.value != "" && produced[n.value] {
+			return fmt.Errorf("%s %q is computed by the source query, not stored on the log: "+
+				"a model reads only the source's filter, so that column does not exist when its state is built", n.what, n.value)
+		}
+	}
+	return nil
+}
+
+// computedFields is sourceProducedFields as a sorted list, less the extraction
+// outputs the model renders itself, which do reach the model's state.
+func computedFields(bql string, extractions []ExtractionStep) []string {
+	produced := sourceProducedFields(bql)
+	for _, ext := range extractions {
+		delete(produced, ext.OutputField)
+	}
+	out := make([]string, 0, len(produced))
+	for name := range produced {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

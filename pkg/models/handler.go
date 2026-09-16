@@ -328,7 +328,7 @@ func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	parsed := ParseSourceQuery(req.Query, req.ModelType)
+	parsed := ParseSourceQuery(req.Query)
 	h.respondSuccess(w, parsed)
 }
 

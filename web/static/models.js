@@ -15,7 +15,7 @@ const AnalyticsModels = {
         editId: null,        // set when editing an existing model
         modelType: 'rarity',
         query: '',           // BQL source query (filter + regex extractions)
-        parsed: { filter: [], extractions: [], candidate_fields: [], errors: [], warnings: [] },
+        parsed: { source_bql: '', filter_complete: true, computed_fields: [], filter: [], extractions: [], candidate_fields: [], errors: [], warnings: [] },
         partitionKey: '',
         valueKey: '',
         keyFields: [''],
@@ -351,7 +351,7 @@ const AnalyticsModels = {
             editId: m.id,
             modelType: m.model_type || 'rarity',
             query: m.source_query || '',
-            parsed: { filter: (def.filter || []).map(f => ({ ...f })), extractions: (def.extractions || []).map(e => ({ ...e })), candidate_fields: [], errors: [], warnings: [] },
+            parsed: { source_bql: def.source_bql || '', filter_complete: true, computed_fields: [], filter: (def.filter || []).map(f => ({ ...f })), extractions: (def.extractions || []).map(e => ({ ...e })), candidate_fields: [], errors: [], warnings: [] },
             partitionKey: def.partition_key || '',
             valueKey: def.value_key || '',
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
@@ -1424,7 +1424,7 @@ ${m.description ? `<div class="me-sec">
             editId: null,
             modelType: 'rarity',
             query: '',
-            parsed: { filter: [], extractions: [], candidate_fields: [], errors: [], warnings: [] },
+            parsed: { source_bql: '', filter_complete: true, computed_fields: [], filter: [], extractions: [], candidate_fields: [], errors: [], warnings: [] },
             partitionKey: '',
             valueKey: '',
             keyFields: [''],
@@ -1770,7 +1770,10 @@ ${m.description ? `<div class="me-sec">
         const e = this.editor;
         const seen = new Set();
         const out = [];
-        const add = f => { if (f && !seen.has(f)) { seen.add(f); out.push(f); } };
+        // Columns the source query computes show up in the preview's results but
+        // never in the model's state, so they are never offered as a key.
+        const computed = new Set(e.parsed.computed_fields || []);
+        const add = f => { if (f && !seen.has(f) && !computed.has(f)) { seen.add(f); out.push(f); } };
         // Fields discovered in the most recent query results come first: these
         // are the columns actually present in the user's searched data.
         (e.resultFields || []).forEach(add);
@@ -2086,7 +2089,7 @@ ${isBeacon ? `
         // Nothing parsed yet (or an empty query): keep the strip hidden rather
         // than showing a noisy "all logs / none" placeholder.
         const hasContent = (p.filter || []).length || (p.extractions || []).length ||
-            (p.errors || []).length || (p.warnings || []).length;
+            (p.errors || []).length || (p.warnings || []).length || p.filter_complete === false;
         if (!hasContent) {
             el.innerHTML = '';
             el.style.display = 'none';
@@ -2103,10 +2106,18 @@ ${isBeacon ? `
             parts.push(`<div class="model-trans-warnings">${p.warnings.map(x => `<div class="model-trans-warn">${_esc(x)}</div>`).join('')}</div>`);
         }
 
-        const filterChips = (p.filter || []).map(f =>
-            `<span class="model-chip"><code>${_esc(f.field)}</code> ${_esc(f.op)} <code>${_esc(f.value)}</code></span>`
-        ).join('');
-        const filterRow = `<div class="model-trans-row"><span class="model-trans-label">Filters</span>${filterChips || '<span class="model-trans-muted">all logs</span>'}</div>`;
+        // Chips only when they describe the whole query. A query with an OR, a
+        // group or a command the structured form has no shape for would otherwise
+        // read as a narrower filter than the one the model actually applies.
+        let filterBody;
+        if (p.filter_complete === false) {
+            filterBody = '<span class="model-trans-muted">the source query as written</span>';
+        } else {
+            filterBody = (p.filter || []).map(f =>
+                `<span class="model-chip"><code>${_esc(f.field)}</code> ${_esc(f.op)} <code>${_esc(f.value)}</code></span>`
+            ).join('') || '<span class="model-trans-muted">all logs</span>';
+        }
+        const filterRow = `<div class="model-trans-row"><span class="model-trans-label">Filters</span>${filterBody}</div>`;
 
         let extRows;
         if ((p.extractions || []).length) {
@@ -2209,8 +2220,11 @@ ${isBeacon ? `
             if (parseData?.data) {
                 const d = parseData.data;
                 e.parsed = {
-                    filter: d.definition?.filter || [],
-                    extractions: d.definition?.extractions || [],
+                    source_bql: d.source_bql || '',
+                    filter_complete: d.filter_complete !== false,
+                    computed_fields: d.computed_fields || [],
+                    filter: d.filter || [],
+                    extractions: d.extractions || [],
                     candidate_fields: d.candidate_fields || [],
                     errors: d.errors || [],
                     warnings: d.warnings || [],
@@ -2311,25 +2325,24 @@ ${isBeacon ? `
         if (!e.name.trim()) { Toast.warning('Model name is required'); return; }
 
         // Re-parse on save for an authoritative definition + validation.
-        let filter = [], extractions = [];
+        let parsed = null;
         if (e.query) {
             const parseData = await this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
             const d = parseData?.data;
             if (!d) { Toast.error('Could not validate the source query'); return; }
             if (d.errors && d.errors.length) {
-                e.parsed = { filter: d.definition?.filter || [], extractions: d.definition?.extractions || [], candidate_fields: d.candidate_fields || [], errors: d.errors, warnings: d.warnings || [] };
+                e.parsed = { source_bql: d.source_bql || '', filter_complete: d.filter_complete !== false, computed_fields: d.computed_fields || [], filter: d.filter || [], extractions: d.extractions || [], candidate_fields: d.candidate_fields || [], errors: d.errors, warnings: d.warnings || [] };
                 this._renderTranslation();
                 Toast.error(d.errors[0]);
                 return;
             }
-            filter = d.definition?.filter || [];
-            extractions = d.definition?.extractions || [];
+            parsed = d;
             e.parsed.candidate_fields = d.candidate_fields || [];
         }
 
         const shapeErr = this._validateShape();
         if (shapeErr) { Toast.warning(shapeErr); return; }
-        const def = this._composeDefinition(filter, extractions);
+        const def = this._composeDefinition(parsed);
 
         const btn = document.getElementById('modelEditorSave');
         if (btn) btn.disabled = true;
@@ -2378,9 +2391,13 @@ ${isBeacon ? `
     },
 
     // Builds the ModelDefinition payload from the current shape + alert config.
-    _composeDefinition(filter, extractions) {
+    // parsed is the parse-query response: source_bql is what the model compiles,
+    // filter/extractions are the structured half the editor displays and the
+    // extraction columns the model renders itself.
+    _composeDefinition(parsed) {
         const e = this.editor;
-        const def = { filter: filter || [], extractions: extractions || [] };
+        const p = parsed || {};
+        const def = { source_bql: p.source_bql || '', filter: p.filter || [], extractions: p.extractions || [] };
         if (e.modelType === 'rarity') {
             def.partition_key = e.partitionKey;
             def.value_key = e.valueKey;
@@ -2460,7 +2477,7 @@ ${isBeacon ? `
 
         // Resolve filter/extractions authoritatively from the current query.
         e.query = (document.getElementById('modelQueryInput')?.value || '').trim();
-        let filter = [], extractions = [];
+        let parsed = null;
         if (e.query) {
             const pd = await this._api('POST', '/models/parse-query', { query: e.query, model_type: e.modelType }).catch(() => null);
             if (seq !== this._previewSeq) return;
@@ -2469,11 +2486,10 @@ ${isBeacon ? `
                 panel.innerHTML = `<div class="query-error"><p>${_esc(d.errors[0])}</p></div>`;
                 return;
             }
-            filter = d?.definition?.filter || [];
-            extractions = d?.definition?.extractions || [];
+            parsed = d;
         }
 
-        const def = this._composeDefinition(filter, extractions);
+        const def = this._composeDefinition(parsed);
         try {
             const data = await this._api('POST', '/models/preview', { model_type: e.modelType, definition: def, window: e.previewWindow });
             if (seq !== this._previewSeq) return;

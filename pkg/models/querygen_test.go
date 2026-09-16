@@ -68,7 +68,7 @@ func TestSourceQueryRoundTrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			q := GenerateSourceQuery(tc.def)
-			got := ParseSourceQuery(q, ModelTypeRarity)
+			got := ParseSourceQuery(q)
 			if len(got.Errors) != 0 {
 				t.Fatalf("generated query %q produced parse errors: %v", q, got.Errors)
 			}

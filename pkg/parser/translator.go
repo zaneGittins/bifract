@@ -141,6 +141,11 @@ type TranslationResult struct {
 	// composes its own aggregation over the same rows takes these rather than the
 	// rendered SQL, whose outer projection formats for display.
 	SourceWhere []string
+	// SourceWhereComplete is true when SourceWhere is the query's entire row
+	// selection: one scan stage, no aggregation, no wrapper layer and no
+	// predicate bound above the scan. A caller that keeps only SourceWhere and
+	// discards the rendered SQL reads the same rows only when this is set.
+	SourceWhereComplete bool
 	// TimeScopedSubquery is true when the SQL embeds a subquery that carries its
 	// own copy of the query's time bounds (join / model_lookup). Re-translating
 	// such a query over a narrower window also narrows that subquery, which drops
@@ -1023,15 +1028,16 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	}
 
 	return &TranslationResult{
-		SQL:                sql,
-		SourceWhere:        append([]string(nil), plan.SourceStage().Layer.Where...),
-		FieldOrder:         fieldOrder,
-		IsAggregated:       plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
-		ChartType:          plan.ChartType,
-		ChartConfig:        plan.ChartConfig,
-		DefaultTimeOrder:   defaultTimeOrder,
-		TimeScopedSubquery: plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
-		Chain:              plan.Chain,
+		SQL:                 sql,
+		SourceWhere:         append([]string(nil), plan.SourceStage().Layer.Where...),
+		SourceWhereComplete: plan.sourceWhereComplete(),
+		FieldOrder:          fieldOrder,
+		IsAggregated:        plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
+		ChartType:           plan.ChartType,
+		ChartConfig:         plan.ChartConfig,
+		DefaultTimeOrder:    defaultTimeOrder,
+		TimeScopedSubquery:  plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
+		Chain:               plan.Chain,
 	}, nil
 }
 

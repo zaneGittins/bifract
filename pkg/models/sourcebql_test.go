@@ -101,3 +101,75 @@ func TestSourceBQLAcceptsRowPreservingSources(t *testing.T) {
 		}
 	}
 }
+
+// A model keeps only the scan predicates, so a source that selects rows anywhere
+// else must be refused rather than silently widened.
+func TestSourceBQLRejectsSelectionAboveTheScan(t *testing.T) {
+	// A result-set binding embeds a subquery carrying the compile-time fractal and
+	// window, which the model has no way to re-scope. It passes the command walk
+	// (the aggregation is inside the binding, not in the pipeline), so only the
+	// completeness check catches it.
+	cases := map[string]string{
+		`let &hosts := * | groupby(host); * | in(host, &hosts)`: "selects rows after the scan",
+	}
+	for query, want := range cases {
+		_, err := compileSourcePredicates(query, parser.QueryOptions{})
+		if err == nil {
+			t.Errorf("%s: expected a rejection", query)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want an error mentioning %q, got: %v", query, want, err)
+		}
+	}
+}
+
+// The compile-time scope must not survive inside a predicate either. This is the
+// backstop for a construct that embeds a subquery without the plan noticing.
+func TestScopeLeakInsideAPredicateIsRefused(t *testing.T) {
+	leaks := []string{
+		"host IN (SELECT host FROM logs WHERE fractal_id = '" + sourceScopeFractal + "')",
+		"host IN (SELECT host FROM logs WHERE timestamp >= '" + sourceScopeStart.Format(chTimeLayout) + "')",
+	}
+	for _, p := range leaks {
+		if err := checkNoScopeLeak([]string{p}); err == nil {
+			t.Errorf("%s: expected a rejection", p)
+		}
+	}
+	if err := checkNoScopeLeak([]string{"fields.`event_id`::String = '1'"}); err != nil {
+		t.Errorf("a clean predicate must pass: %v", err)
+	}
+}
+
+// A model builds its own SELECT from the scan predicates, so a column only the
+// source query computes does not exist when its state is built.
+func TestSourceProducedColumnCannotBeAKey(t *testing.T) {
+	def := ModelDefinition{
+		SourceBQL: `event_id="1" | sprintf("%s-%s", user, image, as=who)`,
+		KeyFields: []string{"who"},
+	}
+	if err := validateSourceProducedKeys(def); err == nil {
+		t.Fatal("keying on a source-computed column must be refused")
+	}
+	// A regex extraction the model renders itself is exempt.
+	ok := ModelDefinition{
+		SourceBQL:   `event_id="1" | regex(field=norm_log, regex="(?<tool>[a-z]+)")`,
+		Extractions: []ExtractionStep{{FromField: "norm_log", Pattern: "(?<tool>[a-z]+)", OutputField: "tool"}},
+		KeyFields:   []string{"tool"},
+	}
+	if err := validateSourceProducedKeys(ok); err != nil {
+		t.Fatalf("an extraction the model renders must be allowed: %v", err)
+	}
+}
+
+// The columns a source adds are what include=/as= name, not the dictionary key
+// the lookup probes: flagging the key would block a real log field of that name
+// from being a model key, and missing the enrichment column would let one be
+// picked that the model's state can never hold.
+func TestComputedFieldsNamesEnrichmentColumns(t *testing.T) {
+	got := computedFields(`event_id="1" | match(dict="rmm", field=image, column=pattern, include=[tool], require=true)`, nil)
+	want := []string{"tool"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("computedFields = %v, want %v", got, want)
+	}
+}

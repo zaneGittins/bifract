@@ -36090,6 +36090,12 @@
               "type": "string"
             }
           },
+          "computed_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "errors": {
             "type": "array",
             "items": {
@@ -36108,6 +36114,9 @@
               "$ref": "#/components/schemas/models.FilterCondition"
             }
           },
+          "filter_complete": {
+            "type": "boolean"
+          },
           "source_bql": {
             "type": "string"
           },
@@ -36119,9 +36128,11 @@
           }
         },
         "required": [
+          "filter_complete",
           "filter",
           "extractions",
           "candidate_fields",
+          "computed_fields",
           "errors",
           "warnings"
         ]

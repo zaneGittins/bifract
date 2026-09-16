@@ -5474,3 +5474,40 @@ func TestHashBracketListHashesEachField(t *testing.T) {
 		}
 	})
 }
+
+// SourceWhereComplete tells a caller that keeps only SourceWhere whether it reads
+// the same rows as the rendered SQL. A construct that selects rows above the scan
+// must clear it, or that caller silently widens the query.
+func TestSourceWhereComplete(t *testing.T) {
+	cases := map[string]bool{
+		`event_id="1"`: true,
+		`event_id="1" | cidr(src_ip, "10.0.0.0/8")`:       true,
+		`event_id="1" | lowercase(image)`:                 true,
+		`risk := 1 | risk > 0`:                            true,
+		`* | groupby(user) | count()`:                     false,
+		`* | dedup(user)`:                                 false,
+		`* | outlier(bytes)`:                              false,
+		`* | histogram(bytes, buckets=5)`:                 false,
+		`* | join(user) { event_id="1" | groupby(user) }`: false,
+		`let &h := * | groupby(host); * | in(host, &h)`:   false,
+	}
+	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for query, want := range cases {
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Errorf("%s: parse: %v", query, err)
+			continue
+		}
+		res, err := TranslateToSQLWithOrder(pipeline, QueryOptions{
+			StartTime: start, EndTime: end, FractalID: "f1", MaxRows: 100,
+		})
+		if err != nil {
+			t.Errorf("%s: translate: %v", query, err)
+			continue
+		}
+		if res.SourceWhereComplete != want {
+			t.Errorf("%s: SourceWhereComplete = %v, want %v", query, res.SourceWhereComplete, want)
+		}
+	}
+}
