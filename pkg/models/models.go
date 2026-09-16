@@ -342,6 +342,37 @@ type Model struct {
 	// SourceQuery is the derived BQL source query (filter + extraction) for the
 	// model builder editor. It is computed on read, never persisted.
 	SourceQuery string `json:"source_query,omitempty"`
+
+	// StateLagSeconds is how far behind now the model's state is, and StateBehind
+	// says that lag is more than the cycle can explain. Computed on read: without
+	// them a model that is falling behind rather than failing looks exactly like a
+	// healthy one, which is the failure mode a busy install hits first.
+	StateLagSeconds *int64 `json:"state_lag_seconds,omitempty"`
+	StateBehind     bool   `json:"state_behind,omitempty"`
+}
+
+// SetStateLag fills in the state-lag fields from the model's watermark. A nil
+// watermark means state maintenance has not taken the model over yet, which is a
+// handover question rather than a lag one, so both fields stay unset.
+func (m *Model) SetStateLag(now time.Time) {
+	if m.StateWatermark == nil {
+		return
+	}
+	lag := int64(now.Sub(*m.StateWatermark).Seconds())
+	if lag < 0 {
+		lag = 0
+	}
+	m.StateLagSeconds = &lag
+	m.StateBehind = lag > int64(StateLagBudget().Seconds())
+}
+
+// StateLagBudget is the lag a healthy model is expected to sit at: a cycle reads
+// up to stateMaintLag back from now and advances once per interval, so steady
+// state is already that much behind before anything is wrong. Four cycles of head
+// room keeps a slow pass or one skipped for ingest pressure from reading as a
+// fault.
+func StateLagBudget() time.Duration {
+	return stateMaintLag + 4*StateMaintInterval()
 }
 
 // ModelInfo is a lightweight representation used in QueryOptions for BQL model_lookup().

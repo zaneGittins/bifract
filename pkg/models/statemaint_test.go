@@ -148,3 +148,45 @@ func TestOutcomeChanged(t *testing.T) {
 		t.Fatal("recovery must clear the recorded failure")
 	}
 }
+
+// A model that is falling behind rather than failing looked exactly like a healthy
+// one, which is the failure mode a busy install hits first.
+func TestStateLagReporting(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	budget := StateLagBudget()
+
+	// No watermark: state maintenance has not taken the model over, which is a
+	// handover question and not a lag one.
+	var m Model
+	m.SetStateLag(now)
+	if m.StateLagSeconds != nil || m.StateBehind {
+		t.Fatalf("a model with no watermark must report no lag, got %v/%v", m.StateLagSeconds, m.StateBehind)
+	}
+
+	// Steady state sits a whole cycle behind by design and must not read as a fault.
+	steady := now.Add(-(stateMaintLag + StateMaintInterval()))
+	m = Model{StateWatermark: &steady}
+	m.SetStateLag(now)
+	if m.StateBehind {
+		t.Errorf("a model at its expected lag (%v) must not report behind", now.Sub(steady))
+	}
+	if m.StateLagSeconds == nil || *m.StateLagSeconds != int64(now.Sub(steady).Seconds()) {
+		t.Errorf("lag not reported: %v", m.StateLagSeconds)
+	}
+
+	// Past the budget it must say so.
+	late := now.Add(-(budget + time.Minute))
+	m = Model{StateWatermark: &late}
+	m.SetStateLag(now)
+	if !m.StateBehind {
+		t.Errorf("a model %v behind (budget %v) must report behind", now.Sub(late), budget)
+	}
+
+	// A watermark ahead of now (clock skew) is clamped rather than reported negative.
+	ahead := now.Add(time.Minute)
+	m = Model{StateWatermark: &ahead}
+	m.SetStateLag(now)
+	if m.StateLagSeconds == nil || *m.StateLagSeconds != 0 || m.StateBehind {
+		t.Errorf("a watermark ahead of now must clamp to zero, got %v", m.StateLagSeconds)
+	}
+}

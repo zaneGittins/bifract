@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
@@ -50,8 +51,10 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load models")
 		return
 	}
+	now := time.Now().UTC()
 	for _, mo := range models {
 		mo.SourceQuery = GenerateSourceQuery(mo.Definition)
+		mo.SetStateLag(now)
 	}
 	api.WriteList(w, models)
 }
@@ -70,6 +73,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model.SourceQuery = GenerateSourceQuery(model.Definition)
+	model.SetStateLag(time.Now().UTC())
 	rowCount, _ := h.manager.RowCount(r.Context(), h.manager.readTableName(model))
 	h.respondSuccess(w, ModelDetail{Model: model, RowCount: rowCount})
 }

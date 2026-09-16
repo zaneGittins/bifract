@@ -35806,6 +35806,12 @@
           "source_query": {
             "type": "string"
           },
+          "state_behind": {
+            "type": "boolean"
+          },
+          "state_lag_seconds": {
+            "type": "integer"
+          },
           "state_watermark": {
             "type": "string",
             "format": "date-time"
@@ -35984,6 +35990,12 @@
           },
           "source_query": {
             "type": "string"
+          },
+          "state_behind": {
+            "type": "boolean"
+          },
+          "state_lag_seconds": {
+            "type": "integer"
           },
           "state_watermark": {
             "type": "string",

@@ -91,13 +91,7 @@ func (m *Manager) networkStateReadTable(id string) string {
 // List returns all models for a fractal (V1: fractal-scoped only).
 func (m *Manager) List(ctx context.Context, fractalID string) ([]*Model, error) {
 	rows, err := m.pg.Query(ctx,
-		`SELECT id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text,''),
-		        name, description, model_type, definition, ch_table_name, ch_mv_name,
-		        status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
-		        COALESCE(created_by,''), created_at, updated_at,
-		        backfill_status, backfill_window, backfill_total, backfill_done,
-		        backfill_started_at, backfill_error,
-		        (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id)
+		`SELECT `+modelColumns+`
 		 FROM analytics_models WHERE fractal_id = $1 ORDER BY name`, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
@@ -121,13 +115,7 @@ func (m *Manager) List(ctx context.Context, fractalID string) ([]*Model, error) 
 // Get returns a single model by ID.
 func (m *Manager) Get(ctx context.Context, id string) (*Model, error) {
 	row := m.pg.QueryRow(ctx,
-		`SELECT id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text,''),
-		        name, description, model_type, definition, ch_table_name, ch_mv_name,
-		        status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
-		        COALESCE(created_by,''), created_at, updated_at,
-		        backfill_status, backfill_window, backfill_total, backfill_done,
-		        backfill_started_at, backfill_error,
-		        (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id)
+		`SELECT `+modelColumns+`
 		 FROM analytics_models WHERE id = $1`, id)
 	model, err := scanModelRow(row)
 	if err == sql.ErrNoRows {
@@ -1372,6 +1360,19 @@ type modelScannable interface {
 	Scan(dest ...interface{}) error
 }
 
+// modelColumns is the column list every model read selects, in the order
+// scanModelRow expects. One constant because it was two identical ones: a column
+// added to a single copy is missed by a variadic Scan without a compile error, and
+// state_watermark was added to the struct and to neither query, so the model's
+// state lag read as unknown everywhere.
+const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text,''),
+	       name, description, model_type, definition, ch_table_name, ch_mv_name,
+	       status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
+	       COALESCE(created_by,''), created_at, updated_at,
+	       backfill_status, backfill_window, backfill_total, backfill_done,
+	       backfill_started_at, backfill_error, state_watermark,
+	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id)`
+
 func scanModel(rows interface {
 	Scan(dest ...interface{}) error
 }) (*Model, error) {
@@ -1390,6 +1391,7 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.CreatedBy, &mo.CreatedAt, &mo.UpdatedAt,
 		&mo.BackfillStatus, &mo.BackfillWindow, &mo.BackfillTotal, &mo.BackfillDone,
 		&mo.BackfillStartedAt, &mo.BackfillError,
+		&mo.StateWatermark,
 		&alertEnabled,
 	)
 	if err != nil {

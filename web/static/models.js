@@ -258,13 +258,12 @@ const AnalyticsModels = {
         const alertBadge = this._alertModeBadge(m);
         const updated = m.updated_at ? TZ.format(m.updated_at, 'date') : '—';
         const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
-        // A model can be active and still not advancing: state maintenance keeps
-        // retrying its window, so the status stays active while the reason sits in
-        // error_message. Without this the model reads as healthy while its state
-        // silently stops moving.
-        const stalledBadge = m.status === 'active' && m.error_message
-            ? ` <span class="model-badge badge-stalled" title="${_esc(m.error_message)}"><span class="model-dot"></span>Not updating</span>`
-            : '';
+        // A model can be active and still not current. Two ways: a cycle that keeps
+        // failing (the reason sits in error_message while the status stays active so
+        // it goes on retrying), or one that is simply falling behind. Neither shows
+        // in the status badge, so a model reads as healthy while its state stops
+        // tracking the logs.
+        const stalledBadge = this._stateBadge(m);
         const backfillBadge = m.backfill_status === 'running'
             ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data"><span class="model-dot"></span>Backfilling ${this._backfillPct(m)}%</span>`
             : '';
@@ -276,6 +275,27 @@ const AnalyticsModels = {
     <td>${alertBadge}</td>
     <td>${updated}</td>
 </tr>`;
+    },
+
+    // The state badge, or nothing when the model is current. A failure outranks
+    // lag: a model that cannot run a cycle is also behind, and the reason is the
+    // more useful of the two.
+    _stateBadge(m) {
+        if (m.status !== 'active') return '';
+        if (m.error_message) {
+            return ` <span class="model-badge badge-stalled" title="${_esc(m.error_message)}"><span class="model-dot"></span>Not updating</span>`;
+        }
+        if (!m.state_behind) return '';
+        const lag = this._lagLabel(m.state_lag_seconds);
+        return ` <span class="model-badge badge-stalled" title="State is ${_esc(lag)} behind the logs; it is still catching up or the cycle cannot keep pace"><span class="model-dot"></span>Behind ${_esc(lag)}</span>`;
+    },
+
+    _lagLabel(seconds) {
+        const s = Number(seconds) || 0;
+        if (s < 60) return `${s}s`;
+        if (s < 3600) return `${Math.floor(s / 60)}m`;
+        if (s < 86400) return `${Math.floor(s / 3600)}h`;
+        return `${Math.floor(s / 86400)}d`;
     },
 
     _statusLabel(status) {
@@ -787,6 +807,11 @@ const AnalyticsModels = {
         const mt = m.model_type;
 
         const rows = [['Type', this._typeLabel(mt)]];
+        // How current the state is. The answer to "why has this model not fired"
+        // is often that it has not read the logs yet.
+        if (m.state_lag_seconds != null) {
+            rows.push(['State lag', this._lagLabel(m.state_lag_seconds) + (m.state_behind ? ' (behind)' : '')]);
+        }
         if (mt === 'rarity') {
             rows.push(['Min sample', def.min_sample || 5]);
             rows.push(['Confidence threshold', (def.alert?.confidence_threshold ?? 0.8).toFixed(2)]);
