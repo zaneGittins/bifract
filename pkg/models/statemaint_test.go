@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -188,5 +189,22 @@ func TestStateLagReporting(t *testing.T) {
 	m.SetStateLag(now)
 	if m.StateLagSeconds == nil || *m.StateLagSeconds != 0 || m.StateBehind {
 		t.Errorf("a watermark ahead of now must clamp to zero, got %v", m.StateLagSeconds)
+	}
+}
+
+// The lag a healthy model sits at has to stay inside the budget the UI judges it
+// by, whatever the interval is set to: steady state is already a cycle plus the
+// read cutoff behind, and a pass skipped for ingest pressure adds another.
+func TestStateLagBudgetCoversSteadyState(t *testing.T) {
+	for _, interval := range []time.Duration{15 * time.Second, time.Minute, 10 * time.Minute} {
+		t.Setenv("BIFRACT_MODEL_STATE_INTERVAL", strconv.Itoa(int(interval.Seconds())))
+		if got := StateMaintInterval(); got != interval {
+			t.Fatalf("interval not read back: got %v want %v", got, interval)
+		}
+		steady := stateMaintLag + interval
+		if budget := StateLagBudget(); budget <= steady {
+			t.Errorf("interval %v: budget %v does not clear steady-state lag %v, so a healthy model reports behind",
+				interval, budget, steady)
+		}
 	}
 }

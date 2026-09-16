@@ -25,9 +25,19 @@ import (
 // plus the minmax index on ingest_timestamp: a cycle reads only the parts holding
 // the window it asks for.
 const (
-	// stateMaintDefaultInterval is how often a cycle runs. Every model's state
-	// lags by at most this much, so it is well under the alert ticker's default.
-	stateMaintDefaultInterval = 15 * time.Second
+	// stateMaintDefaultInterval is how often a cycle runs, and so the most a
+	// model's state lags behind the logs, on top of stateMaintLag.
+	//
+	// A cycle's cost is dominated by the fixed overhead of reading whole granules
+	// rather than by the rows in its window, so a shorter interval multiplies the
+	// overhead without reading less: measured over one ingest-busy stretch, a 15
+	// second window and a 60 second window both read 419,700 rows. Running four
+	// times as often therefore cost four times the IO for the same coverage.
+	//
+	// What the interval buys is freshness. An alert that consults a model is held
+	// at that model's watermark, so this plus stateMaintLag is the worst case lag
+	// of a model-backed detection. BIFRACT_MODEL_STATE_INTERVAL trades the two.
+	stateMaintDefaultInterval = 60 * time.Second
 
 	// stateMaintLag holds the cutoff back from now so a cycle never reads a
 	// window that inserts are still landing in. ingest_timestamp is stamped by
