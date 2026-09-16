@@ -285,6 +285,12 @@ const AnalyticsModels = {
         if (m.error_message) {
             return ` <span class="model-badge badge-stalled" title="${_esc(m.error_message)}"><span class="model-dot"></span>Not updating</span>`;
         }
+        // No watermark on an active model means state maintenance never took it
+        // over. The handover runs at startup and only logs on failure, so without
+        // this the model sits there looking healthy and never updating again.
+        if (m.state_lag_seconds == null) {
+            return ` <span class="model-badge badge-stalled" title="State maintenance has not taken this model over; restart the app, and check the logs for a handover failure"><span class="model-dot"></span>Not started</span>`;
+        }
         if (!m.state_behind) return '';
         const lag = this._lagLabel(m.state_lag_seconds);
         return ` <span class="model-badge badge-stalled" title="State is ${_esc(lag)} behind the logs; it is still catching up or the cycle cannot keep pace"><span class="model-dot"></span>Behind ${_esc(lag)}</span>`;
