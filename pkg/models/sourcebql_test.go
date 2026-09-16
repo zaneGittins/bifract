@@ -18,12 +18,12 @@ func rmmOpts() parser.QueryOptions {
 // The case this work exists for: a pattern list of RMM tool paths, consulted as a
 // filter, which the structured Filter list has no shape for.
 func TestSourceBQLCompilesAPatternListFilter(t *testing.T) {
-	preds, err := compileSourcePredicates(
+	src, err := compileSourcePredicates(
 		`event_id="1" | match(dict="rmm", field=image, column=pattern, include=[pattern], require=true)`, rmmOpts())
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	joined := strings.Join(preds, " AND ")
+	joined := strings.Join(src.preds, " AND ")
 	if !strings.Contains(joined, "dictGetOrDefault('logs.dict_rmm_pattern', '_match'") {
 		t.Errorf("want the pattern-list membership test, got: %s", joined)
 	}
@@ -35,17 +35,17 @@ func TestSourceBQLCompilesAPatternListFilter(t *testing.T) {
 // The translator's own scope must never reach a model's scan: the model supplies
 // its own fractal and window.
 func TestSourceBQLStripsTheTranslatorScope(t *testing.T) {
-	preds, err := compileSourcePredicates(`event_id="1"`, parser.QueryOptions{})
+	src, err := compileSourcePredicates(`event_id="1"`, parser.QueryOptions{})
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	for _, p := range preds {
+	for _, p := range src.preds {
 		if strings.Contains(p, sourceScopeFractal) || strings.Contains(p, "timestamp >=") || strings.Contains(p, "timestamp <=") {
 			t.Errorf("scope guard leaked into the model scan: %s", p)
 		}
 	}
-	if len(preds) != 1 {
-		t.Errorf("want just the author's predicate, got %v", preds)
+	if len(src.preds) != 1 {
+		t.Errorf("want just the author's predicate, got %v", src.preds)
 	}
 }
 
@@ -141,24 +141,41 @@ func TestScopeLeakInsideAPredicateIsRefused(t *testing.T) {
 	}
 }
 
-// A model builds its own SELECT from the scan predicates, so a column only the
-// source query computes does not exist when its state is built.
-func TestSourceProducedColumnCannotBeAKey(t *testing.T) {
+// A network model's state is one flat aggregate over the log table, with no layer
+// that could compute a column, so a key it computes has nowhere to come from.
+func TestNetworkModelCannotKeyOnAComputedColumn(t *testing.T) {
 	def := ModelDefinition{
-		SourceBQL: `event_id="1" | sprintf("%s-%s", user, image, as=who)`,
-		KeyFields: []string{"who"},
+		SourceBQL: `* | match(dict="d", field=image, column=k, include=[tool], require=true)`,
+		Network:   &NetworkFieldMap{SrcField: "tool", DstField: "dst_ip", PortField: "dst_port"},
 	}
-	if err := validateSourceProducedKeys(def); err == nil {
-		t.Fatal("keying on a source-computed column must be refused")
+	if err := validateSourceProducedKeys(ModelTypeBeacon, def); err == nil {
+		t.Fatal("a network model keying on a computed column must be refused")
 	}
-	// A regex extraction the model renders itself is exempt.
-	ok := ModelDefinition{
-		SourceBQL:   `event_id="1" | regex(field=norm_log, regex="(?<tool>[a-z]+)")`,
-		Extractions: []ExtractionStep{{FromField: "norm_log", Pattern: "(?<tool>[a-z]+)", OutputField: "tool"}},
-		KeyFields:   []string{"tool"},
+	// The streaming types build their scan as a CTE, which can compute it.
+	if err := validateSourceProducedKeys(ModelTypeRarity, ModelDefinition{
+		SourceBQL:    def.SourceBQL,
+		PartitionKey: "computer_name",
+		ValueKey:     "tool",
+	}); err != nil {
+		t.Fatalf("a rarity model must be able to key on a computed column: %v", err)
 	}
-	if err := validateSourceProducedKeys(ok); err != nil {
-		t.Fatalf("an extraction the model renders must be allowed: %v", err)
+}
+
+// Every column BQL generates is underscore-prefixed. Those are renderable, but
+// the author did not choose the name and it is not stable, so ask for one.
+func TestGeneratedColumnCannotBeAKey(t *testing.T) {
+	def := ModelDefinition{
+		SourceBQL:    `event_id="1" | concat(image, user, as=k)`,
+		PartitionKey: "computer_name",
+		ValueKey:     "_concat",
+	}
+	if err := validateSourceProducedKeys(ModelTypeRarity, def); err == nil {
+		t.Fatal("keying on a generated column must be refused")
+	}
+	// A model with no source query is unaffected.
+	legacy := ModelDefinition{Filter: []FilterCondition{{Field: "a", Op: "=", Value: "1"}}, KeyFields: []string{"_id"}}
+	if err := validateSourceProducedKeys(ModelTypeFirstSeen, legacy); err != nil {
+		t.Fatalf("a definition without a source query must be unaffected: %v", err)
 	}
 }
 
@@ -196,65 +213,58 @@ func TestSourceBQLRejectsACommandRowLimit(t *testing.T) {
 }
 
 // A source that rewrites a field in place leaves a column carrying that field's
-// name and a different value. The model's state holds what the log stored, so the
-// alert would look up the rewritten value against unrewritten state and match
-// nothing, with nothing to say a detection was missed.
-func TestRewrittenFieldCannotBeAKey(t *testing.T) {
-	bad := ModelDefinition{SourceBQL: `event_id="1" | lowercase(image)`, KeyFields: []string{"computer_name", "image"}}
-	if err := validateSourceProducedKeys(bad); err == nil {
-		t.Fatal("keying on a field the source lowercases must be refused")
+// name and the rewritten value, which is what the author filtered on. The model
+// projects it, so keying on it now stores the rewritten value rather than
+// disagreeing with the query.
+func TestRewrittenFieldIsRenderableAsAKey(t *testing.T) {
+	def := ModelDefinition{
+		SourceBQL: `event_id="1" | lowercase(image)`,
+		KeyFields: []string{"computer_name", "image"},
 	}
-	// Keying on something the source left alone is fine.
-	ok := ModelDefinition{SourceBQL: `event_id="1" | lowercase(image)`, KeyFields: []string{"computer_name"}}
-	if err := validateSourceProducedKeys(ok); err != nil {
-		t.Fatalf("an untouched field must still be allowed: %v", err)
+	if err := validateSourceProducedKeys(ModelTypeFirstSeen, def); err != nil {
+		t.Fatalf("a rewritten field must be renderable as a key: %v", err)
 	}
 }
 
-// Every column BQL generates is underscore-prefixed, so such a name in a
-// definition is one of those and never a log field the model's state can hold.
-func TestGeneratedColumnCannotBeAKey(t *testing.T) {
-	def := ModelDefinition{SourceBQL: `event_id="1" | concat(image, user, as=k)`, KeyFields: []string{"_concat"}}
-	if err := validateSourceProducedKeys(def); err == nil {
-		t.Fatal("keying on a generated column must be refused")
-	}
-	// A model with no source query is unaffected: there is no query to have
-	// generated the name, and its logs may carry a field spelled that way.
-	legacy := ModelDefinition{Filter: []FilterCondition{{Field: "a", Op: "=", Value: "1"}}, KeyFields: []string{"_id"}}
-	if err := validateSourceProducedKeys(legacy); err != nil {
-		t.Fatalf("a definition without a source query must be unaffected: %v", err)
-	}
-}
-
-// A model builds its own SELECT from the predicates alone, so a predicate that
-// leans on a column the query projected is undefined there. The translator emits
-// a bare alias for a registry-known field, which is valid only inside the
-// statement that defines it.
-func TestSourceRejectsAPredicateOnAProjectedColumn(t *testing.T) {
+// A streaming model projects the columns its source computes, so a filter reading
+// one resolves. A network model has no such layer and must refuse rather than
+// render a scan referencing a column nothing defines.
+func TestPredicateOnAProjectedColumn(t *testing.T) {
 	opts := parser.QueryOptions{
 		DictionaryDatabase: "logs",
 		Dictionaries:       map[string]map[string]string{"rmm": {"path": "dict_rmm"}},
 		PatternDicts:       map[string]bool{"dict_rmm": true},
 	}
-	const lookup = `event_id="1" | match(dict="rmm", field=image, column=path, include=[tool], require=true)`
-
-	// Through a binding the filter compiles to a bare `tool`, which the model's
-	// scan does not define.
-	_, err := compileSourcePredicates(`let &a := tool =~ "putty"; `+lookup+` | NOT &a`, opts)
-	if err == nil {
-		t.Fatal("a predicate on a projected column must be refused, not rendered into the model's scan")
-	}
-	if !strings.Contains(err.Error(), "a column the query computes") {
-		t.Fatalf("unhelpful reason: %v", err)
-	}
-
-	// Written directly the same test inlines the lookup and is self-contained.
-	preds, err := compileSourcePredicates(lookup+` | NOT (tool =~ "putty")`, opts)
+	// Through a binding the filter compiles to a bare `tool` rather than inlining.
+	const bql = `let &a := tool =~ "putty"; event_id="1" | match(dict="rmm", field=image, column=path, include=[tool], require=true) | NOT &a`
+	src, err := compileSourcePredicates(bql, opts)
 	if err != nil {
-		t.Fatalf("a direct filter inlines the lookup and must be accepted: %v", err)
+		t.Fatalf("compile: %v", err)
 	}
-	if !strings.Contains(strings.Join(preds, " "), "dictGetOrDefault") {
-		t.Fatalf("expected the lookup inlined into the predicate, got %v", preds)
+	if len(src.projections) == 0 {
+		t.Fatal("the lookup column should be reported as a projection")
+	}
+
+	def := ModelDefinition{
+		SourceBQL:   bql,
+		compiled:    src.preds,
+		compiledSet: true,
+		projections: src.projections,
+		KeyFields:   []string{"computer_name"},
+	}
+	// Streaming: the CTE projects it, so the predicate resolves.
+	sql, err := BuildBackfillInsert(def, ModelTypeFirstSeen, "tgt", "logs", "", "f1")
+	if err != nil {
+		t.Fatalf("streaming build: %v", err)
+	}
+	if !strings.Contains(sql, "AS tool") {
+		t.Errorf("the scan must project the column its filter reads:\n%s", sql)
+	}
+
+	// Network: one flat aggregate, nowhere to compute it.
+	def.Network = &NetworkFieldMap{SrcField: "src_ip", DstField: "dst_ip", PortField: "dst_port"}
+	if _, err := BuildNetStateInsert(def, "state", "logs", "", "f1"); err == nil {
+		t.Error("a network model must refuse a filter on a computed column")
 	}
 }
 

@@ -146,6 +146,12 @@ type TranslationResult struct {
 	// predicate bound above the scan. A caller that keeps only SourceWhere and
 	// discards the rendered SQL reads the same rows only when this is set.
 	SourceWhereComplete bool
+	// SourceProjections are the columns the scan computes, in the order the query
+	// produced them. A predicate in SourceWhere may name one of these rather than
+	// inline it, because a registry-known field compiles to its own alias, so a
+	// caller keeping SourceWhere has to project these alongside it or the scan
+	// references a column nothing defines.
+	SourceProjections []SourceProjection
 	// TimeScopedSubquery is true when the SQL embeds a subquery that carries its
 	// own copy of the query's time bounds (join / model_lookup). Re-translating
 	// such a query over a narrower window also narrows that subquery, which drops
@@ -1038,6 +1044,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		SQL:                 sql,
 		SourceWhere:         append([]string(nil), plan.SourceStage().Layer.Where...),
 		SourceWhereComplete: plan.sourceWhereComplete(),
+		SourceProjections:   plan.sourceProjections(),
 		FieldOrder:          fieldOrder,
 		IsAggregated:        plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
 		ChartType:           plan.ChartType,

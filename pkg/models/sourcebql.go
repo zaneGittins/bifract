@@ -27,19 +27,29 @@ var (
 	sourceScopeEnd   = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
+// compiledSource is what a model keeps from its source query: the predicates its
+// scan applies, and the columns that scan computes. Both are needed: a predicate
+// may name a computed column rather than inline it, and a key may be one.
+type compiledSource struct {
+	preds       []string
+	projections []parser.SourceProjection
+}
+
 // compileSourcePredicates returns the WHERE predicates a model's source query
-// contributes to its scan, with the translator's own scope guards removed.
-func compileSourcePredicates(bql string, dicts parser.QueryOptions) ([]string, error) {
+// contributes to its scan, with the translator's own scope guards removed, plus
+// the columns the scan computes.
+func compileSourcePredicates(bql string, dicts parser.QueryOptions) (compiledSource, error) {
+	var out compiledSource
 	bql = strings.TrimSpace(bql)
 	if bql == "" {
-		return nil, nil
+		return out, nil
 	}
 	pipeline, err := parser.ParseQuery(bql)
 	if err != nil {
-		return nil, fmt.Errorf("source query: %w", err)
+		return out, fmt.Errorf("source query: %w", err)
 	}
 	if err := validateSourcePipeline(pipeline); err != nil {
-		return nil, err
+		return out, err
 	}
 
 	opts := dicts
@@ -50,27 +60,26 @@ func compileSourcePredicates(bql string, dicts parser.QueryOptions) ([]string, e
 
 	res, err := parser.TranslateToSQLWithOrder(pipeline, opts)
 	if err != nil {
-		return nil, fmt.Errorf("source query: %w", err)
+		return out, fmt.Errorf("source query: %w", err)
 	}
 	// A model reads only the scan predicates, so anything that selects rows above
 	// the scan would be silently dropped and the model would aggregate more rows
 	// than the author asked for.
 	if !res.SourceWhereComplete {
-		return nil, fmt.Errorf("source query: this query selects rows after the scan " +
+		return out, fmt.Errorf("source query: this query selects rows after the scan " +
 			"(an aggregation, a window, a dedup or a subquery), and a model reads only " +
 			"the filter its source applies to each log")
 	}
 	preds, err := stripScopeGuards(res.SourceWhere)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	if err := checkNoScopeLeak(preds); err != nil {
-		return nil, err
+		return out, err
 	}
-	if err := checkNoProjectedRefs(preds, computedFields(bql, nil)); err != nil {
-		return nil, err
-	}
-	return preds, nil
+	out.preds = preds
+	out.projections = res.SourceProjections
+	return out, nil
 }
 
 // checkNoScopeLeak refuses predicates that still carry the compile-time scope.
@@ -220,12 +229,14 @@ func sourceProducedFields(bql string) map[string]bool {
 	return out
 }
 
-// validateSourceProducedKeys rejects a definition that shapes its state around a
-// column the source query computes rather than one the log stores. Only a
+// validateSourceProducedKeys checks the columns a definition shapes its state
+// around. A column the source query computes is renderable for the streaming
+// types, whose scan is built as a CTE that can project it, and is not for a
+// network model, whose state is one flat aggregate over the log table. Only a
 // definition carrying a source query is checked: without one there is no query to
 // have computed anything, and a model stored before source queries existed may
 // legitimately key on any field name its logs carry.
-func validateSourceProducedKeys(def ModelDefinition) error {
+func validateSourceProducedKeys(mt ModelType, def ModelDefinition) error {
 	if strings.TrimSpace(def.SourceBQL) == "" {
 		return nil
 	}
@@ -253,16 +264,17 @@ func validateSourceProducedKeys(def ModelDefinition) error {
 		if n.value == "" {
 			continue
 		}
-		if produced[n.value] {
-			return fmt.Errorf("%s %q is computed by the source query, not stored on the log: "+
-				"a model reads only the source's filter, so its state would hold the stored value "+
-				"rather than the computed one; extract it with regex(... as=%s) instead", n.what, n.value, n.value)
+		if produced[n.value] && mt.IsNetwork() {
+			return fmt.Errorf("%s %q is computed by the source query, and a network model's state "+
+				"is one aggregate over the log table with nowhere to compute it: key on a field "+
+				"the log stores", n.what, n.value)
 		}
 		// BQL names every column a command generates with a leading underscore, so
-		// such a name in a definition is one of those and never a log field.
+		// such a name is one of those. Renderable, but the author did not choose it
+		// and it is not stable, so ask for a name instead.
 		if strings.HasPrefix(n.value, "_") {
-			return fmt.Errorf("%s %q names a column the query generates, not a log field: "+
-				"give the value a name with as=, or key on the field it was computed from", n.what, n.value)
+			return fmt.Errorf("%s %q names a column the query generates rather than one you named: "+
+				"give the value a name with as=, and key on that", n.what, n.value)
 		}
 	}
 	return nil
@@ -284,23 +296,23 @@ func computedFields(bql string, extractions []ExtractionStep) []string {
 }
 
 // checkNoProjectedRefs refuses predicates that lean on a column the query's own
-// SELECT projects. The translator resolves a registry-known field to its bare
-// alias, which is valid in the statement that defines it and undefined in the
-// model's, where the projection is the model's own: the scan would fail with an
-// unknown identifier. A plain filter inlines the expression and is unaffected; a
-// binding routes through expression compilation, which does not.
-func checkNoProjectedRefs(preds []string, computed []string) error {
-	if len(computed) == 0 {
+// SELECT projects, for a builder with no layer to compute one. The translator
+// resolves a registry-known field to its bare alias, valid in the statement that
+// defines it and undefined anywhere else. A plain filter inlines the expression
+// and is unaffected; a binding routes through expression compilation, which does
+// not.
+func checkNoProjectedRefs(preds []string, projections []parser.SourceProjection) error {
+	if len(projections) == 0 {
 		return nil
 	}
 	bare := stripSQLStrings(strings.Join(preds, " AND "))
-	for _, name := range computed {
-		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(bare) {
+	for _, pr := range projections {
+		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(pr.Alias) + `\b`).MatchString(bare) {
 			continue
 		}
-		return fmt.Errorf("source query: this filter reads %q through a column the query computes, "+
-			"which a model's own scan does not define; filter on the value directly "+
-			"(the same test written without the binding compiles to the lookup itself)", name)
+		return fmt.Errorf("this source filters on %q, a column the query computes, and a network "+
+			"model's state is one aggregate over the log table with nowhere to compute it; "+
+			"filter on the stored value instead", pr.Alias)
 	}
 	return nil
 }
@@ -326,4 +338,24 @@ func stripSQLStrings(sql string) string {
 		}
 	}
 	return b.String()
+}
+
+// modelProjections drops the source projections the model renders for itself. A
+// regex extraction already becomes a CTE column of the same name, so carrying the
+// translator's version too would define the column twice.
+func modelProjections(all []parser.SourceProjection, extractions []ExtractionStep) []parser.SourceProjection {
+	if len(all) == 0 {
+		return nil
+	}
+	own := make(map[string]bool, len(extractions))
+	for _, ext := range extractions {
+		own[ext.OutputField] = true
+	}
+	out := make([]parser.SourceProjection, 0, len(all))
+	for _, p := range all {
+		if !own[p.Alias] {
+			out = append(out, p)
+		}
+	}
+	return out
 }

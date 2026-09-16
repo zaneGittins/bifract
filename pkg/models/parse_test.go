@@ -112,11 +112,12 @@ func TestEndToEndBQLToDDL(t *testing.T) {
 	}
 
 	// 4. Resolve the source query, as every render path does.
-	preds, cerr := compileSourcePredicates(def.SourceBQL, parser.QueryOptions{})
+	compiled, cerr := compileSourcePredicates(def.SourceBQL, parser.QueryOptions{})
 	if cerr != nil {
 		t.Fatalf("compile source: %v", cerr)
 	}
-	def.compiled, def.compiledSet = preds, true
+	def.compiled, def.compiledSet = compiled.preds, true
+	def.projections = modelProjections(compiled.projections, def.Extractions)
 
 	// 5. Compile to ClickHouse DDL: must succeed and reference the extracted field.
 	tableSQL, err := GenerateDDL(def, ModelTypeRarity, "model_test")

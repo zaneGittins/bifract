@@ -931,3 +931,34 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	}
 	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == ""
 }
+
+// SourceProjection is one column the source scan computes, as the alias it is
+// known by and the expression behind it.
+type SourceProjection struct {
+	Alias string
+	Expr  string
+}
+
+// sourceProjections lists the columns the source stage computes, skipping the
+// passthrough of the table's own columns. A command may write the alias into the
+// expression ("expr AS name") rather than into the Alias field, so both spellings
+// are read; an entry whose alias is the whole expression is a passthrough.
+func (p *QueryPlan) sourceProjections() []SourceProjection {
+	var out []SourceProjection
+	for _, sel := range p.SourceStage().Layer.Selects {
+		alias, expr := sel.Alias, sel.Expr
+		if alias == "" {
+			alias = extractFieldAlias(expr)
+			if alias == expr {
+				continue // a bare column, not a computed one
+			}
+			expr = strings.TrimSpace(expr[:len(expr)-len(alias)])
+			expr = strings.TrimSuffix(strings.TrimSuffix(expr, " AS"), " as")
+		}
+		if alias == "" || alias == expr {
+			continue
+		}
+		out = append(out, SourceProjection{Alias: alias, Expr: strings.TrimSpace(expr)})
+	}
+	return out
+}

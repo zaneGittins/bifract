@@ -37,7 +37,9 @@ The editor is a split panel:
 
   The source accepts any BQL that keeps one row per log, so a filter can consult a [dictionary](dictionaries.md) (`match()`), a CIDR range, a regex or a list. What it cannot accept is a query that changes the row set: an aggregation, `sort`/`head`/`dedup`, anything that bounds the rows it returns (`limit`, a chart's `limit=`), or a command that reads outside the window a cycle covers (`join`, `chain`, `model_lookup`, `tlsh`, `pgr`). The editor names the reason inline.
 
-  A model builds its state from the source's filter, not its projection, so a key has to be a field the log stores. Three things are refused as keys: a column the query computes (`:=`, `sprintf()`, `match(include=[...])`), a generated column (any name starting with `_`), and a field the source rewrote in place (`lowercase()`, `uppercase()`, `replace()`), whose stored value is not the rewritten one. Use a `regex(... as=)` extraction for a derived key: the model renders that itself.
+  A key can be a log field, a `regex(... as=)` extraction, or a column the query computes: a `match(include=[...])` lookup, a `lowercase()` rewrite, anything you name with `as=`. The model's scan projects it. Two exceptions: a generated name (anything starting with `_`) is refused because you did not choose it, so name it with `as=`; and a network model cannot key on a computed column at all, because its state is one flat aggregate over the log table with nowhere to compute one.
+
+  A computed key follows whatever computed it. Keying on a dictionary lookup means the key is whatever the list said **when that cycle ran**: rename a list entry and rows read afterwards carry the new name while state already built keeps the old one, so the same tool appears as two entities and the new one looks brand new. Key on the stored value instead when that matters.
 - **Right - shape and alert.** Pick the model type, map its keys to extracted or base fields, and optionally attach an alert.
 
 Models capture new logs from the moment they are created. They do **not** retroactively process history until you seed it (see below).

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bifract/pkg/parser"
 	"context"
 	"strconv"
 	"strings"
@@ -139,6 +140,10 @@ type ModelDefinition struct {
 	// which would silently run a different query than the author wrote.
 	compiled    []string
 	compiledSet bool
+	// projections are the columns the source query's scan computes, carried so the
+	// model can render them itself: a predicate may name one rather than inline it,
+	// and a key may be one.
+	projections []parser.SourceProjection
 
 	// Network analysis (beacon / long_connection). All additive and omitempty:
 	// definition is stored as JSONB, so no Postgres migration is needed.

@@ -177,20 +177,34 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 
 	var b strings.Builder
 
-	// CTE chain for extractions
-	if len(def.Extractions) > 0 {
+	// CTE chain: needed for an extraction, and for a source query that computes a
+	// column, because the final SELECT names such columns rather than resolving
+	// them as JSON paths.
+	if len(def.Extractions) > 0 || len(def.projections) > 0 {
 		b.WriteString("WITH\n")
-		// base CTE: filter + initial field selection
+		// base CTE: filter + every column the rest of the statement names.
 		b.WriteString("base AS (\n")
 		b.WriteString("    SELECT fractal_id, timestamp")
-		// Collect all fields referenced in extractions, aliased so downstream CTEs
-		// can reference them by plain name (fields.X AS X) rather than via JSON traversal.
 		seen := map[string]bool{}
-		for _, ext := range def.Extractions {
-			if !isExtractionOutput(ext.FromField, def.Extractions) && !seen[ext.FromField] {
-				seen[ext.FromField] = true
-				b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ext.FromField))
+		// The source query's own computed columns come first: one may carry the name
+		// of a log field (lowercase(image) is still called image), and the computed
+		// value is the one the author filtered and keyed on.
+		for _, pr := range def.projections {
+			if seen[pr.Alias] {
+				continue
 			}
+			seen[pr.Alias] = true
+			b.WriteString(fmt.Sprintf(",\n           %s AS %s", pr.Expr, pr.Alias))
+		}
+		// Then every field the final SELECT names by plain name: extraction inputs
+		// and the model's own keys. Without the keys the statement referenced a
+		// column the CTE never projected, which ClickHouse rejects (code 47).
+		for _, f := range modelReferencedFields(def, mt) {
+			if f == "" || seen[f] || isExtractionOutput(f, def.Extractions) {
+				continue
+			}
+			seen[f] = true
+			b.WriteString(fmt.Sprintf(",\n           %s AS %s", chFieldRef(f), f))
 		}
 		b.WriteString(fmt.Sprintf("\n    FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("    WHERE %s", fractalScopeClause(fractalID)))
@@ -643,6 +657,11 @@ func buildNetStateSelect(def ModelDefinition, sourceTable, whereExtra, fractalID
 	if err != nil {
 		return "", err
 	}
+	// One flat aggregate over the log table: there is no layer here that could
+	// compute a column, so a predicate naming one would reference nothing.
+	if err := checkNoProjectedRefs(preds, def.projections); err != nil {
+		return "", err
+	}
 	for _, p := range preds {
 		b.WriteString(fmt.Sprintf("\n    AND %s", p))
 	}
@@ -810,4 +829,21 @@ func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID stri
 // chFloatLiteral renders a float as a ClickHouse numeric literal without exponent noise.
 func chFloatLiteral(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// modelReferencedFields names every log field the final SELECT refers to by plain
+// name: the model's keys and the inputs its extractions read. The CTE that feeds
+// that SELECT has to project each one.
+func modelReferencedFields(def ModelDefinition, mt ModelType) []string {
+	var out []string
+	switch mt {
+	case ModelTypeRarity:
+		out = append(out, def.PartitionKey, def.ValueKey)
+	default:
+		out = append(out, def.KeyFields...)
+	}
+	for _, ext := range def.Extractions {
+		out = append(out, ext.FromField)
+	}
+	return out
 }

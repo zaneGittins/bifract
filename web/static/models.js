@@ -1812,12 +1812,12 @@ ${m.description ? `<div class="me-sec">
         const e = this.editor;
         const seen = new Set();
         const out = [];
-        // Columns the source query computes show up in the preview's results but
-        // never in the model's state, so they are never offered as a key.
-        const computed = new Set(e.parsed.computed_fields || []);
-        const add = f => { if (f && !seen.has(f) && !computed.has(f)) { seen.add(f); out.push(f); } };
+        const add = f => { if (f && !seen.has(f)) { seen.add(f); out.push(f); } };
         // Fields discovered in the most recent query results come first: these
         // are the columns actually present in the user's searched data.
+        // Columns the source query computes come first: they are the reason the
+        // query has them, and the model's scan projects them like any other.
+        (e.parsed.computed_fields || []).forEach(add);
         (e.resultFields || []).forEach(add);
         (e.parsed.extractions || []).forEach(x => add(x.output_field));
         (e.parsed.candidate_fields || []).forEach(add);

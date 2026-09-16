@@ -144,3 +144,22 @@ func TestGeneratedSQLJoinsPredicatesWithRealNewlines(t *testing.T) {
 		}
 	}
 }
+
+// The CTE that feeds a model's final SELECT has to project every column that
+// SELECT names. It projected only extraction inputs, so a model that extracted a
+// value and keyed on an ordinary log field referenced a column nothing defined
+// and ClickHouse refused the whole statement (code 47).
+func TestExtractionCTEProjectsTheModelKeys(t *testing.T) {
+	def := ModelDefinition{
+		Extractions:  []ExtractionStep{{FromField: "norm_log", Pattern: `query:\s+(\S+)`, OutputField: "tld"}},
+		PartitionKey: "computer_name",
+		ValueKey:     "tld",
+	}
+	sql, err := BuildBackfillInsert(def, ModelTypeRarity, "tgt", "logs", "", "f1")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !strings.Contains(sql, "AS computer_name") {
+		t.Errorf("the base CTE does not project the partition key, so the final SELECT names a column nothing defines:\n%s", sql)
+	}
+}

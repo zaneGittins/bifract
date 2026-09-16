@@ -561,11 +561,12 @@ func (m *Manager) ResolveSource(ctx context.Context, def ModelDefinition, fracta
 	if strings.TrimSpace(def.SourceBQL) == "" {
 		return def, nil
 	}
-	preds, err := compileSourcePredicates(def.SourceBQL, m.sourceQueryOptions(ctx, fractalID, prismID))
+	src, err := compileSourcePredicates(def.SourceBQL, m.sourceQueryOptions(ctx, fractalID, prismID))
 	if err != nil {
 		return def, err
 	}
-	def.compiled, def.compiledSet = preds, true
+	def.compiled, def.compiledSet = src.preds, true
+	def.projections = modelProjections(src.projections, def.Extractions)
 	return def, nil
 }
 
@@ -1424,7 +1425,7 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 	if err := validateDefinitionFieldNames(def); err != nil {
 		return err
 	}
-	if err := validateSourceProducedKeys(def); err != nil {
+	if err := validateSourceProducedKeys(mt, def); err != nil {
 		return err
 	}
 	switch mt {

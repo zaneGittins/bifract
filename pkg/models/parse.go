@@ -24,9 +24,10 @@ type ParsedSource struct {
 	Filter          []FilterCondition `json:"filter"`
 	Extractions     []ExtractionStep  `json:"extractions"`
 	CandidateFields []string          `json:"candidate_fields"`
-	// ComputedFields names the columns the source query computes. They appear in a
-	// preview's results but not in the model's state, so the editor must not offer
-	// them as keys.
+	// ComputedFields names the columns the source query computes rather than reads
+	// from the log. They are usable keys, because the model's scan projects them,
+	// but their value follows whatever computed it: a dictionary lookup keyed on a
+	// list that is later edited yields a different key for rows read after the edit.
 	ComputedFields []string `json:"computed_fields"`
 	Errors         []string `json:"errors"`
 	Warnings       []string `json:"warnings"`
@@ -172,6 +173,7 @@ func ParseSourceQuery(query string) ParsedSource {
 
 	res.ComputedFields = computedFields(query, res.Extractions)
 	res.CandidateFields = res.candidateFields(referenced, res.ComputedFields)
+
 	return res
 }
 
@@ -315,15 +317,12 @@ func regexCommandToExtraction(cmd parser.CommandNode) (ExtractionStep, string) {
 }
 
 // candidateFields returns the fields available for shaping a model: every field
-// referenced in filters plus every extraction output, de-duplicated in order,
-// always including norm_log (the canonical normalized text), and never a column
-// the source query computes. The frontend may additionally merge its own list of
-// known log fields.
+// referenced in filters plus every extraction output and every column the source
+// computes, de-duplicated in order, always including norm_log (the canonical
+// normalized text). The frontend may additionally merge its own list of known log
+// fields.
 func (p *ParsedSource) candidateFields(referenced, computed []string) []string {
 	seen := map[string]bool{}
-	for _, f := range computed {
-		seen[f] = true // exists only inside the source query, never in the model's state
-	}
 	var out []string
 	add := func(f string) {
 		if f == "" || seen[f] {
@@ -333,6 +332,10 @@ func (p *ParsedSource) candidateFields(referenced, computed []string) []string {
 		out = append(out, f)
 	}
 	add("norm_log")
+	// A column the source computes is a usable key: the model's scan projects it.
+	for _, f := range computed {
+		add(f)
+	}
 	for _, fc := range p.Filter {
 		add(fc.Field)
 	}
