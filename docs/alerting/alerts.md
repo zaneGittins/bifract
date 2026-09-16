@@ -42,7 +42,7 @@ An execution records `log_count` (every row matched) and `suppressed_count` (how
 
 ## Late Logs
 
-Alerts evaluate on arrival, not event time, so a source that reconnects and flushes a buffered backlog presents week-old events as new and the alert fires on all of them. **Max event lag** bounds that: a match whose event time trails its arrival by more than the configured number of seconds is dropped. 0, the default, alerts on everything.
+Alerts evaluate on arrival, not event time, so a source that reconnects and flushes a buffered backlog presents week-old events as new and the alert fires on all of them. **Max event lag** bounds that: a match whose event time trails its arrival by more than the configured number of seconds is dropped. 0, the default, turns the filter off and alerts on everything.
 
 The comparison is one-sided. An event dated ahead of its arrival, which is what a fast clock produces, is never dropped.
 

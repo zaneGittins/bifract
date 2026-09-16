@@ -1031,6 +1031,18 @@ func printfArg(ref string, verb byte) string {
 	return fmt.Sprintf("ifNull(%s, '')", ref)
 }
 
+// requireMatched reads whether a lookup keeps only the rows it matched. require=
+// is the spelling, because it says what happens to a row that does not match;
+// strict= is the original one and still parses, because saved queries carry it.
+// Named the same on every command that has the setting, even where the default
+// differs, so one word means one thing.
+func requireMatched(b *Bound, def bool) bool {
+	if b.Has("require") {
+		return b.Flag("require", def)
+	}
+	return b.Flag("strict", def)
+}
+
 // matchFieldRef renders the value a dictionary lookup is made with. dictGet
 // compares against a String key, so the reference is cast either way.
 func matchFieldRef(a Argument, registry *FieldRegistry) string {
@@ -1057,10 +1069,11 @@ func matchFieldRef(a Argument, registry *FieldRegistry) string {
 // dictionary hashed lower(key), so the probe has to be lowered to meet it; an
 // unlowered probe would simply miss every mixed-case key.
 // dictProbe is the value a lookup is made with, in the shape the dictionary's
-// layout needs. isPattern is passed rather than read from the name because
-// pattern-ness belongs to the ClickHouse object: a secondary key column on a
-// pattern list resolves to an ordinary HASHED dictionary.
-func dictProbe(fieldRef, dictName string, isPattern bool, opts QueryOptions) string {
+// layout needs. The layout belongs to the ClickHouse object rather than to the
+// list, because a secondary key column on a network or pattern list resolves to
+// an ordinary HASHED dictionary; case-insensitivity is a property of the list,
+// which hashes every one of its objects the same way.
+func dictProbe(fieldRef, dictName, chLookupName string, isPattern bool, opts QueryOptions) string {
 	if fieldRef == "" {
 		return fieldRef
 	}
@@ -1075,7 +1088,7 @@ func dictProbe(fieldRef, dictName string, isPattern bool, opts QueryOptions) str
 	// address, and the server rejects a string outright. OrDefault rather than a
 	// plain cast, because the field is whatever the log carried and an
 	// unparseable value has to miss rather than fail the query.
-	if opts.NetworkDicts[dictName] {
+	if opts.NetworkDicts[chLookupName] {
 		return "toIPv6OrDefault(" + fieldRef + ")"
 	}
 	if !opts.CaseInsensitiveDicts[dictName] {
@@ -1137,7 +1150,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
-	probeRef := dictProbe(fieldRef, dictName, ctx.Opts.PatternDicts[chLookupName], ctx.Opts)
+	probeRef := dictProbe(fieldRef, dictName, chLookupName, ctx.Opts.PatternDicts[chLookupName], ctx.Opts)
 
 	for _, c := range includeColumns {
 		if chLookupName != "" && hasField && fieldRef != "" {
@@ -1159,7 +1172,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	fieldArg, hasField := b.First("field")
 	keyColumn := b.Str("column", "")
 	includeColumns := b.Strings("include")
-	strict := b.Flag("strict", false)
+	strict := requireMatched(b, false)
 
 	if dictName == "" {
 		return fmt.Errorf("match() requires dict= parameter")
@@ -1194,7 +1207,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
 	isPattern := ctx.Opts.PatternDicts[chLookupName]
-	probeRef := dictProbe(fieldRef, dictName, isPattern, ctx.Opts)
+	probeRef := dictProbe(fieldRef, dictName, chLookupName, isPattern, ctx.Opts)
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {
@@ -1413,7 +1426,7 @@ func init() {
 		ParamSpec{Name: "field", Kind: ParamField, Required: true},
 		ParamSpec{Name: "column", Kind: ParamLiteral, Required: true},
 		ParamSpec{Name: "include", Kind: ParamList, Required: true},
-		namedLit("strict"),
+		namedLit("require"), namedLit("strict"),
 	}})
 	registerSpec(&CommandSpec{Name: "lookupip", Params: []ParamSpec{
 		ParamSpec{Name: "field", Kind: ParamField, Required: true},

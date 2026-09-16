@@ -365,7 +365,7 @@ var bqlFunctionDocs = []FunctionDoc{
 			{Name: "field", Type: "string", Required: true, Description: "Log field whose value is used as the lookup key"},
 			{Name: "column", Type: "string", Required: true, Description: "Primary key column in the dictionary (documents intent; implicit in the lookup)"},
 			{Name: "include", Type: "array", Required: true, Description: "Comma-separated list of dictionary columns to add to each row"},
-			{Name: "strict", Type: "bool", Required: false, Description: "When true, only rows with a matching key in the dictionary are returned (default: false)"},
+			{Name: "require", Type: "bool", Required: false, Description: "When true, only rows with a matching key in the dictionary are returned (default: false)"},
 		},
 		Examples: []string{
 			`| match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category], strict=false)`,
@@ -382,7 +382,7 @@ var bqlFunctionDocs = []FunctionDoc{
 		Parameters: []Param{
 			{Name: "model", Type: "string", Required: true, Description: "Name of an active model from the Models tab"},
 			{Name: "key", Type: "array", Required: true, Description: "Log fields matched against the model's key, in order. rarity: [partition_key, value_key]; first_seen and volume_baseline: [entity]; beacon and long_connection: [src_ip, dst_ip, dst_port]"},
-			{Name: "strict", Type: "boolean", Required: false, Description: "true (default) returns only rows the model scored; false keeps unscored rows with empty enrichment"},
+			{Name: "require", Type: "boolean", Required: false, Description: "true (default) returns only rows the model scored; false keeps unscored rows with empty enrichment"},
 		},
 		Examples: []string{
 			`event_id=3 | model_lookup(model="zeek_beacons", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8`,

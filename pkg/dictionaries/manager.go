@@ -1821,11 +1821,13 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 		// probed the wrong shape would silently miss rather than fail.
 		scope.Mappings[name] = inner
 		scope.CaseInsensitive[name] = ci
-		scope.Network[name] = NormalizeKind(kind) == KindNetwork
-		// Keyed by the ClickHouse object, not the list: only a pattern list's own
-		// dictionary is a REGEXP_TREE. A secondary key column gets an ordinary
-		// HASHED one, which has neither the marker attribute nor the layout.
-		if NormalizeKind(kind) == KindPattern {
+		// Both are keyed by the ClickHouse object, not the list: only a list's own
+		// dictionary carries its layout. A secondary key column gets an ordinary
+		// HASHED one, which is probed with a string like any other.
+		switch NormalizeKind(kind) {
+		case KindNetwork:
+			scope.Network[chDictName(id)] = true
+		case KindPattern:
 			scope.Pattern[chDictName(id)] = true
 		}
 	}

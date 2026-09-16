@@ -140,10 +140,12 @@ const Dictionaries = {
 
         tbody.innerHTML = dicts.map(d => `
 <tr class="dict-list-row">
-    <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}${this.kindBadge(d)}${d.is_global ? ' <span class="dict-global-badge">Global</span>' : ''}</a></td>
-    <td style="color:var(--text-secondary);font-size:0.88rem;">${this.esc(d.description || '')}</td>
-    <td style="color:var(--text-secondary);">${d.columns ? d.columns.length : 0}</td>
-    <td style="color:var(--text-secondary);">${(d.row_count || 0).toLocaleString()}</td>
+    <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}</a></td>
+    <td class="dict-col-desc" title="${this.esc(d.description || '')}">${this.esc(d.description || '')}</td>
+    <td class="dict-col-meta" title="${this.esc(this.KINDS[this.kindOf(d)].hint)}">${this.esc(this.KINDS[this.kindOf(d)].label)}</td>
+    <td class="dict-col-meta${d.is_global ? ' dict-col-scope-global' : ''}">${this.esc(this.scopeLabel(d))}</td>
+    <td class="dict-col-meta">${d.columns ? d.columns.length : 0}</td>
+    <td class="dict-col-meta">${(d.row_count || 0).toLocaleString()}</td>
     <td class="kebab-cell"><div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button><div class="kebab-menu"><button class="kebab-item danger" data-id="${d.id}" data-action="delete">Delete</button></div></div></td>
 </tr>`).join('');
 
@@ -209,12 +211,32 @@ const Dictionaries = {
         return this.KINDS[k] ? k : 'value';
     },
 
-    // A Values list is the default and carries no badge: badging every row would
-    // say nothing. Anything else is called out, because it changes what a lookup means.
-    kindBadge(d) {
-        const k = this.kindOf(d);
-        if (k === 'value') return '';
-        return ` <span class="dict-kind-badge">${this.esc(this.KINDS[k].label)}</span>`;
+    // The key column is the only one a Networks or Patterns list matches with its
+    // own semantics: every other key column is a plain exact-match dictionary, so
+    // the header says which column the ranges or expressions live in.
+    KEY_BADGE: {
+        value: { label: 'key', title: 'The lookup key. match(column=...) probes this column.' },
+        network: { label: 'CIDR key', title: 'The only column matched as a CIDR range. Another column made a key matches exact values, not ranges.' },
+        pattern: { label: 'regex key', title: 'The only column matched as a regular expression. Another column made a key matches exact values, not expressions.' },
+    },
+
+    keyBadge(d) {
+        return this.KEY_BADGE[this.kindOf(d)] || this.KEY_BADGE.value;
+    },
+
+    // What promoting another column buys on this list. On a Networks or Patterns
+    // list it is an exact-match key, which is not what the list's kind implies.
+    secondaryKeyHint(d) {
+        return this.kindOf(d) === 'value'
+            ? 'Use as lookup key'
+            : 'Use as an exact-match lookup key';
+    },
+
+    // Who can see a list. A global owned by another fractal shows up in this
+    // fractal's listing, so reach is worth a column of its own.
+    scopeLabel(d) {
+        if (d && d.is_global) return 'Global';
+        return d && d.prism_id ? 'Prism' : 'Fractal';
     },
 
     updateKindHint() {
@@ -476,14 +498,15 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             if (isPrimary) thClass += ' dict-th-col-key';
             else if (isSecondary) thClass += ' dict-th-col-key2';
 
+            const keyBadge = this.keyBadge(dict);
             let inner = `<span class="dict-col-name">${this.esc(c.name)}</span>`;
             if (isPrimary) {
-                inner += '<span class="dict-key-badge dict-key-badge-hdr">key</span>';
+                inner += `<span class="dict-key-badge dict-key-badge-hdr" title="${this.esc(keyBadge.title)}">${this.esc(keyBadge.label)}</span>`;
             } else if (isSecondary) {
                 inner += `<button class="dict-col-key-active-btn" data-col="${this.esc(c.name)}" title="Remove as lookup key">key</button>`;
                 inner += `<button class="dict-col-del-btn" data-col="${this.esc(c.name)}" title="Remove column">&times;</button>`;
             } else {
-                inner += `<button class="dict-col-key-btn" data-col="${this.esc(c.name)}" title="Use as lookup key">key</button>`;
+                inner += `<button class="dict-col-key-btn" data-col="${this.esc(c.name)}" title="${this.esc(this.secondaryKeyHint(dict))}">key</button>`;
                 inner += `<button class="dict-col-del-btn" data-col="${this.esc(c.name)}" title="Remove column">&times;</button>`;
             }
             return `<th class="${thClass}" data-col="${this.esc(c.name)}">${inner}</th>`;

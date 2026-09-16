@@ -444,15 +444,22 @@ func parseModelLookupArgs(cmd CommandNode) (modelName string, keyFields []string
 	if err != nil {
 		return "", nil, false, err
 	}
+	// require= is the spelling; strict= is the original one and still parses.
+	// Unlike match(), a model lookup defaults to keeping only scored rows: an
+	// unscored row carries the model's type defaults, which read as a real score.
 	strict = true
-	if raw := b.Str("strict", ""); raw != "" {
+	name := "strict"
+	if b.Has("require") {
+		name = "require"
+	}
+	if raw := b.Str(name, ""); raw != "" {
 		switch strings.ToLower(raw) {
 		case "true":
 			strict = true
 		case "false":
 			strict = false
 		default:
-			return "", nil, false, fmt.Errorf("model_lookup() strict= must be true or false")
+			return "", nil, false, fmt.Errorf("modelLookup() %s= must be true or false", name)
 		}
 	}
 	modelName = b.Str("model", "")
@@ -488,6 +495,6 @@ func init() {
 	registerSpec(&CommandSpec{Name: "modelLookup", Params: []ParamSpec{
 		ParamSpec{Name: "model", Kind: ParamLiteral, Required: true},
 		ParamSpec{Name: "key", Kind: ParamList, Required: true},
-		namedLit("strict"),
+		namedLit("require"), namedLit("strict"),
 	}}, "modelLookup", "model_lookup")
 }

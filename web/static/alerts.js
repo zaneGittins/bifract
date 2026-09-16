@@ -2628,6 +2628,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         if (throttleTimeField) throttleTimeField.value = '0';
         if (throttleFieldField) throttleFieldField.value = '';
         if (maxEventLagField) maxEventLagField.value = '0';
+        this.syncEventLagLabel();
         if (enabledField) enabledField.checked = true;
 
         // Reset severity
@@ -3288,6 +3289,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
             if (throttleTimeField) throttleTimeField.value = alert.throttle_time_seconds || 0;
             if (throttleFieldField) throttleFieldField.value = alert.throttle_field || '';
             if (maxEventLagField) maxEventLagField.value = alert.max_event_lag_seconds || 0;
+            this.syncEventLagLabel();
             if (enabledField) enabledField.checked = alert.enabled;
 
             // Set alert type dropdown and card
@@ -3952,6 +3954,19 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         if (box && text) text.textContent = box.checked ? 'Enabled' : 'Disabled';
     },
 
+    // 0 is off, and "ignore matches delayed by 0s" reads as the opposite, so the
+    // editor spells out what the current value does.
+    syncEventLagLabel() {
+        const input = document.getElementById('editorMaxEventLag');
+        const state = document.getElementById('editorMaxEventLagState');
+        if (!input || !state) return;
+        const seconds = parseInt(input.value, 10) || 0;
+        const span = window.AlertDetail?.formatThrottle?.(seconds) ?? `${seconds}s`;
+        state.textContent = seconds > 0
+            ? `Ignores a match whose event time is more than ${span} behind its arrival, such as a backlog flushed by a source that reconnected.`
+            : 'Off. Every match alerts, however late it arrived.';
+    },
+
     // One listener for everything the draft and the type badge react to.
     watchEditorEdits() {
         const view = document.getElementById('alertEditorView');
@@ -3969,6 +3984,8 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
         document.getElementById('alertTypeSelect')?.addEventListener('change', () => this.updateTypeBadge());
         document.getElementById('editorAlertEnabled')?.addEventListener('change', () => this.syncEnabledLabel());
+        document.getElementById('editorMaxEventLag')?.addEventListener('input', () => this.syncEventLagLabel());
+        this.syncEventLagLabel();
         document.querySelectorAll('.alert-type-card').forEach(card => {
             card.addEventListener('click', () => { this._typeInferred = false; this.updateTypeBadge(); });
         });

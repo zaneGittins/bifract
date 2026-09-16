@@ -130,14 +130,14 @@ type Scope struct {
 	Mappings map[string]map[string]string
 	// CaseInsensitive marks dictionaries whose keys were hashed lowercased.
 	CaseInsensitive map[string]bool
-	// Network marks IP_TRIE dictionaries, probed with an address rather than a
-	// string and matched on the longest prefix.
+	// Network marks the ClickHouse dictionary OBJECTS built as an IP_TRIE, probed
+	// with an address rather than a string and matched on the longest prefix.
 	Network map[string]bool
-	// Pattern marks the ClickHouse dictionary OBJECTS built as a REGEXP_TREE,
-	// keyed by object name rather than list name: only a pattern list's own
-	// dictionary has that layout, while a secondary key column on the same list
-	// gets an ordinary HASHED one.
+	// Pattern marks the OBJECTS built as a REGEXP_TREE, matched first-expression-wins.
 	Pattern map[string]bool
+	// Both are keyed by object name rather than list name: only a list's own
+	// dictionary carries its layout, while a secondary key column on the same
+	// list gets an ordinary HASHED one.
 }
 
 // ValidatePatternKey rejects a key a REGEXP_TREE cannot compile. ClickHouse

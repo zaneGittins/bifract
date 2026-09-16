@@ -78,7 +78,7 @@ const AlertDetail = {
 
         const maxEventLag = alert.max_event_lag_seconds > 0
             ? `Ignored past ${this.formatThrottle(alert.max_event_lag_seconds)}`
-            : 'Alerted on';
+            : 'Off';
 
         const labels = opts.labels || alert.labels || [];
         const renderLabel = opts.renderLabel

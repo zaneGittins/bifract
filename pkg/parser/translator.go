@@ -57,13 +57,16 @@ type QueryOptions struct {
 	MaxEventLagSeconds int
 	AlertExtraFields   []string // Additional fields to project in alert auto-projection (throttle field, template fields)
 	GeoIPEnabled       bool     // True when MaxMind GeoLite2 dictionaries are loaded
-	// NetworkDicts marks dictionaries built as an IP_TRIE. Their keys are CIDR
-	// ranges, so a lookup probes an address and matches the longest range holding
-	// it; probing one with a string is rejected by the server.
+	// NetworkDicts marks the dictionary objects built as an IP_TRIE. Their keys are
+	// CIDR ranges, so a lookup probes an address and matches the longest range
+	// holding it; probing one with a string is rejected by the server.
 	NetworkDicts map[string]bool
-	// PatternDicts marks dictionaries built as a REGEXP_TREE. Their keys are
+	// PatternDicts marks the objects built as a REGEXP_TREE. Their keys are
 	// regular expressions matched against the probe, first match wins, and the
 	// server has no dictHas for them.
+	//
+	// Both are keyed by ClickHouse object name, not list name: a secondary key
+	// column on either kind of list resolves to an ordinary HASHED dictionary.
 	PatternDicts       map[string]bool
 	DictionaryDatabase string // ClickHouse database holding the dictionary objects; qualifies every dictGet
 	TableName          string // Override source table (default "logs", use "logs_distributed" in cluster mode)

@@ -16,9 +16,9 @@ Enrich log events with data from a dictionary. Each matching log row gets additi
 | `field`   | Yes      | Log field to use as the lookup key |
 | `column`  | Yes      | Dictionary column to match against |
 | `include` | Yes      | Dictionary columns to add to results: `include=[col1,col2]` |
-| `strict`  | No       | When `true`, only return rows that have a match in the dictionary. Default: `false` |
+| `require` | No       | When `true`, only return rows that have a match in the dictionary. Default: `false` |
 
-When `strict=false` (the default), non-matching rows are kept with empty strings for the included columns. When `strict=true`, non-matching rows are filtered out entirely.
+By default non-matching rows are kept, with empty strings for the included columns. With `require=true`, non-matching rows are filtered out entirely.
 
 ### Examples
 
@@ -28,10 +28,10 @@ Enrich logs with threat intelligence data:
 * | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category])
 ```
 
-Only keep logs that match the dictionary (strict mode):
+Only keep logs that match the dictionary:
 
 ```
-* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category], strict=true)
+* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category], require=true)
 ```
 
 Combine with other pipeline stages:
@@ -66,10 +66,10 @@ misses rather than failing the query, and a row whose key is not a CIDR range is
 it is saved.
 
 Asking for the key column reports membership: it returns the looked-up value on a hit and an
-empty string on a miss, so `strict=true` keeps only the rows inside one of the ranges.
+empty string on a miss, so `require=true` keeps only the rows inside one of the ranges.
 
 ```
-* | match(dict="corp_ranges", field=src_ip, column=network, include=[network], strict=true)
+* | match(dict="corp_ranges", field=src_ip, column=network, include=[network], require=true)
 ```
 
 #### Patterns
@@ -92,7 +92,7 @@ Asking for the key column reports membership here too, and does so correctly eve
 matched row's other columns are empty.
 
 ```
-* | match(dict="tooling", field=commandline, column=pattern, include=[pattern], strict=true)
+* | match(dict="tooling", field=commandline, column=pattern, include=[pattern], require=true)
 ```
 
 An expression that does not compile is refused when the row is saved, because a list holding one
@@ -119,7 +119,7 @@ Enrich rows with the baseline an analytics [model](../features/models.md) has bu
 |-----------|----------|-------------|
 | `model` | Yes | Name of an active model in this fractal |
 | `key` | Yes | Log fields matched against the model's key, in order |
-| `strict` | No | `true` (default) returns only rows the model scored; `false` keeps the rest with empty enrichment |
+| `require` | No | `true` (default) returns only rows the model scored; `false` keeps the rest with empty enrichment |
 
 The key shape depends on the model type:
 
@@ -154,17 +154,17 @@ Sequence a first-ever-seen user straight into process execution:
 }
 ```
 
-### strict
+### require
 
 By default a row the model never scored is dropped. The model's key set is pushed into the log scan, so the query reads only the logs that can match rather than every log in the range and discarding the rest after the join.
 
-`strict=false` keeps unscored rows with their enrichment columns at ClickHouse's type defaults (`0` for a score, empty for a date). Those defaults compare like real values, so a threshold that looks for something small matches every unscored row:
+`require=false` keeps unscored rows with their enrichment columns at ClickHouse's type defaults (`0` for a score, empty for a date). Those defaults compare like real values, so a threshold that looks for something small matches every unscored row:
 
 ```
-* | modelLookup(model="rare_images", key=[computer_name, image], strict=false) | percent < 0.1
+* | modelLookup(model="rare_images", key=[computer_name, image], require=false) | percent < 0.1
 ```
 
-That query returns every log the model has no entry for. Use `strict=false` only to see which rows went unscored, and test the enrichment column for emptiness rather than thresholding it.
+That query returns every log the model has no entry for. Use `require=false` only to see which rows went unscored, and test the enrichment column for emptiness rather than thresholding it.
 
 A model scores forward from its creation (plus whatever its backfill covered), so under the default a query over a window older than the model returns nothing.
 

@@ -206,6 +206,7 @@ const AlertDrafts = {
         set('editorThrottleTime', c.throttle_time_seconds);
         set('editorThrottleField', c.throttle_field);
         set('editorMaxEventLag', c.max_event_lag_seconds);
+        window.Alerts?.syncEventLagLabel?.();
 
         if (c.alert_type) {
             const sel = document.getElementById('alertTypeSelect');

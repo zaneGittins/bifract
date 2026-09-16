@@ -14,13 +14,13 @@ func networkDictOpts() QueryOptions {
 		FractalID:          "f1",
 		DictionaryDatabase: "bifract",
 		Dictionaries: map[string]map[string]string{
-			"corp":  {"network": "dict_corp_network"},
+			"corp":  {"network": "dict_corp_network", "owner": "dict_corp_by_owner"},
 			"names": {"name": "dict_names_name"},
 			"tools": {"pattern": "dict_tools_pattern"},
 		},
-		NetworkDicts: map[string]bool{"corp": true},
-		// Keyed by the ClickHouse object, not the list: only a pattern list's own
-		// dictionary is a REGEXP_TREE.
+		// Both keyed by the ClickHouse object, not the list: only a list's own
+		// dictionary carries its layout.
+		NetworkDicts:         map[string]bool{"dict_corp_network": true},
 		PatternDicts:         map[string]bool{"dict_tools_pattern": true},
 		CaseInsensitiveDicts: map[string]bool{"names": true},
 	}
@@ -201,5 +201,19 @@ func TestPrintfVerbsSkipsEscapedPercent(t *testing.T) {
 		if got := string(printfVerbs(format)); got != want {
 			t.Errorf("printfVerbs(%q) = %q, want %q", format, got, want)
 		}
+	}
+}
+
+// A secondary key column on a network list is an ordinary HASHED dictionary over
+// that column's values, so it is probed with a string. Reading the layout from the
+// list rather than from the object cast the probe to an address and the lookup
+// could only fail at the server.
+func TestSecondaryKeyOnANetworkListProbesWithAString(t *testing.T) {
+	sql := networkSQL(t, `* | match(dict="corp", field=user, column=owner, include=[network])`)
+	if strings.Contains(sql, "toIPv6") {
+		t.Errorf("a HASHED key column must not be probed with an address: %s", sql)
+	}
+	if !strings.Contains(sql, "dictGetOrDefault('bifract.dict_corp_by_owner', 'network', toString(fields.`user`::String)") {
+		t.Errorf("want a string probe against the secondary dictionary, got: %s", sql)
 	}
 }
