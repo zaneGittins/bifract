@@ -5515,3 +5515,36 @@ func TestSourceWhereComplete(t *testing.T) {
 		}
 	}
 }
+
+// A command may write its alias into the expression rather than the Alias field,
+// so the projection list has to read both spellings and must not mangle an
+// expression that contains the separator itself.
+func TestSourceProjectionsReadBothAliasSpellings(t *testing.T) {
+	cases := map[string][]SourceProjection{
+		"x AS y":                 {{Alias: "y", Expr: "x"}},
+		"timestamp":              nil,
+		"CAST(a AS String) AS b": {{Alias: "b", Expr: "CAST(a AS String)"}},
+		"lower(fields.`i`) AS i": {{Alias: "i", Expr: "lower(fields.`i`)"}},
+	}
+	for sel, want := range cases {
+		p := NewQueryPlan()
+		p.SourceStage().Layer.Selects = []SelectExpr{{Expr: sel}}
+		got := p.sourceProjections()
+		if len(got) != len(want) {
+			t.Errorf("%q: got %v, want %v", sel, got, want)
+			continue
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("%q: got %+v, want %+v", sel, got[i], want[i])
+			}
+		}
+	}
+	// The explicit-Alias spelling, which UpsertSelect also produces.
+	p := NewQueryPlan()
+	p.SourceStage().Layer.Selects = []SelectExpr{{Expr: "dictGet(x)", Alias: "tool"}}
+	got := p.sourceProjections()
+	if len(got) != 1 || got[0].Alias != "tool" || got[0].Expr != "dictGet(x)" {
+		t.Errorf("explicit alias not read: %+v", got)
+	}
+}

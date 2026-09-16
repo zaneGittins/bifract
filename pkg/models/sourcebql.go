@@ -77,9 +77,27 @@ func compileSourcePredicates(bql string, dicts parser.QueryOptions) (compiledSou
 	if err := checkNoScopeLeak(preds); err != nil {
 		return out, err
 	}
+	if err := checkProjectionAliases(res.SourceProjections); err != nil {
+		return out, err
+	}
 	out.preds = preds
 	out.projections = res.SourceProjections
 	return out, nil
+}
+
+// checkProjectionAliases refuses an alias that is not a plain name. A projection
+// is written into the model's CTE unquoted, the way an extraction output is, so a
+// name carrying punctuation would become a second select expression in a stored
+// statement. Every command sanitizes its own output today; this is the boundary
+// where that stops being something to take on trust.
+func checkProjectionAliases(projections []parser.SourceProjection) error {
+	for _, pr := range projections {
+		if !parser.IsPlainFieldName(pr.Alias) {
+			return fmt.Errorf("source query: %q is not a usable column name: use letters, digits, "+
+				"dot, dash or underscore", pr.Alias)
+		}
+	}
+	return nil
 }
 
 // checkNoScopeLeak refuses predicates that still carry the compile-time scope.
@@ -244,6 +262,13 @@ func validateSourceProducedKeys(mt ModelType, def ModelDefinition) error {
 	for _, f := range computedFields(def.SourceBQL, def.Extractions) {
 		produced[f] = true
 	}
+	shadowing := computedFields(def.SourceBQL, def.Extractions)
+	for _, ext := range def.Extractions {
+		shadowing = append(shadowing, ext.OutputField)
+	}
+	if err := checkNoOwnedColumnShadowed(shadowing); err != nil {
+		return err
+	}
 	nf := def.Network.WithDefaults()
 	named := []struct{ what, value string }{
 		{"partition_key", def.PartitionKey},
@@ -358,4 +383,32 @@ func modelProjections(all []parser.SourceProjection, extractions []ExtractionSte
 		}
 	}
 	return out
+}
+
+// modelOwnedColumns are the names a model's own statement defines. A source query
+// that computes a column of the same name would either collide with it or shadow
+// it: a projection aliased `timestamp` replaced the event time with a dictionary
+// string, and first_seen, last_seen and the day set were built from that.
+var modelOwnedColumns = map[string]bool{
+	"fractal_id": true, "timestamp": true,
+	"partition_val": true, "value_val": true,
+	"entity_key": true, "entity_val": true, "digest": true,
+	"event_count": true, "days": true, "bucket": true,
+	"first_seen": true, "last_seen": true,
+	"src": true, "dst": true, "port": true, "day": true,
+	"conn_count": true, "ts_state": true, "size_state": true, "dur_sum": true,
+	"first_ts": true, "last_ts": true,
+}
+
+// checkNoOwnedColumnShadowed refuses a source that computes a column, or an
+// extraction that produces one, named like a column the model's own statement
+// defines. Both land in the same CTE namespace.
+func checkNoOwnedColumnShadowed(computed []string) error {
+	for _, name := range computed {
+		if modelOwnedColumns[name] {
+			return fmt.Errorf("the source query computes a column called %q, which is the name a "+
+				"model's own state gives one of its columns: name it something else with as=", name)
+		}
+	}
+	return nil
 }

@@ -949,8 +949,11 @@ func (p *QueryPlan) sourceProjections() []SourceProjection {
 		alias, expr := sel.Alias, sel.Expr
 		if alias == "" {
 			alias = extractFieldAlias(expr)
-			if alias == expr {
-				continue // a bare column, not a computed one
+			// An expression can contain the separator without being aliased, as
+			// CAST(x AS String) does, and its trailing token is not a name. Only a
+			// plain one is an alias.
+			if alias == expr || !IsPlainFieldName(alias) {
+				continue
 			}
 			expr = strings.TrimSpace(expr[:len(expr)-len(alias)])
 			expr = strings.TrimSuffix(strings.TrimSuffix(expr, " AS"), " as")

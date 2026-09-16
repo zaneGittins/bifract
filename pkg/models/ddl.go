@@ -251,7 +251,11 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 		b.WriteString("\n")
 
 		// Final SELECT from last CTE
-		b.WriteString(buildFinalSelect(def, mt, prevCTE, opts))
+		final, err := buildFinalSelect(def, mt, prevCTE, opts)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(final)
 	} else {
 		// No extractions: SELECT directly from the source table.
 		direct, err := buildDirectSelect(def, mt, sourceTable, whereExtra, opts, fractalID)
@@ -265,7 +269,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 }
 
 // buildFinalSelect builds the final GROUP BY SELECT from the last CTE.
-func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts aggOpts) string {
+func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts aggOpts) (string, error) {
 	var b strings.Builder
 	switch mt {
 	case ModelTypeRarity:
@@ -325,8 +329,22 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts 
 			b.WriteString(fmt.Sprintf("WHERE %s\n", strings.Join(guards, " AND ")))
 		}
 		b.WriteString("GROUP BY fractal_id, entity_val, bucket")
+	case ModelTypeTLSH:
+		b.WriteString("SELECT fractal_id,\n")
+		b.WriteString(fmt.Sprintf("    %s AS digest,\n", def.KeyFields[0]))
+		b.WriteString("    timestamp AS first_seen,\n")
+		b.WriteString("    timestamp AS last_seen,\n")
+		b.WriteString("    toUInt64(1) AS event_count,\n")
+		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
+		b.WriteString(fmt.Sprintf("WHERE %s\n", tlshDigestGuard(def.KeyFields[0])))
+		b.WriteString("GROUP BY fractal_id, digest, first_seen, last_seen")
+	default:
+		// An unhandled type used to fall through to an empty string, which rendered
+		// a WITH clause with no SELECT after it.
+		return "", fmt.Errorf("model select: %s has no aggregation over a computed scan", mt)
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).

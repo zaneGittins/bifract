@@ -3,6 +3,8 @@ package models
 import (
 	"strings"
 	"testing"
+
+	"bifract/pkg/parser"
 )
 
 // TestFilterConditionWildcard locks in that a `field="*"` model filter compiles to
@@ -161,5 +163,86 @@ func TestExtractionCTEProjectsTheModelKeys(t *testing.T) {
 	}
 	if !strings.Contains(sql, "AS computer_name") {
 		t.Errorf("the base CTE does not project the partition key, so the final SELECT names a column nothing defines:\n%s", sql)
+	}
+}
+
+// Every model type that can reach the CTE path must render an aggregation over
+// it. TLSH could not: a source with a dictionary lookup routed it there and the
+// statement ended after the WITH clause, which is not valid SQL at all.
+func TestEveryModelTypeRendersOverAComputedScan(t *testing.T) {
+	opts := parser.QueryOptions{
+		DictionaryDatabase: "logs",
+		Dictionaries:       map[string]map[string]string{"d": {"k": "dict_d"}},
+		PatternDicts:       map[string]bool{"dict_d": true},
+	}
+	const bql = `* | match(dict="d", field=image, column=k, include=[tool], require=true)`
+	for _, c := range []struct {
+		mt  ModelType
+		def ModelDefinition
+	}{
+		{ModelTypeRarity, ModelDefinition{PartitionKey: "computer_name", ValueKey: "tool"}},
+		{ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"computer_name"}}},
+		{ModelTypeVolumeBaseline, ModelDefinition{KeyFields: []string{"computer_name"}}},
+		{ModelTypeTLSH, ModelDefinition{KeyFields: []string{"tlsh"}}},
+	} {
+		def := c.def
+		def.SourceBQL = bql
+		resolved, err := resolveSourceFor(def, opts)
+		if err != nil {
+			t.Errorf("%s: resolve: %v", c.mt, err)
+			continue
+		}
+		sql, err := BuildBackfillInsert(resolved, c.mt, "tgt", "logs", "", "f1")
+		if err != nil {
+			t.Errorf("%s: build: %v", c.mt, err)
+			continue
+		}
+		if !strings.Contains(sql, ")\nSELECT ") {
+			t.Errorf("%s: the WITH clause is not followed by a SELECT:\n%s", c.mt, sql)
+		}
+		if !strings.Contains(sql, "AS tool") {
+			t.Errorf("%s: the scan does not project the column its filter reads:\n%s", c.mt, sql)
+		}
+	}
+}
+
+// A source that computes a column named like one the model's own state defines
+// shadowed it: a projection aliased `timestamp` replaced the event time with a
+// dictionary string, and first_seen, last_seen and the day set came from that.
+func TestSourceCannotShadowAModelColumn(t *testing.T) {
+	for _, name := range []string{"timestamp", "first_seen", "entity_key", "value_val", "days"} {
+		def := ModelDefinition{
+			SourceBQL: `* | match(dict="d", field=image, column=k, include=[` + name + `], require=true)`,
+			KeyFields: []string{"computer_name"},
+		}
+		if err := validateSourceProducedKeys(ModelTypeFirstSeen, def); err == nil {
+			t.Errorf("a source computing %q must be refused: the model defines that column itself", name)
+		}
+	}
+}
+
+// resolveSourceFor compiles a definition's source the way Manager.ResolveSource
+// does, for the tests that have no database behind them.
+func resolveSourceFor(def ModelDefinition, dicts parser.QueryOptions) (ModelDefinition, error) {
+	src, err := compileSourcePredicates(def.SourceBQL, dicts)
+	if err != nil {
+		return def, err
+	}
+	def.compiled, def.compiledSet = src.preds, true
+	def.projections = modelProjections(src.projections, def.Extractions)
+	return def, nil
+}
+
+// An extraction output shares the CTE namespace with the model's own columns, so
+// naming one after them collides the same way a computed column does.
+func TestExtractionCannotShadowAModelColumn(t *testing.T) {
+	def := ModelDefinition{
+		SourceBQL:    `level="dns"`,
+		Extractions:  []ExtractionStep{{FromField: "norm_log", Pattern: "(x)", OutputField: "timestamp"}},
+		PartitionKey: "computer_name",
+		ValueKey:     "timestamp",
+	}
+	if err := validateSourceProducedKeys(ModelTypeRarity, def); err == nil {
+		t.Fatal("an extraction named after a model column must be refused")
 	}
 }
