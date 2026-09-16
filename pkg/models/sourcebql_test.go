@@ -225,3 +225,48 @@ func TestGeneratedColumnCannotBeAKey(t *testing.T) {
 		t.Fatalf("a definition without a source query must be unaffected: %v", err)
 	}
 }
+
+// A model builds its own SELECT from the predicates alone, so a predicate that
+// leans on a column the query projected is undefined there. The translator emits
+// a bare alias for a registry-known field, which is valid only inside the
+// statement that defines it.
+func TestSourceRejectsAPredicateOnAProjectedColumn(t *testing.T) {
+	opts := parser.QueryOptions{
+		DictionaryDatabase: "logs",
+		Dictionaries:       map[string]map[string]string{"rmm": {"path": "dict_rmm"}},
+		PatternDicts:       map[string]bool{"dict_rmm": true},
+	}
+	const lookup = `event_id="1" | match(dict="rmm", field=image, column=path, include=[tool], require=true)`
+
+	// Through a binding the filter compiles to a bare `tool`, which the model's
+	// scan does not define.
+	_, err := compileSourcePredicates(`let &a := tool =~ "putty"; `+lookup+` | NOT &a`, opts)
+	if err == nil {
+		t.Fatal("a predicate on a projected column must be refused, not rendered into the model's scan")
+	}
+	if !strings.Contains(err.Error(), "a column the query computes") {
+		t.Fatalf("unhelpful reason: %v", err)
+	}
+
+	// Written directly the same test inlines the lookup and is self-contained.
+	preds, err := compileSourcePredicates(lookup+` | NOT (tool =~ "putty")`, opts)
+	if err != nil {
+		t.Fatalf("a direct filter inlines the lookup and must be accepted: %v", err)
+	}
+	if !strings.Contains(strings.Join(preds, " "), "dictGetOrDefault") {
+		t.Fatalf("expected the lookup inlined into the predicate, got %v", preds)
+	}
+}
+
+// A column name appearing inside a SQL string literal is not a column reference:
+// dictGetOrDefault(..., 'tool', ...) names the dictionary attribute.
+func TestStripSQLStrings(t *testing.T) {
+	in := `dictGetOrDefault('logs.d', 'tool', toString(fields.` + "`image`" + `::String), '') = '1' AND tool > 2`
+	got := stripSQLStrings(in)
+	if strings.Count(got, "tool") != 1 {
+		t.Fatalf("want only the bare reference left, got %q", got)
+	}
+	if strings.Contains(got, "logs.d") {
+		t.Fatalf("quoted literal survived: %q", got)
+	}
+}

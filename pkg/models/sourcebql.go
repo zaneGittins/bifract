@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -64,6 +65,9 @@ func compileSourcePredicates(bql string, dicts parser.QueryOptions) ([]string, e
 		return nil, err
 	}
 	if err := checkNoScopeLeak(preds); err != nil {
+		return nil, err
+	}
+	if err := checkNoProjectedRefs(preds, computedFields(bql, nil)); err != nil {
 		return nil, err
 	}
 	return preds, nil
@@ -277,4 +281,49 @@ func computedFields(bql string, extractions []ExtractionStep) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// checkNoProjectedRefs refuses predicates that lean on a column the query's own
+// SELECT projects. The translator resolves a registry-known field to its bare
+// alias, which is valid in the statement that defines it and undefined in the
+// model's, where the projection is the model's own: the scan would fail with an
+// unknown identifier. A plain filter inlines the expression and is unaffected; a
+// binding routes through expression compilation, which does not.
+func checkNoProjectedRefs(preds []string, computed []string) error {
+	if len(computed) == 0 {
+		return nil
+	}
+	bare := stripSQLStrings(strings.Join(preds, " AND "))
+	for _, name := range computed {
+		if !regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(bare) {
+			continue
+		}
+		return fmt.Errorf("source query: this filter reads %q through a column the query computes, "+
+			"which a model's own scan does not define; filter on the value directly "+
+			"(the same test written without the binding compiles to the lookup itself)", name)
+	}
+	return nil
+}
+
+// stripSQLStrings blanks single-quoted literals so a column name is not found
+// inside one: dictGetOrDefault(..., 'tool', ...) names the attribute, not a column.
+func stripSQLStrings(sql string) string {
+	var b strings.Builder
+	inStr := false
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		if c == '\'' {
+			// A doubled quote escapes itself inside a literal.
+			if inStr && i+1 < len(sql) && sql[i+1] == '\'' {
+				i++
+				continue
+			}
+			inStr = !inStr
+			continue
+		}
+		if !inStr {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
