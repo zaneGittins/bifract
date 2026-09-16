@@ -122,3 +122,29 @@ func TestStateTargetFollowsTopology(t *testing.T) {
 		t.Error("a network model must never write its results table")
 	}
 }
+
+// A failure recorded before a restart has to clear when the model recovers. The
+// first version compared the new outcome to a zero value and wrote nothing, so a
+// model went on reporting an error it no longer had.
+func TestOutcomeChanged(t *testing.T) {
+	s := &StateMaintainer{lastErr: map[string]string{}}
+
+	// A fresh process knows nothing, so even a success is written out.
+	if !s.outcomeChanged("m1", "") {
+		t.Fatal("the first outcome after a restart must be written, including a success")
+	}
+	s.lastErr["m1"] = ""
+	if s.outcomeChanged("m1", "") {
+		t.Fatal("an unchanged success must not write on every cycle")
+	}
+	if !s.outcomeChanged("m1", "boom") {
+		t.Fatal("a new failure must be written")
+	}
+	s.lastErr["m1"] = "boom"
+	if s.outcomeChanged("m1", "boom") {
+		t.Fatal("the same failure must not write on every cycle")
+	}
+	if !s.outcomeChanged("m1", "") {
+		t.Fatal("recovery must clear the recorded failure")
+	}
+}

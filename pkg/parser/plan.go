@@ -110,6 +110,10 @@ type QueryPlan struct {
 	AnalyzeFieldsList      []string
 	AnalyzeFieldsScanLimit int
 
+	// rowLimitByCommand records that a command (head, limit, a viz command's
+	// limit=) bounded the row set, rather than the caller's MaxRows.
+	rowLimitByCommand bool
+
 	// usesBindingSet records that a result-set binding was rendered. Like join(),
 	// its subquery carries its own copy of the time bounds, so a caller must not
 	// re-translate the query over a narrower window.
@@ -906,7 +910,8 @@ func (p *QueryPlan) outerHasColumn(column string) bool {
 // sourceWhereComplete reports whether the source stage's WHERE is the query's
 // whole row selection. Every construct that selects rows somewhere else is
 // listed: another stage, a GROUP BY or HAVING, a wrapper layer, a predicate
-// deferred above the scan, a dedup, or a subquery carrying its own scope.
+// deferred above the scan, a dedup, a command-set row limit, or a subquery
+// carrying its own scope.
 func (p *QueryPlan) sourceWhereComplete() bool {
 	if len(p.Stages) != 1 || len(p.WindowLayers) > 0 {
 		return false
@@ -921,7 +926,7 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	if p.IsAggregated || p.HasGroupBy || p.IsAnalyze || p.IsChain || p.IsProcessTree {
 		return false
 	}
-	if p.IsJoin || p.ModelLookupSQL != "" || p.usesBindingSet {
+	if p.IsJoin || p.ModelLookupSQL != "" || p.usesBindingSet || p.rowLimitByCommand {
 		return false
 	}
 	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == ""

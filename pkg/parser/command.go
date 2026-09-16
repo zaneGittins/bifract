@@ -89,6 +89,21 @@ func IsAggregatingCommand(name string) bool { return aggregatingCommandNames[str
 // IsTransformCommand reports whether a command adds a per-row computed column.
 func IsTransformCommand(name string) bool { return transformCommandNames[strings.ToLower(name)] }
 
+// rewriteInPlaceCommandNames holds the transforms that write their result back to
+// the field they read, rather than adding an underscore-prefixed column of their
+// own. The distinction matters to any caller that keeps a query's predicates but
+// not its projection: the column keeps a log field's name while no longer holding
+// that field's stored value. TestTransformOutputsAreDeclared fails the build if a
+// command joins or leaves this set.
+var rewriteInPlaceCommandNames = map[string]bool{
+	"lowercase": true,
+	"uppercase": true,
+	"replace":   true,
+}
+
+// RewritesFieldInPlace reports whether a command overwrites the field it reads.
+func RewritesFieldInPlace(name string) bool { return rewriteInPlaceCommandNames[strings.ToLower(name)] }
+
 // getCommandHandler returns the handler for a command name, or nil if not found.
 func getCommandHandler(name string) CommandHandler {
 	return commandHandlers[strings.ToLower(name)]

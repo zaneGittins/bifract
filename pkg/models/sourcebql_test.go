@@ -173,3 +173,55 @@ func TestComputedFieldsNamesEnrichmentColumns(t *testing.T) {
 		t.Fatalf("computedFields = %v, want %v", got, want)
 	}
 }
+
+// A command's own row limit is row selection the model never applies: the author
+// sees a few hundred rows and the model would aggregate every matching log.
+func TestSourceBQLRejectsACommandRowLimit(t *testing.T) {
+	cases := map[string]string{
+		`* | pgraph(limit=200)`: "nothing to draw",
+		`* | graph(child=process_guid, parent=parent_process_guid, limit=25)`: "nothing to draw",
+		`* | worldmap(lat=latitude, lon=longitude, limit=50)`:                 "nothing to draw",
+		`* | limit(10)`: "reorders or drops rows",
+	}
+	for query, want := range cases {
+		_, err := compileSourcePredicates(query, parser.QueryOptions{})
+		if err == nil {
+			t.Errorf("%s: expected a rejection", query)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want an error mentioning %q, got: %v", query, want, err)
+		}
+	}
+}
+
+// A source that rewrites a field in place leaves a column carrying that field's
+// name and a different value. The model's state holds what the log stored, so the
+// alert would look up the rewritten value against unrewritten state and match
+// nothing, with nothing to say a detection was missed.
+func TestRewrittenFieldCannotBeAKey(t *testing.T) {
+	bad := ModelDefinition{SourceBQL: `event_id="1" | lowercase(image)`, KeyFields: []string{"computer_name", "image"}}
+	if err := validateSourceProducedKeys(bad); err == nil {
+		t.Fatal("keying on a field the source lowercases must be refused")
+	}
+	// Keying on something the source left alone is fine.
+	ok := ModelDefinition{SourceBQL: `event_id="1" | lowercase(image)`, KeyFields: []string{"computer_name"}}
+	if err := validateSourceProducedKeys(ok); err != nil {
+		t.Fatalf("an untouched field must still be allowed: %v", err)
+	}
+}
+
+// Every column BQL generates is underscore-prefixed, so such a name in a
+// definition is one of those and never a log field the model's state can hold.
+func TestGeneratedColumnCannotBeAKey(t *testing.T) {
+	def := ModelDefinition{SourceBQL: `event_id="1" | concat(image, user, as=k)`, KeyFields: []string{"_concat"}}
+	if err := validateSourceProducedKeys(def); err == nil {
+		t.Fatal("keying on a generated column must be refused")
+	}
+	// A model with no source query is unaffected: there is no query to have
+	// generated the name, and its logs may carry a field spelled that way.
+	legacy := ModelDefinition{Filter: []FilterCondition{{Field: "a", Op: "=", Value: "1"}}, KeyFields: []string{"_id"}}
+	if err := validateSourceProducedKeys(legacy); err != nil {
+		t.Fatalf("a definition without a source query must be unaffected: %v", err)
+	}
+}

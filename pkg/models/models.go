@@ -406,3 +406,14 @@ func parseLeadingInt(s string) (int, error) {
 	}
 	return strconv.Atoi(s[:end])
 }
+
+// SelectsSubset reports whether the definition's source selects fewer than all of
+// its fractal's rows. Deliberately conservative: a caller that needs a superset of
+// the rows, such as the tlsh() digest probe, must read "maybe" as "yes", and a
+// source query is only counted as selecting everything when it says so outright.
+func (d ModelDefinition) SelectsSubset() bool {
+	if bql := strings.TrimSpace(d.SourceBQL); bql != "" {
+		return bql != "*"
+	}
+	return len(d.Filter) > 0
+}

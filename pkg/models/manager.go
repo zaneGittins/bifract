@@ -1680,8 +1680,10 @@ type TLSHIndex struct {
 // allowed to return a SUPERSET of the digests a query could see; reading a partial
 // set would drop real matches with no sign that anything was missed.
 //
-// A model carrying a definition filter is excluded: it indexes a subset of its
-// fractal's rows, so it cannot answer for a query whose filters differ.
+// A model whose source selects a subset of its fractal's rows is excluded: it
+// cannot answer for a query whose filters differ. That test reads the source query
+// as well as the structured filter, because a source can carry a filter the
+// structured form has no shape for and would otherwise read as unfiltered.
 func (m *Manager) ListTLSHIndexes(ctx context.Context, fractalIDs []string, keyField string) (map[string]TLSHIndex, map[string]string, error) {
 	result := make(map[string]TLSHIndex)
 	// Models excluded because they carry a definition filter, keyed by fractal, so
@@ -1713,7 +1715,7 @@ func (m *Manager) ListTLSHIndexes(ctx context.Context, fractalIDs []string, keyF
 		if len(def.KeyFields) != 1 || def.KeyFields[0] != keyField {
 			continue
 		}
-		if len(def.Filter) > 0 {
+		if def.SelectsSubset() {
 			// Indexes a subset of the fractal's rows, so it cannot answer for a query
 			// whose filters differ. Recorded rather than dropped: "no index" is a
 			// baffling error when one is sitting there in the UI.

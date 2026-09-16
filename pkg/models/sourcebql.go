@@ -135,6 +135,10 @@ func validateSourcePipeline(pipeline *parser.PipelineNode) error {
 			return fmt.Errorf("%s() cannot be a model source: it reorders or drops rows, which "+
 				"has no meaning when the model reads one window at a time", cmd.Name)
 		}
+		if vizCommands[name] {
+			return fmt.Errorf("%s() cannot be a model source: it renders a picture from a bounded "+
+				"sample, and a model has nothing to draw", cmd.Name)
+		}
 	}
 	return nil
 }
@@ -156,6 +160,13 @@ var windowUnsafeCommands = map[string]string{
 // rowChanging commands reorder or truncate, which the model's own aggregation owns.
 var rowChanging = map[string]bool{
 	"sort": true, "head": true, "tail": true, "limit": true, "dedup": true, "table": true,
+}
+
+// vizCommands draw a result from a bounded sample of the rows. Their limit is row
+// selection the model would not apply, so a source carrying one would aggregate
+// every matching log while the author saw a few hundred.
+var vizCommands = map[string]bool{
+	"graph": true, "graphworld": true, "pgraph": true, "worldmap": true,
 }
 
 // sourceProducedFields names the columns a source query introduces: assignment
@@ -193,19 +204,30 @@ func sourceProducedFields(bql string) map[string]bool {
 				out[g] = true
 			}
 		}
+		// A transform that writes back to the field it read leaves a column holding
+		// a log field's name and a different value. The model stores what the log
+		// stored, so keying on it would index the value the author did not mean.
+		if parser.RewritesFieldInPlace(cmd.Name) {
+			if f := b.Str("field", ""); f != "" {
+				out[f] = true
+			}
+		}
 	}
 	return out
 }
 
 // validateSourceProducedKeys rejects a definition that shapes its state around a
-// column only the source query computes.
+// column the source query computes rather than one the log stores. Only a
+// definition carrying a source query is checked: without one there is no query to
+// have computed anything, and a model stored before source queries existed may
+// legitimately key on any field name its logs carry.
 func validateSourceProducedKeys(def ModelDefinition) error {
+	if strings.TrimSpace(def.SourceBQL) == "" {
+		return nil
+	}
 	produced := map[string]bool{}
 	for _, f := range computedFields(def.SourceBQL, def.Extractions) {
 		produced[f] = true
-	}
-	if len(produced) == 0 {
-		return nil
 	}
 	nf := def.Network.WithDefaults()
 	named := []struct{ what, value string }{
@@ -224,9 +246,19 @@ func validateSourceProducedKeys(def ModelDefinition) error {
 		named = append(named, struct{ what, value string }{"extraction from_field", ext.FromField})
 	}
 	for _, n := range named {
-		if n.value != "" && produced[n.value] {
+		if n.value == "" {
+			continue
+		}
+		if produced[n.value] {
 			return fmt.Errorf("%s %q is computed by the source query, not stored on the log: "+
-				"a model reads only the source's filter, so that column does not exist when its state is built", n.what, n.value)
+				"a model reads only the source's filter, so its state would hold the stored value "+
+				"rather than the computed one; extract it with regex(... as=%s) instead", n.what, n.value, n.value)
+		}
+		// BQL names every column a command generates with a leading underscore, so
+		// such a name in a definition is one of those and never a log field.
+		if strings.HasPrefix(n.value, "_") {
+			return fmt.Errorf("%s %q names a column the query generates, not a log field: "+
+				"give the value a name with as=, or key on the field it was computed from", n.what, n.value)
 		}
 	}
 	return nil

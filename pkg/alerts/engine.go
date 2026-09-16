@@ -393,7 +393,7 @@ func alertEvalInterval() time.Duration {
 // alertEngineLockID is the Postgres advisory lock ID used to ensure only one
 // Bifract replica evaluates alerts at a time. The value is arbitrary but must
 // be consistent across all replicas.
-const alertEngineLockID int64 = 0x6269667261637401 // "bifract\x01"
+const alertEngineLockID = storage.LockAlertEngine
 
 // evaluateAllAlerts runs one evaluation cycle for every enabled alert.
 // Only one cycle runs at a time; if the previous cycle hasn't finished

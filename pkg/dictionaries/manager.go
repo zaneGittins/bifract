@@ -1303,7 +1303,13 @@ func (m *Manager) ReloadDictionary(ctx context.Context, id string) error {
 // surfaces only when a query runs, as a BAD_ARGUMENTS (code 36) from dictGet; this
 // converges that state at startup instead. Every statement is idempotent.
 func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
-	rows, err := m.pg.Query(ctx, `SELECT id, COALESCE(key_column, ''), columns, case_insensitive_keys FROM dictionaries`)
+	// kind is read here, not defaulted: it decides the layout and the source query,
+	// so omitting it rebuilt every IP_TRIE and REGEXP_TREE as a plain HASHED list.
+	// A pattern list then failed every match() with code 36, and a network list did
+	// something worse, comparing the probe to the range as a string and matching
+	// nothing at all with no error to say a detection had stopped working.
+	rows, err := m.pg.Query(ctx, `SELECT id, COALESCE(key_column, ''), columns, case_insensitive_keys,
+	       COALESCE(kind, 'value') FROM dictionaries`)
 	if err != nil {
 		return 0, err
 	}
@@ -1311,7 +1317,7 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 	for rows.Next() {
 		d := &Dictionary{}
 		var colsJSON []byte
-		if err := rows.Scan(&d.ID, &d.KeyColumn, &colsJSON, &d.CaseInsensitiveKeys); err != nil {
+		if err := rows.Scan(&d.ID, &d.KeyColumn, &colsJSON, &d.CaseInsensitiveKeys, &d.Kind); err != nil {
 			rows.Close()
 			return 0, err
 		}

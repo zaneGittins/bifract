@@ -912,8 +912,15 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 			defaultTimeOrder = true
 		}
 	}
-	if activeStage.Layer.Limit == "" && opts.MaxRows > 0 {
-		activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
+	if activeStage.Layer.Limit == "" {
+		if opts.MaxRows > 0 {
+			activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
+		}
+	} else {
+		// A command bounded the rows, not the caller's MaxRows. That is row
+		// selection rather than presentation, so a caller reading only the scan
+		// predicates would read past it.
+		plan.rowLimitByCommand = true
 	}
 
 	// --- Defer out-of-scope ORDER BY (window fields, join/model_lookup outputs) ---

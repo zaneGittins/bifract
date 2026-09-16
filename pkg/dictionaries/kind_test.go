@@ -1,6 +1,7 @@
 package dictionaries
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -184,5 +185,47 @@ func TestValidateRowKeys(t *testing.T) {
 	}
 	if err := validateRowKeys(dict, mixed); err == nil {
 		t.Error("a batch carrying a bad key must be refused whole")
+	}
+}
+
+// Every ClickHouse object a list owns is built from its kind, so every query that
+// loads a list in order to build one has to read it. The startup reconcile did
+// not, and rebuilt every IP_TRIE and REGEXP_TREE as a plain HASHED list on each
+// restart: a pattern list then failed match() outright, and a network list
+// compared the probe to the range as a string and quietly matched nothing.
+func TestEveryDDLLoadReadsKind(t *testing.T) {
+	if !strings.Contains(dictColumns, "kind") {
+		t.Fatal("dictColumns must read kind: every read built from it would default to a value list")
+	}
+	src, err := os.ReadFile("manager.go")
+	if err != nil {
+		t.Fatalf("read manager.go: %v", err)
+	}
+	for _, stmt := range selectsFromDictionaries(string(src)) {
+		// dictColumns is the shared column list, asserted above.
+		if strings.Contains(stmt, "kind") || strings.Contains(stmt, "dictColumns") {
+			continue
+		}
+		t.Errorf("a dictionary SELECT does not read kind, so anything it builds "+
+			"defaults to a value list:\n  %s", strings.Join(strings.Fields(stmt), " "))
+	}
+}
+
+// selectsFromDictionaries returns every SELECT in src that reads the dictionaries
+// table, from the keyword to the table name.
+func selectsFromDictionaries(src string) []string {
+	var out []string
+	for i := 0; ; {
+		j := strings.Index(src[i:], "FROM dictionaries")
+		if j < 0 {
+			return out
+		}
+		end := i + j + len("FROM dictionaries")
+		start := strings.LastIndex(src[:end], "SELECT ")
+		if start < 0 {
+			return out
+		}
+		out = append(out, src[start:end])
+		i = end
 	}
 }

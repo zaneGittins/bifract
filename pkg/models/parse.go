@@ -86,8 +86,8 @@ func ParseSourceQuery(query string) ParsedSource {
 				res.FilterComplete = false
 				continue
 			}
-			fc, perr := conditionToFilter(c)
-			if perr != "" {
+			fc, ok := conditionToFilter(c)
+			if !ok {
 				res.FilterComplete = false
 				continue
 			}
@@ -107,8 +107,8 @@ func ParseSourceQuery(query string) ParsedSource {
 	for _, cmd := range ast.Commands {
 		switch strings.ToLower(cmd.Name) {
 		case "cidr":
-			field, value, perr := cidrArgs(cmd)
-			if perr != "" {
+			field, value, ok := cidrArgs(cmd)
+			if !ok {
 				res.FilterComplete = false
 				continue
 			}
@@ -129,16 +129,16 @@ func ParseSourceQuery(query string) ParsedSource {
 			extIndex[ext.OutputField] = len(res.Extractions)
 			res.Extractions = append(res.Extractions, ext)
 		case "lowercase":
-			field, perr := singleFieldArg(cmd, "lowercase")
+			field, bound := singleFieldArg(cmd)
 			idx, ok := extIndex[field]
-			if perr != "" || !ok {
+			if !bound || !ok {
 				res.FilterComplete = false
 				continue
 			}
 			res.Extractions[idx].Lowercase = true
 		case "len", "length":
-			field, outName, perr := lenCommandArgs(cmd)
-			if perr != "" {
+			field, outName, ok := lenCommandArgs(cmd)
+			if !ok {
 				res.FilterComplete = false
 				continue
 			}
@@ -162,8 +162,8 @@ func ParseSourceQuery(query string) ParsedSource {
 			res.FilterComplete = false
 			continue
 		}
-		min, perr := minLengthFromHaving(hv)
-		if perr != "" {
+		min, ok := minLengthFromHaving(hv)
+		if !ok {
 			res.FilterComplete = false
 			continue
 		}
@@ -193,56 +193,49 @@ func collectConditionFields(c parser.ConditionNode, out *[]string) {
 }
 
 // minLengthFromHaving converts a `_len <op> n` comparison to a MinLength value.
-// `>= n` maps to n; `> n` maps to n+1. Other operators are rejected.
-func minLengthFromHaving(hv parser.HavingCondition) (int, string) {
+// `>= n` maps to n; `> n` maps to n+1. Any other shape is a filter the query
+// applies and the structured form does not carry.
+func minLengthFromHaving(hv parser.HavingCondition) (int, bool) {
 	n, err := strconv.Atoi(strings.TrimSpace(hv.Value))
 	if err != nil {
-		return 0, fmt.Sprintf("len() comparison needs a whole number, got %q", hv.Value)
+		return 0, false
 	}
 	switch hv.Operator {
 	case ">=":
-		return n, ""
+		return n, true
 	case ">":
-		return n + 1, ""
-	default:
-		return 0, fmt.Sprintf("len() supports only >= or > (got %q); use len(x) | _len >= n", hv.Operator)
+		return n + 1, true
 	}
+	return 0, false
 }
 
 // lenCommandArgs returns the measured field and the output field name of a
 // len() command. The output defaults to _len, or the as= value when given.
-func lenCommandArgs(cmd parser.CommandNode) (field, outName, errMsg string) {
+func lenCommandArgs(cmd parser.CommandNode) (field, outName string, ok bool) {
 	b, err := parser.BindCommand(cmd)
 	if err != nil {
-		return "", "", err.Error()
+		return "", "", false
 	}
 	field, outName = b.Str("field", ""), b.Str("as", "_len")
-	if field == "" {
-		return "", "", "len() requires a field, e.g. len(tld) | _len >= 4"
-	}
-	return field, outName, ""
+	return field, outName, field != ""
 }
 
-// singleFieldArg returns the lone field argument of a command like lowercase(x),
-// rejecting an output rename (a second argument).
-func singleFieldArg(cmd parser.CommandNode, name string) (string, string) {
+// singleFieldArg returns the lone field argument of a command like lowercase(x).
+// An output rename means the command produces a new column rather than adorning
+// an extraction, which the structured form has no shape for.
+func singleFieldArg(cmd parser.CommandNode) (string, bool) {
 	b, err := parser.BindCommand(cmd)
-	if err != nil {
-		return "", err.Error()
-	}
-	if b.Has("output") || b.Has("as") {
-		return "", fmt.Sprintf("%s() output rename is not supported; apply it to a field in place", name)
+	if err != nil || b.Has("output") || b.Has("as") {
+		return "", false
 	}
 	field := b.Str("field", "")
-	if field == "" {
-		return "", fmt.Sprintf("%s() requires a field", name)
-	}
-	return field, ""
+	return field, field != ""
 }
 
-// conditionToFilter maps a parsed filter condition to a model FilterCondition,
-// returning a friendly error string for unsupported operators.
-func conditionToFilter(c parser.ConditionNode) (FilterCondition, string) {
+// conditionToFilter maps a parsed filter condition to a model FilterCondition.
+// The second result is false for a condition the structured form cannot hold; the
+// query still runs it, so there is nothing to report, only a chip not to draw.
+func conditionToFilter(c parser.ConditionNode) (FilterCondition, bool) {
 	switch c.Operator {
 	case "=", "":
 		if c.IsRegex {
@@ -251,42 +244,37 @@ func conditionToFilter(c parser.ConditionNode) (FilterCondition, string) {
 				op = "!~"
 			}
 			// Undo the forward-slash escaping applied by bqlRegexLiteral.
-			return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, ""
+			return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, true
 		}
 		if c.Negate {
-			return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, ""
+			return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, true
 		}
-		return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, ""
+		return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, true
 	case "!=":
 		if c.Negate {
-			return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, ""
+			return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, true
 		}
-		return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, ""
+		return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, true
 	case "~", "!~":
 		op := "~"
 		if c.Operator == "!~" || c.Negate {
 			op = "!~"
 		}
-		return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, ""
-	case ">", "<", ">=", "<=":
-		return FilterCondition{}, fmt.Sprintf("comparison operator %q is not supported in model filters", c.Operator)
+		return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, true
 	default:
-		return FilterCondition{}, fmt.Sprintf("operator %q is not supported in model filters", c.Operator)
+		return FilterCondition{}, false
 	}
 }
 
 // cidrArgs extracts the field and range from a cidr() command's arguments,
 // tolerating both positional and field=/range= forms.
-func cidrArgs(cmd parser.CommandNode) (field, value, errMsg string) {
+func cidrArgs(cmd parser.CommandNode) (field, value string, ok bool) {
 	b, err := parser.BindCommand(cmd)
 	if err != nil {
-		return "", "", err.Error()
+		return "", "", false
 	}
 	field, value = b.Str("field", ""), b.Str("range", "")
-	if field == "" || value == "" {
-		return "", "", "cidr() requires a field and a CIDR range, e.g. cidr(src_ip, \"10.0.0.0/8\")"
-	}
-	return field, value, ""
+	return field, value, field != "" && value != ""
 }
 
 // regexCommandToExtraction maps a regex() command to an ExtractionStep. The

@@ -35,9 +35,9 @@ The editor is a split panel:
 
 - **Left - source query.** Write a BQL filter to narrow which logs feed the model, and use `regex()` to pull fields out of `norm_log` (the normalized event text) or a specific field. Run it against a time range to preview matching logs and the fields you extracted. `raw_log` cannot be an extraction source: it is only retained for 7 days, while model state is long-lived.
 
-  The source accepts any BQL that keeps one row per log, so a filter can consult a [dictionary](dictionaries.md) (`match()`), a CIDR range, a regex or a list. What it cannot accept is a query that changes the row set: an aggregation, `sort`/`head`/`dedup`, or a command that reads outside the window a cycle covers (`join`, `chain`, `model_lookup`, `tlsh`, `pgr`). The editor names the reason inline.
+  The source accepts any BQL that keeps one row per log, so a filter can consult a [dictionary](dictionaries.md) (`match()`), a CIDR range, a regex or a list. What it cannot accept is a query that changes the row set: an aggregation, `sort`/`head`/`dedup`, anything that bounds the rows it returns (`limit`, a chart's `limit=`), or a command that reads outside the window a cycle covers (`join`, `chain`, `model_lookup`, `tlsh`, `pgr`). The editor names the reason inline.
 
-  A model builds its state from the source's filter, not its projection: a column the query computes (`:=`, `sprintf()`, `concat()`) exists only in the preview and cannot be a key. Use a `regex(... as=)` extraction for a derived key.
+  A model builds its state from the source's filter, not its projection, so a key has to be a field the log stores. Three things are refused as keys: a column the query computes (`:=`, `sprintf()`, `match(include=[...])`), a generated column (any name starting with `_`), and a field the source rewrote in place (`lowercase()`, `uppercase()`, `replace()`), whose stored value is not the rewritten one. Use a `regex(... as=)` extraction for a derived key: the model renders that itself.
 - **Right - shape and alert.** Pick the model type, map its keys to extracted or base fields, and optionally attach an alert.
 
 Models capture new logs from the moment they are created. They do **not** retroactively process history until you seed it (see below).

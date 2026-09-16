@@ -227,3 +227,27 @@ func TestCHFieldRefEscapesBackticks(t *testing.T) {
 		t.Errorf("unexpected rendering for a plain field: %s", chFieldRef("tlsh"))
 	}
 }
+
+// tlsh() may only probe an index holding a superset of the digests a query could
+// see. A source filter that lives only in SourceBQL still narrows the index, and
+// reading it as unfiltered drops real matches with nothing to say they were missed.
+func TestSelectsSubsetReadsTheSourceQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		def  ModelDefinition
+		want bool
+	}{
+		{"empty", ModelDefinition{}, false},
+		{"bare star", ModelDefinition{SourceBQL: "*"}, false},
+		{"structured filter", ModelDefinition{Filter: []FilterCondition{{Field: "a", Op: "=", Value: "1"}}}, true},
+		{"source only", ModelDefinition{SourceBQL: `event_id="1"`}, true},
+		// The shapes the structured form cannot hold, which is the whole point.
+		{"or", ModelDefinition{SourceBQL: `a="1" OR b="2"`}, true},
+		{"dictionary", ModelDefinition{SourceBQL: `* | match(dict="d", field=image, column=k, include=[v], require=true)`}, true},
+	}
+	for _, c := range cases {
+		if got := c.def.SelectsSubset(); got != c.want {
+			t.Errorf("%s: SelectsSubset() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

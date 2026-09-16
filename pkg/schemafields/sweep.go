@@ -22,7 +22,7 @@ import (
 
 // sweepLockID elects a single replica. The queries are read-only, so concurrent
 // runs would be correct, just wasteful.
-const sweepLockID int64 = 0x6269667261637402
+const sweepLockID = storage.LockSchemaFieldSweep
 
 // sweepTimeout bounds one complete pass so a slow cluster cannot leave the
 // advisory lock held and starve every later sweep.

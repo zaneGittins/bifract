@@ -34,8 +34,8 @@ type ScorerEngine struct {
 }
 
 // scorerLockID is the Postgres advisory lock ID ensuring only one replica scores at
-// a time. Distinct from the alert engine's lock so the two run independently.
-const scorerLockID int64 = 0x6269667261637402 // "bifract\x02"
+// a time. Its own id, so it never blocks or is blocked by another worker.
+const scorerLockID = storage.LockModelScorer
 
 const (
 	// scorerPerModelPairCap hard-bounds the pairs scored per model per cycle so a

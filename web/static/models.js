@@ -1246,7 +1246,11 @@ ${m.description ? `<div class="me-sec">
     },
 
     // Build a BQL source query string from a model definition (mirrors GenerateSourceQuery in Go).
+    // The author's own query wins: rendering from def.filter would drop every filter
+    // the structured form cannot hold, so the detail view would describe a wider
+    // query than the model runs and a pivot would search rows it never counted.
     _buildSourceQuery(def) {
+        if (def && typeof def.source_bql === 'string' && def.source_bql.trim()) return def.source_bql.trim();
         const lines = [];
         const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
         const relit = s => {

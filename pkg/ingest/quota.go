@@ -124,8 +124,8 @@ func (qm *QuotaManager) NotifyCleared(fractalID string) {
 }
 
 // rolloverAdvisoryLockID is a Postgres session advisory-lock id ensuring only one
-// app-tier replica runs the rollover sweep at a time. "bifract\x02".
-const rolloverAdvisoryLockID int64 = 0x6269667261637402
+// app-tier replica runs the rollover sweep at a time.
+const rolloverAdvisoryLockID = storage.LockQuotaRollover
 
 // StartRolloverSweep launches the background loop that enforces rollover-action
 // quotas by dropping whole (fractal, oldest ingest day) partitions. Only the app tier

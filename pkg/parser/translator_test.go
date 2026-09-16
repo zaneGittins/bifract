@@ -5490,6 +5490,10 @@ func TestSourceWhereComplete(t *testing.T) {
 		`* | histogram(bytes, buckets=5)`:                 false,
 		`* | join(user) { event_id="1" | groupby(user) }`: false,
 		`let &h := * | groupby(host); * | in(host, &h)`:   false,
+		// A command's own limit bounds the row set; the caller's MaxRows does not.
+		`* | head(5)`:           false,
+		`* | limit(10)`:         false,
+		`* | pgraph(limit=200)`: false,
 	}
 	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)

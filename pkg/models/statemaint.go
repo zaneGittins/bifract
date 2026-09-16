@@ -52,10 +52,16 @@ type StateMaintainer struct {
 	// ingestActive defers a cycle while ingestion is under pressure, so state
 	// maintenance never competes with the write path it was moved off.
 	ingestActive func() bool
+
+	// lastErr is the message each model last reported, so the Postgres write
+	// happens when it changes rather than on every cycle. A failing model retries
+	// its window forever, which is right, but it would otherwise do so with nothing
+	// but a log line to say the model has stopped advancing.
+	lastErr map[string]string
 }
 
 func NewStateMaintainer(pg *storage.PostgresClient, ch *storage.ClickHouseClient, mgr *Manager) *StateMaintainer {
-	return &StateMaintainer{pg: pg, ch: ch, mgr: mgr}
+	return &StateMaintainer{pg: pg, ch: ch, mgr: mgr, lastErr: map[string]string{}}
 }
 
 // SetIngestPressureFunc registers a callback checked before each cycle.
@@ -140,17 +146,77 @@ func stateTarget(r maintainRow, clustered bool) string {
 	return r.table
 }
 
+// stateMaintLockID elects the replica that advances model state. Without it every
+// replica reads the same window and inserts the same aggregates, which an
+// AggregatingMergeTree sums rather than deduplicates, so every count is multiplied
+// by the replica count.
+const stateMaintLockID = storage.LockModelState
+
 func (s *StateMaintainer) cycle(ctx context.Context) {
+	unlock, acquired := s.pg.TryAdvisoryLock(ctx, stateMaintLockID)
+	if !acquired {
+		return
+	}
+	defer unlock()
+
 	rows, err := s.dueModels(ctx)
 	if err != nil {
 		log.Printf("[Model State] list models: %v", err)
 		return
 	}
+	live := make(map[string]bool, len(rows))
 	for _, r := range rows {
+		live[r.id] = true
+		msg := ""
 		if err := s.maintain(ctx, r); err != nil {
-			log.Printf("[Model State] %s (%s): %v", r.name, r.id, err)
+			msg = err.Error()
+		}
+		s.recordOutcome(ctx, r, msg)
+	}
+	// A model that stopped being due keeps no stale entry.
+	for id := range s.lastErr {
+		if !live[id] {
+			delete(s.lastErr, id)
 		}
 	}
+}
+
+// knowsOutcome reports whether this process has already recorded an outcome for
+// the model. A fresh one has not, whatever Postgres holds.
+func (s *StateMaintainer) knowsOutcome(id string) bool {
+	_, known := s.lastErr[id]
+	return known
+}
+
+// outcomeChanged reports whether msg needs writing. Presence matters as well as
+// value: a fresh process knows nothing, so its first outcome is always written.
+// Comparing values alone left a failure recorded before a restart standing
+// forever, because the first success after it compared equal to the zero value.
+func (s *StateMaintainer) outcomeChanged(id, msg string) bool {
+	prev, known := s.lastErr[id]
+	return !known || prev != msg
+}
+
+// recordOutcome surfaces a model's state-maintenance failure where an operator can
+// see it, and clears it on recovery. The status stays active on purpose: 'error'
+// would take the model out of dueModelsQuery and it would never retry.
+func (s *StateMaintainer) recordOutcome(ctx context.Context, r maintainRow, msg string) {
+	known := s.knowsOutcome(r.id)
+	if !s.outcomeChanged(r.id, msg) {
+		return
+	}
+	switch {
+	case msg != "":
+		log.Printf("[Model State] %s (%s): %v", r.name, r.id, msg)
+	case known:
+		log.Printf("[Model State] %s (%s): recovered", r.name, r.id)
+	}
+	if _, err := s.pg.Exec(ctx,
+		`UPDATE analytics_models SET error_message = $1 WHERE id = $2`, msg, r.id); err != nil {
+		log.Printf("[Model State] %s: record outcome: %v", r.name, err)
+		return
+	}
+	s.lastErr[r.id] = msg
 }
 
 // dueModelsQuery selects the models a cycle maintains. state_watermark IS NOT

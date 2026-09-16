@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -388,6 +389,38 @@ func TestAggregatingCommandsSaySo(t *testing.T) {
 		if res.IsAggregated && !IsAggregatingCommand(name) {
 			t.Errorf("%s() collapses rows but is not registered with registerAggregatingCommand; "+
 				"an assignment, dedup or model join after it will bind to the wrong stage", name)
+		}
+	}
+}
+
+// A transform either adds a column of its own or writes its result back to the
+// field it read. Which one it does is a fact callers depend on, so it is declared
+// rather than inferred: a caller that keeps a query's predicates without its
+// projection sees a rewritten column still carrying a log field's name while no
+// longer holding that field's stored value.
+func TestTransformOutputsAreDeclared(t *testing.T) {
+	alias := regexp.MustCompile(`\bAS ([a-zA-Z_][a-zA-Z0-9_]*)`)
+	for name, probe := range commandProbes {
+		if !IsTransformCommand(name) {
+			continue
+		}
+		sql, err := probeOutput(probe.base)
+		if err != nil {
+			continue // TestEveryCommandHasAProbe owns probe validity
+		}
+		// An output whose own name is also a field the expression reads is a
+		// rewrite in place: lower(fields.`image`) AS image. An output the command
+		// invented (_hash, or an as= name) reads some other field.
+		rewrites := false
+		for _, m := range alias.FindAllStringSubmatch(sql, -1) {
+			if out := m[1]; strings.Contains(sql, "fields.`"+out+"`") {
+				rewrites = true
+			}
+		}
+		if rewrites != RewritesFieldInPlace(name) {
+			t.Errorf("%s(): rewrites a field in place = %v, but RewritesFieldInPlace says %v; "+
+				"update rewriteInPlaceCommandNames, and check every caller that keeps predicates "+
+				"without the projection\n  %s", name, rewrites, RewritesFieldInPlace(name), sql)
 		}
 	}
 }

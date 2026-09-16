@@ -64,7 +64,7 @@ func (c *PostgresClient) Initialize(ctx context.Context, initSQL string) error {
 	// Use an advisory lock so that when multiple replicas start simultaneously,
 	// only one runs the schema initialization at a time. This prevents race
 	// conditions on CREATE TYPE and other non-idempotent DDL.
-	const schemaLockID int64 = 0x6269667261637400 // "bifract\0"
+	const schemaLockID = LockSchemaProvision
 	conn, err := c.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get connection for schema lock: %w", err)
@@ -1440,6 +1440,32 @@ func (c *PostgresClient) Exec(ctx context.Context, query string, args ...interfa
 // release) and true if the lock was acquired, or nil and false if another
 // session already holds it. The lock is automatically released if the returned
 // connection is closed (e.g. on process crash).
+// Advisory lock ids, in one place because they were not: three independent
+// background workers each picked "bifract\x02" while reasoning only about
+// themselves, so whichever took it first silently stopped the other two. A worker
+// that fails to acquire returns without doing its work and without logging, which
+// is what made the collision invisible. TestAdvisoryLockIDsAreDistinct fails the
+// build if two ever match again.
+//
+// The value is arbitrary and session-scoped: changing one is safe and needs no
+// migration.
+const (
+	// LockSchemaProvision serializes first-start schema provisioning.
+	LockSchemaProvision int64 = 0x6269667261637400
+	// LockAlertEngine elects the replica that evaluates alerts.
+	LockAlertEngine int64 = 0x6269667261637401
+	// LockModelScorer elects the replica that scores scheduled models.
+	LockModelScorer int64 = 0x6269667261637402
+	// LockSchemaFieldSweep elects the replica that samples fields for type hints.
+	LockSchemaFieldSweep int64 = 0x6269667261637403
+	// LockQuotaRollover elects the replica that drops partitions past a quota.
+	LockQuotaRollover int64 = 0x6269667261637404
+	// LockModelState elects the replica that advances model state windows. Without
+	// it every replica reads the same window and inserts the same aggregates, which
+	// an AggregatingMergeTree sums rather than deduplicates.
+	LockModelState int64 = 0x6269667261637405
+)
+
 func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unlock func(), acquired bool) {
 	conn, err := c.db.Conn(ctx)
 	if err != nil {
