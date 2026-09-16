@@ -36,20 +36,19 @@ func TestBuildNetStateMVWildcard(t *testing.T) {
 		t.Fatalf("unexpected parse errors: %v", parsed.Errors)
 	}
 	def := ModelDefinition{Filter: parsed.Filter}
-	mv, err := BuildNetStateMV(def, ModelTypeBeacon, "state_tbl", "mv_name", "f1")
+	sql, err := BuildNetStateInsert(def, "state_tbl", "logs", "", "f1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(mv, "= '*'") {
-		t.Fatalf("MV contains a literal wildcard match that would never match:\n%s", mv)
+	if strings.Contains(sql, "= '*'") {
+		t.Fatalf("state insert contains a literal wildcard match that would never match:\n%s", sql)
 	}
 }
 
 // A model definition is stored configuration, not query text, so nothing else
 // constrains it. Extraction fields in particular are written into the statement
 // unquoted (an extraction output becomes a plain CTE column), so a name carrying
-// SQL became a second select expression in the model's materialized view, which
-// then ran on every insert into logs.
+// SQL became a second select expression in the model's state aggregation.
 func TestModelDefinitionRejectsFieldNamesThatAreNotFieldNames(t *testing.T) {
 	hostile := []string{
 		"out, (SELECT 1) AS pwned",

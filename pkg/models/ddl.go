@@ -33,17 +33,17 @@ type aggOpts struct {
 
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
 // fractalID is the owning fractal: it scopes the MV's source scan so a model only
+// much history is read so scoring stays bounded at scale.
+func volumeScoreBounds(timeBucket string) (lower, upper string) {
+	if timeBucket == "hour" {
+		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
+	}
+	return "today() - 90", "today()"
+}
+
 // ever aggregates its own fractal's logs. See fractalScopeClause.
-func GenerateDDL(def ModelDefinition, mt ModelType, tableName, mvName, fractalID string) (string, string, error) {
-	tableSQL, err := generateTableDDL(def, mt, tableName)
-	if err != nil {
-		return "", "", err
-	}
-	mvSQL, err := generateMVDDL(def, mt, tableName, mvName, fractalID)
-	if err != nil {
-		return "", "", err
-	}
-	return tableSQL, mvSQL, nil
+func GenerateDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
+	return generateTableDDL(def, mt, tableName)
 }
 
 func generateTableDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
@@ -131,29 +131,6 @@ func volumeBucketColType(timeBucket string) string {
 // volumeScoreBounds returns (lowerBound, upperBound) predicates on the bucket
 // column for read-time scoring. The upper bound excludes the current, still
 // incomplete bucket (whose count is artificially low); the lower bound caps how
-// much history is read so scoring stays bounded at scale.
-func volumeScoreBounds(timeBucket string) (lower, upper string) {
-	if timeBucket == "hour" {
-		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
-	}
-	return "today() - 90", "today()"
-}
-
-func generateMVDDL(def ModelDefinition, mt ModelType, tableName, mvName, fractalID string) (string, error) {
-	// Build the SELECT body using CTE chains. The MV reads from the local `logs`
-	// table, scoped to the owning fractal and carrying no other extra predicate.
-	selectSQL, err := buildModelSelect(def, mt, "logs", "", aggOpts{}, fractalID)
-	if err != nil {
-		return "", err
-	}
-
-	// DEFINER runs the MV as the privileged creator (default), so the least-privilege
-	// ingest user can push inserts through it without needing SELECT on log data.
-	// Keep this on every logs-sourced MV (see ReconcileMaterializedViewSecurity).
-	return fmt.Sprintf(`CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s
-DEFINER = default SQL SECURITY DEFINER AS
-%s`, mvName, tableName, selectSQL), nil
-}
 
 // BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
 // seeds a model from historical logs. It reuses the exact SELECT logic of the
@@ -578,10 +555,24 @@ func netFieldMap(def ModelDefinition) NetworkFieldMap {
 
 // BuildNetStateMV returns the materialized view that maintains per-pair-per-day
 // aggregation state at ingest. The model's filter is applied here so the state
-// reflects the model's own scope.
-func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName, fractalID string) (string, error) {
+
+// BuildNetStateInsert is the network equivalent of BuildBackfillInsert: the same
+// rolling-state aggregation the view used to compute at insert, over an explicit
+// window, so a scheduled reader can maintain the state instead.
+func BuildNetStateInsert(def ModelDefinition, stateTable, sourceTable, whereExtra, fractalID string) (string, error) {
+	sel, err := buildNetStateSelect(def, sourceTable, whereExtra, fractalID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("INSERT INTO %s\n%s", stateTable, sel), nil
+}
+
+// buildNetStateSelect aggregates connection rows into rolling per-day state.
+// whereExtra, when non-empty, is ANDed into the scan so a caller can bound it to
+// an ingest window.
+func buildNetStateSelect(def ModelDefinition, sourceTable, whereExtra, fractalID string) (string, error) {
 	if fractalID == "" {
-		return "", fmt.Errorf("net state mv: owning fractal_id is required to scope the source scan")
+		return "", fmt.Errorf("net state: owning fractal_id is required to scope the source scan")
 	}
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
@@ -591,9 +582,6 @@ func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName, frac
 	dur := chNumericFieldRef(nf.DurationField)
 
 	var b strings.Builder
-	// DEFINER: run as the privileged creator so the least-privilege ingest user can
-	// push inserts through without SELECT on logs (see ReconcileMaterializedViewSecurity).
-	b.WriteString(fmt.Sprintf("CREATE MATERIALIZED VIEW IF NOT EXISTS %s TO %s\nDEFINER = default SQL SECURITY DEFINER AS\n", mvName, stateTable))
 	b.WriteString("SELECT fractal_id,\n")
 	b.WriteString(fmt.Sprintf("    %s AS src,\n", src))
 	b.WriteString(fmt.Sprintf("    %s AS dst,\n", dst))
@@ -605,8 +593,11 @@ func BuildNetStateMV(def ModelDefinition, mt ModelType, stateTable, mvName, frac
 	b.WriteString(fmt.Sprintf("    sum(%s) AS dur_sum,\n", dur))
 	b.WriteString("    min(timestamp) AS first_ts,\n")
 	b.WriteString("    max(timestamp) AS last_ts\n")
-	b.WriteString("FROM logs\n")
+	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != ''", fractalScopeClause(fractalID), src, dst))
+	if whereExtra != "" {
+		b.WriteString(fmt.Sprintf("\n    AND %s", whereExtra))
+	}
 	for _, fc := range def.Filter {
 		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
 	}

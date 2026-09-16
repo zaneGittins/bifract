@@ -13,7 +13,11 @@ func tlshTestDef() ModelDefinition {
 }
 
 func TestTLSHModelDDL(t *testing.T) {
-	tableSQL, mvSQL, err := GenerateDDL(tlshTestDef(), ModelTypeTLSH, "`t`", "`mv`", "fractal-a")
+	tableSQL, err := GenerateDDL(tlshTestDef(), ModelTypeTLSH, "`t`")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mvSQL, err := BuildBackfillInsert(tlshTestDef(), ModelTypeTLSH, "`t`", "logs", "", "fractal-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +26,7 @@ func TestTLSHModelDDL(t *testing.T) {
 	mustContain(t, tableSQL, "ORDER BY (fractal_id, digest)", "sorted by fractal then digest")
 	mustContain(t, tableSQL, "AggregatingMergeTree", "aggregating engine")
 
-	mustContain(t, mvSQL, "fractal_id = 'fractal-a'", "mv scoped to owner")
+	mustContain(t, mvSQL, "fractal_id = 'fractal-a'", "state scan scoped to owner")
 	mustContain(t, mvSQL, "AS digest", "digest projection")
 	mustContain(t, mvSQL, "match(", "digest shape guard")
 	mustContain(t, mvSQL, "GROUP BY fractal_id, digest, first_seen, last_seen", "group by digest")
@@ -190,7 +194,7 @@ func TestTLSHDDLRejectsMalformedKeyFieldsWithoutPanicking(t *testing.T) {
 		{KeyFields: []string{""}},
 		{KeyFields: []string{"tlsh", "image"}},
 	} {
-		if _, _, err := GenerateDDL(def, ModelTypeTLSH, "`t`", "`mv`", "f1"); err == nil {
+		if _, err := BuildBackfillInsert(def, ModelTypeTLSH, "`t`", "logs", "", "f1"); err == nil {
 			t.Errorf("key_fields %v: expected an error, got none", def.KeyFields)
 		}
 	}

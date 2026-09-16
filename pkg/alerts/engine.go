@@ -856,6 +856,10 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 	if toTime.Sub(fromTime) > maxEvalWindow {
 		toTime = fromTime.Add(maxEvalWindow)
 	}
+	// Never evaluate past the state of a model this alert consults.
+	if toTime = e.modelWatermark(ctx, alert, toTime); toTime.Sub(fromTime) < minEvalWindow {
+		return nil
+	}
 
 	opts, err := e.buildQueryOpts(ctx, alert, fromTime, toTime, cache)
 	if err != nil {

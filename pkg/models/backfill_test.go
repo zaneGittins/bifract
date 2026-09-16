@@ -83,20 +83,23 @@ func TestBuildBackfillInsert_RarityWithExtraction(t *testing.T) {
 
 // Critical safety: the materialized view DDL must be unaffected by the refactor —
 // it reads the local logs table with no extra predicate and performs no backfill.
-func TestMVDDLUnchanged(t *testing.T) {
+// The maintainer reads the local table over an explicit ingest window; the
+// backfill reads the distributed one over a time window. Both come from the same
+// SELECT, so this pins that the window a caller passes is the only difference.
+func TestStateInsertCarriesOnlyTheCallersWindow(t *testing.T) {
 	def := ModelDefinition{
 		Filter:       []FilterCondition{{Field: "event_name", Op: "=", Value: "x"}},
 		PartitionKey: "computer_name",
 		ValueKey:     "sin_port",
 	}
-	_, mvSQL, err := GenerateDDL(def, ModelTypeRarity, "`t`", "`mv`", "f1")
+	sql, err := BuildBackfillInsert(def, ModelTypeRarity, "`t`", "logs", "", "f1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, mvSQL, "CREATE MATERIALIZED VIEW IF NOT EXISTS `mv` TO `t`", "mv ddl")
-	mustContain(t, mvSQL, "FROM logs\n", "mv reads local logs")
-	mustNotContain(t, mvSQL, "logs_distributed", "mv must not read distributed table")
-	mustNotContain(t, mvSQL, "ingest_timestamp <", "mv must not carry a backfill predicate")
+	mustContain(t, sql, "INSERT INTO `t`", "state insert")
+	mustContain(t, sql, "FROM logs\n", "reads the table the caller named")
+	mustNotContain(t, sql, "logs_distributed", "must not read a table the caller did not name")
+	mustNotContain(t, sql, "ingest_timestamp", "no window unless the caller passes one")
 }
 
 func TestBackfillChunks(t *testing.T) {

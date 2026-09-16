@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// A model MV must aggregate only its owning fractal's logs. Before this was
-// enforced, a model's MV carried only a non-empty-fractal check, so a model created
-// in one fractal ran its aggregation over every fractal's inserts and stored rows
-// that only the read-side predicate kept out of view.
-func TestModelMVsAreFractalScoped(t *testing.T) {
+// A model's state aggregation must read only its owning fractal's logs. Before
+// this was enforced the scan carried only a non-empty-fractal check, so a model
+// created in one fractal aggregated every fractal's rows and stored data that only
+// the read-side predicate kept out of view.
+func TestModelStateSelectIsFractalScoped(t *testing.T) {
 	cases := []struct {
 		name string
 		mt   ModelType
@@ -26,28 +26,29 @@ func TestModelMVsAreFractalScoped(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, mvSQL, err := GenerateDDL(tc.def, tc.mt, "`t`", "`mv`", "fractal-a")
+			sql, err := BuildBackfillInsert(tc.def, tc.mt, "`t`", "logs", "", "fractal-a")
 			if err != nil {
 				t.Fatal(err)
 			}
-			mustContain(t, mvSQL, "fractal_id = 'fractal-a'", "mv scoped to owner")
-			mustNotContain(t, mvSQL, "fractal_id != ''", "mv must not scan every fractal")
+			mustContain(t, sql, "fractal_id = 'fractal-a'", "state scan scoped to owner")
+			mustNotContain(t, sql, "fractal_id != ''", "state scan must not read every fractal")
 		})
 	}
 }
 
-func TestNetStateMVIsFractalScoped(t *testing.T) {
+func TestNetStateSelectIsFractalScoped(t *testing.T) {
 	def := ModelDefinition{Network: &NetworkFieldMap{SrcField: "src_ip", DstField: "dst_ip", PortField: "dst_port"}}
-	mvSQL, err := BuildNetStateMV(def, ModelTypeBeacon, "`state`", "`mv`", "fractal-a")
+	sql, err := BuildNetStateInsert(def, "`state`", "logs", "", "fractal-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, mvSQL, "fractal_id = 'fractal-a'", "net state mv scoped to owner")
-	mustNotContain(t, mvSQL, "fractal_id != ''", "net state mv must not scan every fractal")
+	mustContain(t, sql, "fractal_id = 'fractal-a'", "net state scan scoped to owner")
+	mustNotContain(t, sql, "fractal_id != ''", "net state scan must not read every fractal")
 }
 
-// The backfill reuses the MV's SELECT, so it inherits the same scope. An unscoped
-// backfill would read every fractal's history for one fractal's model.
+// The backfill and the scheduled maintainer share this SELECT, so both inherit
+// the same scope. An unscoped read would take every fractal's history into one
+// fractal's model.
 func TestBackfillIsFractalScoped(t *testing.T) {
 	def := ModelDefinition{KeyFields: []string{"image"}}
 	sql, err := BuildBackfillInsert(def, ModelTypeFirstSeen, "`t`", "logs_distributed",
@@ -61,13 +62,13 @@ func TestBackfillIsFractalScoped(t *testing.T) {
 
 // An empty owner must fail loudly. Rendering it would compare fractal_id against
 // the empty string, which silently matches only pre-fractal legacy rows.
-func TestModelDDLRejectsEmptyFractal(t *testing.T) {
+func TestModelStateSelectRejectsEmptyFractal(t *testing.T) {
 	def := ModelDefinition{KeyFields: []string{"image"}}
-	if _, _, err := GenerateDDL(def, ModelTypeFirstSeen, "`t`", "`mv`", ""); err == nil {
-		t.Fatal("expected GenerateDDL to reject an empty fractal_id")
+	if _, err := BuildBackfillInsert(def, ModelTypeFirstSeen, "`t`", "logs", "", ""); err == nil {
+		t.Fatal("expected the state insert to reject an empty fractal_id")
 	}
-	if _, err := BuildNetStateMV(ModelDefinition{}, ModelTypeBeacon, "`s`", "`mv`", ""); err == nil {
-		t.Fatal("expected BuildNetStateMV to reject an empty fractal_id")
+	if _, err := BuildNetStateInsert(ModelDefinition{}, "`s`", "logs", "", ""); err == nil {
+		t.Fatal("expected the net state insert to reject an empty fractal_id")
 	}
 }
 

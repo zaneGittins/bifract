@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS logs (
     -- arbitrary substring and regex matches. Only the index stores the lowercased form.
     INDEX norm_log_ngram_lc lower(norm_log) TYPE text(tokenizer = ngrams(3)) GRANULARITY 1,
     INDEX log_id_bloom log_id TYPE bloom_filter(0.001) GRANULARITY 1,
+    -- Prunes the ingest-time window scheduled model maintenance reads each cycle.
+    -- The partition key only prunes to the day, so without this every cycle reads
+    -- the whole current day.
+    INDEX idx_ingest_ts ingest_timestamp TYPE minmax GRANULARITY 1,
     -- Skip indexes on normalized fields. Defined inline so all new parts are indexed
     -- on insert without requiring MATERIALIZE INDEX. Direct sub-column references
     -- (no CAST) are required — ClickHouse's skip index optimizer does not match

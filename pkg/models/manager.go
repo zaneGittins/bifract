@@ -524,11 +524,25 @@ func (m *Manager) SetAlertEnabled(ctx context.Context, id string, enabled bool) 
 
 func isCHDDLTimeout(err error) bool { return storage.IsDDLTimeout(err) }
 
+// dropStateMV removes a model's insert-time view. Safe to call when there is
+// none: state maintenance moved to a scheduled reader, and a view left behind
+// would write the same rows the reader writes.
+func (m *Manager) dropStateMV(ctx context.Context, mvName string) error {
+	if mvName == "" {
+		return nil
+	}
+	sql := m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", mvName))
+	if err := m.ch.ExecSchema(ctx, sql); err != nil && !isCHDDLTimeout(err) {
+		return fmt.Errorf("drop model mv: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	if mt.IsScheduled() {
 		return m.createNetworkCHObjects(ctx, id, fractalID, def, mt, tableName, mvName)
 	}
-	tableSQL, mvSQL, err := GenerateDDL(def, mt, "`"+tableName+"`", "`"+mvName+"`", fractalID)
+	tableSQL, err := GenerateDDL(def, mt, "`"+tableName+"`")
 	if err != nil {
 		return err
 	}
@@ -540,11 +554,16 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 		return fmt.Errorf("create model table: %w", err)
 	}
 
-	mvSQL = m.ch.InjectOnCluster(mvSQL)
-	if err := m.ch.ExecSchema(ctx, mvSQL); err != nil && !isCHDDLTimeout(err) {
-		// Roll back table creation
+	// No materialized view: state is maintained by StateMaintainer over
+	// logs.ingest_timestamp. Dropping any view left by an older release is what
+	// keeps the two from both writing and doubling every aggregate.
+	if _, err := m.pg.Exec(ctx,
+		`UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("seed state watermark: %w", err)
+	}
+	if err := m.dropStateMV(ctx, mvName); err != nil {
 		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
-		return fmt.Errorf("create model mv: %w", err)
+		return err
 	}
 
 	// In cluster mode, create a Distributed table for fan-out reads.
@@ -581,15 +600,17 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 		return fmt.Errorf("create results table: %w", err)
 	}
 
-	mvSQL, err := BuildNetStateMV(def, mt, "`"+stateName+"`", "`"+mvName+"`", fractalID)
-	if err != nil {
-		return err
+	// No materialized view here either: rolling state is maintained by
+	// StateMaintainer, which keeps the dictionary lookups a source may carry out
+	// of the ingest path.
+	if _, err := m.pg.Exec(ctx,
+		`UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("seed state watermark: %w", err)
 	}
-	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
-		// Roll back state + results so a failed create leaves nothing behind.
+	if err := m.dropStateMV(ctx, mvName); err != nil {
 		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
 		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
-		return fmt.Errorf("create state mv: %w", err)
+		return err
 	}
 
 	// Distributed tables (cluster mode): one over the results table for fan-out
@@ -1527,102 +1548,49 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 // already indexed from other fractals stay put, unreadable, until their parts age out.
 //
 // Idempotent and safe at every startup; best-effort, so one bad model never blocks boot.
-func (m *Manager) ReconcileMVFractalScope(ctx context.Context) {
-	rows, err := m.pg.Query(ctx,
-		`SELECT id, COALESCE(fractal_id::text,''), model_type, definition, ch_table_name, ch_mv_name
-		 FROM analytics_models WHERE status = 'active'`)
+// ReconcileStateViews removes the insert-time views that used to maintain model
+// state. Model state is now kept by StateMaintainer over logs.ingest_timestamp; a
+// view left behind by an older release would write the same rows the maintainer
+// writes, doubling every aggregate in the state table.
+//
+// Runs at startup, before the maintainer starts, so the two can never overlap.
+func (m *Manager) ReconcileStateViews(ctx context.Context) {
+	// Sweep ClickHouse rather than what Postgres references: a model deleted
+	// before its view was dropped leaves an orphan that still fires on every
+	// insert, writing into a state table nothing reads.
+	rows, err := m.ch.QuerySchema(ctx,
+		"SELECT name FROM system.tables WHERE database = currentDatabase() AND engine = 'MaterializedView' AND startsWith(name, 'model_mv_')")
 	if err != nil {
-		log.Printf("models: reconcile mv scope: %v", err)
+		log.Printf("models: reconcile state views: list: %v", err)
 		return
 	}
-	type target struct {
-		id, fractalID, table, mv string
-		mt                       ModelType
-		def                      ModelDefinition
-	}
-	var targets []target
-	for rows.Next() {
-		var t target
-		var mt, defJSON string
-		if err := rows.Scan(&t.id, &t.fractalID, &mt, &defJSON, &t.table, &t.mv); err != nil {
-			log.Printf("models: reconcile mv scope: scan: %v", err)
-			rows.Close()
-			return
-		}
-		if t.fractalID == "" || t.mv == "" {
-			continue
-		}
-		if err := json.Unmarshal([]byte(defJSON), &t.def); err != nil {
-			log.Printf("models: reconcile mv scope: model %s definition: %v", t.id, err)
-			continue
-		}
-		t.mt = ModelType(mt)
-		targets = append(targets, t)
-	}
-	rows.Close()
-
-	rescoped := 0
-	for _, t := range targets {
-		// The MV that a scoped generator would emit carries this predicate verbatim.
-		// Its absence is what identifies a view created before scoping was enforced.
-		//
-		// count() rather than a bare select so "the view is gone" is a zero row
-		// count instead of a scan error indistinguishable from a transient failure.
-		want := fractalScopeClause(t.fractalID)
-		var present uint64
-		var createQuery string
-		err := m.ch.QueryRow(ctx,
-			`SELECT count(), any(create_table_query) FROM system.tables
-			 WHERE database = currentDatabase() AND name = ? AND engine = 'MaterializedView'`,
-			t.mv).Scan(&present, &createQuery)
-		if err != nil {
-			log.Printf("models: reconcile mv scope: probe %s: %v", t.mv, err)
-			continue
-		}
-		// An absent view is rebuilt here too. ReconcileCHObjects only fires when the
-		// target TABLE is missing, so a view lost on its own (an interrupted rescope,
-		// an out-of-band DROP) would otherwise never come back and the model would
-		// stop updating silently, forever.
-		if present > 0 && strings.Contains(createQuery, want) {
-			continue
-		}
-		if present == 0 {
-			log.Printf("models: reconcile mv scope: %s is missing; rebuilding", t.mv)
-		}
-
-		var mvSQL string
-		if t.mt.IsScheduled() {
-			mvSQL, err = BuildNetStateMV(t.def, t.mt, "`"+chModelStateName(t.id)+"`", "`"+t.mv+"`", t.fractalID)
-		} else {
-			_, mvSQL, err = GenerateDDL(t.def, t.mt, "`"+t.table+"`", "`"+t.mv+"`", t.fractalID)
-		}
-		if err != nil {
-			log.Printf("models: reconcile mv scope: build %s: %v", t.mv, err)
-			continue
-		}
-		// A DDL timeout on the DROP is NOT success here. The recreate below is
-		// CREATE ... IF NOT EXISTS, so if the old view survived the timeout the
-		// create silently does nothing and the unscoped view stays live. Leave it
-		// for the next startup rather than reporting a rescope that did not happen.
-		if present > 0 {
-			if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP VIEW IF EXISTS `%s`", t.mv))); err != nil {
-				log.Printf("models: reconcile mv scope: drop %s: %v (will retry next startup)", t.mv, err)
-				continue
+	var views []string
+	for _, r := range rows {
+		for _, v := range r {
+			if name, ok := v.(string); ok && name != "" {
+				views = append(views, name)
 			}
 		}
-		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(mvSQL)); err != nil && !isCHDDLTimeout(err) {
-			// The view is already dropped, so the model has stopped updating. Leave
-			// status alone: 'active' is what makes the next startup retry this, and
-			// marking it 'error' would exclude it from both this reconcile and
-			// ReconcileCHObjects (which only fires on a missing target table),
-			// stranding it with no automatic recovery path.
-			log.Printf("models: reconcile mv scope: recreate %s: %v (model is not updating until this succeeds; will retry next startup)", t.mv, err)
+	}
+
+	for _, mv := range views {
+		if err := m.dropStateMV(ctx, mv); err != nil {
+			// Left for the next startup: the maintainer must not run alongside a
+			// view that survived, so this is reported rather than swallowed.
+			log.Printf("models: reconcile state views: %s: %v (will retry next startup)", mv, err)
 			continue
 		}
-		rescoped++
+		log.Printf("models: dropped insert-time state view %s", mv)
 	}
-	if rescoped > 0 {
-		log.Printf("[Models] Re-scoped %d model materialized view(s) to their owning fractal", rescoped)
+
+	// Hand over every model the sweep freed: the views stopped writing at this
+	// instant, so this is where the maintainer must start. Done here rather than
+	// in a migration because the app's own upgrade path does not run them.
+	if _, err := m.pg.Exec(ctx,
+		`UPDATE analytics_models SET ch_mv_name = '',
+		        state_watermark = COALESCE(state_watermark, NOW())
+		 WHERE COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL`); err != nil {
+		log.Printf("models: reconcile state views: hand over: %v", err)
 	}
 }
 

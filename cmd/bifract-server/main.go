@@ -564,9 +564,9 @@ func main() {
 	// Recreate any model whose ClickHouse objects went missing (a log-data reset
 	// drops them by design). Without this the scorer fails on every tick forever.
 	modelManager.ReconcileCHObjects(context.Background())
-	// Re-scope any model MV built before the source scan was bound to its owning
-	// fractal. Rebuilds the trigger only, so no model data is lost.
-	modelManager.ReconcileMVFractalScope(context.Background())
+	// Remove any insert-time view left by an older release, before the maintainer
+	// starts: a surviving view writes the same rows and doubles every aggregate.
+	modelManager.ReconcileStateViews(context.Background())
 	modelManager.RecoverBackfills(context.Background())
 
 	ingestHandler := ingest.NewIngestHandler(ingestQueue, config.MaxBodySize, tokenCache, ingestTokenStorage)
@@ -585,6 +585,15 @@ func main() {
 	scorerEngine.SetIngestPressureFunc(func() bool {
 		return ingestQueue.Depth() > alertDeferThreshold
 	})
+
+	// Model state is maintained here rather than by an insert-time view, so it
+	// yields to ingest pressure like every other background reader.
+	stateMaintainer := models.NewStateMaintainer(pg, db, modelManager)
+	stateMaintainer.SetIngestPressureFunc(func() bool {
+		return ingestQueue.Depth() > alertDeferThreshold
+	})
+	stateMaintainer.Start(models.StateMaintInterval())
+	defer stateMaintainer.Stop()
 
 	// Distribution queue monitor (cluster mode only) — polls system.distribution_queue
 	// every 60s and writes ch.distribution.* events to the system fractal on health changes.

@@ -2066,6 +2066,10 @@ ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_started_at TIMEST
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_error      TEXT        NOT NULL DEFAULT '';
 -- Scheduled (network) models: the background scorer's per-model rescore cursor.
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS last_scored_at      TIMESTAMPTZ;
+-- How far into logs.ingest_timestamp a model's state has been maintained. The
+-- scheduled maintainer reads (state_watermark, cutoff] each cycle; NULL means the
+-- model has never run and starts from its creation time.
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS state_watermark     TIMESTAMPTZ;
 
 -- ============================
 -- Health Notifications

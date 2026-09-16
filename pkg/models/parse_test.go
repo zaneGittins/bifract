@@ -86,18 +86,22 @@ func TestEndToEndBQLToDDL(t *testing.T) {
 	}
 
 	// 4. Compile to ClickHouse DDL — must succeed and reference the extracted field.
-	tableSQL, mvSQL, err := GenerateDDL(def, ModelTypeRarity, "model_test", "model_mv_test", "f1")
+	tableSQL, err := GenerateDDL(def, ModelTypeRarity, "model_test")
 	if err != nil {
 		t.Fatalf("GenerateDDL failed: %v", err)
 	}
+	mvSQL, err := BuildBackfillInsert(def, ModelTypeRarity, "model_test", "logs", "", "f1")
+	if err != nil {
+		t.Fatalf("state insert failed: %v", err)
+	}
 	if tableSQL == "" || mvSQL == "" {
-		t.Fatal("expected non-empty table and MV DDL")
+		t.Fatal("expected non-empty table DDL and state insert")
 	}
 	if !strings.Contains(mvSQL, "tld") {
-		t.Fatalf("MV DDL does not reference extracted field tld:\n%s", mvSQL)
+		t.Fatalf("state insert does not reference extracted field tld:\n%s", mvSQL)
 	}
 	if !strings.Contains(mvSQL, "isIPAddressInRange") {
-		t.Fatalf("MV DDL does not include the cidr guard:\n%s", mvSQL)
+		t.Fatalf("state insert does not include the cidr guard:\n%s", mvSQL)
 	}
 }
 

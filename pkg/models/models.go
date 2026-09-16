@@ -318,6 +318,10 @@ type Model struct {
 	BackfillStartedAt *time.Time `json:"backfill_started_at,omitempty"`
 	BackfillError     string     `json:"backfill_error,omitempty"`
 
+	// StateWatermark is how far into logs.ingest_timestamp this model's state has
+	// been maintained. Nil means it has never run.
+	StateWatermark *time.Time `json:"state_watermark,omitempty"`
+
 	// SourceQuery is the derived BQL source query (filter + extraction) for the
 	// model builder editor. It is computed on read, never persisted.
 	SourceQuery string `json:"source_query,omitempty"`
