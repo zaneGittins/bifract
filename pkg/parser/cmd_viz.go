@@ -387,7 +387,7 @@ func init() {
 	registerAggregatingCommand(&piechartHandler{}, "piechart")
 	registerAggregatingCommand(&barchartHandler{}, "barchart")
 	registerCommand(&graphHandler{}, "graph")
-	registerCommand(&meshHandler{}, "mesh")
+	registerAggregatingCommand(&meshHandler{}, "mesh")
 	registerCommand(&pgraphHandler{}, "pgraph")
 	registerAggregatingCommand(&singlevalHandler{}, "singleval")
 	registerAggregatingCommand(&timechartHandler{}, "timechart")

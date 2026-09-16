@@ -656,8 +656,8 @@ func (h *heatmapHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 func init() {
 	registerCommand(&tableHandler{}, "table")
 	registerCommand(&ptgHandler{}, "ptg")
-	registerCommand(&analyzefieldsHandler{}, "analyzefields")
-	registerCommand(&chainHandler{}, "chain")
+	registerAggregatingCommand(&analyzefieldsHandler{}, "analyzefields")
+	registerAggregatingCommand(&chainHandler{}, "chain")
 	registerAggregatingCommand(&heatmapHandler{}, "heatmap")
 }
 

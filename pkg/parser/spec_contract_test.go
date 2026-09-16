@@ -370,3 +370,24 @@ func TestChartRenderAndLimitAreSeparate(t *testing.T) {
 		t.Errorf("render= should reach the chart config: %s", sql)
 	}
 }
+
+// A command that collapses rows must be registered as aggregating: the registry
+// decides where an assignment, a dedup and a model join attach, so one that
+// aggregates silently puts all three at the wrong stage.
+func TestAggregatingCommandsSaySo(t *testing.T) {
+	for name, probe := range commandProbes {
+		pipeline, err := ParseQuery(probe.base)
+		if err != nil {
+			continue // TestEveryCommandHasAProbe owns probe validity
+		}
+		res, err := TranslateToSQLWithOrder(pipeline, revOpts())
+		if err != nil {
+			continue
+		}
+		// Every base probe is one command over a bare `*`.
+		if res.IsAggregated && !IsAggregatingCommand(name) {
+			t.Errorf("%s() collapses rows but is not registered with registerAggregatingCommand; "+
+				"an assignment, dedup or model join after it will bind to the wrong stage", name)
+		}
+	}
+}

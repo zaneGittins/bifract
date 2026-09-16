@@ -254,7 +254,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	if mlIdx := commandIndex(pipeline.Commands, "model_lookup"); mlIdx >= 0 {
 		aggBefore, aggAfter := false, false
 		for i, cmd := range pipeline.Commands {
-			if IsAggregatingCommand(cmd.Name) || strings.EqualFold(cmd.Name, "chain") {
+			if IsAggregatingCommand(cmd.Name) {
 				if i < mlIdx {
 					aggBefore = true
 				} else if i > mlIdx {
