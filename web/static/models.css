@@ -134,6 +134,7 @@
 .badge-rebuilding { background: rgba(255,204,0,0.15);   color: #ffcc00; }
 .badge-none     { background: rgba(136,136,136,0.15);   color: #888; }
 .badge-backfilling { background: rgba(255,204,0,0.15);  color: #ffcc00; }
+.badge-stalled  { background: rgba(255, 149, 0, 0.15);  color: #ff9500; }
 .badge-paused   { background: rgba(255,204,0,0.15);     color: #ffcc00; }
 .badge-alert-active { background: rgba(52,199,89,0.15); color: #34c759; cursor: pointer; }
 .badge-alert-active:hover { background: rgba(52,199,89,0.3); }

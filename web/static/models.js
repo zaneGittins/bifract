@@ -258,6 +258,13 @@ const AnalyticsModels = {
         const alertBadge = this._alertModeBadge(m);
         const updated = m.updated_at ? TZ.format(m.updated_at, 'date') : '—';
         const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
+        // A model can be active and still not advancing: state maintenance keeps
+        // retrying its window, so the status stays active while the reason sits in
+        // error_message. Without this the model reads as healthy while its state
+        // silently stops moving.
+        const stalledBadge = m.status === 'active' && m.error_message
+            ? ` <span class="model-badge badge-stalled" title="${_esc(m.error_message)}"><span class="model-dot"></span>Not updating</span>`
+            : '';
         const backfillBadge = m.backfill_status === 'running'
             ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data"><span class="model-dot"></span>Backfilling ${this._backfillPct(m)}%</span>`
             : '';
@@ -265,7 +272,7 @@ const AnalyticsModels = {
 <tr>
     <td><button class="model-name-link" data-id="${m.id}" title="Open ${_esc(m.name)}">${_esc(m.name)}</button><div class="model-desc">${_esc(m.description)}</div></td>
     <td>${_esc(this._typeLabel(m.model_type))}</td>
-    <td><span class="model-badge ${statusClass}"${errorTitle}><span class="model-dot"></span>${_esc(this._statusLabel(m.status))}</span>${backfillBadge}</td>
+    <td><span class="model-badge ${statusClass}"${errorTitle}><span class="model-dot"></span>${_esc(this._statusLabel(m.status))}</span>${stalledBadge}${backfillBadge}</td>
     <td>${alertBadge}</td>
     <td>${updated}</td>
 </tr>`;
