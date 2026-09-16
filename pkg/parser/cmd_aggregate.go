@@ -802,7 +802,7 @@ func init() {
 	registerAggregatingCommand(&simpleAggHandler{name: "kurtosis", format: "kurtPop(%s)"}, "kurtosis", "kurt")
 	registerAggregatingCommand(&frequencyHandler{}, "frequency")
 	registerAggregatingCommand(&iqrHandler{}, "iqr")
-	registerCommand(&headtailHandler{}, "headtail")
+	registerAggregatingCommand(&headtailHandler{}, "headtail")
 	registerAggregatingCommand(&selectfirstHandler{}, "selectfirst")
 	registerAggregatingCommand(&selectlastHandler{}, "selectlast")
 	registerAggregatingCommand(&topHandler{}, "top")

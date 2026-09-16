@@ -143,7 +143,11 @@ const FractalListing = {
         if (items.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <div class="empty-icon">⬢</div>
+                    <div class="empty-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.4;">
+                            <path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z"></path>
+                        </svg>
+                    </div>
                     <p class="empty-message">${this.searchQuery ? 'No items match your search' : 'No fractals found'}</p>
                     ${!this.searchQuery ? '<p class="empty-hint">Click "Create Fractal" to get started, or check if the server is running properly.</p>' : ''}
                 </div>

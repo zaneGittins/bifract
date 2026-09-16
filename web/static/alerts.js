@@ -2675,10 +2675,24 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         // Clear results
         const resultsDiv = document.getElementById('queryResults');
         if (resultsDiv) {
-            resultsDiv.innerHTML = '<div class="no-results"><p>Enter a query above to see live results</p></div>';
+            resultsDiv.innerHTML = this.emptyResultsHtml();
         }
 
         this.currentAlert = null;
+    },
+
+    // Matches the static placeholder in index.html so opening the editor never
+    // swaps one empty state for another.
+    emptyResultsHtml() {
+        return `
+            <div class="empty-state">
+                <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M32 8L8 20V44L32 56L56 44V20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" opacity="0.3"/>
+                    <path d="M32 56V32M32 32L8 20M32 32L56 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+                </svg>
+                <p>Run a query to see results that would trigger this alert</p>
+            </div>
+        `;
     },
 
     // Same deferral policy as the search page, with the editor's own appearance.
@@ -2790,14 +2804,14 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
         const rawQuery = queryInput.value.trim();
         if (!rawQuery) {
-            resultsDiv.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Run a query to see results that would trigger this alert</div></div>';
+            resultsDiv.innerHTML = this.emptyResultsHtml();
             if (countDiv) countDiv.textContent = '';
             return;
         }
 
         const query = this.stripComments(rawQuery);
         if (!query) {
-            resultsDiv.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Run a query to see results that would trigger this alert</div></div>';
+            resultsDiv.innerHTML = this.emptyResultsHtml();
             if (countDiv) countDiv.textContent = '';
             return;
         }
@@ -3089,7 +3103,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                     const resultsDiv = document.getElementById('queryResults');
                     const countDiv = document.getElementById('alertResultsCount');
                     if (resultsDiv) {
-                        resultsDiv.innerHTML = '<div class="no-results"><p>Enter a query above to see live results</p></div>';
+                        resultsDiv.innerHTML = this.emptyResultsHtml();
                     }
                     if (countDiv) {
                         countDiv.textContent = '0 results';

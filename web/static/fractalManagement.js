@@ -330,7 +330,12 @@ const FractalManagement = {
         if (container) {
             container.innerHTML = `
                 <div class="error-state">
-                    <div class="error-icon">⚠️</div>
+                    <div class="error-icon">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.4;">
+                            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                            <path d="M12 9v4M12 17h.01"></path>
+                        </svg>
+                    </div>
                     <h3>Failed to Load Fractals</h3>
                     <p>${Utils.escapeHtml(error)}</p>
                     <button onclick="FractalManagement.loadFractals()" class="btn-primary">

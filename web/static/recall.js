@@ -757,7 +757,15 @@ const Recall = {
         const bar = document.getElementById('recallStatusBar');
         if (bar) bar.style.display = 'none';
         const pane = document.getElementById('recallResults');
-        if (pane) pane.innerHTML = '<div class="no-results">Search the archive for older, cold-tiered logs</div>';
+        if (pane) pane.innerHTML = `
+            <div class="empty-state">
+                <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M32 8L8 20V44L32 56L56 44V20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" opacity="0.3"/>
+                    <path d="M32 56V32M32 32L8 20M32 32L56 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
+                </svg>
+                <p>Search the archive for older, cold-tiered logs</p>
+            </div>
+        `;
     },
 
     // Dispatch the single Run/Cancel button: cancel the in-flight job, else search.
