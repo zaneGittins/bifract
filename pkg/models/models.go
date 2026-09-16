@@ -123,6 +123,23 @@ type ModelDefinition struct {
 	TimeBucket string       `json:"time_bucket" yaml:"time_bucket,omitempty"`
 	Alert      *AlertConfig `json:"alert,omitempty" yaml:"alert,omitempty"`
 
+	// SourceBQL is the model's source query as the author wrote it. When set it is
+	// compiled by the BQL translator and supersedes Filter: the structured form can
+	// only carry what ddl.go was taught to render, which is four commands, while
+	// the translator already knows every filter BQL has.
+	//
+	// Filter is kept alongside for a model saved before this existed, and for the
+	// editor's structured view.
+	SourceBQL string `json:"source_bql,omitempty" yaml:"source_bql,omitempty"`
+
+	// compiled holds SourceBQL's predicates once resolved, and compiledSet says the
+	// resolution happened. Unexported so they are never serialized: they are a
+	// per-render detail, not part of the stored definition. A builder handed a
+	// SourceBQL it has no predicates for errors rather than falling back to Filter,
+	// which would silently run a different query than the author wrote.
+	compiled    []string
+	compiledSet bool
+
 	// Network analysis (beacon / long_connection). All additive and omitempty:
 	// definition is stored as JSONB, so no Postgres migration is needed.
 	Network   *NetworkFieldMap `json:"network,omitempty" yaml:"network,omitempty"`

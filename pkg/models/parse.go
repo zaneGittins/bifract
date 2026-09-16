@@ -13,6 +13,10 @@ import (
 // user can fix are reported in Errors (never as a hard failure) so the UI can
 // surface them inline; Warnings are non-fatal advisories.
 type ParsedSource struct {
+	// SourceBQL is the query as written. It is compiled by the translator at
+	// render time, which is every filter BQL has rather than the handful the
+	// structured fields below can carry.
+	SourceBQL       string            `json:"source_bql,omitempty"`
 	Filter          []FilterCondition `json:"filter"`
 	Extractions     []ExtractionStep  `json:"extractions"`
 	CandidateFields []string          `json:"candidate_fields"`
@@ -47,6 +51,16 @@ func ParseSourceQuery(query string, mt ModelType) ParsedSource {
 		res.Errors = append(res.Errors, fmt.Sprintf("could not parse query: %s", err.Error()))
 		return res
 	}
+
+	// A source the translator can compile is kept verbatim and compiled at render
+	// time, which is every filter BQL has rather than the handful below. The
+	// structured fields are still filled in where they can be, so the editor keeps
+	// its field-by-field view of what it understands.
+	if err := validateSourcePipeline(ast); err != nil {
+		res.Errors = append(res.Errors, err.Error())
+		return res
+	}
+	res.SourceBQL = query
 
 	// Constructs that have no representation in a model definition.
 	if len(ast.Assignments) > 0 {

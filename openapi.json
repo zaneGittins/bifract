@@ -35883,6 +35883,9 @@
           "partition_key": {
             "type": "string"
           },
+          "source_bql": {
+            "type": "string"
+          },
           "time_bucket": {
             "type": "string"
           },
@@ -36104,6 +36107,9 @@
             "items": {
               "$ref": "#/components/schemas/models.FilterCondition"
             }
+          },
+          "source_bql": {
+            "type": "string"
           },
           "warnings": {
             "type": "array",

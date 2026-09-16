@@ -1,12 +1,11 @@
 package models
 
 import (
+	"bifract/pkg/parser"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"bifract/pkg/parser"
 )
 
 var namedGroupRe = regexp.MustCompile(`\(\?P?(?:<[a-zA-Z_][a-zA-Z0-9_]*>|'[a-zA-Z_][a-zA-Z0-9_]*')`)
@@ -195,8 +194,12 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 		}
 		b.WriteString(fmt.Sprintf("\n    FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("    WHERE %s", fractalScopeClause(fractalID)))
-		for _, fc := range def.Filter {
-			b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+		preds, err := sourceFilterSQL(def)
+		if err != nil {
+			return "", err
+		}
+		for _, p := range preds {
+			b.WriteString(fmt.Sprintf("\\n    AND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\n    AND %s", whereExtra))
@@ -236,8 +239,12 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 		// Final SELECT from last CTE
 		b.WriteString(buildFinalSelect(def, mt, prevCTE, opts))
 	} else {
-		// No extractions — SELECT directly from the source table
-		b.WriteString(buildDirectSelect(def, mt, sourceTable, whereExtra, opts, fractalID))
+		// No extractions: SELECT directly from the source table.
+		direct, err := buildDirectSelect(def, mt, sourceTable, whereExtra, opts, fractalID)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(direct)
 	}
 
 	return b.String(), nil
@@ -310,7 +317,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts 
 
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
-func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts, fractalID string) string {
+func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts, fractalID string) (string, error) {
 	var b strings.Builder
 	b.WriteString("SELECT fractal_id")
 
@@ -320,8 +327,12 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
-		for _, fc := range def.Filter {
-			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		preds, err := sourceFilterSQL(def)
+		if err != nil {
+			return "", err
+		}
+		for _, p := range preds {
+			b.WriteString(fmt.Sprintf("\\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -341,8 +352,12 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
-		for _, fc := range def.Filter {
-			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		preds, err := sourceFilterSQL(def)
+		if err != nil {
+			return "", err
+		}
+		for _, p := range preds {
+			b.WriteString(fmt.Sprintf("\\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -353,8 +368,12 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
-		for _, fc := range def.Filter {
-			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		preds, err := sourceFilterSQL(def)
+		if err != nil {
+			return "", err
+		}
+		for _, p := range preds {
+			b.WriteString(fmt.Sprintf("\\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -374,8 +393,12 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		b.WriteString(fmt.Sprintf(",\n    %s AS bucket,\n    toUInt64(count()) AS event_count\n", volumeBucketExpr(def.TimeBucket)))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
-		for _, fc := range def.Filter {
-			b.WriteString(fmt.Sprintf("\nAND %s", filterConditionToSQL(fc)))
+		preds, err := sourceFilterSQL(def)
+		if err != nil {
+			return "", err
+		}
+		for _, p := range preds {
+			b.WriteString(fmt.Sprintf("\\nAND %s", p))
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
@@ -385,7 +408,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		}
 		b.WriteString("\nGROUP BY fractal_id, entity_val, bucket")
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // chFieldRef converts a user-facing field name to a ClickHouse expression.
@@ -433,6 +456,24 @@ func applyLowerIfNeeded(fieldName string, steps []ExtractionStep) string {
 }
 
 // filterConditionToSQL converts a FilterCondition to a ClickHouse WHERE expression.
+// sourceFilterSQL is the set of predicates a model's source contributes to its
+// scan. def.SourceBQL is compiled by the translator; a model saved before that
+// existed falls back to the structured list ddl.go renders itself.
+func sourceFilterSQL(def ModelDefinition) ([]string, error) {
+	if strings.TrimSpace(def.SourceBQL) != "" {
+		if !def.compiledSet {
+			return nil, fmt.Errorf("model source query was not resolved before rendering; " +
+				"call Manager.ResolveSource so match() and the rest compile against this scope")
+		}
+		return def.compiled, nil
+	}
+	out := make([]string, 0, len(def.Filter))
+	for _, fc := range def.Filter {
+		out = append(out, filterConditionToSQL(fc))
+	}
+	return out, nil
+}
+
 func filterConditionToSQL(fc FilterCondition) string {
 	ref := chFieldRef(fc.Field)
 	// Wildcard equality mirrors BQL translator semantics: `field = "*"` means the
@@ -598,8 +639,12 @@ func buildNetStateSelect(def ModelDefinition, sourceTable, whereExtra, fractalID
 	if whereExtra != "" {
 		b.WriteString(fmt.Sprintf("\n    AND %s", whereExtra))
 	}
-	for _, fc := range def.Filter {
-		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	preds, err := sourceFilterSQL(def)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range preds {
+		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
 	}
 	b.WriteString("\nGROUP BY fractal_id, src, dst, port, day")
 	return b.String(), nil
@@ -708,8 +753,12 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	b.WriteString(fmt.Sprintf("    sum(%s) AS total_duration\n", dur))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
-	for _, fc := range def.Filter {
-		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	preds, err := sourceFilterSQL(def)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range preds {
+		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
 	}
 	b.WriteString("\nGROUP BY src, dst, port\n")
 	b.WriteString(having)
@@ -719,7 +768,7 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 // BuildNetPreviewPrevalence returns the per-destination distinct-source counts over
 // raw logs for the preview window (no state table exists yet). It omits the pair
 // HAVING so prevalence counts ALL sources, not only qualifying pairs.
-func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, windowDays int) string {
+func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, windowDays int) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
@@ -727,16 +776,20 @@ func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID strin
 	b.WriteString(fmt.Sprintf("SELECT %s AS dst, uniqExact(%s) AS prev_total\n", dst, src))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
-	for _, fc := range def.Filter {
-		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	preds, err := sourceFilterSQL(def)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range preds {
+		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
 	}
 	b.WriteString("\nGROUP BY dst")
-	return b.String()
+	return b.String(), nil
 }
 
 // BuildNetPreviewNetworkSize returns the total distinct-source count over the preview
 // window, the denominator for the prevalence ratio.
-func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, windowDays int) string {
+func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, windowDays int) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
@@ -744,10 +797,14 @@ func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID stri
 	b.WriteString(fmt.Sprintf("SELECT uniqExact(%s) AS network_size\n", src))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
-	for _, fc := range def.Filter {
-		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
+	preds, err := sourceFilterSQL(def)
+	if err != nil {
+		return "", err
 	}
-	return b.String()
+	for _, p := range preds {
+		b.WriteString(fmt.Sprintf("\\n    AND %s", p))
+	}
+	return b.String(), nil
 }
 
 // chFloatLiteral renders a float as a ClickHouse numeric literal without exponent noise.

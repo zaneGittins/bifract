@@ -137,6 +137,10 @@ type TranslationResult struct {
 	// "timestamp DESC" ordering (no user ORDER BY / GROUP BY / aggregation).
 	// Such queries emit rows newest-first and can be progressively streamed.
 	DefaultTimeOrder bool
+	// SourceWhere holds the predicates bound to the source scan. A caller that
+	// composes its own aggregation over the same rows takes these rather than the
+	// rendered SQL, whose outer projection formats for display.
+	SourceWhere []string
 	// TimeScopedSubquery is true when the SQL embeds a subquery that carries its
 	// own copy of the query's time bounds (join / model_lookup). Re-translating
 	// such a query over a narrower window also narrows that subquery, which drops
@@ -1020,6 +1024,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 
 	return &TranslationResult{
 		SQL:                sql,
+		SourceWhere:        append([]string(nil), plan.SourceStage().Layer.Where...),
 		FieldOrder:         fieldOrder,
 		IsAggregated:       plan.IsAggregated || len(activeStage.Layer.GroupBy) > 0,
 		ChartType:          plan.ChartType,

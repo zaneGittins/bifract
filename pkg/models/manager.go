@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bifract/pkg/dictionaries"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -27,6 +28,11 @@ type Manager struct {
 	// wired post-construction (SetAlertManager) to avoid an import cycle. May be
 	// nil in setups without alerting, in which case linked-alert work is skipped.
 	alerts LinkedAlertManager
+
+	// dicts resolves the context lists a source query consults. Wired
+	// post-construction for the same reason as alerts. Nil leaves match() in a
+	// source query unresolvable, which it reports rather than compiling to nothing.
+	dicts DictionaryResolver
 
 	// Backfill engine state. The backfill seeds a model from historical logs via
 	// INSERT...SELECT (no DDL), throttled to avoid overwhelming ClickHouse.
@@ -518,6 +524,52 @@ func (m *Manager) SetAlertEnabled(ctx context.Context, id string, enabled bool) 
 	_, err = m.pg.Exec(ctx,
 		`UPDATE analytics_models SET alert_mode=$1, updated_at=NOW() WHERE id=$2`, mode, id)
 	return err
+}
+
+// DictionaryResolver is the slice of the dictionary manager a model source needs:
+// the lists visible in its scope, so match() in a source query resolves the same
+// way it does in a search.
+type DictionaryResolver interface {
+	ListDictionaryMappings(ctx context.Context, fractalID, prismID string) (dictionaries.Scope, error)
+}
+
+// SetDictionaryResolver wires dictionary resolution for model source queries.
+func (m *Manager) SetDictionaryResolver(d DictionaryResolver) { m.dicts = d }
+
+// sourceQueryOptions is the context a model's source query is compiled in: the
+// dictionaries of the model's own scope, and nothing else. The scan's fractal and
+// window are the model's, applied by the builder rather than by the translator.
+func (m *Manager) sourceQueryOptions(ctx context.Context, fractalID, prismID string) parser.QueryOptions {
+	opts := parser.QueryOptions{DictionaryDatabase: m.chDB}
+	if m.dicts == nil || (fractalID == "" && prismID == "") {
+		return opts
+	}
+	scope, err := m.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
+	if err != nil {
+		log.Printf("models: resolve dictionaries for source query: %v", err)
+		return opts
+	}
+	opts.Dictionaries = scope.Mappings
+	opts.CaseInsensitiveDicts = scope.CaseInsensitive
+	opts.NetworkDicts = scope.Network
+	opts.PatternDicts = scope.Pattern
+	return opts
+}
+
+// ResolveSource compiles a definition's source query against the dictionaries of
+// its scope, returning a copy carrying the predicates. Every path that renders
+// SQL for a model calls this first; a builder handed an unresolved SourceBQL
+// errors rather than quietly rendering the structured Filter instead.
+func (m *Manager) ResolveSource(ctx context.Context, def ModelDefinition, fractalID, prismID string) (ModelDefinition, error) {
+	if strings.TrimSpace(def.SourceBQL) == "" {
+		return def, nil
+	}
+	preds, err := compileSourcePredicates(def.SourceBQL, m.sourceQueryOptions(ctx, fractalID, prismID))
+	if err != nil {
+		return def, err
+	}
+	def.compiled, def.compiledSet = preds, true
+	return def, nil
 }
 
 // ---- ClickHouse object lifecycle ----

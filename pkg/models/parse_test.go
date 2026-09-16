@@ -17,7 +17,7 @@ func TestParseSourceQuerySubsetRejections(t *testing.T) {
 		{"in", `level = "a" | in(host, values=[x,y])`, "in() is not supported"},
 		{"group-cmd", `level = "a" | group(host)`, "group() is not supported"},
 		{"eval", `level = "a" | eval(x = 1)`, "eval() is not supported"},
-		{"model_lookup", `level = "a" | model_lookup(model="m", key=[a,b])`, "model_lookup() is not supported"},
+		{"model_lookup", `level = "a" | model_lookup(model="m", key=[a,b])`, "another model's output"},
 		{"assignment", `x := 1`, "assignments"},
 		{"regex-no-output", `level = "a" | regex(field=norm_log, regex="([a-z]+)")`, "needs an output name"},
 		{"lowercase-no-extraction", `level = "a" | lowercase(level)`, "must target a field produced by a preceding regex"},

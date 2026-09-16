@@ -375,12 +375,20 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 
 	// Prevalence context over the same window (all sources, not just qualifying).
 	var networkSize uint64
-	if err := m.ch.QueryRow(ctx, BuildNetPreviewNetworkSize(def, source, fractalID, days)+cfg.settings()).Scan(&networkSize); err != nil {
+	sizeSQL, err := BuildNetPreviewNetworkSize(def, source, fractalID, days)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.ch.QueryRow(ctx, sizeSQL+cfg.settings()).Scan(&networkSize); err != nil {
 		return nil, fmt.Errorf("preview network size: %w", err)
 	}
 	prevalence := make(map[string]uint64)
 	if networkSize > 0 {
-		if err := m.ch.StreamQuery(ctx, "", BuildNetPreviewPrevalence(def, source, fractalID, days)+cfg.settings(),
+		prevSQL, err := BuildNetPreviewPrevalence(def, source, fractalID, days)
+		if err != nil {
+			return nil, err
+		}
+		if err := m.ch.StreamQuery(ctx, "", prevSQL+cfg.settings(),
 			func(row map[string]interface{}) error {
 				prevalence[getString(row, "dst")] = getUint64(row, "prev_total")
 				return nil

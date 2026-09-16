@@ -201,6 +201,11 @@ func (s *StateMaintainer) maintain(ctx context.Context, r maintainRow) error {
 	where := fmt.Sprintf("ingest_timestamp > '%s' AND ingest_timestamp <= '%s'",
 		storage.EscCHStr(from.Format(chTimeLayout)), storage.EscCHStr(to.Format(chTimeLayout)))
 
+	def, err := s.mgr.ResolveSource(ctx, r.def, r.fractalID, "")
+	if err != nil {
+		return fmt.Errorf("source query: %w", err)
+	}
+	r.def = def
 	insertSQL, err := r.insertSQL(stateTarget(r, s.ch.Topology().DistributedTables), s.ch.ReadTable(), where)
 	if err != nil {
 		return fmt.Errorf("build: %w", err)

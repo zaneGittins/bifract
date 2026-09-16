@@ -561,6 +561,10 @@ func main() {
 	// Model backfills yield to the same CPU/disk backpressure that gates ingestion,
 	// then resume any backfill interrupted by a prior crash.
 	modelManager.SetBackfillHealth(ingestQueue)
+	// Lets a model's source query consult a context list, the same lists a search
+	// resolves. Without it match() in a source reports the list as unavailable
+	// rather than compiling to nothing.
+	modelManager.SetDictionaryResolver(dictionaryManager)
 	// Recreate any model whose ClickHouse objects went missing (a log-data reset
 	// drops them by design). Without this the scorer fails on every tick forever.
 	modelManager.ReconcileCHObjects(context.Background())
