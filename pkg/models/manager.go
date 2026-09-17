@@ -1160,11 +1160,14 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 	fid := storage.EscCHStr(fractalID)
 	switch model.ModelType {
 	case ModelTypeRarity:
-		return m.getRarityHistogram(ctx, qt, fid)
+		return m.getRarityHistogram(ctx, qt, fid, model.Definition)
 	case ModelTypeFirstSeen:
 		return m.getFirstSeenHistogram(ctx, qt, fid, "entity_key")
 	case ModelTypeTLSH:
-		return m.getFirstSeenHistogram(ctx, qt, fid, "digest")
+		// A tlsh index raises no alerts, so there is no threshold a distribution
+		// could be read against. The row count in the stats strip is the fact worth
+		// knowing, and an empty panel collapses.
+		return nil, nil
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineHistogram(ctx, tableName, model.Definition, fid)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -1254,20 +1257,79 @@ func firstSeenCountInner(source, fidEsc, keyCol string) string {
 	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol) + ") WHERE event_count >= 1"
 }
 
-func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
-	buckets, err := m.runHistogram(ctx, rarityConfidenceInner(qt+" FINAL", fid), rarityHistBucketExpr, rarityHistLabels)
+// getRarityHistogram reports how many values the model's own alert thresholds
+// would flag. A confidence distribution used to be charted here, which no reader
+// can act on: the alert needs a low percent as well, so being right of a
+// confidence marker is necessary and not sufficient, and confidence is a property
+// of the partition sampled once per value, which weights it by how many distinct
+// values each partition has.
+func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string, def ModelDefinition) (map[string]interface{}, error) {
+	preds := rarityFlagPredicates(def)
+	q := fmt.Sprintf(`SELECT toUInt64(count()) AS total, toUInt64(countIf(%s)) AS flagged FROM (%s)`,
+		strings.Join(preds.sql, " AND "), buildRarityScoredSQL(qt+" FINAL", fid))
+	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("rarity histogram: %w", err)
+		return nil, fmt.Errorf("rarity flag counts: %w", err)
 	}
-	return map[string]interface{}{"metric": "confidence", "buckets": buckets}, nil
+	out := map[string]interface{}{"metric": "rarity_flags", "criterion": preds.text}
+	if len(rows) > 0 {
+		out["total"], out["flagged"] = rows[0]["total"], rows[0]["flagged"]
+	}
+	return out, nil
 }
 
-func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol string) (map[string]interface{}, error) {
-	buckets, err := m.runHistogram(ctx, firstSeenCountInner(qt+" FINAL", fid, keyCol), firstSeenHistBucketExpr, firstSeenHistLabels)
-	if err != nil {
-		return nil, fmt.Errorf("first_seen histogram: %w", err)
+// rarityFlagPredicates is the alert's own test, as SQL and as the sentence that
+// explains it. One source so the count and its caption cannot disagree.
+type rarityFlags struct {
+	sql  []string
+	text string
+}
+
+func rarityFlagPredicates(def ModelDefinition) rarityFlags {
+	minSample := def.MinSample
+	if minSample < 1 {
+		minSample = 1
 	}
-	return map[string]interface{}{"metric": "event_count", "buckets": buckets}, nil
+	f := rarityFlags{sql: []string{fmt.Sprintf("model_count >= %d", minSample)}}
+	var words []string
+	if def.Alert != nil {
+		if t := def.Alert.ConfidenceThreshold; t > 0 {
+			f.sql = append(f.sql, fmt.Sprintf("confidence > %g", t))
+			words = append(words, fmt.Sprintf("confidence > %g", t))
+		}
+		if t := def.Alert.PercentThreshold; t > 0 {
+			f.sql = append(f.sql, fmt.Sprintf("percent < %g", t))
+			words = append(words, fmt.Sprintf("percent < %g", t))
+		}
+	}
+	if minSample > 1 {
+		words = append(words, fmt.Sprintf("seen %d+ times", minSample))
+	}
+	f.text = strings.Join(words, " and ")
+	return f
+}
+
+// firstSeenDiscoveryDays is how far back the new-entity series reaches.
+const firstSeenDiscoveryDays = 30
+
+// getFirstSeenHistogram returns how many entities were first seen on each of the
+// last few days. The distribution of an entity's event count used to be charted
+// here, which says nothing about the question the model answers or its alert
+// fires on: whether something new turned up, and how that rate compares to usual.
+func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol string) (map[string]interface{}, error) {
+	q := fmt.Sprintf(`SELECT toString(toDate(first_seen)) AS day, toUInt64(count()) AS cnt
+FROM (%s)
+WHERE first_seen >= today() - %d
+GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol), firstSeenDiscoveryDays)
+	rows, err := m.ch.QuerySchema(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("first_seen discovery series: %w", err)
+	}
+	series := make([]map[string]interface{}, 0, len(rows))
+	for _, r := range rows {
+		series = append(series, map[string]interface{}{"label": fmt.Sprintf("%v", r["day"]), "count": r["cnt"]})
+	}
+	return map[string]interface{}{"metric": "new_per_day", "series": series}, nil
 }
 
 func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {

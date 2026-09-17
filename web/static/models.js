@@ -592,6 +592,20 @@ const AnalyticsModels = {
 
     // Severity is measured against the model's own alert threshold, so a colour
     // means "this crossed what you configured" rather than a fixed cut.
+    // A row is in play only when it meets every condition its alert has. Colouring
+    // from the score alone marked rows that can never fire: a rarity value can sit
+    // at 0.95 confidence and still be 97% of its partition, which no percent
+    // threshold admits.
+    _meetsOtherConditions(row, model) {
+        if (!model || model.model_type !== 'rarity') return true;
+        const def = model.definition || {};
+        const pct = Number(def.alert?.percent_threshold);
+        if (pct > 0 && !(Number(row.percent) < pct)) return false;
+        const min = Number(def.min_sample);
+        if (min > 1 && !(Number(row.model_count) >= min)) return false;
+        return true;
+    },
+
     _sevClass(value, threshold) {
         const t = Number(threshold), v = Number(value);
         if (!isFinite(t) || t <= 0 || !isFinite(v)) return '';
@@ -608,7 +622,7 @@ const AnalyticsModels = {
     },
 
     // Renders one cell. Returns HTML, so every formatter escapes its own value.
-    _fmtCell(c, row, threshold) {
+    _fmtCell(c, row, threshold, inPlay = true) {
         let v = row[c.col];
         if (c.part !== undefined) {
             v = String(v ?? '').split('\x1e')[c.part] ?? '';
@@ -625,7 +639,7 @@ const AnalyticsModels = {
             case 'meter': {
                 const n = Number(v);
                 const pct = Math.max(0, Math.min(100, n * 100));
-                const hot = isFinite(threshold) && n >= threshold ? ' hot' : '';
+                const hot = inPlay && isFinite(threshold) && n >= threshold ? ' hot' : '';
                 return `<span class="mv-meter"><span class="mv-meter-track"><span class="mv-meter-fill${hot}" style="width:${pct}%"></span></span>${_esc(n.toFixed(3))}</span>`;
             }
             default:       return _esc(String(v));
@@ -936,7 +950,7 @@ ${m.description ? `<div class="me-sec">
         const fields = Object.keys(row).filter(k => !skip.has(k)).map(k => {
             const val = packed.has(k)
                 ? _esc(String(row[k] ?? '').split('\x1e').join(' / '))
-                : this._fmtCell({ col: k, fmt: this._drawerFmt(k) }, row, thr);
+                : this._fmtCell({ col: k, fmt: this._drawerFmt(k) }, row, thr, this._meetsOtherConditions(row, m));
             return `<dt>${_esc(k)}</dt><dd>${val}</dd>`;
         }).join('');
 
@@ -1027,16 +1041,85 @@ ${m.description ? `<div class="me-sec">
         const el = document.getElementById('modelsHistogramPanel');
         if (!el) return;
         const h = this.viewer.histogram;
-        const buckets = (h && Array.isArray(h.buckets)) ? h.buckets : [];
-        // The marker is drawn wherever the metric and the threshold share a 0..1
-        // scale: confidence and the network final_score do, banded |z| does not.
-        let thr = null;
+        if (!h) { el.innerHTML = ''; return; }
+
+        // Each type gets the view that answers the question its alert asks. A
+        // distribution earns a chart only where the metric it plots is the whole
+        // criterion; where it is not, a number or a series says more.
+        if (h.metric === 'rarity_flags') { el.innerHTML = this._buildFlagSummaryHTML(h); return; }
+        if (h.metric === 'new_per_day') { el.innerHTML = this._buildDiscoveryHTML(h.series || []); return; }
+
+        const buckets = Array.isArray(h.buckets) ? h.buckets : [];
         const spec = this._viewSpec(this.viewer.model);
-        if (spec.score && (h?.metric === 'confidence' || h?.metric === 'final_score')) {
+        let thr = null;
+        if (spec.score) {
             const t = Number(spec.score.threshold(this.viewer.model?.definition || {}));
-            if (isFinite(t) && t >= 0 && t <= 1) thr = t;
+            if (isFinite(t) && t >= 0) {
+                // The marker is a fraction of the axis. A 0..1 metric is that
+                // fraction already; a banded one has to be placed by band, which is
+                // why a z-score threshold used to have no marker at all.
+                thr = h.metric === 'z_score'
+                    ? this._bandedFrac(t, buckets.length)
+                    : (t <= 1 ? t : null);
+            }
         }
-        el.innerHTML = this._buildHistogramHTML(buckets, h?.metric, thr, this._alertCriterion(this.viewer.model));
+        el.innerHTML = this._buildHistogramHTML(buckets, h.metric, thr, this._alertCriterion(this.viewer.model), thr != null ? Number(spec.score.threshold(this.viewer.model?.definition || {})) : null);
+    },
+
+    // Where a threshold falls across equal-width bands whose last one is open
+    // ended, as |z| 0-1 .. 5+ is.
+    _bandedFrac(threshold, bands) {
+        if (!bands) return null;
+        const capped = Math.min(threshold, bands);
+        return Math.max(0, Math.min(1, capped / bands));
+    },
+
+    // What the alert would flag right now, which is the question a threshold line
+    // on one of two axes could never answer.
+    _buildFlagSummaryHTML(h) {
+        const total = Number(h.total || 0);
+        const flagged = Number(h.flagged || 0);
+        if (!total) {
+            return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
+<div class="histogram-empty">No scored values yet.</div>`;
+        }
+        // With no thresholds set every scored value passes, so saying they "would
+        // alert" would be true of a model that raises none.
+        if (!h.criterion) {
+            return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
+<div class="mv-coverage"><div class="mv-coverage-text"><strong>${this._fmtNum(total)}</strong> scored values. No alert thresholds are set, so nothing is being filtered.</div></div>`;
+        }
+        const pct = total > 0 ? (flagged / total * 100) : 0;
+        return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
+<div class="mv-coverage">
+    <div class="mv-coverage-bar"><span style="width:${Math.max(Math.min(pct, 100), flagged > 0 ? 1 : 0)}%"></span></div>
+    <div class="mv-coverage-text"><strong>${this._fmtNum(flagged)}</strong> of ${this._fmtNum(total)} values would alert, matching ${_esc(h.criterion)}.</div>
+</div>`;
+    },
+
+    // New entities per day: what a first/last seen model is for, and what its
+    // alert fires on. The old chart plotted how many events each entity had, which
+    // says nothing about either.
+    _buildDiscoveryHTML(series) {
+        const arr = Array.isArray(series) ? series : [];
+        if (!arr.length) {
+            return `<div class="histogram-head"><span class="histogram-title">New entities per day</span></div>
+<div class="histogram-empty">Nothing discovered in the last 30 days.</div>`;
+        }
+        const max = arr.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
+        const cols = arr.map(b => {
+            const cnt = Number(b.count || 0);
+            const pct = max > 0 ? Math.round(cnt / max * 100) : 0;
+            return `<div class="histogram-col" title="${_esc(b.label)}: ${cnt.toLocaleString()} new">
+    <div class="histogram-bar-track"><div class="histogram-bar" style="height:${cnt > 0 ? Math.max(pct, 2) : 0}%"></div></div>
+</div>`;
+        }).join('');
+        const first = _esc(String(arr[0].label));
+        const last = _esc(String(arr[arr.length - 1].label));
+        const totalNew = arr.reduce((n, b) => n + Number(b.count || 0), 0);
+        return `<div class="histogram-head"><span class="histogram-title">New entities per day</span></div>
+<div class="histogram-chart histogram-chart-dense">${cols}</div>
+<div class="histogram-note">${this._fmtNum(totalNew)} first seen between ${first} and ${last}. Peak ${this._fmtNum(max)} in a day.</div>`;
     },
 
     // A rarity alert needs both thresholds. Only confidence has an axis here, so the
@@ -1290,11 +1373,12 @@ ${m.description ? `<div class="me-sec">
         }).join('');
 
         const rows = v.rows.map((row, idx) => {
-            const sev = scoreCol ? this._sevClass(spec.score.abs ? Math.abs(row[scoreCol]) : row[scoreCol], thr) : '';
+            const inPlay = this._meetsOtherConditions(row, m);
+            const sev = scoreCol && inPlay ? this._sevClass(spec.score.abs ? Math.abs(row[scoreCol]) : row[scoreCol], thr) : '';
             const cells = cols.map(c => {
                 const cls = [c.align === 'num' ? 'num' : '', c.col === scoreCol ? 'mv-score' : ''].filter(Boolean).join(' ');
                 const title = c.fmt ? '' : ` title="${_esc(this._cellText(c, row))}"`;
-                return `<td${cls ? ` class="${cls}"` : ''}${title}>${this._fmtCell(c, row, thr)}</td>`;
+                return `<td${cls ? ` class="${cls}"` : ''}${title}>${this._fmtCell(c, row, thr, inPlay)}</td>`;
             }).join('');
             const cls = [sev, idx === v.selected ? 'selected' : ''].filter(Boolean).join(' ');
             return `<tr${cls ? ` class="${cls}"` : ''} data-row="${idx}">${cells}</tr>`;
@@ -2692,7 +2776,7 @@ ${isBeacon ? `
     // criterion, when given, says what the alert actually requires. The marker sits
     // on the metric axis alone, so on a rarity model, where the alert also needs a
     // low percent, everything right of the line would otherwise read as flagged.
-    _buildHistogramHTML(buckets, metricKey, thresholdFrac, criterion) {
+    _buildHistogramHTML(buckets, metricKey, thresholdFrac, criterion, thresholdValue) {
         const metric = this.METRIC_LABELS[metricKey] || 'Score';
         const arr = Array.isArray(buckets) ? buckets : [];
         const max = arr.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
@@ -2711,7 +2795,8 @@ ${isBeacon ? `
         }).join('');
         let thresholdLine = '';
         if (thresholdFrac != null && thresholdFrac >= 0 && thresholdFrac <= 1) {
-            const label = _esc(Number(thresholdFrac).toFixed(2)) + ' ' + _esc(metric.toLowerCase());
+            const shown = thresholdValue != null ? Number(thresholdValue) : Number(thresholdFrac);
+            const label = _esc(shown.toFixed(2)) + ' ' + _esc(metric.toLowerCase());
             // No title: the line is pointer-events:none, so the note below carries it.
             thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})"><span class="histogram-threshold-label">${label}</span></div>`;
         }

@@ -617,6 +617,31 @@
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
     line-height: 1;
 }
+/* How much of the model the alert currently covers, which is the answer a marker
+   on one of two axes could never give. */
+.mv-coverage { display: flex; flex-direction: column; gap: 6px; }
+
+.mv-coverage-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+}
+
+.mv-coverage-bar > span {
+    display: block;
+    height: 100%;
+    background: var(--severity-high, #f9944e);
+}
+
+.mv-coverage-text { font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
+.mv-coverage-text strong { color: var(--text-primary); }
+
+/* A day-per-bar series is denser than a bucket chart and carries no per-bar label. */
+.histogram-chart-dense { gap: 2px; }
+.histogram-chart-dense .histogram-col { min-width: 0; }
+
 /* The marker sits on one axis while a rarity alert needs two conditions, so the
    chart says in words what being right of the line does not by itself mean. */
 .histogram-note {
