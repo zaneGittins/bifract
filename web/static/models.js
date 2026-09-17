@@ -870,8 +870,16 @@ ${keys.length ? `<div class="me-sec">
     <div class="mv-chips">${keys.map(k => `<span class="mv-chip">${_esc(k)}</span>`).join('')}</div>
 </div>` : ''}
 ${bql ? `<div class="me-sec">
-    <div class="me-sec-label">Matches</div>
-    <pre class="mv-code">${_esc(bql)}</pre>
+    <div class="me-sec-label mv-code-head">
+        <span>Matches</span>
+        <button class="mv-code-copy" id="modelsRailCopy" title="Copy query" aria-label="Copy query">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+        </button>
+    </div>
+    <pre class="mv-code mv-code-wrap"><code>${window.SyntaxHighlight ? SyntaxHighlight.highlight(bql) : _esc(bql)}</code></pre>
 </div>` : ''}
 <div class="me-sec">
     <div class="me-sec-label">Alerting</div>
@@ -885,6 +893,16 @@ ${m.description ? `<div class="me-sec">
     <div class="mv-desc">${_esc(m.description)}</div>
 </div>` : ''}
 <div class="mv-rail-foot">Updated ${_esc(Utils.timeAgo(m.updated_at) || 'recently')}</div>`;
+
+        const copy = document.getElementById('modelsRailCopy');
+        if (copy) {
+            copy.addEventListener('click', () => {
+                navigator.clipboard.writeText(bql).then(() => {
+                    copy.classList.add('copied');
+                    setTimeout(() => copy.classList.remove('copied'), 1200);
+                }).catch(() => Toast.error('Copy failed'));
+            });
+        }
     },
 
     _bindRailResize() {
@@ -934,7 +952,10 @@ ${m.description ? `<div class="me-sec">
     </div>
     ${days.length ? `<div class="me-sec">
         <div class="me-sec-label">Active days (${days.length})</div>
-        <div class="mv-chips">${days.map(d => `<span class="mv-chip">${_esc(String(d).substring(0, 10))}</span>`).join('')}</div>
+        <div class="mv-chips">${days.map(d => {
+            const day = String(d).substring(0, 10);
+            return `<button type="button" class="mv-chip mv-chip-day" data-day="${_esc(day)}" title="Search this day in logs">${_esc(day)}</button>`;
+        }).join('')}</div>
     </div>` : ''}
 </div>
 <div class="mv-drawer-foot">
@@ -946,6 +967,9 @@ ${m.description ? `<div class="me-sec">
         document.querySelector('.mv-body')?.classList.add('mv-inspecting');
         document.getElementById('modelsDrawerClose').addEventListener('click', () => this._closeRowDrawer());
         document.getElementById('modelsDrawerPivot')?.addEventListener('click', () => this._pivotToSearch(row, m));
+        el.querySelectorAll('.mv-chip-day').forEach(chip => {
+            chip.addEventListener('click', () => this._pivotToSearch(row, m, chip.dataset.day));
+        });
         this._renderDataTable();
     },
 
@@ -1012,7 +1036,22 @@ ${m.description ? `<div class="me-sec">
             const t = Number(spec.score.threshold(this.viewer.model?.definition || {}));
             if (isFinite(t) && t >= 0 && t <= 1) thr = t;
         }
-        el.innerHTML = this._buildHistogramHTML(buckets, h?.metric, thr);
+        el.innerHTML = this._buildHistogramHTML(buckets, h?.metric, thr, this._alertCriterion(this.viewer.model));
+    },
+
+    // A rarity alert needs both thresholds. Only confidence has an axis here, so the
+    // percent half has to be said in words or the chart overstates what fires.
+    _alertCriterion(model) {
+        if (!model || model.model_type !== 'rarity') return '';
+        const a = (model.definition || {}).alert || {};
+        return this._criterionText(a.confidence_threshold, a.percent_threshold);
+    },
+
+    _criterionText(confidence, percent) {
+        const parts = [];
+        if (Number(confidence) > 0) parts.push(`confidence > ${Number(confidence).toFixed(2)}`);
+        if (Number(percent) > 0) parts.push(`percent < ${Number(percent)}`);
+        return parts.length > 1 ? parts.join(' and ') : '';
     },
 
     _fmtNum(v) {
@@ -1333,13 +1372,17 @@ ${m.description ? `<div class="me-sec">
         return lines.join('\n');
     },
 
-    _pivotToSearch(row, model) {
+    // day, when given, narrows the search to that one active day rather than the
+    // whole span the row was seen over.
+    _pivotToSearch(row, model, day) {
         const days = Array.isArray(row.days) ? row.days : [];
-        if (!days.length) { Toast.error('No day data available for this row yet.'); return; }
+        if (!days.length && !day) { Toast.error('No day data available for this row yet.'); return; }
 
         const sorted = [...days].map(d => String(d).substring(0, 10)).sort();
-        const startISO = sorted[0] + 'T00:00:00Z';
-        const endISO = sorted[sorted.length - 1] + 'T23:59:59Z';
+        const from = day || sorted[0];
+        const to = day || sorted[sorted.length - 1];
+        const startISO = from + 'T00:00:00Z';
+        const endISO = to + 'T23:59:59Z';
 
         const def = model.definition || {};
         const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
@@ -2627,7 +2670,9 @@ ${isBeacon ? `
         const countEl = document.getElementById('modelResultsCount');
         if (countEl) countEl.textContent = `${this._fmtNum(scoredTotal)} scored`;
 
-        const histHTML = this._buildHistogramHTML(p.histogram || [], p.metric, p.model_type === 'rarity' ? this.editor.alertConfig.confidence_threshold : null);
+        const histHTML = this._buildHistogramHTML(p.histogram || [], p.metric,
+            p.model_type === 'rarity' ? this.editor.alertConfig.confidence_threshold : null,
+            p.model_type === 'rarity' ? this._criterionText(this.editor.alertConfig.confidence_threshold, this.editor.alertConfig.percent_threshold) : '');
         const topHTML = this._previewTopTableHTML(p.top_columns || [], p.top || []);
 
         panel.innerHTML = `
@@ -2644,7 +2689,10 @@ ${isBeacon ? `
 
     // Builds the score-distribution chart markup, reusing the model viewer's
     // histogram styles. thresholdFrac (0..1), when provided, draws a marker line.
-    _buildHistogramHTML(buckets, metricKey, thresholdFrac) {
+    // criterion, when given, says what the alert actually requires. The marker sits
+    // on the metric axis alone, so on a rarity model, where the alert also needs a
+    // low percent, everything right of the line would otherwise read as flagged.
+    _buildHistogramHTML(buckets, metricKey, thresholdFrac, criterion) {
         const metric = this.METRIC_LABELS[metricKey] || 'Score';
         const arr = Array.isArray(buckets) ? buckets : [];
         const max = arr.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
@@ -2663,11 +2711,13 @@ ${isBeacon ? `
         }).join('');
         let thresholdLine = '';
         if (thresholdFrac != null && thresholdFrac >= 0 && thresholdFrac <= 1) {
-            const label = _esc(Number(thresholdFrac).toFixed(2)) + ' alert';
-            thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})" title="Alert threshold: ${_esc(String(thresholdFrac))}"><span class="histogram-threshold-label">${label}</span></div>`;
+            const label = _esc(Number(thresholdFrac).toFixed(2)) + ' ' + _esc(metric.toLowerCase());
+            // No title: the line is pointer-events:none, so the note below carries it.
+            thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})"><span class="histogram-threshold-label">${label}</span></div>`;
         }
+        const note = criterion ? `<div class="histogram-note">Alerts need ${_esc(criterion)}. This axis shows ${_esc(metric.toLowerCase())} only.</div>` : '';
         return `<div class="histogram-head"><span class="histogram-title">${_esc(metric)} distribution</span></div>
-<div class="histogram-chart">${cols}${thresholdLine}</div>`;
+<div class="histogram-chart">${cols}${thresholdLine}</div>${note}`;
     },
 
     _previewTopTableHTML(columns, rows) {

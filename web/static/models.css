@@ -617,6 +617,14 @@
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
     line-height: 1;
 }
+/* The marker sits on one axis while a rarity alert needs two conditions, so the
+   chart says in words what being right of the line does not by itself mean. */
+.histogram-note {
+    margin-top: 8px;
+    font-size: 10.5px;
+    line-height: 1.5;
+    color: var(--text-tertiary, var(--text-secondary));
+}
 .histogram-col {
     flex: 1;
     min-width: 0;
@@ -783,6 +791,17 @@
     color: var(--text-secondary);
 }
 
+/* A day chip searches that one day; the footer button still searches them all. */
+.mv-chip-day {
+    cursor: pointer;
+    transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.mv-chip-day:hover {
+    border-color: var(--accent-color, var(--text-secondary));
+    color: var(--text-primary);
+}
+
 .mv-code {
     margin: 0;
     padding: 7px 9px;
@@ -795,6 +814,44 @@
     border-radius: 6px;
     overflow-x: auto;
     white-space: pre;
+}
+
+/* A source query is read here, not edited, and the rail is narrow: wrapping beats
+   a horizontal scrollbar on a pipeline of any length. */
+.mv-code-wrap {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: hidden;
+}
+
+.mv-code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.mv-code-copy {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    color: var(--text-tertiary, var(--text-secondary));
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.mv-code-copy:hover {
+    opacity: 1;
+    color: var(--text-primary);
+}
+
+.mv-code-copy.copied {
+    opacity: 1;
+    color: var(--accent-green, #34c759);
 }
 
 .mv-desc {
