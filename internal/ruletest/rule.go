@@ -83,8 +83,11 @@ func LoadRule(path string, norm *normalizers.CompiledNormalizer) (*Rule, error) 
 // model_lookup/join read tables the tester does not populate. Against a scratch
 // table they would return no rows, which a caller would read as "rule did not
 // fire". Failing loudly is the only safe behavior.
+// Keyed by the lower-cased name, because a command has more than one spelling and
+// the canonical one, modelLookup, missed an exact match on the older alias.
 var unsupportedCommands = map[string]string{
 	"model_lookup": "reads analytics model tables that only exist in a live deployment",
+	"modellookup":  "reads analytics model tables that only exist in a live deployment",
 	"join":         "reads a second table the tester does not populate",
 }
 
@@ -96,7 +99,7 @@ func checkSupported(pipeline *parser.PipelineNode) error {
 	var name, reason string
 	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
 		if name == "" {
-			if r, bad := unsupportedCommands[cmd.Name]; bad {
+			if r, bad := unsupportedCommands[strings.ToLower(cmd.Name)]; bad {
 				name, reason = cmd.Name, r
 			}
 		}

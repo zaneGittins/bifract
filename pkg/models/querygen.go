@@ -14,11 +14,11 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 	// fire on rows outside the model's source.
 	lines := sourceLines(def)
 
-	// model_lookup
+	// modelLookup
 	switch mt {
 	case ModelTypeRarity:
 		keyParts := []string{def.PartitionKey, def.ValueKey}
-		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s])",
+		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
 			escapeBQLString(name), strings.Join(keyParts, ", ")))
 		if def.Alert != nil {
 			if def.Alert.ConfidenceThreshold > 0 {
@@ -30,13 +30,13 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 		}
 	case ModelTypeFirstSeen:
 		keyParts := def.KeyFields
-		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s])",
+		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
 			escapeBQLString(name), strings.Join(keyParts, ", ")))
 		if def.Alert != nil && def.Alert.AlertOnNew {
 			lines = append(lines, `| is_new = "1"`)
 		}
 	case ModelTypeVolumeBaseline:
-		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s])",
+		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
 			escapeBQLString(name), strings.Join(def.KeyFields, ", ")))
 		z := 3.5
 		if def.Alert != nil && def.Alert.ZThreshold > 0 {
@@ -45,13 +45,13 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 		lines = append(lines, fmt.Sprintf("| z_score > %.2f", z))
 	case ModelTypeBeacon:
 		nf := def.Network.WithDefaults()
-		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s, %s, %s])",
+		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s, %s, %s])",
 			escapeBQLString(name), nf.SrcField, nf.DstField, nf.PortField))
 		thr := def.Beacon.WithDefaults(int64(def.WindowDays()) * 86400).ScoreThreshold
 		lines = append(lines, fmt.Sprintf("| beacon_score > %.2f", thr))
 	case ModelTypeLongConnection:
 		nf := def.Network.WithDefaults()
-		lines = append(lines, fmt.Sprintf("| model_lookup(model=%s, key=[%s, %s, %s])",
+		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s, %s, %s])",
 			escapeBQLString(name), nf.SrcField, nf.DstField, nf.PortField))
 		thr := def.LongConn.WithDefaults().ScoreThreshold
 		lines = append(lines, fmt.Sprintf("| longconn_score > %.2f", thr))
@@ -64,7 +64,7 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 // wrote, or, for a model stored before source queries were kept verbatim, the
 // filter and extraction half rendered from the structured definition. It is the
 // authoring form shown in the builder's query editor, and it stops before
-// model_lookup and the alert thresholds GenerateQuery adds.
+// modelLookup and the alert thresholds GenerateQuery adds.
 func GenerateSourceQuery(def ModelDefinition) string {
 	return strings.Join(sourceLines(def), "\n")
 }

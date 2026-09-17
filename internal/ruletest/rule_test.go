@@ -3,6 +3,8 @@ package ruletest
 import (
 	"strings"
 	"testing"
+
+	"bifract/pkg/parser"
 )
 
 func TestLoadRuleSigmaUsesNormalizerFieldNames(t *testing.T) {
@@ -132,5 +134,26 @@ func TestLoadNormalizerRejectsUnknownFields(t *testing.T) {
 	p := writeFile(t, dir, "n.yaml", "name: X\nfield_mapping: []\n")
 	if _, err := LoadNormalizer(p); err == nil {
 		t.Fatal("LoadNormalizer accepted a misspelled key; want an error")
+	}
+}
+
+// The guard is keyed by name, and a command has more than one spelling. The
+// canonical modelLookup missed the map's older alias, so a rule using it ran
+// against a scratch table that holds no model, matched nothing, and reported a
+// pass for a rule that was never really tested.
+func TestUnsupportedCommandsCatchEverySpelling(t *testing.T) {
+	for _, q := range []string{
+		`* | model_lookup(model="m", key=[user])`,
+		`* | modelLookup(model="m", key=[user])`,
+		`* | MODELLOOKUP(model="m", key=[user])`,
+	} {
+		pipeline, err := parser.ParseQuery(q)
+		if err != nil {
+			t.Errorf("%s: parse: %v", q, err)
+			continue
+		}
+		if err := checkSupported(pipeline); err == nil {
+			t.Errorf("%s: must be refused as untestable offline", q)
+		}
 	}
 }

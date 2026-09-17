@@ -248,7 +248,7 @@ builds it once and reads it twice, rather than running the same subquery again.
 
 ## Boolean parameters
 
-Most switches are off by default and turned on: `strict=true`, `distinct=true`,
+Most switches are off by default and turned on: `require=true`, `distinct=true`,
 `percent=true`, `directed=true`.
 
 `pgr()` is the exception. Its `reconnect=` and `diffuse=` are on by default,
