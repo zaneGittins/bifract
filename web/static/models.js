@@ -1911,6 +1911,7 @@ ${isBeacon ? `
 <div class="field-group" style="margin-top:10px">
     <label>Min sample size</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
+    <p class="config-hint">How many times a value must have been seen before it is scored at all. It is a floor, not a cap: at 1 every value is scored, and the rarest ones are exactly the ones a higher setting hides.</p>
 </div>
 <p class="config-hint">Example: Partition=<em>file_prefix</em>, Value=<em>tld</em> scores how unusual a TLD is for a given prefix.</p>`;
         }

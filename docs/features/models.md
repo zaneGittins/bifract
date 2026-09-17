@@ -13,6 +13,8 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 | **Beacon** | Is this pair talking on a suspiciously regular interval? | `src_ip`, `dst_ip`, `dst_port` |
 | **Long Connection** | Is this pair holding an unusually long-lived session? | `src_ip`, `dst_ip`, `dst_port` |
 
+Rarity's **min sample size** is a floor on how many times a value must have been seen before the model scores it at all, not a cap on what it collects. At 1 every value is scored. Raise it and the rarest values, which are the ones a rarity model exists to surface, stop being scored at all and are then dropped by `modelLookup`'s default `require=true`.
+
 Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
 
 TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
