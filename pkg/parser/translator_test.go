@@ -5548,3 +5548,39 @@ func TestSourceProjectionsReadBothAliasSpellings(t *testing.T) {
 		t.Errorf("explicit alias not read: %+v", got)
 	}
 }
+
+// A model_lookup key naming a column an earlier command produced has to be looked
+// up as the value that command computed. Resolved as a stored field it read empty
+// on every row, so both the strict prefilter and the join matched nothing and the
+// query returned no rows with no error to say why.
+func TestModelLookupKeyResolvesAComputedColumn(t *testing.T) {
+	const q = `event_id="1" | match(dict="rmm", field=image, column=path, include=[tool], require=true) | modelLookup(model="m", key=[user, tool])`
+	pipeline, err := ParseQuery(q)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	res, err := TranslateToSQLWithOrder(pipeline, QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		FractalID: "f1", MaxRows: 10,
+		DictionaryDatabase: "logs",
+		Dictionaries:       map[string]map[string]string{"rmm": {"path": "dict_rmm"}},
+		PatternDicts:       map[string]bool{"dict_rmm": true},
+		Models: map[string]AnalyticsModelInfo{
+			"m": {ID: "m1", TableName: "model_m1", ModelType: "first_seen", FractalID: "f1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
+	if strings.Contains(res.SQL, "fields.`tool`") {
+		t.Errorf("the join key reads tool as a stored field, which is empty on every row:\n%s", res.SQL)
+	}
+	// Both the hidden key column and the strict prefilter must carry the lookup.
+	if !strings.Contains(res.SQL, "'tool', toString(fields.`image`::String), '') AS _mlk_k1") {
+		t.Errorf("the hidden join key does not carry the lookup:\n%s", res.SQL)
+	}
+	if n := strings.Count(res.SQL, "dictGetOrDefault('logs.dict_rmm', 'tool'"); n < 2 {
+		t.Errorf("the prefilter and the join key should both use the lookup, found %d uses:\n%s", n, res.SQL)
+	}
+}

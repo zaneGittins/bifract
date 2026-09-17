@@ -200,7 +200,7 @@ func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
 	keyExprs := make([]string, len(keyFields))
 	leftParts := make([]string, len(keyFields))
 	for i, kf := range keyFields {
-		keyExprs[i] = modelLookupFieldRef(kf)
+		keyExprs[i] = modelLookupFieldRef(kf, ctx.Registry)
 		leftParts[i] = fmt.Sprintf("_outer._mlk_k%d", i)
 	}
 	rightParts := make([]string, len(rightCols))
@@ -472,17 +472,23 @@ func parseModelLookupArgs(cmd CommandNode) (modelName string, keyFields []string
 // resolveFieldRef converts a user field name to a ClickHouse expression reference.
 // Extraction outputs (already produced by prior pipeline steps) are referenced directly.
 // Standard log fields are referenced via the JSON sub-column.
-func modelLookupFieldRef(field string) string {
+func modelLookupFieldRef(field string, registry *FieldRegistry) string {
 	switch field {
 	case "timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer":
 		return field
 	default:
-		// The key is projected as _mlk_k<i> then concat/compared against the
-		// model table's String key columns -- a non-skip-index context. Cast to
-		// ::String so a Dynamic-stored path (pre-type-hint rows) still joins and
-		// does not trigger ClickHouse error 44. No-op for concretely typed paths;
-		// String content is identical, so match semantics are preserved.
-		return groupableCast(jsonFieldRef(field))
+		// Resolved through the registry, so a key an earlier command produced is
+		// looked up as the value that command computed rather than as a stored
+		// field of the same name. A match() enrichment column read as JSON is empty
+		// on every row, so the join matched nothing and the query returned no rows
+		// with no error. The registry falls back to the JSON path when it knows
+		// nothing about the name, which is every ordinary log field.
+		//
+		// The key is projected as _mlk_k<i> then concat/compared against the model
+		// table's String key columns, a non-skip-index context, so resolveFieldRef's
+		// ::String cast keeps a Dynamic-stored path (pre-type-hint rows) joinable
+		// rather than tripping ClickHouse error 44.
+		return resolveFieldRef(field, registry)
 	}
 }
 
