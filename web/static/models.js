@@ -19,7 +19,7 @@ const AnalyticsModels = {
         partitionKey: '',
         valueKey: '',
         keyFields: [''],
-        minSample: 5,
+        minSample: 1,
         timeBucket: 'day',
         alertMode: 'paused',
         alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 },
@@ -304,6 +304,15 @@ const AnalyticsModels = {
         return `${Math.floor(s / 86400)}d`;
     },
 
+    // min_sample is one stored field with two meanings, so its sensible default
+    // differs by type. For rarity it is a floor on how many times a value must
+    // have been seen before it is scored, and anything above 1 silently gives up
+    // first sightings, which is usually the detection you wanted. For volume
+    // baseline it is how much history a median and MAD need to mean anything.
+    _defaultMinSample(modelType) {
+        return modelType === 'volume_baseline' ? 7 : 1;
+    },
+
     _statusLabel(status) {
         const s = String(status || '');
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown';
@@ -388,7 +397,7 @@ const AnalyticsModels = {
             partitionKey: def.partition_key || '',
             valueKey: def.value_key || '',
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
-            minSample: def.min_sample || 5,
+            minSample: def.min_sample || this._defaultMinSample(m.model_type || 'rarity'),
             timeBucket: def.time_bucket || 'day',
             network: this._networkFromDef(def),
             window: def.window || '1d',
@@ -819,7 +828,7 @@ const AnalyticsModels = {
             rows.push(['State lag', this._lagLabel(m.state_lag_seconds) + (m.state_behind ? ' (behind)' : '')]);
         }
         if (mt === 'rarity') {
-            rows.push(['Min sample', def.min_sample || 5]);
+            rows.push(['Min sample', def.min_sample || this._defaultMinSample(mt)]);
             rows.push(['Confidence threshold', (def.alert?.confidence_threshold ?? 0.8).toFixed(2)]);
             rows.push(['Percent threshold', (def.alert?.percent_threshold ?? 5) + '%']);
         } else if (mt === 'volume_baseline') {
@@ -1470,7 +1479,7 @@ ${m.description ? `<div class="me-sec">
             partitionKey: '',
             valueKey: '',
             keyFields: [''],
-            minSample: 5,
+            minSample: 1,
             timeBucket: 'day',
             network: this._networkFromDef({}),
             window: '1d',
@@ -1705,7 +1714,13 @@ ${m.description ? `<div class="me-sec">
         document.querySelectorAll('#modelTypeCards .me-type-card').forEach(card => {
             card.addEventListener('click', () => {
                 const e = this.editor;
+                const prevType = e.modelType;
                 e.modelType = card.dataset.type;
+                // The field means a different thing for the new type, so carrying
+                // the old number over would carry the old meaning with it.
+                if (e.minSample === this._defaultMinSample(prevType)) {
+                    e.minSample = this._defaultMinSample(e.modelType);
+                }
                 // A tlsh model takes exactly one digest field, and its shape editor
                 // renders only the first row with no remove button. Extra fields
                 // carried over from another type would be invisible here but still
@@ -1911,7 +1926,7 @@ ${isBeacon ? `
 <div class="field-group" style="margin-top:10px">
     <label>Min sample size</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
-    <p class="config-hint">How many times a value must have been seen before it is scored at all. It is a floor, not a cap: at 1 every value is scored, and the rarest ones are exactly the ones a higher setting hides.</p>
+    <p class="config-hint">How many times a value must have been seen before it is scored at all. It is a floor, not a cap: at 1 every value is scored, and the rarest ones are exactly the ones a higher setting hides. Raise it only to trade first sightings away for less noise; whether a partition has enough history to judge is already what confidence measures.</p>
 </div>
 <p class="config-hint">Example: Partition=<em>file_prefix</em>, Value=<em>tld</em> scores how unusual a TLD is for a given prefix.</p>`;
         }
@@ -1987,7 +2002,7 @@ ${isBeacon ? `
             const vSel = document.getElementById('shapeValKey');
             if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); this._schedulePreview(); });
             if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); this._schedulePreview(); });
-            document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 5; this._schedulePreview(); });
+            document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 1; this._schedulePreview(); });
         } else {
             this._bindKeyFieldEvents();
             document.getElementById('addKeyField')?.addEventListener('click', () => {

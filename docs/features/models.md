@@ -13,7 +13,7 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 | **Beacon** | Is this pair talking on a suspiciously regular interval? | `src_ip`, `dst_ip`, `dst_port` |
 | **Long Connection** | Is this pair holding an unusually long-lived session? | `src_ip`, `dst_ip`, `dst_port` |
 
-Rarity's **min sample size** is a floor on how many times a value must have been seen before the model scores it at all, not a cap on what it collects. At 1 every value is scored. Raise it and the rarest values, which are the ones a rarity model exists to surface, stop being scored at all and are then dropped by `modelLookup`'s default `require=true`.
+Rarity's **min sample size** is a floor on how many times a value must have been seen before the model scores it at all, not a cap on what it collects. It defaults to 1, where every value is scored. Raise it and the rarest values, which are the ones a rarity model exists to surface, stop being scored at all and are then dropped by `modelLookup`'s default `require=true`; whether a partition has enough history to judge is already what `confidence` measures. Volume Baseline stores its **min history** in the same field, where the floor is buckets of history rather than occurrences of a value, and 7 is the sensible default there.
 
 Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
 
