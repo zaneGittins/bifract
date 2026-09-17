@@ -246,3 +246,57 @@ func TestExtractionCannotShadowAModelColumn(t *testing.T) {
 		t.Fatal("an extraction named after a model column must be refused")
 	}
 }
+
+// The rarity alert rule is counted with, explained in the data view, and shown in
+// the preview. It was written out three times and could disagree; this pins the
+// one source to the rule modelLookup and the generated alert actually apply.
+func TestRarityFlagPredicates(t *testing.T) {
+	cases := []struct {
+		name      string
+		def       ModelDefinition
+		wantSQL   string
+		wantText  string
+		wantThres bool
+	}{
+		{
+			name:     "no thresholds",
+			def:      ModelDefinition{},
+			wantSQL:  "model_count >= 1",
+			wantText: "",
+		},
+		{
+			name:      "both thresholds",
+			def:       ModelDefinition{Alert: &AlertConfig{ConfidenceThreshold: 0.8, PercentThreshold: 5}},
+			wantSQL:   "model_count >= 1 AND confidence > 0.8 AND percent < 5",
+			wantText:  "confidence > 0.8 and percent < 5",
+			wantThres: true,
+		},
+		{
+			name:      "min sample above the floor is stated",
+			def:       ModelDefinition{MinSample: 5, Alert: &AlertConfig{ConfidenceThreshold: 0.8}},
+			wantSQL:   "model_count >= 5 AND confidence > 0.8",
+			wantText:  "seen 5+ times and confidence > 0.8",
+			wantThres: true,
+		},
+		{
+			// Only the floor applies, so every scored value passes: saying they
+			// "would alert" would be true of a model that raises none.
+			name:     "min sample alone does not count as a threshold",
+			def:      ModelDefinition{MinSample: 5},
+			wantSQL:  "model_count >= 5",
+			wantText: "seen 5+ times",
+		},
+	}
+	for _, c := range cases {
+		got := rarityFlagPredicates(c.def)
+		if got.SQL() != c.wantSQL {
+			t.Errorf("%s: SQL = %q, want %q", c.name, got.SQL(), c.wantSQL)
+		}
+		if got.Text() != c.wantText {
+			t.Errorf("%s: Text = %q, want %q", c.name, got.Text(), c.wantText)
+		}
+		if got.Thresholded != c.wantThres {
+			t.Errorf("%s: Thresholded = %v, want %v", c.name, got.Thresholded, c.wantThres)
+		}
+	}
+}

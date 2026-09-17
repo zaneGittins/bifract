@@ -642,8 +642,8 @@
 .histogram-chart-dense { gap: 2px; }
 .histogram-chart-dense .histogram-col { min-width: 0; }
 
-/* The marker sits on one axis while a rarity alert needs two conditions, so the
-   chart says in words what being right of the line does not by itself mean. */
+/* A caption under a chart: what the marker does not by itself mean where the alert
+   needs more than the plotted metric, and what a series adds up to. */
 .histogram-note {
     margin-top: 8px;
     font-size: 10.5px;

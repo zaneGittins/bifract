@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -210,28 +209,14 @@ func (m *Manager) runPreviewQueries(ctx context.Context, histInner, histBucketEx
 func (m *Manager) previewRarity(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition) error {
 	scored := buildRarityScoredSQL(source, fidEsc)
 
+	// The same rule the data view counts with and the alert fires on, rendered once.
+	preds := rarityFlagPredicates(def)
 	minSample := def.MinSample
 	if minSample < 1 {
 		minSample = 1
 	}
-	// Mirror the linked alert predicate (see GenerateQuery): model_lookup gates on
-	// min sample, then confidence/percent thresholds apply when set (>0).
-	flagPreds := []string{fmt.Sprintf("model_count >= %d", minSample)}
-	// Events, not days: the gate is model_count, which is the pair's event count.
-	// The state carries a day set too, which is what "day" here used to claim.
-	basis := []string{fmt.Sprintf("seen %d+ time%s", minSample, plural(minSample))}
-	if def.Alert != nil {
-		if def.Alert.ConfidenceThreshold > 0 {
-			flagPreds = append(flagPreds, fmt.Sprintf("confidence > %g", def.Alert.ConfidenceThreshold))
-			basis = append(basis, fmt.Sprintf("confidence > %g", def.Alert.ConfidenceThreshold))
-		}
-		if def.Alert.PercentThreshold > 0 {
-			flagPreds = append(flagPreds, fmt.Sprintf("percent < %g", def.Alert.PercentThreshold))
-			basis = append(basis, fmt.Sprintf("percent < %g", def.Alert.PercentThreshold))
-		}
-	}
-	flagPred := strings.Join(flagPreds, " AND ")
-	res.FlagBasis = strings.Join(basis, ", ")
+	flagPred := preds.SQL()
+	res.FlagBasis = preds.Text()
 	res.Metric = "confidence"
 
 	// ifNotFinite guards avg() over an empty window (NaN), which would otherwise

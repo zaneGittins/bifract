@@ -1063,7 +1063,9 @@ ${m.description ? `<div class="me-sec">
                     : (t <= 1 ? t : null);
             }
         }
-        el.innerHTML = this._buildHistogramHTML(buckets, h.metric, thr, this._alertCriterion(this.viewer.model), thr != null ? Number(spec.score.threshold(this.viewer.model?.definition || {})) : null);
+        // No criterion here: the only type whose alert needs more than this metric
+        // is rarity, and rarity returns above with its coverage summary.
+        el.innerHTML = this._buildHistogramHTML(buckets, h.metric, thr, '', thr != null ? Number(spec.score.threshold(this.viewer.model?.definition || {})) : null);
     },
 
     // Where a threshold falls across equal-width bands whose last one is open
@@ -1089,7 +1091,7 @@ ${m.description ? `<div class="me-sec">
             return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
 <div class="mv-coverage"><div class="mv-coverage-text"><strong>${this._fmtNum(total)}</strong> scored values. No alert thresholds are set, so nothing is being filtered.</div></div>`;
         }
-        const pct = total > 0 ? (flagged / total * 100) : 0;
+        const pct = total > 0 && isFinite(flagged) ? (flagged / total * 100) : 0;
         return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
 <div class="mv-coverage">
     <div class="mv-coverage-bar"><span style="width:${Math.max(Math.min(pct, 100), flagged > 0 ? 1 : 0)}%"></span></div>
@@ -1120,21 +1122,6 @@ ${m.description ? `<div class="me-sec">
         return `<div class="histogram-head"><span class="histogram-title">New entities per day</span></div>
 <div class="histogram-chart histogram-chart-dense">${cols}</div>
 <div class="histogram-note">${this._fmtNum(totalNew)} first seen between ${first} and ${last}. Peak ${this._fmtNum(max)} in a day.</div>`;
-    },
-
-    // A rarity alert needs both thresholds. Only confidence has an axis here, so the
-    // percent half has to be said in words or the chart overstates what fires.
-    _alertCriterion(model) {
-        if (!model || model.model_type !== 'rarity') return '';
-        const a = (model.definition || {}).alert || {};
-        return this._criterionText(a.confidence_threshold, a.percent_threshold);
-    },
-
-    _criterionText(confidence, percent) {
-        const parts = [];
-        if (Number(confidence) > 0) parts.push(`confidence > ${Number(confidence).toFixed(2)}`);
-        if (Number(percent) > 0) parts.push(`percent < ${Number(percent)}`);
-        return parts.length > 1 ? parts.join(' and ') : '';
     },
 
     _fmtNum(v) {
@@ -2754,9 +2741,11 @@ ${isBeacon ? `
         const countEl = document.getElementById('modelResultsCount');
         if (countEl) countEl.textContent = `${this._fmtNum(scoredTotal)} scored`;
 
+        // The criterion wording comes from the server, which is where the rule that
+        // produced would_flag lives; spelling it again here let the two disagree.
         const histHTML = this._buildHistogramHTML(p.histogram || [], p.metric,
             p.model_type === 'rarity' ? this.editor.alertConfig.confidence_threshold : null,
-            p.model_type === 'rarity' ? this._criterionText(this.editor.alertConfig.confidence_threshold, this.editor.alertConfig.percent_threshold) : '');
+            p.model_type === 'rarity' ? (p.flag_basis || '') : '');
         const topHTML = this._previewTopTableHTML(p.top_columns || [], p.top || []);
 
         panel.innerHTML = `
@@ -2796,7 +2785,7 @@ ${isBeacon ? `
         let thresholdLine = '';
         if (thresholdFrac != null && thresholdFrac >= 0 && thresholdFrac <= 1) {
             const shown = thresholdValue != null ? Number(thresholdValue) : Number(thresholdFrac);
-            const label = _esc(shown.toFixed(2)) + ' ' + _esc(metric.toLowerCase());
+            const label = _esc(shown.toFixed(2));
             // No title: the line is pointer-events:none, so the note below carries it.
             thresholdLine = `<div class="histogram-threshold-line" style="left:calc(12px + (100% - 24px) * ${thresholdFrac})"><span class="histogram-threshold-label">${label}</span></div>`;
         }

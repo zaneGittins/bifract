@@ -1266,24 +1266,41 @@ func firstSeenCountInner(source, fidEsc, keyCol string) string {
 func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string, def ModelDefinition) (map[string]interface{}, error) {
 	preds := rarityFlagPredicates(def)
 	q := fmt.Sprintf(`SELECT toUInt64(count()) AS total, toUInt64(countIf(%s)) AS flagged FROM (%s)`,
-		strings.Join(preds.sql, " AND "), buildRarityScoredSQL(qt+" FINAL", fid))
+		preds.SQL(), buildRarityScoredSQL(qt+" FINAL", fid))
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("rarity flag counts: %w", err)
 	}
-	out := map[string]interface{}{"metric": "rarity_flags", "criterion": preds.text}
+	criterion := ""
+	if preds.Thresholded {
+		criterion = preds.Text()
+	}
+	out := map[string]interface{}{"metric": "rarity_flags", "criterion": criterion}
 	if len(rows) > 0 {
 		out["total"], out["flagged"] = rows[0]["total"], rows[0]["flagged"]
 	}
 	return out, nil
 }
 
-// rarityFlagPredicates is the alert's own test, as SQL and as the sentence that
-// explains it. One source so the count and its caption cannot disagree.
+// rarityFlags is the alert's own test: the SQL that counts what it would flag, the
+// sentence that explains it, and whether any threshold narrows it at all. One
+// source, because the count, its caption and the preview were three renderings of
+// the same rule and could disagree.
 type rarityFlags struct {
-	sql  []string
-	text string
+	sql []string
+	// words are the conditions in reading order, so a caller can join them the way
+	// its own sentence needs.
+	words []string
+	// Thresholded is false when only the min-sample floor applies, where every
+	// scored value passes and "would alert" would be true of a model raising none.
+	Thresholded bool
 }
+
+// SQL is the predicate the flag count is taken with.
+func (f rarityFlags) SQL() string { return strings.Join(f.sql, " AND ") }
+
+// Text reads the rule as a sentence.
+func (f rarityFlags) Text() string { return strings.Join(f.words, " and ") }
 
 func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 	minSample := def.MinSample
@@ -1291,21 +1308,21 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 		minSample = 1
 	}
 	f := rarityFlags{sql: []string{fmt.Sprintf("model_count >= %d", minSample)}}
-	var words []string
+	if minSample > 1 {
+		f.words = append(f.words, fmt.Sprintf("seen %d+ time%s", minSample, plural(minSample)))
+	}
 	if def.Alert != nil {
 		if t := def.Alert.ConfidenceThreshold; t > 0 {
 			f.sql = append(f.sql, fmt.Sprintf("confidence > %g", t))
-			words = append(words, fmt.Sprintf("confidence > %g", t))
+			f.words = append(f.words, fmt.Sprintf("confidence > %g", t))
+			f.Thresholded = true
 		}
 		if t := def.Alert.PercentThreshold; t > 0 {
 			f.sql = append(f.sql, fmt.Sprintf("percent < %g", t))
-			words = append(words, fmt.Sprintf("percent < %g", t))
+			f.words = append(f.words, fmt.Sprintf("percent < %g", t))
+			f.Thresholded = true
 		}
 	}
-	if minSample > 1 {
-		words = append(words, fmt.Sprintf("seen %d+ times", minSample))
-	}
-	f.text = strings.Join(words, " and ")
 	return f
 }
 
