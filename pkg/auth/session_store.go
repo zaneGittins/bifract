@@ -3,13 +3,16 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
 // SessionStore abstracts session persistence.
 type SessionStore interface {
-	Get(sessionID string) (*Session, bool)
-	Set(sessionID string, session *Session)
+	// Get returns ok=false with a nil error only when no live session exists; a
+	// non-nil error means the store could not answer and says nothing about the session.
+	Get(sessionID string) (*Session, bool, error)
+	Set(sessionID string, session *Session) error
 	Delete(sessionID string)
 	DeleteByUsername(username string)
 	Cleanup()
@@ -26,7 +29,7 @@ func newPgSessionStore(db *sql.DB) *pgSessionStore {
 	return &pgSessionStore{db: db}
 }
 
-func (p *pgSessionStore) Get(sessionID string) (*Session, bool) {
+func (p *pgSessionStore) Get(sessionID string) (*Session, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -49,15 +52,18 @@ func (p *pgSessionStore) Get(sessionID string) (*Session, bool) {
 		 WHERE s.session_id = $1 AND s.expires_at > NOW()`,
 		sessionID,
 	).Scan(&s.Username, &s.CreatedAt, &s.ExpiresAt, &fractal, &prism, &s.MFAPending)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
 	if err != nil {
-		return nil, false
+		return nil, false, err
 	}
 	s.SelectedFractal = fractal.String
 	s.SelectedPrism = prism.String
-	return s, true
+	return s, true, nil
 }
 
-func (p *pgSessionStore) Set(sessionID string, session *Session) {
+func (p *pgSessionStore) Set(sessionID string, session *Session) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -69,7 +75,7 @@ func (p *pgSessionStore) Set(sessionID string, session *Session) {
 		prism = &session.SelectedPrism
 	}
 
-	p.db.ExecContext(ctx,
+	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO sessions (session_id, username, created_at, expires_at, selected_fractal, selected_prism, mfa_pending)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT (session_id) DO UPDATE SET
@@ -80,6 +86,7 @@ func (p *pgSessionStore) Set(sessionID string, session *Session) {
 		   mfa_pending = EXCLUDED.mfa_pending`,
 		sessionID, session.Username, session.CreatedAt, session.ExpiresAt, fractal, prism, session.MFAPending,
 	)
+	return err
 }
 
 func (p *pgSessionStore) Delete(sessionID string) {

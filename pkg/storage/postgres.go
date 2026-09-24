@@ -14,6 +14,9 @@ import (
 	"github.com/lib/pq"
 )
 
+// ErrUserNotFound is returned by GetUser when no such user exists.
+var ErrUserNotFound = errors.New("user not found")
+
 type PostgresClient struct {
 	db      *sql.DB
 	connStr string
@@ -166,7 +169,7 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("user not found")
+		return nil, ErrUserNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user: %w", err)
@@ -470,7 +473,7 @@ func (c *PostgresClient) UpdatePasswordHash(ctx context.Context, username, passw
 		return fmt.Errorf("failed to check rows affected: %w", err)
 	}
 	if rows == 0 {
-		return fmt.Errorf("user not found")
+		return ErrUserNotFound
 	}
 	return nil
 }

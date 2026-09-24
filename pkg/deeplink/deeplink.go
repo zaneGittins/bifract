@@ -76,7 +76,12 @@ func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 
-	user := h.auth.SessionUser(r)
+	user, err := h.auth.SessionUser(r)
+	if err != nil {
+		w.Header().Set("Retry-After", "2")
+		h.renderError(w, http.StatusServiceUnavailable, "Temporarily unavailable", "Your session could not be checked. Reload the page to try again.")
+		return
+	}
 	if user == nil {
 		// Bounce through login and come back, so an expired session costs the
 		// analyst a password and not the link.

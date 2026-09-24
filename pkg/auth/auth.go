@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -209,6 +211,10 @@ type Session struct {
 	// factor. It authorizes nothing until a code is verified.
 	MFAPending bool
 }
+
+// ErrAPIKeyRejected marks an API key that is unknown, inactive, or expired. Any
+// other validation error means the key could not be checked.
+var ErrAPIKeyRejected = errors.New("invalid API key")
 
 // APIKeyValidator interface for validating API keys (to avoid circular dependency)
 type APIKeyValidator interface {
@@ -457,8 +463,10 @@ func (h *AuthHandler) createSessionWithMFA(username string, mfaPending bool) (st
 		MFAPending:      mfaPending,
 	}
 
-	h.store.Set(sessionID, session)
-
+	// A cookie for a session that was never stored would bounce straight back to login.
+	if err := h.store.Set(sessionID, session); err != nil {
+		return "", fmt.Errorf("store session: %w", err)
+	}
 	return sessionID, nil
 }
 
@@ -485,31 +493,45 @@ func (h *AuthHandler) LogAuthEvent(event, user, ip, detail string) {
 // SessionUser resolves the browser session cookie to a user, or nil when the
 // request carries no usable session. Unlike AuthMiddleware it never writes a
 // response, so page routes can redirect to the login screen instead of handing
-// a browser navigation a JSON 401.
-func (h *AuthHandler) SessionUser(r *http.Request) *storage.User {
+// a browser navigation a JSON 401. A non-nil error means the session could not
+// be checked, which the caller must not treat as logged out.
+func (h *AuthHandler) SessionUser(r *http.Request) (*storage.User, error) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	session, exists := h.getSession(cookie.Value)
-	if !exists {
-		return nil
+	session, exists, err := h.getSession(cookie.Value)
+	if err != nil || !exists {
+		return nil, err
 	}
 	if session.MFAPending {
-		return nil
+		return nil, nil
 	}
 	user, err := h.pg.GetUser(r.Context(), session.Username)
-	if err != nil || user == nil || !user.Enabled || user.ForcePasswordChange {
-		return nil
+	if errors.Is(err, storage.ErrUserNotFound) {
+		return nil, nil
 	}
-	if mfaEnrollmentRequired(user) {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return user
+	if !user.Enabled || user.ForcePasswordChange || mfaEnrollmentRequired(user) {
+		return nil, nil
+	}
+	return user, nil
 }
 
-func (h *AuthHandler) getSession(sessionID string) (*Session, bool) {
+func (h *AuthHandler) getSession(sessionID string) (*Session, bool, error) {
 	return h.store.Get(sessionID)
+}
+
+// writeAuthUnavailable answers a request whose credentials could not be checked.
+// It must not be a 401 or 403: the client treats 401 as logged out (an SSO
+// provider then silently re-logs it in, looping the browser) and a scope 403 as
+// a deleted fractal.
+func writeAuthUnavailable(w http.ResponseWriter, err error) {
+	log.Printf("Warning: auth lookup failed: %v", err)
+	w.Header().Set("Retry-After", "2")
+	api.WriteError(w, http.StatusServiceUnavailable, "Authentication temporarily unavailable")
 }
 
 func (h *AuthHandler) deleteSession(sessionID string) {
@@ -1121,7 +1143,8 @@ func parseScopeHeader(v string) (fractalID, prismID string, err error) {
 		return "", "", nil
 	}
 	kind, id, ok := strings.Cut(v, ":")
-	if !ok || id == "" || len(id) > 36 || !isScopeID(id) {
+	// Only the canonical 36-character form: uuid.Parse alone also takes braces and urn prefixes.
+	if !ok || len(id) != 36 || uuid.Validate(id) != nil {
 		return "", "", fmt.Errorf("invalid scope header")
 	}
 	switch kind {
@@ -1134,30 +1157,27 @@ func parseScopeHeader(v string) (fractalID, prismID string, err error) {
 	}
 }
 
-func isScopeID(s string) bool {
-	for _, c := range s {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
-			return false
-		}
-	}
-	return true
-}
-
 // canAccessScope reports whether the user holds at least viewer on the requested
 // scope. A deleted fractal/prism resolves to no role, so stale ids fail here too.
-func (h *AuthHandler) canAccessScope(ctx context.Context, user *storage.User, fractalID, prismID string) bool {
+// An error means the role could not be read, not that access is denied.
+func (h *AuthHandler) canAccessScope(ctx context.Context, user *storage.User, fractalID, prismID string) (bool, error) {
 	if user.IsAdmin {
-		return true
+		return true, nil
 	}
 	if h.rbacResolver == nil {
-		return false
+		return false, nil
 	}
+	var role rbac.Role
+	var err error
 	if fractalID != "" {
-		role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, fractalID)
-		return err == nil && rbac.HasAccess(user, role, rbac.RoleViewer)
+		role, err = h.rbacResolver.ResolveFractalRole(ctx, user.Username, fractalID)
+	} else {
+		role, err = h.rbacResolver.ResolvePrismRole(ctx, user.Username, prismID)
 	}
-	role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, prismID)
-	return err == nil && rbac.HasAccess(user, role, rbac.RoleViewer)
+	if err != nil {
+		return false, err
+	}
+	return rbac.HasAccess(user, role, rbac.RoleViewer), nil
 }
 
 func writeScopeError(w http.ResponseWriter, status int, msg string) {
@@ -1171,9 +1191,19 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try session authentication first (existing flow)
 		if cookie, err := r.Cookie(sessionCookieName); err == nil {
-			if session, exists := h.getSession(cookie.Value); exists {
+			session, exists, err := h.getSession(cookie.Value)
+			if err != nil {
+				writeAuthUnavailable(w, err)
+				return
+			}
+			if exists {
 				// Session auth successful - load user from database
-				if user, err := h.pg.GetUser(r.Context(), session.Username); err == nil {
+				user, err := h.pg.GetUser(r.Context(), session.Username)
+				if err != nil && !errors.Is(err, storage.ErrUserNotFound) {
+					writeAuthUnavailable(w, err)
+					return
+				}
+				if err == nil {
 					// Lock out users whose account was disabled. Because the
 					// user is loaded fresh from the DB each request, this takes
 					// effect on the next request even with an active session.
@@ -1216,7 +1246,10 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 						// fractal in its place.
 						if hdrFractal == "" && hdrPrism == "" {
 							ctx = fractals.WithNoScope(ctx)
-						} else if !h.canAccessScope(ctx, user, hdrFractal, hdrPrism) {
+						} else if ok, err := h.canAccessScope(ctx, user, hdrFractal, hdrPrism); err != nil {
+							writeAuthUnavailable(w, err)
+							return
+						} else if !ok {
 							writeScopeError(w, http.StatusForbidden, "No access to the requested fractal or prism")
 							return
 						}
@@ -1231,14 +1264,20 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 						ctx = context.WithValue(ctx, "prism_role", "admin")
 					} else if h.rbacResolver != nil {
 						if scopeFractal != "" {
-							if role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, scopeFractal); err == nil {
-								ctx = context.WithValue(ctx, "fractal_role", string(role))
+							role, err := h.rbacResolver.ResolveFractalRole(ctx, user.Username, scopeFractal)
+							if err != nil {
+								writeAuthUnavailable(w, err)
+								return
 							}
+							ctx = context.WithValue(ctx, "fractal_role", string(role))
 						}
 						if scopePrism != "" {
-							if role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, scopePrism); err == nil {
-								ctx = context.WithValue(ctx, "prism_role", string(role))
+							role, err := h.rbacResolver.ResolvePrismRole(ctx, user.Username, scopePrism)
+							if err != nil {
+								writeAuthUnavailable(w, err)
+								return
 							}
+							ctx = context.WithValue(ctx, "prism_role", string(role))
 						}
 					}
 
@@ -1276,8 +1315,11 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 		// 3. API key validator is available
 		if h.apiKeyValidator != nil {
 			if apiKey := h.extractAPIKey(r); apiKey != "" {
-				// Try to validate API key, but don't fail if there are database issues
 				keyData, err := h.validateAPIKey(r.Context(), apiKey)
+				if err != nil && !errors.Is(err, ErrAPIKeyRejected) {
+					writeAuthUnavailable(w, err)
+					return
+				}
 				if err == nil {
 					if !h.apiKeyAllowed(keyData.KeyID) {
 						w.Header().Set("Retry-After", "1")
@@ -1339,10 +1381,6 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
-				}
-				// If API key was provided but validation failed, log only if it's not a simple "invalid key" error
-				if err != nil && !strings.Contains(err.Error(), "invalid API key") && !strings.Contains(err.Error(), "no rows") {
-					log.Printf("Warning: API key validation error (table may not exist): %v", err)
 				}
 			}
 		}
