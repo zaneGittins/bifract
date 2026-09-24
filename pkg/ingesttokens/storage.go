@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -192,6 +193,10 @@ func (s *Storage) EnsureDefaultTokens(ctx context.Context, fm *fractals.Manager)
 	return nil
 }
 
+// ErrTokenRejected marks a missing, unknown, or inactive ingest token. Any other
+// validation error means the token could not be checked, and the sender should retry.
+var ErrTokenRejected = errors.New("invalid ingest token")
+
 // ValidateToken checks a raw token string and returns validated data for the hot path.
 func (s *Storage) ValidateToken(ctx context.Context, rawToken string) (*ValidatedToken, error) {
 	tokenHash := HashToken(rawToken)
@@ -212,7 +217,7 @@ func (s *Storage) ValidateToken(ctx context.Context, rawToken string) (*Validate
 		&normalizerID, &normName, &normVersion, &transformsRaw, &mappingsRaw, &valueMappingsRaw, &normTsFieldsRaw)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("invalid ingest token")
+		return nil, ErrTokenRejected
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate ingest token: %w", err)
