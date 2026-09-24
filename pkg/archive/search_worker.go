@@ -449,7 +449,7 @@ func (w *SearchWorker) reapStale(ctx context.Context) {
 // ensureDeps resolves the process-shared catalog + ClickHouse client (built once
 // across all workers) and caches them on this worker for its own use.
 func (w *SearchWorker) ensureDeps(ctx context.Context) error {
-	cat, ch, err := w.deps.ensure(ctx)
+	cat, ch, err := w.deps.ensure()
 	if err != nil {
 		return err
 	}

@@ -1121,12 +1121,12 @@ func startArchiveJobWorkers(topo storage.Topology) (func(), *archive.Estimator) 
 	db.SetMaxIdleConns(4)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	archive.StartJobWorkers(ctx, cfg, db)
+	est := archive.StartJobWorkers(ctx, cfg, db)
 	log.Printf("Archive job workers started (restore concurrency %d; recall pool %d, live cap via recall_concurrency setting)", restoreN, archive.RecallWorkerPool)
 	return func() {
 		cancel()
 		db.Close()
-	}, archive.NewEstimator(cfg)
+	}, est
 }
 
 // startArchiveSpool provisions the ingest archive spool tee when a spool path is
