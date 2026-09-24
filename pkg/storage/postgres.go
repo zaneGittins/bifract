@@ -3,9 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -74,7 +76,11 @@ func (c *PostgresClient) Initialize(ctx context.Context, initSQL string) error {
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", schemaLockID); err != nil {
 		return fmt.Errorf("failed to acquire schema lock: %w", err)
 	}
-	defer conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", schemaLockID)
+	defer func() {
+		if err := UnlockAdvisory(conn, schemaLockID); err != nil {
+			log.Printf("Warning: failed to release schema lock: %v", err)
+		}
+	}()
 
 	// Always run the full SQL - all statements use IF NOT EXISTS / CREATE OR REPLACE,
 	// so this is safe to run on an existing database and picks up new tables/triggers.
@@ -1481,12 +1487,28 @@ func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unl
 		return nil, false
 	}
 	return func() {
-		unlockCtx, unlockCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer unlockCancel()
-		var unlocked bool
-		conn.QueryRowContext(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockID).Scan(&unlocked)
+		if err := UnlockAdvisory(conn, lockID); err != nil {
+			log.Printf("Warning: failed to release advisory lock %d: %v", lockID, err)
+		}
 		conn.Close()
 	}, true
+}
+
+// UnlockAdvisory releases a session-scoped advisory lock held on conn. If that
+// fails, conn is marked bad so it is dropped, releasing the lock, rather than
+// returned to the pool still holding it.
+func UnlockAdvisory(conn *sql.Conn, lockID int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var unlocked bool
+	err := conn.QueryRowContext(ctx, `SELECT pg_advisory_unlock($1)`, lockID).Scan(&unlocked)
+	if err == nil && !unlocked {
+		err = fmt.Errorf("advisory lock %d was not held by this connection", lockID)
+	}
+	if err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	return err
 }
 
 // ============================

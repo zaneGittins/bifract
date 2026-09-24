@@ -365,13 +365,9 @@ func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) err
 		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeSkippedLocked, nil)
 		return nil
 	}
-	// WithoutCancel so shutdown and pass timeout still release the lock. A failure
-	// here returns the connection to the pool still holding a session-scoped lock,
-	// which would make every later pass skip as "locked" with no other symptom, so
-	// it is logged rather than discarded.
+	// Released on a fresh context so shutdown and pass timeout still unlock.
 	defer func() {
-		if _, err := conn.ExecContext(context.WithoutCancel(parent),
-			"SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock)); err != nil {
+		if err := storage.UnlockAdvisory(conn, maintainAdvisoryLock); err != nil {
 			log.Printf("maintain: failed to release the advisory lock: %v", err)
 		}
 	}()
@@ -487,8 +483,7 @@ func reconcileInterruptedPass(ctx context.Context, db *sql.DB) {
 		return
 	}
 	defer func() {
-		if _, err := conn.ExecContext(context.WithoutCancel(ctx),
-			"SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock)); err != nil {
+		if err := storage.UnlockAdvisory(conn, maintainAdvisoryLock); err != nil {
 			log.Printf("maintain-loop: failed to release the advisory lock: %v", err)
 		}
 	}()
