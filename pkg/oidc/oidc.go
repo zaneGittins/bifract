@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -344,10 +345,15 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		baseUsername := username
 		found := false
 		for attempt := 0; attempt <= 10; attempt++ {
-			existing, _ := h.pg.GetUser(ctx, username)
-			if existing == nil {
+			_, err := h.pg.GetUser(ctx, username)
+			if errors.Is(err, storage.ErrUserNotFound) {
 				found = true
 				break
+			}
+			if err != nil {
+				log.Printf("[OIDC] Database error checking username availability: %v", err)
+				http.Redirect(w, r, "/login.html?error=oidc_failed", http.StatusFound)
+				return
 			}
 			username = fmt.Sprintf("%s_%d", baseUsername, attempt+1)
 		}

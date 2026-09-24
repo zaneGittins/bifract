@@ -81,7 +81,7 @@ func runCmd() {
 
 	// The runtime on/off state lives in the Postgres settings table so the admin
 	// UI can toggle it without a redeploy; BIFRACT_ARCHIVE_ENABLED seeds it.
-	db, err := sql.Open("postgres", cfg.PGDSN)
+	db, err := openPostgres(cfg.PGDSN)
 	if err != nil {
 		log.Fatalf("open postgres: %v", err)
 	}
@@ -118,7 +118,7 @@ func runCmd() {
 	}
 	defer reader.Close()
 
-	cat, err := archive.NewCatalog(ctx, "bifract", cfg.PGDSN, cfg.Obj)
+	cat, err := archive.NewCatalog(cfg.PGDSN, cfg.Obj)
 	if err != nil {
 		log.Fatalf("open catalog: %v", err)
 	}
@@ -188,7 +188,7 @@ func maintainCmd() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	db, err := sql.Open("postgres", cfg.PGDSN)
+	db, err := openPostgres(cfg.PGDSN)
 	if err != nil {
 		log.Fatalf("open postgres: %v", err)
 	}
@@ -217,7 +217,7 @@ func maintainLoopCmd() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	db, err := sql.Open("postgres", cfg.PGDSN)
+	db, err := openPostgres(cfg.PGDSN)
 	if err != nil {
 		log.Fatalf("open postgres: %v", err)
 	}
@@ -337,7 +337,7 @@ func deepCompactionInterval() time.Duration {
 // Returns an error only for a genuine pass failure (the caller decides whether
 // to exit or continue); a disabled/locked skip returns nil after writing status.
 func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) error {
-	if !maintainEnabled(cfg) {
+	if !maintainEnabled(parent, cfg, db) {
 		log.Println("maintain: archiving disabled; nothing to do")
 		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeSkippedDisabled, nil)
 		return nil
@@ -365,13 +365,9 @@ func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) err
 		_ = archive.WriteMaintainOutcome(parent, db, archive.MaintainOutcomeSkippedLocked, nil)
 		return nil
 	}
-	// WithoutCancel so shutdown and pass timeout still release the lock. A failure
-	// here returns the connection to the pool still holding a session-scoped lock,
-	// which would make every later pass skip as "locked" with no other symptom, so
-	// it is logged rather than discarded.
+	// Released on a fresh context so shutdown and pass timeout still unlock.
 	defer func() {
-		if _, err := conn.ExecContext(context.WithoutCancel(parent),
-			"SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock)); err != nil {
+		if err := storage.UnlockAdvisory(conn, maintainAdvisoryLock); err != nil {
 			log.Printf("maintain: failed to release the advisory lock: %v", err)
 		}
 	}()
@@ -399,11 +395,14 @@ func runMaintainOnce(parent context.Context, cfg archive.Config, db *sql.DB) err
 	// the terminal WriteMaintainStatus/WriteMaintainOutcome below.
 	_ = archive.MarkMaintainRunning(ctx, db)
 
-	cat, err := archive.NewCatalog(ctx, "bifract", cfg.PGDSN, cfg.Obj)
+	cat, err := archive.NewCatalog(cfg.PGDSN, cfg.Obj)
 	if err != nil {
 		_ = archive.WriteMaintainOutcome(parent, db, maintainFailureOutcome(ctx, err), err)
 		return fmt.Errorf("open catalog: %w", err)
 	}
+	// Each pass opens its own catalog, so it must release it or maintain-loop
+	// accumulates a Postgres pool per pass.
+	defer cat.Close()
 	opts := archive.MaintainOptionsFromEnv()
 	// Per-fractal archive retention. A lookup failure must not skip the whole
 	// pass: compaction and expiry are still worth running, and the next pass
@@ -484,8 +483,7 @@ func reconcileInterruptedPass(ctx context.Context, db *sql.DB) {
 		return
 	}
 	defer func() {
-		if _, err := conn.ExecContext(context.WithoutCancel(ctx),
-			"SELECT pg_advisory_unlock($1)", int64(maintainAdvisoryLock)); err != nil {
+		if err := storage.UnlockAdvisory(conn, maintainAdvisoryLock); err != nil {
 			log.Printf("maintain-loop: failed to release the advisory lock: %v", err)
 		}
 	}()
@@ -511,25 +509,12 @@ func maintainFailureOutcome(ctx context.Context, err error) archive.MaintainOutc
 // maintainEnabled reports whether archiving is on: the env seed, or the runtime
 // archive_enabled setting in Postgres, so an admin toggle is honored between
 // loop passes without a redeploy.
-func maintainEnabled(cfg archive.Config) bool {
+func maintainEnabled(ctx context.Context, cfg archive.Config, db *sql.DB) bool {
 	if cfg.Enabled {
 		return true
 	}
-	return archiveEnabledFromDB(cfg.PGDSN)
-}
-
-// archiveEnabledFromDB reads the runtime archive_enabled setting.
-func archiveEnabledFromDB(dsn string) bool {
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		return false
-	}
-	defer db.Close()
-	var v string
-	if err := db.QueryRow("SELECT value FROM settings WHERE key=$1", archiveEnabledSetting).Scan(&v); err != nil {
-		return false
-	}
-	return v == "true"
+	on, err := readArchiveEnabled(ctx, db)
+	return err == nil && on
 }
 
 // restoreCmd replays an Iceberg event-time window back into ClickHouse.
@@ -605,7 +590,7 @@ func restoreDeps() (archive.Config, *archive.Catalog, *storage.ClickHouseClient)
 		log.Fatalf("config: %v", err)
 	}
 	archive.ApplyBackendEnv(cfg.Obj)
-	cat, err := archive.NewCatalog(context.Background(), "bifract", cfg.PGDSN, cfg.Obj)
+	cat, err := archive.NewCatalog(cfg.PGDSN, cfg.Obj)
 	if err != nil {
 		log.Fatalf("open catalog: %v", err)
 	}
@@ -643,17 +628,45 @@ func parseTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unrecognized time %q (want RFC3339 or 'YYYY-MM-DD [HH:MM:SS]')", s)
 }
 
+// The archiver's Postgres work is sequential (status rows, settings reads, one
+// pinned advisory-lock connection), so a small pool bounds every replica.
+const (
+	pgMaxOpenConns    = 4
+	pgMaxIdleConns    = 2
+	pgConnMaxIdleTime = 5 * time.Minute
+)
+
+// openPostgres opens the archiver's own capped Postgres pool.
+func openPostgres(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(pgMaxOpenConns)
+	db.SetMaxIdleConns(pgMaxIdleConns)
+	db.SetConnMaxIdleTime(pgConnMaxIdleTime)
+	return db, nil
+}
+
 func chFmt(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
 
 // archiveEnabled reports the effective runtime state: the archive_enabled
 // setting if present, otherwise the env seed.
 func archiveEnabled(ctx context.Context, db *sql.DB, envSeed bool) bool {
-	var v string
-	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", archiveEnabledSetting).Scan(&v)
+	on, err := readArchiveEnabled(ctx, db)
 	if err != nil {
 		return envSeed
 	}
-	return v == "true"
+	return on
+}
+
+// readArchiveEnabled reads the runtime archive_enabled setting.
+func readArchiveEnabled(ctx context.Context, db *sql.DB) (bool, error) {
+	var v string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key=$1", archiveEnabledSetting).Scan(&v); err != nil {
+		return false, err
+	}
+	return v == "true", nil
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {

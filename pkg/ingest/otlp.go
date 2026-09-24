@@ -46,7 +46,8 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	// Validate ingest token (always required)
 	tokenData, err := h.handler.validateIngestToken(r)
 	if err != nil {
-		h.respondError(w, r, http.StatusUnauthorized, "Invalid or missing ingest token")
+		status, msg := tokenErrorStatus(w, err)
+		h.respondError(w, r, status, msg)
 		return
 	}
 

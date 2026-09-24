@@ -62,10 +62,8 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 	// Validate ingest token (always required)
 	tokenData, err := h.validateIngestToken(r)
 	if err != nil {
-		respondJSON(w, http.StatusUnauthorized, IngestResponse{
-			Success: false,
-			Error:   "Invalid or missing ingest token",
-		})
+		status, msg := tokenErrorStatus(w, err)
+		respondJSON(w, status, IngestResponse{Success: false, Error: msg})
 		return
 	}
 
@@ -165,6 +163,17 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// tokenErrorStatus maps a validateIngestToken error to a response. A token that
+// could not be checked is a 503, never a 401: shippers drop a batch on 401 but retry a 503.
+func tokenErrorStatus(w http.ResponseWriter, err error) (int, string) {
+	if errors.Is(err, ingesttokens.ErrTokenRejected) {
+		return http.StatusUnauthorized, "Invalid or missing ingest token"
+	}
+	log.Printf("Warning: ingest token check failed: %v", err)
+	w.Header().Set("Retry-After", "2")
+	return http.StatusServiceUnavailable, "Ingest token could not be checked"
+}
+
 // validateIngestToken extracts and validates a bearer token from the request.
 // Accepts "Bearer <token>" and "APIKey <token>" prefixes for compatibility
 // with Elasticsearch clients (e.g. Velociraptor's go-elasticsearch).
@@ -180,7 +189,7 @@ func (h *IngestHandler) validateIngestToken(r *http.Request) (*ingesttokens.Vali
 	}
 
 	if rawToken == "" {
-		return nil, fmt.Errorf("ingest token required: set Authorization: Bearer <token> or ApiKey <token>")
+		return nil, fmt.Errorf("%w: set Authorization: Bearer <token> or ApiKey <token>", ingesttokens.ErrTokenRejected)
 	}
 
 	tokenHash := ingesttokens.HashToken(rawToken)

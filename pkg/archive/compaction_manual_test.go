@@ -53,10 +53,11 @@ func newArchiveTestCatalog(t *testing.T) *Catalog {
 	t.Setenv("BIFRACT_ARCHIVE_INIT_CATALOG", "true")
 	obj := archiveTestObjConfig()
 	ApplyBackendEnv(obj)
-	cat, err := NewCatalog(context.Background(), "bifract", archiveTestPGDSN, obj)
+	cat, err := NewCatalog(archiveTestPGDSN, obj)
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	t.Cleanup(func() { cat.Close() })
 	return cat
 }
 

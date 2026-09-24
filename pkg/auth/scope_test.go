@@ -1,6 +1,11 @@
 package auth
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+const testScopeID = "3321ba27-4315-4245-8b97-bb5940b1931e"
 
 func TestParseScopeHeader(t *testing.T) {
 	tests := []struct {
@@ -10,14 +15,17 @@ func TestParseScopeHeader(t *testing.T) {
 		wantPrism   string
 		wantErr     bool
 	}{
-		{name: "fractal", header: "fractal:abc-123", wantFractal: "abc-123"},
-		{name: "prism", header: "prism:abc-123", wantPrism: "abc-123"},
-		{name: "surrounding space", header: "  fractal:abc-123  ", wantFractal: "abc-123"},
+		{name: "fractal", header: "fractal:" + testScopeID, wantFractal: testScopeID},
+		{name: "prism", header: "prism:" + testScopeID, wantPrism: testScopeID},
+		{name: "surrounding space", header: "  fractal:" + testScopeID + "  ", wantFractal: testScopeID},
+		{name: "not a uuid", header: "fractal:abc-123", wantErr: true},
+		{name: "uuid without dashes", header: "fractal:" + strings.ReplaceAll(testScopeID, "-", ""), wantErr: true},
+		{name: "braced uuid", header: "fractal:{" + testScopeID[:34] + "}", wantErr: true},
 		{name: "explicit none", header: ScopeNone},
 		{name: "none with space", header: "  none  "},
-		{name: "none is not a kind", header: "none:abc-123", wantErr: true},
-		{name: "unknown kind", header: "tenant:abc-123", wantErr: true},
-		{name: "no separator", header: "abc-123", wantErr: true},
+		{name: "none is not a kind", header: "none:" + testScopeID, wantErr: true},
+		{name: "unknown kind", header: "tenant:" + testScopeID, wantErr: true},
+		{name: "no separator", header: testScopeID, wantErr: true},
 		{name: "empty id", header: "fractal:", wantErr: true},
 		{name: "empty header", header: "", wantErr: true},
 		{name: "id too long", header: "fractal:" + string(make([]byte, 37)), wantErr: true},

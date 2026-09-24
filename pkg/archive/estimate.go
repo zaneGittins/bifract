@@ -42,15 +42,14 @@ const (
 	estimateScanConcurrency = 4
 )
 
-// Estimator answers pre-flight scan questions for the Recall UI. It holds a
-// lazily-built catalog (so an install with archiving off never opens object
-// storage) plus a short-lived result cache, and collapses concurrent duplicate
-// requests so a slow manifest read is paid once.
+// Estimator answers pre-flight scan questions for the Recall UI. It reads
+// through the job workers' shared catalog, keeps a short-lived result cache, and
+// collapses concurrent duplicate requests so a slow manifest read is paid once.
 type Estimator struct {
-	cfg Config
+	cfg  Config
+	deps *sharedDeps
 
 	mu       sync.Mutex
-	cat      *Catalog
 	cache    map[string]estimateEntry
 	inflight map[string]chan struct{}
 }
@@ -60,10 +59,11 @@ type estimateEntry struct {
 	at  time.Time
 }
 
-// NewEstimator builds an estimator over the archive config.
-func NewEstimator(cfg Config) *Estimator {
+// newEstimator builds an estimator that reads through deps' catalog.
+func newEstimator(cfg Config, deps *sharedDeps) *Estimator {
 	return &Estimator{
 		cfg:      cfg,
+		deps:     deps,
 		cache:    make(map[string]estimateEntry),
 		inflight: make(map[string]chan struct{}),
 	}
@@ -124,7 +124,7 @@ func (e *Estimator) Estimate(ctx context.Context, fractalID string, from, to tim
 }
 
 func (e *Estimator) compute(ctx context.Context, fractalID string, fromDay, toDay time.Time) (ScanEstimate, error) {
-	cat, err := e.catalog(ctx)
+	cat, err := e.deps.catalog()
 	if err != nil {
 		return ScanEstimate{}, err
 	}
@@ -163,28 +163,4 @@ func (e *Estimator) compute(ctx context.Context, fractalID string, fromDay, toDa
 	}
 	est.Partitions = len(days)
 	return est, nil
-}
-
-// catalog lazily opens the Iceberg catalog on first use.
-func (e *Estimator) catalog(ctx context.Context) (*Catalog, error) {
-	e.mu.Lock()
-	cat := e.cat
-	e.mu.Unlock()
-	if cat != nil {
-		return cat, nil
-	}
-	ApplyBackendEnv(e.cfg.Obj)
-	built, err := NewCatalog(ctx, Namespace, e.cfg.PGDSN, e.cfg.Obj)
-	if err != nil {
-		return nil, fmt.Errorf("open catalog: %w", err)
-	}
-	e.mu.Lock()
-	// Another caller may have won the race; keep whichever landed first so the
-	// process only ever uses one catalog handle.
-	if e.cat == nil {
-		e.cat = built
-	}
-	cat = e.cat
-	e.mu.Unlock()
-	return cat, nil
 }

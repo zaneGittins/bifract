@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/auth"
 	"bifract/pkg/storage"
 )
 
@@ -172,14 +173,14 @@ func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPI
 
 	apiKey, err := scanAPIKey(row)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("invalid API key")
+		return nil, auth.ErrAPIKeyRejected
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate API key: %w", err)
 	}
 
 	if apiKey.ExpiresAt != nil && time.Now().After(*apiKey.ExpiresAt) {
-		return nil, fmt.Errorf("API key expired")
+		return nil, fmt.Errorf("%w: expired", auth.ErrAPIKeyRejected)
 	}
 
 	return &ValidatedAPIKey{APIKey: *apiKey}, nil

@@ -58,7 +58,11 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 	// Validate ingest token (always required)
 	tokenData, err := h.handler.validateIngestToken(r)
 	if err != nil {
-		respondElasticError(w, http.StatusUnauthorized, err.Error())
+		status, msg := tokenErrorStatus(w, err)
+		if status == http.StatusUnauthorized {
+			msg = err.Error()
+		}
+		respondElasticError(w, status, msg)
 		return
 	}
 

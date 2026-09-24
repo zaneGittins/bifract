@@ -2,17 +2,19 @@ package archive
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
+	sqlcat "github.com/apache/iceberg-go/catalog/sql"
 	icetable "github.com/apache/iceberg-go/table"
 
-	// Register the gocloud IO backends (s3/minio/azure/gcs) and the SQL catalog.
-	_ "github.com/apache/iceberg-go/catalog/sql"
+	// Register the gocloud IO backends (s3/minio/azure/gcs).
 	_ "github.com/apache/iceberg-go/io/gocloud"
 
 	"bifract/pkg/objstore"
@@ -26,38 +28,60 @@ const Namespace = "bifract"
 // Catalog wraps an iceberg-go SQL catalog (Postgres-backed) plus the fixed
 // archive schema/partition spec, and manages per-fractal tables.
 type Catalog struct {
-	cat  catalog.Catalog
-	name string
+	cat catalog.Catalog
+	db  *sql.DB
 }
+
+// Catalog metadata queries are short, so a small pool serves every worker that
+// shares one catalog while bounding what each process can hold against Postgres.
+const (
+	catalogMaxOpenConns    = 8
+	catalogMaxIdleConns    = 2
+	catalogConnMaxIdleTime = 5 * time.Minute
+)
+
+// catalogName is the catalog_name iceberg-go's registrar has always stamped on
+// catalog rows; existing tables are keyed by it.
+const catalogName = "sql"
 
 // NewCatalog opens the Postgres-backed Iceberg SQL catalog. pgDSN is a standard
 // lib/pq DSN. The catalog tables (iceberg_tables, iceberg_namespace_properties)
 // are managed by Bifract's own Postgres migrations, so table auto-creation is
 // disabled here.
-func NewCatalog(ctx context.Context, name, pgDSN string, obj objstore.Config) (*Catalog, error) {
+func NewCatalog(pgDSN string, obj objstore.Config) (*Catalog, error) {
 	// Production pre-creates the catalog tables via a Postgres migration, so
 	// auto-creation stays off by default. Tests may flip BIFRACT_ARCHIVE_INIT_CATALOG=true.
 	initTables := "false"
 	if v := os.Getenv("BIFRACT_ARCHIVE_INIT_CATALOG"); v == "true" {
 		initTables = "true"
 	}
+	// The DSN stays out of props: they are handed to every table's file IO.
 	props := iceberg.Properties{
-		"type":                "sql",
-		"sql.driver":          "postgres",
-		"sql.dialect":         "postgres",
-		"uri":                 pgDSN,
 		"warehouse":           obj.WarehouseURI(),
 		"init_catalog_tables": initTables,
 	}
 	for k, v := range obj.IcebergProps() {
 		props[k] = v
 	}
-	cat, err := catalog.Load(ctx, name, props)
+	// Opened here rather than via catalog.Load: the registrar's pool is uncapped
+	// and unreachable, so it could neither be bounded nor ever closed.
+	db, err := sql.Open("postgres", pgDSN)
 	if err != nil {
+		return nil, fmt.Errorf("archive: open catalog db: %w", err)
+	}
+	db.SetMaxOpenConns(catalogMaxOpenConns)
+	db.SetMaxIdleConns(catalogMaxIdleConns)
+	db.SetConnMaxIdleTime(catalogConnMaxIdleTime)
+	cat, err := sqlcat.NewCatalog(catalogName, db, sqlcat.Postgres, props)
+	if err != nil {
+		db.Close()
 		return nil, fmt.Errorf("archive: load catalog: %w", err)
 	}
-	return &Catalog{cat: cat, name: name}, nil
+	return &Catalog{cat: cat, db: db}, nil
 }
+
+// Close releases the catalog's Postgres connections.
+func (c *Catalog) Close() error { return c.db.Close() }
 
 // tableName maps a fractal UUID to a valid Iceberg table identifier component.
 func tableName(fractalID string) string {
