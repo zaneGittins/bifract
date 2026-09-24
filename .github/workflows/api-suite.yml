@@ -61,10 +61,11 @@ jobs:
           FRACTAL=$(curl -sf -b "$COOKIES" "$BASE/api/v1/fractals" \
             | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["fractals"][0]["id"])')
           EXPIRES=$(python3 -c "import datetime;print((datetime.datetime.now(datetime.UTC)+datetime.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+          # A tenant-admin key is instance-wide: it holds no scope role, and the
+          # suite names its fractal per request with the scope header.
           KEY=$(curl -sf -b "$COOKIES" -X POST -H 'Content-Type: application/json' \
-            -H "X-Bifract-Scope: fractal:$FRACTAL" \
-            -d "{\"name\":\"api-suite\",\"role\":\"admin\",\"tenant_admin\":true,\"expires_at\":\"$EXPIRES\"}" \
-            "$BASE/api/v1/fractals/$FRACTAL/api-keys" \
+            -d "{\"name\":\"api-suite\",\"tenant_admin\":true,\"expires_at\":\"$EXPIRES\"}" \
+            "$BASE/api/v1/api-keys" \
             | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["key"])')
           echo "::add-mask::$KEY"
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
