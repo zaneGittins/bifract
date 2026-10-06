@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -227,6 +228,19 @@ func caseValueSQL(raw string) string {
 	return "'" + escapeString(v) + "'"
 }
 
+// caseAssignName matches a field a case branch may assign. The name becomes a
+// bare SQL alias and GROUP BY key, so anything beyond a plain identifier is
+// rejected rather than quoted.
+var caseAssignName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func caseFieldName(raw string) (string, error) {
+	field := strings.TrimSpace(raw)
+	if !caseAssignName.MatchString(field) {
+		return "", fmt.Errorf("case: invalid field name %q: use letters, digits and underscores", field)
+	}
+	return field, nil
+}
+
 // looksLikeCommand reports whether a segment is a function-call command
 // (count(), in(...), regex(...), eval(...)) rather than an assignment or value.
 func looksLikeCommand(seg string) bool {
@@ -298,7 +312,11 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 					// user to the bare-command form rather than quoting it as a literal.
 					return out, fmt.Errorf("case: assign a command result with a bare pipe, not ':='; write `| %s` instead of `%s := %s`", rhs, strings.TrimSpace(parts[0]), rhs)
 				}
-				bd.vals = append(bd.vals, caseSel{field: strings.TrimSpace(parts[0]), expr: caseValueSQL(rhs)})
+				field, err := caseFieldName(parts[0])
+				if err != nil {
+					return out, err
+				}
+				bd.vals = append(bd.vals, caseSel{field: field, expr: caseValueSQL(rhs)})
 			case looksLikeCommand(seg):
 				eff, err := harvestSegment(seg, opts, registry)
 				if err != nil {
@@ -309,7 +327,11 @@ func compileCase(block string, registry *FieldRegistry, opts QueryOptions) (comp
 				bd.aggs = append(bd.aggs, eff.aggs...)
 			case strings.Contains(seg, "="):
 				parts := strings.SplitN(seg, "=", 2)
-				bd.vals = append(bd.vals, caseSel{field: strings.TrimSpace(parts[0]), expr: caseValueSQL(parts[1])})
+				field, err := caseFieldName(parts[0])
+				if err != nil {
+					return out, err
+				}
+				bd.vals = append(bd.vals, caseSel{field: field, expr: caseValueSQL(parts[1])})
 			default:
 				bd.bares = append(bd.bares, caseValueSQL(seg))
 			}
