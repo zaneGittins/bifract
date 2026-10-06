@@ -295,6 +295,12 @@ func (l *Lexer) NextToken() Token {
 		if l.lastType == TokenRParen || l.lastType == TokenRBracket || l.lastType == TokenValue || l.lastType == TokenField {
 			tok = Token{Type: TokenDivide, Value: "/"}
 			l.readChar()
+		} else if l.peekChar() == '/' {
+			// An empty regex is never intended; it is a comment that does not
+			// start its line, and would otherwise silently match everything.
+			tok = Token{Type: TokenError, Value: "//"}
+			l.readChar()
+			l.readChar()
 		} else {
 			tok = Token{Type: TokenRegex, Value: l.readRegex()}
 		}
@@ -382,6 +388,9 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 	for {
 		tok := l.NextToken()
 		if tok.Type == TokenError {
+			if tok.Value == "//" {
+				return nil, newPosError(tok, "unexpected '//': a comment goes on its own line")
+			}
 			return nil, newPosError(tok, "unexpected character %q in query", tok.Value)
 		}
 		if tok.Type == TokenEOF && len(tokens) > 0 {

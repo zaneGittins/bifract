@@ -396,8 +396,8 @@ const SyntaxHighlight = {
                     matched = true;
                 }
             }
-            // Check for line comments (//)
-            else if (line[i] === '/' && line[i + 1] === '/') {
+            // Line comments: // only when it starts the line, as the server reads them
+            else if (line[i] === '/' && line[i + 1] === '/' && !line.slice(0, i).trim()) {
                 result.push({ t: line.substring(i), c: 'hl-comment' });
                 i = line.length;
                 matched = true;

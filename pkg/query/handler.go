@@ -677,7 +677,11 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 
 	log.Printf("[QueryHandler] Received request - Query: %s, FractalID: %s", req.Query, req.FractalID)
 
-	if req.Query == "" {
+	// Comments are blanked before anything reads the text, so substitution and
+	// parsing never see them; a query that is only comments is no query at all.
+	stripped, blanked := parser.StripComments(req.Query)
+	req.Query = stripped
+	if strings.TrimSpace(req.Query) == "" {
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
 			Success: false,
 			Error:   "Query parameter is required",
@@ -685,12 +689,12 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		return
 	}
 
-	// Input size limit: reject excessively long queries
+	// Input size limit: reject excessively long queries. Comments do not count.
 	const maxQueryLength = 10000 // 10KB
-	if len(req.Query) > maxQueryLength {
+	if n := len(req.Query) - blanked; n > maxQueryLength {
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
 			Success: false,
-			Error:   fmt.Sprintf("Query too long (%d chars, max %d)", len(req.Query), maxQueryLength),
+			Error:   fmt.Sprintf("Query too long (%d chars, max %d)", n, maxQueryLength),
 		})
 		return
 	}
@@ -702,10 +706,10 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 
 	// Re-check the size limit on the expanded query: variable values can grow it
 	// well past the raw-input limit, and the parser/translator must stay bounded.
-	if len(req.Query) > maxQueryLength {
+	if n := len(req.Query) - blanked; n > maxQueryLength {
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
 			Success: false,
-			Error:   fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", len(req.Query), maxQueryLength),
+			Error:   fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", n, maxQueryLength),
 		})
 		return
 	}
@@ -1236,16 +1240,19 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An empty query is not an error to flag while typing.
+	// An empty query, or one that is only comments, is not an error to flag
+	// while typing.
+	stripped, blanked := parser.StripComments(req.Query)
+	req.Query = stripped
 	if strings.TrimSpace(req.Query) == "" {
 		respondJSON(w, http.StatusOK, ValidateResponse{Valid: true})
 		return
 	}
 	const maxQueryLength = 10000
-	if len(req.Query) > maxQueryLength {
+	if n := len(req.Query) - blanked; n > maxQueryLength {
 		respondJSON(w, http.StatusOK, ValidateResponse{
 			Valid:     false,
-			Error:     fmt.Sprintf("Query too long (%d chars, max %d)", len(req.Query), maxQueryLength),
+			Error:     fmt.Sprintf("Query too long (%d chars, max %d)", n, maxQueryLength),
 			ErrorType: "parse",
 		})
 		return
@@ -1256,10 +1263,10 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	req.Query = bqlvars.Substitute(req.Query, req.Variables)
 
 	// Variable values can expand the query past the raw-input limit.
-	if len(req.Query) > maxQueryLength {
+	if n := len(req.Query) - blanked; n > maxQueryLength {
 		respondJSON(w, http.StatusOK, ValidateResponse{
 			Valid:     false,
-			Error:     fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", len(req.Query), maxQueryLength),
+			Error:     fmt.Sprintf("Query too long after variable expansion (%d chars, max %d)", n, maxQueryLength),
 			ErrorType: "parse",
 		})
 		return
