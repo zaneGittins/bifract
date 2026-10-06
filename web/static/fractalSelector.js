@@ -38,8 +38,15 @@ const FractalSelector = {
 
         button.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.toggleDropdown();
+            this.toggleDropdown(button);
         });
+        document.querySelectorAll('[data-scope-chip]').forEach(chip => {
+            chip.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleDropdown(chip);
+            });
+        });
+        window.addEventListener('resize', () => this.closeDropdown());
 
         // Delegated so scope names never reach an inline handler.
         document.getElementById('fractalSelectorMenu').addEventListener('click', (e) => {
@@ -53,13 +60,14 @@ const FractalSelector = {
         });
 
         document.addEventListener('click', (e) => {
-            if (!e.target.closest('.sb-scope-wrapper')) this.closeDropdown();
+            if (!e.target.closest('.sb-scope-wrapper, [data-scope-chip]')) this.closeDropdown();
         });
 
         document.addEventListener('keydown', (e) => {
-            if (e.key !== 'Escape' || !button.classList.contains('open')) return;
+            if (e.key !== 'Escape' || !this._anchor) return;
+            const anchor = this._anchor;
             this.closeDropdown();
-            button.focus();
+            anchor.focus();
         });
     },
 
@@ -216,9 +224,12 @@ const FractalSelector = {
         if (window.App) App.showMainView('fractalListing');
     },
 
-    // Selecting a scope from outside the fractal level opens it.
+    // Opens the new scope from outside the fractal level; inside it, the URL moves
+    // to the new scope so a reload or Back lands where the user is.
     _enterScope() {
-        if (window.App && App.currentViewLevel !== 'fractal') App.showFractalView('search');
+        if (!window.App) return;
+        if (App.currentViewLevel !== 'fractal') App.showFractalView('search');
+        else App.pushSubPath('');
     },
 
     _getUsageHistory() {
@@ -367,28 +378,43 @@ const FractalSelector = {
         }
     },
 
-    toggleDropdown() {
-        const menu = document.getElementById('fractalSelectorMenu');
-        if (menu && menu.classList.contains('show')) this.closeDropdown();
-        else this.openDropdown();
+    // The menu opens from the sidebar switcher or from a scope chip on a query bar.
+    _anchor: null,
+
+    toggleDropdown(anchor = document.getElementById('fractalSelectorButton')) {
+        if (this._anchor === anchor) this.closeDropdown();
+        else this.openDropdown(anchor);
     },
 
-    openDropdown() {
+    openDropdown(anchor = document.getElementById('fractalSelectorButton')) {
+        const menu = document.getElementById('fractalSelectorMenu');
+        if (!menu || !anchor) return;
+        if (this._anchor) this._setExpanded(this._anchor, false);
         this.renderFractalMenu();
-        this._setOpen(true);
+        // Fixed positioning keeps the menu free of the sidebar's scroll clipping.
+        const r = anchor.getBoundingClientRect();
+        const beside = anchor.id === 'fractalSelectorButton' && document.documentElement.classList.contains('sb-collapsed');
+        const top = beside ? r.top : r.bottom + 6;
+        menu.style.top = `${Math.round(top)}px`;
+        menu.style.left = `${Math.round(beside ? r.right + 8 : r.left)}px`;
+        menu.style.minWidth = `${Math.round(Math.max(r.width, 260))}px`;
+        menu.style.maxHeight = `${Math.round(Math.max(160, Math.min(420, window.innerHeight - top - 16)))}px`;
+        menu.classList.add('show');
+        if (window.Sidebar) Sidebar.hideTip();
+        this._anchor = anchor;
+        this._setExpanded(anchor, true);
     },
 
     closeDropdown() {
-        this._setOpen(false);
+        const menu = document.getElementById('fractalSelectorMenu');
+        if (menu) menu.classList.remove('show');
+        if (this._anchor) this._setExpanded(this._anchor, false);
+        this._anchor = null;
     },
 
-    _setOpen(open) {
-        const button = document.getElementById('fractalSelectorButton');
-        const menu = document.getElementById('fractalSelectorMenu');
-        if (!button || !menu) return;
-        button.classList.toggle('open', open);
-        button.setAttribute('aria-expanded', String(open));
-        menu.classList.toggle('show', open);
+    _setExpanded(anchor, open) {
+        anchor.classList.toggle('open', open);
+        anchor.setAttribute('aria-expanded', String(open));
     },
 
     updateSelectorText(text) {
@@ -401,6 +427,7 @@ const FractalSelector = {
             button.dataset.tip = text;
             button.classList.toggle('empty', !(window.FractalContext && FractalContext.hasScope()));
         }
+        document.querySelectorAll('[data-scope-chip] .scope-chip-name').forEach(el => { el.textContent = text; });
     },
 
     showErrorInMenu(errorMessage) {

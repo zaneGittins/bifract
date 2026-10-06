@@ -144,11 +144,8 @@ html.sb-animate .sidebar {
 
 .sb-scope-menu {
     display: none;
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    width: max(100%, 260px);
-    max-height: min(420px, 70vh);
+    position: fixed;
+    max-width: 360px;
     overflow-y: auto;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -442,11 +439,6 @@ html.sb-collapsed .sb-label {
     white-space: nowrap;
 }
 
-html.sb-collapsed .sb-scope-menu {
-    top: 0;
-    left: calc(100% + 8px);
-}
-
 html.sb-collapsed .sb-group + .sb-group,
 html.sb-collapsed .sb-bottom {
     margin-top: 8px;
@@ -475,6 +467,21 @@ html.sb-collapsed .sb-notify .notification-badge {
     height: 14px;
     font-size: 9px;
     line-height: 14px;
+}
+
+.scope-chip {
+    max-width: 220px;
+    color: var(--text-primary);
+}
+
+.scope-chip svg:first-child {
+    flex-shrink: 0;
+    color: var(--accent-secondary);
+}
+
+.scope-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .sb-tooltip {

@@ -120,9 +120,9 @@ const Sidebar = {
         document.getElementById('sidebarToggle').addEventListener('click', () => this.toggleCollapsed());
         aside.addEventListener('mouseover', (e) => this._showTip(e.target));
         aside.addEventListener('focusin', (e) => this._showTip(e.target));
-        aside.addEventListener('mouseout', (e) => { if (!aside.contains(e.relatedTarget)) this._hideTip(); });
-        aside.addEventListener('focusout', () => this._hideTip());
-        aside.addEventListener('click', () => this._hideTip());
+        aside.addEventListener('mouseout', (e) => { if (!aside.contains(e.relatedTarget)) this.hideTip(); });
+        aside.addEventListener('focusout', () => this.hideTip());
+        aside.addEventListener('click', () => this.hideTip());
         // Canvas-backed views size from window resize events.
         aside.addEventListener('transitionend', (e) => {
             if (e.target !== aside || e.propertyName !== 'width') return;
@@ -140,7 +140,7 @@ const Sidebar = {
         const link = e.target.closest('a[data-nav], a[data-home]');
         if (!link || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        this._hideTip();
+        this.hideTip();
         if (!window.App) return;
         if (link.hasAttribute('data-home')) {
             App.showMainView('fractalListing');
@@ -253,7 +253,7 @@ const Sidebar = {
         const motion = animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         root.classList.toggle('sb-animate', motion);
         root.classList.toggle('sb-collapsed', collapsed);
-        this._hideTip();
+        this.hideTip();
         // Canvas-backed views size from window resize events.
         if (!motion) requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
     },
@@ -283,7 +283,7 @@ const Sidebar = {
         const el = target && target.closest ? target.closest('[data-tip]') : null;
         if (!el || el.getAttribute('aria-expanded') === 'true' ||
             !document.documentElement.classList.contains('sb-collapsed')) {
-            this._hideTip();
+            this.hideTip();
             return;
         }
         if (!this._tip) {
@@ -299,7 +299,7 @@ const Sidebar = {
         this._tip.classList.add('show');
     },
 
-    _hideTip() {
+    hideTip() {
         if (this._tip) this._tip.classList.remove('show');
     },
 };
