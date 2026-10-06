@@ -18,7 +18,7 @@ async function openSearch(page) {
   await page.goto('/');
   await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
   await page.locator('.fractal-listing-table tbody tr td').first().click();
-  await page.locator('#fractalSearchTabBtn').click();
+  await page.locator('#sidebar a[data-nav="search"]').click();
   await page.locator('#queryInput').waitFor({ timeout: 15000 });
 
   // Widen to the full retention so the assertions do not depend on how recently

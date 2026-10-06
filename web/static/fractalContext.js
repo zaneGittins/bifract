@@ -391,6 +391,7 @@ const FractalContext = {
 
         if (window.FractalSelector) {
             FractalSelector.currentFractal = null;
+            FractalSelector.updateSelectorText('Select a fractal');
         }
         if (window.TimeBar) {
             TimeBar.updateFractalName(null);

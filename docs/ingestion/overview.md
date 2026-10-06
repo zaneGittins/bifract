@@ -10,7 +10,7 @@ Ingest tokens are scoped per-fractal and carry per-token configuration (parser t
 
 ### Getting a Token
 
-1. Navigate to the **Ingest** tab within a fractal
+1. Open **Ingest** in the fractal's sidebar
 2. Copy the token (format: `bifract_ingest_{32_hex_chars}`)
 3. Include it in the `Authorization` header:
 
@@ -137,7 +137,7 @@ Each ingest token is scoped to a single fractal. Logs are routed to the fractal 
 
 Bifract extracts timestamps automatically:
 
-1. Token-configured timestamp fields (set per token in the Ingest tab)
+1. Token-configured timestamp fields (set per token on the Ingest page)
 2. Configured timestamp fields (set in Settings)
 3. Common fields: `timestamp`, `@timestamp`, `time`, `ts`, `_time`
 4. Falls back to ingestion time if none found

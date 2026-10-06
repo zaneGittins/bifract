@@ -15,7 +15,7 @@ async function openFractals(page) {
   });
   expect(res.ok(), 'login request failed').toBeTruthy();
   await page.goto('/');
-  await page.locator('#fractalListingTabBtn').click();
+  await page.locator('#sidebar a[data-home]').click();
   await expect(page.locator('.fractal-listing-table table')).toBeVisible();
   await expect(page.locator('.fractal-listing-table tbody tr').first()).toBeVisible({ timeout: 15000 });
 }

@@ -70,6 +70,7 @@ nav:
     - Sizing Guide: getting-started/sizing.md
     - ClickHouse Cloud: getting-started/clickhouse-cloud.md
     - Configuration: getting-started/configuration.md
+    - Navigating Bifract: getting-started/navigation.md
   - Administration:
     - Users & Roles: administration/users-and-roles.md
     - OIDC / SSO: administration/oidc-sso.md
@@ -103,11 +104,11 @@ nav:
     - ATT&CK Coverage: alerting/attack-coverage.md
     - Testing Rules: alerting/testing-rules.md
   - Features:
-    - Models: features/models.md
+    - Analytics Models: features/models.md
     - Provenance Graph: features/provenance-graph.md
     - Dashboards & Notebooks: features/dashboards.md
     - Deep Links: features/deep-links.md
-    - Context: features/dictionaries.md
+    - Lookups: features/dictionaries.md
     - Normalizers: features/normalizers.md
     - AI Chat: features/ai-chat.md
     - MCP Server: features/mcp-server.md

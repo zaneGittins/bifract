@@ -1683,12 +1683,12 @@ func (c *PostgresClient) GetNotebook(ctx context.Context, id string) (*Notebook,
 	return &notebook, nil
 }
 
-// notebookScopePredicate returns the WHERE fragment and argument selecting a
-// notebook scope. Exactly one of fractal_id/prism_id is set on every row (the
-// notebooks_scope_check constraint), and the columns are UUID, so an empty
+// scopePredicate returns the WHERE fragment and argument selecting a
+// fractal or prism scope on tables that carry both columns. Exactly one of
+// fractal_id/prism_id is set on every row, and the columns are UUID, so an empty
 // string can never be bound: a prism caller passing its empty fractal id used to
 // make Postgres reject ” outright rather than match nothing.
-func notebookScopePredicate(alias, fractalID, prismID string) (string, interface{}, error) {
+func scopePredicate(alias, fractalID, prismID string) (string, interface{}, error) {
 	// A notebook carries exactly one scope, so the prism wins when a caller
 	// supplies both: a stray fractal id (a default-fractal fallback, say) must
 	// never redirect a prism lookup at the wrong scope's rows.
@@ -1697,7 +1697,7 @@ func notebookScopePredicate(alias, fractalID, prismID string) (string, interface
 		col, val = "prism_id", prismID
 	}
 	if val == "" {
-		return "", nil, fmt.Errorf("notebook scope requires a fractal or prism id")
+		return "", nil, fmt.Errorf("scope requires a fractal or prism id")
 	}
 	if alias != "" {
 		col = alias + "." + col
@@ -1705,14 +1705,14 @@ func notebookScopePredicate(alias, fractalID, prismID string) (string, interface
 	return col, val, nil
 }
 
-// notebookLikeEscaper neutralises LIKE wildcards in a user-supplied search term
+// likeEscaper neutralises LIKE wildcards in a user-supplied search term
 // so a name containing % or _ matches literally.
-var notebookLikeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
 // GetNotebookByNameAndScope finds a notebook by exact name within a fractal or a
 // prism. Returns nil, nil if not found.
 func (c *PostgresClient) GetNotebookByNameAndScope(ctx context.Context, name, fractalID, prismID string) (*Notebook, error) {
-	scopeCol, scopeVal, err := notebookScopePredicate("", fractalID, prismID)
+	scopeCol, scopeVal, err := scopePredicate("", fractalID, prismID)
 	if err != nil {
 		return nil, err
 	}
@@ -1762,7 +1762,7 @@ func (c *PostgresClient) GetNotebookByNameAndScope(ctx context.Context, name, fr
 // GetNotebooksByScope retrieves notebooks for a fractal or a prism with
 // pagination. search, when non-empty, filters on name and description.
 func (c *PostgresClient) GetNotebooksByScope(ctx context.Context, fractalID, prismID, search string, limit, offset int) ([]Notebook, int, error) {
-	scopeCol, scopeVal, err := notebookScopePredicate("n", fractalID, prismID)
+	scopeCol, scopeVal, err := scopePredicate("n", fractalID, prismID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1771,7 +1771,7 @@ func (c *PostgresClient) GetNotebooksByScope(ctx context.Context, fractalID, pri
 	args := []interface{}{scopeVal}
 	if search = strings.TrimSpace(search); search != "" {
 		where += ` AND (n.name ILIKE $2 ESCAPE '\' OR COALESCE(n.description, '') ILIKE $2 ESCAPE '\')`
-		args = append(args, "%"+notebookLikeEscaper.Replace(search)+"%")
+		args = append(args, "%"+likeEscaper.Replace(search)+"%")
 	}
 
 	var total int
@@ -2634,23 +2634,35 @@ func (c *PostgresClient) GetDashboard(ctx context.Context, id string) (*Dashboar
 	return &d, nil
 }
 
-func (c *PostgresClient) GetDashboardsByFractal(ctx context.Context, fractalID string, limit, offset int) ([]Dashboard, int, error) {
-	var total int
-	err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dashboards WHERE fractal_id = $1`, fractalID).Scan(&total)
+// GetDashboardsByScope lists a fractal's or prism's dashboards, most recently
+// updated first, optionally filtered by a case-insensitive name match.
+func (c *PostgresClient) GetDashboardsByScope(ctx context.Context, fractalID, prismID, search string, limit, offset int) ([]Dashboard, int, error) {
+	scopeCol, scopeVal, err := scopePredicate("d", fractalID, prismID)
 	if err != nil {
+		return nil, 0, err
+	}
+	where := scopeCol + " = $1"
+	args := []interface{}{scopeVal}
+	if search = strings.TrimSpace(search); search != "" {
+		where += ` AND d.name ILIKE $2 ESCAPE '\'`
+		args = append(args, "%"+likeEscaper.Replace(search)+"%")
+	}
+
+	var total int
+	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dashboards d WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("failed to count dashboards: %w", err)
 	}
 
 	rows, err := c.db.QueryContext(ctx, `
 		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.fractal_id, COALESCE(d.variables, '[]'), COALESCE(d.timezone, 'UTC'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
+		       `+scopeCol+`, COALESCE(d.variables, '[]'), COALESCE(d.timezone, 'UTC'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
 		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
 		FROM dashboards d
 		LEFT JOIN users u ON d.created_by = u.username
-		WHERE d.fractal_id = $1
+		WHERE `+where+`
 		ORDER BY d.updated_at DESC
-		LIMIT $2 OFFSET $3
-	`, fractalID, limit, offset)
+		LIMIT `+fmt.Sprintf("$%d OFFSET $%d", len(args)+1, len(args)+2),
+		append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query dashboards: %w", err)
 	}
@@ -2659,9 +2671,13 @@ func (c *PostgresClient) GetDashboardsByFractal(ctx context.Context, fractalID s
 	var dashboards []Dashboard
 	for rows.Next() {
 		var d Dashboard
+		scopeID := &d.FractalID
+		if prismID != "" {
+			scopeID = &d.PrismID
+		}
 		err := rows.Scan(
 			&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
-			&d.FractalID, &d.Variables, &d.Timezone, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
+			scopeID, &d.Variables, &d.Timezone, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 			&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
 		)
 		if err != nil {
@@ -2669,46 +2685,7 @@ func (c *PostgresClient) GetDashboardsByFractal(ctx context.Context, fractalID s
 		}
 		dashboards = append(dashboards, d)
 	}
-	return dashboards, total, nil
-}
-
-// GetDashboardsByPrism retrieves dashboards scoped to a prism with pagination.
-func (c *PostgresClient) GetDashboardsByPrism(ctx context.Context, prismID string, limit, offset int) ([]Dashboard, int, error) {
-	var total int
-	err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM dashboards WHERE prism_id = $1`, prismID).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count dashboards: %w", err)
-	}
-
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT d.id, d.name, d.description, d.time_range_type, d.time_range_start, d.time_range_end,
-		       d.prism_id, COALESCE(d.variables, '[]'), COALESCE(d.timezone, 'UTC'), COALESCE(d.created_by, ''), d.created_at, d.updated_at,
-		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
-		FROM dashboards d
-		LEFT JOIN users u ON d.created_by = u.username
-		WHERE d.prism_id = $1
-		ORDER BY d.updated_at DESC
-		LIMIT $2 OFFSET $3
-	`, prismID, limit, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to query dashboards: %w", err)
-	}
-	defer rows.Close()
-
-	var dashboards []Dashboard
-	for rows.Next() {
-		var d Dashboard
-		err := rows.Scan(
-			&d.ID, &d.Name, &d.Description, &d.TimeRangeType, &d.TimeRangeStart, &d.TimeRangeEnd,
-			&d.PrismID, &d.Variables, &d.Timezone, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
-			&d.AuthorDisplayName, &d.AuthorGravatarColor, &d.AuthorGravatarInitial,
-		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan dashboard: %w", err)
-		}
-		dashboards = append(dashboards, d)
-	}
-	return dashboards, total, nil
+	return dashboards, total, rows.Err()
 }
 
 // dashboardTimezone normalizes a stored dashboard zone. Empty means the caller

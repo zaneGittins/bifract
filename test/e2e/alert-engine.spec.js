@@ -5,12 +5,12 @@
 // and that the two things a rendered page catches still hold: the mode toggle
 // swaps the table, and the disabled strip names names.
 const { test, expect } = require('@playwright/test');
-const { login } = require('./fixtures');
+const { login, openNav } = require('./fixtures');
 
 async function openAlertEngine(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#mainPerformanceTabBtn').click();
+  await openNav(page, 'performance');
   await expect(page.locator('#performanceView')).toBeVisible();
   await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="alerts"]').click();
   await expect(page.locator('#perfPaneAlerts')).toBeVisible();
@@ -92,7 +92,7 @@ test.describe('Storage & Ingest', () => {
   test('the hot table stats render under Storage', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#mainPerformanceTabBtn').click();
+    await openNav(page, 'performance');
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
     await expect(page.locator('#perfPaneStorage')).toBeVisible();
     await expect(page.locator('#hotMetricPartitions')).toBeVisible();

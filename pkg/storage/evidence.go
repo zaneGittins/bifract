@@ -354,7 +354,7 @@ const ScratchNotebookName = "Untitled notebook"
 // notebooks, one per star. A locked scratch notebook is skipped, so sealing one
 // starts the next capture in a fresh one rather than failing.
 func (c *PostgresClient) GetOrCreateScratchNotebook(ctx context.Context, fractalID, prismID, username string) (*Notebook, error) {
-	scopeCol, scopeVal, err := notebookScopePredicate("", fractalID, prismID)
+	scopeCol, scopeVal, err := scopePredicate("", fractalID, prismID)
 	if err != nil {
 		return nil, err
 	}

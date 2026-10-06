@@ -4,7 +4,7 @@ Bifract is an open source log management, detection, and collaboration platform.
 
 ## Where to Start
 
-- **New to Bifract?** Start with [Installation](getting-started/installation.md)
+- **New to Bifract?** Start with [Installation](getting-started/installation.md), then [Navigating Bifract](getting-started/navigation.md)
 - **Deploying on Kubernetes?** See [Kubernetes](getting-started/kubernetes.md) and [Sizing Guide](getting-started/sizing.md)
 - **Sending logs?** See [Ingestion](ingestion/overview.md)
 - **Writing queries?** Learn [BQL basics](bql/basics.md)

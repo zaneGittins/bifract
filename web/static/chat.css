@@ -2,8 +2,15 @@
    Chat Tab Styles - centered thread, turns, composer, trace
    ============================================================ */
 
+#fractalChatTabContent {
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
 .chat-view {
-    height: calc(100vh - 100px);
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -13,7 +20,8 @@
 
 .chat-layout {
     display: flex;
-    height: 100%;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 

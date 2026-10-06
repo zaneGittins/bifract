@@ -237,7 +237,7 @@ func (s *Sweeper) raise(ctx context.Context, found []overflowField) {
 		shown = shown[:5]
 	}
 	msg := fmt.Sprintf("%s no longer have a column of their own, so queries on them scan every row. "+
-		"Reserve them on the Schema tab to restore pruning.", strings.Join(shown, ", "))
+		"Reserve them on the Schema page to restore pruning.", strings.Join(shown, ", "))
 	if len(names) > len(shown) {
 		msg = fmt.Sprintf("%s and %d more %s", strings.Join(shown, ", "), len(names)-len(shown), msg[strings.Index(msg, "no longer"):])
 	}

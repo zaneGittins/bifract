@@ -67,7 +67,7 @@ The archiver ships in the server image and runs a different command. `bifract --
 
 Once provisioned, enable it either way. Toggling takes effect within seconds, with no redeploy.
 
-- **Admin UI:** *Admin → Settings → Archive → Iceberg Archive*. Greyed out until provisioned.
+- **Admin UI:** *Settings > General > Archive > Iceberg Archive*. Greyed out until provisioned.
 - **Env / secret:** `BIFRACT_ARCHIVE_ENABLED=true` (k8s: the `ARCHIVE_ENABLED` secret).
 
 ### Configuration
@@ -112,11 +112,11 @@ Set on the `bifract-archiver` service (compose) or the `bifract-secrets` Secret 
 
 ### Status
 
-*System → Archive* shows enabled/disabled, backend, spool usage and backpressure, archived fractal count, total archived size, and last-commit time with a liveness indicator for the sidecar.
+*System > Archive* shows enabled/disabled, backend, spool usage and backpressure, archived fractal count, total archived size, and last-commit time with a liveness indicator for the sidecar.
 
 ### Clear catalog
 
-*Admin → Settings → Danger Zone → Clear Iceberg Catalog* resets the archive to zero. Disable archiving first; the button is guarded otherwise.
+*Settings > General > Danger Zone > Clear Iceberg Catalog* resets the archive to zero. Disable archiving first; the button is guarded otherwise.
 
 This drops the archived tables from the catalog but does **not** delete the data files. Empty the bucket or container yourself afterwards to reclaim space and to keep leftover files from interfering with new archiving.
 
@@ -136,7 +136,7 @@ Each job runs one chunk per ingest day and records a cursor after every chunk, s
 
 #### From the admin UI (recommended)
 
-*System → Archive → Restore from Archive*: pick one or more fractals, a time range, and the mode, then start it. Each fractal becomes an async job with a live progress bar and row count.
+*System > Archive > Restore from Archive*: pick one or more fractals, a time range, and the mode, then start it. Each fractal becomes an async job with a live progress bar and row count.
 
 - A job is claimed by exactly one archiver, even when several are running.
 - Pending **and** running jobs can be cancelled. The owning worker interrupts the in-flight insert within a few seconds, and rows already written stay put, so re-running the window in restore (dedup) mode picks up where it left off.
@@ -195,6 +195,6 @@ Practical consequences at **Large** (500 GB to 2 TB/day) and **X-Large**:
 Plan DR around the window you actually need online:
 
 1. **Restore the recent operational window** (days, not months) to get search, alerting, and dashboards working again.
-2. **Query the deep history in place with Recall** (the fractal's **Recall** tab), which reads Iceberg directly and never writes to ClickHouse, so it has no merge cost and no retention ceiling.
+2. **Query the deep history in place with Recall** (the fractal's **Recall** page), which reads Iceberg directly and never writes to ClickHouse, so it has no merge cost and no retention ceiling.
 
 Restore the narrowest window that meets the need. If you are reaching for a multi-month restore to answer an investigative question, Recall is the better tool.

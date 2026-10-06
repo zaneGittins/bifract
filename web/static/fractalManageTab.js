@@ -28,7 +28,7 @@ const FractalManageTab = {
         const live = window.FractalContext?.currentFractal;
         if (!live || !this.currentFractal || live.id !== this.currentFractal.id) {
             if (window.Toast) {
-                Toast.error('Context changed', 'Reopen the Manage tab and try again.');
+                Toast.error('Context changed', 'Reopen Fractal settings and try again.');
             }
             return null;
         }

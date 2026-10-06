@@ -43,6 +43,7 @@
     --font-mono: 'IBM Plex Mono', 'Fira Code', 'Consolas', monospace;
 
     --transition: all 0.15s ease;
+    --time-bar-h: 28px;
 
     /* Dracula-inspired syntax highlighting */
     --syntax-keyword: #ff79c6;
@@ -282,50 +283,6 @@ body {
     flex-direction: column;
     flex: 1;
     min-height: 0;
-}
-
-/* Header */
-.header {
-    margin-bottom: 0.5rem;
-    padding-bottom: 0;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.header-content {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-}
-
-.header-right {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-shrink: 0;
-    margin-left: auto;
-}
-
-.logo {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    cursor: pointer;
-    transition: opacity 0.2s ease;
-    user-select: none;
-    flex-shrink: 0;
-}
-
-.logo:hover {
-    opacity: 0.8;
-}
-
-.logo h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
 }
 
 /* Status Indicator */
@@ -1634,8 +1591,8 @@ body {
     min-height: 0;
 }
 
-/* Lock viewport height when search view is active so results scroll internally */
-body.search-active {
+/* Views that fill the viewport and scroll internally (App._fillViews). */
+body.view-fill {
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
@@ -2589,8 +2546,9 @@ body.col-reordering * {
         padding: 0.75rem;
     }
 
-    .logo h1 {
-        font-size: 1.25rem;
+    .search-toolbar {
+        flex-wrap: wrap;
+        row-gap: 0.375rem;
     }
 
     .search-section,

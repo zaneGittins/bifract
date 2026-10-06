@@ -86,8 +86,18 @@ async function scopeHeader(page) {
   return { 'X-Bifract-Scope': `${isPrism ? 'prism' : 'fractal'}:${id}` };
 }
 
-// Open a fractal in the UI, by name when given, and switch to a tab.
-async function openFractal(page, tabButtonId, fractalName) {
+// Click a sidebar item, expanding the Admin group first when the item lives in it
+// (the group starts collapsed).
+async function openNav(page, key) {
+  if (await page.locator(`#sidebarAdminItems a[data-nav="${key}"]`).count()) {
+    const toggle = page.locator('#sidebarAdminToggle');
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  }
+  await page.locator(`#sidebar a[data-nav="${key}"]`).click();
+}
+
+// Open a fractal in the UI, by name when given, and switch to a sidebar page.
+async function openFractal(page, navKey, fractalName) {
   await page.goto('/');
   await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
   let row = page.locator('.fractal-listing-table tbody tr').first();
@@ -96,7 +106,7 @@ async function openFractal(page, tabButtonId, fractalName) {
     if (await named.count()) row = named;
   }
   await row.locator('td').first().click();
-  if (tabButtonId) await page.locator(`#${tabButtonId}`).click();
+  if (navKey) await openNav(page, navKey);
 }
 
 // Land on the search tab of a fractal that has logs, with results on screen.
@@ -126,7 +136,7 @@ async function openSearchByClick(page) {
   const fractal = await populatedFractal(page);
   if (!fractal) return null;
 
-  await openFractal(page, 'fractalSearchTabBtn', fractal.name);
+  await openFractal(page, 'search', fractal.name);
   await page.locator('#queryInput').waitFor({ timeout: 15000 });
   await page.locator('#timePickerBtn').click();
   await page.locator('#timePickerPanel .tp-preset[data-value="all"]').click();
@@ -151,5 +161,5 @@ async function rerunAllTime(page) {
 module.exports = {
   USER, PASS, WIDE_START, WIDE_END, SEARCH_WINDOW,
   login, listFractals, queryCount, populatedFractal,
-  selectFractal, scopeHeader, openFractal, openSearchOnPopulatedFractal, openSearchByClick, rerunAllTime,
+  selectFractal, scopeHeader, openNav, openFractal, openSearchOnPopulatedFractal, openSearchByClick, rerunAllTime,
 };

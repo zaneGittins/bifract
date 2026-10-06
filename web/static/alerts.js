@@ -49,9 +49,6 @@ const Alerts = {
     },
 
     setupEventListeners() {
-        // Navigation is handled by App.js showFractalViewTab()
-        // No need to add event listener for alertsTabBtn here
-
         // Main control buttons
         FilterBar.install({
             button: 'alertFilterBtn', menu: 'alertFilterMenu', chips: 'alertFilterChips',
@@ -306,27 +303,9 @@ const Alerts = {
         this.closeAlertPanel();
 
         await this.loadAlerts();
-        this.updateAlertCount();
         this.startPressurePolling();
 
         if (subPath) this.openAlertById(subPath);
-    },
-
-    // Opens a panel from outside the table (a deep link), landing on the page
-    // that holds the row so the selection is actually visible.
-    openAlertById(alertId) {
-        const list = this.filteredAlerts || [];
-        const idx = list.findIndex(a => a.id === alertId);
-        if (idx === -1) return;
-
-        const page = Math.floor(idx / this.alertsPageSize) + 1;
-        if (page !== this.alertsCurrentPage) {
-            this.currentDetailAlert = list[idx];
-            this.alertsCurrentPage = page;
-            this.updateAlertsTable();
-            return;
-        }
-        this.showAlertDetailsPanel(list[idx]);
     },
 
     startPressurePolling() {
@@ -403,7 +382,6 @@ const Alerts = {
             }
 
             this.renderAlerts(data.data || []);
-            this.updateAlertCount(data.page?.total ?? (data.data || []).length);
         } catch (error) {
             console.error('Failed to load alerts:', error);
             alertsList.innerHTML = '<div class="error">Failed to load alerts: ' + Utils.escapeHtml(error.message) + '</div>';
@@ -427,10 +405,6 @@ const Alerts = {
             `;
             return;
         }
-
-        // Replacing the list markup destroys the detail panel with it, so drop
-        // the geometry listeners bound to the old node.
-        AlertDetail.stopInset();
 
         const alertsHTML = this.renderAlertsTable(alerts);
         alertsList.innerHTML = alertsHTML;
@@ -637,7 +611,6 @@ const Alerts = {
         content.scrollTop = 0;
 
         AlertDetail.applyWidth(panel);
-        AlertDetail.startInset(panel);
         AlertDetail.setupResize(panel);
         AlertDetail.bindCopy(panel, alert);
         panel.classList.add('open');
@@ -719,7 +692,12 @@ const Alerts = {
     openAlertById(alertId) {
         const list = this.filteredAlerts || [];
         const idx = list.findIndex(a => a.id === alertId);
-        if (idx === -1) return;
+        if (idx === -1) {
+            // Hidden by the active filter: open it without paging to a row.
+            const alert = (this.allAlerts || []).find(a => a.id === alertId);
+            if (alert) this.showAlertDetailsPanel(alert);
+            return;
+        }
 
         const page = Math.floor(idx / this.alertsPageSize) + 1;
         if (page !== this.alertsCurrentPage) {
@@ -747,7 +725,6 @@ const Alerts = {
         this.currentDetailAlert = null;
         this._pendingSelectEdge = null;
         AlertDetail.markSelectedRow(null, document.getElementById('alertsList'));
-        AlertDetail.stopInset();
         AlertDetail.unbindKeys();
     },
 
@@ -1068,14 +1045,6 @@ const Alerts = {
         this.alertsPageSize = parseInt(newSize);
         this.alertsCurrentPage = 1; // Reset to first page
         this.updateAlertsTable();
-    },
-
-    updateAlertCount(count) {
-        // Badge disabled as per user request - counts are distracting
-        const badge = document.getElementById('alertsCountBadge');
-        if (badge) {
-            badge.style.display = 'none';
-        }
     },
 
     // Modal Management

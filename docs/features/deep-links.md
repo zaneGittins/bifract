@@ -76,9 +76,9 @@ A fixed incident window:
 
 ## Sharing from the UI
 
-Everything above also describes what the Query tab hands out. **Share -> Copy share link** builds a `/go/search` URL for whatever you are looking at, so a pasted link is one a colleague can read and edit rather than an opaque blob.
+Everything above also describes what the Query page hands out. **Share -> Copy share link** builds a `/go/search` URL for whatever you are looking at, so a pasted link is one a colleague can read and edit rather than an opaque blob.
 
-The address bar tracks the search as you work. Each query you run becomes its own entry in browser history, so Back returns to the previous query and re-runs it, and Forward moves on again. Re-running the same query does not add an entry. Leaving the Query tab drops the query from the URL.
+The address bar tracks the search as you work. Each query you run becomes its own entry in browser history, so Back returns to the previous query and re-runs it, and Forward moves on again. Re-running the same query does not add an entry. Leaving the Query page drops the query from the URL.
 
 ## Limits
 

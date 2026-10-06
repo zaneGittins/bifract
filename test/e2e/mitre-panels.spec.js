@@ -42,7 +42,7 @@ test.describe('ATT&CK matrix panels', () => {
     })).json();
     expect(widget.success, `widget create failed: ${JSON.stringify(widget)}`).toBeTruthy();
 
-    await openFractal(page, 'fractalDashboardsTabBtn', fractal.name);
+    await openFractal(page, 'dashboards', fractal.name);
     await page.evaluate(id => window.Dashboards.openDashboard(id), dashboardId);
 
     // Observed-only drops whole columns, so the assertion targets a surviving one.
@@ -82,7 +82,7 @@ test.describe('ATT&CK matrix panels', () => {
     })).json();
     expect(section.success, `section create failed: ${JSON.stringify(section)}`).toBeTruthy();
 
-    await openFractal(page, 'fractalNotebooksTabBtn', fractal.name);
+    await openFractal(page, 'notebooks', fractal.name);
     await page.evaluate(id => window.Notebooks.openNotebook(id), notebookId);
 
     const run = page.locator('.execute-query-btn').first();

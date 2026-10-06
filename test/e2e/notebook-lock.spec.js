@@ -11,7 +11,7 @@ const { login, scopeHeader, openFractal } = require('./fixtures');
 // Locking needs a notebook, not logs, so any fractal will do.
 async function openFirstFractal(page) {
   await openFractal(page);
-  await page.locator('#fractalSearchTabBtn').waitFor({ timeout: 15000 });
+  await page.locator('#sidebar a[data-nav="search"]').waitFor({ timeout: 15000 });
   return scopeHeader(page);
 }
 
@@ -29,7 +29,7 @@ async function openNotebook(page, headers, name) {
     data: { section_type: 'markdown', title: 'Hypothesis', content: 'macro dropped a loader', append: true },
   });
 
-  await page.locator('#fractalNotebooksTabBtn').click();
+  await page.locator('#sidebar a[data-nav="notebooks"]').click();
   await page.evaluate(nb => Notebooks.openNotebook(nb), id);
   await expect(page.locator('#notebookEditor')).toBeVisible({ timeout: 15000 });
   return id;
@@ -75,7 +75,7 @@ test.describe('notebook lock', () => {
       // detail endpoint used to drop locked_at, so the button read "Lock" on a
       // locked notebook and nothing could unlock it.
       await page.reload();
-      await page.locator('#fractalNotebooksTabBtn').click();
+      await page.locator('#sidebar a[data-nav="notebooks"]').click();
       await page.evaluate(nb => Notebooks.openNotebook(nb), notebookId);
       await expect(page.locator('#notebookEditor')).toHaveClass(/notebook-locked/, { timeout: 15000 });
       await expect(page.locator('#notebookLockBtn')).toContainText('Unlock');
@@ -161,10 +161,10 @@ test.describe('notebook lock', () => {
 
     try {
       for (let i = 0; i < 4; i++) {
-        await page.locator('#fractalNotebooksTabBtn').click();
-        await page.locator('#fractalSearchTabBtn').click();
+        await page.locator('#sidebar a[data-nav="notebooks"]').click();
+        await page.locator('#sidebar a[data-nav="search"]').click();
       }
-      await page.locator('#fractalNotebooksTabBtn').click();
+      await page.locator('#sidebar a[data-nav="notebooks"]').click();
       await page.evaluate(nb => Notebooks.openNotebook(nb), notebookId);
       await expect(page.locator('#notebookEditor')).toBeVisible({ timeout: 15000 });
 

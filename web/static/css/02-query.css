@@ -761,13 +761,6 @@
 }
 
 /* ============================ Recall tab ============================ */
-/* Lock viewport height when Recall is active so results scroll internally. */
-body.recall-active {
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-}
-
 #fractalRecallTabContent,
 #recallView {
     display: flex;
@@ -1718,7 +1711,7 @@ body.recall-active {
     bottom: 0;
     left: 0;
     right: 0;
-    height: 28px;
+    height: var(--time-bar-h);
     background: var(--bg-tertiary);
     border-top: 1px solid var(--border-color);
     display: grid;
@@ -2198,7 +2191,7 @@ body.recall-active {
 
 /* Add padding to container for time bar */
 body {
-    padding-bottom: 28px;
+    padding-bottom: var(--time-bar-h);
 }
 
 /* Responsive adjustments */

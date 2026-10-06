@@ -12,240 +12,74 @@ const FractalSelector = {
 
     createSelectorUI() {
         if (document.getElementById('fractalSelectorContainer')) return;
-
-        const container = document.getElementById('contextPillContainer');
-        if (!container) {
-            console.warn('[FractalSelector] contextPillContainer not found');
-            return;
-        }
+        const container = document.getElementById('sidebarScope');
+        if (!container) return;
 
         container.innerHTML = `
-            <span class="context-pill-sep"></span>
-            <div class="context-pill-wrapper" id="fractalSelectorContainer">
-                <button class="context-pill-btn" id="fractalSelectorButton">
-                    <span class="context-pill-name" id="fractalSelectorText">Loading...</span>
-                    <svg class="context-pill-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none">
-                        <path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
+            <div class="sb-scope-wrapper" id="fractalSelectorContainer">
+                <button type="button" class="sb-scope-btn" id="fractalSelectorButton" aria-haspopup="true" aria-expanded="false" aria-controls="fractalSelectorMenu">
+                    <svg class="sb-scope-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l9 5v10l-9 5-9-5V7z"/></svg>
+                    <span class="sb-scope-text">
+                        <span class="sb-scope-kind" id="fractalSelectorKind">Fractal</span>
+                        <span class="sb-scope-name" id="fractalSelectorText">Loading...</span>
+                    </span>
+                    <svg class="sb-scope-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
-                <div class="context-pill-menu" id="fractalSelectorMenu">
-                    <div class="fractal-selector-loading">Loading fractals...</div>
-                </div>
             </div>
         `;
-
-        this.addStyles();
-    },
-
-    addStyles() {
-        if (document.getElementById('fractalSelectorStyles')) return;
-
-        const styles = `
-            <style id="fractalSelectorStyles">
-            /* ---- Context pill: type icon + name inline in header ---- */
-            .context-pill-sep {
-                display: inline-block;
-                width: 1px;
-                height: 18px;
-                background: var(--border-color);
-                margin: 0 6px 0 2px;
-                opacity: 0.5;
-                flex-shrink: 0;
-            }
-
-            .context-pill-wrapper {
-                position: relative;
-                display: flex;
-                align-items: center;
-                flex-shrink: 0;
-            }
-
-            .context-pill-btn {
-                background: transparent;
-                border: none;
-                border-radius: 5px;
-                color: var(--text-primary);
-                padding: 4px 6px;
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                font-size: 13px;
-                font-weight: 500;
-                font-family: var(--font-main);
-                transition: background 0.15s ease;
-                white-space: nowrap;
-                line-height: 1;
-                max-width: 220px;
-            }
-
-            .context-pill-btn:hover {
-                background: var(--overlay-subtle);
-            }
-
-            .context-pill-btn.open {
-                background: var(--overlay-light);
-            }
-
-
-            .context-pill-name {
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                max-width: 180px;
-            }
-
-            .context-pill-chevron {
-                flex-shrink: 0;
-                opacity: 0.35;
-                color: var(--text-muted);
-                transition: transform 0.15s ease, opacity 0.15s ease;
-            }
-
-            .context-pill-btn:hover .context-pill-chevron,
-            .context-pill-btn.open .context-pill-chevron {
-                opacity: 0.65;
-            }
-
-            .context-pill-btn.open .context-pill-chevron {
-                transform: rotate(180deg);
-            }
-
-            .context-pill-menu {
-                position: absolute;
-                top: calc(100% + 5px);
-                left: 0;
-                min-width: 220px;
-                background: var(--bg-secondary);
-                border: 1px solid var(--border-color);
-                border-radius: 6px;
-                box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-                z-index: 1000;
-                display: none;
-                max-height: 320px;
-                overflow-y: auto;
-            }
-
-            .context-pill-menu.show {
-                display: block;
-            }
-
-            /* ---- Dropdown menu items ---- */
-            .fractal-selector-loading {
-                padding: 12px;
-                text-align: center;
-                color: var(--text-secondary);
-                font-size: 13px;
-            }
-
-            .fractal-selector-item {
-                display: block;
-                width: 100%;
-                padding: 9px 12px;
-                border: none;
-                background: none;
-                color: var(--text-primary);
-                text-align: left;
-                cursor: pointer;
-                font-size: 13px;
-                font-family: var(--font-main);
-                line-height: 1.4;
-                transition: background-color 0.15s ease;
-                border-bottom: 1px solid var(--border-color);
-            }
-
-            .fractal-selector-item:last-child {
-                border-bottom: none;
-            }
-
-            .fractal-selector-item:hover {
-                background: var(--bg-hover);
-            }
-
-            .fractal-selector-item.current {
-                background: var(--accent-color);
-                color: #fff;
-                font-weight: 500;
-            }
-
-            .fractal-selector-item.current:hover {
-                background: var(--accent-hover, var(--accent-color));
-                color: #fff;
-            }
-
-            .fractal-selector-item.current .fractal-selector-item-description {
-                color: rgba(255,255,255,0.75);
-            }
-
-            .fractal-selector-item.current::after {
-                content: '\\2713';
-                float: right;
-                color: #fff;
-            }
-
-            .fractal-selector-item-name {
-                display: block;
-                font-weight: 500;
-            }
-
-            .fractal-selector-item-description {
-                display: block;
-                font-size: 11px;
-                color: var(--text-secondary);
-                margin-top: 2px;
-            }
-
-            .fractal-selector-divider {
-                height: 1px;
-                background: var(--border-color);
-                margin: 4px 0;
-            }
-
-            @media (max-width: 768px) {
-                .context-pill-name {
-                    max-width: 90px;
-                }
-            }
-            </style>
-        `;
-
-        document.head.insertAdjacentHTML('beforeend', styles);
+        // On the body, not in the sidebar: the phone drawer hides and transforms its
+        // contents, which would hide the menu when it opens from a query bar chip.
+        const menu = document.createElement('div');
+        menu.className = 'sb-scope-menu';
+        menu.id = 'fractalSelectorMenu';
+        menu.innerHTML = '<div class="fractal-selector-loading">Loading fractals...</div>';
+        document.body.appendChild(menu);
     },
 
     setupEventListeners() {
         const button = document.getElementById('fractalSelectorButton');
-        const menu = document.getElementById('fractalSelectorMenu');
+        if (!button) return;
 
-        if (!button || !menu) {
-            console.error('Index selector elements not found');
-            return;
-        }
-
-        // Toggle dropdown on button click
         button.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.toggleDropdown();
+            this.toggleDropdown(button);
+        });
+        document.querySelectorAll('[data-scope-chip]').forEach(chip => {
+            chip.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleDropdown(chip);
+            });
+        });
+        window.addEventListener('resize', () => this.closeDropdown());
+
+        // Delegated so scope names never reach an inline handler.
+        document.getElementById('fractalSelectorMenu').addEventListener('click', (e) => {
+            const item = e.target.closest('[data-scope-id]');
+            if (item) {
+                if (item.dataset.scopeType === 'prism') this.selectPrism(item.dataset.scopeId);
+                else this.selectFractal(item.dataset.scopeId);
+            } else if (e.target.closest('.fractal-selector-all')) {
+                this.showAll();
+            }
         });
 
-        // Close dropdown when clicking outside
         document.addEventListener('click', (e) => {
-            if (!e.target.closest('.context-pill-wrapper')) {
-                this.closeDropdown();
-            }
+            if (!e.target.closest('.sb-scope-wrapper, [data-scope-chip], #fractalSelectorMenu')) this.closeDropdown();
         });
 
-        // Close dropdown on escape key
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                this.closeDropdown();
-            }
+            if (e.key !== 'Escape' || !this._anchor) return;
+            e.preventDefault();
+            const anchor = this._anchor;
+            this.closeDropdown();
+            anchor.focus();
         });
     },
 
     async loadAvailableFractals() {
         try {
             this.isLoading = true;
-            this.updateSelectorText('Loading...');
+            if (!this.currentFractal) this.updateSelectorText('Loading...');
 
             const response = await fetch('/api/v1/fractals', {
                 method: 'GET',
@@ -268,7 +102,10 @@ const FractalSelector = {
             this.availableFractals = data.data.fractals || [];
             this.availablePrisms = data.data.prisms || [];
             this.renderFractalMenu();
+            // Seeding needs the session's selected scope, which arrives with the user.
+            if (window.Auth && Auth.ready) await Auth.ready;
             await this.selectCurrentFractal();
+            this.updateSelectorText(this.currentFractal ? this.currentFractal.name : 'Select a fractal');
 
             // Process share link params now that fractals/prisms are loaded.
             await this.processShareLinkIfPresent();
@@ -277,6 +114,7 @@ const FractalSelector = {
             console.error('Failed to load fractals:', error);
             this.updateSelectorText('Error');
             this.showErrorInMenu(error.message);
+            this._showListingIfUnrouted();
         } finally {
             this.isLoading = false;
         }
@@ -305,9 +143,9 @@ const FractalSelector = {
 
         if (!target) {
             console.warn('[FractalSelector] Share link target not found or no access');
+            this._showListingIfUnrouted();
             return;
         }
-
 
         // Cancel any deferred/polling share link processing from earlier
         // attempts that ran before data was available. We handle it here.
@@ -363,21 +201,19 @@ const FractalSelector = {
             return a.name.localeCompare(b.name);
         });
 
+        const allLink = '<button type="button" class="fractal-selector-all">All fractals and prisms</button>';
         if (items.length === 0) {
-            menu.innerHTML = '<div class="fractal-selector-loading">No fractals available</div>';
+            menu.innerHTML = '<div class="fractal-selector-loading">No fractals available</div>' + allLink;
             return;
         }
 
         menu.innerHTML = items.map(item => {
             const isCurrent = this.currentFractal && this.currentFractal.id === item.id;
             const isPrism = item.itemType === 'prism';
-            const onclick = isPrism
-                ? `FractalSelector.selectPrism('${Utils.escapeJs(item.id)}', '${Utils.escapeJs(item.name)}')`
-                : `FractalSelector.selectFractal('${Utils.escapeJs(item.id)}', '${Utils.escapeJs(item.name)}')`;
             const roleLabel = !isPrism && item.user_role ? item.user_role : '';
             const isDefault = !isPrism && item.is_default;
             return `
-                <button class="fractal-selector-item ${isCurrent ? 'current' : ''}" onclick="${onclick}">
+                <button type="button" class="fractal-selector-item ${isCurrent ? 'current' : ''}" data-scope-id="${Utils.escapeAttr(item.id)}" data-scope-type="${item.itemType}">
                     <span class="fractal-selector-item-name">
                         ${Utils.escapeHtml(item.name)}${isDefault ? ' (default)' : ''}
                         ${isPrism ? `<span class="prism-badge" style="font-size:9px;padding:1px 4px;margin-left:4px;">PRISM</span>` : ''}
@@ -386,7 +222,20 @@ const FractalSelector = {
                     ${item.description ? `<span class="fractal-selector-item-description">${Utils.escapeHtml(item.description)}</span>` : ''}
                 </button>
             `;
-        }).join('');
+        }).join('') + allLink;
+    },
+
+    showAll() {
+        this.closeDropdown();
+        if (window.App) App.showMainView('fractalListing');
+    },
+
+    // Opens the new scope from outside the fractal level; inside it, the URL moves
+    // to the new scope so a reload or Back lands where the user is.
+    _enterScope() {
+        if (!window.App) return;
+        if (App.currentViewLevel !== 'fractal') App.showFractalView('search');
+        else App.pushSubPath('');
     },
 
     _getUsageHistory() {
@@ -409,7 +258,7 @@ const FractalSelector = {
     },
 
     async selectCurrentFractal() {
-        if (this.currentFractal) return;
+        if (this.currentFractal || this._routerOwnsScope()) return;
 
         // Source of truth for which scope we should render is the server
         // session, exposed via Auth.currentUser.{selected_fractal,selected_prism}.
@@ -447,10 +296,23 @@ const FractalSelector = {
                 const role = await FractalContext.selectFractalOnServer(targetFractal.id);
                 if (role === null) return;
                 // Re-check: the router may have won the race while we waited.
-                if (this.currentFractal) return;
+                if (this.currentFractal || this._routerOwnsScope()) return;
                 this._applyInitialSelection(targetFractal, 'fractal');
             }
         }
+    },
+
+    // The initial route skips the listing while a share link is pending; when the
+    // link cannot be landed the page still needs somewhere to be.
+    _showListingIfUnrouted() {
+        if (window.App && !App.currentViewLevel) App.showMainView('fractalListing');
+    },
+
+    // The router sets the scope for scope URLs, and the listing is the no-scope
+    // level; seeding the session's scope in either case races or undoes it.
+    _routerOwnsScope() {
+        if (/^#[fp]\//.test(window.location.hash)) return true;
+        return !!(window.App && App.currentViewLevel === 'main' && App.currentView === 'fractalListing');
     },
 
     // Apply an initial fractal/prism selection to every view that needs to know
@@ -458,18 +320,21 @@ const FractalSelector = {
     // localStorage. No server call - that's the caller's decision.
     _applyInitialSelection(target, type) {
         this.currentFractal = target;
-        this.updateSelectorText(target.name);
         if (window.FractalContext) {
             FractalContext.currentFractal = target;
             FractalContext.currentItemType = type;
             FractalContext._saveToStorage();
         }
+        this.updateSelectorText(target.name);
         if (window.TimeBar) {
             TimeBar.updateFractalName(target.name);
         }
+        // No scope notification here, so refresh what keys off the scope directly.
+        if (window.Auth) Auth.updateRBACVisibility();
+        if (window.Recall) Recall.refreshAvailability();
     },
 
-    async selectFractal(fractalId, fractalName) {
+    async selectFractal(fractalId) {
         if (this.isLoading) {
             return;
         }
@@ -490,6 +355,7 @@ const FractalSelector = {
             if (!(await FractalContext.setCurrentFractal(selectedFractal))) return;
 
             this._recordUsage(fractalId);
+            this._enterScope();
 
         } catch (error) {
             console.error('Failed to select fractal:', error);
@@ -501,7 +367,7 @@ const FractalSelector = {
         }
     },
 
-    async selectPrism(prismId, prismName) {
+    async selectPrism(prismId) {
         if (this.isLoading) return;
         try {
             this.isLoading = true;
@@ -514,6 +380,7 @@ const FractalSelector = {
             if (!(await FractalContext.setCurrentPrism(prism))) return;
 
             this._recordUsage(prismId);
+            this._enterScope();
 
         } catch (error) {
             console.error('Failed to select prism:', error);
@@ -523,102 +390,71 @@ const FractalSelector = {
         }
     },
 
-    // Set current fractal programmatically (used by FractalListing)
-    setCurrentFractal(fractalObject) {
-        this.currentFractal = fractalObject;
-        this.updateSelectorText(fractalObject.name);
+    // The menu opens from the sidebar switcher or from a scope chip on a query bar.
+    _anchor: null,
+
+    toggleDropdown(anchor = document.getElementById('fractalSelectorButton')) {
+        if (this._anchor === anchor) this.closeDropdown();
+        else this.openDropdown(anchor);
     },
 
-    toggleDropdown() {
-        const button = document.getElementById('fractalSelectorButton');
+    openDropdown(anchor = document.getElementById('fractalSelectorButton')) {
         const menu = document.getElementById('fractalSelectorMenu');
-
-        if (!button || !menu) {
-            return;
-        }
-
-        const isOpen = menu.classList.contains('show');
-
-        if (isOpen) {
-            this.closeDropdown();
-        } else {
-            this.openDropdown();
-        }
-    },
-
-    openDropdown() {
-        const button = document.getElementById('fractalSelectorButton');
-        const menu = document.getElementById('fractalSelectorMenu');
-
-        if (button && menu) {
-            button.classList.add('open');
-            menu.classList.add('show');
-        }
+        if (!menu || !anchor) return;
+        if (this._anchor) this._setExpanded(this._anchor, false);
+        this.renderFractalMenu();
+        // Fixed positioning keeps the menu free of the sidebar's scroll clipping.
+        const r = anchor.getBoundingClientRect();
+        const beside = anchor.id === 'fractalSelectorButton' && document.documentElement.classList.contains('sb-collapsed');
+        const top = beside ? r.top : r.bottom + 6;
+        menu.style.top = `${Math.round(top)}px`;
+        menu.style.left = `${Math.round(beside ? r.right + 8 : r.left)}px`;
+        menu.style.minWidth = `${Math.round(Math.max(r.width, 260))}px`;
+        menu.style.maxHeight = `${Math.round(Math.max(160, Math.min(420, window.innerHeight - top - 16)))}px`;
+        menu.classList.add('show');
+        if (window.Sidebar) Sidebar.hideTip();
+        this._anchor = anchor;
+        this._setExpanded(anchor, true);
     },
 
     closeDropdown() {
-        const button = document.getElementById('fractalSelectorButton');
         const menu = document.getElementById('fractalSelectorMenu');
+        if (menu) menu.classList.remove('show');
+        if (this._anchor) this._setExpanded(this._anchor, false);
+        this._anchor = null;
+    },
 
-        if (button && menu) {
-            button.classList.remove('open');
-            menu.classList.remove('show');
-        }
+    _setExpanded(anchor, open) {
+        anchor.classList.toggle('open', open);
+        anchor.setAttribute('aria-expanded', String(open));
     },
 
     updateSelectorText(text) {
         const textElement = document.getElementById('fractalSelectorText');
-        if (textElement) {
-            textElement.textContent = text;
+        if (textElement) textElement.textContent = text;
+        const kind = document.getElementById('fractalSelectorKind');
+        if (kind) kind.textContent = window.FractalContext && FractalContext.isPrism() ? 'Prism' : 'Fractal';
+        const button = document.getElementById('fractalSelectorButton');
+        if (button) {
+            button.dataset.tip = text;
+            button.classList.toggle('empty', !(window.FractalContext && FractalContext.hasScope()));
         }
+        document.querySelectorAll('[data-scope-chip] .scope-chip-name').forEach(el => { el.textContent = text; });
     },
 
     showErrorInMenu(errorMessage) {
         const menu = document.getElementById('fractalSelectorMenu');
         if (menu) {
             menu.innerHTML = `
-                <div class="fractal-selector-loading" style="color: var(--error-color);">
+                <div class="fractal-selector-loading" style="color: var(--error);">
                     Error: ${Utils.escapeHtml(errorMessage)}
                     <button onclick="FractalSelector.loadAvailableFractals()"
-                            style="display: block; margin-top: 8px; color: var(--accent-color); background: none; border: none; cursor: pointer;">
+                            style="display: block; margin-top: 8px; color: var(--accent-primary); background: none; border: none; cursor: pointer;">
                         Retry
                     </button>
                 </div>
             `;
         }
-    },
-
-    showFractalManagement() {
-        this.closeDropdown();
-
-        // Navigate to fractal management view
-        if (window.App && App.showView) {
-            App.showView('fractalManagement');
-        } else {
-            // Fallback: show a simple alert for now
-            alert('Index Management feature coming soon!');
-        }
-    },
-
-    // Public API methods
-    getCurrentFractal() {
-        return this.currentFractal;
-    },
-
-    getCurrentFractalId() {
-        return this.currentFractal ? this.currentFractal.id : null;
-    },
-
-    getCurrentFractalName() {
-        return this.currentFractal ? this.currentFractal.name : 'Unknown';
-    },
-
-    // Method to be called when auth state changes
-    onAuthChange() {
-        this.currentFractal = null;
-        this.availableFractals = [];
-        this.availablePrisms = [];
-        this.loadAvailableFractals();
     }
 };
 

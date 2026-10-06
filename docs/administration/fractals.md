@@ -2,12 +2,12 @@
 
 A fractal is an isolated log container. Each fractal has its own log data in ClickHouse and its own set of API keys, alerts, and comments.
 
-Admins manage fractals from the top-level **Fractals** tab.
+Admins manage fractals from the **Fractals** page at the top of the sidebar.
 
 - **Create fractal**: Provide a name and optional description.
-- **Delete fractal**: From **[Fractal] > Manage > Danger Zone**. Removes all associated log data, API keys, and configuration. This is **irreversible**.
+- **Delete fractal**: From **Fractal settings > Danger Zone**. Removes all associated log data, API keys, and configuration. This is **irreversible**.
 
-Each fractal's own settings live under its **Manage** tab, which has four sections:
+Each fractal's own settings live under its **Fractal settings** page, which has four sections:
 
 | Sub-tab | Contents |
 |---------|----------|
@@ -18,7 +18,7 @@ Each fractal's own settings live under its **Manage** tab, which has four sectio
 
 ## Clearing Logs
 
-Admins can delete all logs for a fractal from **[Fractal] > Manage > Danger Zone > Clear Logs**. The fractal itself, its API keys, and its configuration remain. This is **irreversible**.
+Admins can delete all logs for a fractal from **Fractal settings > Danger Zone > Clear Logs**. The fractal itself, its API keys, and its configuration remain. This is **irreversible**.
 
 ## Disk Quotas
 

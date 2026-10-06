@@ -15,7 +15,7 @@ async function openCoverage(page) {
   await page.goto('/');
   await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
   await page.locator('.fractal-listing-table tbody tr td').first().click();
-  await page.locator('#fractalAlertsTabBtn').click();
+  await page.locator('#sidebar a[data-nav="alerts"]').click();
   await page.locator('.alerts-sub-tab[data-subtab="coverage"]').click();
   await expect(page.locator('#attackCoverageView')).toBeVisible();
   await expect(page.locator('#atkMatrix .atk-column').first()).toBeVisible({ timeout: 15000 });

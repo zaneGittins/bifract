@@ -84,7 +84,7 @@ Some MCP tools are deliberately unavailable in chat, whether or not you would be
 
 ### Instruction Libraries
 
-A **Library** is a set of markdown pages (organized in folders, with wiki-style `[[links]]` between them) that you attach to a conversation to give the assistant durable, environment-specific knowledge: your naming conventions, escalation procedures, known-good baselines, or triage runbooks. Manage them from the fractal's **Library** tab, and attach one or more to a conversation so the assistant can read them via `read_instruction_page`.
+A **Library** is a set of markdown pages (organized in folders, with wiki-style `[[links]]` between them) that you attach to a conversation to give the assistant durable, environment-specific knowledge: your naming conventions, escalation procedures, known-good baselines, or triage runbooks. Manage them from the fractal's **Instructions** page, and attach one or more to a conversation so the assistant can read them via `read_instruction_page`.
 
 Libraries can also be synced from a Git repository, so runbooks stay version-controlled alongside the rest of your detection content.
 

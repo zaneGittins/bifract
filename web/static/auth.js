@@ -133,15 +133,27 @@ const Auth = {
     currentUser: null,
     loginModal: null,
 
+    // Resolves once the current user is known (or the redirect to login started).
+    ready: null,
+
     async init() {
-        await this.checkCurrentUser();
+        this.ready = this.checkCurrentUser();
+        await this.ready;
         // Close dropdown on outside click
         document.addEventListener('click', (e) => {
             const menu = document.getElementById('userMenuDropdown');
             const trigger = document.getElementById('userClickable');
-            if (menu && trigger && !trigger.contains(e.target) && !menu.contains(e.target)) {
-                menu.classList.remove('open');
+            if (menu && trigger && menu.classList.contains('open') &&
+                !trigger.contains(e.target) && !menu.contains(e.target)) {
+                this.toggleMenu();
             }
+        });
+        document.addEventListener('keydown', (e) => {
+            const menu = document.getElementById('userMenuDropdown');
+            if (e.key !== 'Escape' || !menu || !menu.classList.contains('open')) return;
+            e.preventDefault();
+            this.toggleMenu();
+            document.getElementById('userClickable')?.focus();
         });
     },
 
@@ -156,7 +168,7 @@ const Auth = {
             if (data.success) {
                 this.currentUser = null;
                 // Scope state is per-user. Left behind on a shared browser, the
-                // next user sees the previous user's fractal name in the pill
+                // next user sees the previous user's fractal name in the selector
                 // and their fractals ranked first in the selector.
                 try {
                     localStorage.removeItem('bifract_current_context');
@@ -208,28 +220,21 @@ const Auth = {
     showLoggedInUI() {
         const userInfo = document.getElementById('userInfo');
         if (userInfo && this.currentUser) {
-            let roleText = 'No Access';
-            if (this.currentUser.is_admin) {
-                roleText = 'Tenant Admin';
-            } else {
-                const fr = this.getFractalRole();
-                if (fr === 'admin') roleText = 'Fractal Admin';
-                else if (fr === 'analyst') roleText = 'Analyst';
-                else if (fr === 'viewer') roleText = 'Viewer';
-            }
+            const roleText = this.roleText();
             const themeLabel = ThemeManager.isDark() ? 'Light Mode' : 'Dark Mode';
             const sqlLabel = UserPrefs.showSQL() ? 'Hide Query Debug' : 'Show Query Debug';
+            const u = this.currentUser;
+            const color = /^#[0-9a-fA-F]{3,8}$/.test(u.gravatar_color || '') ? u.gravatar_color : 'var(--accent-primary)';
+            const name = Utils.escapeHtml(u.display_name || u.username || '');
             userInfo.innerHTML = `
                 <div class="user-display" id="userDisplayContainer">
-                    <div class="user-clickable" id="userClickable" onclick="Auth.toggleMenu()">
-                        <div class="gravatar" style="background-color: ${this.currentUser.gravatar_color}">
-                            ${this.currentUser.gravatar_initial}
-                        </div>
-                        <div class="user-info-text">
-                            <span class="username">${this.currentUser.display_name}</span>
+                    <button type="button" class="sb-item user-clickable" id="userClickable" data-tip="${name}" aria-expanded="false" aria-controls="userMenuDropdown">
+                        <span class="gravatar" style="background-color: ${color}" aria-hidden="true">${Utils.escapeHtml(u.gravatar_initial || '')}</span>
+                        <span class="sb-label user-info-text">
+                            <span class="username">${name}</span>
                             <span class="user-role">${roleText}</span>
-                        </div>
-                    </div>
+                        </span>
+                    </button>
                     <div class="user-menu-dropdown" id="userMenuDropdown">
                         <button class="user-menu-item" onclick="ThemeManager.toggle(); Auth.updateThemeLabel();">
                             <svg id="themeToggleIcon" viewBox="0 0 24 24" width="16" height="16"></svg>
@@ -259,12 +264,13 @@ const Auth = {
                     </div>
                 </div>
             `;
+            document.getElementById('userClickable').addEventListener('click', () => this.toggleMenu());
             ThemeManager.updateIcon();
             this.updateTimezoneHint();
         }
 
         if (window.App) {
-            App.routeFromHash();
+            App.routeInitial();
         }
 
         if (this.currentUser && this.currentUser.is_admin) {
@@ -279,11 +285,6 @@ const Auth = {
 
         // Update fractal-role-based visibility
         this.updateRBACVisibility();
-
-        const loginButton = document.getElementById('loginButton');
-        if (loginButton) {
-            loginButton.style.display = 'none';
-        }
 
         const notificationBell = document.getElementById('notificationBell');
         if (notificationBell) {
@@ -317,6 +318,12 @@ const Auth = {
         return this.currentUser.fractal_role || '';
     },
 
+    roleText() {
+        if (this.currentUser && this.currentUser.is_admin) return 'Tenant Admin';
+        if (!window.FractalContext || !FractalContext.hasScope()) return '';
+        return { admin: 'Fractal Admin', analyst: 'Analyst', viewer: 'Viewer' }[this.getFractalRole()] || 'No Access';
+    },
+
     hasFractalRole(minRole) {
         if (!this.currentUser) return false;
         if (this.currentUser.is_admin) return true;
@@ -336,13 +343,15 @@ const Auth = {
         document.querySelectorAll('.fractal-analyst-only').forEach(el => {
             el.classList.toggle('rbac-hidden', !isAnalyst);
         });
+        if (window.Sidebar) Sidebar.refresh();
     },
 
     toggleMenu() {
         const menu = document.getElementById('userMenuDropdown');
-        if (menu) {
-            menu.classList.toggle('open');
-        }
+        if (!menu) return;
+        const open = menu.classList.toggle('open');
+        const trigger = document.getElementById('userClickable');
+        if (trigger) trigger.setAttribute('aria-expanded', String(open));
     },
 
     updateTimezoneHint() {
@@ -507,6 +516,3 @@ const Auth = {
 
 window.Auth = Auth;
 
-document.addEventListener('DOMContentLoaded', () => {
-    Auth.init();
-});

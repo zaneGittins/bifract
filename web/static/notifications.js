@@ -13,7 +13,10 @@ const Notifications = {
         });
 
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this._open) this._closeDropdown();
+            if (e.key === 'Escape' && this._open) {
+                e.preventDefault();
+                this._closeDropdown();
+            }
         });
 
         this._startPolling();
@@ -69,6 +72,7 @@ const Notifications = {
         this._open = true;
         const dd = document.getElementById('notificationDropdown');
         if (dd) dd.style.display = 'flex';
+        document.getElementById('notificationBellBtn')?.setAttribute('aria-expanded', 'true');
         this._loadList();
     },
 
@@ -76,6 +80,7 @@ const Notifications = {
         this._open = false;
         const dd = document.getElementById('notificationDropdown');
         if (dd) dd.style.display = 'none';
+        document.getElementById('notificationBellBtn')?.setAttribute('aria-expanded', 'false');
     },
 
     async _loadList() {

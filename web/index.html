@@ -10,6 +10,19 @@
         if (localStorage.getItem('bifract-theme') === 'light') {
             document.documentElement.setAttribute('data-theme', 'light');
         }
+        // Sidebar collapse state before first paint; mirrors Sidebar.isCollapsed.
+        try {
+            var sbPrefs = JSON.parse(localStorage.getItem('bifract-sidebar')) || {};
+            var sbWork = /^#([fp]\/[^/]+(\/|\/(search|recall)(\/.*)?)?|(search|recall)(\/.*)?)$/.test(location.hash) ||
+                (!location.hash && /[?&]q=/.test(location.search));
+            var sbClass = sbWork ? 'workspace' : 'page';
+            var sbSaved = sbPrefs[sbClass];
+            var sbMobile = matchMedia('(max-width: 640px)').matches;
+            var sbNarrow = matchMedia('(max-width: 900px)').matches;
+            if (!sbMobile && (sbNarrow || (typeof sbSaved === 'boolean' ? sbSaved : sbClass === 'workspace'))) {
+                document.documentElement.classList.add('sb-collapsed');
+            }
+        } catch (e) {}
     </script>
     <!-- style.css was split into ordered parts under /static/css/. They are a
          byte-exact partition and must all be loaded, in this order. -->
@@ -35,72 +48,58 @@
     <link rel="stylesheet" href="/static/instructionLibraries.css">
     <link rel="stylesheet" href="/static/schemaFields.css">
     <link rel="stylesheet" href="/static/attackCoverage.css">
+    <link rel="stylesheet" href="/static/sidebar.css">
     <link rel="stylesheet" href="/static/fonts/fonts.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <div class="header-content">
-                <div class="logo">
-                    <img src="/static/logo.png" alt="Bifract" width="40" height="40" style="border-radius: 4px;">
-                </div>
-                <div id="contextPillContainer" style="display: none; align-items: center; flex-shrink: 0;"></div>
-                <!-- Main View Navigation (inline with logo) -->
-                <nav id="mainViewNav" class="header-nav" style="display: none;">
-                    <button id="fractalListingTabBtn" class="nav-tab active">Fractals</button>
-                    <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
-                    <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
-                    <button id="mainApiTabBtn" class="nav-tab admin-only" style="display: none;">API</button>
-                    <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">System</button>
-                    <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Admin</button>
-                </nav>
-                <!-- Fractal View Navigation (inline with logo) -->
-                <nav id="fractalViewNav" class="header-nav" style="display: none;">
-                    <button id="fractalSearchTabBtn" class="nav-tab active">Query</button>
-                    <button id="fractalNotebooksTabBtn" class="nav-tab">
-                        Notebooks
-                        <span id="commentedCountBadge" class="badge" style="display: none;"></span>
-                    </button>
-                    <button id="fractalDashboardsTabBtn" class="nav-tab">Dashboards</button>
-                    <button id="fractalDictionariesTabBtn" class="nav-tab">Context</button>
-                    <button id="fractalModelsTabBtn" class="nav-tab">Models</button>
-                    <button id="fractalLibraryTabBtn" class="nav-tab">Library</button>
-                    <button id="fractalChatTabBtn" class="nav-tab">Chat</button>
-                    <button id="fractalAlertsTabBtn" class="nav-tab">
-                        Alerts
-                        <span id="alertsCountBadge" class="badge" style="display: none;"></span>
-                    </button>
-                    <button id="fractalIngestTabBtn" class="nav-tab">Ingest</button>
-                    <button id="fractalRecallTabBtn" class="nav-tab rbac-hidden" title="Async BQL search over the archive">Recall</button>
-                    <button id="fractalManageTabBtn" class="nav-tab fractal-admin-only rbac-hidden">Manage</button>
-                </nav>
-                <div class="header-right">
-                    <div id="notificationBell" class="notification-bell" style="display:none;">
-                        <button id="notificationBellBtn" class="notification-bell-btn" onclick="Notifications.toggle()">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                            </svg>
-                            <span id="notificationBadge" class="notification-badge" style="display:none;"></span>
-                        </button>
-                        <div id="notificationDropdown" class="notification-dropdown" style="display:none;">
-                            <div class="notification-dropdown-header">
-                                <span class="notification-dropdown-title">Health Notifications</span>
-                                <button class="notification-mark-read-btn" onclick="Notifications.markAllRead()">Mark all read</button>
-                            </div>
-                            <div id="notificationList" class="notification-list">
-                                <div class="notification-empty">No notifications in the last 24 hours</div>
-                            </div>
-                        </div>
+    <div class="app-shell">
+    <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+        <div class="sb-top">
+            <a class="sb-logo" href="#fractalListing" data-home data-tip="Home" aria-label="Home">
+                <img src="/static/logo.png" alt="" width="28" height="28">
+            </a>
+            <div id="sidebarScope" class="sb-scope"></div>
+        </div>
+        <div class="sb-search">
+            <button id="sidebarGoTo" type="button" class="sb-item sb-goto" data-tip="Go to" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <span class="sb-label">Go to...</span>
+                <kbd class="sb-kbd" aria-hidden="true">⌘K</kbd>
+            </button>
+        </div>
+        <nav id="sidebarNav" class="sb-nav" aria-label="Main navigation"></nav>
+        <div class="sb-footer">
+            <div id="notificationBell" class="sb-notify" style="display:none;">
+                <button id="notificationBellBtn" type="button" class="sb-item" data-tip="Notifications" aria-expanded="false" aria-controls="notificationDropdown" onclick="Notifications.toggle()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
+                    <span class="sb-label">Notifications</span>
+                    <span id="notificationBadge" class="notification-badge" style="display:none;"></span>
+                </button>
+                <div id="notificationDropdown" class="notification-dropdown" style="display:none;">
+                    <div class="notification-dropdown-header">
+                        <span class="notification-dropdown-title">Health Notifications</span>
+                        <button class="notification-mark-read-btn" onclick="Notifications.markAllRead()">Mark all read</button>
                     </div>
-                    <div id="userInfo"></div>
-                    <button id="loginButton" onclick="Auth.showLoginModal()" class="btn-primary" style="display: none;">
-                        Login
-                    </button>
+                    <div id="notificationList" class="notification-list">
+                        <div class="notification-empty">No notifications in the last 24 hours</div>
+                    </div>
                 </div>
             </div>
-        </header>
+            <div id="userInfo" class="sb-user"></div>
+            <button id="sidebarToggle" type="button" class="sb-item sb-toggle"></button>
+        </div>
+    </aside>
+    <div id="sidebarBackdrop" class="sb-backdrop"></div>
+    <div class="container">
+        <div class="sb-mobile-bar">
+            <button id="sidebarOpen" type="button" class="sb-mobile-btn" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <span id="sidebarMobileTitle" class="sb-mobile-title"></span>
+        </div>
 
 
         <!-- Main View (Home Page) -->
@@ -136,7 +135,7 @@
                                 <button class="alerts-sub-tab active" data-subtab="overview" onclick="Performance.switchSubTab('overview')">Overview</button>
                                 <button class="alerts-sub-tab" data-subtab="storage" onclick="Performance.switchSubTab('storage')">Storage &amp; Ingest</button>
                                 <button class="alerts-sub-tab" data-subtab="activity" onclick="Performance.switchSubTab('activity')">Activity</button>
-                                <button class="alerts-sub-tab" data-subtab="alerts" onclick="Performance.switchSubTab('alerts')">Alerts</button>
+                                <button class="alerts-sub-tab" data-subtab="alerts" onclick="Performance.switchSubTab('alerts')">Alert engine</button>
                                 <button class="alerts-sub-tab" data-subtab="archive" onclick="Performance.switchSubTab('archive')">Archive</button>
                             </div>
                             <div class="performance-controls">
@@ -677,7 +676,7 @@
                     <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
                     <button class="alerts-sub-tab" data-subtab="apikeys" onclick="SettingsView.switchSubTab('apikeys')">API Keys</button>
                     <button class="alerts-sub-tab" data-subtab="context" onclick="SettingsView.switchSubTab('context')">Context Links</button>
-                    <button class="alerts-sub-tab" data-subtab="settings" onclick="SettingsView.switchSubTab('settings')">Settings</button>
+                    <button class="alerts-sub-tab" data-subtab="settings" onclick="SettingsView.switchSubTab('settings')">General</button>
                 </div>
 
                 <!-- Users Sub-Tab -->
@@ -942,7 +941,7 @@
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="schemaSweepIntervalSettings" class="sp-row-label">Schema measurement interval</label>
-                                        <p class="sp-row-desc">How often Bifract measures field coverage, storage, and column capacity for the Schema tab.</p>
+                                        <p class="sp-row-desc">How often Bifract measures field coverage, storage, and column capacity for the Schema page.</p>
                                     </div>
                                     <div class="sp-row-control">
                                         <select id="schemaSweepIntervalSettings" class="setting-select">
@@ -1589,6 +1588,11 @@
         <section class="search-section">
             <!-- Toolbar row: mode toggle, time controls, utility buttons, search -->
             <div class="search-toolbar">
+                <button type="button" class="toolbar-menu-btn scope-chip" data-scope-chip aria-haspopup="true" aria-expanded="false" aria-controls="fractalSelectorMenu" title="Switch fractal or prism">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l9 5v10l-9 5-9-5V7z"/></svg>
+                    <span class="scope-chip-name"></span>
+                    <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
                 <div id="timePickerWrap" class="toolbar-menu-wrap">
                     <button id="timePickerBtn" class="toolbar-menu-btn" type="button">
                         <svg class="tp-clock-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
@@ -2204,23 +2208,23 @@
                 </div>
             </div>
 
-            <!-- Context Tab Content -->
+            <!-- Lookups Tab Content -->
             <div id="fractalDictionariesTabContent" style="display: none;">
                 <div id="dictionariesView" class="auth-required" style="display: none;">
                     <section class="dashboards-view-section">
 
-                        <!-- Context List Listing -->
+                        <!-- Lookup Listing -->
                         <div id="dictListing" class="dashboards-listing">
                             <div class="dashboards-filters">
-                                <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search context lists...">
+                                <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search lookups...">
                                 <span class="filters-spacer"></span>
-                                <button id="dictCreateBtn" class="btn-primary">+ New List</button>
+                                <button id="dictCreateBtn" class="btn-primary">+ New Lookup</button>
                             </div>
 
                             <!-- Empty State -->
                             <div id="dictsEmptyState" class="listing-empty-state" style="display: none;">
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-                                <p>No context lists yet</p>
+                                <p>No lookups yet</p>
                             </div>
 
                             <div class="dashboards-table-container" style="display: none;">
@@ -2389,7 +2393,7 @@
 
         <!-- Alerts Sub-Tabs -->
         <div class="alerts-sub-tabs" id="alertsSubTabs">
-            <button class="alerts-sub-tab active" data-subtab="manual" onclick="AlertFeeds.showManualAlerts()">Alerts</button>
+            <button class="alerts-sub-tab active" data-subtab="manual" onclick="AlertFeeds.showManualAlerts()">Rules</button>
             <button class="alerts-sub-tab" data-subtab="feeds" onclick="AlertFeeds.showFeedAlertsTab()">Feeds</button>
             <button class="alerts-sub-tab" data-subtab="actions" onclick="AlertFeeds.showActionsTab()">Actions</button>
             <button class="alerts-sub-tab" data-subtab="coverage" onclick="AlertFeeds.showCoverageTab()">Coverage</button>
@@ -2663,6 +2667,11 @@
                 <div id="recallView" style="display: none;">
                     <section class="search-section recall-section">
                         <div class="search-toolbar recall-toolbar">
+                            <button type="button" class="toolbar-menu-btn scope-chip" data-scope-chip aria-haspopup="true" aria-expanded="false" aria-controls="fractalSelectorMenu" title="Switch fractal or prism">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l9 5v10l-9 5-9-5V7z"/></svg>
+                                <span class="scope-chip-name"></span>
+                                <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true"><path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
                             <!-- Ingest-time picker (independent of the main Query event-time window) -->
                             <div id="recallTimePickerWrap" class="toolbar-menu-wrap">
                                 <button id="recallTimePickerBtn" class="toolbar-menu-btn" type="button" title="The archive is organized by ingest time.">
@@ -3459,6 +3468,19 @@
         </div><!-- End fractalView -->
 
     </div><!-- End container -->
+    </div><!-- End app-shell -->
+
+    <div id="goToPalette" class="goto-overlay" hidden>
+        <div class="goto-dialog" role="dialog" aria-modal="true" aria-label="Go to">
+            <div class="goto-input-row">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <input id="goToInput" type="text" role="combobox" aria-expanded="false" aria-controls="goToList" aria-autocomplete="list" aria-label="Go to" placeholder="Go to a page, fractal, dashboard, notebook, rule..." autocomplete="off" spellcheck="false">
+            </div>
+            <div id="goToList" class="goto-list" role="listbox" aria-label="Results"></div>
+            <div id="goToStatus" class="goto-status" role="status" aria-live="polite"></div>
+            <div class="goto-foot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div>
+        </div>
+    </div>
 
     <!-- TOC quick-access FAB (shown when inside a notebook) -->
     <button id="notebookTOCFab" class="notebook-toc-fab" title="Toggle section navigator (F8)" style="display:none" onclick="Notebooks.toggleTOC()">
@@ -3845,17 +3867,17 @@ throttleTimeSeconds: 3600"></textarea>
     </div>
 
 
-    <!-- Create Context List Modal -->
+    <!-- Create Lookup Modal -->
     <div id="createDictModal" class="modal" onclick="if(event.target===this)Dictionaries.hideCreateForm()">
         <div class="modal-content" style="max-width:480px;">
             <div class="modal-header">
-                <h2>New Context List</h2>
+                <h2>New Lookup</h2>
                 <button class="close-btn" onclick="Dictionaries.hideCreateForm()">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
                     <label for="dictNewName">Name</label>
-                    <input type="text" id="dictNewName" class="form-input" placeholder="List name" required>
+                    <input type="text" id="dictNewName" class="form-input" placeholder="Lookup name" required>
                 </div>
                 <div class="form-group">
                     <label for="dictNewDesc">Description (optional)</label>
@@ -4347,6 +4369,8 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/fractalListing.js"></script>
     <script src="/static/timezone.js"></script>
     <script src="/static/utils.js"></script>
+    <script src="/static/sidebar.js"></script>
+    <script src="/static/goTo.js"></script>
     <script src="/static/syntaxHighlight.js"></script>
     <script src="/static/variables.js"></script>
     <script src="/static/queryValidate.js"></script>

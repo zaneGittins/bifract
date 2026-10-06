@@ -1199,7 +1199,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	chLookupName := colMap[keyColumn]
 	if chLookupName == "" {
-		return fmt.Errorf("dictionary %q has no key column %q - enable that column as a key in the Context tab", dictName, keyColumn)
+		return fmt.Errorf("dictionary %q has no key column %q - enable that column as a key on the Lookups page", dictName, keyColumn)
 	}
 
 	// Resolve through the registry so an earlier command that rewrote this field

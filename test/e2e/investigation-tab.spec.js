@@ -11,7 +11,7 @@ const { login, scopeHeader, openFractal } = require('./fixtures');
 // Filing and export need notebooks and comments, not logs, so any fractal works.
 async function openFirstFractal(page) {
   await openFractal(page);
-  await page.locator('#fractalSearchTabBtn').waitFor({ timeout: 15000 });
+  await page.locator('#sidebar a[data-nav="search"]').waitFor({ timeout: 15000 });
   return scopeHeader(page);
 }
 
@@ -23,9 +23,9 @@ test.describe('investigation tab', () => {
     await openFirstFractal(page);
 
     // The Comments tab is gone, not renamed.
-    await expect(page.locator('#fractalCommentsTabBtn')).toHaveCount(0);
+    await expect(page.locator('#sidebar a[data-nav="comments"]')).toHaveCount(0);
 
-    await page.locator('#fractalNotebooksTabBtn').click();
+    await page.locator('#sidebar a[data-nav="notebooks"]').click();
     await expect(page.locator('#investigationSubTabs')).toBeVisible();
     await expect(page.locator('#notebooksView')).toBeVisible();
     await expect(page.locator('#commentedView')).toBeHidden();

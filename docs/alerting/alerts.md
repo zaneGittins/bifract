@@ -1,6 +1,6 @@
 # Alerts
 
-Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from **Admin &rarr; Settings &rarr; Query &amp; Alerting &rarr; Alert evaluation interval**) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
+Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from **Settings > General > Query &amp; Alerting > Alert evaluation interval**) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
 
 Re-enabling a previously disabled alert resets its cursor to a few minutes before now rather than resuming from its old, potentially stale value. This avoids a large cold-storage catch-up scan across the disabled window, at the cost of not retroactively evaluating logs that arrived while the alert was disabled.
 
@@ -28,9 +28,9 @@ An alert has no single "webhook URL" field. Actions are defined once and attache
 | **Webhook** | POSTs the alert payload to an HTTP endpoint. See [Webhooks](../api/webhooks.md) for the payload schema and configuration |
 | **Email** | Sends an email via the configured SMTP settings |
 | **Fractal** | Writes the alert result back into a fractal as new log events, so detections are themselves searchable and can feed other alerts |
-| **Dictionary** | Upserts matched values into a [context list](../features/dictionaries.md), building a live watchlist (e.g. accumulating suspicious IPs for later enrichment) |
+| **Dictionary** | Upserts matched values into a [lookup](../features/dictionaries.md), building a live watchlist (e.g. accumulating suspicious IPs for later enrichment) |
 
-Actions are managed from the fractal's **Alerts** tab and can be attached to multiple alerts.
+Actions are managed from **Alerts > Actions** and can be attached to multiple alerts.
 
 ## Throttling
 
@@ -38,7 +38,7 @@ A throttle suppresses repeat firings for a window. Suppression is per key: the k
 
 Open windows are stored in PostgreSQL, so a restart or a change of which replica holds the evaluation lock does not release them.
 
-An execution records `log_count` (every row matched) and `suppressed_count` (how many of those were withheld), so a partly suppressed firing is visible under **System &rarr; Alerts**.
+An execution records `log_count` (every row matched) and `suppressed_count` (how many of those were withheld), so a partly suppressed firing is visible under **System > Alert engine**.
 
 ## Late Logs
 
@@ -86,4 +86,4 @@ image=/powershell/i | table(image, user, commandline, timestamp, log_id)
 | Alert evaluation interval | `60s` | How often the alert ticker runs, minimum 60s. |
 | Alert query timeout | `5s` | Maximum runtime for a single alert query. Alerts that exceed it are disabled automatically, with the reason recorded on the alert. |
 
-Both live under **Admin &rarr; Settings &rarr; Query &amp; Alerting** (admin only). Neither is an environment variable: they are stored in PostgreSQL and take effect without a restart.
+Both live under **Settings > General > Query &amp; Alerting** (admin only). Neither is an environment variable: they are stored in PostgreSQL and take effect without a restart.

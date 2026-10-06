@@ -173,7 +173,7 @@ func getProvenanceGraph(ctx context.Context, c Client, in provenanceArgs) (any, 
 			"processes": 0,
 			"hint": "No provenance edges. The GUID may be outside the time range, the fractal " +
 				"may not carry process_creation events, or endpoint behavioral analytics may be " +
-				"disabled (Admin > Settings > Features).",
+				"disabled (Settings > General > Endpoint Analytics).",
 		}, nil
 	}
 

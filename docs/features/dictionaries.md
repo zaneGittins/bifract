@@ -1,15 +1,15 @@
-# Context
+# Lookups
 
-Context lists are per-fractal lookup tables for enriching log data at query time. They appear under the **Context** tab and BQL refers to one by name as `dict=`. Define a list with key-value columns, then use `match()` in BQL queries to join it onto your results.
+Lookups are per-fractal tables for enriching log data at query time. They appear on the fractal's **Lookups** page and BQL refers to one by name as `dict=`. Define a lookup with key-value columns, then use `match()` in BQL queries to join it onto your results.
 
-## Creating a Context List
+## Creating a Lookup
 
-Navigate to **Context** within a fractal. Click **+ New List** and provide:
+Open **Lookups** in the fractal's sidebar. Click **+ New Lookup** and provide:
 
 - **Name** - must be a valid identifier (alphanumeric and underscores)
 - **Key column** - the primary lookup column name
 - **Description** (optional)
-- **Global** (optional) - makes the list available to all fractals
+- **Global** (optional) - makes the lookup available to all fractals
 
 ## Managing Data
 
@@ -21,7 +21,7 @@ The editor provides a spreadsheet-like interface:
 - **Import CSV** via drag-and-drop or file picker. New columns in the CSV are added automatically
 - **Reload** forces ClickHouse to refresh its cached copy immediately. Adding, editing, and deleting rows already refresh it
 
-## Using Context Lists in Queries
+## Using Lookups in Queries
 
 Use `match()` to enrich query results. See [Enrichment](../bql/enrichment.md) for full syntax.
 
@@ -33,7 +33,7 @@ The `column` parameter must reference a column marked as a key in the editor.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `dict` | Yes | Context list name |
+| `dict` | Yes | Lookup name |
 | `field` | Yes | Log field to look up |
 | `column` | Yes | Key column to match against |
 | `include` | Yes | Columns to add to results |
@@ -41,7 +41,7 @@ The `column` parameter must reference a column marked as a key in the editor.
 
 ## Scope
 
-- Context lists are scoped to a **fractal** or **prism**
+- Lookups are scoped to a **fractal** or **prism**
 - **Global** lists are visible across all fractals and prisms
 - Requires **Analyst** role to create or modify; **Viewer** can read
 

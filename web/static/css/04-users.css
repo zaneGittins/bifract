@@ -399,19 +399,6 @@
     margin-top: 8px;
 }
 
-.user-info-text {
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-}
-
-.user-role {
-    font-size: 0.7rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
 .admin-only {
     display: none;
 }
@@ -792,32 +779,9 @@
    User Display & Menu Dropdown
    ============================ */
 
-.user-clickable {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    cursor: pointer;
-    padding: 0.375rem 0.75rem;
-    border-radius: 6px;
-    transition: var(--transition);
-}
-
-.user-clickable:hover {
-    background: var(--bg-hover);
-}
-
-.user-display {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
 .user-menu-dropdown {
     display: none;
     position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
     min-width: 200px;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
@@ -883,9 +847,5 @@
 body.theme-transitioning,
 body.theme-transitioning * {
     transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease !important;
-}
-
-.btn-logout {
-    margin-left: 0.5rem;
 }
 

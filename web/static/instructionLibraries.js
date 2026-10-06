@@ -227,7 +227,7 @@ const InstructionLibraries = {
     renderSidebar() {
         if (!this.library) {
             return `
-                <div class="il-tree-header"><span class="il-tree-title">Library</span></div>
+                <div class="il-tree-header"><span class="il-tree-title">Instructions</span></div>
                 <div class="il-tree-empty">No library configured for this fractal yet.</div>
             `;
         }

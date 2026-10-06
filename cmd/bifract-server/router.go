@@ -1233,6 +1233,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Query: []api.QueryParam{
 						{Name: "limit", Type: "integer"},
 						{Name: "offset", Type: "integer"},
+						{Name: "search"},
 					},
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[storage.Dashboard]{},
@@ -1421,6 +1422,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 						{Name: "enabled", Type: "boolean"},
 						{Name: "limit", Type: "integer"},
 						{Name: "offset", Type: "integer"},
+						{Name: "search"},
 					},
 					Access:   api.AccessViewer,
 					Response: api.ListResponse[*alerts.Alert]{},

@@ -251,10 +251,20 @@ test.describe('query URL mirroring', () => {
 
     // The Comments tab was merged into Notebooks, so this leaves search by the
     // route that still exists.
-    await page.locator('#fractalNotebooksTabBtn').click();
+    await page.locator('#sidebar a[data-nav="notebooks"]').click();
     await expect(page).not.toHaveURL(/[?&]q=/, { timeout: 10000 });
   });
 });
+
+// The copy is asynchronous and the clipboard outlives the test, so clear it and
+// wait for the new link rather than reading whatever an earlier test left there.
+async function copyShareLink(page) {
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.locator('#shareMenuBtn').click();
+  await page.locator('#shareQueryBtn').click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).not.toBe('');
+  return page.evaluate(() => navigator.clipboard.readText());
+}
 
 // The Share button hands out the public /go/search form, so what a colleague
 // receives is readable and hand-editable rather than an opaque base64 blob.
@@ -271,9 +281,7 @@ test.describe('share button', () => {
       `&fractal=${encodeURIComponent(fractal.name)}&from=-90d&var.category=process_creation`);
     await expect(page.locator('#queryInput')).toHaveValue('bifract_category=@category | limit(5)');
 
-    await page.locator('#shareMenuBtn').click();
-    await page.locator('#shareQueryBtn').click();
-    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    const copied = await copyShareLink(page);
 
     const url = new URL(copied);
     expect(url.pathname).toBe('/go/search');
@@ -303,10 +311,10 @@ test.describe('share button', () => {
     await page.goto(`/go/search?q=${encodeURIComponent('* | limit(5)')}&fractal=${encodeURIComponent(fractal.name)}` +
       `&from=${from.toISOString()}&to=${to.toISOString()}`);
     await expect(page).toHaveURL(/\bts=/, { timeout: 15000 });
+    // The redirect carries ts= before the link is landed; the query is the signal.
+    await expect(page.locator('#queryInput')).toHaveValue('* | limit(5)', { timeout: 15000 });
 
-    await page.locator('#shareMenuBtn').click();
-    await page.locator('#shareQueryBtn').click();
-    const url = new URL(await page.evaluate(() => navigator.clipboard.readText()));
+    const url = new URL(await copyShareLink(page));
 
     // A window pinned to an incident must not degrade into "last 24h" on share.
     expect(url.searchParams.get('from')).toMatch(/^\d{4}-\d{2}-\d{2}T/);

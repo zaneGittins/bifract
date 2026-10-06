@@ -5,23 +5,6 @@ const SettingsView = {
     mtlsEnabled: false,
 
     async init() {
-        // Set up tab navigation
-        const settingsTab = document.getElementById('settingsTabBtn');
-        const searchTab = document.getElementById('searchTabBtn');
-        const commentedTab = document.getElementById('commentedTabBtn');
-
-        if (settingsTab) {
-            settingsTab.addEventListener('click', () => this.show());
-        }
-
-        if (searchTab) {
-            searchTab.addEventListener('click', () => this.hide());
-        }
-
-        if (commentedTab) {
-            commentedTab.addEventListener('click', () => this.hide());
-        }
-
         // Set up user management handlers
         const addUserBtn = document.getElementById('addUserBtnSettings');
         const createUserBtn = document.getElementById('createUserBtnSettings');
@@ -575,34 +558,6 @@ const SettingsView = {
     },
 
     async show(subPath = '') {
-        // Hide other views
-        const searchView = document.getElementById('searchView');
-        const commentedView = document.getElementById('commentedView');
-        const alertsView = document.getElementById('alertsView');
-        const alertEditorView = document.getElementById('alertEditorView');
-        const settingsView = document.getElementById('settingsView');
-        const referenceView = document.getElementById('referenceView');
-        const searchTab = document.getElementById('searchTabBtn');
-        const commentedTab = document.getElementById('commentedTabBtn');
-        const alertsTab = document.getElementById('alertsTabBtn');
-        const settingsTab = document.getElementById('settingsTabBtn');
-        const referenceTab = document.getElementById('referenceTabBtn');
-
-        if (searchView) searchView.style.display = 'none';
-        if (commentedView) commentedView.style.display = 'none';
-        if (alertsView) alertsView.style.display = 'none';
-        if (alertEditorView) alertEditorView.style.display = 'none';
-        const actionsManageView = document.getElementById('actionsManageView');
-        if (actionsManageView) actionsManageView.style.display = 'none';
-        if (referenceView) referenceView.style.display = 'none';
-        if (settingsView) settingsView.style.display = 'block';
-
-        if (searchTab) searchTab.classList.remove('active');
-        if (commentedTab) commentedTab.classList.remove('active');
-        if (alertsTab) alertsTab.classList.remove('active');
-        if (referenceTab) referenceTab.classList.remove('active');
-        if (settingsTab) settingsTab.classList.add('active');
-
         this.isActive = true;
 
         // subPath is "<subTab>" or "<subTab>/<groupId>" (groups detail deep-link).
