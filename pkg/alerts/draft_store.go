@@ -57,9 +57,10 @@ func (m *Manager) SaveDraft(ctx context.Context, crID, fractalID, prismID string
 			return nil, ErrChangeRequestNotFound // another author's draft does not exist, as far as this one is concerned
 		}
 
+		// Autosave carries no summary, and must not erase one a withdrawn proposal kept.
 		if _, err := m.pg.Exec(ctx, `
 			UPDATE alert_change_requests
-			   SET title = $2, summary = $3, content = $4, tests = $5,
+			   SET title = $2, summary = COALESCE(NULLIF($3::text, ''), summary), content = $4, tests = $5,
 			       content_hash = $6, base_hash = $7, updated_at = NOW()
 			 WHERE id = $1 AND status = 'draft'`,
 			crID, in.Title, in.Summary, contentJSON, testsJSON, contentHash, baseHash,

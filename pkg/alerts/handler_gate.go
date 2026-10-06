@@ -253,8 +253,8 @@ func (h *Handler) HandleMergeChangeRequest(w http.ResponseWriter, r *http.Reques
 	h.respondSuccess(w, cr)
 }
 
-// HandleDiscardChangeRequest withdraws a proposal without destroying it.
-func (h *Handler) HandleDiscardChangeRequest(w http.ResponseWriter, r *http.Request) {
+// HandleWithdrawChangeRequest takes a proposal out of review, back to its author's drafts.
+func (h *Handler) HandleWithdrawChangeRequest(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.changeRequestAccess(w, r, rbac.RoleAnalyst); !ok {
 		return
 	}
@@ -262,11 +262,12 @@ func (h *Handler) HandleDiscardChangeRequest(w http.ResponseWriter, r *http.Requ
 	user := h.getUserObj(r)
 	isAdmin := user != nil && user.IsAdmin
 
-	if err := h.manager.DiscardChangeRequest(r.Context(), chi.URLParam(r, "id"), h.attributionUser(r), isAdmin); err != nil {
+	cr, err := h.manager.WithdrawChangeRequest(r.Context(), chi.URLParam(r, "id"), h.attributionUser(r), isAdmin)
+	if err != nil {
 		h.changeRequestError(w, err)
 		return
 	}
-	h.respondSuccess(w, map[string]bool{"discarded": true})
+	h.respondSuccess(w, cr)
 }
 
 // HandleDeleteChangeRequest removes a proposal permanently. Admin only: rejecting is
@@ -294,8 +295,9 @@ func (h *Handler) changeRequestError(w http.ResponseWriter, err error) {
 		strings.Contains(err.Error(), "cannot be approved by its author"),
 		strings.Contains(err.Error(), "self approval is turned off"):
 		h.respondError(w, http.StatusForbidden, err.Error())
-	case strings.Contains(err.Error(), "is merged"), strings.Contains(err.Error(), "is discarded"),
-		strings.Contains(err.Error(), "no longer be edited"):
+	case errors.Is(err, ErrDraftExists), errors.Is(err, ErrAlertNameTaken),
+		strings.Contains(err.Error(), "is merged"), strings.Contains(err.Error(), "is discarded"),
+		strings.Contains(err.Error(), "is draft"), strings.Contains(err.Error(), "no longer"):
 		h.respondError(w, http.StatusConflict, err.Error())
 	// Bad input is the caller's mistake, not the server's. Falling through to the
 	// default told a client its request had crashed something when it was simply
@@ -360,8 +362,50 @@ func (h *Handler) HandleProposeFromYAML(w http.ResponseWriter, r *http.Request) 
 	cr, err := h.manager.ProposeFromYAML(r.Context(), req.Content, req.Summary,
 		h.attributionUser(r), fractalID, prismID, req.NormalizerID)
 	if err != nil {
-		h.changeRequestError(w, err)
+		h.importChangeError(w, err)
 		return
 	}
 	h.respondSuccess(w, cr)
+}
+
+// DraftFromYAMLRequest imports a document into the caller's drafts.
+type DraftFromYAMLRequest struct {
+	Content      string `json:"content"`
+	NormalizerID string `json:"normalizer_id,omitempty"`
+}
+
+// HandleDraftFromYAML imports an alert or Sigma document as the caller's draft, so it
+// can be checked in the editor before anyone is asked to review it.
+func (h *Handler) HandleDraftFromYAML(w http.ResponseWriter, r *http.Request) {
+	fractalID, prismID, ok := h.policyScopeAccess(w, r, rbac.RoleAnalyst)
+	if !ok {
+		return
+	}
+
+	var req DraftFromYAMLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		h.respondError(w, http.StatusBadRequest, "A document is required")
+		return
+	}
+
+	draft, err := h.manager.DraftFromYAML(r.Context(), req.Content, h.attributionUser(r), fractalID, prismID, req.NormalizerID)
+	if err != nil {
+		h.importChangeError(w, err)
+		return
+	}
+	h.respondSuccess(w, draft)
+}
+
+// importChangeError answers a failed import: the document's fault is a 400, anything
+// else is classified as for any other proposal.
+func (h *Handler) importChangeError(w http.ResponseWriter, err error) {
+	if importRefusal(err) {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.changeRequestError(w, err)
 }

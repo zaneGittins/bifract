@@ -467,20 +467,35 @@ const AlertChanges = {
         await this.act(() => this.api(`/api/v1/alert-changes/${this._selected}/merge`, { method: 'POST' }), 'Merged');
     },
 
+    // Withdrawing takes the proposal out of review and hands the work back to its author
+    // as a draft. A delete has nothing to edit, so it closes instead.
     async discard() {
         if (this._busy || !this._selected) return;
-        // Kept deliberately, unlike approve and merge. Withdrawing is terminal: a
-        // discarded proposal is closed to review, revision and merge, and nothing
-        // reopens it. The button also sits inches from Approve.
-        if (!confirm('Withdraw this proposal? It cannot be reopened.')) return;
-        await this.act(() => this.api(`/api/v1/alert-changes/${this._selected}/discard`, { method: 'POST' }), 'Withdrawn');
+        const toDrafts = this._detail?.kind !== 'delete';
+        // Kept deliberately, unlike approve and merge: the button sits inches from
+        // Approve, and withdrawing takes the proposal out of every reviewer's queue.
+        const question = toDrafts
+            ? 'Withdraw this proposal? It goes back to your drafts, where you can edit and resubmit it.'
+            : 'Withdraw this proposal? It closes for good.';
+        if (!confirm(question)) return;
+
+        await this.act(() => this.api(`/api/v1/alert-changes/${this._selected}/discard`, { method: 'POST' }), (cr) => {
+            if (cr?.status !== 'draft') return 'Withdrawn';
+            Toast.success('Moved to your drafts', 'Click to open it in the editor.', {
+                onClick: () => window.Alerts?.openDraft?.(cr)
+            });
+            return null;
+        });
     },
 
+    // successMessage is a toast title, or a function of the result that shows its own
+    // toast and returns null.
     async act(fn, successMessage) {
         this._busy = true;
         try {
-            await fn();
-            Toast.success(successMessage);
+            const result = await fn();
+            const note = typeof successMessage === 'function' ? successMessage(result) : successMessage;
+            if (note) Toast.success(note);
             const id = this._selected;
             this._list = await this.fetchList();
             this.render();

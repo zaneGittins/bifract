@@ -373,13 +373,10 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return
 		}
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "failed to parse YAML") ||
-			strings.Contains(errMsg, "invalid query syntax") ||
-			strings.Contains(errMsg, "failed to parse Sigma") ||
-			strings.Contains(errMsg, "failed to translate Sigma") ||
-			strings.Contains(errMsg, "generated BQL query is invalid") {
-			h.respondError(w, http.StatusBadRequest, errMsg)
+		if importRefusal(err) {
+			h.respondError(w, http.StatusBadRequest, err.Error())
+		} else if errors.Is(err, ErrAlertNameTaken) {
+			h.respondError(w, http.StatusConflict, err.Error())
 		} else {
 			log.Printf("[Alerts] Failed to import alert: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to import alert")
@@ -388,6 +385,22 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 	}
 
 	api.WriteMessage(w, "Alert imported successfully", alert)
+}
+
+// importRefusal reports an import refused for what its document says, which is the
+// caller's to fix rather than a server failure.
+func importRefusal(err error) bool {
+	msg := err.Error()
+	for _, s := range []string{
+		"failed to parse YAML", "invalid query syntax", "failed to parse Sigma",
+		"failed to translate Sigma", "generated BQL query is invalid", "is required",
+		"actions not found", "is ambiguous",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // HandleGetExecutions retrieves execution history for an alert

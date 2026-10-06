@@ -1298,7 +1298,7 @@ const QueryExecutor = {
         const built = this.buildResultsTable(fields, results, {
             sizingKey: { fractalId, sig: sizingSig },
             features: { resize: true, reorder: true, sort: true },
-            valueOf: extras.length ? (row, field) => this._valueOf(row, field) : null,
+            cellValue: extras.length ? (row, field) => this._valueOf(row, field) : null,
             removableColumns: extras,
             onRemoveColumn: (field) => this.toggleColumn(field),
             // Aggregated rows are not events, so there is nothing to star.
@@ -1514,10 +1514,10 @@ const QueryExecutor = {
         if (window.LogDetail) LogDetail.refreshColumnButtons();
     },
 
-    _computeNumericFields(fields, results, valueOf = null) {
+    _computeNumericFields(fields, results, cellValue = null) {
         return new Set(fields.filter(field =>
             results.length > 0 && results.every(r => {
-                const v = valueOf ? valueOf(r, field) : r[field];
+                const v = cellValue ? cellValue(r, field) : r[field];
                 return v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
             })
         ));
@@ -1571,12 +1571,13 @@ const QueryExecutor = {
         const rows = (opts.maxRows && results.length > opts.maxRows) ? results.slice(0, opts.maxRows) : results;
         // Detect numeric columns and sample widths over the rows we actually
         // render (not the full result set), so capped tables stay cheap.
-        // valueOf lets a surface show columns that are not top-level row keys.
-        const valueOf = opts.valueOf || null;
-        const numericFields = opts.numeric === false ? new Set() : this._computeNumericFields(fields, rows, valueOf);
+        // cellValue lets a surface show columns that are not top-level row keys. Not named
+        // valueOf: every options object inherits Object.prototype.valueOf.
+        const cellValue = opts.cellValue || null;
+        const numericFields = opts.numeric === false ? new Set() : this._computeNumericFields(fields, rows, cellValue);
         const fractalId = (opts.sizingKey && opts.sizingKey.fractalId) || 'default';
         const sig = (opts.sizingKey && opts.sizingKey.sig) || ColumnSizing.signature(fields);
-        const sizing = ColumnSizing.resolve(fractalId, fields, rows, numericFields, sig, valueOf);
+        const sizing = ColumnSizing.resolve(fractalId, fields, rows, numericFields, sig, cellValue);
 
         const seq = ++this._tableSeq;
 
@@ -1623,7 +1624,7 @@ const QueryExecutor = {
             html += `<tr class="result-row${extra ? ' ' + extra : ''}" data-index="${index}"${rowStyle ? ` style="${rowStyle}"` : ''}>`;
             if (gutter) html += gutterImpl.cellHtml(logID, result);
             fields.forEach(field => {
-                const value = valueOf ? valueOf(result, field) : result[field];
+                const value = cellValue ? cellValue(result, field) : result[field];
                 let cellHtml, cellClass;
                 const custom = opts.cellRender ? opts.cellRender(field, value, result) : null;
                 if (custom !== null && custom !== undefined) {

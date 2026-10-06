@@ -134,7 +134,7 @@ const ColumnSizing = {
 
     _defaultFont: '400 13px ui-sans-serif, system-ui, -apple-system, sans-serif',
 
-    defaultWidth(field, results, isNumeric, valueOf = null) {
+    defaultWidth(field, results, isNumeric, cellValue = null) {
         const lower = String(field).toLowerCase();
         const header = this._measure(field, '600 13px ui-sans-serif, system-ui, sans-serif');
 
@@ -142,7 +142,7 @@ const ColumnSizing = {
         let content = 0;
         const limit = Math.min(results.length, 80);
         for (let i = 0; i < limit; i++) {
-            const v = valueOf ? valueOf(results[i], field) : results[i][field];
+            const v = cellValue ? cellValue(results[i], field) : results[i][field];
             if (v === undefined || v === null) continue;
             const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
             const w = this._measure(text, this._defaultFont);
@@ -169,7 +169,7 @@ const ColumnSizing = {
     //   widths    : { field -> px } for every column that gets an explicit width
     //   flexField : the field rendered with no width (fills remaining space), or null
     //   hasFiller : whether a trailing auto-width filler column is appended
-    resolve(fractalId, fields, results, numericFields, sig, valueOf = null) {
+    resolve(fractalId, fields, results, numericFields, sig, cellValue = null) {
         const persisted = this.load(fractalId, sig || this.signature(fields));
 
         let flexField = null;
@@ -183,7 +183,7 @@ const ColumnSizing = {
         fields.forEach(field => {
             if (flexAuto && field === flexField) return; // auto, no explicit width
             const isNumeric = numericFields ? numericFields.has(field) : false;
-            const def = this.defaultWidth(field, results, isNumeric, valueOf);
+            const def = this.defaultWidth(field, results, isNumeric, cellValue);
             const saved = persisted[field];
             widths[field] = (typeof saved === 'number' && saved >= this.MIN) ? saved : def;
         });

@@ -12,6 +12,9 @@ import (
 // ErrChangeRequestNotFound distinguishes a missing proposal from a failed lookup.
 var ErrChangeRequestNotFound = errors.New("change request not found")
 
+// ErrDraftExists refuses to put a second draft of one alert in its author's drafts.
+var ErrDraftExists = errors.New("a draft of this alert is already in progress: finish or discard it first")
+
 // Change request kinds and statuses.
 const (
 	ChangeCreate = "create"
@@ -28,7 +31,7 @@ const (
 	ChangeRejected = "changes_requested"
 	// ChangeMerged has been applied to the alert.
 	ChangeMerged = "merged"
-	// ChangeDiscarded was withdrawn by its author.
+	// ChangeDiscarded is closed for good: a withdrawn delete, or one with no author left.
 	ChangeDiscarded = "discarded"
 
 	ReviewApprove = "approve"
@@ -128,6 +131,28 @@ func (c *ChangeRequest) Draft() bool { return c.Status == ChangeDraft }
 
 // Editable reports whether the author may still revise the content.
 func (c *ChangeRequest) Editable() bool { return c.Open() || c.Draft() }
+
+// CanWithdraw reports whether a principal may withdraw the proposal. Authors withdraw
+// their own; admins may withdraw any.
+func (c *ChangeRequest) CanWithdraw(username string, isAdmin bool) error {
+	if !c.Open() {
+		return fmt.Errorf("this proposal is %s", c.Status)
+	}
+	if !isAdmin && (username == "" || username != c.Author) {
+		return fmt.Errorf("only the author or an admin can withdraw a proposal")
+	}
+	return nil
+}
+
+// WithdrawStatus is where a withdrawn proposal goes: back to its author's drafts, to be
+// edited and resubmitted. A delete has no definition to edit, and a proposal whose
+// author is gone has nobody to return to, so those close instead.
+func (c *ChangeRequest) WithdrawStatus() string {
+	if c.Kind == ChangeDelete || c.Content == nil || c.Author == "" {
+		return ChangeDiscarded
+	}
+	return ChangeDraft
+}
 
 // currentDecisions maps each reviewer to their latest decision on the current content.
 //

@@ -47,6 +47,7 @@ var routeTable = []string{
 	"POST /api/v1/alert-changes/{id}/review 9 auth body resp analyst",
 	"GET /api/v1/alert-drafts 9 auth resp analyst",
 	"PUT /api/v1/alert-drafts 9 auth body resp analyst",
+	"POST /api/v1/alert-drafts/from-yaml 9 auth body resp analyst",
 	"DELETE /api/v1/alert-drafts/{id} 9 auth resp analyst",
 	"POST /api/v1/alert-drafts/{id}/submit 9 auth resp analyst",
 	"GET /api/v1/alert-gate 9 auth resp viewer",

@@ -150,6 +150,12 @@ func TestGovernanceProposalRefusals(t *testing.T) {
 			map[string]any{"decision": "approve"}, http.StatusNotFound},
 		{"merging a proposal that does not exist", "POST", "/alert-changes/" + missingID + "/merge",
 			nil, http.StatusNotFound},
+		{"withdrawing a proposal that does not exist", "POST", "/alert-changes/" + missingID + "/discard",
+			nil, http.StatusNotFound},
+		{"a draft import with no document", "POST", "/alert-drafts/from-yaml",
+			map[string]any{"content": "  "}, http.StatusBadRequest},
+		{"a draft import whose query does not parse", "POST", "/alert-drafts/from-yaml",
+			map[string]any{"content": "name: n\nqueryString: '| bogus('"}, http.StatusBadRequest},
 	})
 }
 

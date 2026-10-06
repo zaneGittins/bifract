@@ -62,7 +62,7 @@
         </div>
         <div class="sb-search">
             <button id="sidebarGoTo" type="button" class="sb-item sb-goto" data-tip="Go to" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l4 4"/></svg>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M10.5 5.5L9 9l-3.5 1.5L7 7z"/></svg>
                 <span class="sb-label">Go to...</span>
                 <kbd class="sb-kbd" aria-hidden="true">⌘K</kbd>
             </button>
@@ -3795,7 +3795,7 @@
     <div id="importYamlModal" class="modal">
         <div class="modal-content large">
             <div class="modal-header">
-                <h2>Import Alert from YAML</h2>
+                <h2>Import YAML or Sigma</h2>
                 <button class="close-btn" onclick="Alerts.closeModal('importYamlModal')">&times;</button>
             </div>
             <div class="modal-body">
@@ -3830,11 +3830,22 @@ throttleTimeSeconds: 3600"></textarea>
                     </select>
                     <span class="help-text">Translates Sigma field names (e.g. CommandLine) to match your ingested data (e.g. command_line).</span>
                 </div>
+                <div id="importDestination" class="import-dest" hidden>
+                    <div class="act-modes" role="radiogroup" aria-label="Import to">
+                        <button type="button" class="act-mode active" role="radio" aria-checked="true" data-dest="draft" onclick="Alerts.setImportDestination('draft')">Draft</button>
+                        <button type="button" class="act-mode" role="radio" aria-checked="false" data-dest="propose" onclick="Alerts.setImportDestination('propose')">Proposal</button>
+                    </div>
+                    <span id="importDestHint" class="import-dest-hint"></span>
+                </div>
+                <div id="importProposalGroup" class="form-group" hidden>
+                    <textarea id="importProposalSummary" class="alert-propose-input" spellcheck="false"
+                              placeholder="For the reviewer: what is this rule, and why import it"></textarea>
+                </div>
+                <div id="alertImportError" class="error-message" style="display: none;"></div>
                 <div class="form-actions">
                     <button id="importYamlBtn" class="btn-primary">Import Alert</button>
                     <button onclick="Alerts.closeModal('importYamlModal')" class="btn-secondary">Cancel</button>
                 </div>
-                <div id="importError" class="error-message" style="display: none;"></div>
             </div>
         </div>
     </div>

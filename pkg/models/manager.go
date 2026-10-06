@@ -1361,10 +1361,25 @@ func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName stri
 
 // TestExtraction runs a sample extraction against logs and returns matched values plus the generated SQL.
 func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter []FilterCondition, extractions []ExtractionStep) ([]map[string]interface{}, string, error) {
-	tableName := m.ch.ReadTable()
-	if len(extractions) == 0 {
-		return nil, "", fmt.Errorf("no extractions provided")
+	sql, err := buildExtractionTestSQL(m.ch.ReadTable(), fractalID, filter, extractions)
+	if err != nil {
+		return nil, "", err
 	}
+	results, err := m.ch.QuerySchema(ctx, sql)
+	return results, sql, err
+}
+
+// buildExtractionTestSQL builds the extraction probe. Field names are validated
+// like a saved definition's and every identifier is quoted, since the request
+// reaches here without passing through create or preview validation.
+func buildExtractionTestSQL(tableName, fractalID string, filter []FilterCondition, extractions []ExtractionStep) (string, error) {
+	if len(extractions) == 0 {
+		return "", fmt.Errorf("no extractions provided")
+	}
+	if err := validateDefinitionFieldNames(ModelDefinition{Filter: filter, Extractions: extractions}); err != nil {
+		return "", err
+	}
+	ident := func(name string) string { return "`" + parser.EscapeCHBacktickIdent(name) + "`" }
 
 	var b strings.Builder
 	b.WriteString("WITH\nbase AS (\n    SELECT timestamp, norm_log, log_id")
@@ -1372,7 +1387,7 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	for _, ext := range extractions {
 		if !isExtractionOutput(ext.FromField, extractions) && !seen[ext.FromField] {
 			seen[ext.FromField] = true
-			b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ext.FromField))
+			b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ident(ext.FromField)))
 		}
 	}
 	b.WriteString(fmt.Sprintf("\n    FROM %s\n    WHERE fractal_id = '%s'", tableName, storage.EscCHStr(fractalID)))
@@ -1384,10 +1399,10 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 	prevCTE := "base"
 	for i, ext := range extractions {
 		cteName := fmt.Sprintf("e%d", i)
-		fromRef := ext.FromField
+		fromRef := ident(ext.FromField)
 		sqlPat := chStringLiteral(extractPattern(ext.Pattern))
 		b.WriteString(fmt.Sprintf(",\n%s AS (\n    SELECT *, extract(%s, %s) AS %s\n    FROM %s\n    WHERE extract(%s, %s) != ''",
-			cteName, fromRef, sqlPat, ext.OutputField, prevCTE, fromRef, sqlPat))
+			cteName, fromRef, sqlPat, ident(ext.OutputField), prevCTE, fromRef, sqlPat))
 		if ext.MinLength > 0 {
 			b.WriteString(fmt.Sprintf("\n    AND length(extract(%s, %s)) >= %d", fromRef, sqlPat, ext.MinLength))
 		}
@@ -1397,13 +1412,11 @@ func (m *Manager) TestExtraction(ctx context.Context, fractalID string, filter [
 
 	// Final select: sample of matched values
 	lastExt := extractions[len(extractions)-1]
-	outField := lastExt.OutputField
+	outField := ident(lastExt.OutputField)
 	b.WriteString(fmt.Sprintf("\nSELECT %s, count() AS cnt FROM %s GROUP BY %s ORDER BY cnt DESC LIMIT 50",
 		outField, prevCTE, outField))
 
-	sql := b.String()
-	results, err := m.ch.QuerySchema(ctx, sql)
-	return results, sql, err
+	return b.String(), nil
 }
 
 // convertDaysToStrings walks rows returned from ClickHouse and converts any

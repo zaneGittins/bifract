@@ -25,6 +25,9 @@ import (
 // handlers answer 404 rather than 500 for an id that simply does not exist.
 var ErrAlertNotFound = errors.New("alert not found")
 
+// ErrAlertNameTaken is an import whose name belongs to a manual alert it may not replace.
+var ErrAlertNameTaken = errors.New("alert name already exists")
+
 // Manager handles CRUD operations and YAML import/export for alerts and webhooks
 type Manager struct {
 	pg                *storage.PostgresClient
@@ -236,33 +239,13 @@ func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID,
 	var req AlertUpdateRequest
 
 	if sigma.IsSigmaRule(yamlContent) {
-		rule, err := sigma.ParseSigmaRule(yamlContent)
-		if err != nil {
-			return yamlImport{}, fmt.Errorf("failed to parse Sigma rule: %w", err)
-		}
-
 		var fieldMapper func(string) string
 		if normalizerID != "" && m.normalizerManager != nil {
 			fieldMapper = sigma.BuildFieldMapper(m.normalizerManager.CompileByID(ctx, normalizerID))
 		}
-
-		queryString, err := sigma.Translate(rule, fieldMapper)
-		if err != nil {
-			return yamlImport{}, fmt.Errorf("failed to translate Sigma rule: %w", err)
-		}
-		if _, err := parser.ParseQuery(queryString); err != nil {
-			return yamlImport{}, fmt.Errorf("generated BQL query is invalid: %w (query: %s)", err, queryString)
-		}
-
-		req = AlertUpdateRequest{
-			Name:        rule.Title,
-			Description: sigmaDescription(rule),
-			QueryString: queryString,
-			AlertType:   "event",
-			Severity:    SeverityFromLevel(rule.Level),
-			Labels:      sigma.BuildLabels(rule),
-			References:  rule.References,
-			Enabled:     false, // Disabled by default for review
+		var err error
+		if req, err = sigmaImportRequest(yamlContent, fieldMapper); err != nil {
+			return yamlImport{}, err
 		}
 	} else {
 		var yamlAlert YAMLAlert
@@ -308,11 +291,42 @@ func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID,
 		}
 	}
 
-	out := yamlImport{Request: req}
-	if existing, err := m.GetAlertByName(ctx, req.Name); err == nil && existing != nil {
-		out.ExistingID = existing.ID
+	holder, err := m.manualAlertNamed(ctx, req.Name)
+	if err != nil {
+		return yamlImport{}, err
 	}
-	return out, nil
+	existingID, err := importReplaces(holder, req.Name, fractalID, prismID)
+	if err != nil {
+		return yamlImport{}, err
+	}
+	return yamlImport{Request: req, ExistingID: existingID}, nil
+}
+
+// sigmaImportRequest translates a Sigma rule into an alert definition, disabled so it
+// is reviewed before it fires.
+func sigmaImportRequest(yamlContent string, fieldMapper func(string) string) (AlertUpdateRequest, error) {
+	rule, err := sigma.ParseSigmaRule(yamlContent)
+	if err != nil {
+		return AlertUpdateRequest{}, fmt.Errorf("failed to parse Sigma rule: %w", err)
+	}
+	queryString, err := sigma.Translate(rule, fieldMapper)
+	if err != nil {
+		return AlertUpdateRequest{}, fmt.Errorf("failed to translate Sigma rule: %w", err)
+	}
+	if _, err := parser.ParseQuery(queryString); err != nil {
+		return AlertUpdateRequest{}, fmt.Errorf("generated BQL query is invalid: %w (query: %s)", err, queryString)
+	}
+
+	return AlertUpdateRequest{
+		Name:        rule.Title,
+		Description: sigmaDescription(rule),
+		QueryString: queryString,
+		AlertType:   "event",
+		Severity:    SeverityFromLevel(rule.Level),
+		Labels:      sigma.BuildLabels(rule),
+		References:  rule.References,
+		Enabled:     false,
+	}, nil
 }
 
 // sigmaDescription folds the Sigma metadata that has no alert field of its own into the
@@ -354,8 +368,34 @@ func (m *Manager) ProposeFromYAML(ctx context.Context, yamlContent, summary, use
 	if err != nil {
 		return nil, err
 	}
+	in := parsed.changeInput()
+	in.Summary = summary
+	return m.SubmitChangeRequest(ctx, "", fractalID, prismID, in, username)
+}
 
-	content := revisionContentFromRequest(parsed.Request, string(parsed.Request.AlertType), string(parsed.Request.Severity))
+// DraftFromYAML puts an imported document into the caller's drafts, to be checked in
+// the editor before it is proposed or saved. An alert's draft is one per author, so an
+// import never lands on top of one already in progress.
+func (m *Manager) DraftFromYAML(ctx context.Context, yamlContent, username, fractalID, prismID, normalizerID string) (*ChangeRequest, error) {
+	parsed, err := m.resolveYAMLImport(ctx, yamlContent, fractalID, prismID, normalizerID)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.ExistingID != "" {
+		existing, err := m.DraftForAlert(ctx, parsed.ExistingID, username)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return nil, ErrDraftExists
+		}
+	}
+	return m.SaveDraft(ctx, "", fractalID, prismID, parsed.changeInput(), username)
+}
+
+// changeInput is the import as a create, or as an update of the alert it replaces.
+func (p yamlImport) changeInput() ChangeRequestInput {
+	content := revisionContentFromRequest(p.Request, string(p.Request.AlertType), string(p.Request.Severity))
 	if content.AlertType == "" {
 		content.AlertType = "event"
 	}
@@ -363,18 +403,12 @@ func (m *Manager) ProposeFromYAML(ctx context.Context, yamlContent, summary, use
 		content.Severity = "medium"
 	}
 
-	in := ChangeRequestInput{
-		Kind:    ChangeCreate,
-		Title:   parsed.Request.Name,
-		Summary: summary,
-		Content: &content,
-	}
-	if parsed.ExistingID != "" {
+	in := ChangeRequestInput{Kind: ChangeCreate, Title: p.Request.Name, Content: &content}
+	if p.ExistingID != "" {
 		in.Kind = ChangeUpdate
-		in.AlertID = parsed.ExistingID
+		in.AlertID = p.ExistingID
 	}
-
-	return m.SubmitChangeRequest(ctx, "", fractalID, prismID, in, username)
+	return in
 }
 
 // CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
@@ -973,15 +1007,39 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 	return &alert, nil
 }
 
-// GetAlertByName retrieves an alert by name
-func (m *Manager) GetAlertByName(ctx context.Context, name string) (*Alert, error) {
-	query := `SELECT id FROM alerts WHERE name = $1`
-	var alertID string
-	err := m.pg.QueryRow(ctx, query, name).Scan(&alertID)
-	if err != nil {
-		return nil, fmt.Errorf("alert not found: %w", err)
+// namedAlert is the manual alert holding a name, and the scope it lives in.
+type namedAlert struct {
+	ID, FractalID, PrismID string
+}
+
+// manualAlertNamed returns the manual alert holding name, or nil. Feed alerts never
+// match: their names sit outside the manual uniqueness index.
+func (m *Manager) manualAlertNamed(ctx context.Context, name string) (*namedAlert, error) {
+	var a namedAlert
+	err := m.pg.QueryRow(ctx, `
+		SELECT id::text, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
+		  FROM alerts WHERE name = $1 AND feed_id IS NULL`, name,
+	).Scan(&a.ID, &a.FractalID, &a.PrismID)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-	return m.GetAlert(ctx, alertID)
+	if err != nil {
+		return nil, fmt.Errorf("look up alert by name: %w", err)
+	}
+	return &a, nil
+}
+
+// importReplaces decides which alert an import of a given name replaces: one in the
+// importing scope, or none. Manual names are unique instance-wide, so a holder in
+// another scope is refused rather than overwritten from here.
+func importReplaces(holder *namedAlert, name, fractalID, prismID string) (string, error) {
+	if holder == nil {
+		return "", nil
+	}
+	if holder.FractalID != fractalID || holder.PrismID != prismID {
+		return "", fmt.Errorf("%w: an alert named %q exists in another fractal or prism", ErrAlertNameTaken, name)
+	}
+	return holder.ID, nil
 }
 
 // ListAlerts retrieves all alerts with optional filtering.
