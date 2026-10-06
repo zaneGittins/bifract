@@ -325,7 +325,6 @@ const FractalContext = {
             QueryExecutor.currentTimeRange = null;
             QueryExecutor.sortColumn = null;
             QueryExecutor.sortDirection = null;
-            QueryExecutor.columnOrder = null;
             QueryExecutor.isAggregated = false;
             QueryExecutor.chartType = '';
             QueryExecutor.currentFractalId = null;

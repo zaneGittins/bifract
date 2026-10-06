@@ -619,7 +619,7 @@ const Recall = {
 
         if (job.status === 'failed') {
             this.setStatus(this._errorGlyph() + `<span>${this.esc(job.error || 'Search failed.')}</span>` + this._durationHtml(job) + this._scannedHtml(job), 'error');
-            if (pane) pane.innerHTML = `<div class="no-results">${this.esc(job.error || 'Search failed.')}</div>`;
+            if (pane) pane.innerHTML = `<div class="results-error">${this.esc(job.error || 'Search failed.')}</div>`;
             return;
         }
         if (job.status === 'canceled') {

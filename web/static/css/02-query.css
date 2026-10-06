@@ -1445,6 +1445,17 @@ body.recall-active {
     border-color: var(--error);
 }
 
+.log-field-actions .log-field-col-btn svg {
+    width: 10px;
+    height: 10px;
+}
+
+.log-field-actions .log-field-col-btn:hover,
+.log-field-actions .log-field-col-btn.active {
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
 .log-field-copy-btn {
     opacity: 0;
     background: none;

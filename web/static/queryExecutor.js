@@ -4,7 +4,6 @@ const QueryExecutor = {
     currentTimeRange: null,
     sortColumn: null,
     sortDirection: null,
-    columnOrder: null,
     isAggregated: false,
     limitHit: null,
     chartType: '',
@@ -215,6 +214,13 @@ const QueryExecutor = {
             this.currentResults = data.results || [];
             this.fieldOrder = data.field_order || ["timestamp", "fields", "log_id"];
             this.isAggregated = false;
+            this._columnsKey = null;
+            this._extraColumns = [];
+            this.currentTimeRange = {
+                start: data.time_start || new Date(Date.now() - 86400000).toISOString(),
+                end: data.time_end || new Date().toISOString()
+            };
+            this._emptyContext = { label: 'Last 24h', matchAll: true, sample: true };
             this.chartType = '';
             this.chartConfig = {};
             this.sortColumn = null;
@@ -235,12 +241,8 @@ const QueryExecutor = {
                 this.renderResults(this.currentResults);
             }
 
+            this.syncResultControls();
             if (window.FieldStats) FieldStats.onResults();
-
-            this.currentTimeRange = {
-                start: data.time_start || new Date(Date.now() - 86400000).toISOString(),
-                end: data.time_end || new Date().toISOString()
-            };
 
             if (window.Comments) {
                 Comments.fetchCommentedLogIds().then(() => this.updateCommentHighlights());
@@ -288,12 +290,13 @@ const QueryExecutor = {
 
         if (!elements.queryInput) return;
 
-        const rawQuery = elements.queryInput.value.trim();
-        if (!rawQuery) return;
-
-        // Strip comment lines (lines starting with //)
-        const query = this.stripComments(rawQuery);
+        // An empty main search matches everything in the selected range.
+        const rawValue = elements.queryInput.value;
+        const stripped = this.stripComments(rawValue.trim());
+        const query = stripped || (config ? '' : '*');
         if (!query) return;
+        // Sent verbatim: the server blanks comments in place, so error offsets match the editor.
+        const requestQuery = stripped ? rawValue : query;
 
         if (window.LogDetail) LogDetail.close();
 
@@ -333,6 +336,10 @@ const QueryExecutor = {
 
         // Get time range
         this.currentTimeRange = this.getTimeRange();
+        this._emptyContext = {
+            label: window.TimePicker ? TimePicker.getLabel() : '',
+            matchAll: query.trim() === '*',
+        };
 
         // Capture run metadata; the history entry is recorded on finalize once
         // result count and duration are known (see _finalizeQuery).
@@ -386,7 +393,7 @@ const QueryExecutor = {
         try {
             // Get currently selected fractal for context
             let requestBody = {
-                query: query,
+                query: requestQuery,
                 start: this.currentTimeRange.start,
                 end: this.currentTimeRange.end
             };
@@ -425,9 +432,7 @@ const QueryExecutor = {
                 let data = {};
                 try { data = await res.json(); } catch (e) {}
                 if (!res.ok || !data.success) {
-                    const msg = data.error || `Query failed (${res.status})`;
-                    this.showError(msg, data.error_type, data.error_pos);
-                    this.renderTableError(msg);
+                    this._failQuery(data.error || `Query failed (${res.status})`, data.error_type, data.error_pos);
                     return;
                 }
                 this._applyQueryMeta(data, elements, false);
@@ -444,8 +449,7 @@ const QueryExecutor = {
                 return;
             }
 
-            this.showError(error.message);
-            this.renderTableError(error.message);
+            this._failQuery(error.message);
         } finally {
             // Only tear down if a newer run hasn't superseded us (which would own
             // the request, timer, and loading indicator).
@@ -542,6 +546,7 @@ const QueryExecutor = {
         const decoder = new TextDecoder();
         let buf = '';
         let pendingRender = false;
+        let failed = false;
         let timeRange = this.currentTimeRange;
         let histogram = null;
 
@@ -551,6 +556,8 @@ const QueryExecutor = {
             pendingRender = true;
             requestAnimationFrame(() => {
                 pendingRender = false;
+                // A render queued before an error frame must not repaint over it.
+                if (failed) return;
                 // Only rebuild the table when the current page's rows have actually
                 // changed. After page 1 fills up, streaming rows go to later pages
                 // and the visible content is stable — avoid needless innerHTML churn.
@@ -658,8 +665,8 @@ const QueryExecutor = {
                     }
                     break;
                 case 'error':
-                    this.showError(frame.error || 'Query failed', frame.error_type, frame.error_pos);
-                    this.renderTableError(frame.error || 'Query failed');
+                    failed = true;
+                    this._failQuery(frame.error || 'Query failed', frame.error_type, frame.error_pos);
                     break;
                 case 'done':
                     this._streamingActive = false;
@@ -710,6 +717,8 @@ const QueryExecutor = {
 
         this.fieldOrder = data.field_order || null;
         this.isAggregated = data.is_aggregated || false;
+        this._columnsKey = null;
+        this._extraColumns = [];
         this.chartType = data.chart_type || '';
         this.chartConfig = data.chart_config || {};
         this.sortColumn = null;
@@ -1230,7 +1239,12 @@ const QueryExecutor = {
                 this.renderChart([]);
                 return;
             }
-            resultsTable.innerHTML = '<div class="no-results">No results found</div>';
+            resultsTable.innerHTML = this._emptyStateHTML();
+            const widen = resultsTable.querySelector('.results-empty-action');
+            if (widen) widen.addEventListener('click', () => {
+                if (widen.dataset.preset) TimePicker.setState({ type: widen.dataset.preset });
+                this.execute();
+            });
             if (chartContainer) chartContainer.style.display = 'none';
             return;
         }
@@ -1255,17 +1269,26 @@ const QueryExecutor = {
         const fractalId = this.currentFractalId || 'default';
         const sizingSig = ColumnSizing.signature(fields);
 
-        // Hydrate any saved column order for this layout (once per result set;
-        // cleared on fractal switch). A share-link/explicit order takes priority.
-        if (this.columnOrder === null || this.columnOrder === undefined) {
-            const savedOrder = ColumnSizing.loadOrder(fractalId, sizingSig);
-            if (savedOrder && savedOrder.length) this.columnOrder = savedOrder;
-        }
+        // Event fields the user promoted to columns. Keyed on the query shape
+        // before they are added, so adding one does not orphan the layout. Only
+        // fields inside the event qualify: the row's own keys are base columns.
+        const rowKeys = new Set(Object.keys(results[0]));
+        const canAddColumns = !this.isAggregated && (fields.includes('norm_log') || !!results[0]._all_fields);
+        const extras = canAddColumns
+            ? ColumnSizing.loadColumns(fractalId, sizingSig).filter(f => !rowKeys.has(f) && !fields.includes(f))
+            : [];
+        this._columnsKey = canAddColumns ? { fractalId, sig: sizingSig, rowKeys } : null;
+        this._extraColumns = extras;
+        if (extras.length) fields = fields.concat(extras);
 
+        // Read per render so one query shape's order never applies to another.
+        const savedOrder = ColumnSizing.loadOrder(fractalId, sizingSig) || [];
         fields = this.orderDisplayFields(fields, {
-            order: this.columnOrder,
+            order: savedOrder.length ? savedOrder : null,
             prioritize: !this.isAggregated,
         });
+        const unplaced = extras.filter(f => !savedOrder.includes(f));
+        if (unplaced.length) fields = this._insertBeforeLog(fields, unplaced);
 
         this._sizingFractalId = fractalId;
         this._sizingSig = sizingSig;
@@ -1275,6 +1298,9 @@ const QueryExecutor = {
         const built = this.buildResultsTable(fields, results, {
             sizingKey: { fractalId, sig: sizingSig },
             features: { resize: true, reorder: true, sort: true },
+            valueOf: extras.length ? (row, field) => this._valueOf(row, field) : null,
+            removableColumns: extras,
+            onRemoveColumn: (field) => this.toggleColumn(field),
             // Aggregated rows are not events, so there is nothing to star.
             gutter: this.isAggregated ? null : true,
             sortColumn: this.sortColumn,
@@ -1305,6 +1331,78 @@ const QueryExecutor = {
 
         resultsTable.innerHTML = built.html;
         built.mount(resultsTable);
+    },
+
+    // Empty results: say which range was searched and, when the fractal's data
+    // sits outside it, offer the smallest range that reaches it.
+    _emptyStateHTML() {
+        const ctx = this._emptyContext || {};
+        const esc = Utils.escapeHtml;
+        const label = ctx.label || '';
+        const scope = !label || label === 'All Time' ? '' : ` in ${this._rangePhrase(label)}`;
+        const title = ctx.matchAll ? `No events${scope}` : `No events match this query${scope}`;
+
+        const range = this.currentTimeRange || {};
+        const startMs = Date.parse(range.start);
+        const endMs = Date.parse(range.end);
+        // latest_log is a periodically refreshed stat, so it is only trusted to
+        // explain a match-all search, whose empty result it cannot contradict.
+        const fc = window.FractalContext;
+        const fractal = fc && !fc.isPrism() ? fc.currentFractal : null;
+        // A context restored on reload carries only id and name; the selector's
+        // list has the stats.
+        const listed = fractal && window.FractalSelector && Array.isArray(FractalSelector.availableFractals)
+            ? FractalSelector.availableFractals.find(f => f.id === fractal.id) : null;
+        const latest = ctx.matchAll && fractal ? ((listed && listed.latest_log) || fractal.latest_log || null) : null;
+        const latestMs = latest ? TZ.toEpoch(latest) : NaN;
+        const pickerStartMs = window.TimePicker ? Date.parse(TimePicker.getTimeRange().start) : NaN;
+
+        let hint = '';
+        let action = null;
+        if (Number.isFinite(latestMs) && Number.isFinite(startMs) && latestMs < startMs) {
+            hint = `Latest event in ${esc(fractal.name)}: ${esc(TZ.format(latest, 'datetime'))} (${esc(Utils.timeAgo(latest))})`;
+            action = this._rangeReaching(latestMs, ctx.sample);
+        } else if (ctx.sample && pickerStartMs < startMs) {
+            // The landing sample ignores the picker; offer the range the user chose.
+            action = { preset: '', label: this._rangePhrase(TimePicker.getLabel()) };
+        } else if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+            action = this._widerRange(endMs - startMs);
+        }
+
+        let html = `<div class="no-results results-empty"><div class="results-empty-title">${esc(title)}</div>`;
+        if (hint) html += `<div class="results-empty-hint">${hint}</div>`;
+        if (action) html += `<button class="results-empty-action" type="button" data-preset="${action.preset}">Search ${esc(action.label)}</button>`;
+        return html + '</div>';
+    },
+
+    // "Last 24h" -> "the last 24h", "All Time" -> "all time", custom as is.
+    _rangePhrase(label) {
+        if (label === 'All Time') return 'all time';
+        return /^Last /.test(label) ? `the last ${label.slice(5)}` : label;
+    },
+
+    // A range that includes latestMs. The landing sample always shows 24h, so
+    // when the picker's own range already reaches the data, run that instead
+    // of replacing the user's choice. preset '' means run without changing it.
+    _rangeReaching(latestMs, sample) {
+        if (!window.TimePicker) return null;
+        if (sample && Date.parse(TimePicker.getTimeRange().start) <= latestMs) {
+            return { preset: '', label: this._rangePhrase(TimePicker.getLabel()) };
+        }
+        return this._widerRange(Date.now() - latestMs, true);
+    },
+
+    // The smallest preset longer than spanMs, or null when nothing is wider. A
+    // custom window may lie in the past, where a "last N" preset would miss it,
+    // so it only widens to all time. fromNow: spanMs is measured back from now.
+    _widerRange(spanMs, fromNow = false) {
+        if (!window.TimePicker) return null;
+        if (fromNow || TimePicker.state.type !== 'custom') {
+            for (const p of ['24h', '7d', '30d']) {
+                if (TimePicker._presetMs[p] > spanMs * 1.01) return { preset: p, label: `the last ${p}` };
+            }
+        }
+        return TimePicker.state.type === 'all' ? null : { preset: 'all', label: 'all time' };
     },
 
     // ---- Shared results-table renderer -------------------------------------
@@ -1340,10 +1438,86 @@ const QueryExecutor = {
         return out.includes('norm_log') ? out.filter(f => f !== 'log_id') : out;
     },
 
-    _computeNumericFields(fields, results) {
+    // New columns sit just before the log column, which flexes to fill the row.
+    _insertBeforeLog(fields, add) {
+        const out = fields.filter(f => !add.includes(f));
+        const logIdx = out.findIndex(f => ColumnSizing.FLEX_FIELDS.includes(f));
+        out.splice(logIdx === -1 ? out.length : logIdx, 0, ...add);
+        return out;
+    },
+
+    _normLogCache: new WeakMap(),
+
+    // A cell value for `field`: the row's own column, else the event field
+    // carried in _all_fields or the norm_log JSON (parsed once per row).
+    _valueOf(row, field) {
+        if (!row) return undefined;
+        if (Object.prototype.hasOwnProperty.call(row, field)) return row[field];
+        let src = (row._all_fields && typeof row._all_fields === 'object') ? row._all_fields : null;
+        if (!src && typeof row.norm_log === 'string') {
+            src = this._normLogCache.get(row);
+            if (src === undefined) {
+                try { src = JSON.parse(row.norm_log); } catch (e) { src = null; }
+                this._normLogCache.set(row, src);
+            }
+        }
+        const v = (src && Object.prototype.hasOwnProperty.call(src, field)) ? src[field] : undefined;
+        // Empty strings are schema type hints for fields the event lacks.
+        return v === '' ? undefined : v;
+    },
+
+    canAddColumns() {
+        return !!this._columnsKey;
+    },
+
+    // A field inside the event, as opposed to one of the row's own columns.
+    isEventField(field) {
+        const key = this._columnsKey;
+        return !!(key && field && field !== 'timestamp' && !key.rowKeys.has(field));
+    },
+
+    // Whether `field` can be a column: the table rows carry it, or it already is one.
+    canShowColumn(row, field) {
+        if (!this.isEventField(field)) return false;
+        return this.hasColumn(field) || this._valueOf(row, field) !== undefined;
+    },
+
+    hasColumn(field) {
+        return !!(this._extraColumns && this._extraColumns.includes(field));
+    },
+
+    // Add or remove an event field as a results column for this query shape.
+    toggleColumn(field) {
+        const key = this._columnsKey;
+        if (!this.isEventField(field)) return;
+        const cols = ColumnSizing.loadColumns(key.fractalId, key.sig);
+        const removing = cols.includes(field);
+        ColumnSizing.saveColumns(key.fractalId, key.sig, removing ? cols.filter(f => f !== field) : [...cols, field]);
+
+        // A saved order is rewritten from the columns on screen; without one, a
+        // new column takes its default place on the next render.
+        if (ColumnSizing.loadOrder(key.fractalId, key.sig)) {
+            const shown = (this._displayFields || []).filter(f => f !== field);
+            ColumnSizing.saveOrder(key.fractalId, key.sig, removing ? shown : this._insertBeforeLog(shown, [field]));
+        }
+
+        if (removing && this.sortColumn === field) {
+            // Back to arrival order rather than sorted by a column no longer shown.
+            this.sortColumn = null;
+            this.sortDirection = null;
+            if (window.Pagination) Pagination.setResults(this.currentResults);
+            else this.rerenderCurrentPage();
+        } else {
+            this.rerenderCurrentPage();
+        }
+        if (window.FieldStats && FieldStats.isOpen) FieldStats.render();
+        if (window.LogDetail) LogDetail.refreshColumnButtons();
+    },
+
+    _computeNumericFields(fields, results, valueOf = null) {
         return new Set(fields.filter(field =>
             results.length > 0 && results.every(r => {
-                const v = r[field];
+                const v = valueOf ? valueOf(r, field) : r[field];
                 return v !== undefined && v !== null && v !== '' && !isNaN(Number(v));
             })
         ));
@@ -1379,11 +1553,15 @@ const QueryExecutor = {
         } else if (value === undefined || value === null) {
             html = '-';
             cellClass += ' null-cell';
+        } else if (value === '') {
+            html = '<span class="empty-cell"></span>';
         } else if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
             html = `<span class="json-value json-unhighlighted">${Utils.escapeHtml(value)}</span>`;
             cellClass += ' json-cell';
         } else {
-            html = Utils.escapeHtml(String(value));
+            // Text sits in a span so row-height modes can clamp it to N lines.
+            const text = Utils.escapeHtml(String(value));
+            html = numericFields.has(field) ? text : `<span class="cell-text">${text}</span>`;
         }
         return { html, cellClass };
     },
@@ -1393,10 +1571,12 @@ const QueryExecutor = {
         const rows = (opts.maxRows && results.length > opts.maxRows) ? results.slice(0, opts.maxRows) : results;
         // Detect numeric columns and sample widths over the rows we actually
         // render (not the full result set), so capped tables stay cheap.
-        const numericFields = opts.numeric === false ? new Set() : this._computeNumericFields(fields, rows);
+        // valueOf lets a surface show columns that are not top-level row keys.
+        const valueOf = opts.valueOf || null;
+        const numericFields = opts.numeric === false ? new Set() : this._computeNumericFields(fields, rows, valueOf);
         const fractalId = (opts.sizingKey && opts.sizingKey.fractalId) || 'default';
         const sig = (opts.sizingKey && opts.sizingKey.sig) || ColumnSizing.signature(fields);
-        const sizing = ColumnSizing.resolve(fractalId, fields, rows, numericFields, sig);
+        const sizing = ColumnSizing.resolve(fractalId, fields, rows, numericFields, sig, valueOf);
 
         const seq = ++this._tableSeq;
 
@@ -1428,7 +1608,9 @@ const QueryExecutor = {
                 ? (opts.sortDirection === 'asc' ? ' ▲' : ' ▼') : '';
             const numClass = numericFields.has(field) ? ' numeric-col' : (field === 'raw_log' ? ' raw-log-col' : '');
             const resizer = features.resize ? '<div class="column-resizer"></div>' : '';
-            html += `<th class="${sortable.trim()}${numClass}" data-field="${Utils.escapeAttr(field)}">${Utils.escapeHtml(field)}${sortIcon}${resizer}</th>`;
+            const remove = (opts.removableColumns && opts.removableColumns.includes(field))
+                ? `<button class="th-remove" type="button" title="Remove column" aria-label="Remove column ${Utils.escapeAttr(field)}">&times;</button>` : '';
+            html += `<th class="${sortable.trim()}${numClass}" data-field="${Utils.escapeAttr(field)}">${Utils.escapeHtml(field)}${sortIcon}${remove}${resizer}</th>`;
         });
         html += (sizing.hasFiller ? '<th class="filler-col"></th>' : '') + '</tr></thead><tbody>';
 
@@ -1441,7 +1623,7 @@ const QueryExecutor = {
             html += `<tr class="result-row${extra ? ' ' + extra : ''}" data-index="${index}"${rowStyle ? ` style="${rowStyle}"` : ''}>`;
             if (gutter) html += gutterImpl.cellHtml(logID, result);
             fields.forEach(field => {
-                const value = result[field];
+                const value = valueOf ? valueOf(result, field) : result[field];
                 let cellHtml, cellClass;
                 const custom = opts.cellRender ? opts.cellRender(field, value, result) : null;
                 if (custom !== null && custom !== undefined) {
@@ -1476,12 +1658,23 @@ const QueryExecutor = {
                 ColumnSizing.attachReordering(table, opts.onReorder);
             }
 
+            if (opts.onRemoveColumn) {
+                const thead = table.querySelector('thead');
+                if (thead) thead.addEventListener('click', (e) => {
+                    const btn = e.target.closest('.th-remove');
+                    if (!btn) return;
+                    const header = btn.closest('th[data-field]');
+                    if (header) opts.onRemoveColumn(header.dataset.field);
+                });
+            }
+
             if (features.sort && opts.onSort) {
                 const thead = table.querySelector('thead');
                 if (thead) thead.addEventListener('click', (e) => {
                     const header = e.target.closest('th[data-field]');
                     if (!header) return;
                     if (e.target.classList.contains('column-resizer')) return;
+                    if (e.target.closest('.th-remove')) return;
                     // Swallow the click that trails a drag-to-reorder so it doesn't sort.
                     const now = (window.performance ? performance.now() : Date.now());
                     if (self._lastReorderTs && (now - self._lastReorderTs) < 300) return;
@@ -1549,7 +1742,6 @@ const QueryExecutor = {
         if (to === from) return;
         order.splice(to, 0, field);
 
-        this.columnOrder = order;
         if (this._sizingSig) ColumnSizing.saveOrder(this._sizingFractalId || 'default', this._sizingSig, order);
         this._lastReorderTs = (window.performance ? performance.now() : Date.now());
 
@@ -1594,7 +1786,7 @@ const QueryExecutor = {
             this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc';
         } else {
             // New column - check if it's numeric or a timestamp
-            const firstValue = this.currentResults[0]?.[field];
+            const firstValue = this._valueOf(this.currentResults[0], field);
             const isNumeric = !isNaN(parseFloat(firstValue)) && isFinite(firstValue);
             const isTimestamp = !isNaN(Date.parse(firstValue)) && /\d{4}-\d{2}-\d{2}/.test(firstValue);
 
@@ -1605,8 +1797,8 @@ const QueryExecutor = {
 
         // Sort the results
         const sorted = [...this.currentResults].sort((a, b) => {
-            let aVal = a[field];
-            let bVal = b[field];
+            let aVal = this._valueOf(a, field);
+            let bVal = this._valueOf(b, field);
 
             // Handle undefined/null
             if (aVal === undefined || aVal === null) return 1;
@@ -1647,13 +1839,41 @@ const QueryExecutor = {
         }
     },
 
-    renderTableError(message) {
+    // A failed run leaves nothing to show: clear the previous results and say
+    // what went wrong once. Errors in the BQL are explained under the editor,
+    // so the results area only points there.
+    _failQuery(message, errorType, errorPos) {
+        this.currentResults = [];
+        this.chartType = '';
+        this._columnsKey = null;
+        this._extraColumns = [];
+        if (window.Pagination) Pagination.reset();
+        if (window.FieldStats && FieldStats.isOpen) FieldStats.render();
+        this._updateLoadMoreButton(false);
+        const count = document.getElementById('resultsCount');
+        if (count) count.textContent = '-';
+        const time = document.getElementById('executionTime');
+        if (time) time.style.display = 'none';
+        if (window.Timeline) Timeline.hide();
+
+        this.showError(message, errorType, errorPos);
+        if (errorType === 'parse' || errorType === 'translate') {
+            this.renderTableError('Fix the query above to run it.', { neutral: true });
+        } else {
+            this.renderTableError(message);
+        }
+    },
+
+    renderTableError(message, opts = {}) {
         const resultsTable = document.getElementById('resultsTable');
         if (!resultsTable) return;
         this._queryHadError = true;
         this._outputTypeStatus('error');
         const safe = message ? Utils.escapeHtml(String(message)) : 'Query failed';
-        resultsTable.innerHTML = `<div class="results-error"><span class="results-error-icon">⚠</span><span>${safe}</span></div>`;
+        resultsTable.style.display = 'block';
+        resultsTable.innerHTML = opts.neutral
+            ? `<div class="no-results">${safe}</div>`
+            : `<div class="results-error"><span class="results-error-icon">⚠</span><span>${safe}</span></div>`;
         const chartContainer = document.getElementById('chartContainer');
         if (chartContainer) chartContainer.style.display = 'none';
     },
@@ -1678,8 +1898,8 @@ const QueryExecutor = {
         // Nothing rendered, so no result controls apply.
         const exportWrap = document.getElementById('exportMenuWrap');
         if (exportWrap) exportWrap.style.display = 'none';
-        const wrapBtn = document.getElementById('wrapToggleBtn');
-        if (wrapBtn) wrapBtn.style.display = 'none';
+        const rowsWrap = document.getElementById('rowsMenuWrap');
+        if (rowsWrap) rowsWrap.style.display = 'none';
     },
 
     showQueryError(message, errorPos) {
@@ -1696,7 +1916,8 @@ const QueryExecutor = {
         el.innerHTML = '';
         const text = document.createElement('span');
         text.className = 'query-error-text';
-        text.textContent = message;
+        const where = this._errorLocation(errorPos);
+        text.textContent = where ? `${message} (${where})` : message;
         const dismiss = document.createElement('button');
         dismiss.className = 'query-error-dismiss';
         dismiss.type = 'button';
@@ -1706,6 +1927,19 @@ const QueryExecutor = {
         el.appendChild(text);
         el.appendChild(dismiss);
         el.style.display = 'flex';
+    },
+
+    // "line 2, col 5" for a rune offset into the search box, or '' without one.
+    _errorLocation(errorPos) {
+        const input = document.getElementById('queryInput');
+        if (!input || !errorPos || !Number.isInteger(errorPos.start)) return '';
+        // Offsets index the query after @variable substitution, not the editor text.
+        if (/@[A-Za-z_]/.test(input.value)) return '';
+        const before = [...input.value].slice(0, errorPos.start);
+        const nl = before.lastIndexOf('\n');
+        const col = before.length - nl;
+        const line = before.filter(c => c === '\n').length + 1;
+        return input.value.includes('\n') ? `line ${line}, col ${col}` : `col ${col}`;
     },
 
     clearQueryError() {
@@ -2055,7 +2289,7 @@ const QueryExecutor = {
         if (isChart || this.isAggregated) {
             if (window.FieldStats && FieldStats.isOpen) FieldStats.close();
             show('fieldsRailToggle', false);
-            if (isChart) show('wrapToggleBtn', false);
+            if (isChart) show('rowsMenuWrap', false);
         } else if (!opts.outputTypeOnly) {
             show('fieldsRailToggle', true);
         }
@@ -2064,23 +2298,34 @@ const QueryExecutor = {
         show('exportMenuWrap', hasRows);
         // PNG only for output types that paint into a canvas we can encode.
         show('exportPngItem', hasRows && !!this._exportCanvas());
-        if (!isChart) show('wrapToggleBtn', hasRows);
-
-        // Row wrap defaults on for table results.
-        if (hasRows && !isChart) {
-            const wrapBtn = document.getElementById('wrapToggleBtn');
-            if (wrapBtn) wrapBtn.classList.add('active');
-            const resultsTableEl = document.getElementById('resultsTable');
-            if (resultsTableEl) resultsTableEl.classList.add('table-wrap');
-        }
+        if (!isChart) show('rowsMenuWrap', hasRows);
+        if (hasRows && !isChart) this._applyRowMode();
     },
 
-    toggleWrap() {
+    ROW_MODE_KEY: 'bifract-row-mode',
+    ROW_MODES: { '1': 'rows-1', '2': 'rows-2', 'full': 'table-wrap' },
+
+    getRowMode() {
+        let mode = null;
+        try { mode = localStorage.getItem(this.ROW_MODE_KEY); } catch (e) { /* storage unavailable */ }
+        return this.ROW_MODES[mode] ? mode : '2';
+    },
+
+    setRowMode(mode) {
+        if (!this.ROW_MODES[mode]) return;
+        try { localStorage.setItem(this.ROW_MODE_KEY, mode); } catch (e) { /* storage unavailable */ }
+        this._applyRowMode();
+    },
+
+    _applyRowMode() {
+        const mode = this.getRowMode();
         const container = document.getElementById('resultsTable');
-        const btn = document.getElementById('wrapToggleBtn');
-        if (!container || !btn) return;
-        const active = container.classList.toggle('table-wrap');
-        btn.classList.toggle('active', active);
+        if (container) {
+            for (const [m, cls] of Object.entries(this.ROW_MODES)) container.classList.toggle(cls, m === mode);
+        }
+        document.querySelectorAll('#rowsMenu [data-row-mode]').forEach(item => {
+            item.classList.toggle('active', item.dataset.rowMode === mode);
+        });
     },
 
     toggleFullscreen() {
@@ -2123,7 +2368,8 @@ const QueryExecutor = {
         if (!this._hasExportableRows()) return;
 
         try {
-            const fields = this.fieldOrder || Object.keys(this.currentResults[0]);
+            let fields = this.fieldOrder || Object.keys(this.currentResults[0]);
+            if (this._extraColumns && this._extraColumns.length) fields = this._insertBeforeLog(fields, this._extraColumns);
             const cell = (value) => {
                 if (value === null || value === undefined) return '""';
                 const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
@@ -2132,7 +2378,7 @@ const QueryExecutor = {
 
             let csv = fields.map(cell).join(',') + '\n';
             for (const row of this.currentResults) {
-                csv += fields.map(f => cell(row[f])).join(',') + '\n';
+                csv += fields.map(f => cell(this._valueOf(row, f))).join(',') + '\n';
             }
 
             const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -5781,11 +6027,18 @@ const QueryExecutor = {
     // through. Replays driven by Back/Forward suppress the write entirely.
     _syncQueryToUrl(mode) {
         try {
-            const params = this._queryUrlParams();
-            if (!params) return;
+            // An empty box runs match-all and is described by an empty URL, the
+            // same state replayFromUrl restores as an empty box.
+            let params = this._queryUrlParams();
+            if (!params) {
+                const typed = this.getElements().queryInput?.value.trim();
+                if (typed || !window.FractalContext?.currentFractal) return;
+                params = new URLSearchParams();
+            }
+            const qs = params.toString();
 
             const changed = this._urlStateKey(params) !== this._urlStateKey(new URLSearchParams(window.location.search));
-            const url = `${window.location.origin}${window.location.pathname}?${params.toString()}${window.location.hash}`;
+            const url = `${window.location.origin}${window.location.pathname}${qs ? '?' + qs : ''}${window.location.hash}`;
             const state = window.App?._buildFractalState ? App._buildFractalState() : history.state;
 
             if (mode === 'push' && changed) history.pushState(state, '', url);
