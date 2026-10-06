@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"bifract/pkg/storage"
@@ -385,23 +386,42 @@ func (m *Manager) ReviewChangeRequest(ctx context.Context, crID, decision, comme
 	return m.GetChangeRequest(ctx, crID)
 }
 
-// DiscardChangeRequest withdraws a proposal without deleting it, so the work stays
-// readable. Authors withdraw their own; admins may withdraw any.
-func (m *Manager) DiscardChangeRequest(ctx context.Context, crID, username string, isAdmin bool) error {
+// WithdrawChangeRequest takes a proposal out of review and returns it to its author's
+// drafts, content, tests and summary intact. See WithdrawStatus for the exceptions.
+func (m *Manager) WithdrawChangeRequest(ctx context.Context, crID, username string, isAdmin bool) (*ChangeRequest, error) {
 	cr, err := m.GetChangeRequest(ctx, crID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !cr.Open() {
-		return fmt.Errorf("this proposal is %s", cr.Status)
-	}
-	if cr.Author != username && !isAdmin {
-		return fmt.Errorf("only the author or an admin can withdraw a proposal")
+	if err := cr.CanWithdraw(username, isAdmin); err != nil {
+		return nil, err
 	}
 
-	_, err = m.pg.Exec(ctx,
-		"UPDATE alert_change_requests SET status = 'discarded', updated_at = NOW() WHERE id = $1", crID)
-	return err
+	status := cr.WithdrawStatus()
+	if status == ChangeDraft && cr.AlertID != "" {
+		existing, err := m.DraftForAlert(ctx, cr.AlertID, cr.Author)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			return nil, ErrDraftExists
+		}
+	}
+
+	// The status precondition loses cleanly to a concurrent merge.
+	result, err := m.pg.Exec(ctx, `
+		UPDATE alert_change_requests SET status = $2, updated_at = NOW()
+		 WHERE id = $1 AND status IN ('open', 'changes_requested')`, crID, status)
+	if err != nil {
+		if strings.Contains(err.Error(), "idx_alert_cr_draft_per_alert") {
+			return nil, ErrDraftExists
+		}
+		return nil, fmt.Errorf("withdraw proposal: %w", err)
+	}
+	if n, err := result.RowsAffected(); err == nil && n == 0 {
+		return nil, fmt.Errorf("this proposal is no longer open")
+	}
+	return m.GetChangeRequest(ctx, crID)
 }
 
 // DeleteChangeRequest removes a proposal for good. Admin only: rejecting is the

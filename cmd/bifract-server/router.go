@@ -1577,6 +1577,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.alertHandler.HandleProposeFromYAML,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/alert-drafts/from-yaml",
+					Access:   api.AccessAnalyst,
+					Request:  alerts.DraftFromYAMLRequest{},
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Import a YAML or Sigma document as the caller's draft.",
+					Handler:  d.alertHandler.HandleDraftFromYAML,
+				})
+				r.Register(api.Route{
 					Method:  http.MethodGet,
 					Path:    "/alerts/bundle",
 					Access:  api.AccessAnalyst,
@@ -1623,9 +1632,9 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Method:   http.MethodPost,
 					Path:     "/alert-changes/{id}/discard",
 					Access:   api.AccessAnalyst,
-					Response: api.Response[map[string]bool]{},
-					Summary:  "Withdraw a proposal without deleting it.",
-					Handler:  d.alertHandler.HandleDiscardChangeRequest,
+					Response: api.Response[*alerts.ChangeRequest]{},
+					Summary:  "Withdraw a proposal back to its author's drafts.",
+					Handler:  d.alertHandler.HandleWithdrawChangeRequest,
 				})
 				r.Register(api.Route{
 					Method:   http.MethodDelete,

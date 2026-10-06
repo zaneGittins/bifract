@@ -2113,7 +2113,7 @@
     "/api/v1/alert-changes/{id}/discard": {
       "post": {
         "operationId": "post_api_v1_alert_changes_byId_discard",
-        "summary": "Withdraw a proposal without deleting it.",
+        "summary": "Withdraw a proposal back to its author's drafts.",
         "description": "Requires the analyst role on the fractal or prism in scope.",
         "tags": [
           "alert-changes"
@@ -2148,10 +2148,7 @@
                       "type": "string"
                     },
                     "data": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "boolean"
-                      }
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
                     },
                     "error": {
                       "type": "string"
@@ -2460,6 +2457,87 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/alerts.SaveDraftRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/alerts.ChangeRequest"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
+    "/api/v1/alert-drafts/from-yaml": {
+      "post": {
+        "operationId": "post_api_v1_alert_drafts_from_yaml",
+        "summary": "Import a YAML or Sigma document as the caller's draft.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "alert-drafts"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/alerts.DraftFromYAMLRequest"
               }
             }
           }
@@ -30740,6 +30818,20 @@
         "required": [
           "id",
           "name"
+        ]
+      },
+      "alerts.DraftFromYAMLRequest": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "normalizer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
         ]
       },
       "alerts.EmailAction": {

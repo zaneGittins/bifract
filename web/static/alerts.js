@@ -1078,12 +1078,61 @@ const Alerts = {
             if (sigmaInfo) sigmaInfo.style.display = 'none';
             if (normalizerGroup) normalizerGroup.style.display = 'none';
 
-            const errorDiv = document.getElementById('importError');
+            // Repaints the highlight layer, which otherwise still shows the last import.
+            yamlTextarea?.dispatchEvent(new Event('input'));
+            const fileName = document.getElementById('yamlFileName');
+            if (fileName) fileName.textContent = '';
+            const summary = document.getElementById('importProposalSummary');
+            if (summary) summary.value = '';
+
+            const errorDiv = document.getElementById('alertImportError');
             if (errorDiv) errorDiv.style.display = 'none';
 
             // Pre-load normalizers for Sigma import
             this.loadNormalizersForImport();
+            this.loadImportGate();
         }
+    },
+
+    // A scope that reviews changes cannot take a direct import, so the modal asks where
+    // the rule goes instead: the author's drafts by default, or straight to review.
+    async loadImportGate() {
+        this._importGated = false;
+        this.setImportDestination('draft');
+        try {
+            const res = await fetch('/api/v1/alert-gate', { credentials: 'include' });
+            const payload = res.ok ? await res.json() : null;
+            this._importGated = !!payload?.data?.enabled;
+        } catch (e) {
+            this._importGated = false;
+        }
+        this.setImportDestination(this._importDest || 'draft');
+    },
+
+    setImportDestination(dest) {
+        this._importDest = dest === 'propose' ? 'propose' : 'draft';
+        const gated = !!this._importGated;
+        const proposing = gated && this._importDest === 'propose';
+
+        const picker = document.getElementById('importDestination');
+        if (picker) picker.hidden = !gated;
+        picker?.querySelectorAll('.act-mode').forEach(btn => {
+            const on = btn.dataset.dest === this._importDest;
+            btn.classList.toggle('active', on);
+            btn.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+
+        const hint = document.getElementById('importDestHint');
+        if (hint) {
+            hint.textContent = proposing
+                ? 'Opens a proposal for reviewers now.'
+                : 'Only you can see it. Check it in the editor, then propose it.';
+        }
+        const summaryGroup = document.getElementById('importProposalGroup');
+        if (summaryGroup) summaryGroup.hidden = !proposing;
+
+        const btn = document.getElementById('importYamlBtn');
+        if (btn) btn.textContent = !gated ? 'Import Alert' : (proposing ? 'Open proposal' : 'Save draft');
     },
 
     detectSigmaRule(yamlContent) {
@@ -1481,44 +1530,38 @@ const Alerts = {
 
     // YAML Import/Export
     async importYAML() {
-        const yamlContent = document.getElementById('yamlContent')?.value.trim();
-        const errorDiv = document.getElementById('importError');
-
-        if (!yamlContent) {
-            this.showError(errorDiv, 'Please enter YAML content');
+        const { content, normalizerID, isSigma, errorDiv } = this.importYamlPayload();
+        if (errorDiv) errorDiv.style.display = 'none';
+        if (!content) {
+            this.showError(errorDiv, 'Paste a rule or choose a file');
             return;
         }
+        if (this._importBusy) return;
 
+        this._importBusy = true;
         try {
-            const normalizerGroup = document.getElementById('importNormalizerGroup');
-            const normalizerSelect = document.getElementById('importNormalizerSelect');
-            const isSigmaVisible = normalizerGroup && normalizerGroup.style.display !== 'none';
-            const normalizerID = isSigmaVisible && normalizerSelect ? normalizerSelect.value : '';
-
-            let response;
-            if (normalizerID) {
-                response = await fetch('/api/v1/alerts/import', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
-                    body: JSON.stringify({ yaml_content: yamlContent, normalizer_id: normalizerID })
-                });
-            } else {
-                response = await fetch('/api/v1/alerts/import', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain' },
-                    credentials: 'include',
-                    body: yamlContent
-                });
+            if (this._importGated) {
+                if (this._importDest === 'propose') await this.submitImportProposal();
+                else await this.importToDraft();
+                return;
             }
 
-            const data = await response.json();
+            const response = await fetch('/api/v1/alerts/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ yaml_content: content, normalizer_id: normalizerID })
+            });
+            const data = await response.json().catch(() => ({}));
 
             // Import creates or updates alerts, so it meets the same refusals a save
             // does. Reporting them as "Import failed" hides what to do about it.
             const refusal = this.classifyRefusal(response, data);
             if (refusal === 'gate') {
-                this.openImportProposal(errorDiv);
+                // Review was switched on after the modal opened.
+                this._importGated = true;
+                this.setImportDestination('draft');
+                this.showError(errorDiv, 'This scope now reviews changes. Save the rule as a draft, or propose it.');
                 return;
             }
             if (refusal === 'policy') {
@@ -1530,15 +1573,36 @@ const Alerts = {
             if (data.success) {
                 this.closeModal('importYamlModal');
                 this.loadAlerts();
-                const msg = isSigmaVisible ? 'Sigma rule imported successfully' : 'Alert imported successfully';
-                Toast.show(msg, 'success');
+                Toast.show(isSigma ? 'Sigma rule imported successfully' : 'Alert imported successfully', 'success');
             } else {
                 this.showError(errorDiv, data.error || 'Import failed');
             }
         } catch (error) {
             console.error('YAML import error:', error);
-            this.showError(errorDiv, 'Network error: ' + error.message);
+            this.showError(errorDiv, error.message);
+        } finally {
+            this._importBusy = false;
         }
+    },
+
+    // The rule lands in the author's drafts, unseen by reviewers until they propose it.
+    async importToDraft() {
+        const { content, normalizerID } = this.importYamlPayload();
+        const res = await fetch('/api/v1/alert-drafts/from-yaml', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, normalizer_id: normalizerID })
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+
+        const draft = payload.data;
+        this.closeModal('importYamlModal');
+        this.loadAlerts();
+        Toast.success('Saved to your drafts', 'Click to open it in the editor.', {
+            onClick: () => { if (draft) this.openDraft(draft); }
+        });
     },
 
     async exportYAML(alertId) {
@@ -1709,50 +1773,23 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         }
     },
 
-    // The server has three ways to refuse a write, and a client that cannot tell them
-    // apart shows "failed" over an instruction the user could have acted on.
-    //
-    //   gate    409 with {gate:"required"} - the scope reviews changes, so propose
-    //   policy  422 with a violation array - a blocking rule, so fix what it names
-    //   null    anything else
-    // Reads the import modal the same way importYAML does, so a proposal carries the
-    // document and normalizer the user actually chose.
+    // The modal as the user left it: the document, and the normalizer only when the
+    // document is a Sigma rule.
     importYamlPayload() {
         const normalizerGroup = document.getElementById('importNormalizerGroup');
         const normalizerSelect = document.getElementById('importNormalizerSelect');
-        const isSigmaVisible = normalizerGroup && normalizerGroup.style.display !== 'none';
+        const isSigma = !!normalizerGroup && normalizerGroup.style.display !== 'none';
 
         return {
             content: document.getElementById('yamlContent')?.value.trim() || '',
-            normalizerID: isSigmaVisible && normalizerSelect ? normalizerSelect.value : '',
-            errorDiv: document.getElementById('importError')
+            normalizerID: isSigma && normalizerSelect ? normalizerSelect.value : '',
+            isSigma,
+            errorDiv: document.getElementById('alertImportError')
         };
     },
 
-    // A gated scope refuses the import, so the document goes to the review queue
-    // instead. The modal keeps the YAML on screen and asks only for the one thing the
-    // reviewer needs that the document cannot supply.
-    openImportProposal(errorDiv) {
-        if (errorDiv) errorDiv.style.display = 'none';
-        document.getElementById('importProposalBlock')?.remove();
-
-        const anchor = document.getElementById('importYamlModal')?.querySelector('.modal-body') || errorDiv?.parentElement;
-        if (!anchor) return;
-
-        anchor.insertAdjacentHTML('beforeend', `
-            <div id="importProposalBlock" class="alert-propose">
-                <label class="alert-propose-label" for="importProposalSummary">This scope reviews changes, so this import becomes a proposal</label>
-                <textarea id="importProposalSummary" class="alert-propose-input" spellcheck="false"
-                          placeholder="What is this rule, and why import it"></textarea>
-                <div class="alert-propose-actions">
-                    <button type="button" class="alert-btn alert-btn-ghost" onclick="document.getElementById('importProposalBlock').remove()">Cancel</button>
-                    <button type="button" class="alert-btn alert-btn-primary" onclick="Alerts.submitImportProposal()">Open proposal</button>
-                </div>
-            </div>
-        `);
-        document.getElementById('importProposalSummary')?.focus();
-    },
-
+    // Straight to the review queue. A proposal needs the one thing the document cannot
+    // supply: a sentence for the reviewer.
     async submitImportProposal() {
         const summaryEl = document.getElementById('importProposalSummary');
         const summary = (summaryEl?.value || '').trim();
@@ -1761,28 +1798,27 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
             return;
         }
 
-        const { content, normalizerID, errorDiv } = this.importYamlPayload();
-        if (!content) return;
+        const { content, normalizerID } = this.importYamlPayload();
+        const res = await fetch('/api/v1/alert-changes/from-yaml', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content, summary, normalizer_id: normalizerID })
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
 
-        try {
-            const res = await fetch('/api/v1/alert-changes/from-yaml', {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content, summary, normalizer_id: normalizerID })
-            });
-            const payload = await res.json().catch(() => ({}));
-            if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
-
-            document.getElementById('importProposalBlock')?.remove();
-            this.closeModal('importYamlModal');
-            Toast.success('Import proposed', 'Ready for review.');
-            this.showProposal(payload.data?.id);
-        } catch (e) {
-            this.showError(errorDiv, e.message);
-        }
+        this.closeModal('importYamlModal');
+        Toast.success('Import proposed', 'Ready for review.');
+        this.showProposal(payload.data?.id);
     },
 
+    // The server has three ways to refuse a write, and a client that cannot tell them
+    // apart shows "failed" over an instruction the user could have acted on.
+    //
+    //   gate    409 with {gate:"required"} - the scope reviews changes, so propose
+    //   policy  422 with a violation array - a blocking rule, so fix what it names
+    //   null    anything else
     classifyRefusal(response, payload) {
         if (response.status === 409 && payload?.data?.gate === 'required') return 'gate';
         if (response.status === 422 && Array.isArray(payload?.data)) return 'policy';
@@ -3768,7 +3804,11 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         `);
         const saveBtn = document.getElementById('saveAlertBtn');
         if (saveBtn) saveBtn.style.display = 'none';
-        document.getElementById('alertProposeSummary')?.focus();
+        // A withdrawn proposal keeps its summary as a draft, so resubmitting starts from it.
+        const summaryEl = document.getElementById('alertProposeSummary');
+        const prior = window.AlertDrafts?._draft?.summary;
+        if (summaryEl && prior) summaryEl.value = prior;
+        summaryEl?.focus();
     },
 
     cancelPropose() {
