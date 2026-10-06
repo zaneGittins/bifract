@@ -412,6 +412,7 @@ html.sb-collapsed .sb-kbd {
 .sb-group-label {
     padding: 4px 10px 3px;
     font-size: 10.5px;
+    line-height: 16px;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;

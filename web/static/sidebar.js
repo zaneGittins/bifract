@@ -1,29 +1,31 @@
 // Left sidebar: primary navigation for the selected fractal/prism and the instance.
 
-const SB_ICON_ATTRS = 'width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+// Drawn on a 16px grid with 1px strokes; straight edges sit on half-pixel
+// coordinates so they land on whole device pixels at 1x and 2x.
+const SB_ICON_ATTRS = 'width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
 
 const SB_ICONS = {
-    search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
-    archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
-    notebook: '<path d="M5 4a2 2 0 0 1 2-2h12v18H7a2 2 0 0 0-2 2z"/><path d="M5 22V4M9 7h6"/>',
-    dashboard: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
-    shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4M12 16h.01"/>',
-    chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-    library: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>',
-    table: '<rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 10h18M9 10v10"/>',
-    chart: '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>',
-    ingest: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/>',
-    sliders: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
-    transform: '<path d="M4 7h13l-3-3M20 17H7l3 3"/>',
-    columns: '<path d="M4 4h16v16H4zM9.5 4v16M14.5 4v16"/>',
-    code: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4"/>',
-    pulse: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
-    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
-    collapse: '<path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/>',
-    expand: '<path d="M13 17l5-5-5-5M6 17l5-5-5-5"/>',
-    chevron: '<path d="M6 9l6 6 6-6"/>',
-    key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M17 6l3 3M14 9l2 2"/>',
-    layers: '<path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/>',
+    search: '<circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5l4 4"/>',
+    archive: '<rect x="1.5" y="2.5" width="13" height="3" rx="0.5"/><path d="M2.5 5.5v8h11v-8M6.5 8.5h3"/>',
+    notebook: '<rect x="3.5" y="1.5" width="10" height="13" rx="1"/><path d="M6.5 1.5v13"/>',
+    dashboard: '<rect x="1.5" y="1.5" width="5" height="7" rx="1"/><rect x="9.5" y="1.5" width="5" height="4" rx="1"/><rect x="9.5" y="8.5" width="5" height="6" rx="1"/><rect x="1.5" y="11.5" width="5" height="3" rx="1"/>',
+    shield: '<path d="M8 14.5s5.5-2.5 5.5-7V3.5L8 1.5 2.5 3.5v4c0 4.5 5.5 7 5.5 7z"/>',
+    chat: '<path d="M2.5 2.5h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7.5l-3 2.5v-2.5h-2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"/>',
+    library: '<path d="M3.5 1.5h6l3 3v10h-9z"/><path d="M9.5 1.5v3h3"/>',
+    table: '<rect x="1.5" y="2.5" width="13" height="11" rx="1"/><path d="M1.5 6.5h13M5.5 6.5v7"/>',
+    chart: '<path d="M1.5 1.5v13h13"/><path d="M4.5 10.5l3-3 2 2 4-4.5"/>',
+    ingest: '<path d="M7.5 1.5v8M4.5 6.5l3 3 3-3M2.5 11.5v3h10v-3"/>',
+    sliders: '<path d="M7.5 4.5h7M1.5 11.5h7"/><circle cx="4.5" cy="4.5" r="2"/><circle cx="11.5" cy="11.5" r="2"/>',
+    transform: '<path d="M2.5 4.5h10M10.5 2.5l2 2-2 2M13.5 11.5h-10M5.5 9.5l-2 2 2 2"/>',
+    columns: '<rect x="1.5" y="1.5" width="13" height="13" rx="1"/><path d="M6.5 1.5v13M9.5 1.5v13"/>',
+    code: '<path d="M5.5 4.5l-3.5 3.5 3.5 3.5M10.5 4.5l3.5 3.5-3.5 3.5"/>',
+    pulse: '<path d="M1.5 8.5h3l2-5 3 9 2-4h3"/>',
+    gear: '<circle cx="8" cy="8" r="2"/><path d="M14.34 6.58v2.84l-1.22-.53-.87 2.1 1.24.49-2.01 2.01-.49-1.24-2.1.87.53 1.22H6.58l.53-1.22-2.1-.87-.49 1.24-2.01-2.01 1.24-.49-.87-2.1-1.22.53V6.58l1.22.53.87-2.1-1.24-.49 2.01-2.01.49 1.24 2.1-.87-.53-1.22h2.84l-.53 1.22 2.1.87.49-1.24 2.01 2.01-1.24.49.87 2.1z"/>',
+    key: '<circle cx="5" cy="11" r="3.5"/><path d="M7.5 8.5l6-6M11.5 4.5l2 2M9.5 6.5l1.5 1.5"/>',
+    layers: '<path d="M8 1.5l6.5 3.5L8 8.5 1.5 5z"/><path d="M1.5 8l6.5 3.5L14.5 8M1.5 11l6.5 3.5 6.5-3.5"/>',
+    collapse: '<path d="M7.5 4.5L4 8l3.5 3.5M12.5 4.5L9 8l3.5 3.5"/>',
+    expand: '<path d="M8.5 4.5L12 8l-3.5 3.5M3.5 4.5L7 8l-3.5 3.5"/>',
+    chevron: '<path d="M4 6l4 4 4-4"/>',
 };
 
 const Sidebar = {

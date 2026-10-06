@@ -377,6 +377,9 @@ const Timeline = {
             86400000, 172800000, 604800000
         ];
 
+        const rs = TZ.parts(startMs), re = TZ.parts(endMs);
+        const range = { crossesYear: !!(rs && re && rs.year !== re.year), days: duration / 86400000 };
+
         for (const interval of INTERVALS) {
             // Skip intervals that would produce more ticks than the canvas can show —
             // avoids generating millions of objects + measureText calls for wide ranges.
@@ -385,25 +388,23 @@ const Timeline = {
             const firstTick = this._firstTickAfter(startMs, interval);
             if (firstTick > endMs) continue;
 
+            // Reject at the first collision, so a too-fine interval costs two labels
+            // rather than one per tick; this runs on every resize frame.
             const ticks = [];
+            let ok = true;
             for (let t = firstTick; t <= endMs; t = this._nextTick(t, interval)) {
                 const x = (t - startMs) / duration * canvasWidth;
-                const label = this._formatRulerLabel(t, interval, startMs, endMs);
+                const label = this._formatRulerLabel(t, interval, range);
                 const labelWidth = ctx.measureText(label).width;
+                const prev = ticks[ticks.length - 1];
+                if (prev && x - prev.x - (prev.labelWidth + labelWidth) / 2 < MIN_GAP) {
+                    ok = false;
+                    break;
+                }
                 ticks.push({ x, label, labelWidth });
             }
 
-            if (ticks.length === 0) continue;
-
-            // Reject this interval if any adjacent pair of labels would overlap
-            let ok = true;
-            for (let i = 1; i < ticks.length; i++) {
-                const gap = ticks[i].x - ticks[i - 1].x
-                    - (ticks[i - 1].labelWidth + ticks[i].labelWidth) / 2;
-                if (gap < MIN_GAP) { ok = false; break; }
-            }
-
-            if (ok) return ticks;
+            if (ok && ticks.length) return ticks;
         }
 
         return [];
@@ -411,14 +412,12 @@ const Timeline = {
 
     // Formats a tick label adaptively based on interval length and range span,
     // in the display zone.
-    _formatRulerLabel(ms, intervalMs, rangeStartMs, rangeEndMs) {
+    _formatRulerLabel(ms, intervalMs, range) {
         const p = TZ.parts(ms);
         if (!p) return '';
         const p2 = n => String(n).padStart(2, '0');
-
-        const rs = TZ.parts(rangeStartMs), re = TZ.parts(rangeEndMs);
-        const crossesYear = rs && re && rs.year !== re.year;
-        const rangeDays   = (rangeEndMs - rangeStartMs) / 86400000;
+        const crossesYear = range.crossesYear;
+        const rangeDays   = range.days;
         const mon = TZ.MONTHS[p.month - 1];
 
         if (intervalMs >= 86400000) {
