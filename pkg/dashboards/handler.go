@@ -220,13 +220,8 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	var dashboards []storage.Dashboard
-	var total int
-	if selectedPrism != "" {
-		dashboards, total, err = h.pg.GetDashboardsByPrism(r.Context(), selectedPrism, limit, offset)
-	} else {
-		dashboards, total, err = h.pg.GetDashboardsByFractal(r.Context(), selectedFractal, limit, offset)
-	}
+	search := r.URL.Query().Get("search")
+	dashboards, total, err := h.pg.GetDashboardsByScope(r.Context(), selectedFractal, selectedPrism, search, limit, offset)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to fetch dashboards")
 		return

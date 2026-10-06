@@ -86,6 +86,16 @@ async function scopeHeader(page) {
   return { 'X-Bifract-Scope': `${isPrism ? 'prism' : 'fractal'}:${id}` };
 }
 
+// Click a sidebar item, expanding the Admin group first when the item lives in it
+// (the group starts collapsed).
+async function openNav(page, key) {
+  if (await page.locator(`#sidebarAdminItems a[data-nav="${key}"]`).count()) {
+    const toggle = page.locator('#sidebarAdminToggle');
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  }
+  await page.locator(`#sidebar a[data-nav="${key}"]`).click();
+}
+
 // Open a fractal in the UI, by name when given, and switch to a sidebar page.
 async function openFractal(page, navKey, fractalName) {
   await page.goto('/');
@@ -96,7 +106,7 @@ async function openFractal(page, navKey, fractalName) {
     if (await named.count()) row = named;
   }
   await row.locator('td').first().click();
-  if (navKey) await page.locator(`#sidebar a[data-nav="${navKey}"]`).click();
+  if (navKey) await openNav(page, navKey);
 }
 
 // Land on the search tab of a fractal that has logs, with results on screen.
@@ -151,5 +161,5 @@ async function rerunAllTime(page) {
 module.exports = {
   USER, PASS, WIDE_START, WIDE_END, SEARCH_WINDOW,
   login, listFractals, queryCount, populatedFractal,
-  selectFractal, scopeHeader, openFractal, openSearchOnPopulatedFractal, openSearchByClick, rerunAllTime,
+  selectFractal, scopeHeader, openNav, openFractal, openSearchOnPopulatedFractal, openSearchByClick, rerunAllTime,
 };

@@ -5,13 +5,13 @@
 // renders left because its lone child sits under `justify-content: space-between`,
 // and content width that jumps as you move between sub-tabs.
 const { test, expect } = require('@playwright/test');
-const { login } = require('./fixtures');
+const { login, openNav } = require('./fixtures');
 
 
 async function openAdmin(page, subtab) {
   await login(page);
   await page.goto('/');
-  await page.locator('#sidebar a[data-nav="settings"]').click();
+  await openNav(page, 'settings');
   await expect(page.locator('#settingsView')).toBeVisible();
   if (subtab) {
     await page.locator(`#settingsSubTabs .alerts-sub-tab[data-subtab="${subtab}"]`).click();
@@ -21,7 +21,7 @@ async function openAdmin(page, subtab) {
 async function openNormalizers(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#sidebar a[data-nav="normalizers"]').click();
+  await openNav(page, 'normalizers');
   await expect(page.locator('#normalizersView')).toBeVisible();
 }
 

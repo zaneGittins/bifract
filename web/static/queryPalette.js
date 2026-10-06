@@ -1,5 +1,5 @@
 // Unified query command palette: merges Recent (history) and Saved queries into
-// one keyboard-driven surface. Opens via the Queries button or Ctrl/Cmd-K.
+// one keyboard-driven surface. Opens via the Queries button or Ctrl/Cmd-K on Query.
 //
 // History is sourced from the backend (/api/v1/query-history) so it follows the
 // user across devices, with a localStorage cache for instant render. Saved
@@ -54,17 +54,9 @@ const QueryPalette = {
         const backdrop = document.getElementById('paletteBackdrop');
         if (backdrop) backdrop.addEventListener('click', () => this.close());
 
-        // Ctrl/Cmd-K opens from anywhere; preventDefault keeps the browser from
-        // stealing it for the address bar. The Queries button is the fallback if
-        // an extension grabs the shortcut.
+        // Ctrl/Cmd-K on the Query page is routed here by GoTo. The Queries button is
+        // the fallback if an extension grabs the shortcut.
         document.addEventListener('keydown', (e) => {
-            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
-                // When the Recall tab is active, its own palette owns Cmd/Ctrl-K.
-                if (document.body.classList.contains('recall-active')) return;
-                e.preventDefault();
-                this.toggle();
-                return;
-            }
             if (e.key === 'Escape' && this.isOpen) this.close();
         });
 

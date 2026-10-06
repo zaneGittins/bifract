@@ -39,6 +39,7 @@ const App = {
         if (this.resumePendingLink()) return;
 
         if (window.Sidebar) Sidebar.init();
+        if (window.GoTo) GoTo.init();
 
         // Initialize all modules
         if (window.TimeBar) {
@@ -1234,27 +1235,20 @@ const App = {
                     SyntaxHighlight.updateHighlight('editorQueryInput', 'alertQueryHighlight');
                 }
 
-                // Route to the correct alerts sub-tab based on subPath, falling back
-                // to whichever DOM sub-tab was last active.
+                // A sub-tab named in the URL, else the one last active; any other
+                // subPath is an alert id.
                 {
-                    const showFeeds = subPath === 'feeds' ||
-                        (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'feeds');
-                    const showActions = subPath === 'actions' ||
-                        (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'actions');
-                    const showCoverage = subPath === 'coverage' ||
-                        (!subPath && document.querySelector('.alerts-sub-tab.active')?.dataset.subtab === 'coverage');
-
-                    if (showCoverage) {
-                        if (window.AlertFeeds) AlertFeeds.showCoverageTab();
-                    } else if (showActions) {
-                        if (window.AlertFeeds) AlertFeeds.showActionsTab();
-                    } else if (showFeeds) {
-                        AlertFeeds?.activateSubTab('feeds', 'feedAlertsView');
-                        if (window.AlertFeeds) AlertFeeds.show(subPath === 'feeds' ? '' : subPath);
-                    } else {
-                        AlertFeeds?.activateSubTab('manual', 'alertsView');
-                        const alertSubPath = (subPath && subPath !== 'manual') ? subPath : '';
-                        if (window.Alerts) Alerts.show(alertSubPath);
+                    const subTabs = ['feeds', 'actions', 'coverage', 'policies', 'changes'];
+                    const last = document.querySelector('#alertsSubTabs .alerts-sub-tab.active')?.dataset.subtab;
+                    const sub = subTabs.includes(subPath) ? subPath : (!subPath && subTabs.includes(last) ? last : '');
+                    if (sub === 'coverage') AlertFeeds.showCoverageTab();
+                    else if (sub === 'actions') AlertFeeds.showActionsTab();
+                    else if (sub === 'policies') AlertFeeds.showPoliciesTab();
+                    else if (sub === 'changes') AlertFeeds.showChangesTab();
+                    else if (sub === 'feeds') AlertFeeds.showFeedAlertsTab();
+                    else {
+                        AlertFeeds.activateSubTab('manual', 'alertsView');
+                        Alerts.show(subPath && subPath !== 'manual' ? subPath : '');
                     }
                 }
                 break;

@@ -308,23 +308,6 @@ const Alerts = {
         if (subPath) this.openAlertById(subPath);
     },
 
-    // Opens a panel from outside the table (a deep link), landing on the page
-    // that holds the row so the selection is actually visible.
-    openAlertById(alertId) {
-        const list = this.filteredAlerts || [];
-        const idx = list.findIndex(a => a.id === alertId);
-        if (idx === -1) return;
-
-        const page = Math.floor(idx / this.alertsPageSize) + 1;
-        if (page !== this.alertsCurrentPage) {
-            this.currentDetailAlert = list[idx];
-            this.alertsCurrentPage = page;
-            this.updateAlertsTable();
-            return;
-        }
-        this.showAlertDetailsPanel(list[idx]);
-    },
-
     startPressurePolling() {
         this.stopPressurePolling();
         this.checkPressure();
@@ -709,7 +692,12 @@ const Alerts = {
     openAlertById(alertId) {
         const list = this.filteredAlerts || [];
         const idx = list.findIndex(a => a.id === alertId);
-        if (idx === -1) return;
+        if (idx === -1) {
+            // Hidden by the active filter: open it without paging to a row.
+            const alert = (this.allAlerts || []).find(a => a.id === alertId);
+            if (alert) this.showAlertDetailsPanel(alert);
+            return;
+        }
 
         const page = Math.floor(idx / this.alertsPageSize) + 1;
         if (page !== this.alertsCurrentPage) {

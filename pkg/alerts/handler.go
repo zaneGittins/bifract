@@ -77,10 +77,26 @@ func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusInternalServerError, "Failed to load alerts")
 		return
 	}
+	alerts = filterAlertsByName(alerts, r.URL.Query().Get("search"))
 
 	limit, offset := api.PageParams(r, defaultAlertPageSize, maxAlertPageSize)
 	window, page := api.Slice(alerts, limit, offset)
 	api.WritePage(w, window, page)
+}
+
+// filterAlertsByName keeps the alerts whose name contains search, ignoring case.
+func filterAlertsByName(alerts []*Alert, search string) []*Alert {
+	search = strings.ToLower(strings.TrimSpace(search))
+	if search == "" {
+		return alerts
+	}
+	matched := make([]*Alert, 0, len(alerts))
+	for _, a := range alerts {
+		if strings.Contains(strings.ToLower(a.Name), search) {
+			matched = append(matched, a)
+		}
+	}
+	return matched
 }
 
 // HandleCreateAlert creates a new alert (analyst+)

@@ -2,10 +2,10 @@ package storage
 
 import "testing"
 
-// TestNotebookScopePredicate covers the prism case that used to bind an empty
+// TestScopePredicate covers the prism case that used to bind an empty
 // string to a UUID column, which Postgres rejects outright rather than treating
 // as "no match".
-func TestNotebookScopePredicate(t *testing.T) {
+func TestScopePredicate(t *testing.T) {
 	tests := []struct {
 		name      string
 		alias     string
@@ -27,7 +27,7 @@ func TestNotebookScopePredicate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			col, val, err := notebookScopePredicate(tt.alias, tt.fractalID, tt.prismID)
+			col, val, err := scopePredicate(tt.alias, tt.fractalID, tt.prismID)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error for an unscoped lookup, got %q = %v", col, val)
@@ -47,9 +47,9 @@ func TestNotebookScopePredicate(t *testing.T) {
 	}
 }
 
-// TestNotebookLikeEscaper checks a search term's wildcards are neutralised, so a
-// notebook name containing % or _ matches literally.
-func TestNotebookLikeEscaper(t *testing.T) {
+// TestLikeEscaper checks a search term's wildcards are neutralised, so a
+// name containing % or _ matches literally.
+func TestLikeEscaper(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"incident", "incident"},
 		{"100%", `100\%`},
@@ -57,7 +57,7 @@ func TestNotebookLikeEscaper(t *testing.T) {
 		{`back\slash`, `back\\slash`},
 	}
 	for _, tt := range tests {
-		if got := notebookLikeEscaper.Replace(tt.in); got != tt.want {
+		if got := likeEscaper.Replace(tt.in); got != tt.want {
 			t.Errorf("Replace(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}

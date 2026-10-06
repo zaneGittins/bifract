@@ -6,13 +6,13 @@
 // rule outranks the UA stylesheet's `display: none` for [hidden]. Only a real
 // layout engine can catch that.
 const { test, expect } = require('@playwright/test');
-const { login } = require('./fixtures');
+const { login, openNav } = require('./fixtures');
 
 
 async function openSchemaTab(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#sidebar a[data-nav="schema"]').click();
+  await openNav(page, 'schema');
   await expect(page.locator('#schemaFieldsView')).toBeVisible();
   // Wait for a real data row, not merely any row: the empty-state row is also a
   // <tr>, and immediately after a restart the table can legitimately still be

@@ -99,7 +99,7 @@ const Sidebar = {
                         ${this.icon('sliders')}<span class="sb-label" id="sidebarManageLabel">Fractal settings</span></a>
                 </div>
                 <div class="sb-group sb-admin" data-group="admin" hidden>
-                    <button type="button" class="sb-group-label sb-group-toggle" id="sidebarAdminToggle" aria-expanded="true" aria-controls="sidebarAdminItems">
+                    <button type="button" class="sb-group-label sb-group-toggle" id="sidebarAdminToggle" aria-expanded="false" aria-controls="sidebarAdminItems">
                         <span>Admin</span>${this.icon('chevron')}
                     </button>
                     <div id="sidebarAdminItems" class="sb-group-items">
@@ -129,7 +129,7 @@ const Sidebar = {
             document.documentElement.classList.remove('sb-animate');
             window.dispatchEvent(new Event('resize'));
         });
-        this._applyAdminOpen(this._prefs().adminOpen !== false);
+        this._applyAdminOpen(this._prefs().adminOpen === true);
         this._renderToggle(document.documentElement.classList.contains('sb-collapsed'));
         this.refresh();
     },
@@ -208,6 +208,8 @@ const Sidebar = {
             else a.removeAttribute('aria-current');
         });
         if (level === 'main' && this.ADMIN.some(i => i.key === key)) this._applyAdminOpen(true);
+        // Query and Recall keep Ctrl/Cmd+K for their own palettes.
+        document.getElementById('sidebarGoTo').classList.toggle('no-kbd', this._pageClass() === 'workspace');
         this._applyCollapsed();
     },
 

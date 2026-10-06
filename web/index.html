@@ -58,6 +58,13 @@
             </a>
             <div id="sidebarScope" class="sb-scope"></div>
         </div>
+        <div class="sb-search">
+            <button id="sidebarGoTo" type="button" class="sb-item sb-goto" data-tip="Go to" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <span class="sb-label">Go to...</span>
+                <kbd class="sb-kbd" aria-hidden="true">⌘K</kbd>
+            </button>
+        </div>
         <nav id="sidebarNav" class="sb-nav" aria-label="Main navigation"></nav>
         <div class="sb-footer">
             <div id="notificationBell" class="sb-notify" style="display:none;">
@@ -3454,6 +3461,18 @@
     </div><!-- End container -->
     </div><!-- End app-shell -->
 
+    <div id="goToPalette" class="goto-overlay" hidden>
+        <div class="goto-dialog" role="dialog" aria-modal="true" aria-label="Go to">
+            <div class="goto-input-row">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+                <input id="goToInput" type="text" role="combobox" aria-expanded="false" aria-controls="goToList" aria-autocomplete="list" aria-label="Go to" placeholder="Go to a page, fractal, dashboard, notebook, rule..." autocomplete="off" spellcheck="false">
+            </div>
+            <div id="goToList" class="goto-list" role="listbox" aria-label="Results"></div>
+            <div id="goToStatus" class="goto-status" role="status" aria-live="polite"></div>
+            <div class="goto-foot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div>
+        </div>
+    </div>
+
     <!-- TOC quick-access FAB (shown when inside a notebook) -->
     <button id="notebookTOCFab" class="notebook-toc-fab" title="Toggle section navigator (F8)" style="display:none" onclick="Notebooks.toggleTOC()">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="1" y1="3" x2="3.5" y2="3" stroke-width="2.5"/><line x1="5.5" y1="3" x2="15" y2="3"/><line x1="1" y1="8" x2="3.5" y2="8" stroke-width="2.5"/><line x1="5.5" y1="8" x2="15" y2="8"/><line x1="1" y1="13" x2="3.5" y2="13" stroke-width="2.5"/><line x1="5.5" y1="13" x2="15" y2="13"/></svg>
@@ -4342,6 +4361,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/timezone.js"></script>
     <script src="/static/utils.js"></script>
     <script src="/static/sidebar.js"></script>
+    <script src="/static/goTo.js"></script>
     <script src="/static/syntaxHighlight.js"></script>
     <script src="/static/variables.js"></script>
     <script src="/static/queryValidate.js"></script>

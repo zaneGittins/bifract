@@ -7,12 +7,12 @@
 // absolutely-positioned transparent overlay layer, so it covered the drawer
 // header. Both need a rendered page to catch.
 const { test, expect } = require('@playwright/test');
-const { login } = require('./fixtures');
+const { login, openNav } = require('./fixtures');
 
 async function openActivity(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#sidebar a[data-nav="performance"]').click();
+  await openNav(page, 'performance');
   await expect(page.locator('#performanceView')).toBeVisible();
   await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="activity"]').click();
   await expect(page.locator('#perfPaneActivity')).toBeVisible();
@@ -194,7 +194,7 @@ test.describe('Storage & Ingest', () => {
   test('leads with the ingest chart and four tiles, not a wall of stats', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#sidebar a[data-nav="performance"]').click();
+    await openNav(page, 'performance');
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
     await expect(page.locator('#perfPaneStorage')).toBeVisible();
 
@@ -210,7 +210,7 @@ test.describe('Storage & Ingest', () => {
   test('unit suffixes keep their case', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#sidebar a[data-nav="performance"]').click();
+    await openNav(page, 'performance');
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
     const summary = page.locator('#ingestSummary');
     await expect(summary).not.toHaveText('');
@@ -225,7 +225,7 @@ test.describe('Storage & Ingest', () => {
   test('the chart formats the selected measure and reuses its instance', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#sidebar a[data-nav="performance"]').click();
+    await openNav(page, 'performance');
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
     await expect(page.locator('#perfIngestChart')).toBeVisible();
 
@@ -259,7 +259,7 @@ test.describe('Storage & Ingest', () => {
   test('the ingest chart can switch measure', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#sidebar a[data-nav="performance"]').click();
+    await openNav(page, 'performance');
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
     await expect(page.locator('#perfIngestChart')).toBeVisible();
 
@@ -275,7 +275,7 @@ test.describe('Overview: background operations', () => {
   test('merges and mutations render on the Overview tab', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#sidebar a[data-nav="performance"]').click();
+    await openNav(page, 'performance');
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="overview"]').click();
     await expect(page.locator('#perfPaneOverview')).toBeVisible();
 
