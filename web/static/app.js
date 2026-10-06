@@ -131,7 +131,7 @@ const App = {
             FractalManagement.init();
         }
 
-        // Initialize the top-bar fractal/prism selector. createSelectorUI()
+        // Initialize the sidebar fractal/prism selector. createSelectorUI()
         // is idempotent, so this is safe to call even if a future code path
         // also initializes it (e.g. post-login).
         if (window.FractalSelector) {
@@ -248,7 +248,7 @@ const App = {
         });
     },
 
-    // Tab name sets for hash-based open-in-new-tab support.
+    // Route names the hash router accepts.
     _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'normalizers', 'schema', 'api']),
     _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'recall', 'manage']),
 
@@ -296,6 +296,9 @@ const App = {
         const prefix = segments[0] || '';
 
         if (!prefix || prefix === 'fractalListing') {
+            // A pending share link opens its own fractal (FractalSelector lands it);
+            // detouring through the listing would clear the scope it is about to use.
+            if (!prefix && window.QueryExecutor?.hasUnprocessedShareLink?.()) return;
             this.showMainView('fractalListing');
             return;
         }
@@ -986,6 +989,9 @@ const App = {
     // Views sized to the viewport with internal scrolling; the rest scroll the page.
     _fillViews: new Set(['search', 'recall', 'chat', 'library', 'fractalListing', 'api']),
 
+    // Alerts sub-tabs with their own route; the Rules list is the default.
+    _alertsSubTabs: ['feeds', 'actions', 'coverage', 'policies', 'changes'],
+
     // Tabs that only exist for fractals, not prisms.
     _fractalOnlyTabs: new Set(['models', 'ingest', 'recall']),
 
@@ -1036,9 +1042,14 @@ const App = {
             tab = 'search';
             subPath = '';
         }
-        // Keep currentView in sync regardless of whether this was called via
-        // showFractalView() (which sets it) or directly from a tab button click
-        // (which does not). pushSubPath() uses this.currentView to build hashes.
+        // Alerts reopens on the sub-tab last shown; resolving it here keeps the
+        // pushed hash complete, so the sub-tab adds no second history entry.
+        if (tab === 'alerts' && !subPath) {
+            const last = document.querySelector('#alertsSubTabs .alerts-sub-tab.active')?.dataset.subtab;
+            if (this._alertsSubTabs.includes(last)) subPath = last;
+        }
+        // Keep currentView in sync whether this was called via showFractalView()
+        // or directly. pushSubPath() uses this.currentView to build hashes.
         this.currentViewLevel = 'fractal';
         this.currentView = tab;
         if (!this._navigatingFromPopState) {
@@ -1083,7 +1094,7 @@ const App = {
             Alerts.stopPressurePolling();
         }
 
-        // The nav tabs are the only way out of the alert editor, so tear it down on
+        // Navigation is the only way out of the alert editor, so tear it down on
         // every switch, including back into the alerts tab itself.
         if (window.Alerts) Alerts.closeAlertEditor();
 
@@ -1235,12 +1246,9 @@ const App = {
                     SyntaxHighlight.updateHighlight('editorQueryInput', 'alertQueryHighlight');
                 }
 
-                // A sub-tab named in the URL, else the one last active; any other
-                // subPath is an alert id.
+                // A sub-tab named in the URL; any other subPath is an alert id.
                 {
-                    const subTabs = ['feeds', 'actions', 'coverage', 'policies', 'changes'];
-                    const last = document.querySelector('#alertsSubTabs .alerts-sub-tab.active')?.dataset.subtab;
-                    const sub = subTabs.includes(subPath) ? subPath : (!subPath && subTabs.includes(last) ? last : '');
+                    const sub = this._alertsSubTabs.includes(subPath) ? subPath : '';
                     if (sub === 'coverage') AlertFeeds.showCoverageTab();
                     else if (sub === 'actions') AlertFeeds.showActionsTab();
                     else if (sub === 'policies') AlertFeeds.showPoliciesTab();

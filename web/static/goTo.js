@@ -25,7 +25,6 @@ const GoTo = {
     PER_GROUP: 6,
     SEARCH_DELAY_MS: 150,
     LIST_CACHE_MS: 60000,
-    IS_MAC: /Mac|iPhone|iPad/.test(navigator.platform),
 
     _open: false,
     _results: [],
@@ -44,7 +43,7 @@ const GoTo = {
         if (!overlay || !input || !list) return;
 
         const kbd = document.querySelector('#sidebarGoTo .sb-kbd');
-        if (kbd && !this.IS_MAC) kbd.textContent = 'Ctrl K';
+        if (kbd && !Utils.isMac) kbd.textContent = 'Ctrl K';
 
         document.getElementById('sidebarGoTo')?.addEventListener('click', () => this.open());
         // Keep focus in the input: clicks elsewhere in the dialog must not blur it.
@@ -73,7 +72,7 @@ const GoTo = {
                 this.close();
                 return;
             }
-            const mod = this.IS_MAC ? e.metaKey : e.ctrlKey;
+            const mod = Utils.isMac ? e.metaKey : e.ctrlKey;
             if (!mod || e.shiftKey || e.altKey || !e.key || e.key.toLowerCase() !== 'k') return;
             if (this._open) {
                 e.preventDefault();
@@ -98,8 +97,13 @@ const GoTo = {
         }
     },
 
+    // A page modal keeps the keyboard; navigating under it would strand it.
+    _modalOpen() {
+        return [...document.querySelectorAll('.modal, .modal-overlay')].some(m => getComputedStyle(m).display !== 'none');
+    },
+
     open() {
-        if (this._open) return;
+        if (this._open || this._modalOpen()) return;
         if (window.QueryPalette && QueryPalette.isOpen) QueryPalette.close();
         this._open = true;
         this._returnFocus = document.activeElement;
@@ -153,7 +157,9 @@ const GoTo = {
             if (!parent || (s.prism !== undefined && s.prism !== isPrism)) continue;
             document.querySelectorAll(s.selector).forEach(b => {
                 if (b.classList.contains('rbac-hidden') || b.hidden) return;
-                out.push({ group: 'Pages', label: `${parent} > ${b.textContent.trim()}`, level: s.level, tab: s.parent, sub: s.route(b), isSub: true });
+                // Own text only: some sub-tabs carry a count badge.
+                const text = [...b.childNodes].filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim();
+                out.push({ group: 'Pages', label: `${parent} > ${text}`, level: s.level, tab: s.parent, sub: s.route(b), isSub: true });
             });
         }
         return out;

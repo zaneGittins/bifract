@@ -1,5 +1,8 @@
 // Utility functions
 const Utils = {
+    // Keyboard shortcuts use Cmd on Apple platforms and Ctrl elsewhere.
+    isMac: /Mac|iPhone|iPad/.test(navigator.platform),
+
     // Columns the server attaches to a result row for the detail panel's benefit
     // rather than for display: they are excluded from field_order, so they must
     // also be excluded wherever a column list is derived from row keys instead.

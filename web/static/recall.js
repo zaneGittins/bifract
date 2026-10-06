@@ -869,10 +869,10 @@ const RecallPalette = {
         const backdrop = document.getElementById('recallPaletteBackdrop');
         if (backdrop) backdrop.addEventListener('click', () => this.close());
 
-        // Ctrl/Cmd-K owns the palette only while the Recall tab is active; the
-        // main Query palette bails out in that case (see queryPalette.js).
+        // Cmd-K on macOS, Ctrl-K elsewhere, owns the palette only while the Recall
+        // tab is active; GoTo leaves the key alone in that case.
         document.addEventListener('keydown', (e) => {
-            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+            if ((Utils.isMac ? e.metaKey : e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
                 if (!document.body.classList.contains('recall-active')) return;
                 e.preventDefault();
                 this.toggle();

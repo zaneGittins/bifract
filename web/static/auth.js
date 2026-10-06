@@ -151,6 +151,7 @@ const Auth = {
         document.addEventListener('keydown', (e) => {
             const menu = document.getElementById('userMenuDropdown');
             if (e.key !== 'Escape' || !menu || !menu.classList.contains('open')) return;
+            e.preventDefault();
             this.toggleMenu();
             document.getElementById('userClickable')?.focus();
         });
@@ -167,7 +168,7 @@ const Auth = {
             if (data.success) {
                 this.currentUser = null;
                 // Scope state is per-user. Left behind on a shared browser, the
-                // next user sees the previous user's fractal name in the pill
+                // next user sees the previous user's fractal name in the selector
                 // and their fractals ranked first in the selector.
                 try {
                     localStorage.removeItem('bifract_current_context');

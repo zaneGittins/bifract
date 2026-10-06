@@ -25,11 +25,15 @@ const FractalSelector = {
                     </span>
                     <svg class="sb-scope-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
-                <div class="sb-scope-menu" id="fractalSelectorMenu">
-                    <div class="fractal-selector-loading">Loading fractals...</div>
-                </div>
             </div>
         `;
+        // On the body, not in the sidebar: the phone drawer hides and transforms its
+        // contents, which would hide the menu when it opens from a query bar chip.
+        const menu = document.createElement('div');
+        menu.className = 'sb-scope-menu';
+        menu.id = 'fractalSelectorMenu';
+        menu.innerHTML = '<div class="fractal-selector-loading">Loading fractals...</div>';
+        document.body.appendChild(menu);
     },
 
     setupEventListeners() {
@@ -60,11 +64,12 @@ const FractalSelector = {
         });
 
         document.addEventListener('click', (e) => {
-            if (!e.target.closest('.sb-scope-wrapper, [data-scope-chip]')) this.closeDropdown();
+            if (!e.target.closest('.sb-scope-wrapper, [data-scope-chip], #fractalSelectorMenu')) this.closeDropdown();
         });
 
         document.addEventListener('keydown', (e) => {
             if (e.key !== 'Escape' || !this._anchor) return;
+            e.preventDefault();
             const anchor = this._anchor;
             this.closeDropdown();
             anchor.focus();
@@ -109,6 +114,7 @@ const FractalSelector = {
             console.error('Failed to load fractals:', error);
             this.updateSelectorText('Error');
             this.showErrorInMenu(error.message);
+            this._showListingIfUnrouted();
         } finally {
             this.isLoading = false;
         }
@@ -137,9 +143,9 @@ const FractalSelector = {
 
         if (!target) {
             console.warn('[FractalSelector] Share link target not found or no access');
+            this._showListingIfUnrouted();
             return;
         }
-
 
         // Cancel any deferred/polling share link processing from earlier
         // attempts that ran before data was available. We handle it here.
@@ -294,6 +300,12 @@ const FractalSelector = {
                 this._applyInitialSelection(targetFractal, 'fractal');
             }
         }
+    },
+
+    // The initial route skips the listing while a share link is pending; when the
+    // link cannot be landed the page still needs somewhere to be.
+    _showListingIfUnrouted() {
+        if (window.App && !App.currentViewLevel) App.showMainView('fractalListing');
     },
 
     // The router sets the scope for scope URLs, and the listing is the no-scope

@@ -38,6 +38,10 @@ html.sb-animate .sidebar {
     transition: width 0.18s ease;
 }
 
+body.results-fullscreen .sidebar {
+    z-index: auto;
+}
+
 .sidebar [hidden] {
     display: none !important;
 }

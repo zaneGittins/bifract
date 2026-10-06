@@ -140,10 +140,11 @@ const Sidebar = {
 
         document.getElementById('sidebarOpen').addEventListener('click', () => this.openDrawer());
         document.getElementById('sidebarBackdrop').addEventListener('click', () => this.closeDrawer());
-        document.addEventListener('keydown', (e) => {
-            if (e.key !== 'Escape' || !document.documentElement.classList.contains('sb-drawer-open')) return;
+        // On window so popups inside the drawer handle Escape first and claim it.
+        window.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape' || e.defaultPrevented ||
+                !document.documentElement.classList.contains('sb-drawer-open')) return;
             this.closeDrawer();
-            document.getElementById('sidebarOpen').focus();
         });
         const onBreakpoint = () => {
             this._narrowExpanded = false;
@@ -284,7 +285,10 @@ const Sidebar = {
     closeDrawer() {
         if (!document.documentElement.classList.contains('sb-drawer-open')) return;
         document.documentElement.classList.remove('sb-drawer-open');
-        document.getElementById('sidebarOpen').setAttribute('aria-expanded', 'false');
+        const opener = document.getElementById('sidebarOpen');
+        opener.setAttribute('aria-expanded', 'false');
+        // Focus must not stay inside the drawer once it is hidden.
+        if (document.getElementById('sidebar').contains(document.activeElement)) opener.focus();
     },
 
     // Only a manual toggle animates; page switches snap so content never reflows
