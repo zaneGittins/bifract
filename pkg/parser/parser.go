@@ -193,7 +193,7 @@ func (p *Parser) advance() {
 func (p *Parser) expect(tokenType TokenType) (Token, error) {
 	tok := p.current()
 	if tok.Type != tokenType {
-		return tok, newPosError(tok, "expected token %s, got %s", tokenType, tok.Type)
+		return tok, newPosError(tok, "expected %s, got %s", tokenType, describeToken(tok))
 	}
 	p.advance()
 	return tok, nil
@@ -434,7 +434,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		// no branch consumed. Break to avoid an infinite loop.
 		if p.pos == startPos {
 			cur := p.current()
-			return nil, newPosError(cur, "unexpected token in pipeline: %s (%q)", cur.Type, cur.Value)
+			return nil, newPosError(cur, "unexpected %s in pipeline", describeToken(cur))
 		}
 	}
 
@@ -697,7 +697,7 @@ func (p *Parser) parseValueList() ([]string, error) {
 			continue
 		default:
 			if len(values) == 0 {
-				return nil, newPosError(tok, "expected value in list, got %s", tok.Type)
+				return nil, newPosError(tok, "expected value in list, got %s", describeToken(tok))
 			}
 			return values, nil
 		}
@@ -729,7 +729,7 @@ func (p *Parser) parseFieldOperand() (string, error) {
 	}
 	tok := p.current()
 	if tok.Type != TokenField && tok.Type != TokenValue && tok.Type != TokenString {
-		return "", newPosError(tok, "field() expects a field name, got %s", tok.Type)
+		return "", newPosError(tok, "field() expects a field name, got %s", describeToken(tok))
 	}
 	name := tok.Value
 	if !isPlainFieldName(name) {
@@ -773,7 +773,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	// Field name
 	tok := p.current()
 	if tok.Type != TokenField {
-		return nil, newPosError(tok, "expected field name, got %s", tok.Type)
+		return nil, newPosError(tok, "expected field name, got %s", describeToken(tok))
 	}
 	cond.Field = tok.Value
 	p.advance()
@@ -809,7 +809,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 		cond.Operator = "=$"
 		p.advance()
 	default:
-		return nil, newPosError(opTok, "expected comparison operator (=, !=, >, <, >=, <=, =~, =^, =$), got %s", opTok.Type)
+		return nil, newPosError(opTok, "expected comparison operator (=, !=, >, <, >=, <=, =~, =^, =$), got %s", describeToken(opTok))
 	}
 
 	// Multi-value operators: parse comma-separated list and return early
@@ -864,7 +864,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 			cond.Value = "-" + numTok.Value
 			p.advance()
 		} else {
-			return nil, newPosError(numTok, "expected number after '-', got %s", numTok.Type)
+			return nil, newPosError(numTok, "expected number after '-', got %s", describeToken(numTok))
 		}
 	} else if valTok.Type == TokenMultiply {
 		// * wildcard - could be bare "*" or a pattern like "*powershell*"
@@ -887,7 +887,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 			cond.Value = "*"
 		}
 	} else {
-		return nil, newPosError(valTok, "expected value, got %s", valTok.Type)
+		return nil, newPosError(valTok, "expected value, got %s", describeToken(valTok))
 	}
 
 	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
@@ -916,7 +916,7 @@ func (p *Parser) collectEqualityList(first string) ([]string, error) {
 		p.advance() // consume comma
 		vt := p.current()
 		if vt.Type != TokenString && vt.Type != TokenField && vt.Type != TokenValue {
-			return nil, newPosError(vt, "expected value after ',' in list, got %s", vt.Type)
+			return nil, newPosError(vt, "expected value after ',' in list, got %s", describeToken(vt))
 		}
 		values = append(values, vt.Value)
 		p.advance()
@@ -929,7 +929,7 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 
 	tok := p.current()
 	if tok.Type != TokenFunction {
-		return nil, newPosError(tok, "expected function name, got %s", tok.Type)
+		return nil, newPosError(tok, "expected function name, got %s", describeToken(tok))
 	}
 	cmd.Name = strings.ToLower(tok.Value)
 	p.advance()
@@ -1325,7 +1325,7 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 	// Field name (could be an aggregate like 'count' or a regular field)
 	fieldTok := p.current()
 	if fieldTok.Type != TokenField && fieldTok.Type != TokenValue {
-		return nil, newPosError(fieldTok, "expected field name in HAVING condition, got %s", fieldTok.Type)
+		return nil, newPosError(fieldTok, "expected field name in HAVING condition, got %s", describeToken(fieldTok))
 	}
 	having.Field = fieldTok.Value
 	p.advance()
@@ -1352,7 +1352,7 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 	case TokenEndsWithAny:
 		having.Operator = "=$"
 	default:
-		return nil, newPosError(opTok, "expected comparison operator in HAVING condition, got %s", opTok.Type)
+		return nil, newPosError(opTok, "expected comparison operator in HAVING condition, got %s", describeToken(opTok))
 	}
 	p.advance()
 
@@ -1405,14 +1405,14 @@ func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
 			having.Value = "-" + numTok.Value
 			p.advance()
 		} else {
-			return nil, newPosError(numTok, "expected number after '-' in HAVING condition, got %s", numTok.Type)
+			return nil, newPosError(numTok, "expected number after '-' in HAVING condition, got %s", describeToken(numTok))
 		}
 	} else if valTok.Type == TokenMultiply {
 		// * wildcard means "any non-empty value"
 		having.Value = "*"
 		p.advance()
 	} else {
-		return nil, newPosError(valTok, "expected value in HAVING condition, got %s", valTok.Type)
+		return nil, newPosError(valTok, "expected value in HAVING condition, got %s", describeToken(valTok))
 	}
 
 	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
@@ -1449,7 +1449,7 @@ func (p *Parser) parseAssignment() (*AssignmentNode, error) {
 	// Field name
 	fieldTok := p.current()
 	if fieldTok.Type != TokenField {
-		return nil, newPosError(fieldTok, "expected field name in assignment, got %s", fieldTok.Type)
+		return nil, newPosError(fieldTok, "expected field name in assignment, got %s", describeToken(fieldTok))
 	}
 	assignment.Field = fieldTok.Value
 	p.advance()
@@ -1457,7 +1457,7 @@ func (p *Parser) parseAssignment() (*AssignmentNode, error) {
 	// := operator
 	assignTok := p.current()
 	if assignTok.Type != TokenAssign {
-		return nil, newPosError(assignTok, "expected := in assignment, got %s", assignTok.Type)
+		return nil, newPosError(assignTok, "expected := in assignment, got %s", describeToken(assignTok))
 	}
 	p.advance()
 
@@ -1497,7 +1497,7 @@ func (p *Parser) parseCaseCommand() (*CommandNode, error) {
 	// Expect {
 	lbrace, err := p.expect(TokenLBrace)
 	if err != nil {
-		return nil, newPosError(p.current(), "expected '{' after case, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '{' after case, got %s", describeToken(p.current()))
 	}
 
 	// Consume the block body, tracking nested brace depth so that nested case/chain
@@ -1523,7 +1523,7 @@ func (p *Parser) parseCaseCommand() (*CommandNode, error) {
 closed:
 	rbrace, err := p.expect(TokenRBrace)
 	if err != nil {
-		return nil, newPosError(p.current(), "expected '}' to close case block, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '}' to close case block, got %s", describeToken(p.current()))
 	}
 	caseBody.WriteString("}")
 
@@ -1544,7 +1544,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect (
 	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, newPosError(p.current(), "expected '(' after chain, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '(' after chain, got %s", describeToken(p.current()))
 	}
 
 	// Parse arguments: grouping fields, optional within=DURATION and order=BOOL
@@ -1587,7 +1587,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect )
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, newPosError(p.current(), "expected ')' after chain arguments, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected ')' after chain arguments, got %s", describeToken(p.current()))
 	}
 
 	if len(groupFields) == 0 {
@@ -1596,7 +1596,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect {
 	if _, err := p.expect(TokenLBrace); err != nil {
-		return nil, newPosError(p.current(), "expected '{' after chain(...), got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '{' after chain(...), got %s", describeToken(p.current()))
 	}
 
 	// Capture raw tokens from the block body (avoids double-tokenization of regex literals).
@@ -1608,7 +1608,7 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 
 	// Expect }
 	if _, err := p.expect(TokenRBrace); err != nil {
-		return nil, newPosError(p.current(), "expected '}' to close chain block, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '}' to close chain block, got %s", describeToken(p.current()))
 	}
 
 	cmd.Args = chainArgs(groupFields, withinValue, orderValue)
@@ -1656,7 +1656,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 	// Expect (
 	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, newPosError(p.current(), "expected '(' after join, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '(' after join, got %s", describeToken(p.current()))
 	}
 
 	// Parse arguments: join key, optional type=, max=, include=[]
@@ -1687,7 +1687,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 					list.List = append(list.List, Argument{Kind: ArgLiteral, Text: p.current().Value, Pos: p.current().Pos})
 				case TokenComma:
 				default:
-					return nil, newPosError(p.current(), "unexpected token in array: %s", p.current().Type)
+					return nil, newPosError(p.current(), "unexpected %s in array", describeToken(p.current()))
 				}
 				p.advance()
 			}
@@ -1711,12 +1711,12 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 	// Expect )
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, newPosError(p.current(), "expected ')' after join arguments, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected ')' after join arguments, got %s", describeToken(p.current()))
 	}
 
 	// Expect {
 	if _, err := p.expect(TokenLBrace); err != nil {
-		return nil, newPosError(p.current(), "expected '{' after join(...), got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '{' after join(...), got %s", describeToken(p.current()))
 	}
 
 	// Consume block body as raw string, tracking brace depth for nested case/chain blocks
@@ -1743,7 +1743,7 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 	// Expect closing }
 	if _, err := p.expect(TokenRBrace); err != nil {
-		return nil, newPosError(p.current(), "expected '}' to close join block, got %s", p.current().Type)
+		return nil, newPosError(p.current(), "expected '}' to close join block, got %s", describeToken(p.current()))
 	}
 
 	block, err := p.resolveBlockBinding(body.String())

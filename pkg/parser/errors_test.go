@@ -18,6 +18,8 @@ func TestParseErrorPositions(t *testing.T) {
 		{"wrong token mid-pipeline", "status=info | sort by", 14, 18, "sort"},
 		{"function name expected", "a=1 | stats badtok(", 6, 11, "stats"},
 		{"eof in expression", "x := ", 5, 5, ""},
+		{"eof message", "* | groupby(a", 13, 13, ""},
+		{"eof before trailing space", "* | groupby(a  \n ", 13, 13, ""},
 	}
 
 	for _, c := range cases {
@@ -68,3 +70,18 @@ func TestErrorPositionNonPositioned(t *testing.T) {
 type errPlain string
 
 func (e errPlain) Error() string { return string(e) }
+
+// TestParseErrorMessages verifies errors name what the user typed rather than
+// internal token kinds.
+func TestParseErrorMessages(t *testing.T) {
+	cases := map[string]string{
+		"* | groupby(a":   "expected ')', got end of query",
+		"user= | head(1)": "expected value, got '|'",
+	}
+	for q, want := range cases {
+		_, err := ParseQuery(q)
+		if err == nil || err.Error() != want {
+			t.Fatalf("%q: got %v, want %q", q, err, want)
+		}
+	}
+}

@@ -29,6 +29,20 @@ func newPosError(tok Token, format string, args ...interface{}) *ParseError {
 	return &ParseError{Msg: fmt.Sprintf(format, args...), Start: start, End: end}
 }
 
+// describeToken renders a token for an error message: the text the user typed
+// where there is any, else the kind of token.
+func describeToken(tok Token) string {
+	// A regex token holds the compiled pattern, not the /.../flags typed.
+	if tok.Type == TokenEOF || tok.Type == TokenRegex || tok.Value == "" {
+		return tok.Type.String()
+	}
+	v := []rune(tok.Value)
+	if len(v) > 40 {
+		v = append(v[:40], '…')
+	}
+	return "'" + string(v) + "'"
+}
+
 // ErrorPosition extracts the rune span from an error if it carries one. ok is
 // false for errors without position information (e.g. translator semantic
 // errors), in which case the editor should fall back to a non-positioned

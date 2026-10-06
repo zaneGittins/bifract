@@ -196,7 +196,7 @@ func (p *exprParser) parsePrimary() (*ExprNode, error) {
 			return nil, err
 		}
 		if p.current().Type != TokenRParen {
-			return nil, newPosError(p.current(), "expected ')' in expression, got %s", p.current().Type)
+			return nil, newPosError(p.current(), "expected ')' in expression, got %s", describeToken(p.current()))
 		}
 		p.advance()
 		return inner, nil
@@ -232,7 +232,7 @@ func (p *exprParser) parsePrimary() (*ExprNode, error) {
 		}
 		return &ExprNode{Kind: kind, Value: tok.Value, Pos: tok.Pos}, nil
 	}
-	return nil, newPosError(tok, "expected a value, field or function in expression, got %s", tok.Type)
+	return nil, newPosError(tok, "expected a value, field or function in expression, got %s", describeToken(tok))
 }
 
 func (p *exprParser) parseCall() (*ExprNode, error) {
@@ -275,7 +275,7 @@ func (p *exprParser) parseCall() (*ExprNode, error) {
 		if p.current().Type == TokenComma {
 			p.advance()
 		} else if p.current().Type != TokenRParen {
-			return nil, newPosError(p.current(), "expected ',' or ')' in %s(), got %s", call.Value, p.current().Type)
+			return nil, newPosError(p.current(), "expected ',' or ')' in %s(), got %s", call.Value, describeToken(p.current()))
 		}
 	}
 	p.advance() // ')'
