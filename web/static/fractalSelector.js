@@ -18,7 +18,7 @@ const FractalSelector = {
         container.innerHTML = `
             <div class="sb-scope-wrapper" id="fractalSelectorContainer">
                 <button type="button" class="sb-scope-btn" id="fractalSelectorButton" aria-haspopup="true" aria-expanded="false" aria-controls="fractalSelectorMenu">
-                    <svg class="sb-scope-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l9 5v10l-9 5-9-5V7z"/></svg>
+                    <svg class="sb-scope-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5l5.5 3.25v6.5L8 14.5l-5.5-3.25v-6.5z"/></svg>
                     <span class="sb-scope-text">
                         <span class="sb-scope-kind" id="fractalSelectorKind">Fractal</span>
                         <span class="sb-scope-name" id="fractalSelectorText">Loading...</span>
