@@ -82,7 +82,7 @@ issued for, whichever way the session is configured.
 
 ### Connecting through mTLS
 
-A deployment fronted by Caddy with mTLS needs the client certificate generated under **Manage > Access > Users > Client Certificate**:
+A deployment fronted by Caddy with mTLS needs the client certificate generated under **Fractal settings > Access > Users > Client Certificate**:
 
 ```json
 "env": {
@@ -287,7 +287,7 @@ Once configured, ask Claude Code things like:
 
 1. Log in to your Bifract instance
 2. Navigate to the fractal you want to query
-3. Go to **Manage > Access > API Keys**
+3. Go to **Fractal settings > Access > API Keys**
 4. Create a new key with at least `query` permission
 5. For alert management, also enable `alert_manage`
 6. Copy the generated key. It is shown once.

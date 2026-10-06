@@ -16,7 +16,7 @@ A key belongs to one fractal or one prism and carries the role its creator grant
 a key made for a reporting job cannot reach another team's data. An instance-wide key is
 the exception: it administers the whole instance, belongs to no scope, carries the
 `bifract_admin_` prefix, and always expires. Create and revoke keys under
-**Admin > API Keys**, or through the API itself; see [All Operations](reference.md) for
+**Settings > API Keys**, or through the API itself; see [All Operations](reference.md) for
 the shape of those requests, and [API Keys](../administration/ingest-tokens.md) for what
 the roles mean.
 

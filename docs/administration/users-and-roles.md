@@ -9,7 +9,7 @@ Users are created with one of two tenant-level roles:
 | `admin` (Tenant Admin) | Full access: manage users, fractals, API keys, delete logs |
 | `user` | Access fractals based on per-fractal permissions |
 
-The first user is created during initial setup as an admin. Additional users are invited by admins from the **Admin** tab.
+The first user is created during initial setup as an admin. Additional users are invited by admins from **Settings** in the sidebar's Admin section.
 
 ## Fractal Roles
 
@@ -25,7 +25,7 @@ Tenant admins have full access to all fractals regardless of per-fractal roles.
 
 ## User Management
 
-Admins manage users from **Admin > Users**.
+Admins manage users from **Settings > Users**.
 
 - **Create user**: Provide a username, optional display name, and role (`admin` or `user`, defaults to `user`). Admins never set a password. Bifract generates a **one-time invite link** that the user opens to choose their own password. Invite links expire after 7 days; use **Reset invite** to issue a new one.
 - **Enable / disable user**: Suspend an account without deleting it. A disabled user cannot log in but their comments, notebooks, and dashboards are preserved.
@@ -44,7 +44,7 @@ Bifract uses standard TOTP, which works with Google Authenticator, 1Password, Au
 
 Individual users can enroll at any time from the user menu by selecting **Two-Factor Authentication**. Nothing needs to be enabled first.
 
-To require it for everyone, turn on **Require two-factor authentication** under **Admin > Settings > Security**. Users are required to enroll at their next sign in.
+To require it for everyone, turn on **Require two-factor authentication** under **Settings > General > Security**. Users are required to enroll at their next sign in.
 
 Two exemptions:
 
@@ -63,8 +63,8 @@ If a deployment has no pepper set, two-factor authentication is unavailable and 
 
 ## Groups
 
-Groups let you grant fractal and prism permissions to several users at once instead of managing each user individually. Manage them from **Admin > Groups**.
+Groups let you grant fractal and prism permissions to several users at once instead of managing each user individually. Manage them from **Settings > Groups**.
 
 - Create a group, then add users as members.
-- Grant the group a role on a fractal or prism from that fractal's **Manage > Access** tab, exactly as you would for a single user.
+- Grant the group a role on a fractal or prism from that fractal's **Fractal settings > Access**, exactly as you would for a single user.
 - A user's effective role is the strongest role granted to them directly or through any group they belong to.

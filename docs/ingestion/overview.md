@@ -10,7 +10,7 @@ Ingest tokens are scoped per-fractal and carry per-token configuration (parser t
 
 ### Getting a Token
 
-1. Navigate to the **Ingest** tab within a fractal
+1. Open **Ingest** in the fractal's sidebar
 2. Copy the token (format: `bifract_ingest_{32_hex_chars}`)
 3. Include it in the `Authorization` header:
 

@@ -1,4 +1,4 @@
-// Context lists module for Bifract
+// Lookups module for Bifract
 const Dictionaries = {
     currentDictionary: null,
     allDictionaries: [],
@@ -96,7 +96,7 @@ const Dictionaries = {
             }
         } catch (e) {
             if (window.FractalContext?.isScopeStale?.(token)) return;
-            console.error('Failed to load context lists:', e);
+            console.error('Failed to load lookups:', e);
         }
     },
 
@@ -128,7 +128,7 @@ const Dictionaries = {
                 const msg = emptyEl.querySelector('p');
                 if (msg) {
                     msg.textContent = this.filteredDictionaries.length === 0
-                        ? 'No context lists yet'
+                        ? 'No lookups yet'
                         : 'No results match your search';
                 }
             }
@@ -275,7 +275,7 @@ const Dictionaries = {
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
             this.hideCreateForm();
-            this.showToast('Context list created', 'success');
+            this.showToast('Lookup created', 'success');
             this.allDictionaries.unshift(data.data);
             this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
             this.openDictionary(data.data.id);
@@ -298,7 +298,7 @@ const Dictionaries = {
             this._csvFile = null;
             this.showDetailView();
         } catch (e) {
-            this.showToast('Failed to load context list: ' + e.message, 'error');
+            this.showToast('Failed to load lookup: ' + e.message, 'error');
         }
     },
 
@@ -972,7 +972,7 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             const resp = await fetch(`/api/v1/dictionaries/${d.id}`, { method: 'DELETE', credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Context list deleted', 'success');
+            this.showToast('Lookup deleted', 'success');
             this.allDictionaries = this.allDictionaries.filter(x => x.id !== d.id);
             window.App?.pushSubPath('');
             this.showListing();
@@ -983,12 +983,12 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
 
     async deleteDictionaryById(id) {
         const dict = this.allDictionaries.find(d => d.id === id);
-        if (!confirm(`Delete "${dict ? dict.name : 'this context list'}"? This drops all data and cannot be undone.`)) return;
+        if (!confirm(`Delete "${dict ? dict.name : 'this lookup'}"? This drops all data and cannot be undone.`)) return;
         try {
             const resp = await fetch(`/api/v1/dictionaries/${id}`, { method: 'DELETE', credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Context list deleted', 'success');
+            this.showToast('Lookup deleted', 'success');
             this.allDictionaries = this.allDictionaries.filter(d => d.id !== id);
             this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
         } catch (e) {
@@ -1003,7 +1003,7 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             const resp = await fetch(`/api/v1/dictionaries/${d.id}/reload`, { method: 'POST', credentials: 'include' });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
-            this.showToast('Context list reloaded', 'success');
+            this.showToast('Lookup reloaded', 'success');
         } catch (e) {
             this.showToast('Reload failed: ' + e.message, 'error');
         }

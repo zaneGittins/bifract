@@ -1,8 +1,8 @@
 # Schema Fields
 
-The **Schema** tab (admin-only) controls which log attributes get a dedicated ClickHouse type hint and, optionally, a secondary index for faster filtering. Bifract stores logs in a single `logs` table with attributes in a JSON column; promoting a frequently-filtered field gives it its own sub-column so equality and token lookups skip far more data.
+The **Schema** page (admin-only) controls which log attributes get a dedicated ClickHouse type hint and, optionally, a secondary index for faster filtering. Bifract stores logs in a single `logs` table with attributes in a JSON column; promoting a frequently-filtered field gives it its own sub-column so equality and token lookups skip far more data.
 
-Open it from the top nav **Schema** tab. It is project-wide (applies across all fractals), not per-fractal.
+Open it from **Schema** in the sidebar's Admin section. It is project-wide (applies across all fractals), not per-fractal.
 
 ## Project Defaults
 

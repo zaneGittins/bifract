@@ -52,7 +52,7 @@ Give each detection a folder holding its rule, its test, and its sample events:
 ```text
 detections/
 ├── normalizers/
-│   └── sysmon.yaml                 # exported from Settings -> Normalizers
+│   └── sysmon.yaml                 # exported from Normalizers > Export
 ├── certutil-download/
 │   ├── rule.yml                    # the Sigma rule or Bifract alert
 │   ├── rule.test.yaml              # which file must fire, which must not
@@ -180,7 +180,7 @@ normalized ones (`image`, `commandline`). The normalizer bridges the two, and it
 sets `bifract_category`, which scopes a rule to an event type.
 
 Test with the wrong normalizer and a perfectly good rule reports `no_match`. Export the
-normalizer you actually ingest with from **Settings -> Normalizers -> Export** and commit it
+normalizer you actually ingest with from **Normalizers > Export** and commit it
 next to your rules.
 
 ## Debugging a rule that will not fire

@@ -4,7 +4,7 @@ Disk quotas let you cap how much data a fractal stores. When a fractal reaches i
 
 ## Configuration
 
-Quotas are configured per fractal from **[Fractal] > Manage > Lifecycle**.
+Quotas are configured per fractal from **Fractal settings > Lifecycle**.
 
 | Field | Description |
 |-------|-------------|

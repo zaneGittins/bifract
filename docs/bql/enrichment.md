@@ -12,7 +12,7 @@ Enrich log events with data from a dictionary. Each matching log row gets additi
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `dict`    | Yes      | Name of the context list (created in the Context tab) |
+| `dict`    | Yes      | Name of the lookup (created on the Lookups page) |
 | `field`   | Yes      | Log field to use as the lookup key |
 | `column`  | Yes      | Dictionary column to match against |
 | `include` | Yes      | Dictionary columns to add to results: `include=[col1,col2]` |
@@ -43,7 +43,7 @@ Combine with other pipeline stages:
 
 ### List kinds
 
-A context list is one of three kinds, chosen when it is created. `match()` is written the same
+A lookup is one of three kinds, chosen when it is created. `match()` is written the same
 way for all of them: the list's kind decides how the key is compared.
 
 | Kind | Keys hold | A lookup matches |
