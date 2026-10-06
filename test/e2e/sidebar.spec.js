@@ -110,6 +110,13 @@ test.describe('go to palette', () => {
     await expect(page.locator('#alertsSubTabs .alerts-sub-tab.active')).toHaveText('Coverage');
   });
 
+  test('the Go to button has its own icon, not Query\'s', async ({ page }) => {
+    await openPage(page, 'alerts');
+    const goTo = await page.locator('#sidebarGoTo svg').innerHTML();
+    const query = await page.locator('#sidebar a[data-nav="search"] svg').innerHTML();
+    expect(goTo).not.toBe(query);
+  });
+
   test('Escape closes only the palette', async ({ page }) => {
     await openPage(page, 'alerts');
     await page.locator('#notificationBellBtn').click();
