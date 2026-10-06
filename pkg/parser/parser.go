@@ -1715,11 +1715,13 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	}
 
 	// Expect {
-	if _, err := p.expect(TokenLBrace); err != nil {
+	lbrace, err := p.expect(TokenLBrace)
+	if err != nil {
 		return nil, newPosError(p.current(), "expected '{' after join(...), got %s", describeToken(p.current()))
 	}
 
-	// Consume block body as raw string, tracking brace depth for nested case/chain blocks
+	// Consume block body, tracking brace depth for nested case/chain blocks. The
+	// token text is a fallback; the source slice below keeps quotes and regexes.
 	var body strings.Builder
 	depth := 1
 	first := true
@@ -1742,11 +1744,16 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	}
 
 	// Expect closing }
-	if _, err := p.expect(TokenRBrace); err != nil {
+	rbrace, err := p.expect(TokenRBrace)
+	if err != nil {
 		return nil, newPosError(p.current(), "expected '}' to close join block, got %s", describeToken(p.current()))
 	}
 
-	block, err := p.resolveBlockBinding(body.String())
+	raw := body.String()
+	if p.input != nil && lbrace.Pos >= 0 && rbrace.Pos <= len(p.input) && rbrace.Pos > lbrace.Pos {
+		raw = strings.TrimSpace(string(p.input[lbrace.Pos+1 : rbrace.Pos]))
+	}
+	block, err := p.resolveBlockBinding(raw)
 	if err != nil {
 		return nil, err
 	}
