@@ -46,7 +46,7 @@ func parseArguments(tokens []Token, source []rune, spec *CommandSpec) ([]Argumen
 		}
 		if p.pos == before {
 			// Nothing was consumed, so looping again would spin forever.
-			return nil, newPosError(p.current(), "%s(): unexpected %s in arguments", spec.Name, p.current().Type)
+			return nil, newPosError(p.current(), "%s(): unexpected %s in arguments", spec.Name, describeToken(p.current()))
 		}
 	}
 	return out, nil

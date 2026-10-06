@@ -1635,6 +1635,7 @@ const App = {
         const defs = [
             { btnId: 'shareMenuBtn',   menuId: 'shareMenu',   wrapId: 'shareMenuWrap'   },
             { btnId: 'exportMenuBtn',  menuId: 'exportMenu',  wrapId: 'exportMenuWrap'  },
+            { btnId: 'rowsMenuBtn',    menuId: 'rowsMenu',    wrapId: 'rowsMenuWrap'    },
             { btnId: 'alertExportMenuBtn', menuId: 'alertExportMenu', wrapId: 'alertExportMenuWrap' },
         ];
 
@@ -1681,6 +1682,12 @@ const App = {
                     if (b) b.classList.remove('active');
                 }
             });
+        });
+
+        const rowsMenu = document.getElementById('rowsMenu');
+        if (rowsMenu) rowsMenu.addEventListener('click', (e) => {
+            const item = e.target.closest('[data-row-mode]');
+            if (item) QueryExecutor.setRowMode(item.dataset.rowMode);
         });
 
         document.addEventListener('keydown', (e) => {

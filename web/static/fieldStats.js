@@ -246,6 +246,8 @@ const FieldStats = {
         if (this._state === 'empty' || fieldCount === 0) { body.innerHTML = this._msg('Run a search to explore its fields'); return; }
 
         const filterLower = this.filterText.toLowerCase();
+        const QE = window.QueryExecutor;
+        const columnable = !!(QE && QE.canAddColumns());
         let html = '';
         let shown = 0;
         for (const field of this.getFieldsSorted()) {
@@ -259,6 +261,10 @@ const FieldStats = {
             html += `<div class="fr-field-head" data-field="${this.escAttr(field)}">`;
             html += `<span class="fr-arrow">${expanded ? '▾' : '▸'}</span>`;
             html += `<span class="fr-name" title="${this.escAttr(field)}">${this.escHtml(field)}</span>`;
+            if (columnable && QE.isEventField(field)) {
+                const on = QE.hasColumn(field);
+                html += `<button class="fr-col-btn${on ? ' active' : ''}" type="button" data-field="${this.escAttr(field)}" title="${on ? 'Remove column' : 'Add as column'}" aria-pressed="${on}">${this.COLUMN_ICON}</button>`;
+            }
             html += `<span class="fr-card" title="${this.fmtNum(stat.cardinality)} distinct value${stat.cardinality === 1 ? '' : 's'}">${this.fmtNum(stat.cardinality)}</span>`;
             html += `</div>`;
 
@@ -294,8 +300,15 @@ const FieldStats = {
         this._bind(body);
     },
 
+    COLUMN_ICON: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M6 2.5v11M10.5 2.5v11" stroke="currentColor" stroke-width="1.3"/></svg>',
+
     _bind(body) {
         body.onclick = (e) => {
+            const colBtn = e.target.closest('.fr-col-btn');
+            if (colBtn) {
+                if (window.QueryExecutor) QueryExecutor.toggleColumn(colBtn.dataset.field);
+                return;
+            }
             const head = e.target.closest('.fr-field-head');
             if (head) {
                 const f = head.dataset.field;

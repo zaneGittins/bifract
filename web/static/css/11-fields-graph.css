@@ -195,6 +195,32 @@
     white-space: nowrap;
 }
 
+.fr-col-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 20px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: var(--transition);
+}
+
+.fr-field-head:hover .fr-col-btn,
+.fr-col-btn:focus-visible,
+.fr-col-btn.active {
+    opacity: 1;
+}
+
+.fr-col-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.fr-col-btn.active { color: var(--accent-primary); }
+
 .fr-card {
     font-size: 0.6rem;
     font-family: var(--font-mono);

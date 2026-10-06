@@ -843,6 +843,10 @@ const Autocomplete = {
     },
 
     _onKeyDownCapture(e) {
+        // Enter runs the query, so a reveal armed by the last keystroke must not
+        // pop the menu over the results or an error.
+        if (e.key === 'Enter' && !e.shiftKey) this._clearIdle();
+
         // ----- browsable menu is open: it owns navigation/accept -----
         if (this._menuVisible) {
             if (e.target !== this._acAnchor) return;

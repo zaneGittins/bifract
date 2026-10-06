@@ -1842,7 +1842,17 @@
                     <div class="results-btn-group">
                         <button id="fieldsRailToggle" class="export-btn fields-rail-toggle" title="Show field statistics">Fields</button>
                         <button id="notebookRailToggle" class="export-btn fields-rail-toggle" title="Show the active notebook">Notebook</button>
-                        <button id="wrapToggleBtn" class="export-btn wrap-toggle-btn" style="display: none;" onclick="QueryExecutor.toggleWrap()" title="Toggle row wrap">wrap</button>
+                        <div class="toolbar-menu-wrap" id="rowsMenuWrap" style="display: none;">
+                            <button id="rowsMenuBtn" class="export-btn" title="Row height">
+                                rows
+                                <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                            <div id="rowsMenu" class="toolbar-dropdown-menu toolbar-dropdown-right" style="display:none">
+                                <button class="toolbar-menu-item" data-row-mode="1" type="button">Single line</button>
+                                <button class="toolbar-menu-item" data-row-mode="2" type="button">Two lines</button>
+                                <button class="toolbar-menu-item" data-row-mode="full" type="button">Full</button>
+                            </div>
+                        </div>
                         <div class="toolbar-menu-wrap" id="exportMenuWrap" style="display: none;">
                             <button id="exportMenuBtn" class="export-btn" title="Export results">
                                 export

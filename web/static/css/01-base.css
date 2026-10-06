@@ -1836,8 +1836,7 @@ body.results-fullscreen .results-section {
     padding: 0.625rem 0.75rem;
 }
 
-.wrap-toggle-btn.active,
-.wrap-toggle-btn.active:hover {
+#rowsMenu .toolbar-menu-item.active {
     color: var(--accent-primary);
 }
 
@@ -1845,17 +1844,22 @@ body.results-fullscreen .results-section {
     overflow-x: hidden;
 }
 
-.results-container.table-wrap .results-table td.raw-log-col {
+.results-container.table-wrap .results-table td:not(.timestamp-cell):not(.sg-gutter):not(.filler-col),
+.results-container.table-wrap .results-table td .json-value {
     white-space: pre-wrap;
     overflow: hidden;
     text-overflow: clip;
     overflow-wrap: anywhere;
 }
 
-.results-container.table-wrap .results-table td.raw-log-col .json-value {
-    white-space: pre-wrap;
+.results-container.rows-2 .results-table td .json-value,
+.results-container.rows-2 .results-table td .cell-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
     overflow: hidden;
-    text-overflow: clip;
     overflow-wrap: anywhere;
 }
 
@@ -2135,11 +2139,46 @@ body.results-fullscreen .results-section {
     padding: 2rem 1.5rem;
     text-align: center;
     font-size: 0.875rem;
-    color: var(--error);
+    color: var(--text-secondary);
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
+}
+
+.results-error {
+    color: var(--error);
+}
+
+.results-empty {
+    flex-direction: column;
+    padding-top: 3rem;
+}
+
+.results-empty-title {
+    color: var(--text-primary);
+}
+
+.results-empty-hint {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.results-empty-action {
+    margin-top: 0.5rem;
+    padding: 0.375rem 0.875rem;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.results-empty-action:hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
 }
 
 .results-error .results-error-icon {
@@ -2177,6 +2216,42 @@ body.results-fullscreen .results-section {
 .results-table th.numeric-col,
 .results-table td.numeric-col {
     text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Text via ::before so copying a row does not pick up the placeholder. */
+.empty-cell::before {
+    content: "(empty)";
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Pinned inside the header's right edge so a long or sorted label in a narrow
+   column can never push it out of reach. Clear of the resize handle. */
+.results-table th .th-remove {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    padding: 0 0.25rem;
+    border: none;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    line-height: 1.2;
+    cursor: pointer;
+    opacity: 0;
+    z-index: 4;
+}
+
+.results-table th:hover .th-remove,
+.results-table th .th-remove:focus-visible {
+    opacity: 1;
+}
+
+.results-table th .th-remove:hover {
+    color: var(--text-primary);
 }
 
 .results-table thead {

@@ -56,13 +56,13 @@ const ColumnSizing = {
         }
     },
 
-    // A stored entry is { w: {field->px}, o: [field,...] | null }.
+    // A stored entry is { w: {field->px}, o: [field,...] | null, c: [field,...] }.
     loadEntry(fractalId, sig) {
         const all = this._readAll();
         const byFractal = all[String(fractalId)] || {};
         const e = byFractal[sig];
-        if (!e) return { w: {}, o: null };
-        return { w: e.w || {}, o: e.o || null };
+        if (!e) return { w: {}, o: null, c: [] };
+        return { w: e.w || {}, o: e.o || null, c: e.c || [] };
     },
 
     _writeEntry(fractalId, sig, entry) {
@@ -70,6 +70,9 @@ const ColumnSizing = {
             const all = this._readAll();
             const key = String(fractalId);
             const byFractal = all[key] || {};
+            // Re-insert so key order is last-written order and eviction below
+            // drops the layouts touched least recently, not the oldest created.
+            delete byFractal[sig];
             byFractal[sig] = entry;
             // Bound growth: drop oldest signatures for this fractal.
             const sigs = Object.keys(byFractal);
@@ -105,6 +108,18 @@ const ColumnSizing = {
         this._writeEntry(fractalId, sig, e);
     },
 
+    // Event fields the user added as columns for this layout.
+    loadColumns(fractalId, sig) {
+        const c = this.loadEntry(fractalId, sig).c;
+        return Array.isArray(c) ? c.slice() : [];
+    },
+
+    saveColumns(fractalId, sig, columns) {
+        const e = this.loadEntry(fractalId, sig);
+        e.c = columns;
+        this._writeEntry(fractalId, sig, e);
+    },
+
     clearFractal(fractalId) {
         try {
             const all = this._readAll();
@@ -119,7 +134,7 @@ const ColumnSizing = {
 
     _defaultFont: '400 13px ui-sans-serif, system-ui, -apple-system, sans-serif',
 
-    defaultWidth(field, results, isNumeric) {
+    defaultWidth(field, results, isNumeric, valueOf = null) {
         const lower = String(field).toLowerCase();
         const header = this._measure(field, '600 13px ui-sans-serif, system-ui, sans-serif');
 
@@ -127,7 +142,7 @@ const ColumnSizing = {
         let content = 0;
         const limit = Math.min(results.length, 80);
         for (let i = 0; i < limit; i++) {
-            const v = results[i][field];
+            const v = valueOf ? valueOf(results[i], field) : results[i][field];
             if (v === undefined || v === null) continue;
             const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
             const w = this._measure(text, this._defaultFont);
@@ -154,7 +169,7 @@ const ColumnSizing = {
     //   widths    : { field -> px } for every column that gets an explicit width
     //   flexField : the field rendered with no width (fills remaining space), or null
     //   hasFiller : whether a trailing auto-width filler column is appended
-    resolve(fractalId, fields, results, numericFields, sig) {
+    resolve(fractalId, fields, results, numericFields, sig, valueOf = null) {
         const persisted = this.load(fractalId, sig || this.signature(fields));
 
         let flexField = null;
@@ -168,7 +183,7 @@ const ColumnSizing = {
         fields.forEach(field => {
             if (flexAuto && field === flexField) return; // auto, no explicit width
             const isNumeric = numericFields ? numericFields.has(field) : false;
-            const def = this.defaultWidth(field, results, isNumeric);
+            const def = this.defaultWidth(field, results, isNumeric, valueOf);
             const saved = persisted[field];
             widths[field] = (typeof saved === 'number' && saved >= this.MIN) ? saved : def;
         });

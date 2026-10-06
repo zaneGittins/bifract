@@ -737,6 +737,12 @@ const LogDetail = {
             return a.localeCompare(b);
         });
 
+        // Only the main search table can take added columns.
+        const QE = window.QueryExecutor;
+        const searchPanel = this.hosts.search && this.hosts.search.panel;
+        const columnable = !!(QE && QE.canAddColumns() && searchPanel && searchPanel.contains(container));
+        const tableRow = this.results ? this.results[this.currentIndex] : null;
+
         // Built off-document and attached in one go: appending each row straight to
         // the live container cost a layout per field.
         const frag = document.createDocumentFragment();
@@ -786,6 +792,7 @@ const LogDetail = {
 
                 actions.appendChild(filterInBtn);
                 actions.appendChild(filterOutBtn);
+                if (columnable && QE.canShowColumn(tableRow, key)) actions.appendChild(this._columnButton(QE.hasColumn(key)));
                 actions.appendChild(this._copyButton('log-field-copy-btn'));
 
                 row.appendChild(textSpan);
@@ -830,6 +837,30 @@ const LogDetail = {
         return btn;
     },
 
+    _columnButton(on) {
+        const btn = this._actionButton('column', '', 'fs-action-btn log-field-col-btn');
+        if (window.FieldStats) btn.innerHTML = FieldStats.COLUMN_ICON;
+        this._setColumnButton(btn, on);
+        return btn;
+    },
+
+    _setColumnButton(btn, on) {
+        btn.classList.toggle('active', on);
+        btn.title = on ? 'Remove column' : 'Add as column';
+        btn.setAttribute('aria-pressed', String(on));
+    },
+
+    // Columns change from the rail, the header and this panel; keep its buttons
+    // in step with the table whichever one did it.
+    refreshColumnButtons() {
+        const panel = this.hosts.search && this.hosts.search.panel;
+        if (!panel || !window.QueryExecutor) return;
+        panel.querySelectorAll('.log-field').forEach(el => {
+            const btn = el.querySelector('.log-field-col-btn');
+            if (btn) this._setColumnButton(btn, QueryExecutor.hasColumn(el.dataset.fieldName));
+        });
+    },
+
     _copyButton(className) {
         const btn = this._actionButton('copy', 'Copy value', className);
         btn.appendChild(ICON_COPY.cloneNode(true));
@@ -856,6 +887,11 @@ const LogDetail = {
                 break;
             case 'copy':
                 this.copyToClipboard(this._copyTextFor(key, value), btn);
+                break;
+            case 'column':
+                if (!window.QueryExecutor) break;
+                QueryExecutor.toggleColumn(key);
+                this._updateSelectedRow(this.currentIndex);
                 break;
             case 'context-link': {
                 if (!window.ContextLinks) break;

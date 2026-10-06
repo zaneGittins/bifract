@@ -295,6 +295,12 @@ func (l *Lexer) NextToken() Token {
 		if l.lastType == TokenRParen || l.lastType == TokenRBracket || l.lastType == TokenValue || l.lastType == TokenField {
 			tok = Token{Type: TokenDivide, Value: "/"}
 			l.readChar()
+		} else if l.peekChar() == '/' {
+			// An empty regex is never intended; it is a comment that does not
+			// start its line, and would otherwise silently match everything.
+			tok = Token{Type: TokenError, Value: "//"}
+			l.readChar()
+			l.readChar()
 		} else {
 			tok = Token{Type: TokenRegex, Value: l.readRegex()}
 		}
@@ -382,7 +388,15 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 	for {
 		tok := l.NextToken()
 		if tok.Type == TokenError {
+			if tok.Value == "//" {
+				return nil, newPosError(tok, "unexpected '//': a comment goes on its own line")
+			}
 			return nil, newPosError(tok, "unexpected character %q in query", tok.Value)
+		}
+		if tok.Type == TokenEOF && len(tokens) > 0 {
+			// End of query reads as just after the last token, not after
+			// trailing whitespace or blanked comment lines.
+			tok.Pos, tok.End = tokens[len(tokens)-1].End, tokens[len(tokens)-1].End
 		}
 		tokens = append(tokens, tok)
 		if tok.Type == TokenEOF {
@@ -392,45 +406,46 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 	return tokens, nil
 }
 
+// String names the token kind as a user would read it in an error message.
 func (t TokenType) String() string {
 	names := map[TokenType]string{
-		TokenEOF:           "EOF",
-		TokenError:         "ERROR",
-		TokenPipe:          "PIPE",
-		TokenField:         "FIELD",
-		TokenValue:         "VALUE",
-		TokenString:        "STRING",
-		TokenRegex:         "REGEX",
-		TokenEqual:         "EQUAL",
-		TokenNotEqual:      "NOTEQUAL",
-		TokenAssign:        "ASSIGN",
+		TokenEOF:           "end of query",
+		TokenError:         "invalid character",
+		TokenPipe:          "'|'",
+		TokenField:         "field name",
+		TokenValue:         "value",
+		TokenString:        "string",
+		TokenRegex:         "regex",
+		TokenEqual:         "'='",
+		TokenNotEqual:      "'!='",
+		TokenAssign:        "':='",
 		TokenAnd:           "AND",
 		TokenOr:            "OR",
 		TokenNot:           "NOT",
-		TokenLParen:        "LPAREN",
-		TokenRParen:        "RPAREN",
-		TokenLBracket:      "LBRACKET",
-		TokenRBracket:      "RBRACKET",
-		TokenLBrace:        "LBRACE",
-		TokenRBrace:        "RBRACE",
-		TokenComma:         "COMMA",
-		TokenSemicolon:     "SEMICOLON",
-		TokenFunction:      "FUNCTION",
-		TokenGreater:       "GREATER",
-		TokenLess:          "LESS",
-		TokenGreaterEqual:  "GREATEREQUAL",
-		TokenLessEqual:     "LESSEQUAL",
-		TokenPlus:          "PLUS",
-		TokenMinus:         "MINUS",
-		TokenMultiply:      "MULTIPLY",
-		TokenDivide:        "DIVIDE",
-		TokenContainsAny:   "CONTAINSANY",
-		TokenStartsWithAny: "STARTSWITHANY",
-		TokenEndsWithAny:   "ENDSWITHANY",
-		TokenBinding:       "BINDING",
+		TokenLParen:        "'('",
+		TokenRParen:        "')'",
+		TokenLBracket:      "'['",
+		TokenRBracket:      "']'",
+		TokenLBrace:        "'{'",
+		TokenRBrace:        "'}'",
+		TokenComma:         "','",
+		TokenSemicolon:     "';'",
+		TokenFunction:      "function name",
+		TokenGreater:       "'>'",
+		TokenLess:          "'<'",
+		TokenGreaterEqual:  "'>='",
+		TokenLessEqual:     "'<='",
+		TokenPlus:          "'+'",
+		TokenMinus:         "'-'",
+		TokenMultiply:      "'*'",
+		TokenDivide:        "'/'",
+		TokenContainsAny:   "'=~'",
+		TokenStartsWithAny: "'=^'",
+		TokenEndsWithAny:   "'=$'",
+		TokenBinding:       "binding",
 	}
 	if name, ok := names[t]; ok {
 		return name
 	}
-	return fmt.Sprintf("UNKNOWN(%d)", t)
+	return fmt.Sprintf("token %d", t)
 }

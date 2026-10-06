@@ -36,7 +36,7 @@ async function findSeed(page) {
   const fractals = (await listRes.json())?.data?.fractals || [];
   for (const f of fractals) {
     const parents = await runQuery(page,
-      'bifract_category="process_creation" | groupby(parent_process_guid) | sort(_count desc) | limit(5)', f.id);
+      'bifract_category="process_creation" | groupby(parent_process_guid) | sort(_count, order=desc) | limit(5)', f.id);
     for (const row of parents.results || []) {
       const guid = row.parent_process_guid;
       if (!guid) continue;

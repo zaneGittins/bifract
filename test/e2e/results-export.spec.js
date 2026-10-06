@@ -1,9 +1,9 @@
-// Results-header controls on the Query tab: which of Fields / wrap / export apply
+// Results-header controls on the Query tab: which of Fields / rows / export apply
 // to the current output type, and that each export format really downloads.
 //
 // None of this is visible to a static check. Every button is present and wired in
 // the markup no matter what the query rendered, so only a real page shows that
-// wrap is gone on a pie chart, that the fields rail retires on an aggregation, or
+// row height is gone on a pie chart, that the fields rail retires on an aggregation, or
 // that PNG is offered exactly when there is a canvas to encode.
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
@@ -48,13 +48,18 @@ async function download(page, itemId) {
 test.describe.configure({ timeout: 90000 });
 
 test.describe('results-header controls follow the output type', () => {
-  test('raw results offer fields, wrap and the row formats', async ({ page }) => {
+  test('raw results offer fields, row height and the row formats', async ({ page }) => {
     await openSearch(page);
     await runQuery(page, '* | limit(20)');
 
     await expect(page.locator('#outputTypeLabel')).toHaveText('Table');
     await expect(page.locator('#fieldsRailToggle')).toBeVisible();
-    await expect(page.locator('#wrapToggleBtn')).toBeVisible();
+    await expect(page.locator('#rowsMenuWrap')).toBeVisible();
+
+    await page.locator('#rowsMenuBtn').click();
+    await page.locator('#rowsMenu [data-row-mode="1"]').click();
+    await expect(page.locator('#resultsTable')).toHaveClass(/\brows-1\b/);
+    await expect(page.locator('#resultsTable')).not.toHaveClass(/\brows-2\b/);
 
     await page.locator('#exportMenuBtn').click();
     await expect(page.locator('#exportCsvItem')).toBeVisible();
@@ -63,12 +68,13 @@ test.describe('results-header controls follow the output type', () => {
     await expect(page.locator('#exportPngItem')).toBeHidden();
   });
 
-  test('a chart retires wrap and the fields rail, and offers PNG', async ({ page }) => {
+  test('a chart retires row height and the fields rail, and offers PNG', async ({ page }) => {
     await openSearch(page);
     await runQuery(page, '* | groupBy(event_type) | piechart()');
 
     await expect(page.locator('#outputTypeLabel')).toHaveText('Pie Chart');
-    await expect(page.locator('#wrapToggleBtn')).toBeHidden();
+    await expect(page.locator('#rowsMenuWrap')).toBeAttached();
+    await expect(page.locator('#rowsMenuWrap')).toBeHidden();
     await expect(page.locator('#fieldsRailToggle')).toBeHidden();
 
     await page.locator('#exportMenuBtn').click();
@@ -76,12 +82,12 @@ test.describe('results-header controls follow the output type', () => {
     await expect(page.locator('#exportCsvItem')).toBeVisible();
   });
 
-  test('an aggregation table keeps wrap but retires the fields rail', async ({ page }) => {
+  test('an aggregation table keeps row height but retires the fields rail', async ({ page }) => {
     await openSearch(page);
     await runQuery(page, '* | groupBy(event_type)');
 
     await expect(page.locator('#outputTypeLabel')).toHaveText('Table');
-    await expect(page.locator('#wrapToggleBtn')).toBeVisible();
+    await expect(page.locator('#rowsMenuWrap')).toBeVisible();
     // Field statistics describe raw events; an aggregation has none.
     await expect(page.locator('#fieldsRailToggle')).toBeHidden();
   });
