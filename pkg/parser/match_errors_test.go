@@ -18,7 +18,7 @@ func matchErr(t *testing.T, query string, opts QueryOptions) string {
 	return err.Error()
 }
 
-// One message for every unresolved dictionary pointed authors at the Context tab's key
+// One message for every unresolved dictionary pointed authors at the Lookups page's key
 // toggle even when the context had no dictionaries at all, which is what an alert test
 // run looked like before it resolved them.
 func TestMatchUnresolvedDictionaryErrors(t *testing.T) {
@@ -47,7 +47,7 @@ func TestMatchUnresolvedDictionaryErrors(t *testing.T) {
 		opts := base
 		opts.Dictionaries = map[string]map[string]string{"sensitive_groups": {"other_col": "lookup_x"}}
 		got := matchErr(t, q, opts)
-		if !strings.Contains(got, "no key column") || !strings.Contains(got, "Context tab") {
+		if !strings.Contains(got, "no key column") || !strings.Contains(got, "Lookups page") {
 			t.Fatalf("got %q", got)
 		}
 	})

@@ -23,7 +23,7 @@ BIFRACT_API_KEY=bifract_... go test -tags integration ./test/integration/ -v
 Without `BIFRACT_API_KEY` the tests skip rather than fail: they need a real
 server, and refusing to run is the honest outcome.
 
-Mint a key under **Admin > API Keys > New key**, with **Tenant admin** ticked.
+Mint a key under **Settings > API Keys > New key**, with **Tenant admin** ticked.
 
 ## What each recipe covers
 

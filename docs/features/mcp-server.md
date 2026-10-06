@@ -82,7 +82,7 @@ issued for, whichever way the session is configured.
 
 ### Connecting through mTLS
 
-A deployment fronted by Caddy with mTLS needs the client certificate generated under **Fractal settings > Access > Users > Client Certificate**:
+A deployment fronted by Caddy with mTLS needs a client certificate, downloaded from **Settings > Users** with **Download mTLS Cert** in the user's row menu:
 
 ```json
 "env": {

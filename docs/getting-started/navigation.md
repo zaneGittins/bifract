@@ -11,7 +11,7 @@ Every page is in the left sidebar. The selector at its top shows the fractal or 
 | Detect | **Alerts** |
 | AI | **Chat**, **Instructions** |
 | Data | **Lookups**, **Analytics**, **Ingest** |
-| Bottom | **Fractal settings** (fractal admins), then **Admin**: **Normalizers**, **Schema**, **API**, **System**, **Settings** (tenant admins) |
+| Bottom | **Fractal settings** (fractal admins; **Prism settings** in a prism), then **Admin**: **Normalizers**, **Schema**, **API**, **System**, **Settings** (tenant admins) |
 
 - **Switching scope**: use the selector at the top of the sidebar, or the chip at the left of the Query and Recall bars. A prism hides the pages that only exist for a fractal (Recall, Analytics, Ingest).
 - **Collapsing**: **Collapse** folds the sidebar to icons; hover an icon for its name. Query and Recall start collapsed and other pages expanded, and each remembers your choice. Windows narrower than 900px show icons only, and on a phone the sidebar opens from the menu button.

@@ -105,7 +105,7 @@ Rules below the configured minimum status are skipped during sync.
 
 ## Recommended Community Feeds
 
-These public Sigma rule repositories work well as starting points. Add them from **Alerts > Alert Feeds**.
+These public Sigma rule repositories work well as starting points. Add them from **Alerts > Feeds**.
 
 | Name | Repository URL | Path | Min Severity | Min Status | Schedule |
 |------|---------------|------|-------------|------------|----------|

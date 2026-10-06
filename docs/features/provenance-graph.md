@@ -6,7 +6,7 @@ The provenance graph (`pgr()`) reconstructs what a suspicious process did and cu
 
 ## Enabling it
 
-Provenance requires baselines built from your endpoint logs, so it is **off by default**. An admin turns it on under **Settings > General > Features > Endpoint behavioral analytics**.
+Provenance requires baselines built from your endpoint logs, so it is **off by default**. An admin turns it on under **Settings > General > Endpoint Analytics > Collect baselines**.
 
 When enabled, Bifract maintains two lightweight baselines as logs arrive: process lineage (who spawned whom) and behavior frequency (how common each file, IP, and domain is across your fleet). These run on every ingested log, so leave the toggle off unless you use these features. When you re-enable it, baselines resume from that point forward.
 

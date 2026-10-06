@@ -10,7 +10,7 @@ Bifract ships with a set of built-in, type-hinted fields (for example `computer_
 
 ## Observed Fields
 
-The Schema tab lists the field names Bifract has actually seen in your logs, with how often each appears and a recommended index type. This is the normal way to promote a field: find it in the list and **Reserve** it, rather than typing the name from memory.
+The Schema page lists the field names Bifract has actually seen in your logs, with how often each appears and a recommended index type. This is the normal way to promote a field: find it in the list and **Reserve** it, rather than typing the name from memory.
 
 Fields you never filter on can be **ignored**, which hides them from the list without changing how they are stored or queried.
 

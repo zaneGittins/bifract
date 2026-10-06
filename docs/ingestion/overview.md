@@ -137,7 +137,7 @@ Each ingest token is scoped to a single fractal. Logs are routed to the fractal 
 
 Bifract extracts timestamps automatically:
 
-1. Token-configured timestamp fields (set per token in the Ingest tab)
+1. Token-configured timestamp fields (set per token on the Ingest page)
 2. Configured timestamp fields (set in Settings)
 3. Common fields: `timestamp`, `@timestamp`, `time`, `ts`, `_time`
 4. Falls back to ingestion time if none found
