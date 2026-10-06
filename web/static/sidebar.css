@@ -432,14 +432,18 @@ html.sb-collapsed .sb-kbd {
     color: var(--text-secondary);
 }
 
-.sb-group-toggle svg {
+.sb-group-toggle > svg {
     width: 12px;
     height: 12px;
     transition: transform 0.15s ease;
 }
 
-.sb-group-toggle[aria-expanded="false"] svg {
+.sb-group-toggle[aria-expanded="false"] > svg {
     transform: rotate(-90deg);
+}
+
+.sb-admin-icon {
+    display: none;
 }
 
 .sb-group-items {
@@ -493,6 +497,10 @@ html.sb-collapsed .sb-kbd {
 
 .sb-item svg {
     flex-shrink: 0;
+}
+
+.sb-group-toggle .sb-label {
+    flex: 1;
 }
 
 .sb-label {
@@ -593,8 +601,27 @@ html.sb-collapsed .sb-scope-btn {
 }
 
 html.sb-collapsed .sb-scope-chevron,
-html.sb-collapsed .sb-group-label {
+html.sb-collapsed .sb-group-label:not(.sb-group-toggle),
+html.sb-collapsed .sb-group-toggle > svg {
     display: none;
+}
+
+/* The Admin group folds behind one icon in the rail. */
+html.sb-collapsed .sb-group-toggle {
+    justify-content: center;
+    height: 30px;
+    padding: 0;
+    border-radius: 6px;
+    color: var(--text-secondary);
+}
+
+html.sb-collapsed .sb-group-toggle:hover,
+html.sb-collapsed .sb-group-toggle[aria-expanded="true"] {
+    background: var(--overlay-subtle);
+}
+
+html.sb-collapsed .sb-admin-icon {
+    display: flex;
 }
 
 /* Visually hidden but still the control's accessible name. */
@@ -617,10 +644,6 @@ html.sb-collapsed .sb-bottom {
 
 html.sb-collapsed .sb-bottom {
     margin-top: auto;
-}
-
-html.sb-collapsed .sb-group-items.closed {
-    display: flex;
 }
 
 html.sb-collapsed .sb-item {
@@ -673,8 +696,100 @@ html.sb-collapsed .sb-notify .notification-badge {
     opacity: 1;
 }
 
+/* ---- Phones: off-canvas drawer ---- */
+
+.sb-mobile-bar,
+.sb-backdrop {
+    display: none;
+}
+
+@media (max-width: 640px) {
+    html,
+    html.sb-collapsed {
+        --sb-w: 0px;
+    }
+
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: var(--time-bar-h);
+        height: auto;
+        width: min(280px, 85vw);
+        transform: translateX(-100%);
+        visibility: hidden;
+        transition: transform 0.2s ease, visibility 0s linear 0.2s;
+        z-index: 10030;
+    }
+
+    html.sb-drawer-open .sidebar {
+        transform: none;
+        visibility: visible;
+        transition: transform 0.2s ease;
+        box-shadow: var(--shadow-lg);
+    }
+
+    .sb-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 10020;
+        background: rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+    }
+
+    html.sb-drawer-open .sb-backdrop {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .sb-mobile-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+        height: 44px;
+        margin-bottom: 6px;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .sb-mobile-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+    }
+
+    .sb-mobile-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    #sidebarToggle {
+        display: none;
+    }
+
+    .sb-notify .notification-dropdown,
+    .sb-user .user-menu-dropdown {
+        left: 0;
+        bottom: calc(100% + 6px);
+        width: min(340px, calc(100vw - 24px));
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     html.sb-animate .sidebar,
+    .sidebar,
+    .sb-backdrop,
     .sb-tooltip {
         transition: none;
     }

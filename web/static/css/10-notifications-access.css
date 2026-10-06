@@ -586,9 +586,13 @@
     border-bottom: 1px solid var(--border-color);
     margin-bottom: 1rem;
     padding: 0 1rem;
+    overflow-x: auto;
+    scrollbar-width: none;
 }
 
 .alerts-sub-tab {
+    flex-shrink: 0;
+    white-space: nowrap;
     background: none;
     border: none;
     color: var(--text-secondary);

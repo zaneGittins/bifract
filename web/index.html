@@ -17,7 +17,9 @@
                 (!location.hash && /[?&]q=/.test(location.search));
             var sbClass = sbWork ? 'workspace' : 'page';
             var sbSaved = sbPrefs[sbClass];
-            if (typeof sbSaved === 'boolean' ? sbSaved : sbClass === 'workspace') {
+            var sbMobile = matchMedia('(max-width: 640px)').matches;
+            var sbNarrow = matchMedia('(max-width: 900px)').matches;
+            if (!sbMobile && (sbNarrow || (typeof sbSaved === 'boolean' ? sbSaved : sbClass === 'workspace'))) {
                 document.documentElement.classList.add('sb-collapsed');
             }
         } catch (e) {}
@@ -90,7 +92,14 @@
             <button id="sidebarToggle" type="button" class="sb-item sb-toggle"></button>
         </div>
     </aside>
+    <div id="sidebarBackdrop" class="sb-backdrop"></div>
     <div class="container">
+        <div class="sb-mobile-bar">
+            <button id="sidebarOpen" type="button" class="sb-mobile-btn" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <span id="sidebarMobileTitle" class="sb-mobile-title"></span>
+        </div>
 
 
         <!-- Main View (Home Page) -->

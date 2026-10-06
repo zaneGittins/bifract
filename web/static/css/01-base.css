@@ -2546,6 +2546,11 @@ body.col-reordering * {
         padding: 0.75rem;
     }
 
+    .search-toolbar {
+        flex-wrap: wrap;
+        row-gap: 0.375rem;
+    }
+
     .search-section,
     .results-section,
     .timeline-section {

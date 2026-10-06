@@ -22,6 +22,7 @@ const SB_ICONS = {
     collapse: '<path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/>',
     expand: '<path d="M13 17l5-5-5-5M6 17l5-5-5-5"/>',
     chevron: '<path d="M6 9l6 6 6-6"/>',
+    key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M17 6l3 3M14 9l2 2"/>',
     layers: '<path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/>',
 };
 
@@ -65,11 +66,16 @@ const Sidebar = {
 
     PREFS_KEY: 'bifract-sidebar',
 
+    // Keep in sync with sidebar.css and the pre-paint script in index.html.
+    NARROW: window.matchMedia('(max-width: 900px)'),
+    MOBILE: window.matchMedia('(max-width: 640px)'),
+
     _rendered: false,
     _initialized: false,
     _level: null,
     _tab: null,
     _tip: null,
+    _narrowExpanded: false, // session-only expand while the window is narrow
 
     icon(name) {
         return `<svg ${SB_ICON_ATTRS}>${SB_ICONS[name] || ''}</svg>`;
@@ -99,8 +105,8 @@ const Sidebar = {
                         ${this.icon('sliders')}<span class="sb-label" id="sidebarManageLabel">Fractal settings</span></a>
                 </div>
                 <div class="sb-group sb-admin" data-group="admin" hidden>
-                    <button type="button" class="sb-group-label sb-group-toggle" id="sidebarAdminToggle" aria-expanded="false" aria-controls="sidebarAdminItems">
-                        <span>Admin</span>${this.icon('chevron')}
+                    <button type="button" class="sb-group-label sb-group-toggle" id="sidebarAdminToggle" data-tip="Admin" aria-expanded="false" aria-controls="sidebarAdminItems">
+                        <span class="sb-admin-icon">${this.icon('key')}</span><span class="sb-label">Admin</span>${this.icon('chevron')}
                     </button>
                     <div id="sidebarAdminItems" class="sb-group-items">
                         ${this.ADMIN.map(i => this._itemHtml(i, 'main')).join('')}
@@ -131,6 +137,21 @@ const Sidebar = {
         });
         this._applyAdminOpen(this._prefs().adminOpen === true);
         this._renderToggle(document.documentElement.classList.contains('sb-collapsed'));
+
+        document.getElementById('sidebarOpen').addEventListener('click', () => this.openDrawer());
+        document.getElementById('sidebarBackdrop').addEventListener('click', () => this.closeDrawer());
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape' || !document.documentElement.classList.contains('sb-drawer-open')) return;
+            this.closeDrawer();
+            document.getElementById('sidebarOpen').focus();
+        });
+        const onBreakpoint = () => {
+            this._narrowExpanded = false;
+            if (!this.MOBILE.matches) this.closeDrawer();
+            this._applyCollapsed();
+        };
+        this.NARROW.addEventListener('change', onBreakpoint);
+        this.MOBILE.addEventListener('change', onBreakpoint);
         this.refresh();
     },
 
@@ -210,6 +231,9 @@ const Sidebar = {
         if (level === 'main' && this.ADMIN.some(i => i.key === key)) this._applyAdminOpen(true);
         // Query and Recall keep Ctrl/Cmd+K for their own palettes.
         document.getElementById('sidebarGoTo').classList.toggle('no-kbd', this._pageClass() === 'workspace');
+        const active = document.querySelector(`#sidebar a[data-nav][aria-current="page"]`);
+        document.getElementById('sidebarMobileTitle').textContent = active ? active.dataset.tip : '';
+        this.closeDrawer();
         this._applyCollapsed();
     },
 
@@ -234,15 +258,33 @@ const Sidebar = {
         }
     },
 
+    // Phones get a full drawer; narrow windows a rail unless expanded for the
+    // session; otherwise the saved choice for the page class applies.
     isCollapsed() {
+        if (this.MOBILE.matches) return false;
+        if (this.NARROW.matches) return !this._narrowExpanded;
         const cls = this._pageClass();
         const saved = this._prefs()[cls];
         return typeof saved === 'boolean' ? saved : cls === 'workspace';
     },
 
     toggleCollapsed() {
-        this._savePrefs({ [this._pageClass()]: !this.isCollapsed() });
+        if (this.NARROW.matches) this._narrowExpanded = !this._narrowExpanded;
+        else this._savePrefs({ [this._pageClass()]: !this.isCollapsed() });
         this._applyCollapsed(true);
+    },
+
+    openDrawer() {
+        document.documentElement.classList.add('sb-drawer-open');
+        document.getElementById('sidebarOpen').setAttribute('aria-expanded', 'true');
+        const first = document.querySelector('#sidebar a[aria-current="page"]') || document.querySelector('#sidebar a, #sidebar button');
+        if (first) first.focus();
+    },
+
+    closeDrawer() {
+        if (!document.documentElement.classList.contains('sb-drawer-open')) return;
+        document.documentElement.classList.remove('sb-drawer-open');
+        document.getElementById('sidebarOpen').setAttribute('aria-expanded', 'false');
     },
 
     // Only a manual toggle animates; page switches snap so content never reflows
