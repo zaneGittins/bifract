@@ -38,6 +38,8 @@ const App = {
         // login page, so the destination is picked up from sessionStorage.
         if (this.resumePendingLink()) return;
 
+        if (window.Sidebar) Sidebar.init();
+
         // Initialize all modules
         if (window.TimeBar) {
             TimeBar.init();
@@ -234,25 +236,20 @@ const App = {
         // Check status every 30 seconds
         setInterval(() => this.checkStatus(), 30000);
 
-        // Route from URL hash on initial page load (deferred so all module inits complete first).
-        setTimeout(() => {
-            this._navigatingFromPopState = true;
-            this.routeFromHash(null).finally(() => {
-                this._navigatingFromPopState = false;
-            });
-        }, 0);
+    },
 
+    // First route of the page, run by Auth once the user is known so role-gated
+    // views render once instead of before and after login resolves.
+    routeInitial() {
+        this._navigatingFromPopState = true;
+        return this.routeFromHash(null).finally(() => {
+            this._navigatingFromPopState = false;
+        });
     },
 
     // Tab name sets for hash-based open-in-new-tab support.
-    _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'normalizers', 'schema']),
+    _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'normalizers', 'schema', 'api']),
     _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'recall', 'manage']),
-
-    // Build the target URL for a given hash (used for open-in-new-tab).
-    _tabUrl(hash) {
-        const base = window.location.origin + window.location.pathname;
-        return hash ? base + '#' + hash : base;
-    },
 
     // Build the full hash string for the current navigation state.
     // Fractal-view tabs: f/{id}/{tab}/{subPath} or p/{id}/{tab}/{subPath}
@@ -287,30 +284,6 @@ const App = {
     pushSubPath(subPath) {
         if (this._navigatingFromPopState) return;
         this._pushHash(this._buildHash(this.currentView, subPath), this._buildFractalState());
-    },
-
-    // Bind click + middle-click/ctrl+click on a tab button.
-    // Normal click calls handler; middle/ctrl+click opens the tab URL in a new browser tab.
-    // hash may be a string or a zero-arg function that returns the hash at click time
-    // (needed for fractal-view tabs whose URL includes the live fractal ID).
-    _bindTab(el, handler, hash) {
-        if (!el) return;
-        el.addEventListener('click', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                e.preventDefault();
-                const h = typeof hash === 'function' ? hash() : hash;
-                window.open(this._tabUrl(h), '_blank');
-            } else {
-                handler();
-            }
-        });
-        el.addEventListener('auxclick', (e) => {
-            if (e.button === 1) {
-                e.preventDefault();
-                const h = typeof hash === 'function' ? hash() : hash;
-                window.open(this._tabUrl(h), '_blank');
-            }
-        });
     },
 
     // Route from the URL hash on page load and handle browser back/forward.
@@ -431,38 +404,9 @@ const App = {
     },
 
     setupEventListeners() {
-        // Logo click - navigate to main view (fractal listing)
-        const logo = document.querySelector('.logo');
-        if (logo) {
-            this._bindTab(logo, () => this.showMainView('fractalListing'), '');
-            logo.style.cursor = 'pointer';
-        }
-
-        // Main View Tab Buttons
-        this._bindTab(document.getElementById('fractalListingTabBtn'), () => this.showMainViewTab('fractalListing'), 'fractalListing');
-        this._bindTab(document.getElementById('mainPerformanceTabBtn'), () => this.showMainViewTab('performance'), 'performance');
-        this._bindTab(document.getElementById('mainSettingsTabBtn'), () => this.showMainViewTab('settings'), 'settings');
-        this._bindTab(document.getElementById('mainNormalizersTabBtn'), () => this.showMainViewTab('normalizers'), 'normalizers');
-        this._bindTab(document.getElementById('mainSchemaTabBtn'), () => this.showMainViewTab('schema'), 'schema');
-        this._bindTab(document.getElementById('mainApiTabBtn'), () => this.showMainViewTab('api'), 'api');
-
-        // Fractal View Tab Buttons
-        // Hash is a function so ctrl+click open-in-new-tab captures the live fractal ID.
-        this._bindTab(document.getElementById('fractalSearchTabBtn'), () => this.showFractalViewTab('search'), () => this._buildHash('search'));
-        this._bindTab(document.getElementById('fractalNotebooksTabBtn'), () => this.showFractalViewTab('notebooks'), () => this._buildHash('notebooks'));
-
         document.querySelectorAll('[data-investigation-subtab]').forEach(btn => {
             btn.addEventListener('click', () => this.showFractalViewTab('notebooks', btn.dataset.investigationSubtab === 'evidence' ? 'evidence' : ''));
         });
-        this._bindTab(document.getElementById('fractalDashboardsTabBtn'), () => this.showFractalViewTab('dashboards'), () => this._buildHash('dashboards'));
-        this._bindTab(document.getElementById('fractalDictionariesTabBtn'), () => this.showFractalViewTab('dictionaries'), () => this._buildHash('dictionaries'));
-        this._bindTab(document.getElementById('fractalModelsTabBtn'), () => this.showFractalViewTab('models'), () => this._buildHash('models'));
-        this._bindTab(document.getElementById('fractalChatTabBtn'), () => this.showFractalViewTab('chat'), () => this._buildHash('chat'));
-        this._bindTab(document.getElementById('fractalLibraryTabBtn'), () => this.showFractalViewTab('library'), () => this._buildHash('library'));
-        this._bindTab(document.getElementById('fractalAlertsTabBtn'), () => this.showFractalViewTab('alerts'), () => this._buildHash('alerts'));
-        this._bindTab(document.getElementById('fractalIngestTabBtn'), () => this.showFractalViewTab('ingest'), () => this._buildHash('ingest'));
-        this._bindTab(document.getElementById('fractalRecallTabBtn'), () => this.showFractalViewTab('recall'), () => this._buildHash('recall'));
-        this._bindTab(document.getElementById('fractalManageTabBtn'), () => this.showFractalViewTab('manage'), () => this._buildHash('manage'));
 
         // Query input
         const queryInput = document.getElementById('queryInput');
@@ -933,21 +877,11 @@ const App = {
         // Hide fractal view
         const fractalView = document.getElementById('fractalView');
         if (fractalView) fractalView.style.display = 'none';
-        // Every view that locks the body to the viewport unlocks it here: leaving for
-        // the main view is the one exit those views do not each get told about.
-        document.body.classList.remove('search-active', 'recall-active');
+        document.body.classList.remove('recall-active');
 
         // Show main view
         const mainView = document.getElementById('mainView');
         if (mainView) mainView.style.display = 'flex';
-
-        // Toggle header navs
-        const mainViewNav = document.getElementById('mainViewNav');
-        const fractalViewNav = document.getElementById('fractalViewNav');
-        if (mainViewNav) mainViewNav.style.display = 'flex';
-        if (fractalViewNav) fractalViewNav.style.display = 'none';
-        const contextPill = document.getElementById('contextPillContainer');
-        if (contextPill) contextPill.style.display = 'none';
 
         // Switch to the requested tab
         this.showMainViewTab(tab, subPath);
@@ -1007,23 +941,13 @@ const App = {
             if (view) view.style.display = 'none';
         });
 
-        // Remove active class from all main view tabs
-        const fractalListingTab = document.getElementById('fractalListingTabBtn');
-        const mainPerformanceTab = document.getElementById('mainPerformanceTabBtn');
-        const mainSettingsTab = document.getElementById('mainSettingsTabBtn');
-        const mainNormalizersTab = document.getElementById('mainNormalizersTabBtn');
-        const mainSchemaTab = document.getElementById('mainSchemaTabBtn');
-        const mainApiTab = document.getElementById('mainApiTabBtn');
-
-        [fractalListingTab, mainPerformanceTab, mainSettingsTab, mainNormalizersTab, mainSchemaTab, mainApiTab].forEach(tabBtn => {
-            if (tabBtn) tabBtn.classList.remove('active');
-        });
+        if (window.Sidebar) Sidebar.setActive('main', tab);
+        document.body.classList.toggle('view-fill', this._fillViews.has(tab));
 
         // Show the requested tab and activate it
         switch (tab) {
             case 'fractalListing':
                 if (fractalListingContent) fractalListingContent.style.display = 'flex';
-                if (fractalListingTab) fractalListingTab.classList.add('active');
                 // Clear current fractal context when returning to fractal listing
                 if (window.FractalContext) FractalContext.clearCurrentFractal();
                 if (window.FractalListing) FractalListing.show();
@@ -1031,25 +955,21 @@ const App = {
             case 'performance':
                 if (mainPerformanceContent) mainPerformanceContent.style.display = 'block';
                 if (performanceView) performanceView.style.display = 'block';
-                if (mainPerformanceTab) mainPerformanceTab.classList.add('active');
                 if (window.Performance) Performance.show(subPath);
                 break;
             case 'settings':
                 if (mainSettingsContent) mainSettingsContent.style.display = 'block';
                 if (settingsView) settingsView.style.display = 'block';
-                if (mainSettingsTab) mainSettingsTab.classList.add('active');
                 if (window.SettingsView) SettingsView.show(subPath);
                 break;
             case 'normalizers':
                 if (mainNormalizersContent) mainNormalizersContent.style.display = 'block';
                 if (normalizersView) normalizersView.style.display = 'block';
-                if (mainNormalizersTab) mainNormalizersTab.classList.add('active');
                 if (window.Normalizers) Normalizers.show(subPath);
                 break;
             case 'schema':
                 if (mainSchemaContent) mainSchemaContent.style.display = 'block';
                 if (schemaFieldsView) schemaFieldsView.style.display = 'block';
-                if (mainSchemaTab) mainSchemaTab.classList.add('active');
                 if (window.SchemaFields) SchemaFields.show();
                 break;
             case 'api':
@@ -1057,44 +977,33 @@ const App = {
                 // .container rather than subtracting a hardcoded chrome height.
                 if (mainApiContent) mainApiContent.style.display = 'flex';
                 if (apiExplorerView) apiExplorerView.style.display = 'flex';
-                if (mainApiTab) mainApiTab.classList.add('active');
                 if (window.APIExplorer) APIExplorer.show();
                 break;
         }
     },
 
-    // Hide/show tabs that only apply to fractals (not prisms) and vice-versa.
-    // Called from showFractalView and whenever the scope type changes in-place.
+    // Views sized to the viewport with internal scrolling; the rest scroll the page.
+    _fillViews: new Set(['search', 'recall', 'chat', 'library', 'fractalListing', 'api']),
+
     // Tabs that only exist for fractals, not prisms.
     _fractalOnlyTabs: new Set(['models', 'ingest', 'recall']),
 
-    updateScopedTabVisibility() {
-        const isPrism = window.FractalContext && window.FractalContext.isPrism();
-        const ingestTabBtn = document.getElementById('fractalIngestTabBtn');
-        if (ingestTabBtn) ingestTabBtn.style.display = isPrism ? 'none' : '';
-        const modelsTabBtn = document.getElementById('fractalModelsTabBtn');
-        if (modelsTabBtn) modelsTabBtn.style.display = isPrism ? 'none' : '';
-        // Recall is fractal-only in v1. For prisms, hard-hide the button; for
-        // fractals, clear the inline display and let Recall's archive-availability
-        // gate (rbac-hidden class) decide whether it shows.
-        const recallTabBtn = document.getElementById('fractalRecallTabBtn');
-        if (recallTabBtn) {
-            recallTabBtn.style.display = isPrism ? 'none' : '';
-            if (isPrism) {
-                recallTabBtn.classList.add('rbac-hidden');
-            } else if (window.Recall && typeof Recall.refreshTabVisibility === 'function') {
-                Recall.refreshTabVisibility();
-            }
-        }
+    // Tabs the current scope does not have: fractal-only tabs in a prism, and
+    // settings without the fractal admin role.
+    _tabUnavailable(tab) {
+        if (this._fractalOnlyTabs.has(tab) && window.FractalContext && FractalContext.isPrism()) return true;
+        return tab === 'manage' && !(window.Auth && Auth.hasFractalRole('admin'));
+    },
 
-        // Hiding the button is not enough: the tab content stays on screen with no
-        // active tab, still showing the previous fractal's data. Move the user to
-        // search when the tab they are on stopped existing. Guarded on the fractal
-        // view being visible so this never fires while navigating to the listing.
+    // Runs on every scope change. Hiding the nav item is not enough: the tab
+    // content would stay on screen showing the previous scope's data, so move the
+    // user to search. Guarded on the fractal view being visible so this never
+    // fires while navigating to the listing.
+    updateScopedTabVisibility() {
+        if (window.Sidebar) Sidebar.refresh();
         const fractalView = document.getElementById('fractalView');
         const onFractalView = fractalView && fractalView.style.display !== 'none';
-        if (isPrism && onFractalView && this.currentViewLevel === 'fractal' &&
-            this._fractalOnlyTabs.has(this.currentView)) {
+        if (onFractalView && this.currentViewLevel === 'fractal' && this._tabUnavailable(this.currentView)) {
             this.showFractalViewTab('search');
         }
     },
@@ -1115,24 +1024,14 @@ const App = {
         const fractalView = document.getElementById('fractalView');
         if (fractalView) fractalView.style.display = 'flex';
 
-        // Toggle header navs
-        const mainViewNav = document.getElementById('mainViewNav');
-        const fractalViewNav = document.getElementById('fractalViewNav');
-        if (mainViewNav) mainViewNav.style.display = 'none';
-        if (fractalViewNav) fractalViewNav.style.display = 'flex';
-        const contextPill = document.getElementById('contextPillContainer');
-        if (contextPill) contextPill.style.display = 'flex';
-
-        this.updateScopedTabVisibility();
+        if (window.Sidebar) Sidebar.refresh();
 
         // Switch to the requested tab
         this.showFractalViewTab(tab, subPath);
     },
 
     showFractalViewTab(tab, subPath = '') {
-        // Models are fractal-scoped and never populate in a prism; redirect to
-        // search so a prism never lands on an empty Models view.
-        if (tab === 'models' && window.FractalContext && window.FractalContext.isPrism()) {
+        if (this._tabUnavailable(tab)) {
             tab = 'search';
             subPath = '';
         }
@@ -1226,9 +1125,8 @@ const App = {
             if (content) content.style.display = 'none';
         });
 
-        // Remove search-active lock so other tabs can scroll normally
-        document.body.classList.remove('search-active');
         document.body.classList.remove('recall-active');
+        document.body.classList.toggle('view-fill', this._fillViews.has(tab));
 
         // Also hide the inner view divs
         const searchView = document.getElementById('searchView');
@@ -1247,32 +1145,15 @@ const App = {
             if (view) view.style.display = 'none';
         });
 
-        // Remove active class from all fractal view tabs
-        const searchTab = document.getElementById('fractalSearchTabBtn');
-        const notebooksTab = document.getElementById('fractalNotebooksTabBtn');
         const investigationSubTabs = document.getElementById('investigationSubTabs');
         if (investigationSubTabs) investigationSubTabs.style.display = 'none';
-        const dashboardsTab = document.getElementById('fractalDashboardsTabBtn');
-        const dictionariesTab = document.getElementById('fractalDictionariesTabBtn');
-        const modelsTab = document.getElementById('fractalModelsTabBtn');
-        const chatTab = document.getElementById('fractalChatTabBtn');
-        const libraryTab = document.getElementById('fractalLibraryTabBtn');
-        const alertsTab = document.getElementById('fractalAlertsTabBtn');
-        const ingestTab = document.getElementById('fractalIngestTabBtn');
-        const recallTab = document.getElementById('fractalRecallTabBtn');
-        const manageTab = document.getElementById('fractalManageTabBtn');
-
-        [searchTab, notebooksTab, dashboardsTab, dictionariesTab, modelsTab, chatTab, libraryTab, alertsTab, ingestTab, recallTab, manageTab].forEach(tabBtn => {
-            if (tabBtn) tabBtn.classList.remove('active');
-        });
+        if (window.Sidebar) Sidebar.setActive('fractal', tab);
 
         // Show the requested tab and activate it
         switch (tab) {
             case 'search':
                 if (searchContent) searchContent.style.display = 'flex';
                 if (searchView) searchView.style.display = 'flex';
-                if (searchTab) searchTab.classList.add('active');
-                document.body.classList.add('search-active');
 
                 // Re-render syntax highlighting when returning to search tab
                 if (window.SyntaxHighlight) {
@@ -1288,7 +1169,6 @@ const App = {
                 subPath = 'evidence';
                 // falls through
             case 'notebooks': {
-                if (notebooksTab) notebooksTab.classList.add('active');
                 if (investigationSubTabs) investigationSubTabs.style.display = 'flex';
 
                 const onEvidence = subPath === 'evidence';
@@ -1314,7 +1194,6 @@ const App = {
             case 'dashboards':
                 if (dashboardsContent) dashboardsContent.style.display = 'block';
                 if (dashboardsView) dashboardsView.style.display = 'block';
-                if (dashboardsTab) dashboardsTab.classList.add('active');
 
                 if (window.Dashboards) {
                     Dashboards.init();
@@ -1326,34 +1205,29 @@ const App = {
             case 'dictionaries':
                 if (dictionariesContent) dictionariesContent.style.display = 'block';
                 if (dictionariesView) dictionariesView.style.display = 'block';
-                if (dictionariesTab) dictionariesTab.classList.add('active');
 
                 if (window.Dictionaries) Dictionaries.show(subPath);
                 break;
             case 'models':
                 if (modelsContent) modelsContent.style.display = 'block';
                 if (modelsView) modelsView.style.display = 'block';
-                if (modelsTab) modelsTab.classList.add('active');
 
                 if (window.AnalyticsModels) AnalyticsModels.show(subPath);
                 break;
             case 'chat':
-                if (chatContent) chatContent.style.display = 'block';
-                if (chatView) chatView.style.display = 'block';
-                if (chatTab) chatTab.classList.add('active');
+                if (chatContent) chatContent.style.display = 'flex';
+                if (chatView) chatView.style.display = 'flex';
 
                 if (window.Chat) Chat.show(subPath);
                 break;
             case 'library':
-                if (libraryContent) libraryContent.style.display = 'block';
-                if (librariesView) librariesView.style.display = 'block';
-                if (libraryTab) libraryTab.classList.add('active');
+                if (libraryContent) libraryContent.style.display = 'flex';
+                if (librariesView) librariesView.style.display = 'flex';
 
                 if (window.InstructionLibraries) InstructionLibraries.show(subPath);
                 break;
             case 'alerts':
                 if (alertsContent) alertsContent.style.display = 'block';
-                if (alertsTab) alertsTab.classList.add('active');
 
                 // Re-render alert query syntax highlighting when returning to alerts tab
                 if (window.SyntaxHighlight) {
@@ -1387,19 +1261,16 @@ const App = {
             case 'ingest':
                 if (ingestContent) ingestContent.style.display = 'block';
                 if (ingestView) ingestView.style.display = 'block';
-                if (ingestTab) ingestTab.classList.add('active');
                 if (window.IngestTokens) IngestTokens.show();
                 break;
             case 'recall':
                 if (recallContent) recallContent.style.display = 'flex';
                 if (recallView) recallView.style.display = 'flex';
-                if (recallTab) recallTab.classList.add('active');
                 document.body.classList.add('recall-active');
                 if (window.Recall) Recall.show(subPath);
                 break;
             case 'manage':
                 if (manageContent) manageContent.style.display = 'block';
-                if (manageTab) manageTab.classList.add('active');
                 if (window.FractalManageTab) FractalManageTab.show(subPath);
                 break;
         }

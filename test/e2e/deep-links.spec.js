@@ -251,7 +251,7 @@ test.describe('query URL mirroring', () => {
 
     // The Comments tab was merged into Notebooks, so this leaves search by the
     // route that still exists.
-    await page.locator('#fractalNotebooksTabBtn').click();
+    await page.locator('#sidebar a[data-nav="notebooks"]').click();
     await expect(page).not.toHaveURL(/[?&]q=/, { timeout: 10000 });
   });
 });

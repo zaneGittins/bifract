@@ -10,7 +10,7 @@ const { login } = require('./fixtures');
 async function openAlertEngine(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#mainPerformanceTabBtn').click();
+  await page.locator('#sidebar a[data-nav="performance"]').click();
   await expect(page.locator('#performanceView')).toBeVisible();
   await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="alerts"]').click();
   await expect(page.locator('#perfPaneAlerts')).toBeVisible();
@@ -92,7 +92,7 @@ test.describe('Storage & Ingest', () => {
   test('the hot table stats render under Storage', async ({ page }) => {
     await login(page);
     await page.goto('/');
-    await page.locator('#mainPerformanceTabBtn').click();
+    await page.locator('#sidebar a[data-nav="performance"]').click();
     await page.locator('#perfSubTabs .alerts-sub-tab[data-subtab="storage"]').click();
     await expect(page.locator('#perfPaneStorage')).toBeVisible();
     await expect(page.locator('#hotMetricPartitions')).toBeVisible();

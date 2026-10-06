@@ -25,7 +25,7 @@ async function runMitreQuery(page, query = QUERY) {
   const fractal = await mitreFractal(page);
   test.skip(!fractal, 'no fractal on this stack has events carrying attack.* tags');
 
-  await openFractal(page, 'fractalSearchTabBtn', fractal.name);
+  await openFractal(page, 'search', fractal.name);
 
   const input = page.locator('#queryInput');
   await input.waitFor({ timeout: 15000 });

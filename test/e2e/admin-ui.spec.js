@@ -11,7 +11,7 @@ const { login } = require('./fixtures');
 async function openAdmin(page, subtab) {
   await login(page);
   await page.goto('/');
-  await page.locator('#mainSettingsTabBtn').click();
+  await page.locator('#sidebar a[data-nav="settings"]').click();
   await expect(page.locator('#settingsView')).toBeVisible();
   if (subtab) {
     await page.locator(`#settingsSubTabs .alerts-sub-tab[data-subtab="${subtab}"]`).click();
@@ -21,7 +21,7 @@ async function openAdmin(page, subtab) {
 async function openNormalizers(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#mainNormalizersTabBtn').click();
+  await page.locator('#sidebar a[data-nav="normalizers"]').click();
   await expect(page.locator('#normalizersView')).toBeVisible();
 }
 

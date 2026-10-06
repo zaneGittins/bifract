@@ -7,39 +7,7 @@
    Health Notifications Bell
    ============================ */
 
-.notification-bell {
-    position: relative;
-    display: flex;
-    align-items: center;
-}
-
-.notification-bell-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--text-secondary);
-    padding: 6px;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: var(--transition);
-    position: relative;
-}
-
-.notification-bell-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-}
-
-.notification-bell-btn.has-unread {
-    color: var(--warning);
-}
-
 .notification-badge {
-    position: absolute;
-    top: 2px;
-    right: 2px;
     min-width: 16px;
     height: 16px;
     border-radius: 8px;
@@ -55,8 +23,6 @@
 
 .notification-dropdown {
     position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
     width: 340px;
     max-height: 420px;
     background: var(--bg-secondary);

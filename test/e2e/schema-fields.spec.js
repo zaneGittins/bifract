@@ -12,7 +12,7 @@ const { login } = require('./fixtures');
 async function openSchemaTab(page) {
   await login(page);
   await page.goto('/');
-  await page.locator('#mainSchemaTabBtn').click();
+  await page.locator('#sidebar a[data-nav="schema"]').click();
   await expect(page.locator('#schemaFieldsView')).toBeVisible();
   // Wait for a real data row, not merely any row: the empty-state row is also a
   // <tr>, and immediately after a restart the table can legitimately still be

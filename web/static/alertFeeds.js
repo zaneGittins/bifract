@@ -628,7 +628,6 @@ const AlertFeeds = {
         }
 
         AlertDetail.applyWidth(panel);
-        AlertDetail.startInset(panel);
         AlertDetail.setupResize(panel);
         AlertDetail.bindCopy(panel, alert);
         panel.classList.add('open');
@@ -695,7 +694,6 @@ const AlertFeeds = {
         this.currentDetailAlert = null;
         this._pendingSelectEdge = null;
         AlertDetail.markSelectedRow(null, document.getElementById('feedAlertsList'));
-        AlertDetail.stopInset();
         AlertDetail.unbindKeys();
     },
 

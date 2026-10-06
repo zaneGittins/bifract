@@ -11,16 +11,6 @@ const CommentedLogs = {
     detailCurrentIndex: -1,
 
     async init() {
-        const commentedTab = document.getElementById('commentedTabBtn');
-        if (commentedTab) {
-            commentedTab.addEventListener('click', () => this.show());
-        }
-
-        const searchTab = document.getElementById('searchTabBtn');
-        if (searchTab) {
-            searchTab.addEventListener('click', () => this.hide());
-        }
-
         const refreshBtn = document.getElementById('commentedRefreshBtn');
         if (refreshBtn) {
             refreshBtn.addEventListener('click', () => this.fetchComments());
@@ -74,8 +64,6 @@ const CommentedLogs = {
     async show() {
         await this.fetchComments();
     },
-
-    hide() {},
 
     // ============================
     // Data Fetching

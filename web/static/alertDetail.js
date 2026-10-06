@@ -9,9 +9,6 @@ const AlertDetail = {
 
     _activityToken: 0,
     _keyHandler: null,
-    _insetHandler: null,
-    _insetFrame: null,
-    _insetPanel: null,
 
     // ---- Content ----
 
@@ -346,40 +343,6 @@ const AlertDetail = {
             document.addEventListener('mousemove', onMove);
             document.addEventListener('mouseup', onUp);
         });
-    },
-
-    // The app header is in normal flow rather than fixed, so the panel's top
-    // edge tracks the header's live bottom and clamps to 0 once it scrolls away.
-    startInset(panel) {
-        this._insetPanel = panel;
-        if (this._insetHandler) {
-            this._insetHandler();
-            return;
-        }
-        const update = () => {
-            this._insetFrame = null;
-            const p = this._insetPanel;
-            const header = document.querySelector('.header');
-            if (!p || !header) return;
-            p.style.top = `${Math.max(0, Math.round(header.getBoundingClientRect().bottom))}px`;
-        };
-        this._insetHandler = () => {
-            if (this._insetFrame) return;
-            this._insetFrame = requestAnimationFrame(update);
-        };
-        window.addEventListener('scroll', this._insetHandler, { passive: true });
-        window.addEventListener('resize', this._insetHandler);
-        update();
-    },
-
-    stopInset() {
-        this._insetPanel = null;
-        if (!this._insetHandler) return;
-        window.removeEventListener('scroll', this._insetHandler);
-        window.removeEventListener('resize', this._insetHandler);
-        if (this._insetFrame) cancelAnimationFrame(this._insetFrame);
-        this._insetFrame = null;
-        this._insetHandler = null;
     },
 
     // ---- Selection and keyboard ----

@@ -117,29 +117,6 @@
     margin-top: 1.5rem;
 }
 
-/* User Display in Header */
-
-.username {
-    font-size: 0.875rem;
-    color: var(--text-secondary);
-}
-
-.btn-logout {
-    background: transparent;
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    padding: 0.375rem 0.75rem;
-    border-radius: 4px;
-    font-size: 0.8125rem;
-    cursor: pointer;
-    transition: var(--transition);
-}
-
-.btn-logout:hover {
-    border-color: var(--error);
-    color: var(--error);
-}
-
 /* Gravatar */
 .gravatar {
     width: 32px;
@@ -164,55 +141,6 @@
 /* Auth Required Elements (hidden by default) */
 .auth-required {
     display: none;
-}
-
-/* ============================
-   Navigation Tabs (inline header)
-   ============================ */
-
-.header-nav {
-    display: flex;
-    align-items: center;
-    gap: 0.125rem;
-    flex-shrink: 0;
-}
-
-.nav-tab {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    padding: 0.5rem 0.625rem;
-    cursor: pointer;
-    font-size: 0.8125rem;
-    font-family: var(--font-main);
-    font-weight: 500;
-    transition: var(--transition);
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    border-radius: 4px;
-    white-space: nowrap;
-    letter-spacing: 0.01em;
-}
-
-.nav-tab:hover {
-    color: var(--text-primary);
-    background: var(--overlay-subtle);
-}
-
-.nav-tab.active {
-    color: var(--accent-secondary);
-    background: var(--accent-glow);
-}
-
-.badge {
-    background: var(--accent-tertiary);
-    color: white;
-    padding: 0.0625rem 0.375rem;
-    border-radius: 10px;
-    font-size: 0.625rem;
-    font-weight: 600;
-    line-height: 1.4;
 }
 
 /* ============================

@@ -10,6 +10,17 @@
         if (localStorage.getItem('bifract-theme') === 'light') {
             document.documentElement.setAttribute('data-theme', 'light');
         }
+        // Sidebar collapse state before first paint; mirrors Sidebar.isCollapsed.
+        try {
+            var sbPrefs = JSON.parse(localStorage.getItem('bifract-sidebar')) || {};
+            var sbWork = /^#([fp]\/[^/]+(\/|\/(search|recall)(\/.*)?)?|(search|recall)(\/.*)?)$/.test(location.hash) ||
+                (!location.hash && /[?&]q=/.test(location.search));
+            var sbClass = sbWork ? 'workspace' : 'page';
+            var sbSaved = sbPrefs[sbClass];
+            if (typeof sbSaved === 'boolean' ? sbSaved : sbClass === 'workspace') {
+                document.documentElement.classList.add('sb-collapsed');
+            }
+        } catch (e) {}
     </script>
     <!-- style.css was split into ordered parts under /static/css/. They are a
          byte-exact partition and must all be loaded, in this order. -->
@@ -35,72 +46,44 @@
     <link rel="stylesheet" href="/static/instructionLibraries.css">
     <link rel="stylesheet" href="/static/schemaFields.css">
     <link rel="stylesheet" href="/static/attackCoverage.css">
+    <link rel="stylesheet" href="/static/sidebar.css">
     <link rel="stylesheet" href="/static/fonts/fonts.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <div class="header-content">
-                <div class="logo">
-                    <img src="/static/logo.png" alt="Bifract" width="40" height="40" style="border-radius: 4px;">
-                </div>
-                <div id="contextPillContainer" style="display: none; align-items: center; flex-shrink: 0;"></div>
-                <!-- Main View Navigation (inline with logo) -->
-                <nav id="mainViewNav" class="header-nav" style="display: none;">
-                    <button id="fractalListingTabBtn" class="nav-tab active">Fractals</button>
-                    <button id="mainNormalizersTabBtn" class="nav-tab admin-only" style="display: none;">Normalizers</button>
-                    <button id="mainSchemaTabBtn" class="nav-tab admin-only" style="display: none;">Schema</button>
-                    <button id="mainApiTabBtn" class="nav-tab admin-only" style="display: none;">API</button>
-                    <button id="mainPerformanceTabBtn" class="nav-tab admin-only" style="display: none;">System</button>
-                    <button id="mainSettingsTabBtn" class="nav-tab admin-only" style="display: none;">Admin</button>
-                </nav>
-                <!-- Fractal View Navigation (inline with logo) -->
-                <nav id="fractalViewNav" class="header-nav" style="display: none;">
-                    <button id="fractalSearchTabBtn" class="nav-tab active">Query</button>
-                    <button id="fractalNotebooksTabBtn" class="nav-tab">
-                        Notebooks
-                        <span id="commentedCountBadge" class="badge" style="display: none;"></span>
-                    </button>
-                    <button id="fractalDashboardsTabBtn" class="nav-tab">Dashboards</button>
-                    <button id="fractalDictionariesTabBtn" class="nav-tab">Context</button>
-                    <button id="fractalModelsTabBtn" class="nav-tab">Models</button>
-                    <button id="fractalLibraryTabBtn" class="nav-tab">Library</button>
-                    <button id="fractalChatTabBtn" class="nav-tab">Chat</button>
-                    <button id="fractalAlertsTabBtn" class="nav-tab">
-                        Alerts
-                        <span id="alertsCountBadge" class="badge" style="display: none;"></span>
-                    </button>
-                    <button id="fractalIngestTabBtn" class="nav-tab">Ingest</button>
-                    <button id="fractalRecallTabBtn" class="nav-tab rbac-hidden" title="Async BQL search over the archive">Recall</button>
-                    <button id="fractalManageTabBtn" class="nav-tab fractal-admin-only rbac-hidden">Manage</button>
-                </nav>
-                <div class="header-right">
-                    <div id="notificationBell" class="notification-bell" style="display:none;">
-                        <button id="notificationBellBtn" class="notification-bell-btn" onclick="Notifications.toggle()">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                            </svg>
-                            <span id="notificationBadge" class="notification-badge" style="display:none;"></span>
-                        </button>
-                        <div id="notificationDropdown" class="notification-dropdown" style="display:none;">
-                            <div class="notification-dropdown-header">
-                                <span class="notification-dropdown-title">Health Notifications</span>
-                                <button class="notification-mark-read-btn" onclick="Notifications.markAllRead()">Mark all read</button>
-                            </div>
-                            <div id="notificationList" class="notification-list">
-                                <div class="notification-empty">No notifications in the last 24 hours</div>
-                            </div>
-                        </div>
+    <div class="app-shell">
+    <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+        <div class="sb-top">
+            <a class="sb-logo" href="#fractalListing" data-home data-tip="Home" aria-label="Home">
+                <img src="/static/logo.png" alt="" width="28" height="28">
+            </a>
+            <div id="sidebarScope" class="sb-scope"></div>
+        </div>
+        <nav id="sidebarNav" class="sb-nav" aria-label="Main navigation"></nav>
+        <div class="sb-footer">
+            <div id="notificationBell" class="sb-notify" style="display:none;">
+                <button id="notificationBellBtn" type="button" class="sb-item" data-tip="Notifications" aria-expanded="false" aria-controls="notificationDropdown" onclick="Notifications.toggle()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
+                    <span class="sb-label">Notifications</span>
+                    <span id="notificationBadge" class="notification-badge" style="display:none;"></span>
+                </button>
+                <div id="notificationDropdown" class="notification-dropdown" style="display:none;">
+                    <div class="notification-dropdown-header">
+                        <span class="notification-dropdown-title">Health Notifications</span>
+                        <button class="notification-mark-read-btn" onclick="Notifications.markAllRead()">Mark all read</button>
                     </div>
-                    <div id="userInfo"></div>
-                    <button id="loginButton" onclick="Auth.showLoginModal()" class="btn-primary" style="display: none;">
-                        Login
-                    </button>
+                    <div id="notificationList" class="notification-list">
+                        <div class="notification-empty">No notifications in the last 24 hours</div>
+                    </div>
                 </div>
             </div>
-        </header>
+            <div id="userInfo" class="sb-user"></div>
+            <button id="sidebarToggle" type="button" class="sb-item sb-toggle"></button>
+        </div>
+    </aside>
+    <div class="container">
 
 
         <!-- Main View (Home Page) -->
@@ -3459,6 +3442,7 @@
         </div><!-- End fractalView -->
 
     </div><!-- End container -->
+    </div><!-- End app-shell -->
 
     <!-- TOC quick-access FAB (shown when inside a notebook) -->
     <button id="notebookTOCFab" class="notebook-toc-fab" title="Toggle section navigator (F8)" style="display:none" onclick="Notebooks.toggleTOC()">
@@ -4347,6 +4331,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/fractalListing.js"></script>
     <script src="/static/timezone.js"></script>
     <script src="/static/utils.js"></script>
+    <script src="/static/sidebar.js"></script>
     <script src="/static/syntaxHighlight.js"></script>
     <script src="/static/variables.js"></script>
     <script src="/static/queryValidate.js"></script>

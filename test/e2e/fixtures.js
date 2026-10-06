@@ -86,8 +86,8 @@ async function scopeHeader(page) {
   return { 'X-Bifract-Scope': `${isPrism ? 'prism' : 'fractal'}:${id}` };
 }
 
-// Open a fractal in the UI, by name when given, and switch to a tab.
-async function openFractal(page, tabButtonId, fractalName) {
+// Open a fractal in the UI, by name when given, and switch to a sidebar page.
+async function openFractal(page, navKey, fractalName) {
   await page.goto('/');
   await page.locator('.fractal-listing-table tbody tr').first().waitFor({ timeout: 15000 });
   let row = page.locator('.fractal-listing-table tbody tr').first();
@@ -96,7 +96,7 @@ async function openFractal(page, tabButtonId, fractalName) {
     if (await named.count()) row = named;
   }
   await row.locator('td').first().click();
-  if (tabButtonId) await page.locator(`#${tabButtonId}`).click();
+  if (navKey) await page.locator(`#sidebar a[data-nav="${navKey}"]`).click();
 }
 
 // Land on the search tab of a fractal that has logs, with results on screen.
@@ -126,7 +126,7 @@ async function openSearchByClick(page) {
   const fractal = await populatedFractal(page);
   if (!fractal) return null;
 
-  await openFractal(page, 'fractalSearchTabBtn', fractal.name);
+  await openFractal(page, 'search', fractal.name);
   await page.locator('#queryInput').waitFor({ timeout: 15000 });
   await page.locator('#timePickerBtn').click();
   await page.locator('#timePickerPanel .tp-preset[data-value="all"]').click();

@@ -189,6 +189,7 @@ const Recall = {
     _pollTimer: null,
     _elapsedTimer: null,
     _recent: [],
+    available: false,     // archive enabled and provisioned; gates the nav item
     _visToken: 0,         // guards out-of-order archive-availability checks
     _pager: null,         // scoped client-side pagination for the results table
     _fieldOrder: null,    // column order of the active job's results
@@ -266,7 +267,7 @@ const Recall = {
         this.stopPolling();
         this._activeJobId = null;
         this.clearEstimate();
-        this.refreshTabVisibility();
+        this.refreshAvailability();
 
         // Recall is fractal-only, so there is nothing to reload in a prism; the
         // tab is being navigated away from by updateScopedTabVisibility.
@@ -284,18 +285,14 @@ const Recall = {
         }
     },
 
-    // Toggle the Recall tab button based on archive availability. Uses the
-    // auth-only /recall/available endpoint (enabled && provisioned) so the gate
-    // is correct for analysts, not just admins.
-    async refreshTabVisibility() {
-        const btn = document.getElementById('fractalRecallTabBtn');
-        if (!btn) return;
-        if (!this.fractalId()) { btn.classList.add('rbac-hidden'); return; }
-
+    // Uses the auth-only /recall/available endpoint so the gate is correct for
+    // analysts, not just admins.
+    async refreshAvailability() {
         const token = ++this._visToken;
-        const available = await this.checkArchiveAvailable();
+        const available = this.fractalId() ? await this.checkArchiveAvailable() : false;
         if (token !== this._visToken) return; // superseded by a newer switch
-        btn.classList.toggle('rbac-hidden', !available);
+        this.available = available;
+        if (window.Sidebar) Sidebar.refresh();
     },
 
     async checkArchiveAvailable() {
