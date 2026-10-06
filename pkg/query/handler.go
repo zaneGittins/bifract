@@ -2536,6 +2536,36 @@ func (h *QueryHandler) buildFractalCondition(r *http.Request, selectedFractal st
 	return "", false, nil
 }
 
+// recentLogsSQL selects the landing sample: the newest 50 rows in [start, end].
+// The constant upper bound keeps future-dated (clock-skewed) rows from leading a
+// newest-first read, and as a sort-key range it still prunes and reads in order.
+func recentLogsSQL(table, fractalCondition string, withShard bool, start, end time.Time) string {
+	where := fmt.Sprintf("WHERE timestamp >= '%s' AND timestamp <= '%s'",
+		start.UTC().Format("2006-01-02 15:04:05.000"), end.UTC().Format("2006-01-02 15:04:05.000"))
+	if fractalCondition != "" {
+		where += " AND " + fractalCondition
+	}
+	cols := "timestamp, norm_log, log_id, fractal_id"
+	if withShard {
+		cols += ", toString(_shard_num) AS _shard_num"
+	}
+	return fmt.Sprintf("SELECT %s FROM %s %s ORDER BY timestamp DESC LIMIT 50", cols, table, where)
+}
+
+// recentHistogramSQL counts the landing window from the per-minute rollup,
+// bounded above like recentLogsSQL so future-dated rows stay out of it.
+func recentHistogramSQL(table, fractalCondition string, start, end time.Time) string {
+	where := fmt.Sprintf("WHERE minute >= '%s' AND minute <= '%s'",
+		start.UTC().Format("2006-01-02 15:04:05"), end.UTC().Format("2006-01-02 15:04:05"))
+	if fractalCondition != "" {
+		where += " AND " + fractalCondition
+	}
+	return fmt.Sprintf(
+		"SELECT toStartOfInterval(minute, INTERVAL 15 MINUTE) AS bucket, sum(cnt) AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket",
+		table, where,
+	)
+}
+
 // HandleGetRecentLogs returns the 50 most recent logs in the last 24h for a fractal.
 func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -2562,16 +2592,7 @@ func (h *QueryHandler) HandleGetRecentLogs(w http.ResponseWriter, r *http.Reques
 
 	now := time.Now().UTC()
 	oneDayAgo := now.Add(-24 * time.Hour)
-	whereClause := fmt.Sprintf("WHERE timestamp >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
-	if fractalCondition != "" {
-		whereClause += " AND " + fractalCondition
-	}
-
-	selectCols := "timestamp, norm_log, log_id, fractal_id"
-	if h.db.Topology().DistributedTables {
-		selectCols += ", toString(_shard_num) AS _shard_num"
-	}
-	logsSQL := fmt.Sprintf("SELECT %s FROM %s %s ORDER BY timestamp DESC LIMIT 50", selectCols, h.queryTableName(), whereClause)
+	logsSQL := recentLogsSQL(h.queryTableName(), fractalCondition, h.db.Topology().DistributedTables, oneDayAgo, now)
 
 	queryStart := time.Now()
 	queryCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -2662,14 +2683,7 @@ func (h *QueryHandler) HandleGetRecentHistogram(w http.ResponseWriter, r *http.R
 	histogram := make([]int, 96)
 
 	if !noData {
-		histWhereClause := fmt.Sprintf("WHERE minute >= '%s'", oneDayAgo.Format("2006-01-02 15:04:05"))
-		if fractalCondition != "" {
-			histWhereClause += " AND " + fractalCondition
-		}
-		histogramSQL := fmt.Sprintf(
-			"SELECT toStartOfInterval(minute, INTERVAL 15 MINUTE) AS bucket, sum(cnt) AS cnt FROM %s %s GROUP BY bucket ORDER BY bucket",
-			h.db.HistogramReadTable(), histWhereClause,
-		)
+		histogramSQL := recentHistogramSQL(h.db.HistogramReadTable(), fractalCondition, oneDayAgo, now)
 
 		queryCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
