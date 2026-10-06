@@ -70,6 +70,7 @@ nav:
     - Sizing Guide: getting-started/sizing.md
     - ClickHouse Cloud: getting-started/clickhouse-cloud.md
     - Configuration: getting-started/configuration.md
+    - Navigating Bifract: getting-started/navigation.md
   - Administration:
     - Users & Roles: administration/users-and-roles.md
     - OIDC / SSO: administration/oidc-sso.md
