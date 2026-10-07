@@ -882,6 +882,15 @@
 .pg-drawer-row[data-log]:hover .pg-drawer-val { color: var(--text-primary); text-decoration: underline; text-underline-offset: 2px; }
 .pg-drawer-empty { padding: 22px; text-align: center; color: var(--text-muted); font-size: 12px; }
 
+/* "Why" an edge scored what it did: the evidence line, then muted supporting facts. */
+.pg-why { padding: 6px 8px 8px; margin: 0 6px 6px; border-bottom: 1px solid var(--border-color); font-size: 11.5px; line-height: 1.45; }
+.pg-why-head { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin-bottom: 3px; }
+.pg-why-lead { color: var(--text-secondary); overflow-wrap: anywhere; }
+.pg-why-lead b { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.pg-why-facts { color: var(--text-muted); font-size: 10.5px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.pg-why-row { margin: -2px 0 4px; padding: 0 8px 6px; border-bottom: none; font-size: 10.5px; }
+.pg-why-row .pg-why-lead { color: var(--text-muted); }
+
 /* Two-line drawer row (reconnections): the actual value on top at full width, a muted
    descriptor ("shared IP / dropped & ran · peer" + host) below, so the value never competes. */
 .pg-drawer-row2 { flex-direction: column; align-items: stretch; gap: 3px; }

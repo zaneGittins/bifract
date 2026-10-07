@@ -3673,6 +3673,7 @@ const QueryExecutor = {
         const logInfoById = new Map();   // node id -> {log_id,timestamp,fractal_id,_shard_num}
         const anomalyByNode = new Map(); // node id -> anomaly on its incoming edge
         const firstSeenByNode = new Map(); // node id -> first day this relationship was ever observed
+        const whyByNode = new Map();     // process guid -> explanation of the spawn edge into it (see _pgWhyOf)
         const procMeta = new Map();      // guid -> {cmd, user} (command line + user, cmd truncated server-side)
         const procTime = new Map();      // guid -> epoch ms (process creation / first-seen time)
         const procHost = new Map();      // guid -> computer_name (for cross-host reconnection notation)
@@ -3711,6 +3712,7 @@ const QueryExecutor = {
                 // its own creation) from a "ghost" parent that only exists as some child's
                 // parent_guid (its creation event is missing / outside the time range).
                 if (et === 'spawn') hasCreation.add(r.child);
+                if (et === 'spawn' && !whyByNode.has(r.child)) { const w = this._pgWhyOf(r); if (w) whyByNode.set(r.child, w); }
                 if (info) logInfoById.set(r.child, info);
                 bumpAnomaly(r.child, anomaly);
                 // command line + user ride on the child process row (pm-joined server-side).
@@ -3722,7 +3724,7 @@ const QueryExecutor = {
                 if (t != null && (et === 'spawn' || !procTime.has(r.child))) procTime.set(r.child, t);
                 // Empty parent => a true root: register its creation (above) but draw no spawn edge.
                 if (et === 'spawn') { if (r.parent) { push(spawnKids, r.parent, r.child); isChild.add(r.child); } }
-                else if (r.parent) { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info, recon: et.indexOf('reconnect') === 0 }); }
+                else if (r.parent) { push(interactions, r.parent, { target: r.child, type: et, anomaly, label: r.label, info, recon: et.indexOf('reconnect') === 0, why: this._pgWhyOf(r) }); }
             } else {
                 if (!r.parent) return; // a leaf edge (file/net/dns) must have an owning process
                 ensureProc(r.parent, null);
@@ -3732,8 +3734,11 @@ const QueryExecutor = {
                 const grp = leafGroups.get(r.parent)[ctype];
                 const lk = r.parent + '\x00' + ctype + '\x00' + r.child;
                 let entry = leafIndex.get(lk);
-                if (!entry) { entry = { id: r.child, label: r.label, anomaly, info }; grp.push(entry); leafIndex.set(lk, entry); }
+                const why = this._pgWhyOf(r);
+                if (!entry) { entry = { id: r.child, label: r.label, anomaly, info, why }; grp.push(entry); leafIndex.set(lk, entry); }
                 else if (anomaly > entry.anomaly) entry.anomaly = anomaly;
+                // The scored leaf explains itself better than a bridge row for the same artifact.
+                if (why && why.basis !== 'reconnect' && (!entry.why || entry.why.basis === 'reconnect')) entry.why = why;
                 if (et.indexOf('reconnect') === 0) entry.recon = true;
                 if (!leafOwners.has(r.child)) leafOwners.set(r.child, new Set());
                 leafOwners.get(r.child).add(r.parent);
@@ -3876,7 +3881,57 @@ const QueryExecutor = {
         const labelDerived = (g) => !procLabel.get(g) && !!procLabelHint.get(g);
 
         return { procLabel, procLabelHint, labelOf, labelDerived, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats,
-            logInfoById, anomalyByNode, firstSeenByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
+            logInfoById, anomalyByNode, firstSeenByNode, whyByNode, procMeta, procTime, procHost, procSet, roots, rootOf, homeRoot, externalProcs, ghostProcs };
+    },
+
+    // The explanation columns pgr() emits with every scored edge, or null for rows without them
+    // (ptg(), or an older server).
+    _pgWhyOf(r) {
+        if (!r || !r.score_basis) return null;
+        const num = (k) => { const v = parseFloat(r[k]); return isNaN(v) ? 0 : v; };
+        return {
+            basis: r.score_basis, eventType: r.event_type || '', parent: r.parent || '',
+            edge: num('edge_host_days'), src: num('source_host_days'), exec: num('source_exec_host_days'),
+            tgt: num('target_host_days'), tgtHosts: num('target_hosts'), totalHosts: num('total_hosts'),
+            own: num('edge_score'), final: num('anomaly_score'), firstSeen: r.first_seen || '',
+        };
+    },
+
+    // Plain-language reasons for a score: the evidence line (what everyone else's history holds,
+    // this tree left out) and the supporting facts. Returns escaped HTML.
+    _pgWhyHtml(w, tgtName) {
+        if (!w) return '';
+        const esc = Utils.escapeHtml;
+        const n = (v) => Math.round(v).toLocaleString();
+        const verb = { spawn: 'started a process', net_connect: 'made a connection', dns_query: 'resolved a domain',
+            file_write: 'wrote a file', remote_thread: 'injected a thread', process_access: 'opened a process' }[w.eventType] || 'did this';
+        const srcName = w.parent ? this._pgShort(this._pgModel.labelOf(w.parent)) : 'the source';
+        // Without a target name (a leaf row already shows it) the lead drops the "a → b:" prefix.
+        const edge = tgtName ? `${esc(srcName)} → ${esc(this._pgShort(tgtName))}: ` : '';
+        let lead;
+        if (w.basis === 'transition') {
+            lead = w.src > 0
+                ? `<span title="Of the ${n(w.src)} host-days on which ${esc(srcName)} ${verb} anywhere else, ${n(w.edge)} reached this target">${edge}<b>${n(w.edge)}</b> of ${n(w.src)} other host-days</span>`
+                : `${edge}${esc(srcName)} ran on ${n(w.exec)} other host-days and never ${verb}`;
+        } else if (w.basis === 'new_source') {
+            lead = `${edge}${esc(srcName)} never ran on another host; target touched on <b>${n(w.tgt)}</b> other host-days`;
+        } else if (w.basis === 'no_source') {
+            lead = 'No parent image to compare against';
+        } else if (w.basis === 'reconnect') {
+            lead = 'Bridge to another tree through a shared rare artifact';
+        } else {
+            return '';
+        }
+        const facts = [];
+        if (w.firstSeen) {
+            const t = Date.parse(w.firstSeen + 'T00:00:00Z');
+            const days = isNaN(t) ? null : Math.max(0, Math.floor((Date.now() - t) / 86400000));
+            facts.push('first seen ' + (days === 0 ? 'today' : days != null ? days + 'd ago' : esc(w.firstSeen)));
+        }
+        if (w.totalHosts > 0) facts.push(`target on ${w.tgtHosts >= 256 ? '256+' : n(w.tgtHosts)} of ${n(w.totalHosts)} hosts`);
+        const inherited = w.final - w.own;
+        if (inherited >= 0.005) facts.push(`own ${w.own.toFixed(2)}, inherited +${inherited.toFixed(2)}`);
+        return `<div class="pg-why-lead">${lead}</div>` + (facts.length ? `<div class="pg-why-facts">${facts.join(' · ')}</div>` : '');
     },
 
     // Parse pgr's "YYYY-MM-DD HH:MM:SS.mmm" (UTC, no tz) into epoch ms, or null.
@@ -4709,11 +4764,11 @@ const QueryExecutor = {
         // Activity drawers (process interactions / file / network / dns): a simple ranked list.
         let items, heading;
         if (type === 'inject') {
-            items = (m.interactions.get(guid) || []).filter(it => passT(it.anomaly)).map(it => ({ label: it.label || it.target, anomaly: it.anomaly, info: it.info, tag: it.type }));
+            items = (m.interactions.get(guid) || []).filter(it => passT(it.anomaly)).map(it => ({ label: it.label || it.target, anomaly: it.anomaly, info: it.info, tag: it.type, why: it.why }));
             heading = 'Process interactions';
         } else {
             const grp = m.leafGroups.get(guid) || { file: [], net: [], dns: [] };
-            items = (grp[type] || []).filter(x => passT(x.anomaly)).map(x => ({ label: x.label, anomaly: x.anomaly, info: x.info }));
+            items = (grp[type] || []).filter(x => passT(x.anomaly)).map(x => ({ label: x.label, anomaly: x.anomaly, info: x.info, why: x.why }));
             heading = type === 'file' ? 'File activity' : type === 'net' ? 'Network activity' : 'DNS activity';
         }
         const sevOf = (a) => this._pgSev(a);
@@ -4723,7 +4778,9 @@ const QueryExecutor = {
             const pill = isNaN(it.anomaly) ? '' : `<span class="pg-anom pg-anom-${sevOf(it.anomaly)}">${it.anomaly.toFixed(2)}</span>`;
             const val = esc(String(it.label || ''));
             const tag = it.tag ? `<span class="pg-tag">${esc(it.tag)}</span>` : '';
-            return `<div class="pg-drawer-row"${dl} title="${val}"><span class="pg-drawer-val">${val}</span>${tag}${pill}</div>`;
+            const why = this._pgWhyHtml(it.why);
+            return `<div class="pg-drawer-row"${dl} title="${val}"><span class="pg-drawer-val">${val}</span>${tag}${pill}</div>` +
+                (why ? `<div class="pg-why pg-why-row">${why}</div>` : '');
         }).join('') || '<div class="pg-drawer-empty">No matching activity.</div>';
         openDrawer(heading, `${items.length} ${items.length === 1 ? 'entry' : 'entries'}`, rows, (dr) => {
             dr.querySelectorAll('.pg-drawer-row[data-log]').forEach(r => r.addEventListener('click', () => {
@@ -4770,6 +4827,7 @@ const QueryExecutor = {
         const info = m.logInfoById.get(guid) || null;
         const t = m.procTime.get(guid);
         const pill = isNaN(a) ? '' : `<span class="pg-anom pg-anom-${this._pgSev(a)}">${a.toFixed(2)}</span>`;
+        const whyHtml = this._pgWhyHtml(m.whyByNode && m.whyByNode.get(guid), name);
         // A copyable key/value row (whole row copies its value on click). Empty values are dropped.
         const kv = (k, v) => {
             const val = String(v == null ? '' : v);
@@ -4796,7 +4854,8 @@ const QueryExecutor = {
             `<span class="pg-drawer-proc" title="${esc(String(name))}">${esc(this._pgShort(name))}</span>${idLink}</div>` +
             `<button class="pg-drawer-close" title="Close">&times;</button></div>` +
             `${pill ? `<div class="pg-drawer-count">anomaly ${pill}</div>` : ''}` +
-            `<div class="pg-drawer-body"><div class="pg-kv-group pg-drawer-fields">${instant || '<div class="pg-drawer-empty">No details for this process.</div>'}</div></div>`;
+            `<div class="pg-drawer-body">${whyHtml ? `<div class="pg-why"><div class="pg-why-head">Why</div>${whyHtml}</div>` : ''}` +
+            `<div class="pg-kv-group pg-drawer-fields">${instant || '<div class="pg-drawer-empty">No details for this process.</div>'}</div></div>`;
         drawer.hidden = false;
         requestAnimationFrame(() => drawer.classList.add('open'));
         const mm = host.querySelector('.pg-minimap'); if (mm) mm.style.opacity = '0';
