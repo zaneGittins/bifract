@@ -20553,6 +20553,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "description": "all (default) or findings: only the rows the model's alert would raise, most unusual first.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "security": [
