@@ -283,12 +283,12 @@ func (m *Manager) runPreviewQueries(ctx context.Context, shapeSQL, metricsSQL, t
 }
 
 // rarityDistSQL bins scored rarity rows by confidence (ceil, 0.01), percent
-// (floor, 0.1) and histogram band, with s = 1 when the row passes min days seen.
+// (floor, 0.1) and histogram band, with s = 1 when the row's group has the min history.
 func rarityDistSQL(scored string, minSample int) string {
 	return fmt.Sprintf(`SELECT toInt64(ceil(round(confidence * 100, 6))) AS c,
     toInt64(floor(round(percent * 10, 6))) AS p,
     toInt64(%s) AS h,
-    toInt64(model_count >= %d) AS s,
+    toInt64(model_total >= %d) AS s,
     toInt64(count()) AS n
 FROM (%s)
 GROUP BY c, p, h, s
@@ -379,7 +379,7 @@ FROM (%s)`, flagPred, scored)
 
 	topSQL := fmt.Sprintf(`SELECT partition_val, value_val, model_count, percent, confidence
 FROM (%s)
-WHERE model_count >= %d
+WHERE model_total >= %d
 ORDER BY confidence DESC, percent ASC, model_count DESC
 LIMIT 25`, scored, minSample)
 

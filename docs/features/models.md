@@ -6,7 +6,7 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 
 | Type | Answers | Shape |
 |------|---------|-------|
-| **Rarity** | How unusual is a value within its group? | Partition key (group by), value key, min days seen |
+| **Rarity** | How unusual is a value within its group? | Group by (e.g. host), value (e.g. port), min history |
 | **First / Last Seen** | When was an entity first and last observed? | One or more key fields |
 | **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, time bucket (hour/day), min history |
 | **TLSH Index** | Which fuzzy-hash digests exist here? | One digest field |
@@ -15,18 +15,18 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 
 ### How rarity is scored
 
-Rarity counts **days**, not events: a value seen 10,000 times on one day counts once, so a burst cannot make itself look normal. For each value in a partition:
+Rarity counts **days**, not events: a value seen 10,000 times on one day counts once, so a burst cannot make itself look normal. For each value in a group (the "Group by" field):
 
 | Output | Meaning |
 |---|---|
 | `model_count` | Days the value was seen |
-| `model_total` | Days the partition was seen with any value |
-| `percent` | `model_count / model_total`, the share of the partition's days the value appeared on |
-| `confidence` | Good-Turing coverage of the partition: 1 minus (values seen on only one day / total value-days). Near 1 means the partition rarely produces a new value; low means new values are routine there |
+| `model_total` | Days the group was seen with any value |
+| `percent` | `model_count / model_total`, the share of the group's days the value appeared on |
+| `confidence` | Good-Turing coverage of the group: 1 minus (values seen on only one day / total value-days). Near 1 means the group rarely produces a new value; low means new values are routine there |
 
 The alert fires on a value whose `percent` is below the share threshold while `confidence` is above its threshold. Port 22 appearing once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `confidence` 0.99; on a host that touches a new port most days, `confidence` stays low and new ports do not alert.
 
-The share threshold also sets the learning period: a value seen on one day can only fall below it once the partition has more than 100 / threshold days of history (10% needs more than 10 days). **Min days seen** is a floor on `model_count` before a value is scored; leave it at 1, since first sightings are what the model finds.
+**Min history** is the learning period: the days a group must have been seen (`model_total`) before any of its values can alert. It defaults to 14, two weeks of normal. The share threshold adds its own floor, since a value seen on one day only falls below it once the group has more than 100 / threshold days (10% needs more than 10), so the effective learning period is the longer of the two. A value is never held back for being new: first sightings are what the model finds.
 
 ### How volume is scored
 
@@ -104,7 +104,7 @@ The listing shows one state per model, the worst that applies, with the reason o
 | **Rebuilding** | Its tables are being created |
 | **Backfill n%** | History is being seeded |
 | **Stale** | The newest event the model recorded is more than 2 days old (3 hours for an hourly Volume Baseline, which otherwise scores every entity against an empty bucket) |
-| **Learning k/n** | Too little history for scores to mean much. Rarity needs more than 100 / share threshold days, Volume Baseline its min history in buckets, First / Last Seen 7 days, network models one full window |
+| **Learning k/n** | Too little history for scores to mean much. Rarity needs its min history in days per group, or more than 100 / share threshold days if that is longer, Volume Baseline its min history in buckets, First / Last Seen 7 days, network models one full window |
 | **Healthy** | Recording and scoring normally |
 
 **Findings** counts what the model surfaced over the last 7 days: entities first recorded per day (First / Last Seen) or value pairs first seen per day (Rarity), each with a daily sparkline; entities above the z threshold in the latest bucket (Volume Baseline); pairs at or above the score threshold (network models). **Last alert** is when the linked alert last fired. Both are read from the model's own tables, never raw logs, and cached for two minutes.
@@ -122,7 +122,7 @@ The **Data** view opens on **Findings**: the rows the model's alert would raise,
 
 A rarity model with no thresholds has no findings, and a TLSH Index has no alert, so it shows only its rows. The same rows are available from the API as `GET /models/{id}/data?view=findings`.
 
-A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, partition confidence, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
+A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, group confidence, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
 
 ## Import / Export
 

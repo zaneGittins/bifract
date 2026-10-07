@@ -194,6 +194,30 @@ func TestRarityScoring(t *testing.T) {
 	if code := scoped.Status(t, "GET", "/models/"+model.ID+"/data?view=bogus", nil); code != 400 {
 		t.Errorf("an unknown view answered %d, want 400", code)
 	}
+
+	// Min history is per group: WS02 and WS03 each have 28 days, so a 29-day
+	// requirement holds both back and a 28-day one lets both alert. It is
+	// applied at read time, so the edit keeps the model's data.
+	setMinHistory := func(days int) {
+		scoped.Do(t, "PUT", "/models/"+model.ID, map[string]any{
+			"name": modelName, "alert_mode": "none",
+			"definition": map[string]any{
+				"source_bql":    fmt.Sprintf("suite_marker=%q", marker),
+				"partition_key": "computer_name",
+				"value_key":     "dst_port",
+				"min_sample":    days,
+				"alert":         map[string]any{"confidence_threshold": 0.9, "percent_threshold": 10},
+			},
+		}, nil)
+	}
+	setMinHistory(days + 1)
+	if findings, total := modelFindings(t, scoped, model.ID, ""); total != 0 {
+		t.Errorf("min history %d: findings = %s, want none while every group is learning", days+1, rarityKeys(findings))
+	}
+	setMinHistory(days)
+	if findings, total := modelFindings(t, scoped, model.ID, ""); total != 2 || rarityKeys(findings) != "WS02/22,WS03/3389" {
+		t.Errorf("min history %d: findings = %s (total %d), want WS02/22,WS03/3389", days, rarityKeys(findings), total)
+	}
 }
 
 // modelFindings reads a model's Findings view: the rows its alert would raise,

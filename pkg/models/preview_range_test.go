@@ -102,7 +102,7 @@ func TestSplitDistRows(t *testing.T) {
 
 func TestDistSQLBinsOnThresholdGrid(t *testing.T) {
 	r := rarityDistSQL("SELECT 1", 3)
-	for _, want := range []string{"ceil(round(confidence * 100, 6))", "floor(round(percent * 10, 6))", "model_count >= 3", "LIMIT 50001"} {
+	for _, want := range []string{"ceil(round(confidence * 100, 6))", "floor(round(percent * 10, 6))", "model_total >= 3", "LIMIT 50001"} {
 		if !strings.Contains(r, want) {
 			t.Errorf("rarity distribution missing %q", want)
 		}
