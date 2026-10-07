@@ -26,9 +26,21 @@ Rarity counts **days**, not events: a value seen 10,000 times on one day counts 
 
 The alert fires on a value whose `percent` is below the share threshold while `confidence` is above its threshold. Port 22 appearing once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `confidence` 0.99; on a host that touches a new port most days, `confidence` stays low and new ports do not alert.
 
-The share threshold also sets the learning period: a value seen on one day can only fall below it once the partition has more than 100 / threshold days of history (10% needs more than 10 days). **Min days seen** is a floor on `model_count` before a value is scored; leave it at 1, since first sightings are what the model finds. Volume Baseline stores its **min history** in the same field, where it counts buckets of history, and 7 is the sensible default there.
+The share threshold also sets the learning period: a value seen on one day can only fall below it once the partition has more than 100 / threshold days of history (10% needs more than 10 days). **Min days seen** is a floor on `model_count` before a value is scored; leave it at 1, since first sightings are what the model finds.
 
-Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
+### How volume is scored
+
+Volume Baseline scores the latest **complete** time bucket (`latest_bucket`, yesterday for a daily model) against the entity's own history; the current incomplete bucket is excluded. History runs from the entity's first bucket in the window (90 days for daily, 30 days for hourly) up to, but not including, the scored bucket. Buckets with no events count as zero, so a quiet entity's bursts and drops show, and an empty scored bucket scores as 0 events.
+
+| Output | Meaning |
+|---|---|
+| `latest_count` | Events in `latest_bucket` (0 when it was empty) |
+| `baseline_median` | Median count per bucket over the history |
+| `mad` | Median absolute deviation of the history |
+| `n_buckets` | Buckets of history, empty ones included. An entity is scored once this reaches **min history** (default 7) |
+| `z_score` | Modified z-score, `0.6745 * (latest_count - median) / mad`. 3.5 is the standard cutoff |
+
+When `mad` is 0 (most buckets equal the median), `z_score` falls back to `(latest_count - median) / (1.253314 * mean absolute deviation)`. When the history is perfectly flat (every bucket the same), any change scores `z_score` 1000000, or -1000000 for a drop, shown as "flat history, any change". Seasonality (weekday or hour-of-day baselines) is not modeled.
 
 ### What "new" means for First / Last Seen
 

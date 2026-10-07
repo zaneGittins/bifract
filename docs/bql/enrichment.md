@@ -127,7 +127,7 @@ The key shape depends on the model type:
 |---|---|
 | `rarity` | `[partition_key, value_key]` ([how it is scored](../features/models.md#how-rarity-is-scored)) |
 | `first_seen` | `[entity]` ([what is_new means](../features/models.md#what-new-means-for-first-last-seen)) |
-| `volume_baseline` | `[entity]` |
+| `volume_baseline` | `[entity]` ([how it is scored](../features/models.md#how-volume-is-scored)) |
 | `beacon`, `long_connection` | `[src_ip, dst_ip, dst_port]` |
 
 Enrichment columns can be filtered and aggregated like any other field.

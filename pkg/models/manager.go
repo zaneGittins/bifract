@@ -902,55 +902,10 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, se
 	return rows, total, nil
 }
 
-// volumeMinBuckets returns the minimum number of complete buckets of history an
-// entity must have before it is scored, defaulting to 7 when unset.
-func volumeMinBuckets(def ModelDefinition) int {
-	if def.MinSample > 0 {
-		return def.MinSample
-	}
-	return 7
-}
-
-// buildVolumeBaselineScoringSQL returns the per-entity modified z-score query for
-// a volume_baseline model. It computes, over the entity's complete buckets, the
-// median daily count (baseline), the Median Absolute Deviation (MAD), the most
-// recent complete bucket's count, and the modified z-score
-// (0.6745 * (count - median) / MAD), matching Bifract's BQL modifiedZScore()
-// convention including the mad=0 -> z=0 guard.
-//
-// `source` is the FROM expression yielding rows shaped like the volume model
-// table (fractal_id, entity_val, bucket, event_count): live scoring passes
-// "`tbl` FINAL"; the preview passes a windowed aggregation subquery. lower/upper
-// bound the scored buckets (upper excludes the current incomplete bucket). Volume
-// counts are additive across day chunks, so the preview matches the post-backfill
-// table. fidEsc must already be CH-escaped; lower/upper are raw SQL bound exprs.
-func buildVolumeBaselineScoringSQL(source, fidEsc string, minBuckets int, lower, upper string) string {
-	if minBuckets < 1 {
-		minBuckets = 1
-	}
-	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket, days,
-    if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
-FROM (
-    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket, days,
-        arrayReduce('medianExact', arrayMap(x -> abs(toFloat64(x) - baseline_median), cnts)) AS mad
-    FROM (
-        SELECT entity_val,
-            groupArray(daily_count) AS cnts,
-            arrayReduce('medianExact', groupArray(daily_count)) AS baseline_median,
-            argMax(daily_count, bucket) AS latest_count,
-            max(bucket) AS latest_bucket,
-            count() AS n_buckets,
-            arraySort(groupUniqArray(365)(toDate(bucket))) AS days
-        FROM (
-            SELECT entity_val, bucket, sum(event_count) AS daily_count
-            FROM %s
-            WHERE fractal_id = '%s' AND bucket >= %s AND bucket < %s
-            GROUP BY entity_val, bucket
-        )
-        GROUP BY entity_val
-    )
-)
-WHERE n_buckets >= %d`, source, fidEsc, lower, upper, minBuckets)
+// buildVolumeScoredSQL scores a volume_baseline model's entities with the shared
+// definition (see parser.VolumeScoredSQL). fidEsc must already be CH-escaped.
+func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, lower string) string {
+	return parser.VolumeScoredSQL(source, "fractal_id = '"+fidEsc+"'", def.TimeBucket, def.MinSample, lower, true)
 }
 
 func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
@@ -959,8 +914,7 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		sortCol = "z_score"
 	}
 
-	lower, upper := volumeScoreBounds(def.TimeBucket)
-	baseQuery := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), volumeMinBuckets(def), lower, upper)
+	baseQuery := buildVolumeScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), def, "")
 	if search != "" {
 		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(search))
 	}
@@ -1131,8 +1085,7 @@ func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, 
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {
 		threshold = def.Alert.ZThreshold
 	}
-	lower, upper := volumeScoreBounds(def.TimeBucket)
-	scoring := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", fid, volumeMinBuckets(def), lower, upper)
+	scoring := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
        round(max(abs(z_score)), 4) AS max_z
@@ -1357,8 +1310,7 @@ GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol, false)
 }
 
 func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
-	lower, upper := volumeScoreBounds(def.TimeBucket)
-	inner := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", fid, volumeMinBuckets(def), lower, upper)
+	inner := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
 	buckets, err := m.runHistogram(ctx, inner, volumeHistBucketExpr, volumeHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline histogram: %w", err)

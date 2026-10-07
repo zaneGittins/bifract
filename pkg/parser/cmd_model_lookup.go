@@ -38,6 +38,7 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("latest_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("mad", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("n_buckets", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("latest_bucket", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("beacon_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("longconn_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("regularity_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
@@ -67,7 +68,7 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 	case "first_seen":
 		reg("first_seen", "last_seen", "event_count", "is_new")
 	case "volume_baseline":
-		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets")
+		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets", "latest_bucket")
 	case "beacon":
 		// beacon_score is the final verdict; the rest is the breakdown ("why").
 		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count")
@@ -134,14 +135,11 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
 
 	case "volume_baseline":
-		ctx.Plan.ModelLookupSQL = buildVolumeBaselineScoringSQL(info.TableName, fractalIDs, info.MinSample, info.TimeBucket)
+		ctx.Plan.ModelLookupSQL = VolumeScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
 		rightCols = []string{"entity_val"}
-		// Same bucket window the scoring subquery reads, so the prefilter cannot
-		// admit an entity whose only buckets fall outside it.
-		lower, upper := volumeScoreBounds(info.TimeBucket)
-		prefilterWhere = fmt.Sprintf("%[1]s.bucket >= %[2]s AND %[1]s.bucket < %[3]s", modelPrefilterAlias, lower, upper)
-		exact = info.MinSample == 1
-		ctx.Plan.ModelLookupFields = []string{"latest_count", "baseline_median", "mad", "n_buckets", "z_score"}
+		prefilterWhere = volumeScoredKeysPredicate(modelPrefilterAlias, info.TimeBucket, info.MinSample)
+		exact = true // the predicate admits exactly the entities with enough history
+		ctx.Plan.ModelLookupFields = []string{"latest_count", "baseline_median", "mad", "n_buckets", "latest_bucket", "z_score"}
 
 	case "beacon", "long_connection":
 		if len(keyFields) != 3 {
@@ -229,10 +227,10 @@ func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
 // reads the model table's raw key columns with no FINAL and no aggregation, since
 // neither engine ever drops a key.
 //
-// exact reports that this key set is identical to the one the JOIN matches. Model
-// types that discard keys after aggregation (rarity's min_sample, volume_baseline's
-// bucket count) leave a superset: a correct filter, but the JOIN is still the final
-// arbiter, so the scan's LIMIT may not stay below it.
+// exact reports that this key set is identical to the one the JOIN matches. A model
+// type that discards keys after aggregation (rarity's min_sample) leaves a superset:
+// a correct filter, but the JOIN is still the final arbiter, so the scan's LIMIT may
+// not stay below it.
 func setModelLookupPrefilter(ctx *CommandContext, table string, fractalIDs, rightCols []string, extraWhere string, exact bool) {
 	keys := ctx.Plan.ModelLookupKeyExprs
 	if len(keys) == 0 || len(rightCols) == 0 {
@@ -404,54 +402,6 @@ FROM (
 		horizon,
 		"`"+tableName+"`",
 		fractalIDInClause(fractalIDs),
-	)
-}
-
-// volumeScoreBounds returns (lowerBound, upperBound) predicates on the bucket
-// column. The upper bound excludes the current incomplete bucket; the lower bound
-// caps history so reads stay bounded. Mirrors models.volumeScoreBounds.
-func volumeScoreBounds(timeBucket string) (lower, upper string) {
-	if timeBucket == "hour" {
-		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
-	}
-	return "today() - 90", "today()"
-}
-
-// buildVolumeBaselineScoringSQL returns the per-entity modified z-score subquery
-// for a volume_baseline model, joined against incoming logs on the entity field.
-// It mirrors models.buildVolumeBaselineScoringSQL: baseline = median of complete
-// daily counts, MAD = median absolute deviation, z = 0.6745*(latest-median)/MAD
-// with the mad=0 -> z=0 guard.
-func buildVolumeBaselineScoringSQL(tableName string, fractalIDs []string, minBuckets int, timeBucket string) string {
-	if minBuckets < 1 {
-		minBuckets = 7
-	}
-	lower, upper := volumeScoreBounds(timeBucket)
-	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket,
-    if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
-FROM (
-    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket,
-        arrayReduce('medianExact', arrayMap(x -> abs(toFloat64(x) - baseline_median), cnts)) AS mad
-    FROM (
-        SELECT entity_val,
-            groupArray(daily_count) AS cnts,
-            arrayReduce('medianExact', groupArray(daily_count)) AS baseline_median,
-            argMax(daily_count, bucket) AS latest_count,
-            max(bucket) AS latest_bucket,
-            count() AS n_buckets
-        FROM (
-            SELECT entity_val, bucket, sum(event_count) AS daily_count
-            FROM %s FINAL
-            WHERE %s AND bucket >= %s AND bucket < %s
-            GROUP BY entity_val, bucket
-        )
-        GROUP BY entity_val
-    )
-)
-WHERE n_buckets >= %d`,
-		"`"+tableName+"`",
-		fractalIDInClause(fractalIDs),
-		lower, upper, minBuckets,
 	)
 }
 

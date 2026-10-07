@@ -19,14 +19,6 @@ func extractPattern(pattern string) string {
 
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
 // fractalID is the owning fractal: it scopes the MV's source scan so a model only
-// much history is read so scoring stays bounded at scale.
-func volumeScoreBounds(timeBucket string) (lower, upper string) {
-	if timeBucket == "hour" {
-		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
-	}
-	return "today() - 90", "today()"
-}
-
 // ever aggregates its own fractal's logs. See fractalScopeClause.
 func GenerateDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
 	return generateTableDDL(def, mt, tableName)
@@ -103,10 +95,6 @@ func volumeBucketColType(timeBucket string) string {
 	}
 	return "Date"
 }
-
-// volumeScoreBounds returns (lowerBound, upperBound) predicates on the bucket
-// column for read-time scoring. The upper bound excludes the current, still
-// incomplete bucket (whose count is artificially low); the lower bound caps how
 
 // BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
 // seeds a model from historical logs. It reuses the exact SELECT logic of the

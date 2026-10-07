@@ -673,17 +673,22 @@ func TestModelLookup_NetworkScoringIsOneRowPerPair(t *testing.T) {
 	}
 }
 
-// volume_baseline scores only complete buckets in a bounded window, so the prefilter
-// carries the same bounds: an entity whose buckets all fall outside cannot match.
+// volume_baseline scores an entity only once it has min_sample buckets of history
+// before the latest complete bucket, so the prefilter admits exactly the entities
+// with a bucket that far back and the scan keeps its LIMIT.
 func TestModelLookup_VolumePrefilterCarriesBucketBounds(t *testing.T) {
 	opts := mlookupOpts()
 	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1"}
 	sql := translateMLWith(t, `* | model_lookup(model="vol", key=[user])`, opts)
 
 	const want = "fields.`user`::String IN (SELECT _mlk_src.entity_val FROM `model_vol` AS _mlk_src " +
-		"WHERE _mlk_src.fractal_id IN ('f1') AND _mlk_src.bucket >= today() - 90 AND _mlk_src.bucket < today())"
+		"WHERE _mlk_src.fractal_id IN ('f1') AND _mlk_src.bucket >= toDate(now('UTC')) - INTERVAL 90 DAY " +
+		"AND _mlk_src.bucket <= toDate(now('UTC')) - INTERVAL 1 DAY - INTERVAL 7 day)"
 	if !strings.Contains(sql, want) {
-		t.Errorf("expected bucket-bounded prefilter %s, got:\n%s", want, sql)
+		t.Errorf("expected history-bounded prefilter %s, got:\n%s", want, sql)
+	}
+	if strings.Index(sql, "LIMIT 1000") > strings.Index(sql, "INNER JOIN") {
+		t.Errorf("an exact prefilter keeps the LIMIT on the source scan, got:\n%s", sql)
 	}
 }
 

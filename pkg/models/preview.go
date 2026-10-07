@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 )
 
@@ -295,17 +296,13 @@ LIMIT 25`, keyCol, agg)
 }
 
 func (m *Manager) previewVolume(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, start time.Time) error {
-	// Bound the scored buckets to the window, excluding the current incomplete
-	// bucket (its count is artificially low), exactly as live scoring does.
-	var lower, upper string
+	// History starts at the preview window; the scored bucket is the latest
+	// complete one, exactly as live scoring does.
+	lower := fmt.Sprintf("toDate('%s')", start.Format("2006-01-02"))
 	if def.TimeBucket == "hour" {
-		lower = fmt.Sprintf("toStartOfHour(toDateTime('%s'))", start.Format("2006-01-02 15:04:05"))
-		upper = "toStartOfHour(now())"
-	} else {
-		lower = fmt.Sprintf("toDate('%s')", start.Format("2006-01-02"))
-		upper = "today()"
+		lower = fmt.Sprintf("toStartOfHour(toDateTime('%s', 'UTC'))", start.Format("2006-01-02 15:04:05"))
 	}
-	scored := buildVolumeBaselineScoringSQL(source, fidEsc, volumeMinBuckets(def), lower, upper)
+	scored := buildVolumeScoredSQL(source, fidEsc, def, lower)
 
 	z := 3.5
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {
@@ -337,7 +334,7 @@ LIMIT 25`, scored)
 	res.Stats = sanitizeStats(map[string]interface{}{
 		"entities_scored": metrics["entities_scored"],
 		"max_z":           metrics["max_z"],
-		"min_buckets":     volumeMinBuckets(def),
+		"min_buckets":     parser.VolumeMinBuckets(def.MinSample),
 	})
 	return nil
 }
