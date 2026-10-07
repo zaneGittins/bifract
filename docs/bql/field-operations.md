@@ -22,7 +22,7 @@ The right-hand side is a full expression: functions nest, arithmetic follows nor
 After an aggregation, an assignment references the computed aliases:
 
 ```
-* | groupby(user) | multi(count(field=event_id, distinct=true, as=unique), count(field=event_id, as=total)) | confidence := ((total - unique) / total) * 0.95
+* | groupby(user) | multi(count(field=hostname, distinct=true, as=hosts), count(field=event_id, as=events)) | events_per_host := events / hosts
 ```
 
 ### Types

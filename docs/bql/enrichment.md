@@ -125,7 +125,7 @@ The key shape depends on the model type:
 
 | Model type | `key=` |
 |---|---|
-| `rarity` | `[partition_key, value_key]` |
+| `rarity` | `[partition_key, value_key]` ([how it is scored](../features/models.md#how-rarity-is-scored)) |
 | `first_seen` | `[entity]` |
 | `volume_baseline` | `[entity]` |
 | `beacon`, `long_connection` | `[src_ip, dst_ip, dst_port]` |

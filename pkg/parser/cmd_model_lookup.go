@@ -120,7 +120,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if len(keyFields) != 2 {
 			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		ctx.Plan.ModelLookupSQL = buildRarityScoringSQL(info.TableName, fractalIDs, info.MinSample)
+		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.MinSample, false)
 		rightCols = []string{"partition_val", "value_val"}
 		// Keys below min_sample are scored away, so the raw key set is a superset.
 		exact = info.MinSample <= 1
@@ -328,32 +328,46 @@ GROUP BY src_ip, dst_ip, dst_port`,
 	)
 }
 
-// buildRarityScoringSQL returns the triple-nested scoring subquery for a rarity model.
-func buildRarityScoringSQL(tableName string, fractalIDs []string, minSample int) string {
+// RarityScoredSQL scores every (partition, value) pair of a rarity model, the one
+// definition the data view, preview, alert counts and modelLookup() all read.
+// Counts are days, taken from the stored day set, so live and backfilled state
+// agree and replays cannot double count. model_count is the days the value was
+// seen, model_total the days its partition was seen, percent their ratio, and
+// confidence is Good-Turing coverage, 1 - (values seen on one day / total
+// value-days): how rarely the partition still produces something new.
+//
+// source must yield the rarity state shape (partition_val, value_val, days);
+// scope is a WHERE predicate on it. withDays adds the sorted day list, which only
+// the data view needs. The trailing WHERE lets callers append AND clauses.
+func RarityScoredSQL(source, scope string, minSample int, withDays bool) string {
 	if minSample < 1 {
 		minSample = 1
 	}
+	daysCol := ""
+	if withDays {
+		daysCol = ",\n    seen_days AS days"
+	}
 	return fmt.Sprintf(`SELECT partition_val, value_val,
-    event_count AS model_count,
-    _total AS model_total,
-    round(event_count / _total * 100.0, 4) AS percent,
-    round(((_total - _unique) / _total) * 0.95, 4) AS confidence
+    days_seen AS model_count,
+    days_observed AS model_total,
+    round(days_seen / days_observed * 100.0, 4) AS percent,
+    round(1 - singletons / value_days, 4) AS confidence%s
 FROM (
-    SELECT partition_val, value_val, event_count,
-        sum(event_count) OVER (PARTITION BY partition_val) AS _total,
-        uniqExact(value_val) OVER (PARTITION BY partition_val) AS _unique
+    SELECT partition_val, value_val, seen_days, days_seen,
+        length(groupUniqArrayArray(seen_days) OVER w) AS days_observed,
+        sum(days_seen) OVER w AS value_days,
+        countIf(days_seen = 1) OVER w AS singletons
     FROM (
-        SELECT partition_val, value_val, sum(event_count) AS event_count
-        FROM %s FINAL
+        SELECT partition_val, value_val,
+            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
+            length(seen_days) AS days_seen
+        FROM %s
         WHERE %s
         GROUP BY partition_val, value_val
     )
+    WINDOW w AS (PARTITION BY partition_val)
 )
-WHERE event_count >= %d`,
-		"`"+tableName+"`",
-		fractalIDInClause(fractalIDs),
-		minSample,
-	)
+WHERE days_seen >= %d`, daysCol, source, scope, minSample)
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.

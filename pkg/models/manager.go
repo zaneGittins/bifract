@@ -785,34 +785,12 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 	}
 }
 
-// buildRarityScoredSQL returns the per-(partition,value) scored projection
-// (model_count, percent, confidence, days). `source` is the FROM expression
-// yielding rows shaped like the rarity model table -- fractal_id, partition_val,
-// value_val, event_count, and the groupUniqArray(Date) state `days`. Live
-// scoring passes "`tbl` FINAL"; the preview passes a windowed, day-bucketed
-// aggregation subquery. The math is identical either way, so a preview matches
-// the post-backfill table exactly. fidEsc must already be CH-escaped.
+// buildRarityScoredSQL scores a rarity model's pairs with the shared definition
+// (see parser.RarityScoredSQL). `source` yields rows shaped like the model table:
+// live scoring passes "`tbl` FINAL", the preview a windowed aggregation subquery.
+// fidEsc must already be CH-escaped.
 func buildRarityScoredSQL(source, fidEsc string) string {
-	return fmt.Sprintf(`
-SELECT partition_val, value_val,
-    event_count AS model_count,
-    _total AS model_total,
-    round(event_count / _total * 100.0, 4) AS percent,
-    round(((_total - _unique) / _total) * 0.95, 4) AS confidence,
-    days
-FROM (
-    SELECT partition_val, value_val, event_count, days,
-        sum(event_count) OVER (PARTITION BY partition_val) AS _total,
-        uniqExact(value_val) OVER (PARTITION BY partition_val) AS _unique
-    FROM (
-        SELECT partition_val, value_val, sum(event_count) AS event_count,
-            arraySort(groupUniqArrayMerge(365)(days)) AS days
-        FROM %s
-        WHERE fractal_id = '%s'
-        GROUP BY partition_val, value_val
-    )
-)
-WHERE event_count >= 1`, source, fidEsc)
+	return parser.RarityScoredSQL(source, "fractal_id = '"+fidEsc+"'", 1, true)
 }
 
 func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
@@ -1309,7 +1287,7 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 	}
 	f := rarityFlags{sql: []string{fmt.Sprintf("model_count >= %d", minSample)}}
 	if minSample > 1 {
-		f.words = append(f.words, fmt.Sprintf("seen %d+ time%s", minSample, plural(minSample)))
+		f.words = append(f.words, fmt.Sprintf("seen on %d+ day%s", minSample, plural(minSample)))
 	}
 	if def.Alert != nil {
 		if t := def.Alert.ConfidenceThreshold; t > 0 {
@@ -1319,7 +1297,7 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 		}
 		if t := def.Alert.PercentThreshold; t > 0 {
 			f.sql = append(f.sql, fmt.Sprintf("percent < %g", t))
-			f.words = append(f.words, fmt.Sprintf("percent < %g", t))
+			f.words = append(f.words, fmt.Sprintf("seen on < %g%% of days", t))
 			f.Thresholded = true
 		}
 	}

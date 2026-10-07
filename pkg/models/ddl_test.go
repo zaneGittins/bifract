@@ -268,14 +268,14 @@ func TestRarityFlagPredicates(t *testing.T) {
 			name:      "both thresholds",
 			def:       ModelDefinition{Alert: &AlertConfig{ConfidenceThreshold: 0.8, PercentThreshold: 5}},
 			wantSQL:   "model_count >= 1 AND confidence > 0.8 AND percent < 5",
-			wantText:  "confidence > 0.8 and percent < 5",
+			wantText:  "confidence > 0.8 and seen on < 5% of days",
 			wantThres: true,
 		},
 		{
 			name:      "min sample above the floor is stated",
 			def:       ModelDefinition{MinSample: 5, Alert: &AlertConfig{ConfidenceThreshold: 0.8}},
 			wantSQL:   "model_count >= 5 AND confidence > 0.8",
-			wantText:  "seen 5+ times and confidence > 0.8",
+			wantText:  "seen on 5+ days and confidence > 0.8",
 			wantThres: true,
 		},
 		{
@@ -284,7 +284,7 @@ func TestRarityFlagPredicates(t *testing.T) {
 			name:     "min sample alone does not count as a threshold",
 			def:      ModelDefinition{MinSample: 5},
 			wantSQL:  "model_count >= 5",
-			wantText: "seen 5+ times",
+			wantText: "seen on 5+ days",
 		},
 	}
 	for _, c := range cases {
