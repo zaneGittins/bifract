@@ -4,6 +4,7 @@ import (
 	"bifract/pkg/api"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -485,7 +486,11 @@ func (h *DashboardHandler) HandleUpdateWidget(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	err = h.pg.UpdateDashboardWidget(r.Context(), widgetID, req.Title, req.QueryContent, req.ChartType, chartConfigJSON)
+	err = h.pg.UpdateDashboardWidget(r.Context(), dashboardID, widgetID, req.Title, req.QueryContent, req.ChartType, chartConfigJSON)
+	if errors.Is(err, storage.ErrDashboardWidgetNotFound) {
+		api.WriteError(w, http.StatusNotFound, "Widget not found")
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to update widget")
 		return
@@ -568,7 +573,11 @@ func (h *DashboardHandler) HandleDeleteWidget(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	err = h.pg.DeleteDashboardWidget(r.Context(), widgetID)
+	err = h.pg.DeleteDashboardWidget(r.Context(), dashboardID, widgetID)
+	if errors.Is(err, storage.ErrDashboardWidgetNotFound) {
+		api.WriteError(w, http.StatusNotFound, "Widget not found")
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to delete widget")
 		return

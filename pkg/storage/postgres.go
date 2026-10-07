@@ -2816,19 +2816,31 @@ func (c *PostgresClient) GetDashboardWidget(ctx context.Context, widgetID string
 	return &w, nil
 }
 
-func (c *PostgresClient) UpdateDashboardWidget(ctx context.Context, widgetID string, title, queryContent, chartType, chartConfig *string) error {
-	_, err := c.db.ExecContext(ctx, `
+// ErrDashboardWidgetNotFound means no widget with that ID exists on the given
+// dashboard. Widget writes are scoped by dashboard so a caller authorized for
+// one dashboard can never reach another dashboard's widget.
+var ErrDashboardWidgetNotFound = errors.New("dashboard widget not found")
+
+func widgetWriteResult(res sql.Result, err error, op string) error {
+	if err != nil {
+		return fmt.Errorf("failed to %s dashboard widget: %w", op, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrDashboardWidgetNotFound
+	}
+	return nil
+}
+
+func (c *PostgresClient) UpdateDashboardWidget(ctx context.Context, dashboardID, widgetID string, title, queryContent, chartType, chartConfig *string) error {
+	res, err := c.db.ExecContext(ctx, `
 		UPDATE dashboard_widgets SET
 			title = COALESCE($1, title),
 			query_content = COALESCE($2, query_content),
 			chart_type = COALESCE($3, chart_type),
 			chart_config = COALESCE($4::jsonb, chart_config)
-		WHERE id = $5
-	`, title, queryContent, chartType, chartConfig, widgetID)
-	if err != nil {
-		return fmt.Errorf("failed to update dashboard widget: %w", err)
-	}
-	return nil
+		WHERE id = $5 AND dashboard_id = $6
+	`, title, queryContent, chartType, chartConfig, widgetID, dashboardID)
+	return widgetWriteResult(res, err, "update")
 }
 
 // UpdateDashboardWidgetResults caches a widget's results and returns the stored
@@ -2865,12 +2877,9 @@ func (c *PostgresClient) UpdateDashboardWidgetLayout(ctx context.Context, widget
 	return nil
 }
 
-func (c *PostgresClient) DeleteDashboardWidget(ctx context.Context, widgetID string) error {
-	_, err := c.db.ExecContext(ctx, `DELETE FROM dashboard_widgets WHERE id = $1`, widgetID)
-	if err != nil {
-		return fmt.Errorf("failed to delete dashboard widget: %w", err)
-	}
-	return nil
+func (c *PostgresClient) DeleteDashboardWidget(ctx context.Context, dashboardID, widgetID string) error {
+	res, err := c.db.ExecContext(ctx, `DELETE FROM dashboard_widgets WHERE id = $1 AND dashboard_id = $2`, widgetID, dashboardID)
+	return widgetWriteResult(res, err, "delete")
 }
 
 // ============================
