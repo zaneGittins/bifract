@@ -492,8 +492,6 @@ const AnalyticsModels = {
                 { col: 'partition_val', label: d => d.partition_key || 'Partition' },
                 { col: 'value_val', label: d => d.value_key || 'Value' },
                 { why: true },
-                { col: 'model_count', label: 'Days seen', fmt: 'int', align: 'num' },
-                { col: 'model_total', label: 'Of days', fmt: 'int', align: 'num' },
                 { col: 'percent', label: 'Share of days', fmt: 'pct100', align: 'num' },
             ],
         },
