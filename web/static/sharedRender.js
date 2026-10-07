@@ -5,9 +5,6 @@
 // uses. It deliberately reuses NONE of dashboards.js: no pivots, drilldowns,
 // brushing, editing, SSE, or presence exist here.
 const SharedRender = {
-    GRID_COLS: 12,
-    ROW_HEIGHT: 130,
-
     token: null,
     data: null,
     builtIds: '',            // signature of the current widget shell set
@@ -21,7 +18,6 @@ const SharedRender = {
             this.showState('Invalid link', 'This shared link is missing its token.');
             return;
         }
-        window.addEventListener('resize', () => this.relayout());
         this.showState('Loading dashboard…', '');
         this.tick();
     },
@@ -105,13 +101,13 @@ const SharedRender = {
         this.destroyCharts(grid);
         grid.innerHTML = '';
 
-        const maxBottom = widgets.reduce((m, w) => Math.max(m, w.pos_y + w.height), 6);
-        grid.style.minHeight = `${maxBottom * this.ROW_HEIGHT + 40}px`;
-
+        // Same CSS grid as the app, so the wallboard reflows on any resize.
+        grid.classList.add('dashboard-grid');
         widgets.forEach(w => {
             const el = document.createElement('div');
             el.className = 'dashboard-widget';
             el.dataset.widgetId = w.id;
+            DashboardLayout.place(el, DashboardLayout.fromWidget(w));
             const esc = (window.Utils && Utils.escapeHtml) ? Utils.escapeHtml : (s => s);
             el.innerHTML = `
                 <div class="widget-header">
@@ -123,7 +119,8 @@ const SharedRender = {
             `;
             grid.appendChild(el);
         });
-        this.relayout();
+        DashboardLayout.applyOrder(DashboardLayout.fromWidgets(widgets),
+            id => grid.querySelector(`.dashboard-widget[data-widget-id="${CSS.escape(id)}"]`));
     },
 
     // Re-render every widget's content from the current data (used on theme change
@@ -131,22 +128,6 @@ const SharedRender = {
     rerenderAll() {
         if (!this.data || !this.data.widgets) return;
         this.data.widgets.forEach(w => this.renderWidgetContent(w));
-    },
-
-    // Recompute absolute positions from the current grid width (12-col layout).
-    relayout() {
-        const grid = document.getElementById('sharedGrid');
-        if (!grid || !this.data) return;
-        const containerWidth = grid.offsetWidth || (window.innerWidth - 40);
-        const colWidth = containerWidth / this.GRID_COLS;
-        (this.data.widgets || []).forEach(w => {
-            const el = grid.querySelector(`.dashboard-widget[data-widget-id="${w.id}"]`);
-            if (!el) return;
-            el.style.left = `${w.pos_x * colWidth}px`;
-            el.style.top = `${w.pos_y * this.ROW_HEIGHT}px`;
-            el.style.width = `${w.width * colWidth}px`;
-            el.style.height = `${w.height * this.ROW_HEIGHT}px`;
-        });
     },
 
     renderWidgetContent(widget) {

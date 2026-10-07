@@ -2,6 +2,7 @@ package dashboards
 
 import (
 	"bifract/pkg/api"
+	"bifract/pkg/storage"
 	"encoding/json"
 	"time"
 )
@@ -40,7 +41,7 @@ type DashboardWidget struct {
 	ChartType    string          `json:"chart_type"`
 	ChartConfig  json.RawMessage `json:"chart_config,omitempty"`
 
-	// Grid layout (units: 12-col grid, row height ~130px)
+	// Grid layout: 24 columns, 26px row pitch
 	PosX   int `json:"pos_x"`
 	PosY   int `json:"pos_y"`
 	Width  int `json:"width"`
@@ -98,6 +99,11 @@ type UpdateWidgetLayoutRequest struct {
 	PosY   int `json:"pos_y"`
 	Width  int `json:"width"`
 	Height int `json:"height"`
+}
+
+// UpdateLayoutRequest saves the placement of several widgets at once.
+type UpdateLayoutRequest struct {
+	Widgets []storage.WidgetLayout `json:"widgets"`
 }
 
 // UpdateVariablesRequest saves dashboard variables

@@ -2750,9 +2750,64 @@ func (c *PostgresClient) DeleteDashboard(ctx context.Context, id string) error {
 	return nil
 }
 
+// Dashboard grid units. Version 1 stored 12 columns x 130px rows; version 2
+// stores 24 columns x 26px row pitch. Reads scale version 1 rows, and the first
+// layout write to a dashboard converts it so positions are never rounded.
+const (
+	DashboardGridColumns = 24
+	dashboardGridV1Col   = 2
+	dashboardGridV1Row   = 5
+)
+
+// widgetCols selects a widget (aliased w, joined to its dashboard as d) with its
+// layout in version 2 units.
+const widgetCols = `w.id, w.dashboard_id, w.title, w.query_content, w.chart_type, COALESCE(w.chart_config, 'null'::jsonb),
+	CASE WHEN d.grid_version = 1 THEN w.pos_x * 2 ELSE w.pos_x END,
+	CASE WHEN d.grid_version = 1 THEN w.pos_y * 5 ELSE w.pos_y END,
+	CASE WHEN d.grid_version = 1 THEN w.width * 2 ELSE w.width END,
+	CASE WHEN d.grid_version = 1 THEN w.height * 5 ELSE w.height END,
+	w.last_executed_at, COALESCE(w.last_results, 'null'::jsonb), w.created_at, w.updated_at`
+
+func scanWidget(row interface{ Scan(...any) error }, w *DashboardWidget) error {
+	return row.Scan(
+		&w.ID, &w.DashboardID, &w.Title, &w.QueryContent, &w.ChartType, &w.ChartConfig,
+		&w.PosX, &w.PosY, &w.Width, &w.Height, &w.LastExecutedAt, &w.LastResults,
+		&w.CreatedAt, &w.UpdatedAt,
+	)
+}
+
+// upgradeDashboardGrid converts a version 1 dashboard's widgets to version 2
+// units inside tx. The dashboards row update takes the row lock, so concurrent
+// writers convert once.
+func upgradeDashboardGrid(ctx context.Context, tx *sql.Tx, dashboardID string) error {
+	res, err := tx.ExecContext(ctx, `UPDATE dashboards SET grid_version = 2 WHERE id = $1 AND grid_version = 1`, dashboardID)
+	if err != nil {
+		return fmt.Errorf("failed to upgrade dashboard grid: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE dashboard_widgets SET pos_x = pos_x * $2, width = width * $2, pos_y = pos_y * $3, height = height * $3
+		WHERE dashboard_id = $1
+	`, dashboardID, dashboardGridV1Col, dashboardGridV1Row)
+	if err != nil {
+		return fmt.Errorf("failed to upgrade dashboard widgets: %w", err)
+	}
+	return nil
+}
+
 func (c *PostgresClient) InsertDashboardWidget(ctx context.Context, w DashboardWidget) (*DashboardWidget, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := upgradeDashboardGrid(ctx, tx, w.DashboardID); err != nil {
+		return nil, err
+	}
 	var nw DashboardWidget
-	err := c.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO dashboard_widgets (dashboard_id, title, query_content, chart_type, chart_config, pos_x, pos_y, width, height)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, dashboard_id, title, query_content, chart_type, COALESCE(chart_config, 'null'::jsonb), pos_x, pos_y, width, height, last_executed_at, COALESCE(last_results, 'null'::jsonb), created_at, updated_at
@@ -2764,15 +2819,19 @@ func (c *PostgresClient) InsertDashboardWidget(ctx context.Context, w DashboardW
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert dashboard widget: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit dashboard widget: %w", err)
+	}
 	return &nw, nil
 }
 
 func (c *PostgresClient) GetDashboardWidgets(ctx context.Context, dashboardID string) ([]DashboardWidget, error) {
 	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, dashboard_id, title, query_content, chart_type, COALESCE(chart_config, 'null'::jsonb), pos_x, pos_y, width, height, last_executed_at, COALESCE(last_results, 'null'::jsonb), created_at, updated_at
-		FROM dashboard_widgets
-		WHERE dashboard_id = $1
-		ORDER BY pos_y ASC, pos_x ASC
+		SELECT `+widgetCols+`
+		FROM dashboard_widgets w
+		JOIN dashboards d ON d.id = w.dashboard_id
+		WHERE w.dashboard_id = $1
+		ORDER BY w.pos_y ASC, w.pos_x ASC
 	`, dashboardID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query dashboard widgets: %w", err)
@@ -2782,12 +2841,7 @@ func (c *PostgresClient) GetDashboardWidgets(ctx context.Context, dashboardID st
 	var widgets []DashboardWidget
 	for rows.Next() {
 		var w DashboardWidget
-		err := rows.Scan(
-			&w.ID, &w.DashboardID, &w.Title, &w.QueryContent, &w.ChartType, &w.ChartConfig,
-			&w.PosX, &w.PosY, &w.Width, &w.Height, &w.LastExecutedAt, &w.LastResults,
-			&w.CreatedAt, &w.UpdatedAt,
-		)
-		if err != nil {
+		if err := scanWidget(rows, &w); err != nil {
 			return nil, fmt.Errorf("failed to scan dashboard widget: %w", err)
 		}
 		widgets = append(widgets, w)
@@ -2798,15 +2852,12 @@ func (c *PostgresClient) GetDashboardWidgets(ctx context.Context, dashboardID st
 // GetDashboardWidget fetches a single widget by ID.
 func (c *PostgresClient) GetDashboardWidget(ctx context.Context, widgetID string) (*DashboardWidget, error) {
 	var w DashboardWidget
-	err := c.db.QueryRowContext(ctx, `
-		SELECT id, dashboard_id, title, query_content, chart_type, COALESCE(chart_config, 'null'::jsonb), pos_x, pos_y, width, height, last_executed_at, COALESCE(last_results, 'null'::jsonb), created_at, updated_at
-		FROM dashboard_widgets
-		WHERE id = $1
-	`, widgetID).Scan(
-		&w.ID, &w.DashboardID, &w.Title, &w.QueryContent, &w.ChartType, &w.ChartConfig,
-		&w.PosX, &w.PosY, &w.Width, &w.Height, &w.LastExecutedAt, &w.LastResults,
-		&w.CreatedAt, &w.UpdatedAt,
-	)
+	err := scanWidget(c.db.QueryRowContext(ctx, `
+		SELECT `+widgetCols+`
+		FROM dashboard_widgets w
+		JOIN dashboards d ON d.id = w.dashboard_id
+		WHERE w.id = $1
+	`, widgetID), &w)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("widget not found")
@@ -2816,19 +2867,31 @@ func (c *PostgresClient) GetDashboardWidget(ctx context.Context, widgetID string
 	return &w, nil
 }
 
-func (c *PostgresClient) UpdateDashboardWidget(ctx context.Context, widgetID string, title, queryContent, chartType, chartConfig *string) error {
-	_, err := c.db.ExecContext(ctx, `
+// ErrDashboardWidgetNotFound means no widget with that ID exists on the given
+// dashboard. Widget writes are scoped by dashboard so a caller authorized for
+// one dashboard can never reach another dashboard's widget.
+var ErrDashboardWidgetNotFound = errors.New("dashboard widget not found")
+
+func widgetWriteResult(res sql.Result, err error, op string) error {
+	if err != nil {
+		return fmt.Errorf("failed to %s dashboard widget: %w", op, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrDashboardWidgetNotFound
+	}
+	return nil
+}
+
+func (c *PostgresClient) UpdateDashboardWidget(ctx context.Context, dashboardID, widgetID string, title, queryContent, chartType, chartConfig *string) error {
+	res, err := c.db.ExecContext(ctx, `
 		UPDATE dashboard_widgets SET
 			title = COALESCE($1, title),
 			query_content = COALESCE($2, query_content),
 			chart_type = COALESCE($3, chart_type),
 			chart_config = COALESCE($4::jsonb, chart_config)
-		WHERE id = $5
-	`, title, queryContent, chartType, chartConfig, widgetID)
-	if err != nil {
-		return fmt.Errorf("failed to update dashboard widget: %w", err)
-	}
-	return nil
+		WHERE id = $5 AND dashboard_id = $6
+	`, title, queryContent, chartType, chartConfig, widgetID, dashboardID)
+	return widgetWriteResult(res, err, "update")
 }
 
 // UpdateDashboardWidgetResults caches a widget's results and returns the stored
@@ -2855,22 +2918,48 @@ func (c *PostgresClient) UpdateDashboardWidgetResults(ctx context.Context, widge
 	return executedAt, nil
 }
 
-func (c *PostgresClient) UpdateDashboardWidgetLayout(ctx context.Context, widgetID string, posX, posY, width, height int) error {
-	_, err := c.db.ExecContext(ctx, `
-		UPDATE dashboard_widgets SET pos_x = $1, pos_y = $2, width = $3, height = $4 WHERE id = $5
-	`, posX, posY, width, height, widgetID)
-	if err != nil {
-		return fmt.Errorf("failed to update dashboard widget layout: %w", err)
-	}
-	return nil
+// WidgetLayout is one widget's grid placement in version 2 units.
+type WidgetLayout struct {
+	ID     string `json:"id"`
+	PosX   int    `json:"pos_x"`
+	PosY   int    `json:"pos_y"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
 }
 
-func (c *PostgresClient) DeleteDashboardWidget(ctx context.Context, widgetID string) error {
-	_, err := c.db.ExecContext(ctx, `DELETE FROM dashboard_widgets WHERE id = $1`, widgetID)
+// UpdateDashboardWidgetLayouts saves the placement of several widgets of one
+// dashboard atomically. Widgets of other dashboards are never touched; the
+// returned count says how many rows matched.
+func (c *PostgresClient) UpdateDashboardWidgetLayouts(ctx context.Context, dashboardID string, items []WidgetLayout) (int, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to delete dashboard widget: %w", err)
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	return nil
+	defer tx.Rollback()
+	if err := upgradeDashboardGrid(ctx, tx, dashboardID); err != nil {
+		return 0, err
+	}
+	updated := 0
+	for _, it := range items {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE dashboard_widgets SET pos_x = $1, pos_y = $2, width = $3, height = $4
+			WHERE id = $5 AND dashboard_id = $6
+		`, it.PosX, it.PosY, it.Width, it.Height, it.ID, dashboardID)
+		if err != nil {
+			return 0, fmt.Errorf("failed to update dashboard widget layout: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		updated += int(n)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit dashboard layout: %w", err)
+	}
+	return updated, nil
+}
+
+func (c *PostgresClient) DeleteDashboardWidget(ctx context.Context, dashboardID, widgetID string) error {
+	res, err := c.db.ExecContext(ctx, `DELETE FROM dashboard_widgets WHERE id = $1 AND dashboard_id = $2`, widgetID, dashboardID)
+	return widgetWriteResult(res, err, "delete")
 }
 
 // ============================

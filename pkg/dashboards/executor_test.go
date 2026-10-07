@@ -26,7 +26,10 @@ func TestComputeTimeRange(t *testing.T) {
 		{"last24h", 24 * time.Hour},
 		{"last7d", 7 * 24 * time.Hour},
 		{"last30d", 30 * 24 * time.Hour},
-		{"", 24 * time.Hour}, // default
+		{"last15m", 15 * time.Minute},
+		{"last2w", 14 * 24 * time.Hour},
+		{"last0h", 24 * time.Hour}, // invalid falls back
+		{"", 24 * time.Hour},       // default
 	}
 	for _, c := range cases {
 		start, end := computeTimeRange(&storage.Dashboard{TimeRangeType: c.typ})

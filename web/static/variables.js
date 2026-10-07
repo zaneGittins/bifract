@@ -23,11 +23,14 @@ class VariableManager {
         this.onChange = opts.onChange || null;
         this.onVarsChanged = opts.onVarsChanged || null;
         this.onOverlayClear = opts.onOverlayClear || null;
+        // overlayEditable: edits go to the overlay (a per-viewer view) and never
+        // to this.values; onChange still fires so the caller can re-run.
+        this.overlayEditable = !!opts.overlayEditable;
         this.autoRun = !!opts.autoRun;
         this.values = new Map(); // name -> value (insertion order = display order)
-        // Transient display-only overlay (e.g. a pivot drilldown). When set, the
-        // affected pills SHOW the overlay value and lock, but this.values (the
-        // persisted set) is untouched, so a drilldown never rewrites the defaults.
+        // Transient overlay (a pivot drilldown, or a dashboard viewer's own
+        // values). Overlaid pills SHOW the overlay value; this.values (the
+        // persisted set) is untouched, so an overlay never rewrites the defaults.
         this.displayOverlay = null; // Map name -> value, or null
     }
 
@@ -220,13 +223,14 @@ class VariableManager {
             const safeName = esc(name);
             const overridden = ov && ov.has(name);
             const dispVal = overridden ? ov.get(name) : value;
-            // In a drilldown, overridden pills show the drilldown value with a
-            // distinct style and a clear (x) that exits the drilldown; they are
-            // read-only so an accidental edit can't persist the transient value.
+            // Overridden pills are styled distinctly with a clear (x). Unless the
+            // overlay is editable they are read-only, so an edit can't persist a
+            // transient value.
             const pillClass = overridden ? 'variable-pill drilldown-override' : 'variable-pill';
-            const ro = overridden ? ' readonly' : '';
+            const ro = overridden && !this.overlayEditable ? ' readonly' : '';
+            const clearLabel = this.overlayEditable ? 'Reset to default' : 'Exit drilldown';
             const clearBtn = overridden
-                ? `<button type="button" class="variable-drilldown-clear" title="Exit drilldown" aria-label="Exit drilldown for ${safeName}">&#x2715;</button>`
+                ? `<button type="button" class="variable-drilldown-clear" data-var-name="${safeName}" title="${clearLabel}" aria-label="${clearLabel}: ${safeName}">&#x2715;</button>`
                 : '';
             html += `<div class="${pillClass}">
                 <span class="variable-name">@${safeName}</span>
@@ -254,7 +258,7 @@ class VariableManager {
             if (input.readOnly) return; // locked overlay pill: no edit/persist
             const name = input.getAttribute('data-var-name');
             input.addEventListener('change', () => {
-                this.values.set(name, input.value);
+                if (!this.overlayEditable) this.values.set(name, input.value);
                 if (this.onChange) this.onChange(name, input.value);
             });
             input.addEventListener('keydown', (e) => {
@@ -263,7 +267,7 @@ class VariableManager {
         });
 
         this.container.querySelectorAll('.variable-drilldown-clear').forEach((btn) => {
-            btn.addEventListener('click', () => { if (this.onOverlayClear) this.onOverlayClear(); });
+            btn.addEventListener('click', () => { if (this.onOverlayClear) this.onOverlayClear(btn.getAttribute('data-var-name')); });
         });
     }
 }

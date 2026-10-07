@@ -94,7 +94,7 @@
         }
         .shared-theme-btn:hover { background: var(--bg-hover); }
         .shared-body { flex: 1; overflow: auto; padding: 16px 20px; }
-        #sharedGrid { position: relative; width: 100%; }
+        #sharedGrid { margin: 0; }
         .shared-state {
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             height: 60vh; text-align: center; color: var(--text-muted); gap: 10px;
@@ -126,6 +126,7 @@
     <script src="/static/charts.js"></script>
     <script src="/static/worldmap.js"></script>
     <script src="/static/mitreMatrix.js"></script>
+    <script src="/static/dashboardLayout.js"></script>
     <script src="/static/sharedRender.js"></script>
     <script>
         // Theme toggle (standalone copy, mirrors login.html)
@@ -137,7 +138,7 @@
             function update(rerender) {
                 const light = document.documentElement.getAttribute('data-theme') === 'light';
                 icon.innerHTML = light ? sunPath : moonPath;
-                if (rerender && window.SharedRender) { SharedRender.rerenderAll(); SharedRender.relayout(); }
+                if (rerender && window.SharedRender) SharedRender.rerenderAll();
             }
             update();
             btn.addEventListener('click', function() {
