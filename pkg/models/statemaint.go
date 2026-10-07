@@ -141,7 +141,7 @@ func (r maintainRow) insertSQL(target, sourceTable, where string) (string, error
 	if r.modelType.IsNetwork() {
 		return BuildNetStateInsert(r.def, "`"+target+"`", sourceTable, where, r.fractalID)
 	}
-	return BuildBackfillInsert(r.def, r.modelType, "`"+target+"`", sourceTable, where, r.fractalID)
+	return BuildStateInsert(r.def, r.modelType, "`"+target+"`", sourceTable, where, r.fractalID)
 }
 
 // stateTarget is the table a cycle writes, distributed when the deployment is.

@@ -121,7 +121,7 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	whereExtra := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
 		start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
 
-	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, fractalID)
+	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, fractalID, recordedHistory)
 	if err != nil {
 		return nil, fmt.Errorf("build preview aggregation: %w", err)
 	}
@@ -251,12 +251,11 @@ LIMIT 25`, scored, minSample)
 }
 
 func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time, keyCol string) error {
-	agg := firstSeenAggSQL(source, fidEsc, "", keyCol)
+	agg := firstSeenAggSQL(source, fidEsc, "", keyCol, false)
 
-	// The is_new alert (cmd_model_lookup) fires on entities whose first_seen is
-	// within the last hour of each evaluation, so an exact count can't be replayed
-	// from a historical backfill. Instead we report the new-entity RATE: entities
-	// first observed in the last 24h of the window (i.e. new entities/day). The
+	// The is_new alert fires on entities the live model records for the first time,
+	// which nothing in history can replay. Instead we report the new-entity RATE:
+	// entities first observed in the last 24h of the window (new entities/day). The
 	// FlagBasis makes clear this is a rate estimate, not an instantaneous count.
 	recent := end.Add(-24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
 	res.Metric = "event_count"

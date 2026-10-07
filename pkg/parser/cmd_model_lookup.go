@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // modelLookupHandler handles: model_lookup(model="name", key=[field1, field2])
@@ -127,7 +128,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "confidence"}
 
 	case "first_seen":
-		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs)
+		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, ctx.Opts.ModelNewSince)
 		rightCols = []string{"entity_key"}
 		exact = true // the scoring subquery drops no key
 		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
@@ -371,30 +372,36 @@ WHERE days_seen >= %d`, daysCol, source, scope, minSample)
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
-// The aggregation and the derived is_new flag are split across two SELECT levels:
-// computing is_new as if(min(first_seen) >= ...) in the SAME level as
-// min(first_seen) AS first_seen makes the analyzer resolve the inner first_seen to
-// the alias, yielding min(min(first_seen)) (nested aggregate, ClickHouse code 184).
-func buildFirstSeenScoringSQL(tableName string, fractalIDs []string) string {
-	// Two levels with NON-shadowing inner aliases (fs/ls/ec): shadowing the input
-	// column names would make min(first_seen) AS first_seen + if(min(first_seen)...)
-	// nest aggregates (code 184). The outer level derives is_new from the raw
-	// DateTime column and stringifies the dates so the row scanner can read them
-	// (DateTime64 -> *string is unsupported in the display scan path).
+// The aggregation and the derived is_new flag are split across two SELECT levels
+// with non-shadowing inner aliases (fs/ls/ec/fr): min(first_seen) AS first_seen in
+// the same level as is_new would nest aggregates (code 184). Dates are stringified
+// because DateTime64 -> *string is unsupported in the display scan path.
+//
+// is_new reads first_recorded, when the model's state first held the entity, not
+// first_seen: a late or replayed log carries an old event time but is still new
+// to the model, and seeded history (epoch) never is. newSince, an alert's window
+// start, widens the usual hour so a backlogged alert keeps what was new in it.
+func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, newSince time.Time) string {
+	horizon := "now() - INTERVAL 1 HOUR"
+	if !newSince.IsZero() {
+		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(newSince.UTC()))
+	}
 	return fmt.Sprintf(`SELECT entity_key,
     toString(fs) AS first_seen,
     toString(ls) AS last_seen,
     ec AS event_count,
-    if(fs >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new
+    if(fr >= %s, '1', '0') AS is_new
 FROM (
     SELECT entity_key,
         min(first_seen) AS fs,
         max(last_seen) AS ls,
-        sum(event_count) AS ec
+        sum(event_count) AS ec,
+        min(first_recorded) AS fr
     FROM %s FINAL
     WHERE %s
     GROUP BY entity_key
 )`,
+		horizon,
 		"`"+tableName+"`",
 		fractalIDInClause(fractalIDs),
 	)

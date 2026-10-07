@@ -87,6 +87,19 @@ func TestNetworkStateTargetsTheStateTable(t *testing.T) {
 	}
 }
 
+// A cycle is the live path: what it records is new to the model.
+func TestStateCycleRecordsFirstSeenAsNew(t *testing.T) {
+	r := maintainRow{id: "abc", modelType: ModelTypeFirstSeen, table: "t", fractalID: "f1",
+		def: ModelDefinition{KeyFields: []string{"user"}}}
+	sql, err := r.insertSQL("t", "logs", "1=1")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !contains(sql, "now64(3, 'UTC') AS first_recorded") {
+		t.Errorf("a state cycle must stamp first_recorded with now: %s", sql)
+	}
+}
+
 // The maintainer must skip a model whose watermark is NULL. That is a model whose
 // insert-time view has not been handed over yet, and reading from created_at
 // instead would re-count everything the view already wrote.

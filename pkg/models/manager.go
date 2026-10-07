@@ -637,6 +637,28 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 		}
 	}
 
+	// CREATE IF NOT EXISTS leaves a table that survived a drop at its old shape.
+	// Not fatal: a new table already has every column, and startup retries.
+	if err := m.ensureStateColumns(ctx, id, mt, tableName); err != nil {
+		log.Printf("model %s: %v", id, err)
+	}
+	return nil
+}
+
+// ensureStateColumns adds the columns a model's state table gained after it was
+// created, on the table and its Distributed companion. Without first_recorded a
+// first_seen model's state inserts fail, and its alert holds at the watermark.
+func (m *Manager) ensureStateColumns(ctx context.Context, id string, mt ModelType, tableName string) error {
+	if mt != ModelTypeFirstSeen {
+		return nil
+	}
+	dist := ""
+	if m.ch.Topology().DistributedTables {
+		dist = chModelDistName(id)
+	}
+	if err := m.ch.EnsureColumn(ctx, tableName, dist, FirstRecordedColumn, FirstRecordedDefinition); err != nil {
+		return fmt.Errorf("add %s: %w", FirstRecordedColumn, err)
+	}
 	return nil
 }
 
@@ -778,9 +800,9 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 	case ModelTypeRarity:
 		return m.getRarityData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "entity_key")
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "entity_key", true)
 	case ModelTypeTLSH:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "digest")
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "digest", false)
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, search, sortCol, sortDir, limit, offset)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -827,23 +849,25 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, searc
 }
 
 // firstSeenAggSQL returns the per-entity aggregation (first_seen, last_seen,
-// event_count, days) for a first_seen model. `source` is the FROM expression
-// (live: "`tbl` FINAL"; preview: a windowed aggregation subquery); extraWhere is
-// an optional predicate ANDed into the scan (e.g. a search filter). first_seen's
-// aggregates (min/max/sum over exact timestamps) are day-chunk invariant, so the
-// preview matches the post-backfill table without day bucketing.
-// firstSeenAggSQL collapses the per-row aggregate state into one row per key.
-// keyCol is "entity_key" for first_seen models and "digest" for tlsh models, which
-// share this shape exactly.
-func firstSeenAggSQL(source, fidEsc, extraWhere, keyCol string) string {
+// event_count, days) for a first_seen or tlsh model; keyCol is entity_key or
+// digest. `source` is the FROM expression (live: "`tbl` FINAL"; preview: a
+// windowed aggregation subquery); extraWhere is an optional predicate ANDed into
+// the scan. The aggregates are day-chunk invariant, so the preview matches the
+// post-backfill table. recorded adds recorded_at, which only a first_seen table
+// has; the epoch it holds for seeded history renders as empty.
+func firstSeenAggSQL(source, fidEsc, extraWhere, keyCol string, recorded bool) string {
+	recordedCol := ""
+	if recorded {
+		recordedCol = ",\n    min(" + FirstRecordedColumn + ") AS recorded_at"
+	}
 	q := fmt.Sprintf(`
 SELECT %s,
     min(first_seen) AS first_seen,
     max(last_seen) AS last_seen,
     sum(event_count) AS event_count,
-    arraySort(groupUniqArrayMerge(365)(days)) AS days
+    arraySort(groupUniqArrayMerge(365)(days)) AS days%s
 FROM %s
-WHERE fractal_id = '%s'`, keyCol, source, fidEsc)
+WHERE fractal_id = '%s'`, keyCol, recordedCol, source, fidEsc)
 	if extraWhere != "" {
 		q += "\nAND " + extraWhere
 	}
@@ -851,7 +875,7 @@ WHERE fractal_id = '%s'`, keyCol, source, fidEsc)
 	return q
 }
 
-func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int, keyCol string) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int, keyCol string, recorded bool) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{keyCol: true, "first_seen": true, "last_seen": true, "event_count": true}
 	if !allowed[sortCol] {
 		sortCol = "first_seen"
@@ -861,7 +885,7 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, se
 	if search != "" {
 		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(search))
 	}
-	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol)
+	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol, recorded)
 
 	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
 	var total uint64
@@ -1237,7 +1261,7 @@ func rarityConfidenceInner(source, fidEsc string) string {
 // firstSeenCountInner returns the SQL projecting one `event_count` column per
 // first_seen entity, ready for histogram bucketing.
 func firstSeenCountInner(source, fidEsc, keyCol string) string {
-	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol) + ") WHERE event_count >= 1"
+	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol, false) + ") WHERE event_count >= 1"
 }
 
 // getRarityHistogram reports how many values the model's own alert thresholds
@@ -1320,7 +1344,7 @@ func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol str
 	q := fmt.Sprintf(`SELECT toString(toDate(first_seen)) AS day, toUInt64(count()) AS cnt
 FROM (%s)
 WHERE first_seen >= today() - %d
-GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol), firstSeenDiscoveryDays)
+GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol, false), firstSeenDiscoveryDays)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen discovery series: %w", err)
@@ -1671,6 +1695,9 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 			continue
 		}
 		if exists {
+			if err := m.ensureStateColumns(ctx, t.id, t.mt, t.table); err != nil {
+				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
+			}
 			continue
 		}
 		if err := m.createCHObjects(ctx, t.id, t.fractalID, t.def, t.mt, t.table, t.mv); err != nil {

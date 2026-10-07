@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -36,6 +37,23 @@ func TestQueryWindowContract(t *testing.T) {
 				t.Errorf("got (%d, %q), want (%d, %q)", lb, col, tc.wantLookback, tc.wantColumn)
 			}
 		})
+	}
+}
+
+// is_new's horizon is the window being evaluated, not the read widened for a
+// lookback: rows before the window start were already evaluated.
+func TestAlertOptsCarryModelNewSince(t *testing.T) {
+	from := time.Date(2026, 1, 1, 6, 0, 0, 0, time.UTC)
+	alert := &Alert{ID: "a", FractalID: "f1", QueryString: `status=500`, LookbackSeconds: 300}
+	opts, err := (&Engine{}).buildQueryOpts(context.Background(), alert, from, from.Add(time.Minute), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.ModelNewSince.Equal(from) {
+		t.Errorf("ModelNewSince = %v, want the window start %v", opts.ModelNewSince, from)
+	}
+	if !opts.StartTime.Equal(from.Add(-300 * time.Second)) {
+		t.Errorf("StartTime = %v, want the lookback-widened read", opts.StartTime)
 	}
 }
 

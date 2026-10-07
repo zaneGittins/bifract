@@ -160,3 +160,99 @@ func TestBackfillWindowDays(t *testing.T) {
 		t.Error("empty window should be invalid")
 	}
 }
+
+// A first_seen or tlsh key aggregates to one state row per insert. Grouping by
+// the event time as well wrote a row per distinct timestamp, about one per log.
+func TestFirstSeenStateAggregatesPerEntity(t *testing.T) {
+	direct := ModelDefinition{KeyFields: []string{"user"}}
+	extracted := ModelDefinition{
+		Extractions: []ExtractionStep{{FromField: "norm_log", Pattern: `user=(\w+)`, OutputField: "who"}},
+		KeyFields:   []string{"who"},
+	}
+	cases := []struct {
+		name  string
+		def   ModelDefinition
+		mt    ModelType
+		group string
+	}{
+		{"first_seen direct", direct, ModelTypeFirstSeen, "GROUP BY fractal_id, entity_key"},
+		{"first_seen extraction", extracted, ModelTypeFirstSeen, "GROUP BY fractal_id, entity_key"},
+		{"tlsh", tlshTestDef(), ModelTypeTLSH, "GROUP BY fractal_id, digest"},
+	}
+	builders := []func(ModelDefinition, ModelType, string, string, string, string) (string, error){BuildBackfillInsert, BuildStateInsert}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, build := range builders {
+				sql, err := build(tc.def, tc.mt, "`t`", "logs", "", "f1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.HasSuffix(sql, tc.group) {
+					t.Errorf("want the key alone as the group, got:\n%s", sql)
+				}
+				mustContain(t, sql, "min(timestamp) AS first_seen", "first_seen")
+				mustContain(t, sql, "max(timestamp) AS last_seen", "last_seen")
+				mustContain(t, sql, "count() AS event_count", "event_count")
+				mustNotContain(t, sql, "timestamp AS first_seen", "per-row first_seen")
+				mustNotContain(t, sql, "toUInt64(1) AS event_count", "per-row count")
+			}
+		})
+	}
+}
+
+// "New" is new to the model: a live cycle stamps what it records now, seeded
+// history takes the epoch so a backfill never floods the alert, and the column
+// sits last so positional inserts match a table that gained it by ALTER.
+func TestFirstSeenRecordedStamp(t *testing.T) {
+	for _, def := range []ModelDefinition{
+		{KeyFields: []string{"user"}},
+		{Extractions: []ExtractionStep{{FromField: "norm_log", Pattern: `user=(\w+)`, OutputField: "who"}}, KeyFields: []string{"who"}},
+	} {
+		live, err := BuildStateInsert(def, ModelTypeFirstSeen, "`t`", "logs", "", "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		history, err := BuildBackfillInsert(def, ModelTypeFirstSeen, "`t`", "logs", "", "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustContain(t, live, "now64(3, 'UTC') AS first_recorded", "live cycle records now")
+		mustContain(t, history, "toDateTime64(0, 3, 'UTC') AS first_recorded", "backfill is not new")
+		mustNotContain(t, history, "now64", "backfill must never read as new")
+		for _, sql := range []string{live, history} {
+			days, rec := strings.Index(sql, " AS days,\n"), strings.Index(sql, " AS first_recorded")
+			if days < 0 || rec < days {
+				t.Errorf("first_recorded must follow days, the table's column order:\n%s", sql)
+			}
+		}
+	}
+
+	ddl, err := GenerateDDL(ModelDefinition{KeyFields: []string{"user"}}, ModelTypeFirstSeen, "`t`")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, ddl, "Date),\n    first_recorded "+FirstRecordedDefinition+"\n)", "column last, with the not-new default")
+	mustContain(t, FirstRecordedDefinition, "SimpleAggregateFunction(min, DateTime64(3, 'UTC')) DEFAULT toDateTime64(0, 3, 'UTC')", "definition")
+
+	// Only first_seen carries it: the other types' tables have no such column.
+	for _, mt := range []ModelType{ModelTypeRarity, ModelTypeVolumeBaseline, ModelTypeTLSH} {
+		def := ModelDefinition{KeyFields: []string{"tlsh"}, PartitionKey: "a", ValueKey: "b"}
+		sql, err := BuildStateInsert(def, mt, "`t`", "logs", "", "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustNotContain(t, sql, FirstRecordedColumn, string(mt))
+		ddl, err := GenerateDDL(def, mt, "`t`")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustNotContain(t, ddl, FirstRecordedColumn, string(mt)+" table")
+	}
+}
+
+// The data view shows when the model recorded a first_seen entity; a tlsh table
+// has no such column and must not be asked for it.
+func TestFirstSeenAggRecordedColumn(t *testing.T) {
+	mustContain(t, firstSeenAggSQL("`t` FINAL", "f1", "", "entity_key", true), "min(first_recorded) AS recorded_at", "first_seen view")
+	mustNotContain(t, firstSeenAggSQL("`t` FINAL", "f1", "", "digest", false), "first_recorded", "tlsh view")
+}

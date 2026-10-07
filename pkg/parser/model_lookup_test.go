@@ -455,6 +455,35 @@ func TestModelLookup_FirstSeenSingleKey(t *testing.T) {
 	}
 }
 
+// is_new means new to the model: when its state first recorded the entity, not
+// the event time, which is old on a late or replayed log.
+func TestModelLookup_FirstSeenIsNewReadsFirstRecorded(t *testing.T) {
+	sql := translateML(t, `* | model_lookup(model="fs", key=[src_ip]) | is_new = "1"`)
+	for _, want := range []string{
+		"min(first_recorded) AS fr",
+		"if(fr >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("want %q in:\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "if(fs >=") {
+		t.Errorf("is_new must not read the event time:\n%s", sql)
+	}
+}
+
+// An alert reaching back past the hour, catching up on a backlog, still treats
+// what the model recorded since its window start as new.
+func TestModelLookup_FirstSeenIsNewCoversAlertWindow(t *testing.T) {
+	opts := mlookupOpts()
+	opts.ModelNewSince = time.Date(2026, 1, 1, 6, 30, 0, 0, time.UTC)
+	sql := translateMLWith(t, `* | model_lookup(model="fs", key=[src_ip]) | is_new = "1"`, opts)
+	want := "if(fr >= least(now() - INTERVAL 1 HOUR, toDateTime64('2026-01-01 06:30:00.000', 3, 'UTC')), '1', '0') AS is_new"
+	if !strings.Contains(sql, want) {
+		t.Errorf("want %q in:\n%s", want, sql)
+	}
+}
+
 // ---- strict mode (model_lookup default) ----
 
 // translateMLWith is translateML against caller-supplied options (prism, cluster).

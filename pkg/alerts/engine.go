@@ -544,6 +544,9 @@ func (e *Engine) resolvePrismFractalIDs(ctx context.Context, prismID string, cac
 
 // buildQueryOpts constructs parser.QueryOptions with fractal/prism scoping.
 func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time.Time, cache *prismResolveCache) (parser.QueryOptions, error) {
+	// The window as evaluated, before any lookback widening: what a first_seen
+	// model recorded since then is new to this evaluation.
+	newSince := from
 	// A query that correlates across events cannot see one that straddles the
 	// window edge, so widen the read by what it declared it needs. Rows completing
 	// before the window start are dropped after the query, keeping this
@@ -568,6 +571,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 		EndTime:            to,
 		MaxRows:            10000,
 		UseIngestTimestamp: true,
+		ModelNewSince:      newSince,
 		MaxEventLagSeconds: alert.MaxEventLagSeconds,
 		TableName:          tableName,
 	}

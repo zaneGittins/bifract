@@ -30,6 +30,10 @@ The share threshold also sets the learning period: a value seen on one day can o
 
 Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
 
+### What "new" means for First / Last Seen
+
+`first_seen` and `last_seen` are event times. `is_new`, which the alert fires on, is about the model instead: it is `1` when the model first recorded the entity within the last hour. A log that arrives late, or a dataset replayed with old timestamps, still counts as new if the model has not seen its entity before. History seeded by a backfill never counts as new, so seeding does not flood the alert; run the backfill before activating the alert, or entities that only appear in history may fire once before the backfill reaches them. An alert catching up on a backlog counts everything recorded since the start of the window it is evaluating. The **Data** view shows when the model recorded each entity as `recorded_at` in the row details (empty for seeded history).
+
 TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
 
 Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.
