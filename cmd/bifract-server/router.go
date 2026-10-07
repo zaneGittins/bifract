@@ -2764,6 +2764,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					{Name: "order", Type: "boolean"},
 					{Name: "search"},
 					{Name: "sort"},
+					{Name: "view", Description: "all (default) or findings: only the rows the model's alert would raise, most unusual first."},
 				},
 				Access:   api.AccessViewer,
 				Response: api.ListResponse[map[string]interface{}]{},

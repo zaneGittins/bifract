@@ -42,7 +42,7 @@ const AnalyticsModels = {
         sortCol: '',
         sortDir: 'desc',
         search: '',
-        tab: 'data',     // 'data' | 'config'
+        view: 'findings', // 'findings' (what the alert would raise) | 'all'
         stats: null,     // aggregate summary from /models/:id/stats
         selected: -1,    // index of the row open in the detail drawer
     },
@@ -430,7 +430,7 @@ const AnalyticsModels = {
     // whether the backend will actually sort on it. A label given as a function
     // is resolved against the definition, so a column stored as partition_val
     // reads as the field the model was built from. Columns the table omits are
-    // still shown in the row drawer.
+    // still shown in the row drawer. { why: true } places the fact-chip column.
     VIEW_SPEC: {
         rarity: {
             sortDefault: 'confidence',
@@ -440,6 +440,7 @@ const AnalyticsModels = {
                 { col: 'confidence', label: 'Confidence', fmt: 'meter', align: 'num' },
                 { col: 'partition_val', label: d => d.partition_key || 'Partition' },
                 { col: 'value_val', label: d => d.value_key || 'Value' },
+                { why: true },
                 { col: 'model_count', label: 'Days seen', fmt: 'int', align: 'num' },
                 { col: 'model_total', label: 'Of days', fmt: 'int', align: 'num' },
                 { col: 'percent', label: 'Share of days', fmt: 'pct100', align: 'num' },
@@ -450,6 +451,7 @@ const AnalyticsModels = {
             sortable: ['entity_key', 'first_seen', 'last_seen', 'event_count'],
             cols: [
                 { col: 'entity_key', keys: true },
+                { why: true },
                 { col: 'first_seen', label: 'First seen', fmt: 'ts' },
                 { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
                 { col: 'event_count', label: 'Events', fmt: 'int', align: 'num' },
@@ -460,6 +462,7 @@ const AnalyticsModels = {
             sortable: ['digest', 'first_seen', 'last_seen', 'event_count'],
             cols: [
                 { col: 'digest', keys: true },
+                { why: true },
                 { col: 'first_seen', label: 'First seen', fmt: 'ts' },
                 { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
                 { col: 'event_count', label: 'Events', fmt: 'int', align: 'num' },
@@ -472,6 +475,7 @@ const AnalyticsModels = {
             cols: [
                 { col: 'z_score', label: 'z-score', fmt: 'score', align: 'num' },
                 { col: 'entity_val', keys: true },
+                { why: true },
                 { col: 'latest_count', label: 'Latest', fmt: 'int', align: 'num' },
                 { col: 'baseline_median', label: 'Baseline', fmt: 'num', align: 'num' },
                 { col: 'mad', label: 'MAD', fmt: 'num', align: 'num' },
@@ -488,6 +492,7 @@ const AnalyticsModels = {
                 { col: 'src_ip', label: 'Source' },
                 { col: 'dst_ip', label: 'Destination' },
                 { col: 'dst_port', label: 'Port', align: 'num' },
+                { why: true },
                 { col: 'regularity_score', label: 'Regularity', fmt: 'score', align: 'num' },
                 { col: 'conn_count', label: 'Connections', fmt: 'int', align: 'num' },
                 { col: 'prevalence', label: 'Prevalence', fmt: 'pct1', align: 'num' },
@@ -503,43 +508,13 @@ const AnalyticsModels = {
                 { col: 'src_ip', label: 'Source' },
                 { col: 'dst_ip', label: 'Destination' },
                 { col: 'dst_port', label: 'Port', align: 'num' },
+                { why: true },
                 { col: 'total_duration', label: 'Total duration', fmt: 'dur', align: 'num' },
                 { col: 'conn_count', label: 'Connections', fmt: 'int', align: 'num' },
                 { col: 'prevalence', label: 'Prevalence', fmt: 'pct1', align: 'num' },
                 { col: 'last_seen', label: 'Last seen', fmt: 'ts' },
             ],
         },
-    },
-
-    // Summary cards, from the /stats endpoint. tone colours the value.
-    STAT_SPEC: {
-        rarity: [
-            { k: 'total_rows', label: 'Pairs', fmt: 'int' },
-            { k: 'distinct_partitions', label: d => 'Distinct ' + (d.partition_key || 'partitions'), fmt: 'int' },
-        ],
-        first_seen: [
-            { k: 'total_entities', label: 'Entities', fmt: 'int' },
-            { k: 'new_today', label: 'New today', fmt: 'int', tone: 'flag' },
-            { k: 'newest_seen', label: 'Newest', fmt: 'ago' },
-            { k: 'oldest_seen', label: 'Oldest', fmt: 'ago' },
-        ],
-        tlsh: [
-            { k: 'total_entities', label: 'Digests', fmt: 'int' },
-            { k: 'new_today', label: 'New today', fmt: 'int', tone: 'flag' },
-            { k: 'newest_seen', label: 'Newest', fmt: 'ago' },
-            { k: 'oldest_seen', label: 'Oldest', fmt: 'ago' },
-        ],
-        volume_baseline: [
-            { k: 'total_entities', label: 'Entities', fmt: 'int' },
-            { k: 'anomalous', label: 'Anomalous', fmt: 'int', tone: 'flag' },
-            { k: 'max_z', label: 'Max |z|', fmt: 'score' },
-        ],
-        network: [
-            { k: 'total_pairs', label: 'Scored pairs', fmt: 'int' },
-            { k: 'flagged', label: 'Flagged', fmt: 'int', tone: 'flag' },
-            { k: 'critical', label: 'Critical', fmt: 'int', tone: 'crit' },
-            { k: 'max_score', label: 'Max score', fmt: 'score' },
-        ],
     },
 
     _viewSpec(model) {
@@ -554,6 +529,10 @@ const AnalyticsModels = {
         const def = model?.definition || {};
         const out = [];
         for (const c of spec.cols) {
+            if (c.why) {
+                out.push({ why: true, col: '_why', label: 'Why', sortable: false });
+                continue;
+            }
             if (!c.keys) {
                 out.push({ ...c, label: typeof c.label === 'function' ? c.label(def) : c.label });
                 continue;
@@ -665,19 +644,41 @@ const AnalyticsModels = {
         if (!model) return;
         window.App?.pushSubPath(id);
         this._stopListPoll();
-        // Seed the sort from the type's server-side default so the header shows
-        // the order the first page actually comes back in.
+        // Findings first: the rows the alert would raise, most unusual first. A
+        // model with no alert (a tlsh index) has only its rows.
+        const view = this._hasFindings(model) ? 'findings' : 'all';
         this.viewer = {
             model, rows: [], total: 0, limit: 50, offset: 0,
-            sortCol: this._viewSpec(model).sortDefault, sortDir: 'desc',
-            search: '', tab: 'data', backfillWindow: '7d', histogram: null, stats: null, selected: -1,
+            sortCol: this._defaultSort(model, view), sortDir: 'desc',
+            search: '', view, backfillWindow: '7d', stats: null, selected: -1,
         };
         this.currentView = 'data';
         this._render();
         await this._loadViewerData();
-        this._loadHistogram();
         this._loadStats();
         if (model.backfill_status === 'running') this._startViewerPoll();
+    },
+
+    _hasFindings(model) {
+        return !!model && model.model_type !== 'tlsh';
+    },
+
+    // A findings page comes back in the rule's order, so no header claims the
+    // sort; All rows seeds the type's server-side default so the header shows
+    // the order the first page actually comes back in.
+    _defaultSort(model, view) {
+        return view === 'findings' ? '' : this._viewSpec(model).sortDefault;
+    },
+
+    _setView(view) {
+        const v = this.viewer;
+        if (!v.model || v.view === view) return;
+        v.view = view;
+        v.offset = 0;
+        v.sortCol = this._defaultSort(v.model, view);
+        v.sortDir = 'desc';
+        this._renderTabs();
+        this._loadViewerData();
     },
 
     // Aggregate summary. Best-effort: the table is the page, so a failed stats
@@ -700,12 +701,15 @@ const AnalyticsModels = {
     async _loadViewerData() {
         const v = this.viewer;
         const params = new URLSearchParams({
-            limit: v.limit, offset: v.offset,
+            view: v.view, limit: v.limit, offset: v.offset,
             sort: v.sortCol, order: v.sortDir, search: v.search
         });
+        const id = v.model.id, view = v.view;
         try {
-            const data = await this._api('GET', `/models/${v.model.id}/data?${params}`);
+            const data = await this._api('GET', `/models/${id}/data?${params}`);
+            if (this.viewer.model?.id !== id || this.viewer.view !== view) return;
             v.rows = data?.data || [];
+            this._pivotRanges = new Map();
             v.total = data?.page?.total || 0;
             this._hideRowDrawer();
             this._renderViewerContent();
@@ -742,10 +746,10 @@ const AnalyticsModels = {
     <div class="mv-body">
         <div class="mv-main">
             <div id="modelsBackfillBar" class="model-backfill-bar"></div>
-            <div id="modelsStats" class="mv-stats"></div>
-            <div id="modelsHistogramPanel" class="model-histogram-panel"></div>
+            <div id="modelsStats" class="mv-summary"></div>
             <div class="mv-results">
                 <div class="mv-toolbar">
+                    <div class="mv-tabs" id="modelsViewTabs" role="tablist"></div>
                     <input type="text" id="modelsDataSearch" class="models-search" placeholder="Search results..." value="${_esc(this.viewer.search)}">
                     <span class="mv-toolbar-spacer"></span>
                     <span class="mv-range" id="modelsDataRange"></span>
@@ -766,6 +770,11 @@ const AnalyticsModels = {
 
         this._renderRail();
         this._bindRailResize();
+        this._renderTabs();
+        this._renderStats();
+        const onPivot = q => this._pivotChip(q);
+        FactChips.bind(document.getElementById('modelsDataTableWrap'), onPivot);
+        FactChips.bind(document.getElementById('modelsRowDrawer'), onPivot);
 
         this._renderBackfillBar();
         // Resume progress polling if a backfill is running (e.g. after returning
@@ -809,33 +818,116 @@ const AnalyticsModels = {
     },
 
     // ---- Summary strip ----
-    // The counts that answer "did this model find anything", from /stats. The
-    // strip stays out of the layout entirely until the call lands.
+    // One line that answers "did this model find anything": what its alert would
+    // raise now, what turned up recently, and new values per day. The counts come
+    // from /stats, which applies the same rule as the Findings tab.
     _renderStats() {
         const el = document.getElementById('modelsStats');
         if (!el) return;
         const v = this.viewer;
-        const st = v.stats;
-        if (!st) { el.innerHTML = ''; return; }
+        this._renderTabs();
+        if (!v.stats || !v.model) { el.innerHTML = ''; return; }
+        const s = this._summary(v.stats, v.model);
+        const facts = s.facts.filter(Boolean).map(f => {
+            const tone = f.tone ? ` mv-sum-${f.tone}` : '';
+            const title = f.title ? ` title="${_esc(f.title)}"` : '';
+            const val = f.value !== undefined ? `<b>${_esc(f.value)}</b> ` : '';
+            return `<span class="mv-sum-fact${tone}"${title}>${val}${_esc(f.label)}</span>`;
+        }).join('<span class="mv-sum-sep" aria-hidden="true">·</span>');
+        el.innerHTML = `
+<div class="mv-sum-main">
+    <div class="mv-sum-facts">${facts}</div>
+    ${s.rule ? `<div class="mv-sum-rule">${_esc(s.rule)}</div>` : ''}
+</div>
+${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.seriesLabel) : ''}`;
+        // An empty findings page rendered before the rule arrived can now say why.
+        if (v.view === 'findings' && !v.rows.length) this._renderDataTable();
+    },
 
-        const mt = v.model?.model_type;
-        const spec = this.STAT_SPEC[mt === 'beacon' || mt === 'long_connection' ? 'network' : mt] || [];
-        const def = v.model?.definition || {};
+    // The strip's facts per type. The lead is what the alert would raise; the
+    // rest is context, muted so the lead carries the line.
+    _summary(st, m) {
+        const def = m.definition || {};
+        const n = x => Number(x || 0).toLocaleString();
+        const findings = Number(st.findings || 0);
+        const lead = { value: n(findings), label: 'would alert', tone: findings > 0 ? 'alert' : '' };
+        const rule = st.findings_rule ? 'Alert rule: ' + st.findings_rule : '';
+        const newest = v => (v && !this._isEpochZero(v)) ? { label: 'newest seen ' + (Utils.timeAgo(v) || ''), tone: 'muted' } : null;
+        switch (m.model_type) {
+            case 'rarity':
+                return {
+                    facts: [
+                        st.findings_rule ? lead : { label: 'No alert thresholds set', tone: 'muted' },
+                        { value: n(st.new_week), label: 'new pairs this week', title: 'Pairs first seen in the last 7 days' },
+                        { value: n(st.total_rows), label: 'pairs', tone: 'muted' },
+                        { value: n(st.distinct_partitions), label: (def.partition_key || 'partition') + ' values', tone: 'muted' },
+                    ],
+                    rule, series: st.series, seriesLabel: 'New pairs per day',
+                };
+            case 'first_seen': {
+                const alertOn = def.alert?.alert_on_new !== false;
+                return {
+                    facts: [
+                        { value: n(findings), label: 'new this week', tone: findings > 0 ? 'alert' : '', title: 'First recorded by the model in the last 7 days' },
+                        alertOn ? { value: n(st.new_hour), label: 'would alert now', title: 'First recorded in the last hour, which is what the alert fires on' } : null,
+                        { value: n(st.total_entities), label: 'entities', tone: 'muted' },
+                        newest(st.newest_seen),
+                    ],
+                    rule: 'New means first recorded by the model. History seeded by a backfill never counts.',
+                    series: st.series, seriesLabel: 'New entities per day',
+                };
+            }
+            case 'tlsh':
+                return { facts: [{ value: n(st.total_entities), label: 'digests' }, newest(st.newest_seen)] };
+            case 'volume_baseline': {
+                const lb = st.latest_bucket && !this._isEpochZero(st.latest_bucket)
+                    ? { label: 'latest bucket ' + Utils.formatTimestamp(st.latest_bucket, 'friendly'), tone: 'muted' } : null;
+                return { facts: [lead, { value: n(st.total_entities), label: 'entities scored', tone: 'muted' }, lb], rule };
+            }
+            case 'beacon':
+            case 'long_connection': {
+                const scored = st.scored_at && !this._isEpochZero(st.scored_at)
+                    ? { label: 'scored ' + (Utils.timeAgo(st.scored_at) || ''), tone: 'muted', title: Utils.timestampTitle(st.scored_at) } : null;
+                return { facts: [lead, { value: n(st.total_pairs), label: 'pairs scored', tone: 'muted' }, scored], rule };
+            }
+        }
+        return { facts: [] };
+    },
 
-        const cards = spec.map(c => {
-            const raw = st[c.k];
-            if (raw === null || raw === undefined) return '';
-            let val;
-            if (c.fmt === 'int') val = Number(raw).toLocaleString();
-            else if (c.fmt === 'score') val = c.k === 'max_z' && this._isFlatZ(raw) ? this.FLAT_Z_LABEL : Number(raw).toFixed(3);
-            else if (c.fmt === 'ago') val = this._isEpochZero(raw) ? '\u2014' : (Utils.timeAgo(raw) || '\u2014');
-            else val = String(raw);
-            const label = typeof c.label === 'function' ? c.label(def) : c.label;
-            const tone = c.tone && Number(raw) > 0 ? ' mv-stat-' + c.tone : '';
-            return `<div class="mv-stat${tone}"><div class="mv-stat-k">${_esc(label)}</div><div class="mv-stat-v">${_esc(val)}</div></div>`;
+    // Thirty days of counts as bars: a burst of new values reads at a glance,
+    // and every bar names its day and count on hover.
+    _sparkHTML(series, label) {
+        const max = series.reduce((m, d) => Math.max(m, Number(d.count || 0)), 0);
+        const bw = 4, gap = 2, h = 26;
+        const total = series.reduce((t, d) => t + Number(d.count || 0), 0);
+        const bars = series.map((d, i) => {
+            const c = Number(d.count || 0);
+            const bh = c > 0 ? Math.max(3, Math.round(c / max * h)) : 1;
+            const cls = c > 0 ? 'mv-spark-bar' : 'mv-spark-bar mv-spark-zero';
+            return `<rect class="${cls}" x="${i * (bw + gap)}" y="${h - bh}" width="${bw}" height="${bh}" rx="1"><title>${_esc(d.day)}: ${c.toLocaleString()}</title></rect>`;
         }).join('');
+        const w = series.length * (bw + gap) - gap;
+        return `<div class="mv-spark">
+    <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${_esc(label)}: ${total.toLocaleString()} in the last ${series.length} days">${bars}</svg>
+    <span class="mv-spark-label">${_esc(label)} &middot; ${series.length}d</span>
+</div>`;
+    },
 
-        el.innerHTML = cards;
+    // Findings | All rows. Counts come with the stats, so they appear when it lands.
+    _renderTabs() {
+        const el = document.getElementById('modelsViewTabs');
+        if (!el) return;
+        const v = this.viewer;
+        if (!this._hasFindings(v.model)) { el.hidden = true; el.innerHTML = ''; return; }
+        el.hidden = false;
+        const st = v.stats;
+        const allKey = { rarity: 'total_rows', first_seen: 'total_entities', volume_baseline: 'total_entities', beacon: 'total_pairs', long_connection: 'total_pairs' }[v.model.model_type];
+        const count = (k, hot) => st && st[k] != null
+            ? `<span class="mv-tab-n${hot && Number(st[k]) > 0 ? ' hot' : ''}">${_esc(this._fmtNum(st[k]))}</span>` : '';
+        el.innerHTML = [['findings', 'Findings', count('findings', true)], ['all', 'All rows', count(allKey)]].map(([k, label, c]) =>
+            `<button type="button" role="tab" class="mv-tab${v.view === k ? ' active' : ''}" aria-selected="${v.view === k}" data-view="${k}">${label}${c}</button>`
+        ).join('');
+        el.querySelectorAll('.mv-tab').forEach(b => b.addEventListener('click', () => this._setView(b.dataset.view)));
     },
 
     // ---- Definition rail ----
@@ -943,9 +1035,9 @@ ${m.description ? `<div class="me-sec">
     },
 
     // ---- Row drawer ----
-    // A row is an entity with a history, so it opens rather than dead-ending.
-    // It also carries the columns the table leaves out (beacon sub-scores, the
-    // prevalence totals) which is what makes trimming the table safe.
+    // A row is an entity with a history, so it opens rather than dead-ending. It
+    // leads with why the row stands out, as fact chips; every stored column,
+    // including the ones the table leaves out, sits folded under All columns.
     _openRowDrawer(idx) {
         const v = this.viewer;
         const row = v.rows[idx];
@@ -957,6 +1049,7 @@ ${m.description ? `<div class="me-sec">
         const spec = this._viewSpec(m);
         const thr = spec.score ? Number(spec.score.threshold(m.definition || {})) : NaN;
         const days = Array.isArray(row.days) ? row.days : [];
+        const search = this._rowSearch(row, m);
 
         // entity_key and entity_val pack the key fields with a record separator,
         // which prints as a control character when dumped raw.
@@ -976,8 +1069,8 @@ ${m.description ? `<div class="me-sec">
 </div>
 <div class="mv-drawer-body">
     <div class="me-sec">
-        <div class="me-sec-label">All columns</div>
-        <dl class="mv-kv mv-kv-wide">${fields}</dl>
+        <div class="me-sec-label">Why</div>
+        ${FactChips.render(this._whyChips(row, m)) || '<span class="mv-none">Nothing recorded for this row.</span>'}
     </div>
     ${days.length ? `<div class="me-sec">
         <div class="me-sec-label">Active days (${days.length})</div>
@@ -986,11 +1079,15 @@ ${m.description ? `<div class="me-sec">
             return `<button type="button" class="mv-chip mv-chip-day" data-day="${_esc(day)}" title="Search this day in logs">${_esc(day)}</button>`;
         }).join('')}</div>
     </div>` : ''}
+    <details class="me-sec mv-all-cols">
+        <summary class="me-sec-label">All columns</summary>
+        <dl class="mv-kv mv-kv-wide">${fields}</dl>
+    </details>
 </div>
 <div class="mv-drawer-foot">
-    ${days.length
-        ? `<button class="btn-primary btn-sm" id="modelsDrawerPivot">Search these ${days.length} day${days.length === 1 ? '' : 's'} in logs</button>`
-        : `<span class="mv-none">No day history recorded for this row, so there is nothing to pivot to.</span>`}
+    ${search
+        ? `<button class="btn-primary btn-sm" id="modelsDrawerPivot">${days.length ? `Search these ${days.length} day${days.length === 1 ? '' : 's'} in logs` : 'Search this pair in logs'}</button>`
+        : `<span class="mv-none">No time range recorded for this row, so there is nothing to pivot to.</span>`}
 </div>`;
         el.hidden = false;
         document.querySelector('.mv-body')?.classList.add('mv-inspecting');
@@ -1036,108 +1133,8 @@ ${m.description ? `<div class="me-sec">
         return String(raw ?? '').split('\x1e').join(' / ');
     },
 
-    // ---- Score distribution histogram ----
+    // Score axis names for the editor preview's distribution chart.
     METRIC_LABELS: { confidence: 'Confidence', z_score: 'Anomaly score (|z|)', event_count: 'Event count', beacon_score: 'Beacon score', longconn_score: 'Long-connection score', final_score: 'Score' },
-
-    async _loadHistogram() {
-        const v = this.viewer;
-        if (!v.model) return;
-        try {
-            const data = await this._api('GET', `/models/${v.model.id}/histogram`);
-            v.histogram = data?.data || null;
-        } catch (e) {
-            console.error('[Models] loadHistogram error:', e);
-            v.histogram = null;
-        }
-        this._renderHistogram();
-    },
-
-    _renderHistogram() {
-        const el = document.getElementById('modelsHistogramPanel');
-        if (!el) return;
-        const h = this.viewer.histogram;
-        if (!h) { el.innerHTML = ''; return; }
-
-        // Each type gets the view that answers the question its alert asks. A
-        // distribution earns a chart only where the metric it plots is the whole
-        // criterion; where it is not, a number or a series says more.
-        if (h.metric === 'rarity_flags') { el.innerHTML = this._buildFlagSummaryHTML(h); return; }
-        if (h.metric === 'new_per_day') { el.innerHTML = this._buildDiscoveryHTML(h.series || []); return; }
-
-        const buckets = Array.isArray(h.buckets) ? h.buckets : [];
-        const spec = this._viewSpec(this.viewer.model);
-        let thr = null;
-        if (spec.score) {
-            const t = Number(spec.score.threshold(this.viewer.model?.definition || {}));
-            if (isFinite(t) && t >= 0) {
-                // The marker is a fraction of the axis. A 0..1 metric is that
-                // fraction already; a banded one has to be placed by band, which is
-                // why a z-score threshold used to have no marker at all.
-                thr = h.metric === 'z_score'
-                    ? this._bandedFrac(t, buckets.length)
-                    : (t <= 1 ? t : null);
-            }
-        }
-        // No criterion here: the only type whose alert needs more than this metric
-        // is rarity, and rarity returns above with its coverage summary.
-        el.innerHTML = this._buildHistogramHTML(buckets, h.metric, thr, '', thr != null ? Number(spec.score.threshold(this.viewer.model?.definition || {})) : null);
-    },
-
-    // Where a threshold falls across equal-width bands whose last one is open
-    // ended, as |z| 0-1 .. 5+ is.
-    _bandedFrac(threshold, bands) {
-        if (!bands) return null;
-        const capped = Math.min(threshold, bands);
-        return Math.max(0, Math.min(1, capped / bands));
-    },
-
-    // What the alert would flag right now, which is the question a threshold line
-    // on one of two axes could never answer.
-    _buildFlagSummaryHTML(h) {
-        const total = Number(h.total || 0);
-        const flagged = Number(h.flagged || 0);
-        if (!total) {
-            return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
-<div class="histogram-empty">No scored values yet.</div>`;
-        }
-        // With no thresholds set every scored value passes, so saying they "would
-        // alert" would be true of a model that raises none.
-        if (!h.criterion) {
-            return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
-<div class="mv-coverage"><div class="mv-coverage-text"><strong>${this._fmtNum(total)}</strong> scored values. No alert thresholds are set, so nothing is being filtered.</div></div>`;
-        }
-        const pct = total > 0 && isFinite(flagged) ? (flagged / total * 100) : 0;
-        return `<div class="histogram-head"><span class="histogram-title">Alert coverage</span></div>
-<div class="mv-coverage">
-    <div class="mv-coverage-bar"><span style="width:${Math.max(Math.min(pct, 100), flagged > 0 ? 1 : 0)}%"></span></div>
-    <div class="mv-coverage-text"><strong>${this._fmtNum(flagged)}</strong> of ${this._fmtNum(total)} values would alert, matching ${_esc(h.criterion)}.</div>
-</div>`;
-    },
-
-    // New entities per day: what a first/last seen model is for, and what its
-    // alert fires on. The old chart plotted how many events each entity had, which
-    // says nothing about either.
-    _buildDiscoveryHTML(series) {
-        const arr = Array.isArray(series) ? series : [];
-        if (!arr.length) {
-            return `<div class="histogram-head"><span class="histogram-title">New entities per day</span></div>
-<div class="histogram-empty">Nothing discovered in the last 30 days.</div>`;
-        }
-        const max = arr.reduce((m, b) => Math.max(m, Number(b.count || 0)), 0);
-        const cols = arr.map(b => {
-            const cnt = Number(b.count || 0);
-            const pct = max > 0 ? Math.round(cnt / max * 100) : 0;
-            return `<div class="histogram-col" title="${_esc(b.label)}: ${cnt.toLocaleString()} new">
-    <div class="histogram-bar-track"><div class="histogram-bar" style="height:${cnt > 0 ? Math.max(pct, 2) : 0}%"></div></div>
-</div>`;
-        }).join('');
-        const first = _esc(String(arr[0].label));
-        const last = _esc(String(arr[arr.length - 1].label));
-        const totalNew = arr.reduce((n, b) => n + Number(b.count || 0), 0);
-        return `<div class="histogram-head"><span class="histogram-title">New entities per day</span></div>
-<div class="histogram-chart histogram-chart-dense">${cols}</div>
-<div class="histogram-note">${this._fmtNum(totalNew)} first seen between ${first} and ${last}. Peak ${this._fmtNum(max)} in a day.</div>`;
-    },
 
     _fmtNum(v) {
         const n = Number(v);
@@ -1325,9 +1322,9 @@ ${m.description ? `<div class="me-sec">
         if (model.backfill_status !== 'running') {
             this._stopViewerPoll();
             if (prev === 'running') {
-                // Just finished: refresh the rows + distribution so backfilled data shows.
+                // Just finished: refresh the rows and the summary so backfilled data shows.
                 this._loadViewerData();
-                this._loadHistogram();
+                this._loadStats();
                 if (model.backfill_status === 'completed') Toast.success('Backfill complete');
                 else if (model.backfill_status === 'failed') Toast.error('Backfill failed: ' + (model.backfill_error || 'error'));
             }
@@ -1350,11 +1347,13 @@ ${m.description ? `<div class="me-sec">
                 ? EmptyState.render({ icon: 'list', title: 'Backfilling historical data', detail: 'Rows appear as each day completes.' })
                 : v.search
                     ? EmptyState.render({ icon: 'list', title: 'No matching rows', detail: 'No result matches this search.' })
-                    : EmptyState.render({
-                        icon: 'list',
-                        title: 'No data yet',
-                        detail: 'Use Backfill to seed history, or new matching logs will appear here as they are ingested.',
-                    });
+                    : v.view === 'findings'
+                        ? this._findingsEmptyHTML()
+                        : EmptyState.render({
+                            icon: 'list',
+                            title: 'No data yet',
+                            detail: 'Use Backfill to seed history, or new matching logs will appear here as they are ingested.',
+                        });
             this._renderPagination();
             return;
         }
@@ -1364,20 +1363,22 @@ ${m.description ? `<div class="me-sec">
         const thr = spec.score ? Number(spec.score.threshold(m.definition || {})) : NaN;
         const scoreCol = spec.score?.col;
 
-        const headers = cols.map((c, i) => {
+        // The stored column name stays in the tooltip, so a sort or a BQL query
+        // written against these results still lines up with what is on screen.
+        const headers = cols.map(c => {
             const active = c.sortable && v.sortCol === c.col ? (v.sortDir === 'asc' ? ' sort-asc' : ' sort-desc') : '';
-            const cls = `${c.align === 'num' ? 'num ' : ''}${c.sortable ? 'sortable' : ''}${active}`.trim();
+            const cls = `${c.align === 'num' ? 'num ' : ''}${c.why ? 'mv-why ' : ''}${c.sortable ? 'sortable' : ''}${active}`.trim();
             const attr = c.sortable ? ` data-col="${_esc(c.col)}"` : '';
-            const title = c.label !== c.col ? ` title="${_esc(c.col)}"` : '';
-            return `<th class="${cls}"${attr}${title}><span class="mv-h">${_esc(c.label)}</span>${
-                c.label !== c.col ? `<span class="mv-h-src">${_esc(c.col)}</span>` : ''
-            }${c.sortable ? '<span class="sort-icon"></span>' : ''}</th>`;
+            const tip = c.why ? 'What makes this row stand out' : (c.label !== c.col ? c.col : '');
+            const title = tip ? ` title="${_esc(tip)}"` : '';
+            return `<th class="${cls}"${attr}${title}><span class="mv-h">${_esc(c.label)}</span>${c.sortable ? '<span class="sort-icon"></span>' : ''}</th>`;
         }).join('');
 
         const rows = v.rows.map((row, idx) => {
             const inPlay = this._meetsOtherConditions(row, m);
             const sev = scoreCol && inPlay ? this._sevClass(spec.score.abs ? Math.abs(row[scoreCol]) : row[scoreCol], thr) : '';
             const cells = cols.map(c => {
+                if (c.why) return `<td class="mv-why">${FactChips.render(this._whyChips(row, m, true), { compact: true })}</td>`;
                 const cls = [c.align === 'num' ? 'num' : '', c.col === scoreCol ? 'mv-score' : ''].filter(Boolean).join(' ');
                 const title = c.fmt ? '' : ` title="${_esc(this._cellText(c, row))}"`;
                 return `<td${cls ? ` class="${cls}"` : ''}${title}>${this._fmtCell(c, row, thr, inPlay)}</td>`;
@@ -1407,7 +1408,9 @@ ${m.description ? `<div class="me-sec">
         });
 
         wrap.querySelectorAll('tbody tr').forEach(tr => {
-            tr.addEventListener('click', () => {
+            tr.addEventListener('click', e => {
+                // A pivot chip searches; it does not also toggle the drawer.
+                if (e.target.closest('.fact-chip-pivot')) return;
                 const idx = parseInt(tr.dataset.row, 10);
                 if (idx === v.selected) this._closeRowDrawer();
                 else this._openRowDrawer(idx);
@@ -1415,6 +1418,32 @@ ${m.description ? `<div class="me-sec">
         });
 
         this._renderPagination();
+    },
+
+    // An empty Findings tab says what the rule is, so "nothing" reads as a
+    // result rather than a failure, and offers every row instead.
+    _findingsEmptyHTML() {
+        const v = this.viewer;
+        const st = v.stats;
+        const mt = v.model?.model_type;
+        const action = { label: 'Browse all rows', onclick: "AnalyticsModels._setView('all')" };
+        if (!st) return EmptyState.render({ icon: 'list', title: 'Nothing would alert', action });
+        if (mt === 'rarity' && !st.findings_rule) {
+            return EmptyState.render({
+                icon: 'list', title: 'No alert thresholds set', action,
+                detail: 'Without a confidence or share-of-days threshold this model singles nothing out. Set them in Edit to see what would alert.',
+            });
+        }
+        if (mt === 'first_seen') {
+            return EmptyState.render({
+                icon: 'list', title: 'Nothing new this week', action,
+                detail: 'No entity was first recorded by the model in the last 7 days. History seeded by a backfill never counts as new.',
+            });
+        }
+        return EmptyState.render({
+            icon: 'list', title: 'Nothing would alert', action,
+            detail: _esc(`No row meets the alert rule: ${st.findings_rule}.`),
+        });
     },
 
     // Build a BQL source query string from a model definition (mirrors GenerateSourceQuery in Go).
@@ -1458,43 +1487,82 @@ ${m.description ? `<div class="me-sec">
         return lines.join('\n');
     },
 
-    // day, when given, narrows the search to that one active day rather than the
-    // whole span the row was seen over.
-    _pivotToSearch(row, model, day) {
-        const days = Array.isArray(row.days) ? row.days : [];
-        if (!days.length && !day) { Toast.error('No day data available for this row yet.'); return; }
-
-        const sorted = [...days].map(d => String(d).substring(0, 10)).sort();
-        const from = day || sorted[0];
-        const to = day || sorted[sorted.length - 1];
-        const startISO = from + 'T00:00:00Z';
-        const endISO = to + 'T23:59:59Z';
-
+    // The search a row pivots to: the model's source query narrowed to the row's
+    // keys, over the span it was seen. range narrows it: a 'YYYY-MM-DD' day, or
+    // { from, to } ISO bounds. Null when the row records no time to search.
+    _rowSearch(row, model, range) {
         const def = model.definition || {};
+        const mt = model.model_type || 'rarity';
         const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-
-        let bql = this._buildSourceQuery(def);
-
-        // Append row-specific entity/value filters
         const rowFilters = [];
-        const mtype = model.model_type || 'rarity';
-        if (mtype === 'rarity') {
-            if (def.partition_key && row.partition_val != null) rowFilters.push(`| ${def.partition_key}=${esc(row.partition_val)}`);
-            if (def.value_key && row.value_val != null)         rowFilters.push(`| ${def.value_key}=${esc(row.value_val)}`);
+        let from = '', to = '';
+        if (mt === 'beacon' || mt === 'long_connection') {
+            const n = def.network || {};
+            rowFilters.push(`| ${n.src_field || 'src_ip'}=${esc(row.src_ip)}`);
+            rowFilters.push(`| ${n.dst_field || 'dst_ip'}=${esc(row.dst_ip)}`);
+            rowFilters.push(`| ${n.port_field || 'dst_port'}=${esc(row.dst_port)}`);
+            if (!this._isEpochZero(row.first_seen) && !this._isEpochZero(row.last_seen)) {
+                from = this._isoSec(row.first_seen);
+                to = this._isoSec(row.last_seen, 1);
+            }
         } else {
-            // first_seen uses entity_key; volume_baseline uses entity_val
-            const entityRaw = mtype === 'first_seen' ? row.entity_key : row.entity_val;
-            const fields = Array.isArray(def.key_fields) ? def.key_fields : [];
-            if (fields.length && entityRaw != null) {
-                const parts = String(entityRaw).split('\x1e');
-                fields.forEach((field, i) => rowFilters.push(`| ${field}=${esc(parts[i] ?? '')}`));
+            if (mt === 'rarity') {
+                if (def.partition_key && row.partition_val != null) rowFilters.push(`| ${def.partition_key}=${esc(row.partition_val)}`);
+                if (def.value_key && row.value_val != null)         rowFilters.push(`| ${def.value_key}=${esc(row.value_val)}`);
+            } else {
+                const entityRaw = { first_seen: row.entity_key, tlsh: row.digest }[mt] ?? row.entity_val;
+                const fields = Array.isArray(def.key_fields) ? def.key_fields : [];
+                if (fields.length && entityRaw != null) {
+                    const parts = String(entityRaw).split('\x1e');
+                    fields.forEach((field, i) => rowFilters.push(`| ${field}=${esc(parts[i] ?? '')}`));
+                }
+            }
+            const days = (Array.isArray(row.days) ? row.days : []).map(d => String(d).substring(0, 10)).sort();
+            if (days.length) {
+                from = days[0] + 'T00:00:00Z';
+                to = days[days.length - 1] + 'T23:59:59Z';
             }
         }
+        if (typeof range === 'string' && range) {
+            from = range + 'T00:00:00Z';
+            to = range + 'T23:59:59Z';
+        } else if (range && range.from && range.to) {
+            ({ from, to } = range);
+        }
+        if (!from || !to) return null;
+
+        let bql = this._buildSourceQuery(def);
         if (rowFilters.length) {
             if (!bql) rowFilters[0] = rowFilters[0].replace(/^\|\s+/, '');
             bql = (bql ? bql + '\n' : '') + rowFilters.join('\n');
         }
+        return { bql, from, to };
+    },
 
+    // A stored timestamp as an ISO bound at second precision, plus pad seconds so
+    // an end bound keeps the event at that second.
+    _isoSec(v, pad = 0) {
+        const ms = window.TZ ? TZ.toEpoch(v) : Date.parse(v);
+        if (!Number.isFinite(ms)) return '';
+        return new Date(Math.floor(ms / 1000) * 1000 + pad * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    },
+
+    // day, when given, narrows the search to that one active day rather than the
+    // whole span the row was seen over.
+    _pivotToSearch(row, model, day) {
+        const s = this._rowSearch(row, model, day);
+        if (!s) { Toast.error('No time range recorded for this row yet.'); return; }
+        this._runSearch(s);
+    },
+
+    // A pivot chip carries its query; the range it searches was registered with it
+    // when the chip was built.
+    _pivotChip(query) {
+        const s = this._pivotRanges?.get(query);
+        if (s) this._runSearch(s);
+    },
+
+    _runSearch({ bql, from, to }) {
         if (window.App) App.showFractalViewTab('search');
 
         const queryInput = document.getElementById('queryInput');
@@ -1504,12 +1572,114 @@ ${m.description ? `<div class="me-sec">
         }
 
         if (window.TimePicker) {
-            TimePicker.setState({ type: 'custom', customStart: startISO, customEnd: endISO }, true);
+            TimePicker.setState({ type: 'custom', customStart: from, customEnd: to }, true);
         }
 
         if (window.QueryExecutor) {
             setTimeout(() => QueryExecutor.execute(), 50);
         }
+    },
+
+    // ---- Why: fact chips ----
+    // Each chip states one fact against the baseline it was measured on. compact
+    // keeps the one to three that say most for the table; the drawer gets all.
+    // The chip that names the row's activity pivots to search for it.
+    _whyChips(row, model, compact = false) {
+        const def = model.definition || {};
+        const mt = model.model_type;
+        const int = x => Math.round(Number(x) || 0).toLocaleString();
+        const fix = (x, d = 2) => Number(x || 0).toFixed(d);
+        const days = Array.isArray(row.days) ? [...row.days].map(d => String(d).substring(0, 10)).sort() : [];
+        const pivot = range => {
+            const s = this._rowSearch(row, model, range);
+            if (!s) return undefined;
+            (this._pivotRanges ||= new Map()).set(s.bql, s);
+            return s.bql;
+        };
+        const pick = (all, idx) => compact ? idx.map(i => all[i]).filter(Boolean) : all.filter(Boolean);
+
+        if (mt === 'rarity') {
+            const pctThr = Number(def.alert?.percent_threshold) || 0;
+            const confThr = Number(def.alert?.confidence_threshold) || 0;
+            const pct = Number(row.percent);
+            const conf = Number(row.confidence);
+            return pick([
+                { label: 'Seen on', value: `${FactChips.of(row.model_count, row.model_total)} days`,
+                  tone: pctThr > 0 && pct < pctThr ? 'alert' : '',
+                  title: `${fix(pct, 1)}% of the days ${row.partition_val} was seen. Click to search them.`, query: pivot() },
+                { label: 'Partition confidence', value: fix(conf),
+                  tone: confThr > 0 && !(conf > confThr) ? 'muted' : '',
+                  title: 'How rarely this partition produces a new value (Good-Turing coverage). Low means new values are routine there.' },
+                days.length ? { label: 'First seen', value: FactChips.ago(days[0]) || days[0], title: days[0] } : null,
+            ], [0, 2]);
+        }
+        if (mt === 'volume_baseline') {
+            const z = Number(row.z_score);
+            const zThr = Number(def.alert?.z_threshold) || 3.5;
+            const unit = def.time_bucket === 'hour' ? 'hour' : 'day';
+            const flat = this._isFlatZ(z);
+            let latestRange;
+            if (row.latest_bucket && !this._isEpochZero(row.latest_bucket)) {
+                latestRange = { from: this._isoSec(row.latest_bucket), to: this._isoSec(row.latest_bucket, (unit === 'hour' ? 3600 : 86400) - 1) };
+            }
+            return pick([
+                flat ? { value: 'Flat history', tone: 'warn', title: 'Every bucket of history had the same count, so any change is maximal' } : null,
+                { label: 'Latest', value: int(row.latest_count), tone: z > zThr ? 'alert' : '',
+                  title: `Events in the latest complete ${unit}. Click to search it.`, query: pivot(latestRange) },
+                { label: 'Typical', value: Number(row.baseline_median || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }), title: `Median events per ${unit} over its history` },
+                { label: 'History', value: `${int(row.n_buckets)} ${unit}s` },
+                flat ? null : { label: 'z', value: fix(z), tone: z > zThr ? 'alert' : 'muted', title: `Modified z-score; the alert fires above ${zThr}` },
+            ], flat ? [0, 1] : [1, 2]);
+        }
+        if (mt === 'first_seen' || mt === 'tlsh') {
+            const rec = row.recorded_at;
+            const recMs = rec && !this._isEpochZero(rec) ? (window.TZ ? TZ.toEpoch(rec) : Date.parse(rec)) : NaN;
+            const isNew = Number.isFinite(recMs) && Date.now() - recMs < 7 * 86400000;
+            return pick([
+                isNew ? { value: 'New to model', tone: 'alert', title: `First recorded by the model ${FactChips.ago(rec)}` } : null,
+                { label: 'First seen', value: FactChips.ago(row.first_seen) || '—', title: Utils.timestampTitle(row.first_seen) + '. Click to search its days.', query: pivot() },
+                { label: 'Events', value: int(row.event_count) },
+                days.length ? { label: 'Active on', value: `${days.length} day${days.length === 1 ? '' : 's'}` } : null,
+                { label: 'Last seen', value: FactChips.ago(row.last_seen), title: Utils.timestampTitle(row.last_seen) },
+            ], [0, 1]);
+        }
+        if (mt === 'beacon' || mt === 'long_connection') {
+            const final = Number(row.final_score);
+            const thr = Number(this._viewSpec(model).score.threshold(def));
+            // The stored share is rounded, so the network size cannot be recovered
+            // from it exactly; the count and the share are stated as stored.
+            const srcs = Number(row.prevalence_total);
+            const prevalence = srcs > 0 ? {
+                label: 'Sources', value: `${int(srcs)} (${(Number(row.prevalence) * 100).toFixed(1)}%)`,
+                tone: srcs <= 1 ? 'warn' : '',
+                title: 'Distinct sources that talked to this destination in the window, and their share of all sources',
+            } : null;
+            const conns = { label: 'Connections', value: int(row.conn_count), title: 'Click to search this pair', query: pivot() };
+            const seen = !this._isEpochZero(row.last_seen) ? { label: 'Last seen', value: FactChips.ago(row.last_seen), title: Utils.timestampTitle(row.last_seen) } : null;
+            if (mt === 'long_connection') {
+                return pick([
+                    { label: 'Duration', value: this._fmtDuration(row.total_duration), tone: final > thr ? 'alert' : '' },
+                    prevalence, conns, seen,
+                ], [1, 3]);
+            }
+            const subs = [
+                ['Timing', 'ts_score', 'Consistency of the gaps between connections'],
+                ['Size', 'ds_score', 'Consistency of the bytes per connection'],
+                ['Persistence', 'dur_score', 'How much of the window the pair spans and how it recurs across the day'],
+                ['Histogram', 'hist_score', 'How evenly connections spread across the hours of the day'],
+            ].map(([label, k, title]) => ({ label, value: fix(row[k]), tone: Number(row[k]) >= 0.8 ? '' : 'muted', title, v: Number(row[k]) || 0 }));
+            if (compact) {
+                // The table already shows the score, regularity and connections;
+                // the chips add who else talks to it and what drove the regularity.
+                const top = subs.filter(s => s.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
+                return [prevalence, ...top].filter(Boolean);
+            }
+            return [
+                { label: 'Regularity', value: fix(row.regularity_score), tone: final > thr ? 'alert' : '', title: 'Combined timing, size, persistence and histogram regularity' },
+                prevalence, conns, ...subs, seen,
+            ].filter(Boolean);
+        }
+        return [];
     },
 
     _renderPagination() {

@@ -91,7 +91,18 @@ Thresholds depend on the model type (confidence and max share of days for Rarity
 
 ## Viewing Results
 
-The **Data** view shows the model's output table with sorting, search, and pagination, a stats panel (top partitions, anomalous entity counts, first/last seen ranges), and a **Configuration** tab summarizing the filters, extractions, shape, and alert.
+The **Data** view opens on **Findings**: the rows the model's alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search, and pagination.
+
+| Type | A finding is | Ordered by |
+|---|---|---|
+| Rarity | A value meeting the alert's confidence and share-of-days thresholds | Share of days, then confidence |
+| Volume Baseline | An entity whose `z_score` is above the alert's threshold | `z_score`, highest first |
+| First / Last Seen | An entity first recorded by the model in the last 7 days | Newest first |
+| Beacon, Long Connection | A pair whose score is above the alert's threshold | Score, highest first |
+
+A rarity model with no thresholds has no findings, and a TLSH Index has no alert, so it shows only its rows. The same rows are available from the API as `GET /models/{id}/data?view=findings`.
+
+A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, partition confidence, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
 
 ## Import / Export
 

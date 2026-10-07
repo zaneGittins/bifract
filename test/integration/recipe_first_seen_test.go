@@ -128,7 +128,11 @@ func TestFirstSeenNewToModel(t *testing.T) {
 		t.Errorf("backfilled entity recorded_at = %v, want the epoch (history, not new)", rec)
 	}
 
-	// Seeded history is not new, however recently it was seeded.
+	// Seeded history is not new, however recently it was seeded: nothing is a finding.
+	if found, total := modelFindings(t, scoped, model.ID, ""); total != 0 || len(found) != 0 {
+		t.Errorf("findings after a backfill = %d rows (total %d), want none", len(found), total)
+	}
+
 	lookup := func(user string) []map[string]any {
 		return query(fmt.Sprintf("suite_marker=%q suite_user=%q | modelLookup(model=%q, key=[suite_user]) | table(suite_user, first_seen, last_seen, event_count, is_new)",
 			marker, user, modelName))
@@ -182,6 +186,19 @@ func TestFirstSeenNewToModel(t *testing.T) {
 	}
 	if all := dataRows(marker); len(all) != 2 {
 		t.Errorf("data view returned %d rows, want one per entity (2)", len(all))
+	}
+
+	// B, first recorded now, is the one finding; A stays history.
+	if found, total := modelFindings(t, scoped, model.ID, ""); total != 1 || len(found) != 1 || fmt.Sprint(found[0]["entity_key"]) != userB {
+		t.Errorf("findings = %v (total %d), want only %s", found, total, userB)
+	}
+	var stats struct {
+		Findings int `json:"findings"`
+		NewHour  int `json:"new_hour"`
+	}
+	scoped.Do(t, "GET", "/models/"+model.ID+"/stats", nil, &stats)
+	if stats.Findings != 1 || stats.NewHour != 1 {
+		t.Errorf("stats findings = %d, new_hour = %d, want 1 and 1", stats.Findings, stats.NewHour)
 	}
 }
 

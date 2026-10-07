@@ -781,32 +781,35 @@ func (m *Manager) readTableName(model *Model) string {
 	return model.CHTableName
 }
 
-// GetData returns paginated model data with computed scores.
-// For rarity: runs the triple-nested scoring subquery.
-// For first_seen: returns entity_key, first_seen, last_seen, event_count.
-func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
-	if limit <= 0 {
-		limit = 50
+// GetData returns a page of a model's scored rows: all of them, or with
+// q.View = DataViewFindings only those its alert would raise, most unusual first.
+func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q DataQuery) ([]map[string]interface{}, uint64, error) {
+	if q.Limit <= 0 {
+		q.Limit = 50
 	}
-	if limit > 500 {
-		limit = 500
+	if q.Limit > 500 {
+		q.Limit = 500
 	}
-	if sortDir != "asc" {
-		sortDir = "desc"
+	if q.Offset < 0 {
+		q.Offset = 0
+	}
+	if q.Order != "asc" {
+		q.Order = "desc"
 	}
 
 	tableName := m.readTableName(model)
+	rule := findingsRuleFor(model.ModelType, model.Definition)
 	switch model.ModelType {
 	case ModelTypeRarity:
-		return m.getRarityData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
+		return m.getRarityData(ctx, tableName, fractalID, q, rule)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "entity_key", true)
+		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "entity_key", true)
 	case ModelTypeTLSH:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "digest", false)
+		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "digest", false)
 	case ModelTypeVolumeBaseline:
-		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, search, sortCol, sortDir, limit, offset)
+		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, q, rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
-		return m.getNetworkData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
+		return m.getNetworkData(ctx, tableName, fractalID, q, rule)
 	default:
 		return nil, 0, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
@@ -820,32 +823,20 @@ func buildRarityScoredSQL(source, fidEsc string) string {
 	return parser.RarityScoredSQL(source, "fractal_id = '"+fidEsc+"'", 1, true)
 }
 
-func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "confidence": true}
-	if !allowed[sortCol] {
-		sortCol = "confidence"
+	where, order, none := dataPlan(q, allowed, "confidence", rule, plainSort)
+	if none {
+		return nil, 0, nil
 	}
 
 	baseQuery := buildRarityScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID))
 
-	if search != "" {
+	if q.Search != "" {
 		baseQuery += fmt.Sprintf(" AND (partition_val ILIKE '%%%s%%' OR value_val ILIKE '%%%s%%')",
-			storage.EscCHStr(search), storage.EscCHStr(search))
+			storage.EscCHStr(q.Search), storage.EscCHStr(q.Search))
 	}
-
-	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
-	var total uint64
-	if err := m.ch.QueryRow(ctx, countQuery).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count rarity data: %w", err)
-	}
-
-	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, sortCol, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.QuerySchema(ctx, dataQuery)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query rarity data: %w", err)
-	}
-	convertDaysToStrings(rows)
-	return rows, total, nil
+	return m.runPage(ctx, "rarity", baseQuery, where, order, q.Limit, q.Offset)
 }
 
 // firstSeenAggSQL returns the per-entity aggregation (first_seen, last_seen,
@@ -875,31 +866,19 @@ WHERE fractal_id = '%s'`, keyCol, recordedCol, source, fidEsc)
 	return q
 }
 
-func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int, keyCol string, recorded bool) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, keyCol string, recorded bool) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{keyCol: true, "first_seen": true, "last_seen": true, "event_count": true}
-	if !allowed[sortCol] {
-		sortCol = "first_seen"
+	where, order, none := dataPlan(q, allowed, "first_seen", rule, plainSort)
+	if none {
+		return nil, 0, nil
 	}
 
 	extra := ""
-	if search != "" {
-		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(search))
+	if q.Search != "" {
+		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(q.Search))
 	}
 	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol, recorded)
-
-	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
-	var total uint64
-	if err := m.ch.QueryRow(ctx, countQuery).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count first_seen data: %w", err)
-	}
-
-	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, sortCol, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.QuerySchema(ctx, dataQuery)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query first_seen data: %w", err)
-	}
-	convertDaysToStrings(rows)
-	return rows, total, nil
+	return m.runPage(ctx, "first_seen", baseQuery, where, order, q.Limit, q.Offset)
 }
 
 // buildVolumeScoredSQL scores a volume_baseline model's entities with the shared
@@ -908,38 +887,26 @@ func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, lower stri
 	return parser.VolumeScoredSQL(source, "fractal_id = '"+fidEsc+"'", def.TimeBucket, def.MinSample, lower, true)
 }
 
-func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"entity_val": true, "latest_count": true, "baseline_median": true, "mad": true, "z_score": true, "n_buckets": true, "latest_bucket": true}
-	if !allowed[sortCol] {
-		sortCol = "z_score"
+	// Sort by absolute z-score so the largest anomalies (high or low) surface first.
+	where, order, none := dataPlan(q, allowed, "z_score", rule, func(col string) string {
+		if col == "z_score" {
+			return "abs(z_score)"
+		}
+		return col
+	})
+	if none {
+		return nil, 0, nil
 	}
 
 	baseQuery := buildVolumeScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), def, "")
-	if search != "" {
-		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(search))
+	if q.Search != "" {
+		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(q.Search))
 	}
-
-	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
-	var total uint64
-	if err := m.ch.QueryRow(ctx, countQuery).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count volume_baseline data: %w", err)
-	}
-
-	// Sort by absolute z-score so the largest anomalies (high or low) surface first.
-	orderExpr := sortCol
-	if sortCol == "z_score" {
-		orderExpr = "abs(z_score)"
-	}
-	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", baseQuery, orderExpr, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.QuerySchema(ctx, dataQuery)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query volume_baseline data: %w", err)
-	}
-	convertDaysToStrings(rows)
-	return rows, total, nil
+	return m.runPage(ctx, "volume_baseline", baseQuery, where, order, q.Limit, q.Offset)
 }
 
-// GetStats returns aggregate statistics for a model's data table.
 // networkResultCols is the projection returned to the data viewer for a scored
 // pair: the final verdict plus the full breakdown (subscores + prevalence modifier)
 // so the reviewer can see why a pair scored high.
@@ -960,38 +927,29 @@ func networkScoreThreshold(def ModelDefinition, mt ModelType) float64 {
 // getNetworkData returns scored pairs from a network model's results table, ranked
 // by final_score (severity order) by default. Both beacon and long_connection share
 // this table.
-func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"final_score": true, "regularity_score": true, "conn_count": true, "total_duration": true, "prevalence": true, "last_seen": true}
-	if !allowed[sortCol] {
-		sortCol = "final_score"
+	where, order, none := dataPlan(q, allowed, "final_score", rule, plainSort)
+	if none {
+		return nil, 0, nil
 	}
 	fid := storage.EscCHStr(fractalID)
-	where := fmt.Sprintf("fractal_id = '%s'", fid)
-	if search != "" {
-		s := storage.EscCHStr(search)
-		where += fmt.Sprintf(" AND (src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%')", s, s)
+	scope := fmt.Sprintf("fractal_id = '%s'", fid)
+	if q.Search != "" {
+		s := storage.EscCHStr(q.Search)
+		scope += fmt.Sprintf(" AND (src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%')", s, s)
 	}
-	base := fmt.Sprintf("SELECT %s FROM `%s` FINAL WHERE %s", networkResultCols, tableName, where)
-
-	var total uint64
-	if err := m.ch.QueryRow(ctx, fmt.Sprintf("SELECT count() FROM (%s)", base)).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count network data: %w", err)
-	}
-	dataQuery := fmt.Sprintf("%s ORDER BY %s %s LIMIT %d OFFSET %d", base, sortCol, strings.ToUpper(sortDir), limit, offset)
-	rows, err := m.ch.QuerySchema(ctx, dataQuery)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query network data: %w", err)
-	}
-	return rows, total, nil
+	base := fmt.Sprintf("SELECT %s FROM `%s` FINAL WHERE %s", networkResultCols, tableName, scope)
+	return m.runPage(ctx, "network", base, where, order, q.Limit, q.Offset)
 }
 
-func (m *Manager) getNetworkStats(ctx context.Context, qt, fid string, def ModelDefinition, mt ModelType) (map[string]interface{}, error) {
-	threshold := networkScoreThreshold(def, mt)
+func (m *Manager) getNetworkStats(ctx context.Context, qt, fid string, rule findingsRule) (map[string]interface{}, error) {
 	q := fmt.Sprintf(`SELECT count() AS total_pairs,
-       countIf(final_score >= %g) AS flagged,
+       countIf(%s) AS flagged,
        countIf(final_score > 0.8) AS critical,
-       round(max(final_score), 3) AS max_score
-FROM %s FINAL WHERE fractal_id = '%s'`, threshold, qt, fid)
+       round(max(final_score), 3) AS max_score,
+       max(scored_at) AS scored_at
+FROM %s FINAL WHERE fractal_id = '%s'`, rule.Where, qt, fid)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("network stats: %w", err)
@@ -1000,8 +958,10 @@ FROM %s FINAL WHERE fractal_id = '%s'`, threshold, qt, fid)
 	if len(rows) > 0 {
 		result["total_pairs"] = rows[0]["total_pairs"]
 		result["flagged"] = rows[0]["flagged"]
+		result["findings"] = rows[0]["flagged"]
 		result["critical"] = rows[0]["critical"]
 		result["max_score"] = rows[0]["max_score"]
+		result["scored_at"] = rows[0]["scored_at"]
 	}
 	return result, nil
 }
@@ -1015,28 +975,66 @@ func (m *Manager) getNetworkHistogram(ctx context.Context, qt, fid string) (map[
 	return map[string]interface{}{"metric": "final_score", "buckets": buckets}, nil
 }
 
+// GetStats returns aggregate statistics for a model's data table. Every type
+// with an alert also reports findings, the count its Findings view holds, and
+// findings_rule, that rule as a phrase ("" when the model sets none).
 func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) (map[string]interface{}, error) {
 	tableName := m.readTableName(model)
 	qt := "`" + tableName + "`"
 	fid := storage.EscCHStr(fractalID)
+	rule := findingsRuleFor(model.ModelType, model.Definition)
+	now := time.Now().UTC()
 
+	var result map[string]interface{}
+	var err error
 	switch model.ModelType {
 	case ModelTypeRarity:
-		return m.getRarityStats(ctx, qt, fid)
+		result, err = m.getRarityStats(ctx, qt, fid, rule, now)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenStats(ctx, qt, fid, "entity_key")
+		result, err = m.getFirstSeenStats(ctx, qt, fid, "entity_key")
+		if err == nil {
+			err = m.addFirstSeenDiscovery(ctx, qt, fid, result, now)
+		}
 	case ModelTypeTLSH:
 		return m.getFirstSeenStats(ctx, qt, fid, "digest")
 	case ModelTypeVolumeBaseline:
-		return m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid)
+		result, err = m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid, rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
-		return m.getNetworkStats(ctx, qt, fid, model.Definition, model.ModelType)
+		result, err = m.getNetworkStats(ctx, qt, fid, rule)
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", model.ModelType)
 	}
+	if err != nil {
+		return nil, err
+	}
+	result["findings_rule"] = rule.Text
+	if _, ok := result["findings"]; !ok {
+		result["findings"] = uint64(0)
+	}
+	return result, nil
 }
 
-func (m *Manager) getRarityStats(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
+// addFirstSeenDiscovery adds what a first_seen model found new: findings (first
+// recorded within findingsNewDays), new_hour (what the alert fires on now) and
+// the per-day series.
+func (m *Manager) addFirstSeenDiscovery(ctx context.Context, qt, fid string, result map[string]interface{}, now time.Time) error {
+	rows, err := m.ch.QuerySchema(ctx, firstSeenDiscoverySQL(qt, fid, discoveryWindow(now)))
+	if err != nil {
+		return fmt.Errorf("first_seen discovery: %w", err)
+	}
+	counts := map[string]uint64{}
+	var week, hour uint64
+	for _, r := range rows {
+		counts[getString(r, "day")] += getUint64(r, "n")
+		week += getUint64(r, "week")
+		hour += getUint64(r, "hour")
+	}
+	result["findings"], result["new_week"], result["new_hour"] = week, week, hour
+	result["series"] = fillDiscovery(counts, now)
+	return nil
+}
+
+func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findingsRule, now time.Time) (map[string]interface{}, error) {
 	summaryQ := fmt.Sprintf(`SELECT count() AS total_rows, uniq(partition_val) AS distinct_partitions FROM %s FINAL WHERE fractal_id = '%s'`, qt, fid)
 	rows, err := m.ch.QuerySchema(ctx, summaryQ)
 	if err != nil {
@@ -1052,6 +1050,23 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string) (map[strin
 	if err == nil {
 		result["top_partitions"] = topRows
 	}
+
+	// Findings and new pairs per day in one pass: each pair's first day comes from
+	// its stored day set, so this reads the state and never the logs.
+	dRows, err := m.ch.QuerySchema(ctx, rarityDiscoverySQL(buildRarityScoredSQL(qt+" FINAL", fid), rule.Where))
+	if err != nil {
+		return nil, fmt.Errorf("rarity discovery: %w", err)
+	}
+	counts := map[string]uint64{}
+	var flagged uint64
+	for _, r := range dRows {
+		counts[getString(r, "first_day")] += getUint64(r, "n")
+		flagged += getUint64(r, "flagged")
+	}
+	series := fillDiscovery(counts, now)
+	result["findings"] = flagged
+	result["new_week"] = sumSince(series, findingsNewDays)
+	result["series"] = series
 	return result, nil
 }
 
@@ -1080,25 +1095,23 @@ FROM (
 	return result, nil
 }
 
-func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
-	threshold := 3.5
-	if def.Alert != nil && def.Alert.ZThreshold > 0 {
-		threshold = def.Alert.ZThreshold
-	}
+func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid string, rule findingsRule) (map[string]interface{}, error) {
 	scoring := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
-       round(max(abs(z_score)), 4) AS max_z
-FROM (%s)`, threshold, scoring)
+       countIf(%s) AS findings,
+       round(max(abs(z_score)), 4) AS max_z,
+       max(latest_bucket) AS latest_bucket
+FROM (%s)`, volumeZThreshold(def), rule.Where, scoring)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline stats: %w", err)
 	}
 	result := map[string]interface{}{}
 	if len(rows) > 0 {
-		result["total_entities"] = rows[0]["total_entities"]
-		result["anomalous"] = rows[0]["anomalous"]
-		result["max_z"] = rows[0]["max_z"]
+		for _, k := range []string{"total_entities", "anomalous", "findings", "max_z", "latest_bucket"} {
+			result[k] = rows[0][k]
+		}
 	}
 	return result, nil
 }

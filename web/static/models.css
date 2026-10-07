@@ -373,41 +373,144 @@
     gap: 10px;
 }
 
-/* Summary strip */
-.mv-stats {
+/* Summary strip: what the alert would raise, then context, then new per day. */
+.mv-summary {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    align-items: center;
+    gap: 18px;
     flex-shrink: 0;
-}
-
-.mv-stats:empty { display: none; }
-
-.mv-stat {
+    padding: 9px 14px;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
-    padding: 7px 13px;
-    min-width: 104px;
 }
 
-.mv-stat-k {
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-muted);
+.mv-summary:empty { display: none; }
+
+.mv-sum-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
 }
 
-.mv-stat-v {
-    margin-top: 2px;
+.mv-sum-facts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.mv-sum-fact b {
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    font-size: 17px;
     font-variant-numeric: tabular-nums;
-    line-height: 1.25;
+    font-weight: 600;
+    color: var(--text-primary);
 }
 
-.mv-stat-flag .mv-stat-v { color: var(--severity-high, #f9944e); }
-.mv-stat-crit .mv-stat-v { color: var(--error, #f87171); }
+.mv-sum-fact:first-child { font-size: 14px; }
+.mv-sum-alert b { color: var(--error, #f87171); }
+.mv-sum-muted { color: var(--text-muted, #888); font-size: 12px; }
+.mv-sum-muted b { color: var(--text-secondary); font-weight: 500; }
+.mv-sum-sep { color: var(--text-muted, #888); opacity: 0.6; }
+
+.mv-sum-rule {
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mv-spark {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    flex-shrink: 0;
+}
+
+.mv-spark svg { display: block; overflow: visible; }
+.mv-spark-bar { fill: var(--accent-primary); }
+.mv-spark-bar:hover { fill: var(--accent-secondary); }
+.mv-spark-zero { fill: var(--border-color); }
+
+.mv-spark-label {
+    font-size: 10px;
+    color: var(--text-muted, #888);
+    white-space: nowrap;
+}
+
+/* Findings | All rows */
+.mv-tabs {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.mv-tabs[hidden] { display: none; }
+
+.mv-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-muted, #888);
+    font: 500 12px/1.4 var(--font-main);
+    cursor: pointer;
+    transition: var(--transition, background 0.12s ease, color 0.12s ease);
+}
+
+.mv-tab:hover { color: var(--text-primary); }
+.mv-tab:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+
+.mv-tab.active {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.mv-tab-n {
+    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted, #888);
+}
+
+.mv-tab-n.hot { color: var(--error, #f87171); }
+
+/* Why: compact fact chips; the cell keeps them on one line and clips. */
+.model-data-table td.mv-why { max-width: 360px; }
+.model-data-table td.mv-why .fact-chips { flex-wrap: nowrap; overflow: hidden; }
+.model-data-table th.mv-why .mv-h { color: var(--text-muted, #888); }
+
+/* The raw columns fold away under the facts. */
+.mv-all-cols > summary {
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+}
+
+.mv-all-cols > summary::-webkit-details-marker { display: none; }
+.mv-all-cols > summary::before {
+    content: '\25B8';
+    display: inline-block;
+    margin-right: 6px;
+    transition: transform 0.15s ease;
+}
+
+.mv-all-cols[open] > summary::before { transform: rotate(90deg); }
+.mv-all-cols[open] > summary { margin-bottom: 8px; }
 
 /* Results panel: only the table body scrolls, so the toolbar and the pager stay put. */
 .mv-results {
@@ -469,22 +572,11 @@
     z-index: 1;
 }
 
-/* The stored column name stays under the label, so a sort, an export or a BQL
-   query written against these results still lines up with what is on screen. */
 .model-data-table th .mv-h {
     display: block;
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
-}
-
-.model-data-table th .mv-h-src {
-    display: block;
-    margin-top: 1px;
-    font-family: var(--font-mono, 'IBM Plex Mono', monospace);
-    font-size: 10px;
-    font-weight: 400;
-    color: var(--text-muted, #888);
 }
 
 .model-data-table th.sortable { cursor: pointer; }
@@ -567,10 +659,7 @@
 
 .mv-meter-fill.hot { background: var(--severity-high, #f9944e); }
 
-/* Score distribution histogram */
-.model-histogram-panel { margin: 0; flex-shrink: 0; }
-.model-histogram-panel:empty { display: none; }
-
+/* Score distribution histogram (editor preview) */
 .histogram-head { margin-bottom: 6px; }
 .histogram-title {
     font-size: 11px;
@@ -617,30 +706,6 @@
     font-family: var(--font-mono, 'IBM Plex Mono', monospace);
     line-height: 1;
 }
-/* How much of the model the alert currently covers, which is the answer a marker
-   on one of two axes could never give. */
-.mv-coverage { display: flex; flex-direction: column; gap: 6px; }
-
-.mv-coverage-bar {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    overflow: hidden;
-}
-
-.mv-coverage-bar > span {
-    display: block;
-    height: 100%;
-    background: var(--severity-high, #f9944e);
-}
-
-.mv-coverage-text { font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
-.mv-coverage-text strong { color: var(--text-primary); }
-
-/* A day-per-bar series is denser than a bucket chart and carries no per-bar label. */
-.histogram-chart-dense { gap: 2px; }
-.histogram-chart-dense .histogram-col { min-width: 0; }
 
 /* A caption under a chart: what the marker does not by itself mean where the alert
    needs more than the plotted metric, and what a series adds up to. */
