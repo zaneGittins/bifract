@@ -1302,6 +1302,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.dashboardHandler.HandleUpdateWidgetLayout,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPut,
+					Path:     "/dashboards/{id}/layout",
+					Access:   api.AccessViewer,
+					Request:  dashboards.UpdateLayoutRequest{},
+					Response: dashboards.Response{},
+					Summary:  "Move or resize several widgets atomically.",
+					Handler:  d.dashboardHandler.HandleUpdateLayout,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodDelete,
 					Path:     "/dashboards/{id}/widgets/{widget_id}",
 					Access:   api.AccessViewer,

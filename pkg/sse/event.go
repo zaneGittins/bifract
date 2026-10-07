@@ -19,7 +19,8 @@ const (
 	WidgetRemoved        = "widget_removed"
 	WidgetUpdated        = "widget_updated"
 	WidgetResultsUpdated = "widget_results_updated"
-	WidgetLayoutUpdated  = "widget_layout_updated"
+	// DashboardLayoutUpdated carries {"widgets": [{id,pos_x,pos_y,width,height}]}.
+	DashboardLayoutUpdated = "dashboard_layout_updated"
 )
 
 // Event types for presence and connection.

@@ -516,43 +516,40 @@ func (e *Executor) clampInterval(seconds int) time.Duration {
 // autoIntervalSeconds maps a dashboard time range to a sensible auto cadence:
 // shorter windows refresh more often; long historical windows barely change.
 func autoIntervalSeconds(timeRangeType string) int {
-	switch timeRangeType {
-	case "last1h":
-		return 30
-	case "last24h":
-		return 300
-	case "last7d":
-		return 1800
-	case "last30d", "all":
+	d, ok := relativeDuration(timeRangeType)
+	switch {
+	case timeRangeType == "all":
 		return 3600
-	default:
+	case !ok:
 		return 300
+	case d <= time.Hour:
+		return 30
+	case d <= 24*time.Hour:
+		return 300
+	case d <= 7*24*time.Hour:
+		return 1800
+	default:
+		return 3600
 	}
 }
 
-// computeTimeRange mirrors the frontend getDashboardTimeRange so server-executed
-// results match what an interactive run would produce.
+// computeTimeRange mirrors the frontend dashboard range resolution so
+// server-executed results match what an interactive run would produce.
 func computeTimeRange(d *storage.Dashboard) (time.Time, time.Time) {
 	now := time.Now()
 	switch d.TimeRangeType {
-	case "last1h":
-		return now.Add(-time.Hour), now
-	case "last24h":
-		return now.Add(-24 * time.Hour), now
-	case "last7d":
-		return now.Add(-7 * 24 * time.Hour), now
-	case "last30d":
-		return now.Add(-30 * 24 * time.Hour), now
 	case "all":
 		return time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), now
 	case "custom":
 		if d.TimeRangeStart != nil && d.TimeRangeEnd != nil {
 			return *d.TimeRangeStart, *d.TimeRangeEnd
 		}
-		return now.Add(-24 * time.Hour), now
 	default:
-		return now.Add(-24 * time.Hour), now
+		if dur, ok := relativeDuration(d.TimeRangeType); ok {
+			return now.Add(-dur), now
+		}
 	}
+	return now.Add(-24 * time.Hour), now
 }
 
 // Variable substitution is centralized in pkg/bqlvars (quote- and

@@ -10413,6 +10413,97 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/dashboards/{id}/layout": {
+      "put": {
+        "operationId": "put_api_v1_dashboards_byId_layout",
+        "summary": "Move or resize several widgets atomically.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "dashboards"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dashboards.UpdateLayoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "description": "Any JSON value."
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/dashboards/{id}/presence": {
       "get": {
         "operationId": "get_api_v1_dashboards_byId_presence",
@@ -33806,6 +33897,20 @@
           }
         }
       },
+      "dashboards.UpdateLayoutRequest": {
+        "type": "object",
+        "properties": {
+          "widgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/storage.WidgetLayout"
+            }
+          }
+        },
+        "required": [
+          "widgets"
+        ]
+      },
       "dashboards.UpdateRefreshIntervalRequest": {
         "type": "object",
         "properties": {
@@ -39043,6 +39148,33 @@
           "granted_by",
           "created_at",
           "updated_at"
+        ]
+      },
+      "storage.WidgetLayout": {
+        "type": "object",
+        "properties": {
+          "height": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "pos_x": {
+            "type": "integer"
+          },
+          "pos_y": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "pos_x",
+          "pos_y",
+          "width",
+          "height"
         ]
       },
       "tls.ConnectionState": {

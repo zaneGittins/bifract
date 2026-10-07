@@ -821,6 +821,9 @@ ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS refresh_interval INTEGER NOT NUL
 -- IANA zone that time buckets snap to. Belongs to the dashboard, not the
 -- viewer: widget results are one cached blob shared by everyone who opens it.
 ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC';
+-- Widget layout units: 1 = legacy 12-col x 130px (scaled on read), 2 = 24-col x 26px pitch.
+ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS grid_version SMALLINT NOT NULL DEFAULT 1;
+ALTER TABLE dashboards ALTER COLUMN grid_version SET DEFAULT 2;
 
 CREATE TABLE IF NOT EXISTS dashboard_widgets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

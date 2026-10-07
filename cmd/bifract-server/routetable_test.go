@@ -155,6 +155,7 @@ var routeTable = []string{
 	"GET /api/v1/dashboards/{id}/events 9 auth viewer",
 	"POST /api/v1/dashboards/{id}/execute 9 auth resp viewer",
 	"GET /api/v1/dashboards/{id}/export 9 auth viewer",
+	"PUT /api/v1/dashboards/{id}/layout 9 auth body resp viewer",
 	"GET /api/v1/dashboards/{id}/presence 9 auth resp viewer",
 	"POST /api/v1/dashboards/{id}/presence 9 auth resp viewer",
 	"PUT /api/v1/dashboards/{id}/refresh-interval 9 auth body resp viewer",

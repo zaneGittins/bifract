@@ -258,9 +258,8 @@ func (h *DashboardHandler) HandleCreateDashboard(w http.ResponseWriter, r *http.
 		req.TimeRangeType = "last1h"
 	}
 
-	validTimeRanges := map[string]bool{"last1h": true, "last24h": true, "last7d": true, "last30d": true, "all": true, "custom": true}
-	if !validTimeRanges[req.TimeRangeType] {
-		api.WriteError(w, http.StatusBadRequest, "time_range_type must be one of: last1h, last24h, last7d, last30d, all, custom")
+	if !validTimeRangeType(req.TimeRangeType) {
+		api.WriteError(w, http.StatusBadRequest, timeRangeTypeHelp)
 		return
 	}
 	if req.TimeRangeType == "custom" && (req.TimeRangeStart == nil || req.TimeRangeEnd == nil) {
@@ -353,6 +352,16 @@ func (h *DashboardHandler) HandleUpdateDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
+	if req.TimeRangeType != nil {
+		if !validTimeRangeType(*req.TimeRangeType) {
+			api.WriteError(w, http.StatusBadRequest, timeRangeTypeHelp)
+			return
+		}
+		if *req.TimeRangeType == "custom" && (req.TimeRangeStart == nil || req.TimeRangeEnd == nil) {
+			api.WriteError(w, http.StatusBadRequest, "time_range_start and time_range_end are required for custom time range")
+			return
+		}
+	}
 	if req.Timezone != nil {
 		tz := strings.TrimSpace(*req.Timezone)
 		if !storage.ValidTimezone(tz) {
@@ -430,11 +439,12 @@ func (h *DashboardHandler) HandleCreateWidget(w http.ResponseWriter, r *http.Req
 		req.ChartType = "table"
 	}
 	if req.Width <= 0 {
-		req.Width = 6
+		req.Width = 12
 	}
 	if req.Height <= 0 {
-		req.Height = 4
+		req.Height = 16
 	}
+	req.PosX, req.PosY, req.Width, req.Height = clampLayout(req.PosX, req.PosY, req.Width, req.Height)
 
 	widget := storage.DashboardWidget{
 		DashboardID:  dashboardID,
@@ -525,6 +535,32 @@ func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *ht
 	dashboardID := chi.URLParam(r, "id")
 	widgetID := chi.URLParam(r, "widget_id")
 
+	var req UpdateWidgetLayoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	h.saveLayout(w, r, dashboardID, []storage.WidgetLayout{{
+		ID: widgetID, PosX: req.PosX, PosY: req.PosY, Width: req.Width, Height: req.Height,
+	}})
+}
+
+// HandleUpdateLayout saves the placement of many widgets in one transaction, so
+// a drag that pushes neighbours lands as one change for every viewer.
+func (h *DashboardHandler) HandleUpdateLayout(w http.ResponseWriter, r *http.Request) {
+	var req UpdateLayoutRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.Widgets) == 0 || len(req.Widgets) > 500 {
+		api.WriteError(w, http.StatusBadRequest, "widgets must hold 1 to 500 entries")
+		return
+	}
+	h.saveLayout(w, r, chi.URLParam(r, "id"), req.Widgets)
+}
+
+func (h *DashboardHandler) saveLayout(w http.ResponseWriter, r *http.Request, dashboardID string, items []storage.WidgetLayout) {
 	fractalID, prismID, err := h.getDashboardScope(r.Context(), dashboardID)
 	if err != nil {
 		api.WriteError(w, http.StatusNotFound, "Dashboard not found")
@@ -533,30 +569,26 @@ func (h *DashboardHandler) HandleUpdateWidgetLayout(w http.ResponseWriter, r *ht
 	if !h.requireDashboardRole(w, r, fractalID, prismID, rbac.RoleAnalyst) {
 		return
 	}
-
-	var req UpdateWidgetLayoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
-		return
+	for i := range items {
+		it := &items[i]
+		it.PosX, it.PosY, it.Width, it.Height = clampLayout(it.PosX, it.PosY, it.Width, it.Height)
 	}
 
-	err = h.pg.UpdateDashboardWidgetLayout(r.Context(), widgetID, req.PosX, req.PosY, req.Width, req.Height)
+	n, err := h.pg.UpdateDashboardWidgetLayouts(r.Context(), dashboardID, items)
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to update widget layout")
+		return
+	}
+	if n == 0 {
+		api.WriteError(w, http.StatusNotFound, "Widget not found")
 		return
 	}
 
 	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Widget layout updated"})
 
 	h.broadcastSSE(r, dashboardID, sse.Event{
-		Type: sse.WidgetLayoutUpdated,
-		Data: map[string]interface{}{
-			"id":     widgetID,
-			"pos_x":  req.PosX,
-			"pos_y":  req.PosY,
-			"width":  req.Width,
-			"height": req.Height,
-		},
+		Type: sse.DashboardLayoutUpdated,
+		Data: map[string]interface{}{"widgets": items},
 	})
 }
 
@@ -820,7 +852,10 @@ type variableYAML struct {
 }
 
 type dashboardYAML struct {
-	Kind        string         `yaml:"kind"`
+	Kind string `yaml:"kind"`
+	// GridColumns is the layout unit of the widget positions. Files exported
+	// before the 24-column grid omit it and use 12 columns x 130px rows.
+	GridColumns int            `yaml:"grid_columns,omitempty"`
 	Name        string         `yaml:"name"`
 	Description string         `yaml:"description,omitempty"`
 	TimeRange   string         `yaml:"time_range_type,omitempty"`
@@ -861,6 +896,7 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 
 	export := dashboardYAML{
 		Kind:        "Dashboard",
+		GridColumns: storage.DashboardGridColumns,
 		Name:        dashboard.Name,
 		Description: dashboard.Description,
 		TimeRange:   dashboard.TimeRangeType,
@@ -979,7 +1015,11 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
+	legacyGrid := imported.GridColumns == 0
 	for i, wg := range imported.Widgets {
+		if legacyGrid {
+			wg.PosX, wg.Width, wg.PosY, wg.Height = wg.PosX*2, wg.Width*2, wg.PosY*5, wg.Height*5
+		}
 		widget := storage.DashboardWidget{
 			DashboardID:  created.ID,
 			QueryContent: wg.Query,
@@ -1001,12 +1041,13 @@ func (h *DashboardHandler) HandleImportDashboard(w http.ResponseWriter, r *http.
 		if widget.ChartType == "" {
 			widget.ChartType = "table"
 		}
-		if widget.Width < 2 {
-			widget.Width = 4
+		if widget.Width <= 0 {
+			widget.Width = 12
 		}
-		if widget.Height < 2 {
-			widget.Height = 3
+		if widget.Height <= 0 {
+			widget.Height = 16
 		}
+		widget.PosX, widget.PosY, widget.Width, widget.Height = clampLayout(widget.PosX, widget.PosY, widget.Width, widget.Height)
 		if _, err := h.pg.InsertDashboardWidget(r.Context(), widget); err != nil {
 			fmt.Printf("[Dashboards] Failed to import widget %d: %v\n", i, err)
 		}
