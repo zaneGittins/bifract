@@ -17,19 +17,6 @@ func extractPattern(pattern string) string {
 	return namedGroupRe.ReplaceAllString(pattern, "(")
 }
 
-// aggOpts tunes how the model aggregation SELECT is built. It exists so the
-// preview path can reproduce the day-chunked backfill exactly without changing
-// the byte-stable MV/backfill output (which always uses the zero value).
-type aggOpts struct {
-	// dayBucket adds toDate(timestamp) to the rarity GROUP BY. The live backfill
-	// runs one INSERT per UTC day, so a rarity pair's event_count equals the
-	// number of distinct days it appeared. A single-pass preview scan would
-	// instead collapse to event_count=1 (confidence 0 for everything); bucketing
-	// by day reproduces the per-day chunking so preview == post-backfill output.
-	// No effect on first_seen/volume_baseline, whose aggregates are day-invariant.
-	dayBucket bool
-}
-
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
 // fractalID is the owning fractal: it scopes the MV's source scan so a model only
 // much history is read so scoring stays bounded at scale.
@@ -99,17 +86,6 @@ SETTINGS index_granularity = 8192`, tableName, volumeBucketColType(def.TimeBucke
 	}
 }
 
-// rarityDayGroupBy returns the extra GROUP BY term that splits a rarity
-// aggregation by UTC day when opts.dayBucket is set. This makes a single-pass
-// preview scan emit one row per (partition, value, day) with event_count=1,
-// reproducing the day-chunked backfill (whose event_count counts distinct days).
-func rarityDayGroupBy(opts aggOpts) string {
-	if opts.dayBucket {
-		return ", toDate(timestamp)"
-	}
-	return ""
-}
-
 // volumeBucketExpr returns the ClickHouse expression that buckets a log's parsed
 // timestamp for a volume_baseline model.
 func volumeBucketExpr(timeBucket string) string {
@@ -140,7 +116,7 @@ func volumeBucketColType(timeBucket string) string {
 // IMPORTANT: this performs NO DDL. It only inserts into an already-existing
 // model table, so it can never orphan a table or materialized view.
 func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra, fractalID string) (string, error) {
-	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra, aggOpts{}, fractalID)
+	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra, fractalID)
 	if err != nil {
 		return "", err
 	}
@@ -151,7 +127,7 @@ func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceT
 // shared by the materialized view (sourceTable="logs", whereExtra="") and the
 // backfill INSERT...SELECT (distributed source + time-window predicate).
 // whereExtra, when non-empty, is ANDed into the source-scan WHERE clause.
-func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts, fractalID string) (string, error) {
+func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID string) (string, error) {
 	// An unscoped model MV aggregates every fractal's logs into the owning
 	// fractal's table: an ingest-time cost on fractals that never read it, and
 	// cross-fractal rows sitting behind nothing but the read-side predicate.
@@ -251,14 +227,14 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 		b.WriteString("\n")
 
 		// Final SELECT from last CTE
-		final, err := buildFinalSelect(def, mt, prevCTE, opts)
+		final, err := buildFinalSelect(def, mt, prevCTE)
 		if err != nil {
 			return "", err
 		}
 		b.WriteString(final)
 	} else {
 		// No extractions: SELECT directly from the source table.
-		direct, err := buildDirectSelect(def, mt, sourceTable, whereExtra, opts, fractalID)
+		direct, err := buildDirectSelect(def, mt, sourceTable, whereExtra, fractalID)
 		if err != nil {
 			return "", err
 		}
@@ -269,7 +245,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 }
 
 // buildFinalSelect builds the final GROUP BY SELECT from the last CTE.
-func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts aggOpts) (string, error) {
+func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) (string, error) {
 	var b strings.Builder
 	switch mt {
 	case ModelTypeRarity:
@@ -282,7 +258,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts 
 		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		b.WriteString(fmt.Sprintf("WHERE %s != '' AND %s != ''\n", partRef, valRef))
-		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val%s", rarityDayGroupBy(opts)))
+		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val"))
 	case ModelTypeFirstSeen:
 		b.WriteString("SELECT fractal_id,\n")
 		if len(def.KeyFields) == 1 {
@@ -349,7 +325,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string, opts 
 
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
-func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, opts aggOpts, fractalID string) (string, error) {
+func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID string) (string, error) {
 	var b strings.Builder
 	b.WriteString("SELECT fractal_id")
 
@@ -370,7 +346,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
 		b.WriteString(fmt.Sprintf("\nAND %s != '' AND %s != ''\n", chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
-		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val%s", rarityDayGroupBy(opts)))
+		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val"))
 	case ModelTypeFirstSeen:
 		if len(def.KeyFields) == 1 {
 			b.WriteString(fmt.Sprintf(",\n    %s AS entity_key", chFieldRef(def.KeyFields[0])))

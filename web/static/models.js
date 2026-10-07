@@ -22,7 +22,7 @@ const AnalyticsModels = {
         minSample: 1,
         timeBucket: 'day',
         alertMode: 'paused',
-        alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5 },
+        alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5 },
         name: '',
         description: '',
         timeRange: '24h',
@@ -385,7 +385,7 @@ const AnalyticsModels = {
         if (!m) return;
         window.App?.pushSubPath(`${id}/edit`);
         const def = m.definition || {};
-        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 };
+        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 };
         if (def.alert) Object.assign(alertCfg, def.alert);
         if (def.beacon && def.beacon.score_threshold != null) alertCfg.beacon_threshold = def.beacon.score_threshold;
         if (def.long_conn && def.long_conn.score_threshold != null) alertCfg.longconn_threshold = def.long_conn.score_threshold;
@@ -440,8 +440,9 @@ const AnalyticsModels = {
                 { col: 'confidence', label: 'Confidence', fmt: 'meter', align: 'num' },
                 { col: 'partition_val', label: d => d.partition_key || 'Partition' },
                 { col: 'value_val', label: d => d.value_key || 'Value' },
-                { col: 'model_count', label: 'Seen', fmt: 'int', align: 'num' },
-                { col: 'percent', label: 'Share', fmt: 'pct100', align: 'num' },
+                { col: 'model_count', label: 'Days seen', fmt: 'int', align: 'num' },
+                { col: 'model_total', label: 'Of days', fmt: 'int', align: 'num' },
+                { col: 'percent', label: 'Share of days', fmt: 'pct100', align: 'num' },
             ],
         },
         first_seen: {
@@ -842,9 +843,9 @@ const AnalyticsModels = {
             rows.push(['State lag', this._lagLabel(m.state_lag_seconds) + (m.state_behind ? ' (behind)' : '')]);
         }
         if (mt === 'rarity') {
-            rows.push(['Min sample', def.min_sample || this._defaultMinSample(mt)]);
+            rows.push(['Min days seen', def.min_sample || this._defaultMinSample(mt)]);
             rows.push(['Confidence threshold', (def.alert?.confidence_threshold ?? 0.8).toFixed(2)]);
-            rows.push(['Percent threshold', (def.alert?.percent_threshold ?? 5) + '%']);
+            rows.push(['Max share of days', (def.alert?.percent_threshold ?? 5) + '%']);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
             rows.push(['z threshold', (def.alert?.z_threshold || 3.5).toFixed(1)]);
@@ -1598,7 +1599,7 @@ ${m.description ? `<div class="me-sec">
             network: this._networkFromDef({}),
             window: '1d',
             alertMode: 'paused',
-            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.8, percent_threshold: 5.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
+            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
             name: '',
             description: '',
             timeRange: '24h',
@@ -2031,18 +2032,18 @@ ${isBeacon ? `
             return `
 <div class="field-group">
     <label>Partition Key (group by)</label>
-    ${this._fieldInput('shapePartKey', e.partitionKey, 'e.g. file_prefix')}
+    ${this._fieldInput('shapePartKey', e.partitionKey, 'e.g. computer_name')}
 </div>
 <div class="field-group" style="margin-top:10px">
     <label>Value Key (rarity of what?)</label>
-    ${this._fieldInput('shapeValKey', e.valueKey, 'e.g. tld')}
+    ${this._fieldInput('shapeValKey', e.valueKey, 'e.g. dst_port')}
 </div>
 <div class="field-group" style="margin-top:10px">
-    <label>Min sample size</label>
+    <label>Min days seen</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
-    <p class="config-hint">How many times a value must have been seen before it is scored at all. It is a floor, not a cap: at 1 every value is scored, and the rarest ones are exactly the ones a higher setting hides. Raise it only to trade first sightings away for less noise; whether a partition has enough history to judge is already what confidence measures.</p>
+    <p class="config-hint">Days a value must have been seen before it is scored. Keep it at 1: first sightings are what this model finds.</p>
 </div>
-<p class="config-hint">Example: Partition=<em>file_prefix</em>, Value=<em>tld</em> scores how unusual a TLD is for a given prefix.</p>`;
+<p class="config-hint">Example: Partition=<em>computer_name</em>, Value=<em>dst_port</em> scores how unusual a port is for that host, counted in days.</p>`;
         }
         if (e.modelType === 'volume_baseline') {
             return `
@@ -2176,10 +2177,11 @@ ${isBeacon ? `
             <input type="number" id="alertConfidence" class="model-num-input" value="${c.confidence_threshold}" min="0" max="1" step="0.05">
         </div>
         <div class="field-group">
-            <label>Max % Threshold</label>
+            <label>Max % of days</label>
             <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
-    </div>`;
+    </div>
+    <p class="config-hint">Alerts on a value seen on fewer than this share of its partition's days, once the partition rarely produces new values (confidence is Good-Turing coverage). A one-day value needs more than 100 ÷ share days of history, so 10% learns for 10 days.</p>`;
         } else if (mt === 'volume_baseline') {
             typeFields = `
     <div class="field-group" style="margin-top:10px">

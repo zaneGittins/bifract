@@ -121,10 +121,7 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	whereExtra := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
 		start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
 
-	// rarity counts distinct days, so its windowed aggregation must be split by
-	// day to match the day-chunked backfill; first_seen/volume are day-invariant.
-	opts := aggOpts{dayBucket: mt == ModelTypeRarity}
-	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, opts, fractalID)
+	agg, err := buildModelSelect(def, mt, m.ch.ReadTable(), whereExtra, fractalID)
 	if err != nil {
 		return nil, fmt.Errorf("build preview aggregation: %w", err)
 	}

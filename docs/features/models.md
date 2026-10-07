@@ -6,14 +6,27 @@ Analytics **Models** turn a BQL query into a continuously-maintained detection b
 
 | Type | Answers | Shape |
 |------|---------|-------|
-| **Rarity** | How unusual is a value within its group? | Partition key (group by), value key, min sample size |
+| **Rarity** | How unusual is a value within its group? | Partition key (group by), value key, min days seen |
 | **First / Last Seen** | When was an entity first and last observed? | One or more key fields |
 | **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, time bucket (hour/day), min history |
 | **TLSH Index** | Which fuzzy-hash digests exist here? | One digest field |
 | **Beacon** | Is this pair talking on a suspiciously regular interval? | `src_ip`, `dst_ip`, `dst_port` |
 | **Long Connection** | Is this pair holding an unusually long-lived session? | `src_ip`, `dst_ip`, `dst_port` |
 
-Rarity's **min sample size** is a floor on how many times a value must have been seen before the model scores it at all, not a cap on what it collects. It defaults to 1, where every value is scored. Raise it and the rarest values, which are the ones a rarity model exists to surface, stop being scored at all and are then dropped by `modelLookup`'s default `require=true`; whether a partition has enough history to judge is already what `confidence` measures. Volume Baseline stores its **min history** in the same field, where the floor is buckets of history rather than occurrences of a value, and 7 is the sensible default there.
+### How rarity is scored
+
+Rarity counts **days**, not events: a value seen 10,000 times on one day counts once, so a burst cannot make itself look normal. For each value in a partition:
+
+| Output | Meaning |
+|---|---|
+| `model_count` | Days the value was seen |
+| `model_total` | Days the partition was seen with any value |
+| `percent` | `model_count / model_total`, the share of the partition's days the value appeared on |
+| `confidence` | Good-Turing coverage of the partition: 1 minus (values seen on only one day / total value-days). Near 1 means the partition rarely produces a new value; low means new values are routine there |
+
+The alert fires on a value whose `percent` is below the share threshold while `confidence` is above its threshold. Port 22 appearing once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `confidence` 0.99; on a host that touches a new port most days, `confidence` stays low and new ports do not alert.
+
+The share threshold also sets the learning period: a value seen on one day can only fall below it once the partition has more than 100 / threshold days of history (10% needs more than 10 days). **Min days seen** is a floor on `model_count` before a value is scored; leave it at 1, since first sightings are what the model finds. Volume Baseline stores its **min history** in the same field, where it counts buckets of history, and 7 is the sensible default there.
 
 Volume Baseline scores the latest **complete** time bucket against the entity's own median using a modified z-score (3.5 is the standard cutoff); the current incomplete bucket is excluded.
 
@@ -58,7 +71,7 @@ Each model has an alert mode:
 - **Paused** (recommended default) - the alert is created but does not fire until enabled.
 - **Active** - the alert fires when its threshold is exceeded.
 
-Thresholds depend on the model type (confidence and max % for Rarity, z-score for Volume Baseline, new-entities-only for First/Last Seen). Toggle the mode from the listing or the data viewer. See [Alerts](../alerting/alerts.md) for actions and feeds.
+Thresholds depend on the model type (confidence and max share of days for Rarity, z-score for Volume Baseline, new-entities-only for First/Last Seen). Toggle the mode from the listing or the data viewer. See [Alerts](../alerting/alerts.md) for actions and feeds.
 
 ## Viewing Results
 
