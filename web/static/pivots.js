@@ -187,11 +187,11 @@ window.Pivots = {
         Dashboards.enterDrilldown(pivot.dashboard_id, dd);
     },
 
+    // The drilldown travels as the target's view params in the hash.
     _dashboardUrl(targetId, dd) {
         const s = this._scope();
-        const params = new URLSearchParams();
-        params.set('pv', btoa(encodeURIComponent(JSON.stringify(dd))));
-        return `${window.location.origin}${window.location.pathname}?${params.toString()}#${s.key}/${s.ctxId}/dashboards/${targetId}`;
+        const qs = Dashboards.viewParams(Dashboards.viewFromDrilldown(dd)).toString();
+        return `${window.location.origin}${window.location.pathname}#${s.key}/${s.ctxId}/dashboards/${targetId}${qs ? '?' + qs : ''}`;
     },
 
     // Open the search page via the share-link contract (q + tr + f/p + vars).

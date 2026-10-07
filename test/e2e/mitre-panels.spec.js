@@ -38,7 +38,7 @@ test.describe('ATT&CK matrix panels', () => {
     const dashboardId = dash.data.id;
 
     const widget = await (await page.request.post(`/api/v1/dashboards/${dashboardId}/widgets`, {
-      data: { title: 'ATT&CK', query_content: QUERY, chart_type: 'mitre', width: 12, height: 8 },
+      data: { title: 'ATT&CK', query_content: QUERY, chart_type: 'mitre', width: 24, height: 40 },
     })).json();
     expect(widget.success, `widget create failed: ${JSON.stringify(widget)}`).toBeTruthy();
 

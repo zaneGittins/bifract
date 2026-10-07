@@ -2181,10 +2181,38 @@
                             <div class="dashboard-header">
                                 <div class="dashboard-title-area">
                                     <h2 id="dashboardTitle">Untitled Dashboard</h2>
+                                    <span class="dashboard-edit-badge dash-edit-only">Editing</span>
                                 </div>
                                 <div class="dashboard-controls">
                                     <div id="dashboardPresence" class="notebook-presence"></div>
                                     <span id="dashboardUpdatedAt" class="dashboard-updated-at"></span>
+                                    <div id="dashboardViewState" class="dashboard-view-state" style="display:none;">
+                                        <span class="dvs-label" title="The time range and variable values you picked apply to your view only. Nothing is saved.">Your view</span>
+                                        <button id="dashboardViewResetBtn" class="dvs-btn" type="button">Reset</button>
+                                        <button id="dashboardViewSaveBtn" class="dvs-btn dvs-save" type="button" title="Make this time range and these variable values the dashboard defaults for everyone">Save as default</button>
+                                    </div>
+                                    <div class="dashboard-time-group">
+                                        <button id="dashboardTimeBackBtn" class="dash-icon-btn" type="button" title="Previous time range" aria-label="Previous time range" style="display:none;">
+                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                        </button>
+                                        <div id="dashboardTimeWrap" class="toolbar-menu-wrap">
+                                            <button id="dashboardTimeBtn" class="toolbar-menu-btn" type="button" aria-haspopup="dialog">
+                                                <svg class="tp-clock-icon" width="13" height="13" viewBox="0 0 16 16" fill="none">
+                                                    <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
+                                                    <path d="M8 5v3.5l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                                </svg>
+                                                <span id="dashboardTimeLabel">Last 24h</span>
+                                                <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                                    <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                            </button>
+                                            <div id="dashboardTimeBackdrop" class="tp-backdrop" style="display:none"></div>
+                                            <div id="dashboardTimePanel" class="time-picker-panel dtp-panel" role="dialog" aria-label="Time range" style="display:none"></div>
+                                        </div>
+                                        <button id="dashboardZoomOutBtn" class="dash-icon-btn" type="button" title="Zoom out" aria-label="Zoom out">
+                                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.75" stroke="currentColor" stroke-width="1.4"/><path d="M5 7h4M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                                        </button>
+                                    </div>
                                     <select id="dashboardRefreshSelect" class="dashboard-refresh-select" title="Server-side auto-refresh">
                                         <option value="0">Auto-refresh: Off</option>
                                         <option value="-1">Auto</option>
@@ -2193,10 +2221,15 @@
                                         <option value="300">Every 5m</option>
                                         <option value="900">Every 15m</option>
                                     </select>
-                                    <button id="dashboardTimeRangeBtn" class="btn-secondary">Time Range</button>
                                     <button id="dashboardShareBtn" class="btn-secondary" style="display:none;">Share</button>
-                                    <button id="addWidgetBtn" class="btn-primary">+ Add Widget</button>
-                                    <button id="deleteDashboardBtn" class="btn-secondary" style="color:var(--error);">Delete</button>
+                                    <button id="dashboardEditBtn" class="btn-secondary dash-view-only" type="button">Edit</button>
+                                    <button id="dashboardUndoBtn" class="dash-icon-btn dash-edit-only" type="button" title="Undo layout change (Ctrl+Z)" aria-label="Undo layout change" disabled>
+                                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M5.5 3.5L2.5 6.5l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 6.5h6.5a4 4 0 010 8H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                                    </button>
+                                    <button id="dashboardSettingsBtn" class="btn-secondary dash-edit-only" type="button">Settings</button>
+                                    <button id="deleteDashboardBtn" class="btn-secondary dash-edit-only dash-danger" type="button">Delete</button>
+                                    <button id="addWidgetBtn" class="btn-secondary dash-edit-only" type="button">+ Add widget</button>
+                                    <button id="dashboardDoneBtn" class="btn-primary dash-edit-only" type="button">Done</button>
                                 </div>
                             </div>
                             <!-- Variables Bar -->
@@ -4428,6 +4461,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/charts.js"></script>
     <script src="/static/format-panel.js"></script>
     <script src="/static/notebooks.js"></script>
+    <script src="/static/dashboardLayout.js"></script>
     <script src="/static/dashboards.js"></script>
     <script src="/static/pivots.js"></script>
     <script src="/static/dictionaries.js"></script>

@@ -151,9 +151,127 @@
 
 .dashboard-controls {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
     align-items: center;
 }
+
+/* View/edit split: the editor root carries .editing. */
+.dash-edit-only { display: none !important; }
+.dashboard-editor.editing .dash-edit-only { display: inline-flex !important; }
+.dashboard-editor.editing .dash-view-only { display: none !important; }
+
+.dashboard-edit-badge {
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--accent-primary);
+    background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}
+
+.dash-danger { color: var(--error); }
+
+.dash-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.dash-icon-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
+}
+
+.dash-icon-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.dashboard-time-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+#dashboardTimeBtn.modified {
+    color: var(--accent-primary);
+    border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--border-color));
+}
+
+.dtp-panel {
+    left: auto;
+    right: 0;
+}
+
+.dtp-default {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.dtp-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent-primary);
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.dtp-link:hover { text-decoration: underline; }
+
+/* Shown while the viewer's time range or variables differ from the defaults. */
+.dashboard-view-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: 32px;
+    padding: 0 4px 0 10px;
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 40%, var(--border-color));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--accent-primary) 7%, transparent);
+    font-size: 0.75rem;
+    box-sizing: border-box;
+}
+
+.dvs-label {
+    color: var(--text-secondary);
+    margin-right: 4px;
+    cursor: help;
+}
+
+.dvs-btn {
+    background: none;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.dvs-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.dvs-btn.dvs-save { color: var(--accent-primary); }
 
 /* Age of the results on screen. One per dashboard: the executor refreshes all
    widgets in a single pass, so a per-widget stamp would just repeat this. */
@@ -185,60 +303,133 @@
     border-color: var(--accent-primary);
 }
 
-/* Dashboard Grid */
+/* Dashboard Grid: 24 columns, 18px tracks, 8px gutters (see dashboardLayout.js). */
 .dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    grid-auto-rows: 18px;
+    gap: 8px;
     position: relative;
-    min-height: 600px;
     margin: 16px;
-    background:
-        linear-gradient(var(--overlay-subtle) 1px, transparent 1px),
-        linear-gradient(90deg, var(--overlay-subtle) 1px, transparent 1px);
-    background-size: calc(100% / 12) 130px;
+}
+
+/* Column guides while a widget is being moved or resized. */
+.dashboard-grid.layout-active {
+    --guide: color-mix(in srgb, var(--text-primary) 2.5%, transparent);
+    background-image: linear-gradient(to right,
+        var(--guide) 0, var(--guide) calc(var(--col-pitch) - 8px),
+        transparent calc(var(--col-pitch) - 8px));
+    background-size: var(--col-pitch) 100%;
     border-radius: 8px;
-    overflow: visible;
 }
 
 /* Dashboard Widget */
 .dashboard-widget {
-    position: absolute;
+    grid-column: var(--gx) / span var(--gw);
+    grid-row: var(--gy) / span var(--gh);
+    position: relative;
+    min-width: 0;
+    min-height: 0;
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
     box-shadow: var(--shadow-sm);
-    transition: box-shadow 0.15s ease;
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
     box-sizing: border-box;
 }
 
-.dashboard-widget:hover {
+/* Lift above neighbours while its menu is open; the menu overflows the card. */
+.dashboard-widget:has(.widget-kebab-menu.open) {
+    z-index: 20;
+}
+
+.dashboard-grid.editing .dashboard-widget:hover {
     box-shadow: var(--shadow-md);
 }
 
-.dashboard-widget.dragging {
-    opacity: 0.85;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    z-index: 100;
-    cursor: grabbing;
+.dashboard-widget.remote-added {
+    border-color: var(--accent-primary);
 }
 
-.dashboard-widget.resizing {
-    opacity: 0.9;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+/* Following the pointer, out of the grid flow. */
+.dashboard-widget.lifted {
+    position: absolute;
+    grid-column: auto;
+    grid-row: auto;
     z-index: 100;
+    opacity: 0.88;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
 }
+
+.widget-placeholder {
+    grid-column: var(--gx) / span var(--gw);
+    grid-row: var(--gy) / span var(--gh);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--accent-primary);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+    pointer-events: none;
+}
+
+.widget-size-badge {
+    position: absolute;
+    right: 18px;
+    bottom: 18px;
+    z-index: 6;
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+}
+
+body.dash-dragging,
+body.dash-dragging * { cursor: grabbing !important; user-select: none; }
+body.dash-resizing-e,
+body.dash-resizing-e * { cursor: ew-resize !important; user-select: none; }
+body.dash-resizing-s,
+body.dash-resizing-s * { cursor: ns-resize !important; user-select: none; }
+body.dash-resizing-se,
+body.dash-resizing-se * { cursor: nwse-resize !important; user-select: none; }
+
+.dashboard-empty {
+    grid-column: 1 / -1;
+    grid-row: 1 / span 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px dashed var(--border-color);
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.dashboard-empty-title {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.dashboard-empty .btn-primary { margin-top: 6px; }
 
 /* Widget Header */
 .widget-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 10px;
+    gap: 8px;
+    padding: 6px 10px;
     background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-color);
-    cursor: grab;
-    user-select: none;
+    border-radius: 8px 8px 0 0;
     flex-shrink: 0;
     /* Anchors the refresh sweep below. No overflow clip here: the kebab menu is
        absolutely positioned below the header and would be cut off. The sweep is
@@ -264,8 +455,15 @@
     to { transform: translateX(100%); }
 }
 
-.widget-header:active {
-    cursor: grabbing;
+.dashboard-grid.editing .widget-header {
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+}
+
+.dashboard-grid.editing .widget-header:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
 }
 
 .widget-title {
@@ -285,7 +483,8 @@
     transition: opacity 0.15s ease;
 }
 
-.dashboard-widget:hover .widget-actions {
+.dashboard-widget:hover .widget-actions,
+.dashboard-widget:focus-within .widget-actions {
     opacity: 1;
 }
 
@@ -450,22 +649,84 @@
     text-overflow: ellipsis;
 }
 
-/* Resize Handle */
-.widget-resize-handle {
+/* Resize handles: right edge, bottom edge and corner, in edit mode only. */
+.widget-resize {
+    display: none;
     position: absolute;
-    bottom: 0;
-    right: 0;
-    width: 16px;
-    height: 16px;
-    cursor: nwse-resize;
-    background: linear-gradient(135deg, transparent 50%, var(--border-color) 50%);
-    border-bottom-right-radius: 8px;
-    flex-shrink: 0;
     z-index: 5;
+    touch-action: none;
 }
 
-.widget-resize-handle:hover {
-    background: linear-gradient(135deg, transparent 50%, var(--accent-tertiary) 50%);
+.dashboard-grid.editing .widget-resize { display: block; }
+
+.widget-resize[data-dir="e"] {
+    top: 12px;
+    right: -5px;
+    bottom: 12px;
+    width: 10px;
+    cursor: ew-resize;
+}
+
+.widget-resize[data-dir="s"] {
+    left: 12px;
+    right: 12px;
+    bottom: -5px;
+    height: 10px;
+    cursor: ns-resize;
+}
+
+.widget-resize[data-dir="se"] {
+    right: 0;
+    bottom: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+    background: linear-gradient(135deg, transparent 55%, var(--border-color) 55%, var(--border-color) 65%, transparent 65%, transparent 75%, var(--border-color) 75%, var(--border-color) 85%, transparent 85%);
+    border-bottom-right-radius: 8px;
+}
+
+.widget-resize[data-dir="e"]::after,
+.widget-resize[data-dir="s"]::after {
+    content: '';
+    position: absolute;
+    border-radius: 2px;
+    background: var(--accent-primary);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.widget-resize[data-dir="e"]::after { top: 0; bottom: 0; left: 4px; width: 2px; }
+.widget-resize[data-dir="s"]::after { left: 0; right: 0; top: 4px; height: 2px; }
+
+.widget-resize:hover::after { opacity: 0.8; }
+
+.widget-resize[data-dir="se"]:hover {
+    background: linear-gradient(135deg, transparent 55%, var(--accent-primary) 55%, var(--accent-primary) 65%, transparent 65%, transparent 75%, var(--accent-primary) 75%, var(--accent-primary) 85%, transparent 85%);
+}
+
+/* Narrow screens: one column in reading order. Layout editing needs the grid. */
+@media (max-width: 760px) {
+    .dashboard-grid {
+        grid-template-columns: minmax(0, 1fr);
+        margin: 10px;
+    }
+
+    .dashboard-widget {
+        grid-column: 1;
+        grid-row: auto / span var(--gh);
+        order: var(--order);
+    }
+
+    .dashboard-grid.editing .widget-header { cursor: default; touch-action: auto; }
+    .dashboard-grid.editing .widget-resize { display: none; }
+
+    .dashboard-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+
+    .dashboard-controls { justify-content: flex-start; }
 }
 
 /* ============================

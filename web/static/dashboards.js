@@ -3,6 +3,11 @@
  * Grid-based dashboards with draggable, resizable query widgets.
  * Opening a dashboard paints the last saved results immediately, then refreshes
  * any widget whose cache has aged past the dashboard's refresh cadence.
+ *
+ * Viewing and editing are separate: anyone can change the time range and
+ * @variable values for their own view (kept in the URL, run through the preview
+ * path, never persisted); analysts enter edit mode to change the layout and
+ * widgets, and can promote their view to the dashboard defaults.
  */
 
 const Dashboards = {
@@ -13,22 +18,23 @@ const Dashboards = {
     totalDashboards: 0,
     searchQuery: '',
 
-    // Drag/resize state
-    dragState: null,
-    resizeState: null,
+    editMode: false,
+    _op: null,               // active drag/resize
+    _undo: [],               // layout snapshots, newest last
+    _view: null,             // {range, vars} the viewer picked; null = defaults
+    _rangeHistory: [],       // previous view ranges for "back"
+    _inflight: new Map(),    // widgetId -> AbortController
+    _queueGen: 0,
+
     presenceInterval: null,
     eventSource: null,
     sseClientId: null,
 
-    // Grid config: 12 columns, row height in px
-    GRID_COLS: 12,
-    ROW_HEIGHT: 130,
-    MIN_WIDTH: 2,
-    MIN_HEIGHT: 2,
-
     // Cache age below which an opened widget is not re-executed when the
     // dashboard has auto-refresh off. Matches the executor's MinInterval floor.
     MIN_CACHE_FRESH_MS: 10000,
+    // Widgets executed at once from this client.
+    EXEC_CONCURRENCY: 4,
 
     init() {
         this.currentDashboard = null;
@@ -46,12 +52,16 @@ const Dashboards = {
             };
             document.addEventListener('click', this._kebabCloseHandler);
         }
+        if (!this._docKeyHandler) {
+            this._docKeyHandler = (e) => this.onDocumentKeyDown(e);
+            document.addEventListener('keydown', this._docKeyHandler);
+        }
     },
 
     onFractalChange() {
-        this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
         this.currentDashboard = null;
-        this._drilldown = null;
+        this.resetViewState();
+        this.setEditMode(false);
         this.stopDragResize();
         this.stopUpdatedAtTicker();
         this.currentPage = 0;
@@ -65,87 +75,79 @@ const Dashboards = {
     bindEvents() {
         this.unbindEvents();
 
-        const createBtn = document.getElementById('createDashboardBtn');
-        if (createBtn) {
-            createBtn._dashHandler = () => this.showCreateDashboardModal();
-            createBtn.addEventListener('click', createBtn._dashHandler);
-        }
+        const on = (id, type, fn) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el._dashHandler = fn;
+            el._dashEvent = type;
+            el.addEventListener(type, fn);
+        };
 
-
-        const searchInput = document.getElementById('dashboardSearchInput');
-        if (searchInput) {
-            searchInput._dashHandler = (e) => {
-                this.searchQuery = e.target.value;
-                this.currentPage = 0;
-                this.loadDashboards();
-            };
-            searchInput.addEventListener('input', searchInput._dashHandler);
-        }
-
-        const prevBtn = document.getElementById('dashboardsPrevBtn');
-        if (prevBtn) {
-            prevBtn._dashHandler = () => {
-                if (this.currentPage > 0) { this.currentPage--; this.loadDashboards(); }
-            };
-            prevBtn.addEventListener('click', prevBtn._dashHandler);
-        }
-
-        const nextBtn = document.getElementById('dashboardsNextBtn');
-        if (nextBtn) {
-            nextBtn._dashHandler = () => {
-                const maxPage = Math.ceil(this.totalDashboards / this.pageSize) - 1;
-                if (this.currentPage < maxPage) { this.currentPage++; this.loadDashboards(); }
-            };
-            nextBtn.addEventListener('click', nextBtn._dashHandler);
-        }
-
-        const addWidgetBtn = document.getElementById('addWidgetBtn');
-        if (addWidgetBtn) {
-            addWidgetBtn._dashHandler = () => this.addWidget();
-            addWidgetBtn.addEventListener('click', addWidgetBtn._dashHandler);
-        }
-
-        const deleteDashboardBtn = document.getElementById('deleteDashboardBtn');
-        if (deleteDashboardBtn) {
-            deleteDashboardBtn._dashHandler = () => this.deleteDashboard();
-            deleteDashboardBtn.addEventListener('click', deleteDashboardBtn._dashHandler);
-        }
-
-        const timeRangeBtn = document.getElementById('dashboardTimeRangeBtn');
-        if (timeRangeBtn) {
-            timeRangeBtn._dashHandler = () => this.showTimeRangeModal();
-            timeRangeBtn.addEventListener('click', timeRangeBtn._dashHandler);
-        }
-
-        const shareBtn = document.getElementById('dashboardShareBtn');
-        if (shareBtn) {
-            shareBtn._dashHandler = () => this.showShareModal();
-            shareBtn.addEventListener('click', shareBtn._dashHandler);
-        }
-
-        const refreshSelect = document.getElementById('dashboardRefreshSelect');
-        if (refreshSelect) {
-            refreshSelect._dashHandler = () => this.updateRefreshInterval(parseInt(refreshSelect.value, 10));
-            refreshSelect.addEventListener('change', refreshSelect._dashHandler);
-        }
+        on('createDashboardBtn', 'click', () => this.showCreateDashboardModal());
+        on('dashboardSearchInput', 'input', (e) => {
+            this.searchQuery = e.target.value;
+            this.currentPage = 0;
+            this.loadDashboards();
+        });
+        on('dashboardsPrevBtn', 'click', () => {
+            if (this.currentPage > 0) { this.currentPage--; this.loadDashboards(); }
+        });
+        on('dashboardsNextBtn', 'click', () => {
+            const maxPage = Math.ceil(this.totalDashboards / this.pageSize) - 1;
+            if (this.currentPage < maxPage) { this.currentPage++; this.loadDashboards(); }
+        });
+        on('addWidgetBtn', 'click', () => this.addWidget());
+        on('deleteDashboardBtn', 'click', () => this.deleteDashboard());
+        on('dashboardShareBtn', 'click', () => this.showShareModal());
+        on('dashboardRefreshSelect', 'change', (e) => this.updateRefreshInterval(parseInt(e.target.value, 10)));
+        on('dashboardEditBtn', 'click', () => this.setEditMode(true));
+        on('dashboardDoneBtn', 'click', () => this.setEditMode(false));
+        on('dashboardUndoBtn', 'click', () => this.undoLayout());
+        on('dashboardSettingsBtn', 'click', () => this.showSettingsModal());
+        on('dashboardTimeBtn', 'click', (e) => { e.stopPropagation(); this.toggleTimePanel(); });
+        on('dashboardTimeBackdrop', 'click', () => this.closeTimePanel());
+        on('dashboardZoomOutBtn', 'click', () => this.zoomOut());
+        on('dashboardTimeBackBtn', 'click', () => this.goBackRange());
+        on('dashboardViewResetBtn', 'click', () => this.resetView());
+        on('dashboardViewSaveBtn', 'click', () => this.saveViewAsDefault());
     },
 
     unbindEvents() {
         const ids = [
-            'createDashboardBtn', 'dashboardSearchInput',
-            'dashboardsPrevBtn', 'dashboardsNextBtn',
-            'addWidgetBtn', 'deleteDashboardBtn', 'dashboardTimeRangeBtn',
-            'dashboardShareBtn', 'dashboardRefreshSelect'
+            'createDashboardBtn', 'dashboardSearchInput', 'dashboardsPrevBtn', 'dashboardsNextBtn',
+            'addWidgetBtn', 'deleteDashboardBtn', 'dashboardShareBtn', 'dashboardRefreshSelect',
+            'dashboardEditBtn', 'dashboardDoneBtn', 'dashboardUndoBtn', 'dashboardSettingsBtn',
+            'dashboardTimeBtn', 'dashboardTimeBackdrop', 'dashboardZoomOutBtn', 'dashboardTimeBackBtn',
+            'dashboardViewResetBtn', 'dashboardViewSaveBtn'
         ];
         ids.forEach(id => {
             const el = document.getElementById(id);
             if (el && el._dashHandler) {
-                el.removeEventListener('click', el._dashHandler);
-                el.removeEventListener('input', el._dashHandler);
-                el.removeEventListener('change', el._dashHandler);
+                el.removeEventListener(el._dashEvent, el._dashHandler);
                 delete el._dashHandler;
+                delete el._dashEvent;
             }
         });
+    },
+
+    // Analysts edit; viewers only view. The server enforces the same split.
+    canEdit() {
+        return !!(window.Auth && typeof Auth.hasFractalRole === 'function' && Auth.hasFractalRole('analyst'));
+    },
+
+    onDocumentKeyDown(e) {
+        if (e.key === 'Escape') {
+            if (this._op) { this.endLayoutOp(true); return; }
+            this.closeTimePanel();
+            return;
+        }
+        if (!this.editMode || !this.currentDashboard) return;
+        const t = e.target;
+        const typing = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+        if (!typing && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            this.undoLayout();
+        }
     },
 
     // =====================
@@ -155,8 +157,9 @@ const Dashboards = {
     showDashboardListing() {
         this.stopPresenceTracking();
         this.stopUpdatedAtTicker();
-        this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
-        this._drilldown = null;
+        this.resetViewState();
+        this.setEditMode(false);
+        this.closeTimePanel();
         const listing = document.getElementById('dashboardListing');
         const editor = document.getElementById('dashboardEditor');
         if (listing) listing.style.display = 'block';
@@ -211,7 +214,7 @@ const Dashboards = {
             <tr>
                 <td><a href="#" class="dash-link" data-id="${d.id}">${Utils.escapeHtml(d.name)}</a></td>
                 <td>${Utils.escapeHtml(d.description || '')}</td>
-                <td>${Utils.escapeHtml(d.time_range_type || '')}</td>
+                <td>${Utils.escapeHtml(this.rangeLabel(d.time_range_type === 'custom' ? { type: 'custom', start: d.time_range_start, end: d.time_range_end } : { type: d.time_range_type }))}</td>
                 <td>${this.formatDate(d.created_at)}</td>
                 <td>${this.formatDate(d.updated_at)}</td>
                 <td class="kebab-cell">
@@ -254,16 +257,22 @@ const Dashboards = {
     // Dashboard Editor
     // =====================
 
-    async openDashboard(id) {
+    // target is a dashboard id, optionally followed by "?" and view params
+    // (the URL hash form), e.g. "<id>?range=last1h&var-host=web1".
+    async openDashboard(target) {
+        const [id, qs] = String(target || '').split('?');
+        if (!id) return;
         try {
-            // Leaving a different dashboard: forget its transient drilldown so it
-            // never resurfaces on a later normal open. A reload of the SAME
-            // dashboard keeps it (currentDashboard is null on a fresh page load),
-            // so a refresh still restores the drilldown view.
-            if (this.currentDashboard && this.currentDashboard.id !== id) {
-                this._clearStoredDrilldown(this.currentDashboard.id);
-            }
-            window.App?.pushSubPath(id);
+            const view = this._pendingView
+                || this.viewFromParams(new URLSearchParams(qs || ''))
+                || this._readLegacyDrilldown();
+            this._pendingView = null;
+            if (this.currentDashboard && this.currentDashboard.id !== id) this.setEditMode(false);
+            this.resetViewState();
+            this._view = view;
+
+            const viewQs = this.viewParams(view).toString();
+            window.App?.pushSubPath(viewQs ? `${id}?${viewQs}` : id);
             const response = await fetch(`/api/v1/dashboards/${id}`, { credentials: 'include' });
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to load dashboard');
@@ -278,13 +287,19 @@ const Dashboards = {
             const titleEl = document.getElementById('dashboardTitle');
             if (titleEl) titleEl.textContent = this.currentDashboard.name;
 
+            const canEdit = this.canEdit();
+            const editBtn = document.getElementById('dashboardEditBtn');
+            if (editBtn) editBtn.style.display = canEdit ? '' : 'none';
             const refreshSelect = document.getElementById('dashboardRefreshSelect');
-            if (refreshSelect) refreshSelect.value = String(this.currentDashboard.refresh_interval ?? 0);
+            if (refreshSelect) {
+                refreshSelect.value = String(this.currentDashboard.refresh_interval ?? 0);
+                refreshSelect.disabled = !canEdit;
+            }
 
             this.updateShareButtonVisibility();
             this.renderVariablesBar();
             this.renderDashboardGrid();
-            this._resolveDrilldown();
+            this.renderViewState();
             this.paintCachedWidgets();
             this.autoExecuteAllWidgets(true);
             this.startUpdatedAtTicker();
@@ -357,6 +372,7 @@ const Dashboards = {
             clearInterval(this.presenceInterval);
             this.presenceInterval = null;
         }
+        this.stopViewRefresh();
         const el = document.getElementById('dashboardPresence');
         if (el) el.innerHTML = '';
     },
@@ -389,8 +405,8 @@ const Dashboards = {
             case 'widget_results_updated':
                 this.onRemoteWidgetResultsUpdated(event.data);
                 break;
-            case 'widget_layout_updated':
-                this.onRemoteWidgetLayoutUpdated(event.data);
+            case 'dashboard_layout_updated':
+                this.onRemoteLayoutUpdated(event.data);
                 break;
             case 'presence_joined':
             case 'presence_left':
@@ -409,13 +425,10 @@ const Dashboards = {
         const grid = document.getElementById('dashboardGrid');
         if (grid) {
             const el = this.createWidgetElement(widget);
-            // Brief highlight
-            el.style.transition = 'box-shadow 0.5s ease';
-            el.style.boxShadow = '0 0 0 2px var(--accent-primary)';
-            setTimeout(() => { el.style.boxShadow = ''; }, 1500);
+            el.classList.add('remote-added');
+            setTimeout(() => el.classList.remove('remote-added'), 1500);
             grid.appendChild(el);
-            this.expandGridIfNeeded();
-            this.initDragAndDrop();
+            this.afterLayoutChange();
             this.executeWidget(widget.id);
         }
         this.syncDashboardVariables(false);
@@ -425,8 +438,9 @@ const Dashboards = {
         if (!this.currentDashboard) return;
         const widgetId = data.id;
         this.currentDashboard.widgets = this.currentDashboard.widgets.filter(w => w.id !== widgetId);
-        const el = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
+        const el = this.widgetEl(widgetId);
         if (el) { this.destroyWidgetVisuals(el); el.remove(); }
+        this.afterLayoutChange();
         this.syncDashboardVariables(false);
     },
 
@@ -459,24 +473,21 @@ const Dashboards = {
 
     onRemoteWidgetResultsUpdated(data) {
         if (!this.currentDashboard) return;
-        // During a private drilldown, ignore broadcast shared results so they
-        // don't clobber this viewer's filtered view. Exiting re-runs the shared
-        // queries, so the cache refreshes then. Read through activeDrilldown() so a
-        // transiently-nulled in-memory flag cannot let a default-variable broadcast
-        // (one per pod in a multi-replica deploy) slip past and revert the view.
-        if (this.activeDrilldown()) return;
         const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
         if (!widget) return;
-
-        // Skip if user is editing this widget
-        const contentEl = document.getElementById(`wc-${data.id}`);
-        if (contentEl && contentEl._editingWidget) return;
 
         if (data.last_results) widget.last_results = data.last_results;
         if (data.chart_type) widget.chart_type = data.chart_type;
         if (data.last_executed_at) widget.last_executed_at = data.last_executed_at;
 
-        // Re-render results
+        // A viewer with their own time range or variables keeps seeing their
+        // view; the shared cache is kept current for when they reset it.
+        if (this.activeView()) return;
+
+        // Skip if user is editing this widget
+        const contentEl = document.getElementById(`wc-${data.id}`);
+        if (contentEl && contentEl._editingWidget) return;
+
         try {
             const resultData = JSON.parse(widget.last_results);
             this.renderWidgetResults(data.id, resultData);
@@ -484,32 +495,22 @@ const Dashboards = {
         } catch (_) {}
     },
 
-    onRemoteWidgetLayoutUpdated(data) {
-        if (!this.currentDashboard) return;
-        const widget = this.currentDashboard.widgets.find(w => w.id === data.id);
-        if (!widget) return;
-
-        // Skip if user is currently dragging/resizing this widget
-        if ((this.dragState && this.dragState.widgetId === data.id) ||
-            (this.resizeState && this.resizeState.widgetId === data.id)) return;
-
-        widget.pos_x = data.pos_x;
-        widget.pos_y = data.pos_y;
-        widget.width = data.width;
-        widget.height = data.height;
-
-        const el = document.querySelector(`.dashboard-widget[data-widget-id="${data.id}"]`);
-        if (el) {
-            const grid = document.getElementById('dashboardGrid');
-            const containerWidth = grid ? grid.offsetWidth : window.innerWidth - 40;
-            const colWidth = containerWidth / this.GRID_COLS;
-            el.style.left = `${data.pos_x * colWidth}px`;
-            el.style.top = `${data.pos_y * this.ROW_HEIGHT}px`;
-            el.style.width = `${data.width * colWidth}px`;
-            el.style.height = `${data.height * this.ROW_HEIGHT}px`;
-        }
-
-        this.expandGridIfNeeded();
+    onRemoteLayoutUpdated(data) {
+        if (!this.currentDashboard || !data || !Array.isArray(data.widgets)) return;
+        // A local drag owns the layout until it is dropped; the drop then saves
+        // the merged result for everyone.
+        if (this._op) return;
+        data.widgets.forEach(it => {
+            const widget = this.getWidget(it.id);
+            if (!widget) return;
+            widget.pos_x = it.pos_x;
+            widget.pos_y = it.pos_y;
+            widget.width = it.width;
+            widget.height = it.height;
+            const el = this.widgetEl(it.id);
+            if (el) DashboardLayout.place(el, DashboardLayout.fromWidget(widget));
+        });
+        this.afterLayoutChange();
     },
 
     async onPresenceChanged() {
@@ -552,48 +553,36 @@ const Dashboards = {
 
         this.destroyWidgetVisuals(grid);
         grid.innerHTML = '';
+        if (!this.currentDashboard) return;
 
-        if (!this.currentDashboard || !this.currentDashboard.widgets) return;
-
-        // Calculate grid height needed
-        const maxBottom = this.currentDashboard.widgets.reduce((max, w) => {
-            return Math.max(max, w.pos_y + w.height);
-        }, 6);
-        grid.style.minHeight = `${maxBottom * this.ROW_HEIGHT + 40}px`;
-
-        this.currentDashboard.widgets.forEach(widget => {
-            const el = this.createWidgetElement(widget);
-            grid.appendChild(el);
+        (this.currentDashboard.widgets || []).forEach(widget => {
+            grid.appendChild(this.createWidgetElement(widget));
         });
+        this.afterLayoutChange();
+        this.initGridInteractions();
+    },
 
-        this.initDragAndDrop();
+    widgetEl(widgetId) {
+        return document.querySelector(`#dashboardGrid .dashboard-widget[data-widget-id="${CSS.escape(widgetId)}"]`);
     },
 
     createWidgetElement(widget) {
-        const grid = document.getElementById('dashboardGrid');
-        const containerWidth = grid ? grid.offsetWidth : window.innerWidth - 40;
-        const colWidth = containerWidth / this.GRID_COLS;
-
         const el = document.createElement('div');
         el.className = 'dashboard-widget';
         el.dataset.widgetId = widget.id;
-
-        el.style.left = `${widget.pos_x * colWidth}px`;
-        el.style.top = `${widget.pos_y * this.ROW_HEIGHT}px`;
-        el.style.width = `${widget.width * colWidth}px`;
-        el.style.height = `${widget.height * this.ROW_HEIGHT}px`;
+        DashboardLayout.place(el, DashboardLayout.fromWidget(widget));
 
         const title = widget.title || 'Widget';
 
         el.innerHTML = `
-            <div class="widget-header" data-widget-id="${widget.id}" title="Double-click to edit">
+            <div class="widget-header" data-widget-id="${widget.id}">
                 <span class="widget-title">${Utils.escapeHtml(title)}</span>
                 <div class="widget-actions">
-                    <button class="widget-btn widget-execute-btn" title="Re-execute" onclick="Dashboards.executeWidget('${widget.id}')">&#9654;</button>
-                    <div class="widget-kebab-wrapper">
+                    <button class="widget-btn widget-execute-btn" title="Re-run" onclick="Dashboards.executeWidget('${widget.id}')">&#9654;</button>
+                    <div class="widget-kebab-wrapper dash-edit-only">
                         <button class="widget-btn widget-kebab-btn" title="More options" onclick="Dashboards.toggleWidgetKebab('${widget.id}', event)">&#x22EE;</button>
                         <div class="widget-kebab-menu" id="widget-kebab-menu-${widget.id}">
-                            <button onclick="Dashboards.showInlineWidgetEdit('${widget.id}')">Edit</button>
+                            <button onclick="Dashboards.showInlineWidgetEdit('${widget.id}')">Edit query</button>
                             <button onclick="Dashboards.openFormatPanel('${widget.id}')">Formatting</button>
                             <button onclick="Dashboards.openPivotConfig('${widget.id}')">Pivots</button>
                             <div class="kebab-divider"></div>
@@ -605,10 +594,26 @@ const Dashboards = {
             <div class="widget-content" id="wc-${widget.id}">
                 <div class="widget-loading">Loading...</div>
             </div>
-            <div class="widget-resize-handle" data-widget-id="${widget.id}"></div>
+            <div class="widget-resize" data-dir="e" aria-hidden="true"></div>
+            <div class="widget-resize" data-dir="s" aria-hidden="true"></div>
+            <div class="widget-resize" data-dir="se" aria-hidden="true"></div>
         `;
-
+        this.decorateHeader(el.querySelector('.widget-header'));
         return el;
+    },
+
+    // In edit mode a header is the drag handle and a keyboard target.
+    decorateHeader(header) {
+        if (!header) return;
+        if (this.editMode) {
+            header.tabIndex = 0;
+            header.title = 'Drag to move, double-click to edit. Arrow keys move, Shift+arrows resize.';
+            header.setAttribute('aria-roledescription', 'movable widget');
+        } else {
+            header.removeAttribute('tabindex');
+            header.removeAttribute('title');
+            header.removeAttribute('aria-roledescription');
+        }
     },
 
     toggleWidgetKebab(widgetId, event) {
@@ -620,16 +625,58 @@ const Dashboards = {
         if (!isOpen) menu.classList.add('open');
     },
 
+    // Re-derive everything that depends on the set of placed widgets.
+    afterLayoutChange() {
+        const grid = document.getElementById('dashboardGrid');
+        if (!grid || !this.currentDashboard) return;
+        const items = this.layoutItems();
+        DashboardLayout.applyOrder(items, id => this.widgetEl(id));
+        // Edit mode leaves room below the last widget to drop into.
+        grid.style.minHeight = this.editMode
+            ? `${(DashboardLayout.bottom(items) + 12) * DashboardLayout.PITCH}px`
+            : '';
+        this.renderEmptyState(grid, items.length === 0);
+    },
+
+    renderEmptyState(grid, empty) {
+        let el = grid.querySelector(':scope > .dashboard-empty');
+        if (!empty) { if (el) el.remove(); return; }
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'dashboard-empty';
+            grid.appendChild(el);
+        }
+        const canEdit = this.canEdit();
+        el.innerHTML = `
+            <div class="dashboard-empty-title">This dashboard has no widgets yet</div>
+            <div class="dashboard-empty-hint">${canEdit ? 'Each widget is a BQL query rendered as a table or chart.' : 'An analyst can add widgets to it.'}</div>
+            ${canEdit ? '<button class="btn-primary" type="button" onclick="Dashboards.setEditMode(true); Dashboards.addWidget();">+ Add widget</button>' : ''}
+        `;
+    },
+
+    layoutItems() {
+        return DashboardLayout.fromWidgets(this.currentDashboard && this.currentDashboard.widgets);
+    },
+
     // =====================
     // Auto-execute on open
     // =====================
 
+    // Runs widgets top-down a few at a time, so a large board neither floods
+    // ClickHouse nor makes the first screen wait on widgets below the fold.
     autoExecuteAllWidgets(skipFresh = false) {
         if (!this.currentDashboard || !this.currentDashboard.widgets) return;
-        this.currentDashboard.widgets.forEach(widget => {
-            if (skipFresh && this.isCacheFresh(widget)) return;
-            this.executeWidget(widget.id);
-        });
+        const ids = DashboardLayout.sorted(this.layoutItems())
+            .map(it => this.getWidget(it.id))
+            .filter(w => w && !(skipFresh && this.isCacheFresh(w)))
+            .map(w => w.id);
+        const gen = ++this._queueGen;
+        let next = 0;
+        const run = () => {
+            if (gen !== this._queueGen || next >= ids.length) return;
+            this.executeWidget(ids[next++]).finally(run);
+        };
+        for (let i = 0; i < this.EXEC_CONCURRENCY; i++) run();
     },
 
     // Age of the results on screen, shown once for the whole dashboard: the
@@ -641,7 +688,7 @@ const Dashboards = {
         const el = document.getElementById('dashboardUpdatedAt');
         if (!el) return;
         const clear = () => { el.textContent = ''; el.removeAttribute('title'); };
-        if (!this.currentDashboard || !this.currentDashboard.widgets || this.activeDrilldown()) return clear();
+        if (!this.currentDashboard || !this.currentDashboard.widgets || this.activeView()) return clear();
 
         let newest = 0;
         this.currentDashboard.widgets.forEach(w => {
@@ -681,7 +728,7 @@ const Dashboards = {
     // over SSE. With auto-refresh off, a short floor still absorbs reopens.
     isCacheFresh(widget) {
         if (!widget || !widget.last_results || !widget.last_executed_at) return false;
-        if (this.activeDrilldown()) return false;
+        if (this.activeView()) return false;
         const age = Date.now() - new Date(widget.last_executed_at).getTime();
         if (!Number.isFinite(age) || age < 0) return false;
         const interval = this.currentDashboard?.refresh_interval || 0;
@@ -693,22 +740,35 @@ const Dashboards = {
     // drilldown: the cache holds unfiltered results that would misrepresent it.
     paintCachedWidgets() {
         if (!this.currentDashboard || !this.currentDashboard.widgets) return;
-        if (this.activeDrilldown()) return;
+        if (this.activeView()) return;
         this.currentDashboard.widgets.forEach(w => this.renderWidgetFromCache(w.id));
     },
 
     async executeWidget(widgetId) {
-        const widget = this.currentDashboard && this.currentDashboard.widgets
-            ? this.currentDashboard.widgets.find(w => w.id === widgetId)
-            : null;
-        if (!widget) return;
+        const widget = this.getWidget(widgetId);
+        if (!widget || !this.currentDashboard) return;
 
         const contentEl = document.getElementById(`wc-${widgetId}`);
         if (contentEl && contentEl._editingWidget) return;
 
-        // Results already on screen (cached or from a prior run) stay visible and
-        // are refreshed in place; only an empty widget shows a loading state.
-        const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
+        if (!(widget.query_content || '').trim()) {
+            if (contentEl) {
+                delete contentEl.dataset.rendered;
+                contentEl.innerHTML = `<div class="widget-loading">${this.editMode ? 'No query yet. Use Edit query from the widget menu.' : 'No query yet'}</div>`;
+            }
+            return;
+        }
+
+        // A newer run of this widget supersedes an older one, so a slow result
+        // for a stale range or variable never lands over a fresh one.
+        const prev = this._inflight.get(widgetId);
+        if (prev) prev.abort();
+        const ctrl = new AbortController();
+        this._inflight.set(widgetId, ctrl);
+
+        // Results already on screen stay visible and are refreshed in place;
+        // only an empty widget shows a loading state.
+        const widgetEl = this.widgetEl(widgetId);
         const hasRendered = !!(contentEl && contentEl.dataset.rendered === '1');
         if (contentEl && !hasRendered) {
             this.destroyWidgetVisuals(contentEl);
@@ -716,32 +776,37 @@ const Dashboards = {
         }
         if (widgetEl && hasRendered) widgetEl.classList.add('refreshing');
 
-        const execBtn = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"] .widget-execute-btn`);
+        const execBtn = widgetEl && widgetEl.querySelector('.widget-execute-btn');
         if (execBtn) { execBtn.innerHTML = '<span class="spinner"></span>'; execBtn.disabled = true; }
 
-        try {
-            // Execution runs server-side against the dashboard's stored scope,
-            // time range and variables. The backend persists the results as the
-            // authoritative cache and pushes them to other viewers over SSE; the
-            // direct response lets this client render immediately.
-            // In a pivot drilldown the run is a private, transient view: send the
-            // override variables/time so the server executes (but does not persist
-            // or broadcast) a filtered result for this viewer only.
-            const dd = this.activeDrilldown();
-            const body = dd ? JSON.stringify({
+        // With no view the run is the shared one: the server persists it as the
+        // dashboard cache and pushes it to other viewers. A viewer's own range or
+        // variables run as a private preview that is neither stored nor broadcast.
+        const view = this.activeView();
+        let body;
+        if (view) {
+            const req = {
                 preview: true,
-                variables: dd.vars || [],
-                time_range_start: dd.start,
-                time_range_end: dd.end
-            }) : undefined;
+                variables: Object.entries(view.vars).map(([name, value]) => ({ name, value })),
+            };
+            if (view.range) {
+                const r = this.resolveRange(view.range);
+                req.time_range_start = r.start;
+                req.time_range_end = r.end;
+            }
+            body = JSON.stringify(req);
+        }
+
+        try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/execute`, {
                 method: 'POST',
                 headers: this.sseHeaders(),
                 credentials: 'include',
-                body
+                body,
+                signal: ctrl.signal
             });
             const data = await response.json();
-
+            if (this._inflight.get(widgetId) !== ctrl) return;
             if (!data.success) throw new Error(data.error || 'Query failed');
 
             const resultData = data.data || {};
@@ -750,14 +815,19 @@ const Dashboards = {
             resultData.chart_config = resultData.chart_config || {};
             resultData.field_order = resultData.field_order || [];
 
-            // Update widget in local state
-            widget.last_results = JSON.stringify(resultData);
-            widget.last_executed_at = new Date().toISOString();
-            if (resultData.chart_type) widget.chart_type = resultData.chart_type;
+            if (view) {
+                widget._viewResults = resultData;
+            } else {
+                widget._viewResults = null;
+                widget.last_results = JSON.stringify(resultData);
+                widget.last_executed_at = new Date().toISOString();
+                if (resultData.chart_type) widget.chart_type = resultData.chart_type;
+            }
 
             this.renderWidgetResults(widgetId, resultData);
             this.renderUpdatedAt();
         } catch (err) {
+            if (err.name === 'AbortError' || this._inflight.get(widgetId) !== ctrl) return;
             console.error('[Dashboards] Widget execution failed:', err);
             if (contentEl && !contentEl._editingWidget) {
                 if (contentEl.dataset.rendered === '1') {
@@ -771,9 +841,23 @@ const Dashboards = {
                 }
             }
         } finally {
-            if (widgetEl) widgetEl.classList.remove('refreshing');
-            if (execBtn) { execBtn.innerHTML = '&#9654;'; execBtn.disabled = false; }
+            if (this._inflight.get(widgetId) === ctrl) this._inflight.delete(widgetId);
+            if (!this._inflight.has(widgetId)) {
+                if (widgetEl) widgetEl.classList.remove('refreshing');
+                if (execBtn) { execBtn.innerHTML = '&#9654;'; execBtn.disabled = false; }
+            }
         }
+    },
+
+    abortInflight() {
+        this._queueGen++;
+        this._inflight.forEach(c => c.abort());
+        this._inflight.clear();
+    },
+
+    // Chart hosts are inserted as HTML strings; draw once they are laid out.
+    afterPaint(fn) {
+        requestAnimationFrame(() => fn());
     },
 
     showStaleNote(contentEl, message) {
@@ -861,14 +945,14 @@ const Dashboards = {
                     <div id="${graphId}" class="widget-visual-host" style="width:100%;height:100%;"></div>
                 </div>
             `;
-            setTimeout(() => {
+            this.afterPaint(() => {
                 const el = document.getElementById(graphId);
                 if (el) el._visNetwork = BifractCharts.renderGraphSimple(el, {
                     data: results.results || [],
                     fields: results.field_order,
                     config: results.chart_config || {}
                 });
-            }, 300);
+            });
             return graphHtml;
         }
 
@@ -879,7 +963,7 @@ const Dashboards = {
                     <div id="${meshId}" class="widget-visual-host" style="width:100%;height:100%;"></div>
                 </div>
             `;
-            setTimeout(() => {
+            this.afterPaint(() => {
                 const el = document.getElementById(meshId);
                 if (el) el._visNetwork = BifractCharts.renderMeshSimple(el, {
                     data: results.results || [],
@@ -887,7 +971,7 @@ const Dashboards = {
                     config: results.chart_config || {},
                     onDataClick: (ctx, ev) => this.onWidgetDataClick(widgetId, ctx, ev)
                 });
-            }, 300);
+            });
             return meshHtml;
         }
 
@@ -898,13 +982,13 @@ const Dashboards = {
                     <div id="${heatmapId}" style="width:100%;overflow:auto;"></div>
                 </div>
             `;
-            setTimeout(() => {
+            this.afterPaint(() => {
                 const el = document.getElementById(heatmapId);
                 if (el) BifractCharts.renderHeatmap(el, {
                     data: results.results || [],
                     config: results.chart_config || {}
                 });
-            }, 300);
+            });
             return heatmapHtml;
         }
 
@@ -915,7 +999,7 @@ const Dashboards = {
                     <div id="${mitreId}" class="mtr-host widget-visual-host" style="height:100%;"></div>
                 </div>
             `;
-            setTimeout(() => {
+            this.afterPaint(() => {
                 const el = document.getElementById(mitreId);
                 // embedded: a wallboard panel opens on what fired, not on 700 empty cells.
                 if (el && window.BifractMitreMatrix) BifractMitreMatrix.render(el, {
@@ -923,7 +1007,7 @@ const Dashboards = {
                     config: results.chart_config || {},
                     embedded: true
                 });
-            }, 300);
+            });
             return mitreHtml;
         }
 
@@ -934,7 +1018,7 @@ const Dashboards = {
                     <div id="${mapId}" class="worldmap-container widget-visual-host" style="height:100%;"></div>
                 </div>
             `;
-            setTimeout(() => {
+            this.afterPaint(() => {
                 const el = document.getElementById(mapId);
                 if (el && window.BifractWorldMap) {
                     const cfg = results.chart_config || {};
@@ -944,7 +1028,7 @@ const Dashboards = {
                         labelField: cfg.labelField || null
                     });
                 }
-            }, 300);
+            });
             return mapHtml;
         }
 
@@ -954,9 +1038,9 @@ const Dashboards = {
             </div>
         `;
 
-        setTimeout(() => {
+        this.afterPaint(() => {
             this.renderChartOnCanvas(chartId, results, widgetConfig, widgetId);
-        }, 300);
+        });
 
         return chartHtml;
     },
@@ -997,27 +1081,10 @@ const Dashboards = {
         }
     },
 
-    // Apply a brushed time span as the dashboard's custom range and refresh all
-    // widgets. Mirrors saveTimeRange but for an explicit start/end.
-    async applyBrushTimeRange(startISO, endISO) {
+    // A brushed span on a timechart zooms this viewer's range; "back" undoes it.
+    applyBrushTimeRange(startISO, endISO) {
         if (!this.currentDashboard) return;
-        try {
-            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ time_range_type: 'custom', time_range_start: startISO, time_range_end: endISO })
-            });
-            if (!resp.ok) throw new Error('Failed to save time range');
-            this.currentDashboard.time_range_type = 'custom';
-            this.currentDashboard.time_range_start = startISO;
-            this.currentDashboard.time_range_end = endISO;
-            this.autoExecuteAllWidgets();
-            this.showSuccess(`Zoomed to ${this.formatDate(startISO)} - ${this.formatDate(endISO)}`);
-        } catch (err) {
-            console.error('[Dashboards] Failed to apply brushed time range:', err);
-            this.showError('Failed to apply time selection');
-        }
+        this.setViewRange({ type: 'custom', start: startISO, end: endISO });
     },
 
     renderSingleValWidget(results, widgetConfig) {
@@ -1131,248 +1198,333 @@ const Dashboards = {
     },
 
     // =====================
-    // Drag and Resize
+    // Edit mode, drag and resize
     // =====================
 
-    initDragAndDrop() {
+    setEditMode(on) {
+        const next = !!on && this.canEdit() && !!this.currentDashboard;
+        if (this._op) this.endLayoutOp(true);
+        this.editMode = next;
+        if (!next) this._undo = [];
+        const editor = document.getElementById('dashboardEditor');
+        if (editor) editor.classList.toggle('editing', next);
+        const grid = document.getElementById('dashboardGrid');
+        if (grid) {
+            grid.classList.toggle('editing', next);
+            grid.querySelectorAll('.widget-header').forEach(h => this.decorateHeader(h));
+        }
+        document.querySelectorAll('.widget-kebab-menu.open').forEach(m => m.classList.remove('open'));
+        this.updateUndoButton();
+        this.afterLayoutChange();
+    },
+
+    initGridInteractions() {
         this.stopDragResize();
-
         const grid = document.getElementById('dashboardGrid');
         if (!grid) return;
-
-        grid.addEventListener('mousedown', this._onMouseDown = (e) => {
-            const header = e.target.closest('.widget-header');
-            const resizeHandle = e.target.closest('.widget-resize-handle');
-            const btn = e.target.closest('button');
-
-            if (btn) return;
-
-            if (resizeHandle) {
-                this.startResize(e, resizeHandle.dataset.widgetId);
-            } else if (header) {
-                this.startDrag(e, header.dataset.widgetId);
-            }
-        });
-
-        // Double-click header to edit widget
-        grid.addEventListener('dblclick', this._onDblClick = (e) => {
-            const header = e.target.closest('.widget-header');
-            if (!header) return;
-            const btn = e.target.closest('button');
-            if (btn) return;
-            this.showInlineWidgetEdit(header.dataset.widgetId);
-        });
-    },
-
-    startDrag(e, widgetId) {
-        e.preventDefault();
-        const grid = document.getElementById('dashboardGrid');
-        const widgetEl = grid.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
-        if (!widgetEl) return;
-
-        const rect = widgetEl.getBoundingClientRect();
-        const gridRect = grid.getBoundingClientRect();
-        const colWidth = grid.offsetWidth / this.GRID_COLS;
-
-        this.dragState = {
-            widgetId,
-            widgetEl,
-            startMouseX: e.clientX,
-            startMouseY: e.clientY,
-            startLeft: rect.left - gridRect.left,
-            startTop: rect.top - gridRect.top,
-            colWidth,
-            gridRect
+        this._gridHandlers = {
+            pointerdown: (e) => this.onGridPointerDown(e),
+            keydown: (e) => this.onGridKeyDown(e),
+            dblclick: (e) => {
+                if (!this.editMode) return;
+                const header = e.target.closest('.widget-header');
+                if (!header || e.target.closest('button')) return;
+                this.showInlineWidgetEdit(header.dataset.widgetId);
+            },
         };
-
-        widgetEl.classList.add('dragging');
-
-        document.addEventListener('mousemove', this._onMouseMove = (e) => this.onDragMove(e));
-        document.addEventListener('mouseup', this._onMouseUp = (e) => this.onDragEnd(e));
-    },
-
-    onDragMove(e) {
-        if (!this.dragState) return;
-        const ds = this.dragState;
-        const dx = e.clientX - ds.startMouseX;
-        const dy = e.clientY - ds.startMouseY;
-
-        const newLeft = Math.max(0, ds.startLeft + dx);
-        const newTop = Math.max(0, ds.startTop + dy);
-
-        ds.widgetEl.style.left = `${newLeft}px`;
-        ds.widgetEl.style.top = `${newTop}px`;
-    },
-
-    onDragEnd(_e) {
-        if (!this.dragState) return;
-        const ds = this.dragState;
-        ds.widgetEl.classList.remove('dragging');
-
-        const colWidth = ds.colWidth;
-        const left = parseFloat(ds.widgetEl.style.left);
-        const top = parseFloat(ds.widgetEl.style.top);
-
-        const widget = this.currentDashboard.widgets.find(w => w.id === ds.widgetId);
-        const prevX = widget ? widget.pos_x : 0;
-        const prevY = widget ? widget.pos_y : 0;
-
-        const gridX = Math.max(0, Math.round(left / colWidth));
-        const gridY = Math.max(0, Math.round(top / this.ROW_HEIGHT));
-        const maxX = this.GRID_COLS - (widget ? widget.width : 1);
-        let clampedX = Math.min(gridX, maxX);
-        let clampedY = gridY;
-
-        // Resolve overlap: push down until no collision
-        if (widget) {
-            [clampedX, clampedY] = this.resolveOverlap(ds.widgetId, clampedX, clampedY, widget.width, widget.height);
-        }
-
-        ds.widgetEl.style.left = `${clampedX * colWidth}px`;
-        ds.widgetEl.style.top = `${clampedY * this.ROW_HEIGHT}px`;
-
-        if (widget) {
-            widget.pos_x = clampedX;
-            widget.pos_y = clampedY;
-        }
-
-        this.saveWidgetLayout(ds.widgetId, clampedX, clampedY, widget ? widget.width : 6, widget ? widget.height : 4);
-
-        this.dragState = null;
-        document.removeEventListener('mousemove', this._onMouseMove);
-        document.removeEventListener('mouseup', this._onMouseUp);
-
-        this.expandGridIfNeeded();
-
-        // Only re-execute if position actually changed (not a click/double-click with no movement)
-        if (clampedX !== prevX || clampedY !== prevY) {
-            this.executeWidget(ds.widgetId);
-        }
-    },
-
-    startResize(e, widgetId) {
-        e.preventDefault();
-        const grid = document.getElementById('dashboardGrid');
-        const widgetEl = grid.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
-        if (!widgetEl) return;
-
-        const colWidth = grid.offsetWidth / this.GRID_COLS;
-
-        this.resizeState = {
-            widgetId,
-            widgetEl,
-            startMouseX: e.clientX,
-            startMouseY: e.clientY,
-            startWidth: parseFloat(widgetEl.style.width),
-            startHeight: parseFloat(widgetEl.style.height),
-            colWidth
-        };
-
-        widgetEl.classList.add('resizing');
-
-        document.addEventListener('mousemove', this._onMouseMove = (e) => this.onResizeMove(e));
-        document.addEventListener('mouseup', this._onMouseUp = (e) => this.onResizeEnd(e));
-    },
-
-    onResizeMove(e) {
-        if (!this.resizeState) return;
-        const rs = this.resizeState;
-        const dx = e.clientX - rs.startMouseX;
-        const dy = e.clientY - rs.startMouseY;
-
-        const minW = this.MIN_WIDTH * rs.colWidth;
-        const minH = this.MIN_HEIGHT * this.ROW_HEIGHT;
-
-        rs.widgetEl.style.width = `${Math.max(minW, rs.startWidth + dx)}px`;
-        rs.widgetEl.style.height = `${Math.max(minH, rs.startHeight + dy)}px`;
-    },
-
-    onResizeEnd(_e) {
-        if (!this.resizeState) return;
-        const rs = this.resizeState;
-        rs.widgetEl.classList.remove('resizing');
-
-        const colWidth = rs.colWidth;
-        const newWidth = parseFloat(rs.widgetEl.style.width);
-        const newHeight = parseFloat(rs.widgetEl.style.height);
-
-        const gridW = Math.max(this.MIN_WIDTH, Math.round(newWidth / colWidth));
-        const gridH = Math.max(this.MIN_HEIGHT, Math.round(newHeight / this.ROW_HEIGHT));
-
-        // Get current position and size
-        const widget = this.currentDashboard.widgets.find(w => w.id === rs.widgetId);
-        const prevW = widget ? widget.width : 6;
-        const prevH = widget ? widget.height : 4;
-        const maxW = this.GRID_COLS - (widget ? widget.pos_x : 0);
-        const clampedW = Math.min(gridW, maxW);
-
-        rs.widgetEl.style.width = `${clampedW * colWidth}px`;
-        rs.widgetEl.style.height = `${gridH * this.ROW_HEIGHT}px`;
-
-        if (widget) {
-            widget.width = clampedW;
-            widget.height = gridH;
-        }
-
-        this.saveWidgetLayout(rs.widgetId, widget ? widget.pos_x : 0, widget ? widget.pos_y : 0, clampedW, gridH);
-
-        this.resizeState = null;
-        document.removeEventListener('mousemove', this._onMouseMove);
-        document.removeEventListener('mouseup', this._onMouseUp);
-
-        this.expandGridIfNeeded();
-
-        // Only re-execute if size actually changed
-        if (clampedW !== prevW || gridH !== prevH) {
-            this.executeWidget(rs.widgetId);
-        }
-    },
-
-    // Returns [x, y] adjusted so the widget doesn't overlap any other widget
-    resolveOverlap(widgetId, x, y, w, h) {
-        const others = this.currentDashboard.widgets.filter(ww => ww.id !== widgetId);
-        const overlaps = (ax, ay) => others.some(o =>
-            ax < o.pos_x + o.width && ax + w > o.pos_x &&
-            ay < o.pos_y + o.height && ay + h > o.pos_y
-        );
-        // Try the desired position; if blocked, push down row by row
-        let ry = y;
-        while (overlaps(x, ry)) {
-            ry++;
-        }
-        return [x, ry];
-    },
-
-    expandGridIfNeeded() {
-        if (!this.currentDashboard || !this.currentDashboard.widgets) return;
-        const grid = document.getElementById('dashboardGrid');
-        if (!grid) return;
-
-        const maxBottom = this.currentDashboard.widgets.reduce((max, w) => Math.max(max, w.pos_y + w.height), 6);
-        grid.style.minHeight = `${maxBottom * this.ROW_HEIGHT + 40}px`;
+        this._gridEl = grid;
+        Object.entries(this._gridHandlers).forEach(([type, fn]) => grid.addEventListener(type, fn));
     },
 
     stopDragResize() {
-        if (this._onMouseMove) document.removeEventListener('mousemove', this._onMouseMove);
-        if (this._onMouseUp) document.removeEventListener('mouseup', this._onMouseUp);
-        const grid = document.getElementById('dashboardGrid');
-        if (grid && this._onDblClick) grid.removeEventListener('dblclick', this._onDblClick);
-        if (grid && this._onMouseDown) grid.removeEventListener('mousedown', this._onMouseDown);
-        this.dragState = null;
-        this.resizeState = null;
+        if (this._op) this.endLayoutOp(true);
+        if (this._gridEl && this._gridHandlers) {
+            Object.entries(this._gridHandlers).forEach(([type, fn]) => this._gridEl.removeEventListener(type, fn));
+        }
+        this._gridEl = null;
+        this._gridHandlers = null;
     },
 
-    async saveWidgetLayout(widgetId, posX, posY, width, height) {
-        if (!this.currentDashboard) return;
+    onGridPointerDown(e) {
+        if (!this.editMode || this._op || (e.pointerType === 'mouse' && e.button !== 0)) return;
+        const grid = e.currentTarget;
+        const handle = e.target.closest('.widget-resize');
+        const header = e.target.closest('.widget-header');
+        if (!handle && (!header || e.target.closest('button, input, textarea, select, .widget-kebab-menu'))) return;
+        const el = e.target.closest('.dashboard-widget');
+        if (!el) return;
+        const m = DashboardLayout.metrics(grid);
+        if (m.stacked) return;
+
+        const start = this.layoutItems();
+        const item = start.find(i => i.id === el.dataset.widgetId);
+        if (!item) return;
+        e.preventDefault();
+
+        const gridRect = grid.getBoundingClientRect();
+        const rect = el.getBoundingClientRect();
+        this._op = {
+            kind: handle ? 'resize' : 'drag',
+            dir: handle ? handle.dataset.dir : '',
+            id: item.id, el, grid, m, start, layout: start, item,
+            downX: e.clientX, downY: e.clientY, x: e.clientX, y: e.clientY,
+            offX: e.clientX - rect.left, offY: e.clientY - rect.top,
+            box: { left: rect.left - gridRect.left, top: rect.top - gridRect.top, width: rect.width, height: rect.height },
+            lifted: false,
+        };
+        this._opHandlers = {
+            pointermove: (ev) => this.onLayoutPointerMove(ev),
+            pointerup: () => this.endLayoutOp(false),
+            pointercancel: () => this.endLayoutOp(true),
+        };
+        Object.entries(this._opHandlers).forEach(([type, fn]) => document.addEventListener(type, fn));
+        if (handle) this.liftLayoutOp();
+    },
+
+    onLayoutPointerMove(e) {
+        const op = this._op;
+        if (!op) return;
+        op.x = e.clientX;
+        op.y = e.clientY;
+        // A click or double-click on a header must not turn into a drag.
+        if (!op.lifted) {
+            if (Math.hypot(op.x - op.downX, op.y - op.downY) < 4) return;
+            this.liftLayoutOp();
+        }
+        this.updateLayoutOp();
+    },
+
+    // Take the widget out of the grid flow so it follows the pointer, and show
+    // a placeholder where it will land.
+    liftLayoutOp() {
+        const op = this._op;
+        op.lifted = true;
+        op.grid.classList.add('layout-active');
+        op.grid.style.setProperty('--col-pitch', `${op.m.colPitch}px`);
+        document.body.classList.add(op.kind === 'drag' ? 'dash-dragging' : `dash-resizing-${op.dir}`);
+
+        const ph = document.createElement('div');
+        ph.className = 'widget-placeholder';
+        DashboardLayout.place(ph, op.item);
+        op.grid.appendChild(ph);
+        op.ph = ph;
+        // Live size readout, on the widget being resized so it stays in view.
+        if (op.kind === 'resize') {
+            op.badge = document.createElement('span');
+            op.badge.className = 'widget-size-badge';
+            op.el.appendChild(op.badge);
+        }
+
+        op.el.classList.add('lifted');
+        Object.assign(op.el.style, {
+            left: `${op.box.left}px`, top: `${op.box.top}px`,
+            width: `${op.box.width}px`, height: `${op.box.height}px`,
+        });
+        this.updateSizeBadge(op.item);
+        this.startAutoScroll(op);
+    },
+
+    updateLayoutOp() {
+        const op = this._op;
+        if (!op || !op.lifted) return;
+        const D = DashboardLayout;
+        const m = op.m;
+        const g = op.grid.getBoundingClientRect();
+        let rect;
+
+        if (op.kind === 'drag') {
+            const left = Math.min(Math.max(op.x - g.left - op.offX, 0), Math.max(0, m.width - op.box.width));
+            const top = Math.max(op.y - g.top - op.offY, 0);
+            op.el.style.left = `${left}px`;
+            op.el.style.top = `${top}px`;
+            rect = { x: Math.round(left / m.colPitch), y: Math.round(top / m.rowPitch) };
+        } else {
+            let { width, height } = op.box;
+            if (op.dir.includes('e')) {
+                const minW = D.MIN_W * m.colPitch - D.GAP;
+                width = Math.min(Math.max(op.x - g.left - op.box.left, minW), m.width - op.box.left);
+            }
+            if (op.dir.includes('s')) {
+                const minH = D.MIN_H * m.rowPitch - D.GAP;
+                height = Math.max(op.y - g.top - op.box.top, minH);
+            }
+            op.el.style.width = `${width}px`;
+            op.el.style.height = `${height}px`;
+            rect = {
+                w: Math.max(D.MIN_W, Math.round((width + D.GAP) / m.colPitch)),
+                h: Math.max(D.MIN_H, Math.round((height + D.GAP) / m.rowPitch)),
+            };
+        }
+
+        const key = JSON.stringify(rect);
+        if (key === op.lastKey) return;
+        op.lastKey = key;
+
+        op.layout = D.apply(op.start, op.id, rect);
+        op.layout.forEach(it => {
+            if (it.id === op.id) return;
+            const el = this.widgetEl(it.id);
+            if (el) D.place(el, it);
+        });
+        const mine = op.layout.find(i => i.id === op.id);
+        D.place(op.ph, mine);
+        this.updateSizeBadge(mine);
+        op.grid.style.minHeight = `${(D.bottom(op.layout) + 12) * D.PITCH}px`;
+    },
+
+    updateSizeBadge(it) {
+        const badge = this._op && this._op.badge;
+        if (badge) badge.textContent = `${it.w} × ${it.h}`;
+    },
+
+    endLayoutOp(cancelled) {
+        const op = this._op;
+        if (!op) return;
+        this._op = null;
+        if (this._opHandlers) {
+            Object.entries(this._opHandlers).forEach(([type, fn]) => document.removeEventListener(type, fn));
+            this._opHandlers = null;
+        }
+        if (op.raf) cancelAnimationFrame(op.raf);
+        document.body.classList.remove('dash-dragging', 'dash-resizing-e', 'dash-resizing-s', 'dash-resizing-se');
+        op.grid.classList.remove('layout-active');
+        if (op.ph) op.ph.remove();
+        if (op.badge) op.badge.remove();
+        if (op.lifted) {
+            op.el.classList.remove('lifted');
+            Object.assign(op.el.style, { left: '', top: '', width: '', height: '' });
+        }
+        if (!op.lifted || cancelled) {
+            op.start.forEach(it => { const el = this.widgetEl(it.id); if (el) DashboardLayout.place(el, it); });
+            this.afterLayoutChange();
+            return;
+        }
+        this.commitLayout(op.start, op.layout);
+    },
+
+    // Scroll the page while a drag or resize nears the top or bottom edge.
+    startAutoScroll(op) {
+        const scroller = this.scrollParent(op.grid);
+        const edge = 48;
+        const step = () => {
+            if (this._op !== op) return;
+            const r = scroller === document.scrollingElement
+                ? { top: 0, bottom: window.innerHeight }
+                : scroller.getBoundingClientRect();
+            let dy = 0;
+            if (op.y < r.top + edge) dy = -Math.ceil((r.top + edge - op.y) / 3);
+            else if (op.y > r.bottom - edge) dy = Math.ceil((op.y - (r.bottom - edge)) / 3);
+            if (dy) {
+                const before = scroller.scrollTop;
+                scroller.scrollTop += dy;
+                if (scroller.scrollTop !== before) this.updateLayoutOp();
+            }
+            op.raf = requestAnimationFrame(step);
+        };
+        op.raf = requestAnimationFrame(step);
+    },
+
+    scrollParent(el) {
+        for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+            const oy = getComputedStyle(p).overflowY;
+            if ((oy === 'auto' || oy === 'scroll') && p.scrollHeight > p.clientHeight) return p;
+        }
+        return document.scrollingElement || document.documentElement;
+    },
+
+    // Arrow keys move the focused widget one cell (up/down swap with the
+    // neighbour, since the grid floats everything up); Shift resizes.
+    onGridKeyDown(e) {
+        if (!this.editMode || this._op) return;
+        const header = e.target;
+        if (!header.classList || !header.classList.contains('widget-header')) return;
+        const delta = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+        if (!delta) {
+            if (e.key === 'Enter') { e.preventDefault(); this.showInlineWidgetEdit(header.dataset.widgetId); }
+            return;
+        }
+        e.preventDefault();
+        const D = DashboardLayout;
+        const before = this.layoutItems();
+        const it = before.find(i => i.id === header.dataset.widgetId);
+        if (!it) return;
+
+        let rect;
+        if (e.shiftKey) {
+            rect = { w: Math.max(D.MIN_W, it.w + delta[0]), h: Math.max(D.MIN_H, it.h + delta[1]) };
+        } else if (delta[1] === 0) {
+            rect = { x: it.x + delta[0] };
+        } else {
+            const overlapX = o => o.id !== it.id && o.x < it.x + it.w && o.x + o.w > it.x;
+            if (delta[1] < 0) {
+                const above = before.filter(o => overlapX(o) && o.y + o.h <= it.y)
+                    .sort((a, b) => (b.y + b.h) - (a.y + a.h))[0];
+                rect = { y: above ? above.y : it.y - 1 };
+            } else {
+                const below = before.filter(o => overlapX(o) && o.y >= it.y + it.h).sort((a, b) => a.y - b.y)[0];
+                rect = { y: below ? Math.max(it.y + 1, below.y + below.h - it.h) : it.y + 1 };
+            }
+        }
+        this.commitLayout(before, D.apply(before, it.id, rect));
+    },
+
+    // Adopt a new layout locally, then persist only what moved.
+    commitLayout(before, after) {
+        const changed = DashboardLayout.diff(before, after);
+        after.forEach(it => {
+            const w = this.getWidget(it.id);
+            if (w) { w.pos_x = it.x; w.pos_y = it.y; w.width = it.w; w.height = it.h; }
+            const el = this.widgetEl(it.id);
+            if (el) DashboardLayout.place(el, it);
+        });
+        this.afterLayoutChange();
+        if (!changed.length) return;
+        this._undo.push(before);
+        if (this._undo.length > 50) this._undo.shift();
+        this.updateUndoButton();
+        this.saveLayout(changed);
+    },
+
+    undoLayout() {
+        const snapshot = this._undo.pop();
+        this.updateUndoButton();
+        if (!snapshot || !this.currentDashboard) return;
+        // Widgets added since the snapshot keep their place; deleted ones drop out.
+        const prev = new Map(snapshot.map(i => [i.id, i]));
+        const current = this.layoutItems();
+        const next = DashboardLayout.compact(current.map(i => ({ ...(prev.get(i.id) || i) })));
+        const changed = DashboardLayout.diff(current, next);
+        next.forEach(it => {
+            const w = this.getWidget(it.id);
+            if (w) { w.pos_x = it.x; w.pos_y = it.y; w.width = it.w; w.height = it.h; }
+            const el = this.widgetEl(it.id);
+            if (el) DashboardLayout.place(el, it);
+        });
+        this.afterLayoutChange();
+        if (changed.length) this.saveLayout(changed);
+    },
+
+    updateUndoButton() {
+        const btn = document.getElementById('dashboardUndoBtn');
+        if (btn) btn.disabled = !this._undo.length;
+    },
+
+    async saveLayout(items) {
+        if (!this.currentDashboard || !items.length) return;
         try {
-            await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets/${widgetId}/layout`, {
+            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/layout`, {
                 method: 'PUT',
                 headers: this.sseHeaders(),
                 credentials: 'include',
-                body: JSON.stringify({ pos_x: posX, pos_y: posY, width, height })
+                body: JSON.stringify({
+                    widgets: items.map(i => ({ id: i.id, pos_x: i.x, pos_y: i.y, width: i.w, height: i.h }))
+                })
             });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error || 'Failed to save layout');
         } catch (err) {
-            console.error('[Dashboards] Failed to save widget layout:', err);
+            console.error('[Dashboards] Failed to save layout:', err);
+            this.showError('Failed to save layout');
         }
     },
 
@@ -1381,12 +1533,10 @@ const Dashboards = {
     // =====================
 
     async addWidget() {
-        if (!this.currentDashboard) return;
+        if (!this.currentDashboard || !this.editMode) return;
 
-        // Find a reasonable default position (below existing widgets)
-        const maxBottom = this.currentDashboard.widgets
-            ? this.currentDashboard.widgets.reduce((max, w) => Math.max(max, w.pos_y + w.height), 0)
-            : 0;
+        const w = 12, h = 16;
+        const slot = DashboardLayout.findSlot(this.layoutItems(), w, h);
 
         try {
             const response = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/widgets`, {
@@ -1397,10 +1547,10 @@ const Dashboards = {
                     title: 'New Widget',
                     query_content: '',
                     chart_type: 'table',
-                    pos_x: 0,
-                    pos_y: maxBottom,
-                    width: 6,
-                    height: 4
+                    pos_x: slot.x,
+                    pos_y: slot.y,
+                    width: w,
+                    height: h
                 })
             });
             const data = await response.json();
@@ -1410,13 +1560,12 @@ const Dashboards = {
             if (!this.currentDashboard.widgets) this.currentDashboard.widgets = [];
             this.currentDashboard.widgets.push(widget);
 
-            // Add widget to grid
             const grid = document.getElementById('dashboardGrid');
             if (grid) {
                 const el = this.createWidgetElement(widget);
                 grid.appendChild(el);
-                this.expandGridIfNeeded();
-                this.initDragAndDrop();
+                this.afterLayoutChange();
+                el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
 
             // Open inline editor immediately for the new widget
@@ -1573,8 +1722,9 @@ const Dashboards = {
             // Removing a widget may orphan @variables it referenced.
             this.syncDashboardVariables();
 
-            const widgetEl = document.querySelector(`.dashboard-widget[data-widget-id="${widgetId}"]`);
+            const widgetEl = this.widgetEl(widgetId);
             if (widgetEl) { this.destroyWidgetVisuals(widgetEl); widgetEl.remove(); }
+            this.afterLayoutChange();
         } catch (err) {
             console.error('[Dashboards] Failed to delete widget:', err);
             this.showError('Failed to delete widget');
@@ -1934,47 +2084,50 @@ const Dashboards = {
         }
     },
 
-    showTimeRangeModal() {
-        if (!this.currentDashboard) return;
+    showSettingsModal() {
+        if (!this.currentDashboard || !this.canEdit()) return;
+        const d = this.currentDashboard;
 
-        const existing = document.getElementById('dashTimeRangeModal');
+        const existing = document.getElementById('dashSettingsModal');
         if (existing) existing.remove();
 
         const modal = document.createElement('div');
-        modal.id = 'dashTimeRangeModal';
+        modal.id = 'dashSettingsModal';
         modal.className = 'modal-overlay';
         modal.innerHTML = `
-            <div class="modal-content" style="width:380px;max-width:95vw;">
+            <div class="modal-content" style="width:440px;max-width:95vw;">
                 <div class="modal-header">
-                    <h3>Time Settings</h3>
-                    <button class="modal-close" onclick="document.getElementById('dashTimeRangeModal').remove()">&#x2715;</button>
+                    <h3>Dashboard settings</h3>
+                    <button class="modal-close" onclick="document.getElementById('dashSettingsModal').remove()">&#x2715;</button>
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
-                        <label>Time Range</label>
-                        <select id="dtrSelect" class="form-input">
-                            ${this.currentDashboard.time_range_type === 'custom' ? '<option value="custom" selected disabled>Custom (brushed range)</option>' : ''}
-                            <option value="last1h" ${this.currentDashboard.time_range_type === 'last1h' ? 'selected' : ''}>Last 1 Hour</option>
-                            <option value="last24h" ${this.currentDashboard.time_range_type === 'last24h' ? 'selected' : ''}>Last 24 Hours</option>
-                            <option value="last7d" ${this.currentDashboard.time_range_type === 'last7d' ? 'selected' : ''}>Last 7 Days</option>
-                            <option value="last30d" ${this.currentDashboard.time_range_type === 'last30d' ? 'selected' : ''}>Last 30 Days</option>
-                            <option value="all" ${this.currentDashboard.time_range_type === 'all' ? 'selected' : ''}>All Time</option>
-                        </select>
+                        <label for="dsName">Name</label>
+                        <input type="text" id="dsName" class="form-input" maxlength="255" value="${Utils.escapeAttr(d.name || '')}">
                     </div>
                     <div class="form-group">
-                        <label>Bucket Timezone</label>
-                        <select id="dtrZone" class="form-input">${this.zoneOptionsHTML()}</select>
+                        <label for="dsDescription">Description</label>
+                        <input type="text" id="dsDescription" class="form-input" value="${Utils.escapeAttr(d.description || '')}" placeholder="Optional">
+                    </div>
+                    <div class="form-group">
+                        <label>Default time range</label>
+                        <div class="form-hint" style="margin-top:0;">${Utils.escapeHtml(this.rangeLabel(this.defaultRange()))}. Pick a range in the time picker, then use Save as default.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="dsZone">Bucket timezone</label>
+                        <select id="dsZone" class="form-input">${this.zoneOptionsHTML()}</select>
                         <div class="form-hint">Where day, hour and week boundaries fall for bucket() and timechart. It belongs to the dashboard so every viewer reads the same buckets. Individual timestamps still follow each viewer's own zone.</div>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-secondary" onclick="document.getElementById('dashTimeRangeModal').remove()">Cancel</button>
-                    <button class="btn-primary" onclick="Dashboards.saveTimeRange()">Apply &amp; Refresh</button>
+                    <button class="btn-secondary" onclick="document.getElementById('dashSettingsModal').remove()">Cancel</button>
+                    <button class="btn-primary" onclick="Dashboards.saveSettings()">Save</button>
                 </div>
             </div>
         `;
         document.body.appendChild(modal);
         modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        document.getElementById('dsName')?.focus();
     },
 
     async updateRefreshInterval(seconds) {
@@ -1990,6 +2143,7 @@ const Dashboards = {
             const data = await resp.json();
             if (!data.success) throw new Error(data.error || 'Failed');
             this.currentDashboard.refresh_interval = seconds;
+            this.scheduleViewRefresh();
             if (seconds === 0) {
                 this.showSuccess('Auto-refresh disabled');
             } else if (seconds < 0) {
@@ -2019,27 +2173,25 @@ const Dashboards = {
                `<optgroup label="All">${all.map(opt).join('')}</optgroup>`;
     },
 
-    async saveTimeRange() {
+    async saveSettings() {
         if (!this.currentDashboard) return;
-        const val = document.getElementById('dtrSelect')?.value;
-        const zone = document.getElementById('dtrZone')?.value;
+        const d = this.currentDashboard;
+        const name = document.getElementById('dsName')?.value.trim();
+        const description = document.getElementById('dsDescription')?.value.trim() ?? '';
+        const zone = document.getElementById('dsZone')?.value;
+        if (!name) { this.showError('Name is required'); return; }
 
         const body = {};
-        // "custom" is the disabled placeholder for a brushed range, so seeing it
-        // selected means the range was not touched.
-        if (val && val !== 'custom' && val !== this.currentDashboard.time_range_type) {
-            body.time_range_type = val;
-        }
-        if (zone && zone !== (this.currentDashboard.timezone || 'UTC')) {
-            body.timezone = zone;
-        }
+        if (name !== d.name) body.name = name;
+        if (description !== (d.description || '')) body.description = description;
+        if (zone && zone !== (d.timezone || 'UTC')) body.timezone = zone;
         if (!Object.keys(body).length) {
-            document.getElementById('dashTimeRangeModal')?.remove();
+            document.getElementById('dashSettingsModal')?.remove();
             return;
         }
 
         try {
-            const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}`, {
+            const resp = await fetch(`/api/v1/dashboards/${d.id}`, {
                 method: 'PUT',
                 headers: this.sseHeaders(),
                 credentials: 'include',
@@ -2048,21 +2200,20 @@ const Dashboards = {
             const data = await resp.json();
             if (!data.success) throw new Error(data.error || 'Failed to save');
 
-            if (body.time_range_type) this.currentDashboard.time_range_type = body.time_range_type;
-            if (body.timezone) this.currentDashboard.timezone = body.timezone;
-            document.getElementById('dashTimeRangeModal')?.remove();
+            Object.assign(d, body);
+            const titleEl = document.getElementById('dashboardTitle');
+            if (titleEl) titleEl.textContent = d.name;
+            document.getElementById('dashSettingsModal')?.remove();
 
-            if (body.time_range_type) {
-                this.autoExecuteAllWidgets();
-            } else {
+            if (body.timezone) {
                 // A zone change re-ran every widget server-side before this
-                // response returned, so the fresh results are already cached.
-                // Reload them instead of paying for the same queries twice.
-                await this.reloadCachedResults();
+                // response returned, so the shared cache is already fresh.
+                if (this.activeView()) this.autoExecuteAllWidgets();
+                else await this.reloadCachedResults();
             }
         } catch (err) {
-            console.error('[Dashboards] Failed to save time settings:', err);
-            this.showError(err.message || 'Failed to save time settings');
+            console.error('[Dashboards] Failed to save settings:', err);
+            this.showError(err.message || 'Failed to save settings');
         }
     },
 
@@ -2113,15 +2264,17 @@ const Dashboards = {
         });
     },
 
-    // Returns true when cached results were rendered, so callers can fall back.
+    // Renders the results this viewer is looking at: their private view's
+    // results when one is active, else the shared cache. Returns true when
+    // something was rendered, so callers can fall back.
     renderWidgetFromCache(widgetId) {
-        const widget = this.currentDashboard && this.currentDashboard.widgets
-            ? this.currentDashboard.widgets.find(w => w.id === widgetId) : null;
-        if (!widget || !widget.last_results) return false;
-        let resultData;
-        try {
-            resultData = typeof widget.last_results === 'string' ? JSON.parse(widget.last_results) : widget.last_results;
-        } catch (e) { return false; }
+        const widget = this.getWidget(widgetId);
+        if (!widget) return false;
+        let resultData = this.activeView() ? widget._viewResults : widget.last_results;
+        if (!resultData) return false;
+        if (typeof resultData === 'string') {
+            try { resultData = JSON.parse(resultData); } catch (e) { return false; }
+        }
         if (!resultData || typeof resultData !== 'object') return false;
         this.renderWidgetResults(widgetId, resultData);
         return true;
@@ -2180,162 +2333,477 @@ const Dashboards = {
         Pivots.handleDataClick(widget, pivots, ctx, event);
     },
 
-    // A drilldown is a transient, per-viewer override that must survive the whole
-    // time the user is looking at the target dashboard. It is NOT persisted
-    // server-side (the server only ever knows the dashboard's default variables),
-    // so its entire lifetime lives client-side. The in-memory flag alone is
-    // fragile: a spurious scope notify, a re-entrant route, or an SSE reconnect can
-    // null it, and the moment it is null a default-variable result (pushed by the
-    // background executor, one per pod in a multi-replica deploy) overwrites the
-    // filtered view. To make it authoritative we mirror it into sessionStorage
-    // keyed by dashboard id (per-tab, so a new-tab drilldown never collides with or
-    // clobbers another tab), and read through activeDrilldown() everywhere the
-    // override gates behavior. The stored context is cleared only on an explicit
-    // exit, a real scope change, or returning to the listing.
-    _drilldownStoreKey(id) { return 'bifract_drilldown_' + id; },
+    // =====================
+    // Per-viewer view state
+    // =====================
+    // The time range and @variable values a viewer picks belong to them alone.
+    // They live in the URL hash ("?range=last1h&var-host=web1", or from/to for an
+    // absolute range) so reloads, back/forward and shared links keep them, and
+    // they run through the preview path, which the server neither persists nor
+    // broadcasts. Pivot drilldowns are views too. Analysts can promote a view to
+    // the dashboard defaults with "Save as default".
 
-    _storeDrilldown(dd) {
-        if (!dd || !dd.dashboardId) return;
-        try { sessionStorage.setItem(this._drilldownStoreKey(dd.dashboardId), JSON.stringify(dd)); }
-        catch (e) { /* sessionStorage unavailable: fall back to in-memory only */ }
+    activeView() {
+        const v = this._view;
+        if (!v || !this.currentDashboard) return null;
+        return (v.range || Object.keys(v.vars).length) ? v : null;
     },
 
-    _loadStoredDrilldown(id) {
-        if (!id) return null;
-        try {
-            const raw = sessionStorage.getItem(this._drilldownStoreKey(id));
-            if (!raw) return null;
-            const dd = JSON.parse(raw);
-            return (dd && Array.isArray(dd.vars) && dd.dashboardId === id) ? dd : null;
-        } catch (e) { return null; }
+    ensureView() {
+        if (!this._view) this._view = { range: null, vars: {} };
+        return this._view;
     },
 
-    _clearStoredDrilldown(id) {
-        if (!id) return;
-        try { sessionStorage.removeItem(this._drilldownStoreKey(id)); } catch (e) { /* ignore */ }
+    resetViewState() {
+        this.abortInflight();
+        this._view = null;
+        this._rangeHistory = [];
+        this.stopViewRefresh();
     },
 
-    // The authoritative drilldown for the dashboard currently on screen. Prefers the
-    // in-memory context but transparently rehydrates from sessionStorage when a
-    // transient reset has nulled it, so default-variable results can never win a
-    // race against the override view.
-    activeDrilldown() {
-        const id = this.currentDashboard && this.currentDashboard.id;
-        if (!id) return null;
-        if (this._drilldown && this._drilldown.dashboardId === id) return this._drilldown;
-        const stored = this._loadStoredDrilldown(id);
-        if (stored) { this._drilldown = stored; return stored; }
-        return null;
+    setViewRange(range, remember = true) {
+        const prev = this.currentRange();
+        const view = this.ensureView();
+        view.range = (range && !this.sameRange(range, this.defaultRange())) ? range : null;
+        if (remember && !this.sameRange(prev, this.currentRange())) {
+            this._rangeHistory.push(prev);
+            if (this._rangeHistory.length > 20) this._rangeHistory.shift();
+        }
+        this.onViewChanged();
     },
 
-    // Enter a transient drilldown on a (possibly different) dashboard. Same-board
-    // drilldowns re-run in place; cross-board ones stash the context and open the
-    // target, where _resolveDrilldown picks it up after load.
+    setViewVar(name, value) {
+        const view = this.ensureView();
+        const def = this.varManager ? this.varManager.getValue(name) : undefined;
+        if (value === def) delete view.vars[name];
+        else view.vars[name] = value;
+        this.onViewChanged();
+    },
+
+    clearViewVar(name) {
+        if (!this._view || !(name in this._view.vars)) return;
+        delete this._view.vars[name];
+        this.onViewChanged();
+    },
+
+    resetView() {
+        if (!this.activeView()) return;
+        this._view = null;
+        this._rangeHistory = [];
+        this.onViewChanged();
+    },
+
+    goBackRange() {
+        const prev = this._rangeHistory.pop();
+        if (prev) this.setViewRange(prev, false);
+    },
+
+    onViewChanged() {
+        this.abortInflight();
+        this.syncViewToUrl();
+        this.renderViewState();
+        if (this.activeView()) {
+            this.autoExecuteAllWidgets();
+        } else {
+            // Back on the defaults: the shared cache is what everyone sees.
+            this.currentDashboard?.widgets?.forEach(w => { w._viewResults = null; });
+            this.paintCachedWidgets();
+            this.autoExecuteAllWidgets(true);
+        }
+    },
+
+    // Enter a pivot drilldown on this or another dashboard. Same-board
+    // drilldowns layer onto the current view; cross-board ones open the target.
     enterDrilldown(targetId, dd) {
+        const incoming = this.viewFromDrilldown(dd);
         if (targetId && this.currentDashboard && targetId !== this.currentDashboard.id) {
-            this._pendingDrilldown = dd;
+            this._pendingView = incoming;
             this.openDashboard(targetId);
             return;
         }
-        dd.dashboardId = this.currentDashboard && this.currentDashboard.id;
-        this._drilldown = dd;
-        this._storeDrilldown(dd);
-        this.renderDrilldownBanner();
-        this.autoExecuteAllWidgets();
-    },
-
-    exitDrilldown() {
-        const active = this.activeDrilldown();
-        if (!active) return;
-        this._clearStoredDrilldown(this.currentDashboard && this.currentDashboard.id);
-        this._drilldown = null;
-        this.renderDrilldownBanner();
-        this.autoExecuteAllWidgets();
-    },
-
-    // Resolve a drilldown context on dashboard open: an in-app pending context
-    // wins; then a ?pv= URL param (new-tab / shared drilldown link); then a
-    // sessionStorage context left by an earlier open of this same dashboard.
-    //
-    // The overlay is a per-view state, not a one-shot: the ?pv= param is consumed
-    // on first read, but opening the same dashboard is re-entrant (routing,
-    // presence/SSE, variable-bar reconcile all re-execute widgets). So the overlay
-    // is bound to its target dashboard id and preserved across re-entrant opens and
-    // reloads; it is only dropped when a fresh drilldown arrives, the user exits, or
-    // a DIFFERENT dashboard is opened. Without this, a re-entrant open would null the
-    // overlay and the follow-up executes would revert widgets to the stored defaults.
-    _resolveDrilldown() {
-        const currentId = this.currentDashboard && this.currentDashboard.id;
-        let dd = this._pendingDrilldown || null;
-        this._pendingDrilldown = null;
-        if (!dd) dd = this._readDrilldownFromUrl();
-        if (!dd) dd = this._loadStoredDrilldown(currentId);
-        if (dd) {
-            dd.dashboardId = currentId;
-            this._drilldown = dd;
-            this._storeDrilldown(dd);
-        } else if (!(this._drilldown && this._drilldown.dashboardId === currentId)) {
-            this._drilldown = null;
+        const view = this.ensureView();
+        Object.assign(view.vars, incoming.vars);
+        if (incoming.range) {
+            this._rangeHistory.push(this.currentRange());
+            view.range = incoming.range;
         }
-        this.renderDrilldownBanner();
+        this.onViewChanged();
     },
 
-    _readDrilldownFromUrl() {
+    viewFromDrilldown(dd) {
+        const view = { range: null, vars: {} };
+        (dd && Array.isArray(dd.vars) ? dd.vars : []).forEach(v => {
+            if (v && v.name) view.vars[v.name] = v.value == null ? '' : String(v.value);
+        });
+        if (dd && dd.start && dd.end) view.range = { type: 'custom', start: dd.start, end: dd.end };
+        return view;
+    },
+
+    viewParams(view) {
+        const p = new URLSearchParams();
+        if (!view) return p;
+        if (view.range) {
+            if (view.range.type === 'custom') {
+                p.set('from', view.range.start);
+                p.set('to', view.range.end);
+            } else {
+                p.set('range', view.range.type);
+            }
+        }
+        Object.entries(view.vars || {}).forEach(([name, value]) => p.set(`var-${name}`, value));
+        return p;
+    },
+
+    viewFromParams(params) {
+        const view = { range: null, vars: {} };
+        const range = params.get('range');
+        const from = params.get('from');
+        const to = params.get('to');
+        if (range && (range === 'all' || this.parseRelative(range))) {
+            view.range = { type: range };
+        } else if (from && to) {
+            const s = new Date(from), e = new Date(to);
+            if (Number.isFinite(s.getTime()) && Number.isFinite(e.getTime()) && s < e) {
+                view.range = { type: 'custom', start: s.toISOString(), end: e.toISOString() };
+            }
+        }
+        params.forEach((value, key) => {
+            if (key.startsWith('var-') && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key.slice(4))) view.vars[key.slice(4)] = value;
+        });
+        return (view.range || Object.keys(view.vars).length) ? view : null;
+    },
+
+    // Links made before views moved into the hash carried a one-shot ?pv=.
+    _readLegacyDrilldown() {
         const params = new URLSearchParams(window.location.search);
         const raw = params.get('pv');
         if (!raw) return null;
-        // Consume the param so a refresh or re-share doesn't silently re-filter.
         params.delete('pv');
         const qs = params.toString();
-        window.history.replaceState({}, document.title,
+        window.history.replaceState(window.history.state, document.title,
             window.location.pathname + (qs ? '?' + qs : '') + window.location.hash);
         try {
             const dd = JSON.parse(decodeURIComponent(atob(raw)));
-            return (dd && Array.isArray(dd.vars)) ? dd : null;
+            return (dd && Array.isArray(dd.vars)) ? this.viewFromDrilldown(dd) : null;
         } catch (e) {
             console.warn('[Dashboards] Invalid drilldown param:', e);
             return null;
         }
     },
 
-    // Reflect the active drilldown directly on the variable pills (the pill shows
-    // the drilldown value, styled distinctly, with an (x) to exit). No banner: the
-    // overlay is display-only and never rewrites the dashboard's stored defaults.
-    renderDrilldownBanner() {
+    // Mirror the view into the hash without adding a history entry.
+    syncViewToUrl() {
+        if (!this.currentDashboard) return;
+        const [base] = window.location.hash.split('?');
+        if (!base.endsWith(`/dashboards/${this.currentDashboard.id}`)) return;
+        const qs = this.viewParams(this.activeView()).toString();
+        const target = base + (qs ? `?${qs}` : '');
+        if (target !== window.location.hash) {
+            window.history.replaceState(window.history.state, '', target);
+        }
+    },
+
+    renderViewState() {
+        const view = this.activeView();
+        const range = this.currentRange();
+
+        const label = document.getElementById('dashboardTimeLabel');
+        if (label) label.textContent = this.rangeLabel(range);
+        const timeBtn = document.getElementById('dashboardTimeBtn');
+        if (timeBtn) {
+            timeBtn.classList.toggle('modified', !!(view && view.range));
+            timeBtn.title = view && view.range
+                ? `Your range. Dashboard default: ${this.rangeLabel(this.defaultRange())}`
+                : 'Dashboard time range';
+        }
+        const back = document.getElementById('dashboardTimeBackBtn');
+        if (back) back.style.display = this._rangeHistory.length ? '' : 'none';
+        const zoom = document.getElementById('dashboardZoomOutBtn');
+        if (zoom) zoom.disabled = range.type === 'all';
+
+        const chip = document.getElementById('dashboardViewState');
+        if (chip) chip.style.display = view ? '' : 'none';
+        const save = document.getElementById('dashboardViewSaveBtn');
+        if (save) save.style.display = this.canEdit() ? '' : 'none';
+
         const mgr = this.ensureVarManager();
-        if (!mgr) return;
-        // Legacy: remove any banner left over from an older render.
-        const stale = document.getElementById('dashboardDrilldownBanner');
-        if (stale) stale.remove();
-        const active = this.activeDrilldown();
-        const vars = (active && active.vars) || [];
-        if (!vars.length) { mgr.clearDisplayOverlay(); return; }
-        const overlay = new Map();
-        vars.forEach(v => { if (v && v.name) overlay.set(v.name, v.value == null ? '' : String(v.value)); });
-        mgr.setDisplayOverlay(overlay);
+        if (mgr) {
+            const vars = (view && view.vars) || {};
+            if (Object.keys(vars).length) mgr.setDisplayOverlay(new Map(Object.entries(vars)));
+            else mgr.clearDisplayOverlay();
+        }
+
+        this.renderUpdatedAt();
+        this.scheduleViewRefresh();
+    },
+
+    async saveViewAsDefault() {
+        const view = this.activeView();
+        if (!view || !this.canEdit() || !this.currentDashboard) return;
+        const d = this.currentDashboard;
+        try {
+            if (view.range) {
+                const body = { time_range_type: view.range.type };
+                if (view.range.type === 'custom') {
+                    body.time_range_start = view.range.start;
+                    body.time_range_end = view.range.end;
+                }
+                const resp = await fetch(`/api/v1/dashboards/${d.id}`, {
+                    method: 'PUT',
+                    headers: this.sseHeaders(),
+                    credentials: 'include',
+                    body: JSON.stringify(body)
+                });
+                const data = await resp.json();
+                if (!data.success) throw new Error(data.error || 'Failed to save time range');
+                d.time_range_type = body.time_range_type;
+                if (body.time_range_start) {
+                    d.time_range_start = body.time_range_start;
+                    d.time_range_end = body.time_range_end;
+                }
+            }
+            const mgr = this.ensureVarManager();
+            if (mgr && Object.keys(view.vars).length) {
+                Object.entries(view.vars).forEach(([name, value]) => mgr.setValue(name, value));
+                d.variables = mgr.serialize();
+                await this.saveVariables();
+                mgr.render();
+            }
+
+            // The defaults now match the view: run the shared refresh so every
+            // viewer and the cache pick them up.
+            this.abortInflight();
+            this._view = null;
+            this._rangeHistory = [];
+            this.syncViewToUrl();
+            this.renderViewState();
+            d.widgets?.forEach(w => { w._viewResults = null; });
+            this.autoExecuteAllWidgets();
+            this.showSuccess('Saved as the dashboard default');
+        } catch (err) {
+            console.error('[Dashboards] Failed to save default view:', err);
+            this.showError(err.message || 'Failed to save as default');
+        }
+    },
+
+    // A viewer's own view refreshes from this client at the dashboard cadence;
+    // the shared view is refreshed by the server executor and arrives over SSE.
+    scheduleViewRefresh() {
+        this.stopViewRefresh();
+        const view = this.activeView();
+        if (!view || !this.currentDashboard) return;
+        const range = this.currentRange();
+        const interval = this.currentDashboard.refresh_interval || 0;
+        if (interval === 0 || range.type === 'custom') return;
+        const seconds = Math.max(10, interval > 0 ? interval : this.autoRefreshSeconds(range));
+        this._viewTimer = setInterval(() => {
+            if (!document.hidden && this.activeView()) this.autoExecuteAllWidgets();
+        }, seconds * 1000);
+    },
+
+    stopViewRefresh() {
+        if (this._viewTimer) {
+            clearInterval(this._viewTimer);
+            this._viewTimer = null;
+        }
+    },
+
+    // Mirrors the executor's autoIntervalSeconds.
+    autoRefreshSeconds(range) {
+        const rel = this.parseRelative(range.type);
+        if (!rel) return range.type === 'all' ? 3600 : 300;
+        if (rel.ms <= 3600000) return 30;
+        if (rel.ms <= 86400000) return 300;
+        if (rel.ms <= 604800000) return 1800;
+        return 3600;
+    },
+
+    // =====================
+    // Time picker
+    // =====================
+
+    TIME_PRESETS: ['last15m', 'last1h', 'last4h', 'last12h', 'last24h', 'last7d', 'last30d', 'all'],
+
+    toggleTimePanel() {
+        const panel = document.getElementById('dashboardTimePanel');
+        if (!panel) return;
+        if (panel.style.display === 'block') this.closeTimePanel();
+        else this.openTimePanel();
+    },
+
+    openTimePanel() {
+        const panel = document.getElementById('dashboardTimePanel');
+        const backdrop = document.getElementById('dashboardTimeBackdrop');
+        if (!panel || !this.currentDashboard) return;
+        const range = this.currentRange();
+        const view = this.activeView();
+        const rel = this.parseRelative(range.type);
+        const resolved = this.resolveRange(range);
+        const fmtIn = (iso) => (window.TZ ? TZ.formatInput(iso) : iso);
+        const esc = Utils.escapeHtml;
+        const unitOpt = (u, name) => `<option value="${u}"${rel && rel.unit === u ? ' selected' : ''}>${name}</option>`;
+
+        panel.innerHTML = `
+            <div class="tp-section-label">Quick ranges</div>
+            <div class="tp-presets">
+                ${this.TIME_PRESETS.map(t => `<button class="tp-preset${range.type === t ? ' active' : ''}" data-range="${t}" type="button">${t === 'all' ? 'All' : t.slice(4)}</button>`).join('')}
+            </div>
+            <div class="tp-divider"></div>
+            <div class="tp-section-label">Relative</div>
+            <div class="tp-relative-row">
+                <span class="tp-rel-prefix">Last</span>
+                <input type="number" id="dtpRelN" class="tp-num-input" value="${rel ? rel.n : 4}" min="1" max="99999">
+                <select id="dtpRelUnit" class="tp-unit-select">
+                    ${unitOpt('m', 'minutes')}${unitOpt('h', 'hours')}${unitOpt('d', 'days')}${unitOpt('w', 'weeks')}
+                </select>
+                <button id="dtpRelApply" class="tp-apply-btn" type="button">Apply</button>
+            </div>
+            <div class="tp-divider"></div>
+            <div class="tp-section-label">Absolute range <span class="tp-zone-tag">${esc(window.TZ ? TZ.abbrev() : 'UTC')}</span></div>
+            <div class="tp-absolute-col">
+                <div class="tp-abs-row">
+                    <span class="tp-abs-label">From</span>
+                    <input type="text" id="dtpAbsStart" class="tp-abs-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false" value="${esc(fmtIn(resolved.start))}">
+                </div>
+                <div class="tp-abs-row">
+                    <span class="tp-abs-label">To</span>
+                    <input type="text" id="dtpAbsEnd" class="tp-abs-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false" value="${esc(fmtIn(resolved.end))}">
+                </div>
+                <button id="dtpAbsApply" class="tp-apply-btn tp-abs-apply" type="button">Apply</button>
+            </div>
+            <div class="tp-divider"></div>
+            <div class="dtp-default">
+                <span>Default: ${esc(this.rangeLabel(this.defaultRange()))}</span>
+                ${view && view.range ? '<button id="dtpUseDefault" class="dtp-link" type="button">Use default</button>' : ''}
+            </div>
+        `;
+
+        const apply = (range) => { this.closeTimePanel(); this.setViewRange(range); };
+        panel.querySelectorAll('[data-range]').forEach(btn => {
+            btn.addEventListener('click', () => apply({ type: btn.dataset.range }));
+        });
+        const relApply = () => {
+            const n = parseInt(document.getElementById('dtpRelN')?.value, 10);
+            const unit = document.getElementById('dtpRelUnit')?.value || 'h';
+            if (n > 0 && n <= 99999) apply({ type: `last${n}${unit}` });
+        };
+        document.getElementById('dtpRelApply')?.addEventListener('click', relApply);
+        document.getElementById('dtpRelN')?.addEventListener('keydown', e => { if (e.key === 'Enter') relApply(); });
+        const absApply = () => {
+            const parse = (id) => {
+                const raw = (document.getElementById(id)?.value || '').trim();
+                const ms = raw && window.TZ ? TZ.parseWallClock(raw) : NaN;
+                return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+            };
+            const start = parse('dtpAbsStart');
+            const end = parse('dtpAbsEnd');
+            if (!start || !end || start >= end) { this.showError('Enter a start before the end, as YYYY-MM-DD HH:MM'); return; }
+            apply({ type: 'custom', start, end });
+        };
+        document.getElementById('dtpAbsApply')?.addEventListener('click', absApply);
+        ['dtpAbsStart', 'dtpAbsEnd'].forEach(id => document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') absApply(); }));
+        document.getElementById('dtpUseDefault')?.addEventListener('click', () => apply(null));
+
+        panel.style.display = 'block';
+        if (backdrop) backdrop.style.display = 'block';
+        document.getElementById('dashboardTimeBtn')?.classList.add('active');
+    },
+
+    closeTimePanel() {
+        const panel = document.getElementById('dashboardTimePanel');
+        const backdrop = document.getElementById('dashboardTimeBackdrop');
+        if (panel) panel.style.display = 'none';
+        if (backdrop) backdrop.style.display = 'none';
+        document.getElementById('dashboardTimeBtn')?.classList.remove('active');
+    },
+
+    // Double the window. Rolling ranges stay rolling; absolute ones widen
+    // around their centre without running past now.
+    zoomOut() {
+        const range = this.currentRange();
+        const rel = this.parseRelative(range.type);
+        if (rel) {
+            this.setViewRange({ type: this.relativeType(rel.ms * 2) });
+            return;
+        }
+        if (range.type !== 'custom') return;
+        const r = this.resolveRange(range);
+        const s = new Date(r.start).getTime(), e = new Date(r.end).getTime();
+        const span = e - s;
+        const end = Math.min(Date.now(), e + span / 2);
+        const start = end - span * 2;
+        this.setViewRange({ type: 'custom', start: new Date(start).toISOString(), end: new Date(end).toISOString() });
+    },
+
+    relativeType(ms) {
+        for (const unit of ['w', 'd', 'h', 'm']) {
+            const size = this.RANGE_UNITS[unit];
+            if (ms % size === 0 && ms / size <= 99999) return `last${ms / size}${unit}`;
+        }
+        const minutes = Math.round(ms / 60000);
+        return minutes <= 99999 ? `last${minutes}m` : 'all';
     },
 
     // =====================
     // Helpers
     // =====================
 
-    getDashboardTimeRange() {
-        const type = this.currentDashboard?.time_range_type || 'last24h';
-        const now = new Date();
-        switch (type) {
-            case 'last1h':  return { start: new Date(now - 3600000).toISOString(), end: now.toISOString() };
-            case 'last24h': return { start: new Date(now - 86400000).toISOString(), end: now.toISOString() };
-            case 'last7d':  return { start: new Date(now - 604800000).toISOString(), end: now.toISOString() };
-            case 'last30d': return { start: new Date(now - 2592000000).toISOString(), end: now.toISOString() };
-            case 'all':    return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString() };
-            case 'custom':
-                if (this.currentDashboard.time_range_start && this.currentDashboard.time_range_end) {
-                    return { start: this.currentDashboard.time_range_start, end: this.currentDashboard.time_range_end };
-                }
-                return { start: new Date(now - 86400000).toISOString(), end: now.toISOString() };
-            default:
-                return { start: new Date(now - 86400000).toISOString(), end: now.toISOString() };
+    // A range is {type: 'all' | 'lastN{m,h,d,w}'} or {type: 'custom', start, end}.
+    RANGE_UNITS: { m: 60000, h: 3600000, d: 86400000, w: 604800000 },
+
+    parseRelative(type) {
+        const m = /^last([1-9]\d{0,4})([mhdw])$/.exec(type || '');
+        if (!m) return null;
+        const n = parseInt(m[1], 10);
+        return { n, unit: m[2], ms: n * this.RANGE_UNITS[m[2]] };
+    },
+
+    defaultRange() {
+        const d = this.currentDashboard || {};
+        if (d.time_range_type === 'custom') {
+            return { type: 'custom', start: d.time_range_start, end: d.time_range_end };
         }
+        return { type: d.time_range_type || 'last24h' };
+    },
+
+    currentRange() {
+        const view = this.activeView();
+        return (view && view.range) || this.defaultRange();
+    },
+
+    sameRange(a, b) {
+        if (!a || !b || a.type !== b.type) return false;
+        if (a.type !== 'custom') return true;
+        return new Date(a.start).getTime() === new Date(b.start).getTime() &&
+            new Date(a.end).getTime() === new Date(b.end).getTime();
+    },
+
+    // Mirrors the executor's computeTimeRange.
+    resolveRange(range) {
+        const now = Date.now();
+        const iso = (ms) => new Date(ms).toISOString();
+        if (range && range.type === 'custom' && range.start && range.end) {
+            return { start: range.start, end: range.end };
+        }
+        if (range && range.type === 'all') return { start: '2000-01-01T00:00:00.000Z', end: iso(now) };
+        const rel = this.parseRelative(range && range.type);
+        return { start: iso(now - (rel ? rel.ms : 86400000)), end: iso(now) };
+    },
+
+    // The window the viewer is looking at (pivots forward it).
+    getDashboardTimeRange() {
+        return this.resolveRange(this.currentRange());
+    },
+
+    rangeLabel(range) {
+        if (!range) return '';
+        if (range.type === 'all') return 'All time';
+        if (range.type === 'custom') {
+            if (!range.start || !range.end) return 'Custom range';
+            return `${this.formatDate(range.start)} to ${this.formatDate(range.end)}`;
+        }
+        const rel = this.parseRelative(range.type);
+        return rel ? `Last ${rel.n}${rel.unit}` : range.type;
     },
 
     formatDate(dateStr) {
@@ -2424,22 +2892,18 @@ const Dashboards = {
     // =====================
 
     // Variables are auto-detected from widget queries (no manual add). The manager
-    // owns the displayed values; currentDashboard.variables mirrors it for
+    // owns the default values; currentDashboard.variables mirrors them for
     // persistence and server-side substitution.
     ensureVarManager() {
         if (this.varManager) return this.varManager;
         if (!window.VariableManager) return null;
         this.varManager = new VariableManager({
             container: 'dashboardVariables',
-            onChange: async () => {
-                this.currentDashboard.variables = this.varManager.serialize();
-                // Persist before refreshing: server-side execution substitutes
-                // from the stored values, so the save must land first.
-                await this.saveVariables();
-                this.autoExecuteAllWidgets();
-            },
-            // Clicking the (x) on a drilldown pill exits the drilldown.
-            onOverlayClear: () => this.exitDrilldown(),
+            // Values typed here are this viewer's own; the stored defaults only
+            // change through "Save as default".
+            overlayEditable: true,
+            onChange: (name, value) => this.setViewVar(name, value),
+            onOverlayClear: (name) => this.clearViewVar(name),
         });
         return this.varManager;
     },
@@ -2481,23 +2945,21 @@ const Dashboards = {
         const queries = this.currentDashboard.widgets.map(w => w.query_content || '');
         if (mgr.syncFromText(queries)) {
             this.currentDashboard.variables = mgr.serialize();
-            if (persist) return this.saveVariables();
+            if (persist) return this.saveVariables().catch(err => console.error('[Dashboards] Failed to save variables:', err));
         }
         return Promise.resolve();
     },
 
     async saveVariables() {
         if (!this.currentDashboard) return;
-        try {
-            await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/variables`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ variables: this.currentDashboard.variables || [] })
-            });
-        } catch (err) {
-            console.error('[Dashboards] Failed to save variables:', err);
-        }
+        const resp = await fetch(`/api/v1/dashboards/${this.currentDashboard.id}/variables`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ variables: this.currentDashboard.variables || [] })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data.success === false) throw new Error(data.error || 'Failed to save variables');
     }
 };
 
