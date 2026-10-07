@@ -1235,7 +1235,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 					"field:=value | result:=1+2",
 					"| score:=latency*priority",
 					"| total:=requests+errors",
-					"| groupby(user) | multi(count(field=event_id, distinct=true, as=unique), count(field=event_id, as=total)) | confidence := ((total - unique) / total) * 0.95",
+					"| groupby(user) | multi(count(field=hostname, distinct=true, as=hosts), count(field=event_id, as=events)) | events_per_host := events / hosts",
 				},
 			},
 			{
