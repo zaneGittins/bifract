@@ -62,6 +62,10 @@ See [Enrichment](../bql/enrichment.md#modellookup) for the key shape each model 
 
 ## Building a Model
 
+A new model opens on a gallery of templates over the normalized schema: new programs per host (First / Last Seen on `computer_name`, `image`), rare child of Office apps (Rarity of `image` per `parent_image`), new outbound ports per host (Rarity of `dst_port` per `computer_name`), network volume spike per host (hourly Volume Baseline on `computer_name`), and beaconing. A template fills the query, shape and thresholds and scores the result; **Start blank** skips it.
+
+The **Scores** tab estimates what the model would produce over a window: the last 1, 7 or 30 days, or a **custom range** of up to 90 days that can end in the past, so a model over older data can be judged on it. The threshold controls above the distribution recount "would flag" as they move, without another scan.
+
 The editor is a split panel:
 
 - **Left - source query.** Write a BQL filter to narrow which logs feed the model, and use `regex()` to pull fields out of `norm_log` (the normalized event text) or a specific field. Run it against a time range to preview matching logs and the fields you extracted. `raw_log` cannot be an extraction source: it is only retained for 7 days, while model state is long-lived.
@@ -89,9 +93,36 @@ Each model has an alert mode:
 
 Thresholds depend on the model type (confidence and max share of days for Rarity, z-score for Volume Baseline, new-entities-only for First/Last Seen). Toggle the mode from the listing or the data viewer. See [Alerts](../alerting/alerts.md) for actions and feeds.
 
+## Model Health
+
+The listing shows one state per model, the worst that applies, with the reason on hover:
+
+| State | Meaning |
+|---|---|
+| **Error** | The model failed to build |
+| **Not updating** / **Not started** / **Behind** | State maintenance is failing, never took the model over, or lags the logs |
+| **Rebuilding** | Its tables are being created |
+| **Backfill n%** | History is being seeded |
+| **Stale** | The newest event the model recorded is more than 2 days old (3 hours for an hourly Volume Baseline, which otherwise scores every entity against an empty bucket) |
+| **Learning k/n** | Too little history for scores to mean much. Rarity needs more than 100 / share threshold days, Volume Baseline its min history in buckets, First / Last Seen 7 days, network models one full window |
+| **Healthy** | Recording and scoring normally |
+
+**Findings** counts what the model surfaced over the last 7 days: entities first recorded per day (First / Last Seen) or value pairs first seen per day (Rarity), each with a daily sparkline; entities above the z threshold in the latest bucket (Volume Baseline); pairs at or above the score threshold (network models). **Last alert** is when the linked alert last fired. Both are read from the model's own tables, never raw logs, and cached for two minutes.
+
 ## Viewing Results
 
-The **Data** view shows the model's output table with sorting, search, and pagination, a stats panel (top partitions, anomalous entity counts, first/last seen ranges), and a **Configuration** tab summarizing the filters, extractions, shape, and alert.
+The **Data** view opens on **Findings**: the rows the model's alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search, and pagination.
+
+| Type | A finding is | Ordered by |
+|---|---|---|
+| Rarity | A value meeting the alert's confidence and share-of-days thresholds | Share of days, then confidence |
+| Volume Baseline | An entity whose `z_score` is above the alert's threshold | `z_score`, highest first |
+| First / Last Seen | An entity first recorded by the model in the last 7 days | Newest first |
+| Beacon, Long Connection | A pair whose score is above the alert's threshold | Score, highest first |
+
+A rarity model with no thresholds has no findings, and a TLSH Index has no alert, so it shows only its rows. The same rows are available from the API as `GET /models/{id}/data?view=findings`.
+
+A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, partition confidence, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
 
 ## Import / Export
 

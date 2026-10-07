@@ -56,6 +56,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		mo.SourceQuery = GenerateSourceQuery(mo.Definition)
 		mo.SetStateLag(now)
 	}
+	h.manager.AttachHealth(r.Context(), models)
 	api.WriteList(w, models)
 }
 
@@ -151,7 +152,8 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, map[string]bool{"deleted": true})
 }
 
-// HandleGetData returns paginated model data (with computed scores for rarity).
+// HandleGetData returns a page of a model's scored rows; view=findings keeps
+// only the rows its alert would raise, most unusual first.
 func (h *Handler) HandleGetData(w http.ResponseWriter, r *http.Request) {
 	model := h.getModelScoped(w, r)
 	if model == nil {
@@ -164,16 +166,27 @@ func (h *Handler) HandleGetData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	search := q.Get("search")
-	sortCol := q.Get("sort")
-	sortDir := q.Get("order")
+	view := q.Get("view")
+	if view == "" {
+		view = DataViewAll
+	}
+	if view != DataViewAll && view != DataViewFindings {
+		h.respondError(w, http.StatusBadRequest, "view must be all or findings")
+		return
+	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	if limit <= 0 {
 		limit = 50
 	}
+	if offset < 0 {
+		offset = 0
+	}
 
-	rows, total, err := h.manager.GetData(r.Context(), model, fractalID, search, sortCol, sortDir, limit, offset)
+	rows, total, err := h.manager.GetData(r.Context(), model, fractalID, DataQuery{
+		View: view, Search: q.Get("search"), Sort: q.Get("sort"), Order: q.Get("order"),
+		Limit: limit, Offset: offset,
+	})
 	if err != nil {
 		log.Printf("[Models] get data %s: %v", model.ID, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to fetch model data")
@@ -336,11 +349,15 @@ func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, parsed)
 }
 
-// PreviewRequest estimates a model definition over a recent window.
+// PreviewRequest estimates a model definition over a window: a preset relative
+// to now (1d, 7d, 30d), or an explicit start and end of at most 90 days, which
+// take precedence.
 type PreviewRequest struct {
 	ModelType  ModelType       `json:"model_type"`
 	Definition ModelDefinition `json:"definition"`
 	Window     string          `json:"window"`
+	Start      *time.Time      `json:"start,omitempty"`
+	End        *time.Time      `json:"end,omitempty"`
 }
 
 // HandlePreview estimates a model's output over a recent window BEFORE the model
@@ -360,10 +377,12 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Window == "" {
-		req.Window = "7d"
+	rng, err := ResolvePreviewRange(req.Window, req.Start, req.End, time.Now())
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	result, err := h.manager.Preview(r.Context(), fractalID, req.ModelType, req.Definition, req.Window)
+	result, err := h.manager.Preview(r.Context(), fractalID, req.ModelType, req.Definition, rng)
 	if err != nil {
 		log.Printf("[Models] preview: %v", err)
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Preview failed: %v", err))

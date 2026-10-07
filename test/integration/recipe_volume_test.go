@@ -180,6 +180,25 @@ func TestVolumeBaselineScoring(t *testing.T) {
 		}
 		expectVolume(t, "lookup "+entity, res[0], yesterday, w)
 	}
+
+	// Findings are what the alert (z_score > 3.5, the default) would raise, the
+	// largest z first: STEADY's flat-history sentinel, then NEAR. BURSTY's 3.08
+	// stays under the threshold and SPARSE scores 0.
+	findings, total := modelFindings(t, scoped, model.ID, "")
+	got := make([]string, len(findings))
+	for i, r := range findings {
+		got[i] = fmt.Sprint(r["entity_val"])
+	}
+	if total != 2 || strings.Join(got, ",") != "STEADY,NEAR" {
+		t.Errorf("findings = %v (total %d), want STEADY,NEAR", got, total)
+	}
+	var stats struct {
+		Findings int `json:"findings"`
+	}
+	scoped.Do(t, "GET", "/models/"+model.ID+"/stats", nil, &stats)
+	if stats.Findings != 2 {
+		t.Errorf("stats findings = %d, want 2", stats.Findings)
+	}
 }
 
 type volumeWant struct {

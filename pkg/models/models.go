@@ -354,6 +354,13 @@ type Model struct {
 	// healthy one, which is the failure mode a busy install hits first.
 	StateLagSeconds *int64 `json:"state_lag_seconds,omitempty"`
 	StateBehind     bool   `json:"state_behind,omitempty"`
+
+	// LastAlertAt is when the linked alert last fired; nil when it never has.
+	LastAlertAt *time.Time `json:"last_alert_at,omitempty"`
+
+	// Health is the listing's one-line verdict on the model. Computed on read
+	// by the list endpoint only.
+	Health *ModelHealth `json:"health,omitempty"`
 }
 
 // SetStateLag fills in the state-lag fields from the model's watermark. A nil

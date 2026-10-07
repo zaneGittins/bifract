@@ -860,6 +860,8 @@
     transform: translateX(100%); transition: transform .2s cubic-bezier(.4,0,.2,1);
 }
 .pg-drawer.open { transform: translateX(0); }
+/* display:flex above would otherwise defeat [hidden], leaving the closed drawer's shadow at the edge. */
+.pg-drawer[hidden] { display: none; }
 .pg-drawer-head {
     display: flex; align-items: flex-start; justify-content: space-between;
     padding: 12px 14px 9px; border-bottom: 1px solid var(--border-color);
@@ -887,7 +889,7 @@
 .pg-why-head { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin-bottom: 3px; }
 .pg-why-lead { color: var(--text-secondary); overflow-wrap: anywhere; }
 .pg-why-lead b { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
-.pg-why-facts { color: var(--text-muted); font-size: 10.5px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.pg-why .fact-chips { margin-top: 6px; }
 .pg-why-row { margin: -2px 0 4px; padding: 0 8px 6px; border-bottom: none; font-size: 10.5px; }
 .pg-why-row .pg-why-lead { color: var(--text-muted); }
 
@@ -1021,7 +1023,7 @@
 .pg-drawer-anom { margin-left: auto; align-self: center; font-size: 11px; color: var(--text-muted); }
 
 /* --- Tree view --- */
-.pg-tree { flex: 1 1 auto; min-width: 0; display: block; background: var(--bg-sunken); }
+.pg-tree { flex: 1 1 auto; min-width: 0; display: block; background: var(--bg-sunken); position: relative; overflow: hidden; }
 .pg-tree-scroll {
     /* Height, not max-height: the table should occupy the same envelope the graph does, so
        switching views doesn't resize the panel and a short tree doesn't leave dead space. */
@@ -1175,11 +1177,11 @@
 .pg-th-act { flex: 0 0 auto; margin-left: auto; text-align: right; }
 .pg-th-fs { flex: 0 0 58px; margin-left: 12px; text-align: right; }
 
-/* time column + inter-node delta. Fixed width + a healthy left margin (mirrored by the Time header)
-   so the activity chips can't bleed into it and the header labels line up over their columns. */
+/* Time column: wall clock with the gap since the parent stacked under it. --pg-gutter-w is set from
+   the widest label after render (_pgRenderTree), so a time is never clipped; the header shares it. */
 .pg-gutter {
-    flex: 0 0 var(--pg-gutter-w, 52px); display: inline-flex; align-items: center;
-    justify-content: flex-end; padding-right: 10px; margin-right: 2px; overflow: hidden;
+    flex: 0 0 var(--pg-gutter-w, 52px); display: inline-flex; flex-direction: column; align-items: flex-end;
+    justify-content: center; gap: 1px; padding-right: 10px; margin-right: 2px; overflow: hidden;
 }
 .pg-fs { flex: 0 0 58px; margin-left: 12px; display: inline-flex; justify-content: flex-end; }
 /* Chip, matching the gutter's delta: same shape, muted by default so the column reads quiet until
@@ -1197,7 +1199,9 @@
     color: var(--pg-dns); background: color-mix(in srgb, var(--pg-dns) 14%, transparent);
     border-radius: 4px; padding: 0 5px;
 }
-.pg-time { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 62px; text-align: right; }
+.pg-time { font-size: 11px; line-height: 1.3; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+.pg-time-d { color: var(--text-secondary); font-weight: 600; }
+.pg-gutter > .pg-delta { line-height: 1.35; white-space: nowrap; }
 .pg-muted { color: var(--text-muted); font-style: italic; font-weight: 400; }
 .pg-tag {
     font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
@@ -1277,6 +1281,116 @@
 .pg-anom-med  { color: var(--bg-primary); background: var(--warning); }
 .pg-anom-low  { color: var(--text-muted); background: transparent; font-weight: 600; }
 .pg-anom-spacer { flex: 0 0 auto; min-width: 40px; margin-left: 8px; }
+
+/* Path | Full scope toggle, beside Graph | Table. The toolbar wraps rather than pushing its
+   controls past the card edge on narrower screens. */
+.pg-mode-toggle { margin-left: -4px; }
+.graph-toolbar.pg-toolbar { flex-wrap: wrap; row-gap: 6px; }
+.pg-stat-hidden { color: var(--text-secondary); }
+.pg-stat-hidden.pg-stat-click:hover, .pg-stat-hidden.pg-stat-click:focus-visible { background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
+
+/* Path view "+N hidden" marker: off-path siblings folded in place (graph node and table row). */
+.pg-hidden-pill {
+    display: inline-flex; align-items: center; white-space: nowrap;
+    font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.5;
+    color: var(--text-muted); padding: 0 8px; border-radius: 999px;
+    border: 1px dashed color-mix(in srgb, var(--text-muted) 55%, transparent);
+    background: var(--bg-sunken);
+    transition: color .12s, border-color .12s;
+}
+.pg-node-hidden:hover .pg-hidden-pill, .pg-node-hidden:focus-visible .pg-hidden-pill,
+.pg-hidden-row:hover .pg-hidden-pill, .pg-hidden-row.pg-kbsel .pg-hidden-pill {
+    color: var(--accent-primary); border-color: var(--accent-primary); border-style: solid;
+}
+.pg-node-hidden:focus-visible { outline: none; }
+.pg-row.pg-hidden-row { cursor: pointer; min-height: 28px; }
+.pg-hidden-row .pg-hidden-pill { margin-left: 2px; }
+.pg-legend-hidden { flex: 0 0 auto; padding: 0 5px; }
+
+/* Reconnected section (graph nodes and table rows): section header, bridge groups, peer summaries. */
+.pg-sec-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--pg-recon); }
+.pg-sec-meta { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.pg-node.pg-node-sec { gap: 10px; max-width: none; cursor: default; padding-left: 4px; }
+.pg-node.pg-node-bridge {
+    gap: 7px; max-width: 640px; cursor: default; padding: 4px 10px 4px 8px; border-radius: 8px;
+    background: color-mix(in srgb, var(--pg-recon) 8%, var(--bg-secondary));
+    border: 1px solid color-mix(in srgb, var(--pg-recon) 30%, transparent);
+}
+.pg-bridge-ico { flex: 0 0 auto; display: inline-flex; width: 14px; height: 14px; }
+.pg-bridge-ico svg { width: 14px; height: 14px; }
+.pg-bridge-label {
+    min-width: 0; max-width: 300px; font: 600 12px/1.4 var(--font-mono); color: var(--text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pg-bridge-kind { flex: 0 0 auto; font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); white-space: nowrap; }
+.pg-bridge-count { flex: 0 0 auto; margin-left: auto; font-size: 11px; font-weight: 600; color: var(--pg-recon); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pg-node-bridge .fact-chips, .pg-bridge-row .fact-chips { flex-wrap: nowrap; }
+.pg-node.pg-node-peer {
+    gap: 6px; max-width: 420px; padding: 3px 9px 3px 6px; border-radius: 7px;
+    background: var(--bg-secondary); border: 1px solid var(--border-color);
+    box-shadow: inset 2px 0 0 var(--pg-recon); font-size: 12px; transition: border-color .12s;
+}
+.pg-node.pg-node-peer:hover, .pg-node.pg-node-peer:focus-visible { border-color: var(--pg-recon); outline: none; }
+.pg-peer-chev { flex: 0 0 auto; width: 12px; text-align: center; font-weight: 700; color: var(--pg-recon); }
+.pg-peer-host { flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.pg-peer-sep { flex: 0 0 auto; color: var(--text-muted); }
+.pg-peer-proc { min-width: 0; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pg-node-peer.pg-sev-high .pg-peer-proc, .pg-peer-row.pg-sev-high .pg-peer-proc { color: var(--error); }
+.pg-node-peer.pg-sev-med .pg-peer-proc, .pg-peer-row.pg-sev-med .pg-peer-proc { color: var(--warning); }
+.pg-node-peer .pg-anom { margin-left: 2px; min-width: 0; padding: 0 6px; font-size: 10.5px; }
+.pg-peer-size { flex: 0 0 auto; font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
+.pg-e-peer { stroke: var(--pg-recon); opacity: .55; }
+.pg-row.pg-sec-row {
+    gap: 10px; min-height: 30px; margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid var(--border-color); border-radius: 0;
+}
+.pg-row.pg-bridge-row { gap: 7px; min-height: 30px; }
+.pg-bridge-row .pg-bridge-label { max-width: 360px; }
+.pg-bridge-row .pg-bridge-count { margin-left: auto; }
+.pg-row.pg-peer-row { cursor: pointer; min-height: 28px; gap: 6px; }
+.pg-row.pg-peer-row:hover { background: var(--bg-hover, rgba(255,255,255,.04)); }
+.pg-peer-row .pg-anom, .pg-peer-row .pg-anom-spacer { margin-left: 4px; }
+
+/* Legend keyboard section. */
+.pg-legend-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: center; padding: 2px 0; }
+.pg-legend kbd {
+    display: inline-block; min-width: 16px; padding: 0 4px; margin-right: 2px; text-align: center;
+    border: 1px solid var(--border-color); border-bottom-width: 2px; border-radius: 4px;
+    background: var(--bg-sunken); color: var(--text-primary); font: 600 10px/1.5 var(--font-mono);
+}
+
+/* Process drawer action row: compact ghost buttons; searches open in a new tab. */
+.pg-acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px 10px; border-bottom: 1px solid var(--border-color); }
+.pg-act {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 6px;
+    border: 1px solid var(--border-color); background: var(--bg-sunken); color: var(--text-secondary);
+    font: 500 11.5px/1.3 var(--font-main); cursor: pointer; white-space: nowrap;
+    transition: color .12s, border-color .12s;
+}
+.pg-act svg { flex: 0 0 auto; width: 13px; height: 13px; color: var(--text-muted); transition: color .12s; }
+.pg-act:hover:not(:disabled) { color: var(--text-primary); border-color: var(--accent-primary); }
+.pg-act:hover:not(:disabled) svg { color: var(--accent-primary); }
+.pg-act:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+.pg-act:disabled { opacity: .5; cursor: default; }
+
+/* Edge score hover card: why the edge scored, as fact chips. */
+.pg-canvas .pg-elabel[data-ew] { pointer-events: auto; cursor: help; }
+.pg-tip {
+    position: absolute; z-index: 9; max-width: 330px; pointer-events: none;
+    padding: 8px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.45;
+    background: var(--bg-secondary); border: 1px solid var(--border-color);
+    box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.pg-tip[hidden] { display: none; }
+.pg-tip-head {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted);
+}
+.pg-tip .pg-anom { margin-left: 0; min-width: 0; padding: 0 6px; font-size: 10.5px; text-transform: none; letter-spacing: 0; }
+.pg-tip .pg-why-lead { color: var(--text-secondary); overflow-wrap: anywhere; }
+.pg-tip .pg-why-lead b { color: var(--text-primary); font-weight: 600; }
+.pg-tip .fact-chips { margin-top: 6px; }
+.pg-why-row .fact-chips { margin-top: 3px; }
 
 
 /* chain() matched sequence, log detail panel */

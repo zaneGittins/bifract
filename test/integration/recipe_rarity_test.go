@@ -12,6 +12,7 @@ package integration
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +42,7 @@ func TestRarityScoring(t *testing.T) {
 	}, &token)
 
 	// WS02: ports 80, 443 and 8080 every day for 28 days, then port 22 once.
+	// WS03: the same three ports every day, plus port 3389 on two days.
 	// DEV1: port 443 every day, plus a different new port on each of 20 days.
 	// Each port shows up many times on its day: rarity counts days, not events.
 	const days = 28
@@ -58,6 +60,7 @@ func TestRarityScoring(t *testing.T) {
 	for d := 1; d <= days; d++ {
 		for _, p := range []string{"80", "443", "8080"} {
 			add("WS02", p, d, 3)
+			add("WS03", p, d, 2)
 		}
 		add("DEV1", "443", d, 2)
 		if d <= 20 {
@@ -65,6 +68,8 @@ func TestRarityScoring(t *testing.T) {
 		}
 	}
 	add("WS02", "22", 1, 5)
+	add("WS03", "3389", 2, 1)
+	add("WS03", "3389", 9, 1)
 	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs, nil)
 
 	Eventually(t, "the ingested logs to become queryable", 120*time.Second, func() bool {
@@ -95,6 +100,8 @@ func TestRarityScoring(t *testing.T) {
 			"partition_key": "computer_name",
 			"value_key":     "dst_port",
 			"min_sample":    1,
+			// Thresholds are scored at read time; the Findings view applies them.
+			"alert": map[string]any{"confidence_threshold": 0.9, "percent_threshold": 10},
 		},
 	}, &model)
 	t.Cleanup(func() { scoped.Status(t, "DELETE", "/models/"+model.ID, nil) })
@@ -147,6 +154,68 @@ func TestRarityScoring(t *testing.T) {
 		t.Fatalf("modelLookup returned %d rows for port 22, want 1", len(res.Results))
 	}
 	expectRarity(t, map[string]map[string]any{"lookup": res.Results[0]}, "lookup", 1, days, 100.0/days, 1-1.0/85)
+
+	// Findings are exactly what the alert (confidence > 0.9, share < 10%) would
+	// raise, rarest first: WS02/22 on 1 of 28 days, then WS03/3389 on 2 of 28
+	// (WS03 has no one-day value, so its confidence is 1). DEV1's new ports are
+	// as rare but routine for DEV1 (confidence 0.58), so none of them alert.
+	expectRarity(t, byKey, "WS03/3389", 2, days, 200.0/days, 1)
+	findings, total := modelFindings(t, scoped, model.ID, "")
+	if got := rarityKeys(findings); total != 2 || got != "WS02/22,WS03/3389" {
+		t.Errorf("findings = %s (total %d), want WS02/22,WS03/3389", got, total)
+	}
+	// Paging walks the same ordered set.
+	if page, total := modelFindings(t, scoped, model.ID, "&limit=1&offset=1"); total != 2 || rarityKeys(page) != "WS03/3389" {
+		t.Errorf("second findings page = %s (total %d), want WS03/3389", rarityKeys(page), total)
+	}
+
+	// The summary counts the same rule, and each pair's first day from its stored
+	// day set: WS02/22 and DEV1's ports from the last 6 days are new this week.
+	var stats struct {
+		Findings     int    `json:"findings"`
+		FindingsRule string `json:"findings_rule"`
+		NewWeek      int    `json:"new_week"`
+		Series       []struct {
+			Day   string `json:"day"`
+			Count int    `json:"count"`
+		} `json:"series"`
+	}
+	scoped.Do(t, "GET", "/models/"+model.ID+"/stats", nil, &stats)
+	if stats.Findings != 2 || stats.FindingsRule == "" {
+		t.Errorf("stats findings = %d (rule %q), want 2 under a rule", stats.Findings, stats.FindingsRule)
+	}
+	if len(stats.Series) != 30 {
+		t.Errorf("series has %d days, want 30", len(stats.Series))
+	}
+	if time.Now().UTC().Truncate(24*time.Hour) == noon.Truncate(24*time.Hour) && stats.NewWeek != 7 {
+		t.Errorf("new_week = %d, want 7 (WS02/22 and DEV1's ports from days 1-6)", stats.NewWeek)
+	}
+
+	if code := scoped.Status(t, "GET", "/models/"+model.ID+"/data?view=bogus", nil); code != 400 {
+		t.Errorf("an unknown view answered %d, want 400", code)
+	}
+}
+
+// modelFindings reads a model's Findings view: the rows its alert would raise,
+// in the order the view ranks them, and the view's total.
+func modelFindings(t *testing.T, c *Client, modelID, query string) ([]map[string]any, int) {
+	t.Helper()
+	var page struct {
+		Data []map[string]any `json:"data"`
+		Page struct {
+			Total int `json:"total"`
+		} `json:"page"`
+	}
+	c.DoRaw(t, "GET", "/models/"+modelID+"/data?view=findings"+query, nil, &page)
+	return page.Data, page.Page.Total
+}
+
+func rarityKeys(rows []map[string]any) string {
+	keys := make([]string, len(rows))
+	for i, r := range rows {
+		keys[i] = fmt.Sprint(r["partition_val"], "/", r["value_val"])
+	}
+	return strings.Join(keys, ",")
 }
 
 func expectRarity(t *testing.T, rows map[string]map[string]any, key string, seen, total int, percent, confidence float64) {

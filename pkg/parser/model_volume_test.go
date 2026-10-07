@@ -110,3 +110,21 @@ func TestModelLookup_VolumeUsesSharedScoring(t *testing.T) {
 		}
 	}
 }
+
+// Scored as of a past instant, the bucket holding it is the incomplete one and
+// nothing reads the current time.
+func TestVolumeScoredSQLAt_PastInstant(t *testing.T) {
+	asOf := "toDateTime('2026-09-09 02:30:00', 'UTC')"
+	sql := VolumeScoredSQLAt("src", "fractal_id = 'f'", "hour", 24, "", asOf, false)
+	mustContain(t, sql,
+		"toStartOfHour("+asOf+") - INTERVAL 1 HOUR AS latest_bucket",
+		"bucket < toStartOfHour("+asOf+")",
+		"WHERE n_buckets >= 24",
+	)
+	if strings.Contains(sql, "now(") {
+		t.Errorf("a past-instant score must not read the clock:\n%s", sql)
+	}
+	if VolumeScoredSQLAt("src", "s", "day", 7, "", "", true) != VolumeScoredSQL("src", "s", "day", 7, "", true) {
+		t.Error("an empty asOf must score as of now")
+	}
+}

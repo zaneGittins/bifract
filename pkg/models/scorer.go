@@ -255,6 +255,9 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		count++
 
 		p := pairFromRow(row, cutoff)
+		if !p.inWindow() {
+			return nil
+		}
 		prevTotal := prevalence[p.Dst]
 		prevRatio := float64(prevTotal) / float64(networkSize)
 
@@ -407,6 +410,12 @@ func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
 	}
 	return p
 }
+
+// inWindow reports whether any of the pair's connections fall inside the exact
+// window. The state is read by whole day, so a pair seen only early on the
+// window's first day has none left after trimming. Scoring it anyway overwrote
+// its last real result with zero scores and an epoch first/last seen.
+func (p PairAgg) inWindow() bool { return len(p.TsList) > 0 }
 
 func unixToTime(sec int64) time.Time {
 	if sec <= 0 {
