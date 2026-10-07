@@ -155,19 +155,20 @@ func (m *Manager) StartBackfill(ctx context.Context, model *Model, window string
 		if !ok {
 			return fmt.Errorf("invalid backfill window: %s", window)
 		}
-		// Anchor the dedup boundary at the model's creation time: the live MV owns
-		// every row ingested at/after creation, so the backfill takes only rows
-		// ingested strictly before it. started_at is the stable event-time end so
-		// chunking is deterministic across restarts (resume-safe).
-		anchor := model.CreatedAt.UTC()
+		// The anchor is where live state took over the current table (set when the
+		// table was created), so the backfill takes only rows ingested before it.
+		// created_at is the fallback for models whose table predates the anchor.
+		// started_at is the stable event-time end so chunking is deterministic
+		// across restarts (resume-safe).
 		startedAt := time.Now().UTC()
 		total := len(backfillChunks(startedAt, days))
 		res, err := m.pg.Exec(ctx,
 			`UPDATE analytics_models
 			    SET backfill_status='running', backfill_window=$1, backfill_total=$2,
-			        backfill_done=0, backfill_anchor=$3, backfill_started_at=$4, backfill_error=''
-			  WHERE id=$5 AND status='active' AND backfill_status IN ('none','')`,
-			window, total, anchor, startedAt, model.ID)
+			        backfill_done=0, backfill_anchor=COALESCE(backfill_anchor, created_at),
+			        backfill_started_at=$3, backfill_error=''
+			  WHERE id=$4 AND status='active' AND backfill_status IN ('none','')`,
+			window, total, startedAt, model.ID)
 		if err != nil {
 			return fmt.Errorf("mark backfill running: %w", err)
 		}
@@ -286,7 +287,7 @@ func (m *Manager) runBackfill(ctx context.Context, id string) {
 	settings := fmt.Sprintf(
 		" SETTINGS max_threads=%d, max_execution_time=%d, max_bytes_before_external_group_by=%d, priority=10, os_thread_priority=%d",
 		m.bfCfg.maxThreads, m.bfCfg.chunkTimeoutSec, m.bfCfg.maxGroupByBytes, m.bfCfg.osThreadPriority)
-	anchorLit := anchor.UTC().Format("2006-01-02 15:04:05")
+	anchorLit := anchor.UTC().Format(chTimeLayout)
 
 	for i, ch := range chunks {
 		if i < done {

@@ -338,6 +338,62 @@ func syncDistributedColumns(ctx context.Context, conn driver.Conn, database, dis
 	return nil
 }
 
+// EnsureColumn adds a column to a runtime-created local table (an analytics model's
+// state) that predates it, then brings the table's Distributed companion, when it
+// has one, in line with it. Model tables have generated names, so a numbered
+// migration cannot reach them; the app calls this at startup instead.
+//
+// On a cluster it runs on every node directly, as initializeShards does: the
+// companion is a per-node object, and a load-balanced probe would describe only
+// whichever node it landed on. Idempotent, and a no-op once the column exists.
+func (c *ClickHouseClient) EnsureColumn(ctx context.Context, local, dist, column, definition string) error {
+	apply := func(conn driver.Conn) error {
+		if ok, err := chTableExists(ctx, conn, local); err != nil || !ok {
+			return err
+		}
+		var n uint64
+		if err := conn.QueryRow(ctx,
+			"SELECT count() FROM system.columns WHERE database = currentDatabase() AND table = ? AND name = ?",
+			local, column).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			stmt := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN IF NOT EXISTS `%s` %s",
+				escapeCHBacktickIdent(local), escapeCHBacktickIdent(column), definition)
+			if err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("add %s to %s: %w", column, local, err)
+			}
+			log.Printf("Added column %s to %s", column, local)
+		}
+		if dist == "" {
+			return nil
+		}
+		if ok, err := chTableExists(ctx, conn, dist); err != nil || !ok {
+			return err
+		}
+		return syncDistributedColumns(ctx, conn, c.logsDatabase(), dist, local)
+	}
+
+	if !c.topo.PerNodeAdmin {
+		return apply(c.conn)
+	}
+	var firstErr error
+	for _, addr := range c.addrs {
+		conn, err := openClickHouseConn(c.nodeConnOptions(addr, adminNodePool))
+		if err == nil {
+			err = apply(conn)
+			conn.Close()
+		}
+		if err != nil {
+			log.Printf("[ClickHouse] ensure column %s on %s (%s): %v", column, local, addr, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 // ensureAllShardsReachable verifies every shard address accepts a trivial query.
 // It gates cluster migrations: applying to only the reachable subset would leave
 // shards on divergent schemas. Returns an error naming the first unreachable shard.

@@ -40,11 +40,13 @@ const (
 	stateMaintDefaultInterval = 60 * time.Second
 
 	// stateMaintLag holds the cutoff back from now so a cycle never reads a
-	// window that inserts are still landing in. ingest_timestamp is stamped by
-	// the writer, so a row can be committed with a timestamp slightly in the
-	// past; reading right up to now would step over it and the watermark would
-	// advance past a row that was never counted.
-	stateMaintLag = 30 * time.Second
+	// window that inserts are still landing in. ingest_timestamp is stamped when
+	// a log is received, and the ingest queue holds a quiet partition for up to
+	// its 30s flush interval before inserting (longer with retries, and a
+	// cluster's Distributed insert forwards to shards after that). Reading closer
+	// than that would advance the watermark past rows not yet committed, which
+	// are then never counted.
+	stateMaintLag = 2 * time.Minute
 
 	// stateMaintMaxWindow caps one cycle's read. After downtime the watermark can
 	// be far behind, and a single unbounded read would scan every partition since;
@@ -139,7 +141,7 @@ func (r maintainRow) insertSQL(target, sourceTable, where string) (string, error
 	if r.modelType.IsNetwork() {
 		return BuildNetStateInsert(r.def, "`"+target+"`", sourceTable, where, r.fractalID)
 	}
-	return BuildBackfillInsert(r.def, r.modelType, "`"+target+"`", sourceTable, where, r.fractalID)
+	return BuildStateInsert(r.def, r.modelType, "`"+target+"`", sourceTable, where, r.fractalID)
 }
 
 // stateTarget is the table a cycle writes, distributed when the deployment is.

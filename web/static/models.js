@@ -475,7 +475,7 @@ const AnalyticsModels = {
                 { col: 'latest_count', label: 'Latest', fmt: 'int', align: 'num' },
                 { col: 'baseline_median', label: 'Baseline', fmt: 'num', align: 'num' },
                 { col: 'mad', label: 'MAD', fmt: 'num', align: 'num' },
-                { col: 'n_buckets', label: 'Buckets', fmt: 'int', align: 'num' },
+                { col: 'n_buckets', label: 'History', fmt: 'int', align: 'num' },
                 { col: 'latest_bucket', label: 'Latest bucket', fmt: 'ts' },
             ],
         },
@@ -586,6 +586,15 @@ const AnalyticsModels = {
         return !Number.isFinite(ms) || ms < 86400000;
     },
 
+    // A volume z_score of +/-VOLUME_FLAT_Z means the history was perfectly flat and
+    // the latest bucket differs (parser.VolumeFlatZ); the number itself means nothing.
+    VOLUME_FLAT_Z: 1000000,
+    FLAT_Z_LABEL: 'flat history, any change',
+
+    _isFlatZ(v) {
+        return Math.abs(Number(v)) === this.VOLUME_FLAT_Z;
+    },
+
     _fmtTime(v, style) {
         if (!v || this._isEpochZero(v)) return '<span class="mv-none">&mdash;</span>';
         return `<span title="${_esc(Utils.timestampTitle(v))}">${_esc(Utils.formatTimestamp(v, style || 'friendly'))}</span>`;
@@ -633,8 +642,12 @@ const AnalyticsModels = {
             case 'int':    return _esc(Number(v).toLocaleString());
             case 'pct1':   return _esc((Number(v) * 100).toFixed(1) + '%');
             case 'pct100': return _esc(Number(v).toFixed(1) + '%');
-            case 'score':  return _esc(Number(v).toFixed(3));
-            case 'num':    return _esc(Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+            case 'score':
+                if (c.col === 'z_score' && this._isFlatZ(v)) {
+                    return `<span title="Every bucket of history had the same count, so any change is maximal">${_esc(this.FLAT_Z_LABEL)}</span>`;
+                }
+                return _esc(Number(v).toFixed(3));
+            case 'num':   return _esc(Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 }));
             case 'dur':    return _esc(this._fmtDuration(v));
             case 'ts':     return this._fmtTime(v);
             case 'meter': {
@@ -814,7 +827,7 @@ const AnalyticsModels = {
             if (raw === null || raw === undefined) return '';
             let val;
             if (c.fmt === 'int') val = Number(raw).toLocaleString();
-            else if (c.fmt === 'score') val = Number(raw).toFixed(3);
+            else if (c.fmt === 'score') val = c.k === 'max_z' && this._isFlatZ(raw) ? this.FLAT_Z_LABEL : Number(raw).toFixed(3);
             else if (c.fmt === 'ago') val = this._isEpochZero(raw) ? '\u2014' : (Utils.timeAgo(raw) || '\u2014');
             else val = String(raw);
             const label = typeof c.label === 'function' ? c.label(def) : c.label;
@@ -848,6 +861,7 @@ const AnalyticsModels = {
             rows.push(['Max share of days', (def.alert?.percent_threshold ?? 5) + '%']);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
+            rows.push(['Min history', (def.min_sample || this._defaultMinSample(mt)) + ' buckets']);
             rows.push(['z threshold', (def.alert?.z_threshold || 3.5).toFixed(1)]);
         } else if (mt === 'beacon') {
             rows.push(['Window', def.window || '1d']);
@@ -2069,7 +2083,7 @@ ${isBeacon ? `
         <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
     </div>
 </div>
-<p class="config-hint">Counts events per <em>${e.timeBucket === 'hour' ? 'hour' : 'day'}</em> per entity, then scores the latest complete bucket against the entity's own median (modified z-score). The current, incomplete bucket is excluded.</p>`;
+<p class="config-hint">Counts events per <em>${e.timeBucket === 'hour' ? 'hour' : 'day'}</em> per entity, then scores the latest complete bucket against the entity's own history (modified z-score). Empty buckets since the entity first appeared count as zero, and min history counts them too. The current, incomplete bucket is excluded.</p>`;
         }
         if (e.modelType === 'tlsh') {
             return `
@@ -2187,7 +2201,7 @@ ${isBeacon ? `
     <div class="field-group" style="margin-top:10px">
         <label>Z-score threshold</label>
         <input type="number" id="alertZThreshold" class="model-num-input" value="${c.z_threshold}" min="0" step="0.5">
-        <p class="config-hint">Alert when an entity's latest bucket has |modified z-score| above this. 3.5 is the standard cutoff.</p>
+        <p class="config-hint">Alert on an entity's logs when its latest complete bucket scores a modified z-score above this (a spike). 3.5 is the standard cutoff.</p>
     </div>`;
         } else {
             typeFields = `
@@ -2704,7 +2718,7 @@ ${isBeacon ? `
         } else if (p.model_type === 'volume_baseline') {
             chips = [
                 [num(s.entities_scored), 'entities scored'],
-                [Number(s.max_z || 0).toFixed(2), 'max |z|'],
+                [this._isFlatZ(s.max_z) ? this.FLAT_Z_LABEL : Number(s.max_z || 0).toFixed(2), 'max |z|'],
                 [num(s.min_buckets), 'min history'],
             ];
         } else if (this._isNetworkType(p.model_type)) {
@@ -2735,7 +2749,7 @@ ${isBeacon ? `
         // may be empty over a short window rather than showing a blank chart.
         let hint = '';
         if (p.model_type === 'volume_baseline' && scoredTotal === 0) {
-            hint = `<div class="score-preview-hint">No entity has enough complete buckets in this window to establish a baseline. Try a longer window or the per-hour bucket.</div>`;
+            hint = `<div class="score-preview-hint">No entity has enough buckets of history in this window to establish a baseline. Try a longer window or the per-hour bucket.</div>`;
         } else if (scoredTotal === 0) {
             hint = `<div class="score-preview-hint">No matching results in the last ${_esc(p.window)}.</div>`;
         }
@@ -2810,7 +2824,7 @@ ${isBeacon ? `
         const map = {
             partition_val: 'Partition', value_val: 'Value', model_count: 'Days seen', percent: '%', confidence: 'Confidence',
             entity_key: 'Entity', entity_val: 'Entity', first_seen: 'First seen', last_seen: 'Last seen', event_count: 'Events',
-            latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'Buckets', z_score: 'z-score',
+            latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'History', z_score: 'z-score',
             src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',
             regularity: 'Regularity', ts_score: 'Timing', ds_score: 'Size', dur_score: 'Duration', hist_score: 'Histogram',
             prevalence: 'Prevalence', conn_count: 'Conns', total_duration: 'Total dur (s)',
@@ -2822,6 +2836,7 @@ ${isBeacon ? `
         if (v === null || v === undefined) return '';
         if (col === 'confidence') return _esc(Number(v).toFixed(3));
         if (col === 'percent') return _esc(Number(v).toFixed(2) + '%');
+        if (col === 'z_score' && this._isFlatZ(v)) return _esc(this.FLAT_Z_LABEL);
         if (col === 'z_score' || col === 'baseline_median' || col === 'mad') return _esc(Number(v).toFixed(2));
         if (col === 'score' || col === 'final_score' || col === 'regularity' || col === 'ts_score' || col === 'ds_score' || col === 'dur_score' || col === 'hist_score' || col === 'prevalence') return _esc(Number(v).toFixed(3));
         if (col === 'conn_count' || col === 'total_duration') return _esc(this._fmtNum(Number(v)));

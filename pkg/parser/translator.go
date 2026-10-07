@@ -47,6 +47,11 @@ type QueryOptions struct {
 	HasTLSHFilter        bool                          // True when query uses tlsh() and the digest match has been resolved
 	TLSHMatches          []TLSHMatch                   // Digests within threshold of a needle, resolved server-side against the tlsh model index
 	UseIngestTimestamp   bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
+	// ModelNewSince is the start of an alert's evaluation window. A first_seen
+	// model's is_new also admits an entity recorded since then, so an alert
+	// catching up on a backlog older than the usual hour still sees what was new
+	// in it. Zero outside alert evaluation.
+	ModelNewSince time.Time
 	// MaxEventLagSeconds drops rows whose event time trails their ingest time by
 	// more than this many seconds (0 = keep every row). Alerts read forward on
 	// ingest_timestamp, so a source flushing a backlog presents week-old events as

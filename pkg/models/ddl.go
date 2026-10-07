@@ -19,14 +19,6 @@ func extractPattern(pattern string) string {
 
 // GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
 // fractalID is the owning fractal: it scopes the MV's source scan so a model only
-// much history is read so scoring stays bounded at scale.
-func volumeScoreBounds(timeBucket string) (lower, upper string) {
-	if timeBucket == "hour" {
-		return "toStartOfHour(now()) - INTERVAL 30 DAY", "toStartOfHour(now())"
-	}
-	return "today() - 90", "today()"
-}
-
 // ever aggregates its own fractal's logs. See fractalScopeClause.
 func GenerateDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
 	return generateTableDDL(def, mt, tableName)
@@ -52,10 +44,11 @@ SETTINGS index_granularity = 8192`, tableName), nil
     first_seen  SimpleAggregateFunction(min, DateTime64(3, 'UTC')),
     last_seen   SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     event_count SimpleAggregateFunction(sum, UInt64),
-    days        AggregateFunction(groupUniqArray(365), Date)
+    days        AggregateFunction(groupUniqArray(365), Date),
+    %s %s
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, entity_key)
-SETTINGS index_granularity = 8192`, tableName), nil
+SETTINGS index_granularity = 8192`, tableName, FirstRecordedColumn, FirstRecordedDefinition), nil
 
 	case ModelTypeTLSH:
 		// digest is the verbatim on-disk string, never a canonicalised form: it is
@@ -103,10 +96,6 @@ func volumeBucketColType(timeBucket string) string {
 	return "Date"
 }
 
-// volumeScoreBounds returns (lowerBound, upperBound) predicates on the bucket
-// column for read-time scoring. The upper bound excludes the current, still
-// incomplete bucket (whose count is artificially low); the lower bound caps how
-
 // BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
 // seeds a model from historical logs. It reuses the exact SELECT logic of the
 // materialized view, but reads from sourceTable (the distributed logs table in
@@ -116,18 +105,42 @@ func volumeBucketColType(timeBucket string) string {
 // IMPORTANT: this performs NO DDL. It only inserts into an already-existing
 // model table, so it can never orphan a table or materialized view.
 func BuildBackfillInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra, fractalID string) (string, error) {
-	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra, fractalID)
+	return buildInsert(def, mt, targetTable, sourceTable, whereExtra, fractalID, recordedHistory)
+}
+
+// BuildStateInsert is the live counterpart of BuildBackfillInsert, run by each
+// state maintenance cycle: the same aggregation, but what it records is new to
+// the model as of now.
+func BuildStateInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra, fractalID string) (string, error) {
+	return buildInsert(def, mt, targetTable, sourceTable, whereExtra, fractalID, recordedLive)
+}
+
+func buildInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, whereExtra, fractalID, recorded string) (string, error) {
+	selectSQL, err := buildModelSelect(def, mt, sourceTable, whereExtra, fractalID, recorded)
 	if err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("INSERT INTO %s\n%s", targetTable, selectSQL), nil
 }
 
+// first_recorded is when a first_seen model's state first held an entity, which
+// is what "new" means to its alert; first_seen is event time and says nothing
+// about when the model learned of it. Seeded history and rows that predate the
+// column take the epoch, which min() makes absorbing and no recency check admits.
+const (
+	FirstRecordedColumn     = "first_recorded"
+	FirstRecordedDefinition = "SimpleAggregateFunction(min, DateTime64(3, 'UTC')) DEFAULT " + recordedHistory
+
+	recordedHistory = "toDateTime64(0, 3, 'UTC')"
+	recordedLive    = "now64(3, 'UTC')"
+)
+
 // buildModelSelect builds the SELECT ... FROM <sourceTable> ... GROUP BY ...
 // shared by the materialized view (sourceTable="logs", whereExtra="") and the
 // backfill INSERT...SELECT (distributed source + time-window predicate).
 // whereExtra, when non-empty, is ANDed into the source-scan WHERE clause.
-func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID string) (string, error) {
+// recorded is the first_recorded expression a first_seen model writes.
+func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID, recorded string) (string, error) {
 	// An unscoped model MV aggregates every fractal's logs into the owning
 	// fractal's table: an ingest-time cost on fractals that never read it, and
 	// cross-fractal rows sitting behind nothing but the read-side predicate.
@@ -227,14 +240,14 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 		b.WriteString("\n")
 
 		// Final SELECT from last CTE
-		final, err := buildFinalSelect(def, mt, prevCTE)
+		final, err := buildFinalSelect(def, mt, prevCTE, recorded)
 		if err != nil {
 			return "", err
 		}
 		b.WriteString(final)
 	} else {
 		// No extractions: SELECT directly from the source table.
-		direct, err := buildDirectSelect(def, mt, sourceTable, whereExtra, fractalID)
+		direct, err := buildDirectSelect(def, mt, sourceTable, whereExtra, fractalID, recorded)
 		if err != nil {
 			return "", err
 		}
@@ -245,7 +258,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 }
 
 // buildFinalSelect builds the final GROUP BY SELECT from the last CTE.
-func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) (string, error) {
+func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded string) (string, error) {
 	var b strings.Builder
 	switch mt {
 	case ModelTypeRarity:
@@ -270,10 +283,8 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) (stri
 			}
 			b.WriteString(fmt.Sprintf("    concat(%s) AS entity_key,\n", strings.Join(parts, ", char(30), ")))
 		}
-		b.WriteString("    timestamp AS first_seen,\n")
-		b.WriteString("    timestamp AS last_seen,\n")
-		b.WriteString("    toUInt64(1) AS event_count,\n")
-		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString(entityAggCols)
+		b.WriteString(fmt.Sprintf(",\n    %s AS %s\n", recorded, FirstRecordedColumn))
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		if len(def.KeyFields) > 0 {
 			guards := make([]string, len(def.KeyFields))
@@ -282,7 +293,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) (stri
 			}
 			b.WriteString(fmt.Sprintf("WHERE %s\n", strings.Join(guards, " AND ")))
 		}
-		b.WriteString("GROUP BY fractal_id, entity_key, first_seen, last_seen")
+		b.WriteString("GROUP BY fractal_id, entity_key")
 	case ModelTypeVolumeBaseline:
 		b.WriteString("SELECT fractal_id,\n")
 		if len(def.KeyFields) == 1 {
@@ -308,13 +319,10 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) (stri
 	case ModelTypeTLSH:
 		b.WriteString("SELECT fractal_id,\n")
 		b.WriteString(fmt.Sprintf("    %s AS digest,\n", def.KeyFields[0]))
-		b.WriteString("    timestamp AS first_seen,\n")
-		b.WriteString("    timestamp AS last_seen,\n")
-		b.WriteString("    toUInt64(1) AS event_count,\n")
-		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString(entityAggCols + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		b.WriteString(fmt.Sprintf("WHERE %s\n", tlshDigestGuard(def.KeyFields[0])))
-		b.WriteString("GROUP BY fractal_id, digest, first_seen, last_seen")
+		b.WriteString("GROUP BY fractal_id, digest")
 	default:
 		// An unhandled type used to fall through to an empty string, which rendered
 		// a WITH clause with no SELECT after it.
@@ -323,9 +331,17 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable string) (stri
 	return b.String(), nil
 }
 
+// entityAggCols aggregates a first_seen or tlsh key's rows into one state row.
+// Grouping by the key alone matters: grouping by the timestamp as well wrote a
+// state row per distinct event time, roughly one per log.
+const entityAggCols = `    min(timestamp) AS first_seen,
+    max(timestamp) AS last_seen,
+    count() AS event_count,
+    groupUniqArrayState(365)(toDate(timestamp)) AS days`
+
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
-func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID string) (string, error) {
+func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID, recorded string) (string, error) {
 	var b strings.Builder
 	b.WriteString("SELECT fractal_id")
 
@@ -357,7 +373,8 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			}
 			b.WriteString(fmt.Sprintf(",\n    concat(%s) AS entity_key", strings.Join(parts, ", char(30), ")))
 		}
-		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString(",\n" + entityAggCols)
+		b.WriteString(fmt.Sprintf(",\n    %s AS %s\n", recorded, FirstRecordedColumn))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -370,10 +387,10 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
-		b.WriteString("\nGROUP BY fractal_id, entity_key, first_seen, last_seen")
+		b.WriteString("\nGROUP BY fractal_id, entity_key")
 	case ModelTypeTLSH:
 		b.WriteString(fmt.Sprintf(",\n    %s AS digest", chFieldRef(def.KeyFields[0])))
-		b.WriteString(",\n    timestamp AS first_seen,\n    timestamp AS last_seen,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString(",\n" + entityAggCols + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -387,7 +404,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
 		b.WriteString(fmt.Sprintf("\nAND %s", tlshDigestGuard(chFieldRef(def.KeyFields[0]))))
-		b.WriteString("\nGROUP BY fractal_id, digest, first_seen, last_seen")
+		b.WriteString("\nGROUP BY fractal_id, digest")
 	case ModelTypeVolumeBaseline:
 		if len(def.KeyFields) == 1 {
 			b.WriteString(fmt.Sprintf(",\n    %s AS entity_val", chFieldRef(def.KeyFields[0])))

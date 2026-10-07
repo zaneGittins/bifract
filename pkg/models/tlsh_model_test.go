@@ -29,7 +29,11 @@ func TestTLSHModelDDL(t *testing.T) {
 	mustContain(t, mvSQL, "fractal_id = 'fractal-a'", "state scan scoped to owner")
 	mustContain(t, mvSQL, "AS digest", "digest projection")
 	mustContain(t, mvSQL, "match(", "digest shape guard")
-	mustContain(t, mvSQL, "GROUP BY fractal_id, digest, first_seen, last_seen", "group by digest")
+	if !strings.HasSuffix(mvSQL, "GROUP BY fractal_id, digest") {
+		t.Errorf("want one state row per digest, got:\n%s", mvSQL)
+	}
+	mustContain(t, mvSQL, "min(timestamp) AS first_seen", "first_seen aggregated")
+	mustNotContain(t, tableSQL+mvSQL, FirstRecordedColumn, "tlsh has no is_new, so no first_recorded")
 }
 
 // The MV's guard is what keeps unusable digests out of the index, so it has to

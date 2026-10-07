@@ -253,6 +253,42 @@ func TestTheProvenanceGraphIsRebuiltAsATree(t *testing.T) {
 	}
 }
 
+// Every scored edge says why, in the counts the score came from, so a model can quote the
+// evidence instead of only a number.
+func TestProvenanceEdgesExplainTheirScore(t *testing.T) {
+	spawn := row("spawn", "p1", "p2", "node.exe", 1)
+	for k, v := range map[string]any{
+		"edge_score": 0.98, "score_basis": "transition", "edge_host_days": 0.0, "source_host_days": 1240.0,
+		"target_hosts": 1.0, "total_hosts": 4.0, "first_seen": "2026-10-07",
+	} {
+		spawn[k] = v
+	}
+	c2 := row("net_connect", "p2", "net:203.0.113.50", "203.0.113.50", 1)
+	for k, v := range map[string]any{
+		"edge_score": 1.0, "score_basis": "new_source", "target_host_days": 0.0, "target_hosts": 1.0, "total_hosts": 4.0,
+	} {
+		c2[k] = v
+	}
+	graph := summarizeGraph([]any{row("spawn", "", "p1", "cmd.exe", 0), spawn, c2}, 40)
+
+	tree, _ := graph["process_tree"].(string)
+	for _, want := range []string{
+		"why: 0 of 1240 other host-days on which this source made a spawn reached this target",
+		"target on 1 of 4 hosts", "first seen 2026-10-07", "own 0.98, inherited +0.02",
+	} {
+		if !strings.Contains(tree, want) {
+			t.Errorf("tree explanation missing %q:\n%s", want, tree)
+		}
+	}
+	activity, _ := graph["notable_activity"].([]map[string]any)
+	if len(activity) != 1 {
+		t.Fatalf("activity = %v", activity)
+	}
+	if why, _ := activity[0]["why"].(string); !strings.Contains(why, "source binary never ran elsewhere; target touched on 0 other host-days") {
+		t.Errorf("activity why = %q", why)
+	}
+}
+
 func row(eventType, parent, child, label string, anomaly float64) map[string]any {
 	return map[string]any{
 		"event_type": eventType, "parent": parent, "child": child,

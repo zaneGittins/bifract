@@ -27,6 +27,48 @@ type process struct {
 	user        string
 	anomaly     float64
 	logID       string
+	why         string
+}
+
+// whyShownFrom is the anomaly at which a process's score explanation is written into the tree;
+// below it the line would only explain why something is unremarkable.
+const whyShownFrom = 0.5
+
+// explainEdge says in one line why pgr() scored an edge what it did, from the explanation
+// columns: what the baseline held besides this tree, the target's footprint, when the
+// relationship was first seen, and how much of the score the chain above it added.
+func explainEdge(row any) string {
+	n := func(key string) string { return fmt.Sprintf("%.0f", number64(row, key)) }
+	var parts []string
+	switch text(row, "score_basis") {
+	case "transition":
+		if number64(row, "source_host_days") > 0 {
+			parts = append(parts, fmt.Sprintf("%s of %s other host-days on which this source made a %s reached this target",
+				n("edge_host_days"), n("source_host_days"), text(row, "event_type")))
+		} else {
+			parts = append(parts, fmt.Sprintf("source ran on %s other host-days but never made a %s",
+				n("source_exec_host_days"), text(row, "event_type")))
+		}
+	case "new_source":
+		parts = append(parts, fmt.Sprintf("source binary never ran elsewhere; target touched on %s other host-days", n("target_host_days")))
+	case "no_source":
+		parts = append(parts, "no parent image to compare against")
+	case "reconnect":
+		return "bridge to another tree through a shared rare artifact"
+	default:
+		return ""
+	}
+	if total := number64(row, "total_hosts"); total > 0 {
+		parts = append(parts, fmt.Sprintf("target on %s of %s hosts", n("target_hosts"), n("total_hosts")))
+	}
+	if seen := text(row, "first_seen"); seen != "" {
+		parts = append(parts, "first seen "+seen)
+	}
+	own, final := number64(row, "edge_score"), number64(row, "anomaly_score")
+	if final-own >= 0.005 {
+		parts = append(parts, fmt.Sprintf("own %.2f, inherited +%.2f", own, final-own))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (p process) headline() string {
@@ -127,6 +169,7 @@ func buildTree(spawns []any) (map[string]process, map[string][]string, []string)
 			user:        text(row, "proc_user"),
 			anomaly:     number64(row, "anomaly_score"),
 			logID:       text(row, "log_id"),
+			why:         explainEdge(row),
 		}
 		parents[child] = parent
 		children[parent] = append(children[parent], child)
@@ -179,6 +222,9 @@ func renderTree(processes map[string]process, children map[string][]string, root
 			if child.commandLine != "" && child.commandLine != child.image {
 				lines = append(lines, childPrefix+"cmd: "+truncateRunes(child.commandLine, maxCommandLine))
 			}
+			if child.why != "" && child.anomaly >= whyShownFrom {
+				lines = append(lines, childPrefix+"why: "+child.why)
+			}
 			walk(kid, childPrefix, depth+1)
 		}
 	}
@@ -199,6 +245,9 @@ func renderTree(processes map[string]process, children map[string][]string, root
 		lines = append(lines, host+p.headline())
 		if p.commandLine != "" && p.commandLine != p.image {
 			lines = append(lines, "cmd: "+truncateRunes(p.commandLine, maxCommandLine))
+		}
+		if p.why != "" && p.anomaly >= whyShownFrom {
+			lines = append(lines, "why: "+p.why)
 		}
 		walk(root, "", 0)
 		lines = append(lines, "")
@@ -229,6 +278,7 @@ func rankActivity(rows []any, processes map[string]process, limit int) []map[str
 			"type":      text(row, "event_type"),
 			"target":    text(row, "label"),
 			"anomaly":   number64(row, "anomaly_score"),
+			"why":       explainEdge(row),
 			"process":   parent,
 			"image":     proc.image,
 			"host":      host,

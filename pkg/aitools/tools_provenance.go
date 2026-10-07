@@ -35,7 +35,10 @@ func registerProvenanceTools(d *set) {
 			"is across the fleet (0 = ubiquitous, 1 = never seen before), prunes the everyday " +
 			"noise, and pulls in other process trees that share a rare artifact with this one.\n\n" +
 			"The result is a rendered process tree plus the notable activity and cross-tree " +
-			"bridges, ranked by anomaly, rather than a raw edge list.\n\n" +
+			"bridges, ranked by anomaly, rather than a raw edge list. Each scored edge carries a " +
+			"\"why\": how many OTHER host-days (this tree left out) made the same move, how many " +
+			"hosts touched the target, when it was first seen, and how much of the score the " +
+			"chain above it added. Quote it when explaining a verdict.\n\n" +
 			"Get a GUID from find_processes. Set the time range to cover the whole " +
 			"investigation window: lineage outside it is not included.\n\n" +
 			"Requires an admin to have enabled endpoint behavioral analytics, and " +

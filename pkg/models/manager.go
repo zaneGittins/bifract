@@ -358,13 +358,9 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 				err.Error(), id)
 			return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
 		}
-		// Data was dropped; reset backfill state so the data viewer re-offers the
-		// "Seed history" CTA against the new definition.
+		// createCHObjects reset the backfill against the new, empty table.
 		_, _ = m.pg.Exec(context.Background(),
-			`UPDATE analytics_models SET status='active', error_message='',
-			    backfill_status='none', backfill_window='', backfill_total=0, backfill_done=0,
-			    backfill_anchor=NULL, backfill_started_at=NULL, backfill_error=''
-			 WHERE id=$1`, id)
+			`UPDATE analytics_models SET status='active', error_message='' WHERE id=$1`, id)
 	}
 
 	updated, err := m.Get(ctx, id)
@@ -611,8 +607,17 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	// No materialized view: state is maintained by StateMaintainer over
 	// logs.ingest_timestamp. Dropping any view left by an older release is what
 	// keeps the two from both writing and doubling every aggregate.
+	//
+	// The table is new and empty here (create, rebuild after an edit, or recreate
+	// after a log reset), so the backfill restarts, bounded by where live state
+	// resumes: everything ingested before the watermark is the backfill's.
 	if _, err := m.pg.Exec(ctx,
-		`UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1`, id); err != nil {
+		`UPDATE analytics_models
+		    SET state_watermark = COALESCE(state_watermark, NOW()),
+		        backfill_anchor = COALESCE(state_watermark, NOW()),
+		        backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0,
+		        backfill_started_at = NULL, backfill_error = ''
+		  WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("seed state watermark: %w", err)
 	}
 	if err := m.dropStateMV(ctx, mvName); err != nil {
@@ -632,6 +637,28 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 		}
 	}
 
+	// CREATE IF NOT EXISTS leaves a table that survived a drop at its old shape.
+	// Not fatal: a new table already has every column, and startup retries.
+	if err := m.ensureStateColumns(ctx, id, mt, tableName); err != nil {
+		log.Printf("model %s: %v", id, err)
+	}
+	return nil
+}
+
+// ensureStateColumns adds the columns a model's state table gained after it was
+// created, on the table and its Distributed companion. Without first_recorded a
+// first_seen model's state inserts fail, and its alert holds at the watermark.
+func (m *Manager) ensureStateColumns(ctx context.Context, id string, mt ModelType, tableName string) error {
+	if mt != ModelTypeFirstSeen {
+		return nil
+	}
+	dist := ""
+	if m.ch.Topology().DistributedTables {
+		dist = chModelDistName(id)
+	}
+	if err := m.ch.EnsureColumn(ctx, tableName, dist, FirstRecordedColumn, FirstRecordedDefinition); err != nil {
+		return fmt.Errorf("add %s: %w", FirstRecordedColumn, err)
+	}
 	return nil
 }
 
@@ -773,9 +800,9 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID, search, 
 	case ModelTypeRarity:
 		return m.getRarityData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "entity_key")
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "entity_key", true)
 	case ModelTypeTLSH:
-		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "digest")
+		return m.getFirstSeenData(ctx, tableName, fractalID, search, sortCol, sortDir, limit, offset, "digest", false)
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, search, sortCol, sortDir, limit, offset)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -822,23 +849,25 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID, searc
 }
 
 // firstSeenAggSQL returns the per-entity aggregation (first_seen, last_seen,
-// event_count, days) for a first_seen model. `source` is the FROM expression
-// (live: "`tbl` FINAL"; preview: a windowed aggregation subquery); extraWhere is
-// an optional predicate ANDed into the scan (e.g. a search filter). first_seen's
-// aggregates (min/max/sum over exact timestamps) are day-chunk invariant, so the
-// preview matches the post-backfill table without day bucketing.
-// firstSeenAggSQL collapses the per-row aggregate state into one row per key.
-// keyCol is "entity_key" for first_seen models and "digest" for tlsh models, which
-// share this shape exactly.
-func firstSeenAggSQL(source, fidEsc, extraWhere, keyCol string) string {
+// event_count, days) for a first_seen or tlsh model; keyCol is entity_key or
+// digest. `source` is the FROM expression (live: "`tbl` FINAL"; preview: a
+// windowed aggregation subquery); extraWhere is an optional predicate ANDed into
+// the scan. The aggregates are day-chunk invariant, so the preview matches the
+// post-backfill table. recorded adds recorded_at, which only a first_seen table
+// has; the epoch it holds for seeded history renders as empty.
+func firstSeenAggSQL(source, fidEsc, extraWhere, keyCol string, recorded bool) string {
+	recordedCol := ""
+	if recorded {
+		recordedCol = ",\n    min(" + FirstRecordedColumn + ") AS recorded_at"
+	}
 	q := fmt.Sprintf(`
 SELECT %s,
     min(first_seen) AS first_seen,
     max(last_seen) AS last_seen,
     sum(event_count) AS event_count,
-    arraySort(groupUniqArrayMerge(365)(days)) AS days
+    arraySort(groupUniqArrayMerge(365)(days)) AS days%s
 FROM %s
-WHERE fractal_id = '%s'`, keyCol, source, fidEsc)
+WHERE fractal_id = '%s'`, keyCol, recordedCol, source, fidEsc)
 	if extraWhere != "" {
 		q += "\nAND " + extraWhere
 	}
@@ -846,7 +875,7 @@ WHERE fractal_id = '%s'`, keyCol, source, fidEsc)
 	return q
 }
 
-func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int, keyCol string) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, search, sortCol, sortDir string, limit, offset int, keyCol string, recorded bool) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{keyCol: true, "first_seen": true, "last_seen": true, "event_count": true}
 	if !allowed[sortCol] {
 		sortCol = "first_seen"
@@ -856,7 +885,7 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, se
 	if search != "" {
 		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(search))
 	}
-	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol)
+	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol, recorded)
 
 	countQuery := fmt.Sprintf("SELECT count() FROM (%s)", baseQuery)
 	var total uint64
@@ -873,55 +902,10 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID, se
 	return rows, total, nil
 }
 
-// volumeMinBuckets returns the minimum number of complete buckets of history an
-// entity must have before it is scored, defaulting to 7 when unset.
-func volumeMinBuckets(def ModelDefinition) int {
-	if def.MinSample > 0 {
-		return def.MinSample
-	}
-	return 7
-}
-
-// buildVolumeBaselineScoringSQL returns the per-entity modified z-score query for
-// a volume_baseline model. It computes, over the entity's complete buckets, the
-// median daily count (baseline), the Median Absolute Deviation (MAD), the most
-// recent complete bucket's count, and the modified z-score
-// (0.6745 * (count - median) / MAD), matching Bifract's BQL modifiedZScore()
-// convention including the mad=0 -> z=0 guard.
-//
-// `source` is the FROM expression yielding rows shaped like the volume model
-// table (fractal_id, entity_val, bucket, event_count): live scoring passes
-// "`tbl` FINAL"; the preview passes a windowed aggregation subquery. lower/upper
-// bound the scored buckets (upper excludes the current incomplete bucket). Volume
-// counts are additive across day chunks, so the preview matches the post-backfill
-// table. fidEsc must already be CH-escaped; lower/upper are raw SQL bound exprs.
-func buildVolumeBaselineScoringSQL(source, fidEsc string, minBuckets int, lower, upper string) string {
-	if minBuckets < 1 {
-		minBuckets = 1
-	}
-	return fmt.Sprintf(`SELECT entity_val, latest_count, baseline_median, mad, n_buckets, latest_bucket, days,
-    if(mad = 0, 0, round(0.6745 * (toFloat64(latest_count) - baseline_median) / mad, 4)) AS z_score
-FROM (
-    SELECT entity_val, latest_count, baseline_median, n_buckets, latest_bucket, days,
-        arrayReduce('medianExact', arrayMap(x -> abs(toFloat64(x) - baseline_median), cnts)) AS mad
-    FROM (
-        SELECT entity_val,
-            groupArray(daily_count) AS cnts,
-            arrayReduce('medianExact', groupArray(daily_count)) AS baseline_median,
-            argMax(daily_count, bucket) AS latest_count,
-            max(bucket) AS latest_bucket,
-            count() AS n_buckets,
-            arraySort(groupUniqArray(365)(toDate(bucket))) AS days
-        FROM (
-            SELECT entity_val, bucket, sum(event_count) AS daily_count
-            FROM %s
-            WHERE fractal_id = '%s' AND bucket >= %s AND bucket < %s
-            GROUP BY entity_val, bucket
-        )
-        GROUP BY entity_val
-    )
-)
-WHERE n_buckets >= %d`, source, fidEsc, lower, upper, minBuckets)
+// buildVolumeScoredSQL scores a volume_baseline model's entities with the shared
+// definition (see parser.VolumeScoredSQL). fidEsc must already be CH-escaped.
+func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, lower string) string {
+	return parser.VolumeScoredSQL(source, "fractal_id = '"+fidEsc+"'", def.TimeBucket, def.MinSample, lower, true)
 }
 
 func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, search, sortCol, sortDir string, limit, offset int) ([]map[string]interface{}, uint64, error) {
@@ -930,8 +914,7 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		sortCol = "z_score"
 	}
 
-	lower, upper := volumeScoreBounds(def.TimeBucket)
-	baseQuery := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), volumeMinBuckets(def), lower, upper)
+	baseQuery := buildVolumeScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), def, "")
 	if search != "" {
 		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(search))
 	}
@@ -1102,8 +1085,7 @@ func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, 
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {
 		threshold = def.Alert.ZThreshold
 	}
-	lower, upper := volumeScoreBounds(def.TimeBucket)
-	scoring := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", fid, volumeMinBuckets(def), lower, upper)
+	scoring := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
        round(max(abs(z_score)), 4) AS max_z
@@ -1232,7 +1214,7 @@ func rarityConfidenceInner(source, fidEsc string) string {
 // firstSeenCountInner returns the SQL projecting one `event_count` column per
 // first_seen entity, ready for histogram bucketing.
 func firstSeenCountInner(source, fidEsc, keyCol string) string {
-	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol) + ") WHERE event_count >= 1"
+	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol, false) + ") WHERE event_count >= 1"
 }
 
 // getRarityHistogram reports how many values the model's own alert thresholds
@@ -1315,7 +1297,7 @@ func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol str
 	q := fmt.Sprintf(`SELECT toString(toDate(first_seen)) AS day, toUInt64(count()) AS cnt
 FROM (%s)
 WHERE first_seen >= today() - %d
-GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol), firstSeenDiscoveryDays)
+GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol, false), firstSeenDiscoveryDays)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen discovery series: %w", err)
@@ -1328,8 +1310,7 @@ GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol), first
 }
 
 func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
-	lower, upper := volumeScoreBounds(def.TimeBucket)
-	inner := buildVolumeBaselineScoringSQL("`"+tableName+"` FINAL", fid, volumeMinBuckets(def), lower, upper)
+	inner := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
 	buckets, err := m.runHistogram(ctx, inner, volumeHistBucketExpr, volumeHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline histogram: %w", err)
@@ -1666,6 +1647,9 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 			continue
 		}
 		if exists {
+			if err := m.ensureStateColumns(ctx, t.id, t.mt, t.table); err != nil {
+				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
+			}
 			continue
 		}
 		if err := m.createCHObjects(ctx, t.id, t.fractalID, t.def, t.mt, t.table, t.mv); err != nil {
