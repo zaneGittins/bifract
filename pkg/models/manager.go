@@ -626,7 +626,7 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 		return fmt.Errorf("seed state watermark: %w", err)
 	}
 	if err := m.dropStateMV(ctx, mvName); err != nil {
-		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(tableName)))
 		return err
 	}
 
@@ -682,7 +682,7 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 
 	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`" + tableName + "`")))
 	if err := m.ch.ExecSchema(ctx, resultsSQL); err != nil && !isCHDDLTimeout(err) {
-		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(stateName)))
 		return fmt.Errorf("create results table: %w", err)
 	}
 
@@ -694,8 +694,8 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 		return fmt.Errorf("seed state watermark: %w", err)
 	}
 	if err := m.dropStateMV(ctx, mvName); err != nil {
-		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", stateName)))
-		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(stateName)))
+		_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(tableName)))
 		return err
 	}
 
@@ -721,6 +721,14 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 	return nil
 }
 
+// dropModelTableSQL drops one of a model's replicated tables. SYNC clears the
+// replica's Keeper path now instead of after the Atomic drop delay, so an edit
+// can re-create the table under the same name (code 253 otherwise), and the
+// size guard is lifted so a large model table never refuses to drop.
+func dropModelTableSQL(name string) string {
+	return fmt.Sprintf("DROP TABLE IF EXISTS `%s` SYNC SETTINGS max_table_size_to_drop = 0", name)
+}
+
 func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName string, mt ModelType) error {
 	// Order: drop the MV first so it can never write to a half-dropped target, then
 	// the target tables. Every drop is IF EXISTS + best-effort (log and continue) so
@@ -732,12 +740,12 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 	}
 	// A scheduled model also owns a rolling-state table (the MV's target); drop it.
 	if mt.IsScheduled() {
-		stateDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateName(id)))
+		stateDrop := m.ch.InjectOnCluster(dropModelTableSQL(chModelStateName(id)))
 		if err := m.ch.ExecSchema(ctx, stateDrop); err != nil {
 			log.Printf("drop state table %s: %v", chModelStateName(id), err)
 		}
 	}
-	tableDrop := m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName))
+	tableDrop := m.ch.InjectOnCluster(dropModelTableSQL(tableName))
 	if err := m.ch.ExecSchema(ctx, tableDrop); err != nil {
 		log.Printf("drop table %s: %v", tableName, err)
 	}
