@@ -349,12 +349,10 @@ const AnalyticsModels = {
         return `${Math.floor(s / 86400)}d`;
     },
 
-    // min_sample is one stored field with two meanings, so its sensible default
-    // differs by type. For rarity it is a floor on how many times a value must
-    // have been seen before it is scored, and anything above 1 silently gives up
-    // first sightings, which is usually the detection you wanted. For volume
-    // baseline it is how much history a median and MAD need to mean anything.
+    // min_sample is the learning period: days a rarity group must have been seen
+    // before its values are scored, or buckets of history a volume entity needs.
     _defaultMinSample(modelType) {
+        if (modelType === 'rarity') return 14;
         return modelType === 'volume_baseline' ? 7 : 1;
     },
 
@@ -640,7 +638,7 @@ const AnalyticsModels = {
         const pct = Number(def.alert?.percent_threshold);
         if (pct > 0 && !(Number(row.percent) < pct)) return false;
         const min = Number(def.min_sample);
-        if (min > 1 && !(Number(row.model_count) >= min)) return false;
+        if (min > 1 && !(Number(row.model_total) >= min)) return false;
         return true;
     },
 
@@ -997,9 +995,11 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['State lag', this._lagLabel(m.state_lag_seconds) + (m.state_behind ? ' (behind)' : '')]);
         }
         if (mt === 'rarity') {
-            rows.push(['Min days seen', def.min_sample || this._defaultMinSample(mt)]);
-            rows.push(['Confidence threshold', (def.alert?.confidence_threshold ?? 0.8).toFixed(2)]);
-            rows.push(['Max share of days', (def.alert?.percent_threshold ?? 5) + '%']);
+            const minHist = def.min_sample || 1;
+            const conf = Number(def.alert?.confidence_threshold), share = Number(def.alert?.percent_threshold);
+            rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'} per group`]);
+            rows.push(['Confidence threshold', conf > 0 ? conf.toFixed(2) : 'Not set']);
+            rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
             rows.push(['Min history', (def.min_sample || this._defaultMinSample(mt)) + ' buckets']);
@@ -1017,7 +1017,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
 
         let keyLabel = 'Keys', keys = [];
         if (mt === 'rarity') {
-            keys = [def.partition_key, def.value_key].filter(Boolean);
+            keyLabel = '';
         } else if (mt === 'beacon' || mt === 'long_connection') {
             keyLabel = 'Connection fields';
             const n = def.network || {};
@@ -1035,6 +1035,13 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
     <dl class="mv-kv">${rows.map(([k, val]) =>
         `<dt>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
 </div>
+${mt === 'rarity' ? `<div class="me-sec">
+    <div class="me-sec-label">Group by</div>
+    <div class="mv-chips"><span class="mv-chip">${_esc(def.partition_key || '')}</span></div>
+    <div class="me-sec-label" style="margin-top:10px">Value</div>
+    <div class="mv-chips"><span class="mv-chip">${_esc(def.value_key || '')}</span></div>
+    <p class="mv-desc">How rare each ${_esc(def.value_key || 'value')} is for its ${_esc(def.partition_key || 'group')}, counted in days.</p>
+</div>` : ''}
 ${keys.length ? `<div class="me-sec">
     <div class="me-sec-label">${_esc(keyLabel)}</div>
     <div class="mv-chips">${keys.map(k => `<span class="mv-chip">${_esc(k)}</span>`).join('')}</div>
@@ -1652,15 +1659,19 @@ ${m.description ? `<div class="me-sec">
             const confThr = Number(def.alert?.confidence_threshold) || 0;
             const pct = Number(row.percent);
             const conf = Number(row.confidence);
+            const minHist = Number(def.min_sample) || 1;
+            const learning = Number(row.model_total) < minHist;
             return pick([
+                learning ? { label: 'Group learning', value: `${FactChips.of(row.model_total, minHist)} days`, tone: 'warn',
+                  title: `${row.partition_val} has ${int(row.model_total)} days of history; its values can alert after ${int(minHist)}.` } : null,
                 { label: 'Seen on', value: `${FactChips.of(row.model_count, row.model_total)} days`,
                   tone: pctThr > 0 && pct < pctThr ? 'alert' : '',
                   title: `${fix(pct, 1)}% of the days ${row.partition_val} was seen. Click to search them.`, query: pivot() },
-                { label: 'Partition confidence', value: fix(conf),
+                { label: 'Group confidence', value: fix(conf),
                   tone: confThr > 0 && !(conf > confThr) ? 'muted' : '',
                   title: 'How rarely this partition produces a new value (Good-Turing coverage). Low means new values are routine there.' },
                 days.length ? { label: 'First seen', value: FactChips.ago(days[0]) || days[0], title: days[0] } : null,
-            ], [0, 2]);
+            ], learning ? [0, 1] : [1, 3]);
         }
         if (mt === 'volume_baseline') {
             const z = Number(row.z_score);
@@ -1798,8 +1809,8 @@ ${m.description ? `<div class="me-sec">
     // Editor (split-panel, BQL-first)
     // ============================
     MODEL_TYPES: [
-        { id: 'rarity', label: 'Rarity', desc: 'Scores how unusual a value is within its partition.' },
-        { id: 'first_seen', label: 'First / Last Seen', desc: 'Tracks when an entity was first and last observed.' },
+        { id: 'rarity', label: 'Rarity', desc: 'How unusual a value is for its group, e.g. a port for a host. Learns each group first and stays quiet where new values are routine.' },
+        { id: 'first_seen', label: 'First / Last Seen', desc: 'Alerts the first time anything new appears, with no learning period. Use it to never miss a new program, domain or hash.' },
         { id: 'volume_baseline', label: 'Volume Baseline', desc: 'Flags entities whose volume deviates from their own history, by modified z-score.' },
         { id: 'tlsh', label: 'TLSH Index', desc: 'Indexes the distinct fuzzy-hash digests in a field so tlsh() can match similar files. Not a detection on its own.' },
         { id: 'beacon', label: 'Beacon', desc: 'Finds regular, automated check-ins (C2 beaconing) in network connection logs.' },
@@ -1836,7 +1847,7 @@ ${m.description ? `<div class="me-sec">
             name: 'rare_office_child', type: 'rarity',
             description: 'Scores how rarely each Office application launches a given child process.',
             query: 'bifract_category=process_creation\n| parent_image=$winword.exe,excel.exe,powerpnt.exe,outlook.exe,onenote.exe,msaccess.exe,mspub.exe',
-            shape: { partitionKey: 'parent_image', valueKey: 'image', minSample: 1 },
+            shape: { partitionKey: 'parent_image', valueKey: 'image', minSample: 14 },
             alert: { confidence_threshold: 0.9, percent_threshold: 10 },
         },
         {
@@ -1845,7 +1856,7 @@ ${m.description ? `<div class="me-sec">
             name: 'rare_ports_per_host', type: 'rarity',
             description: 'Scores how rarely each host connects to a destination port.',
             query: 'bifract_category=network_connect',
-            shape: { partitionKey: 'computer_name', valueKey: 'dst_port', minSample: 1 },
+            shape: { partitionKey: 'computer_name', valueKey: 'dst_port', minSample: 14 },
             alert: { confidence_threshold: 0.9, percent_threshold: 10 },
         },
         {
@@ -1878,7 +1889,7 @@ ${m.description ? `<div class="me-sec">
             partitionKey: '',
             valueKey: '',
             keyFields: [''],
-            minSample: 1,
+            minSample: this._defaultMinSample('rarity'),
             timeBucket: 'day',
             network: this._networkFromDef({}),
             window: '1d',
@@ -2397,19 +2408,20 @@ ${isBeacon ? `
         if (e.modelType === 'rarity') {
             return `
 <div class="field-group">
-    <label>Partition Key (group by)</label>
+    <label>Group by</label>
     ${this._fieldInput('shapePartKey', e.partitionKey, 'e.g. computer_name')}
+    <p class="config-hint">Each group gets its own baseline, e.g. one per host.</p>
 </div>
 <div class="field-group" style="margin-top:10px">
-    <label>Value Key (rarity of what?)</label>
+    <label>Value</label>
     ${this._fieldInput('shapeValKey', e.valueKey, 'e.g. dst_port')}
+    <p class="config-hint">What is rare or not within a group, e.g. the ports a host connects to.</p>
 </div>
 <div class="field-group" style="margin-top:10px">
-    <label>Min days seen</label>
+    <label>Min history (days)</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
-    <p class="config-hint">Keep at 1: first sightings are what this model finds.</p>
-</div>
-<p class="config-hint">Example: Partition=<em>computer_name</em>, Value=<em>dst_port</em> scores how unusual a port is for that host, counted in days.</p>`;
+    <p class="config-hint">Days a group must have been seen before its values can alert. 14 covers two weeks of normal.</p>
+</div>`;
         }
         if (e.modelType === 'volume_baseline') {
             return `
@@ -2547,7 +2559,7 @@ ${isBeacon ? `
             <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
     </div>
-    <p class="config-hint">Flags values seen on under this share of their partition's days, where new values are rare. Learns for more than 100 ÷ share days.</p>`;
+    <p class="config-hint">Flags values seen on under this share of their group's days, in groups where new values are rare. A value seen once needs more than 100 ÷ share days of group history, so the learning period is the longer of that and Min history.</p>`;
         } else if (mt === 'volume_baseline') {
             typeFields = `
     <div class="field-group" style="margin-top:10px">

@@ -124,7 +124,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		}
 		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.MinSample, false)
 		rightCols = []string{"partition_val", "value_val"}
-		// Keys below min_sample are scored away, so the raw key set is a superset.
+		// Partitions still learning are scored away, so the raw key set is a superset.
 		exact = info.MinSample <= 1
 		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "confidence"}
 
@@ -337,10 +337,12 @@ GROUP BY src_ip, dst_ip, dst_port`,
 //
 // source must yield the rarity state shape (partition_val, value_val, days);
 // scope is a WHERE predicate on it. withDays adds the sorted day list, which only
-// the data view needs. The trailing WHERE lets callers append AND clauses.
-func RarityScoredSQL(source, scope string, minSample int, withDays bool) string {
-	if minSample < 1 {
-		minSample = 1
+// the data view needs. minHistory is how many days a partition must have been
+// seen before its values are scored (the model's learning period); the trailing
+// WHERE lets callers append AND clauses.
+func RarityScoredSQL(source, scope string, minHistory int, withDays bool) string {
+	if minHistory < 1 {
+		minHistory = 1
 	}
 	daysCol := ""
 	if withDays {
@@ -366,7 +368,7 @@ FROM (
     )
     WINDOW w AS (PARTITION BY partition_val)
 )
-WHERE days_seen >= %d`, daysCol, source, scope, minSample)
+WHERE days_observed >= %d`, daysCol, source, scope, minHistory)
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.

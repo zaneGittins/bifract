@@ -1278,9 +1278,9 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 	if minSample < 1 {
 		minSample = 1
 	}
-	f := rarityFlags{sql: []string{fmt.Sprintf("model_count >= %d", minSample)}}
+	f := rarityFlags{sql: []string{fmt.Sprintf("model_total >= %d", minSample)}}
 	if minSample > 1 {
-		f.words = append(f.words, fmt.Sprintf("seen on %d+ day%s", minSample, plural(minSample)))
+		f.words = append(f.words, fmt.Sprintf("group seen on %d+ day%s", minSample, plural(minSample)))
 	}
 	if def.Alert != nil {
 		if t := def.Alert.ConfidenceThreshold; t > 0 {

@@ -21,7 +21,7 @@ func TestFindingsRuleMatchesAlert(t *testing.T) {
 			name:  "rarity",
 			mt:    ModelTypeRarity,
 			def:   ModelDefinition{MinSample: 3, Alert: &AlertConfig{ConfidenceThreshold: 0.8, PercentThreshold: 5}},
-			where: "model_count >= 3 AND confidence > 0.8 AND percent < 5",
+			where: "model_total >= 3 AND confidence > 0.8 AND percent < 5",
 			order: "percent ASC, confidence DESC, partition_val, value_val",
 			alert: "| confidence > 0.80\n| percent < 5.00",
 		},
@@ -172,9 +172,9 @@ func TestPageSQL(t *testing.T) {
 
 func TestRarityDiscoverySQL(t *testing.T) {
 	scored := buildRarityScoredSQL("`tbl` FINAL", "f1")
-	q := rarityDiscoverySQL(scored, "model_count >= 1 AND percent < 5")
+	q := rarityDiscoverySQL(scored, "model_total >= 1 AND percent < 5")
 	mustContain(t, q, "toString(days[1]) AS first_day", "groups by each pair's first day")
-	mustContain(t, q, "toUInt64(countIf(model_count >= 1 AND percent < 5)) AS flagged", "counts with the rule")
+	mustContain(t, q, "toUInt64(countIf(model_total >= 1 AND percent < 5)) AS flagged", "counts with the rule")
 	mustContain(t, q, "FROM (", "reads the scored rows")
 	mustContain(t, q, "fractal_id = 'f1'", "scoped to the fractal")
 	if !strings.Contains(scored, "seen_days AS days") {

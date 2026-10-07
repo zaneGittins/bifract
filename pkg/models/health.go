@@ -156,7 +156,13 @@ func rarityPercentThreshold(def ModelDefinition) float64 {
 func learningNeed(mt ModelType, def ModelDefinition) (int, string) {
 	switch mt {
 	case ModelTypeRarity:
-		return int(math.Floor(100/rarityPercentThreshold(def))) + 1, "day"
+		// The group's min history, or longer when the share threshold needs it: a
+		// value seen on one day can only fall under share S after more than 100/S days.
+		need := int(math.Floor(100/rarityPercentThreshold(def))) + 1
+		if def.MinSample > need {
+			need = def.MinSample
+		}
+		return need, "day"
 	case ModelTypeVolumeBaseline:
 		unit := "day"
 		if def.TimeBucket == "hour" {
