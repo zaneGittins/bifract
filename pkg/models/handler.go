@@ -56,6 +56,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 		mo.SourceQuery = GenerateSourceQuery(mo.Definition)
 		mo.SetStateLag(now)
 	}
+	h.manager.AttachHealth(r.Context(), models)
 	api.WriteList(w, models)
 }
 
@@ -348,11 +349,15 @@ func (h *Handler) HandleParseQuery(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, parsed)
 }
 
-// PreviewRequest estimates a model definition over a recent window.
+// PreviewRequest estimates a model definition over a window: a preset relative
+// to now (1d, 7d, 30d), or an explicit start and end of at most 90 days, which
+// take precedence.
 type PreviewRequest struct {
 	ModelType  ModelType       `json:"model_type"`
 	Definition ModelDefinition `json:"definition"`
 	Window     string          `json:"window"`
+	Start      *time.Time      `json:"start,omitempty"`
+	End        *time.Time      `json:"end,omitempty"`
 }
 
 // HandlePreview estimates a model's output over a recent window BEFORE the model
@@ -372,10 +377,12 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Window == "" {
-		req.Window = "7d"
+	rng, err := ResolvePreviewRange(req.Window, req.Start, req.End, time.Now())
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	result, err := h.manager.Preview(r.Context(), fractalID, req.ModelType, req.Definition, req.Window)
+	result, err := h.manager.Preview(r.Context(), fractalID, req.ModelType, req.Definition, rng)
 	if err != nil {
 		log.Printf("[Models] preview: %v", err)
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Preview failed: %v", err))

@@ -35886,8 +35886,15 @@
           "fractal_id": {
             "type": "string"
           },
+          "health": {
+            "$ref": "#/components/schemas/models.ModelHealth"
+          },
           "id": {
             "type": "string"
+          },
+          "last_alert_at": {
+            "type": "string",
+            "format": "date-time"
           },
           "linked_alert_id": {
             "type": "string"
@@ -36068,8 +36075,15 @@
           "fractal_id": {
             "type": "string"
           },
+          "health": {
+            "$ref": "#/components/schemas/models.ModelHealth"
+          },
           "id": {
             "type": "string"
+          },
+          "last_alert_at": {
+            "type": "string",
+            "format": "date-time"
           },
           "linked_alert_id": {
             "type": "string"
@@ -36137,6 +36151,46 @@
           "backfill_total",
           "backfill_done",
           "row_count"
+        ]
+      },
+      "models.ModelHealth": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "findings": {
+            "type": "integer"
+          },
+          "findings_basis": {
+            "type": "string"
+          },
+          "findings_series": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "history": {
+            "type": "integer"
+          },
+          "history_needed": {
+            "type": "integer"
+          },
+          "history_unit": {
+            "type": "string"
+          },
+          "newest_data": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "history"
         ]
       },
       "models.ModifierParams": {
@@ -36261,6 +36315,10 @@
           "definition": {
             "$ref": "#/components/schemas/models.ModelDefinition"
           },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
           "model_type": {
             "type": "string",
             "enum": [
@@ -36271,6 +36329,10 @@
               "beacon",
               "long_connection"
             ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
           },
           "window": {
             "type": "string"
@@ -36285,6 +36347,13 @@
       "models.PreviewResult": {
         "type": "object",
         "properties": {
+          "distribution": {
+            "$ref": "#/components/schemas/models.ScoreDistribution"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
           "flag_basis": {
             "type": "string"
           },
@@ -36307,6 +36376,10 @@
               "beacon",
               "long_connection"
             ]
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
           },
           "stats": {
             "type": "object",
@@ -36339,6 +36412,8 @@
         "required": [
           "model_type",
           "window",
+          "start",
+          "end",
           "metric",
           "histogram",
           "stats",
@@ -36346,6 +36421,47 @@
           "flag_basis",
           "top",
           "top_columns"
+        ]
+      },
+      "models.ScoreDistribution": {
+        "type": "object",
+        "properties": {
+          "bins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          },
+          "dims": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dims",
+          "steps",
+          "bins",
+          "cells"
         ]
       },
       "models.TestExtractionRequest": {

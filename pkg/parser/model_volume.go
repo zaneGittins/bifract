@@ -27,11 +27,16 @@ type volumeWindow struct {
 // volumeWindowFor bounds hourly models to 30 days and daily ones to 90, in UTC
 // to match the buckets (toStartOfHour/toDate of the UTC log timestamp).
 func volumeWindowFor(timeBucket string) volumeWindow {
+	return volumeWindowAt(timeBucket, "now('UTC')")
+}
+
+// volumeWindowAt is volumeWindowFor as of asOf, a DateTime expression in UTC.
+func volumeWindowAt(timeBucket, asOf string) volumeWindow {
 	if timeBucket == "hour" {
-		cur := "toStartOfHour(now('UTC'))"
+		cur := "toStartOfHour(" + asOf + ")"
 		return volumeWindow{unit: "hour", lower: cur + " - INTERVAL 30 DAY", latest: cur + " - INTERVAL 1 HOUR", upper: cur}
 	}
-	cur := "toDate(now('UTC'))"
+	cur := "toDate(" + asOf + ")"
 	return volumeWindow{unit: "day", lower: cur + " - INTERVAL 90 DAY", latest: cur + " - INTERVAL 1 DAY", upper: cur}
 }
 
@@ -53,7 +58,17 @@ func volumeWindowFor(timeBucket string) volumeWindow {
 // bound (the preview passes its window start); "" uses the model's default.
 // withDays adds the sorted active-day list, which only the data view needs.
 func VolumeScoredSQL(source, scope, timeBucket string, minSample int, lower string, withDays bool) string {
+	return VolumeScoredSQLAt(source, scope, timeBucket, minSample, lower, "", withDays)
+}
+
+// VolumeScoredSQLAt is VolumeScoredSQL scored as of asOf, a UTC DateTime
+// expression, instead of now: the bucket containing asOf is the incomplete one.
+// The preview uses it to score a window that ended in the past.
+func VolumeScoredSQLAt(source, scope, timeBucket string, minSample int, lower, asOf string, withDays bool) string {
 	w := volumeWindowFor(timeBucket)
+	if asOf != "" {
+		w = volumeWindowAt(timeBucket, asOf)
+	}
 	if lower == "" {
 		lower = w.lower
 	}

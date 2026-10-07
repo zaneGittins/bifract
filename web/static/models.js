@@ -221,7 +221,9 @@ const AnalyticsModels = {
         wrap.innerHTML = `
 <table class="models-table">
     <thead><tr>
-        <th>Name</th><th>Type</th><th>Status</th><th>Alert</th><th>Updated</th>
+        <th>Name</th><th>Type</th><th>State</th>
+        <th title="What the model surfaced over the last 7 days">Findings <span class="models-th-sub">7d</span></th>
+        <th>Last alert</th><th>Alert</th>
     </tr></thead>
     <tbody>${filtered.map(m => this._modelRow(m)).join('')}</tbody>
 </table>`;
@@ -232,8 +234,10 @@ const AnalyticsModels = {
             badge.addEventListener('click', () => this._toggleAlertMode(badge.dataset.id, badge.dataset.mode));
         });
 
-        // Keep the listing live while any model is seeding.
-        if (this.models.some(m => m.backfill_status === 'running')) this._startListPoll();
+        // Keep the listing live while any model is seeding, or while the server is
+        // still reading a model's state for its health.
+        const pending = m => m.backfill_status === 'running' || m.health?.state === 'checking';
+        if (this.models.some(pending)) this._startListPoll();
         else this._stopListPoll();
     },
 
@@ -254,50 +258,91 @@ const AnalyticsModels = {
     },
 
     _modelRow(m) {
-        const statusClass = { active: 'badge-active', error: 'badge-error', rebuilding: 'badge-rebuilding' }[m.status] || 'badge-none';
-        const alertBadge = this._alertModeBadge(m);
-        const updated = m.updated_at ? TZ.format(m.updated_at, 'date') : '—';
-        const errorTitle = m.status === 'error' && m.error_message ? ` title="${_esc(m.error_message)}"` : '';
-        // A model can be active and still not current. Two ways: a cycle that keeps
-        // failing (the reason sits in error_message while the status stays active so
-        // it goes on retrying), or one that is simply falling behind. Neither shows
-        // in the status badge, so a model reads as healthy while its state stops
-        // tracking the logs.
-        const stalledBadge = this._stateBadge(m);
-        const backfillBadge = m.backfill_status === 'running'
-            ? ` <span class="model-badge badge-backfilling" title="Backfilling historical data"><span class="model-dot"></span>Backfilling ${this._backfillPct(m)}%</span>`
-            : '';
         return `
-<tr>
+<tr data-model-id="${_esc(m.id)}">
     <td><button class="model-name-link" data-id="${m.id}" title="Open ${_esc(m.name)}">${_esc(m.name)}</button><div class="model-desc">${_esc(m.description)}</div></td>
     <td>${_esc(this._typeLabel(m.model_type))}</td>
-    <td><span class="model-badge ${statusClass}"${errorTitle}><span class="model-dot"></span>${_esc(this._statusLabel(m.status))}</span>${stalledBadge}${backfillBadge}</td>
-    <td>${alertBadge}</td>
-    <td>${updated}</td>
+    <td class="model-state-cell">${this._healthBadge(m)}</td>
+    <td class="model-findings-cell">${this._findingsCell(m)}</td>
+    <td class="model-last-alert-cell">${this._lastAlertCell(m)}</td>
+    <td>${this._alertModeBadge(m)}</td>
 </tr>`;
     },
 
-    // The state badge, or nothing when the model is current. A failure outranks
-    // lag: a model that cannot run a cycle is also behind, and the reason is the
-    // more useful of the two.
-    _stateBadge(m) {
-        if (m.status !== 'active') return '';
-        if (m.error_message) {
-            return ` <span class="model-badge badge-stalled" title="${_esc(m.error_message)}"><span class="model-dot"></span>Not updating</span>`;
+    // One state per model, worst first; the server decides which (health.go) and
+    // the badge only names it. [class, label]
+    HEALTH_BADGES: {
+        error:        ['badge-error', 'Error'],
+        not_updating: ['badge-stalled', 'Not updating'],
+        not_started:  ['badge-stalled', 'Not started'],
+        behind:       ['badge-stalled', 'Behind'],
+        rebuilding:   ['badge-rebuilding', 'Rebuilding'],
+        backfilling:  ['badge-progress', 'Backfill'],
+        stale:        ['badge-stale', 'Stale'],
+        learning:     ['badge-learning', 'Learning'],
+        healthy:      ['badge-healthy', 'Healthy'],
+        checking:     ['badge-checking', 'Checking'],
+        unknown:      ['badge-none', 'Unknown'],
+    },
+
+    _healthBadge(m) {
+        const h = m.health;
+        if (!h) {
+            const cls = { active: 'badge-active', error: 'badge-error', rebuilding: 'badge-rebuilding' }[m.status] || 'badge-none';
+            return `<span class="model-badge ${cls}"><span class="model-dot"></span>${_esc(this._statusLabel(m.status))}</span>`;
         }
-        // No watermark on an active model means state maintenance never took it
-        // over. The handover runs at startup and only logs on failure, so without
-        // this the model sits there looking healthy and never updating again.
-        if (m.state_lag_seconds == null) {
-            return ` <span class="model-badge badge-stalled" title="State maintenance has not taken this model over; restart the app, and check the logs for a handover failure"><span class="model-dot"></span>Not started</span>`;
+        const [cls, base] = this.HEALTH_BADGES[h.state] || ['badge-none', this._statusLabel(h.state)];
+        let label = base;
+        if (h.state === 'behind' && m.state_lag_seconds != null) label += ' ' + this._lagLabel(m.state_lag_seconds);
+        if (h.state === 'backfilling') label += ` ${this._backfillPct(m)}%`;
+        if (h.state === 'stale' && h.newest_data) label += ' ' + this._lagLabel((Date.now() - TZ.toEpoch(h.newest_data)) / 1000);
+        if (h.state === 'learning' && h.history_needed) label += ` ${h.history || 0}/${h.history_needed}${h.history_unit === 'hour' ? 'h' : 'd'}`;
+        const lines = [h.detail || ''];
+        if (h.newest_data) lines.push(`Newest event: ${TZ.format(h.newest_data, 'friendly')}`);
+        return `<span class="model-badge ${cls}" title="${_esc(lines.filter(Boolean).join('\n'))}"><span class="model-dot"></span>${_esc(label)}</span>`;
+    },
+
+    // Findings over the last 7 days, with a per-day sparkline where the model
+    // keeps a daily history of them.
+    _findingsCell(m) {
+        const h = m.health;
+        if (!h || h.findings == null) {
+            const why = m.model_type === 'tlsh' ? 'A TLSH index raises no findings' : 'Not computed yet';
+            return `<span class="model-muted" title="${why}">n/a</span>`;
         }
-        if (!m.state_behind) return '';
-        const lag = this._lagLabel(m.state_lag_seconds);
-        return ` <span class="model-badge badge-stalled" title="State is ${_esc(lag)} behind the logs; it is still catching up or the cycle cannot keep pace"><span class="model-dot"></span>Behind ${_esc(lag)}</span>`;
+        const n = Number(h.findings) || 0;
+        const series = Array.isArray(h.findings_series) ? h.findings_series : [];
+        let title = h.findings_basis || '';
+        if (series.length) {
+            const day = i => new Date(Date.now() - (series.length - 1 - i) * 86400000).toISOString().slice(5, 10);
+            title += '\n' + series.map((c, i) => `${day(i)}: ${Number(c).toLocaleString()}`).join('\n');
+        }
+        return `<span class="model-findings${n > 0 ? ' has-findings' : ''}" title="${_esc(title)}">` +
+            `<span class="model-findings-n">${this._fmtNum(n)}</span>${series.length ? this._sparkline(series) : ''}</span>`;
+    },
+
+    // A 7-bar sparkline; an empty day keeps a 1px tick so the week reads as a week.
+    _sparkline(series) {
+        const max = Math.max(1, ...series.map(Number));
+        const w = 4, gap = 2, hgt = 14;
+        const bars = series.map((v, i) => {
+            const n = Number(v) || 0;
+            const bh = n > 0 ? Math.max(2, Math.round(n / max * hgt)) : 1;
+            return `<rect x="${i * (w + gap)}" y="${hgt - bh}" width="${w}" height="${bh}" rx="1"${n > 0 ? '' : ' class="spark-zero"'}/>`;
+        }).join('');
+        return `<svg class="model-spark" width="${series.length * (w + gap) - gap}" height="${hgt}" viewBox="0 0 ${series.length * (w + gap) - gap} ${hgt}" aria-hidden="true">${bars}</svg>`;
+    },
+
+    _lastAlertCell(m) {
+        if (!m.linked_alert_id) return '<span class="model-muted" title="Collect only: no alert">n/a</span>';
+        if (!m.last_alert_at) return '<span class="model-muted">Never</span>';
+        const secs = (Date.now() - TZ.toEpoch(m.last_alert_at)) / 1000;
+        const rel = secs < 86400 ? `${this._lagLabel(Math.max(0, secs))} ago` : (FactChips.ago(m.last_alert_at) || TZ.format(m.last_alert_at, 'date'));
+        return `<span class="model-last-alert" title="${_esc(TZ.format(m.last_alert_at, 'friendly'))}">${_esc(rel)}</span>`;
     },
 
     _lagLabel(seconds) {
-        const s = Number(seconds) || 0;
+        const s = Math.floor(Number(seconds) || 0);
         if (s < 60) return `${s}s`;
         if (s < 3600) return `${Math.floor(s / 60)}m`;
         if (s < 86400) return `${Math.floor(s / 3600)}h`;
@@ -318,11 +363,13 @@ const AnalyticsModels = {
         return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown';
     },
 
+    // Active is the only mode that can page someone, so it is the only one with
+    // weight; paused is an outline, collect-only is plain text.
     _alertModeBadge(m) {
         switch (m.alert_mode) {
             case 'active': return `<span class="model-badge badge-alert-active alert-mode-badge" data-id="${m.id}" data-mode="active" title="Click to pause"><span class="model-dot"></span>Active</span>`;
-            case 'paused': return `<span class="model-badge badge-paused alert-mode-badge" data-id="${m.id}" data-mode="paused" title="Click to activate"><span class="model-dot"></span>Paused</span>`;
-            default:       return `<span class="model-badge badge-none">No Alert</span>`;
+            case 'paused': return `<span class="model-badge badge-shadow alert-mode-badge" data-id="${m.id}" data-mode="paused" title="Click to activate">Paused</span>`;
+            default:       return `<span class="model-collect-only" title="The model records data but raises no alert">Collect only</span>`;
         }
     },
 
@@ -414,7 +461,11 @@ const AnalyticsModels = {
             ran: false,
             resultMode: 'logs',
             previewWindow: '7d',
+            previewStart: '',
+            previewEnd: '',
             preview: null,
+            previewCfg: null,
+            showGallery: false,
             dirty: false,
         };
         this.currentView = 'editor';
@@ -1768,6 +1819,57 @@ ${m.description ? `<div class="me-sec">
 
     BASE_FIELDS: ['norm_log', 'contents', 'commandline', 'target_file', 'src_ip', 'dst_ip', 'user', 'image', 'parent_process', 'process_name'],
 
+    // Starter models over the normalized schema (bifract_category plus the
+    // provenance fields, see docs/features/provenance-graph.md). Each fills the
+    // whole editor; the author tunes from there.
+    TEMPLATES: [
+        {
+            id: 'new_programs', title: 'New programs per host',
+            blurb: 'A binary running on a host for the first time.',
+            name: 'new_programs_per_host', type: 'first_seen',
+            description: 'Alerts when a host runs an image it has never run before.',
+            query: 'bifract_category=process_creation',
+            shape: { keyFields: ['computer_name', 'image'] },
+            alert: { alert_on_new: true },
+        },
+        {
+            id: 'office_child', title: 'Rare child of Office apps',
+            blurb: 'Office spawning a process it rarely spawns.',
+            name: 'rare_office_child', type: 'rarity',
+            description: 'Scores how rarely each Office application launches a given child process.',
+            query: 'bifract_category=process_creation\n| parent_image=$winword.exe,excel.exe,powerpnt.exe,outlook.exe,onenote.exe,msaccess.exe,mspub.exe',
+            shape: { partitionKey: 'parent_image', valueKey: 'image', minSample: 1 },
+            alert: { confidence_threshold: 0.9, percent_threshold: 10 },
+        },
+        {
+            id: 'outbound_ports', title: 'New outbound ports per host',
+            blurb: 'A host connecting on a port it rarely uses.',
+            name: 'rare_ports_per_host', type: 'rarity',
+            description: 'Scores how rarely each host connects to a destination port.',
+            query: 'bifract_category=network_connect',
+            shape: { partitionKey: 'computer_name', valueKey: 'dst_port', minSample: 1 },
+            alert: { confidence_threshold: 0.9, percent_threshold: 10 },
+        },
+        {
+            id: 'net_volume', title: 'Network volume spike per host',
+            blurb: 'Hourly connection count far above the host\'s norm.',
+            name: 'network_volume_per_host', type: 'volume_baseline',
+            description: 'Flags hosts whose hourly connection count spikes against their own history.',
+            query: 'bifract_category=network_connect',
+            shape: { keyFields: ['computer_name'], timeBucket: 'hour', minSample: 24 },
+            alert: { z_threshold: 3.5 },
+        },
+        {
+            id: 'beaconing', title: 'Beaconing',
+            blurb: 'Regular, automated check-ins to one destination.',
+            name: 'beaconing', type: 'beacon',
+            description: 'Finds source, destination and port pairs that connect on a regular interval.',
+            query: 'bifract_category=network_connect',
+            shape: { window: '1d', network: { src_field: 'src_ip', dst_field: 'dst_ip', port_field: 'dst_port', bytes_field: 'orig_bytes' } },
+            alert: { beacon_threshold: 0.8 },
+        },
+    ],
+
     _startEditor() {
         window.App?.pushSubPath('new');
         this.editor = {
@@ -1794,8 +1896,12 @@ ${m.description ? `<div class="me-sec">
             hasTimeline: false,
             ran: false,
             resultMode: 'logs',     // 'logs' (matching logs) | 'scores' (score preview)
-            previewWindow: '7d',    // lookback for the score preview
+            previewWindow: '7d',    // score preview preset, or 'custom' for previewStart/End
+            previewStart: '',       // custom preview range, UTC ISO8601
+            previewEnd: '',
             preview: null,          // last PreviewResult
+            previewCfg: null,       // alertConfig the preview was scored with
+            showGallery: true,      // starter templates until one is picked or the user starts blank
             dirty: false,
         };
         this.currentView = 'editor';
@@ -1808,7 +1914,7 @@ ${m.description ? `<div class="me-sec">
         const e = this.editor;
         const scores = e.resultMode === 'scores';
         const ranges = [['1h', 'Last 1 Hour'], ['6h', 'Last 6 Hours'], ['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
-        const previews = [['1d', 'Last 1 Day'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        const previews = [['1d', 'Last 1 Day'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days'], ['custom', 'Custom range']];
         const opts = (list, sel) => list.map(([v, l]) => `<option value="${v}" ${sel === v ? 'selected' : ''}>${l}</option>`).join('');
         container.innerHTML = `
 <div class="model-editor-container">
@@ -1829,7 +1935,13 @@ ${m.description ? `<div class="me-sec">
             <section class="search-section">
                 <div class="search-toolbar">
                     <select id="modelTimeRange" class="time-range-select" ${scores ? 'hidden' : ''}>${opts(ranges, e.timeRange)}</select>
-                    <select id="modelPreviewWindow" class="time-range-select" title="Lookback window for the score preview" ${scores ? '' : 'hidden'}>${opts(previews, e.previewWindow)}</select>
+                    <select id="modelPreviewWindow" class="time-range-select" title="Window the score preview scans" ${scores ? '' : 'hidden'}>${opts(previews, e.previewWindow)}</select>
+                    <div id="modelPreviewRange" class="me-preview-range" ${scores && e.previewWindow === 'custom' ? '' : 'hidden'}>
+                        <input type="text" id="modelPreviewStart" class="me-range-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false" autocomplete="off" value="${_esc(e.previewStart ? TZ.formatInput(e.previewStart) : '')}" aria-label="Preview start">
+                        <span class="me-range-sep">to</span>
+                        <input type="text" id="modelPreviewEnd" class="me-range-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false" autocomplete="off" value="${_esc(e.previewEnd ? TZ.formatInput(e.previewEnd) : '')}" aria-label="Preview end">
+                        <button type="button" class="btn-secondary me-range-apply" id="modelPreviewApply">Apply</button>
+                    </div>
                     <div class="toolbar-spacer"></div>
                     <button class="search-btn" id="modelRunBtn" ${scores ? 'hidden' : ''}>
                         <span class="btn-text">Run</span>
@@ -1869,7 +1981,7 @@ ${m.description ? `<div class="me-sec">
                             <code id="modelSqlOutput" style="display:none;"></code>
                         </div>
                         <div id="modelTranslation" class="model-translation"></div>
-                        <div id="modelQueryResults" class="results-container">${this._benchEmpty()}</div>
+                        <div id="modelQueryResults" class="results-container">${!e.editId && e.showGallery ? this._templateGalleryHTML() : this._benchEmpty()}</div>
                     </div>
 
                     <div id="modelScorePreview" class="model-score-pane" ${scores ? '' : 'hidden'}></div>
@@ -1962,7 +2074,8 @@ ${m.description ? `<div class="me-sec">
         document.querySelectorAll('#modelResultTabs .ert-tab').forEach(b => {
             b.addEventListener('click', () => this._setResultMode(b.dataset.mode));
         });
-        document.getElementById('modelPreviewWindow').addEventListener('change', ev => { e.previewWindow = ev.target.value; this._runScorePreview(); });
+        this._bindPreviewRange();
+        this._bindTemplateGallery();
         this._bindTypeCards();
         this._bindEditorDetails();
         this._bindEditorShape();
@@ -1994,6 +2107,77 @@ ${m.description ? `<div class="me-sec">
 
     _benchEmpty(title = 'Nothing run yet', detail = 'Run the query to preview matching logs and the fields you can build a shape from.') {
         return EmptyState.render({ icon: 'list', title, detail });
+    },
+
+    // ---- Starter templates (new models only) ----
+    _templateGalleryHTML() {
+        const keys = t => {
+            const sh = t.shape || {};
+            if (sh.partitionKey) return `${sh.partitionKey} → ${sh.valueKey}`;
+            if (sh.keyFields) return sh.keyFields.join(', ') + (sh.timeBucket ? ` per ${sh.timeBucket}` : '');
+            if (sh.network) return `${sh.network.src_field} → ${sh.network.dst_field}:${sh.network.port_field}`;
+            return '';
+        };
+        const cards = this.TEMPLATES.map(t => `
+<button type="button" class="me-tpl-card" data-template="${_esc(t.id)}">
+    <span class="me-tpl-head">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${this.TYPE_ICONS[t.type] || ''}</svg>
+        <span class="me-tpl-title">${_esc(t.title)}</span>
+    </span>
+    <span class="me-tpl-blurb">${_esc(t.blurb)}</span>
+    <span class="me-tpl-meta">${_esc(this._typeLabel(t.type))} · <code>${_esc(keys(t))}</code></span>
+</button>`).join('');
+        return `
+<div class="me-tpl-gallery" id="modelTemplateGallery">
+    <div class="me-tpl-intro">
+        <div class="me-tpl-heading">Start from a template</div>
+        <div class="me-tpl-sub">Each fills the query, shape and thresholds over the normalized schema. Tune from there.</div>
+    </div>
+    <div class="me-tpl-grid">${cards}</div>
+    <button type="button" class="btn-secondary me-tpl-blank" id="modelStartBlank">Start blank</button>
+</div>`;
+    },
+
+    _bindTemplateGallery() {
+        const gallery = document.getElementById('modelTemplateGallery');
+        if (!gallery) return;
+        gallery.querySelectorAll('.me-tpl-card').forEach(card => {
+            card.addEventListener('click', () => this._applyTemplate(card.dataset.template));
+        });
+        document.getElementById('modelStartBlank')?.addEventListener('click', () => {
+            this.editor.showGallery = false;
+            const el = document.getElementById('modelQueryResults');
+            if (el) el.innerHTML = this._benchEmpty();
+            document.getElementById('modelQueryInput')?.focus();
+        });
+    },
+
+    // Fills the editor from a template, then scores it: the preview is what tells
+    // the author whether the template fits their data.
+    _applyTemplate(id) {
+        const t = this.TEMPLATES.find(x => x.id === id);
+        if (!t) return;
+        const e = this.editor;
+        const sh = t.shape || {};
+        e.showGallery = false;
+        e.modelType = t.type;
+        e.name = t.name;
+        e.description = t.description;
+        e.query = t.query;
+        e.partitionKey = sh.partitionKey || '';
+        e.valueKey = sh.valueKey || '';
+        e.keyFields = sh.keyFields ? [...sh.keyFields] : [''];
+        e.minSample = sh.minSample || this._defaultMinSample(t.type);
+        e.timeBucket = sh.timeBucket || 'day';
+        e.window = sh.window || '1d';
+        e.network = this._networkFromDef({ network: sh.network || {} });
+        Object.assign(e.alertConfig, t.alert || {});
+        e.resultMode = 'scores';
+        e.dirty = true;
+        this._render();
+        // The Results tab gets the matching logs too, which also feeds the field
+        // suggestions; it renders into its hidden pane.
+        this._runQuery();
     },
 
     // Icon-and-label cards, as in the alert editor's type picker. The description of
@@ -2225,7 +2409,7 @@ ${isBeacon ? `
 <div class="field-group" style="margin-top:10px">
     <label>Min days seen</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
-    <p class="config-hint">Days a value must have been seen before it is scored. Keep it at 1: first sightings are what this model finds.</p>
+    <p class="config-hint">Keep at 1: first sightings are what this model finds.</p>
 </div>
 <p class="config-hint">Example: Partition=<em>computer_name</em>, Value=<em>dst_port</em> scores how unusual a port is for that host, counted in days.</p>`;
         }
@@ -2253,7 +2437,7 @@ ${isBeacon ? `
         <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
     </div>
 </div>
-<p class="config-hint">Counts events per <em>${e.timeBucket === 'hour' ? 'hour' : 'day'}</em> per entity, then scores the latest complete bucket against the entity's own history (modified z-score). Empty buckets since the entity first appeared count as zero, and min history counts them too. The current, incomplete bucket is excluded.</p>`;
+<p class="config-hint">Scores each entity's last complete ${e.timeBucket === 'hour' ? 'hour' : 'day'} against its own history (modified z-score). Empty buckets count as zero.</p>`;
         }
         if (e.modelType === 'tlsh') {
             return `
@@ -2365,13 +2549,13 @@ ${isBeacon ? `
             <input type="number" id="alertPercent" class="model-num-input" value="${c.percent_threshold}" min="0.1" max="100" step="0.5">
         </div>
     </div>
-    <p class="config-hint">Alerts on a value seen on fewer than this share of its partition's days, once the partition rarely produces new values (confidence is Good-Turing coverage). A one-day value needs more than 100 ÷ share days of history, so 10% learns for 10 days.</p>`;
+    <p class="config-hint">Flags values seen on under this share of their partition's days, where new values are rare. Learns for more than 100 ÷ share days.</p>`;
         } else if (mt === 'volume_baseline') {
             typeFields = `
     <div class="field-group" style="margin-top:10px">
         <label>Z-score threshold</label>
         <input type="number" id="alertZThreshold" class="model-num-input" value="${c.z_threshold}" min="0" step="0.5">
-        <p class="config-hint">Alert on an entity's logs when its latest complete bucket scores a modified z-score above this (a spike). 3.5 is the standard cutoff.</p>
+        <p class="config-hint">Flags a spike above this modified z-score. 3.5 is the standard cutoff.</p>
     </div>`;
         } else {
             typeFields = `
@@ -2428,14 +2612,22 @@ ${isBeacon ? `
         input.style.width = Math.min(Math.max(probe.offsetWidth + 22, 60), 640) + 'px';
     },
 
+    // Thresholds never need a new scan: the Scores tab recounts from the
+    // distribution it already has (_onThresholdChange).
     _bindAlertConfigEvents() {
         const c = this.editor.alertConfig;
-        document.getElementById('alertConfidence')?.addEventListener('change', ev => { c.confidence_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
-        document.getElementById('alertPercent')?.addEventListener('change', ev => { c.percent_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
-        document.getElementById('alertZThreshold')?.addEventListener('change', ev => { c.z_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
-        document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; this._schedulePreview(); });
-        document.getElementById('alertBeaconThreshold')?.addEventListener('change', ev => { c.beacon_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
-        document.getElementById('alertLongConnThreshold')?.addEventListener('change', ev => { c.longconn_threshold = parseFloat(ev.target.value); this._schedulePreview(); });
+        const num = (id, key) => document.getElementById(id)?.addEventListener('input', ev => {
+            const v = parseFloat(ev.target.value);
+            if (!Number.isFinite(v)) return;
+            c[key] = v;
+            this._onThresholdChange(key);
+        });
+        num('alertConfidence', 'confidence_threshold');
+        num('alertPercent', 'percent_threshold');
+        num('alertZThreshold', 'z_threshold');
+        num('alertBeaconThreshold', 'beacon_threshold');
+        num('alertLongConnThreshold', 'longconn_threshold');
+        document.getElementById('alertOnNew')?.addEventListener('change', ev => { c.alert_on_new = ev.target.checked; this._onThresholdChange('alert_on_new'); });
     },
 
     // ---- Translation feedback strip (left panel) ----
@@ -2780,6 +2972,47 @@ ${isBeacon ? `
     },
 
     // ---- Score preview ----
+    // The preview's window: a preset, or a custom range typed as wall clock in
+    // the display zone (the same "YYYY-MM-DD HH:MM" the time pickers take).
+    _bindPreviewRange() {
+        const e = this.editor;
+        const sel = document.getElementById('modelPreviewWindow');
+        const box = document.getElementById('modelPreviewRange');
+        if (!sel || !box) return;
+        sel.addEventListener('change', ev => {
+            e.previewWindow = ev.target.value;
+            box.hidden = e.previewWindow !== 'custom';
+            if (e.previewWindow === 'custom') {
+                // Seed with the last 7 days so there is something to edit.
+                if (!e.previewStart || !e.previewEnd) {
+                    e.previewEnd = new Date().toISOString();
+                    e.previewStart = new Date(Date.now() - 7 * 86400000).toISOString();
+                    document.getElementById('modelPreviewStart').value = TZ.formatInput(e.previewStart);
+                    document.getElementById('modelPreviewEnd').value = TZ.formatInput(e.previewEnd);
+                }
+                document.getElementById('modelPreviewStart')?.focus();
+            }
+            this._runScorePreview();
+        });
+        const apply = () => {
+            const parse = id => {
+                const ms = TZ.parseWallClock(String(document.getElementById(id)?.value || '').trim());
+                return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+            };
+            const start = parse('modelPreviewStart'), end = parse('modelPreviewEnd');
+            if (!start || !end) { Toast.warning('Enter the range as YYYY-MM-DD HH:MM'); return; }
+            if (Date.parse(end) <= Date.parse(start)) { Toast.warning('The range must end after it starts'); return; }
+            if (Date.parse(end) - Date.parse(start) > 90 * 86400000) { Toast.warning('A preview range is limited to 90 days'); return; }
+            e.previewStart = start;
+            e.previewEnd = end;
+            this._runScorePreview();
+        };
+        document.getElementById('modelPreviewApply')?.addEventListener('click', apply);
+        box.querySelectorAll('.me-range-input').forEach(i => i.addEventListener('keydown', ev => {
+            if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
+        }));
+    },
+
     _setResultMode(mode) {
         const e = this.editor;
         e.resultMode = mode;
@@ -2792,6 +3025,7 @@ ${isBeacon ? `
         show('modelScorePreview', scores);
         show('modelTimeRange', !scores);
         show('modelPreviewWindow', scores);
+        show('modelPreviewRange', scores && e.previewWindow === 'custom');
         show('modelRunBtn', !scores);
         // The count and the timeline describe the pane on screen, so they do not
         // follow the tab out, and they come back with it.
@@ -2848,10 +3082,21 @@ ${isBeacon ? `
         }
 
         const def = this._composeDefinition(parsed);
+        const body = { model_type: e.modelType, definition: def, window: e.previewWindow };
+        if (e.previewWindow === 'custom') {
+            if (!e.previewStart || !e.previewEnd) {
+                panel.innerHTML = this._benchEmpty('Pick a range', 'Enter a start and end (up to 90 days) to score the model over a past window.');
+                return;
+            }
+            body.window = '';
+            body.start = e.previewStart;
+            body.end = e.previewEnd;
+        }
         try {
-            const data = await this._api('POST', '/models/preview', { model_type: e.modelType, definition: def, window: e.previewWindow });
+            const data = await this._api('POST', '/models/preview', body);
             if (seq !== this._previewSeq) return;
             e.preview = data?.data || null;
+            e.previewCfg = { ...e.alertConfig };
             this._renderScorePreview();
         } catch (err) {
             if (seq !== this._previewSeq) return;
@@ -2883,7 +3128,7 @@ ${isBeacon ? `
         } else if (p.model_type === 'first_seen') {
             chips = [
                 [num(s.entities), 'entities'],
-                [num(s.new_recent), 'new (last 24h)'],
+                [num(s.new_recent), 'new (last 24h of range)'],
             ];
         } else if (p.model_type === 'volume_baseline') {
             chips = [
@@ -2900,50 +3145,194 @@ ${isBeacon ? `
         }
 
         const scoredTotal = Number(s.scored_values || s.entities || s.entities_scored || s.pairs_scored || 0);
-        const flags = Number(p.would_flag || 0);
-        // The tab carries the number that matters: how much this model would fire.
-        if (chip) {
-            chip.textContent = this._fmtNum(flags);
-            chip.classList.toggle('warn', flags > 0);
-            chip.hidden = false;
-        }
-        const flagBadge = `<div class="score-flag-badge ${flags > 0 ? 'has-flags' : ''}">
-    <span class="score-flag-count">${this._fmtNum(flags)}</span>
-    <span class="score-flag-text">would flag</span>
-    <span class="score-flag-basis">${_esc(p.flag_basis || '')}</span>
-</div>`;
-
         const chipsHTML = chips.map(([v, l]) => `<div class="score-stat-chip"><span class="score-stat-val">${_esc(String(v))}</span><span class="score-stat-label">${_esc(l)}</span></div>`).join('');
 
         // Volume baseline needs several complete buckets to score; surface why it
         // may be empty over a short window rather than showing a blank chart.
         let hint = '';
+        const range = this._previewRangeLabel(p);
         if (p.model_type === 'volume_baseline' && scoredTotal === 0) {
-            hint = `<div class="score-preview-hint">No entity has enough buckets of history in this window to establish a baseline. Try a longer window or the per-hour bucket.</div>`;
+            hint = `<div class="score-preview-hint">No entity has enough buckets of history in ${_esc(range)} to establish a baseline. Try a longer window or the per-hour bucket.</div>`;
         } else if (scoredTotal === 0) {
-            hint = `<div class="score-preview-hint">No matching results in the last ${_esc(p.window)}.</div>`;
+            hint = `<div class="score-preview-hint">No matching results ${_esc(range)}. If the data is older, pick a custom range.</div>`;
         }
 
         const countEl = document.getElementById('modelResultsCount');
         if (countEl) countEl.textContent = `${this._fmtNum(scoredTotal)} scored`;
 
-        // The criterion wording comes from the server, which is where the rule that
-        // produced would_flag lives; spelling it again here let the two disagree.
-        const histHTML = this._buildHistogramHTML(p.histogram || [], p.metric,
-            p.model_type === 'rarity' ? this.editor.alertConfig.confidence_threshold : null,
-            p.model_type === 'rarity' ? (p.flag_basis || '') : '');
         const topHTML = this._previewTopTableHTML(p.top_columns || [], p.top || []);
 
         panel.innerHTML = `
 <div class="score-preview">
     <div class="score-preview-head">
         <div class="score-preview-stats">${chipsHTML}</div>
-        ${flagBadge}
+        <div id="modelFlagBadge"></div>
     </div>
+    ${this._scoreThresholdsHTML(p.model_type)}
     ${hint}
-    ${histHTML}
+    <div id="modelScoreHistogram"></div>
     ${topHTML}
 </div>`;
+        this._bindScoreThresholds();
+        this._renderFlagCount();
+    },
+
+    // "over the last 7d", or "between Sep 1 10:00 and Sep 8 10:00" for a custom range.
+    _previewRangeLabel(p) {
+        if (p.window) return `in the last ${p.window}`;
+        if (p.start && p.end) return `between ${TZ.format(p.start, 'friendly')} and ${TZ.format(p.end, 'friendly')}`;
+        return 'in this window';
+    },
+
+    // The would-flag count, the tab chip and the histogram marker for the current
+    // thresholds. Recounted from the preview's score distribution, so moving a
+    // threshold costs no scan; the server's own count stands when the thresholds
+    // are the ones it scored with.
+    _renderFlagCount() {
+        const e = this.editor;
+        const p = e.preview;
+        if (!p) return;
+        const counted = this._countFlags(p);
+        const asScored = this._thresholdsAsScored(p.model_type);
+        const flags = asScored || !counted ? Number(p.would_flag || 0) : counted.n;
+        const approx = !asScored && counted && !counted.exact;
+        // The criterion wording comes from the server, where the rule lives; once a
+        // threshold moves, the controls above say what it is instead.
+        const basis = asScored ? (p.flag_basis || '') : (counted ? 'at the thresholds above' : 'rescoring...');
+
+        const chip = document.getElementById('modelFlagChip');
+        if (chip) {
+            chip.textContent = this._fmtNum(flags);
+            chip.classList.toggle('warn', flags > 0);
+            chip.hidden = false;
+        }
+        const badge = document.getElementById('modelFlagBadge');
+        if (badge) {
+            badge.innerHTML = `<div class="score-flag-badge ${flags > 0 ? 'has-flags' : ''}">
+    <span class="score-flag-count">${approx ? '~' : ''}${this._fmtNum(flags)}</span>
+    <span class="score-flag-text">would flag</span>
+    <span class="score-flag-basis">${_esc(basis)}</span>
+</div>`;
+        }
+        const hist = document.getElementById('modelScoreHistogram');
+        if (hist) {
+            const c = e.alertConfig;
+            const fracKey = { rarity: 'confidence_threshold', beacon: 'beacon_threshold', long_connection: 'longconn_threshold' }[p.model_type];
+            let frac = fracKey ? Number(c[fracKey]) : null;
+            if (frac != null && !(frac >= 0 && frac <= 1)) frac = null;
+            const criterion = p.model_type !== 'rarity' ? '' : (asScored ? (p.flag_basis || '') : 'the thresholds above');
+            hist.innerHTML = this._buildHistogramHTML(p.histogram || [], p.metric, frac, criterion, null);
+        }
+    },
+
+    // Threshold fields per type: [alertConfig key, label, min, max, step, default].
+    THRESHOLD_FIELDS: {
+        rarity: [['confidence_threshold', 'Min confidence', 0, 1, 0.01, 0.9], ['percent_threshold', 'Max % of days', 0.1, 100, 0.1, 10]],
+        volume_baseline: [['z_threshold', 'Z-score above', 0, 20, 0.1, 3.5]],
+        beacon: [['beacon_threshold', 'Score at least', 0, 1, 0.01, 0.8]],
+        long_connection: [['longconn_threshold', 'Score at least', 0, 1, 0.01, 0.5]],
+    },
+
+    _scoreThresholdsHTML(mt) {
+        const c = this.editor.alertConfig;
+        if (mt === 'first_seen') {
+            return `<div class="score-thresholds"><label class="toggle-label"><input type="checkbox" class="themed-checkbox" id="scoreAlertOnNew" ${c.alert_on_new ? 'checked' : ''}> Alert on new entities only</label></div>`;
+        }
+        const fields = this.THRESHOLD_FIELDS[mt];
+        if (!fields) return '';
+        return `<div class="score-thresholds">${fields.map(([key, label, min, max, step]) => `
+    <label class="score-threshold" data-key="${key}">
+        <span class="score-threshold-label">${_esc(label)}</span>
+        <input type="range" class="score-threshold-range" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${_esc(String(c[key]))}">
+        <input type="number" class="model-num-input model-num-mini score-threshold-num" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${_esc(String(c[key]))}">
+    </label>`).join('')}</div>`;
+    },
+
+    _bindScoreThresholds() {
+        const e = this.editor;
+        document.getElementById('scoreAlertOnNew')?.addEventListener('change', ev => {
+            e.alertConfig.alert_on_new = ev.target.checked;
+            this._onThresholdChange('alert_on_new');
+        });
+        document.querySelectorAll('#modelScorePreview .score-threshold input').forEach(input => {
+            input.addEventListener('input', ev => {
+                const key = ev.target.dataset.key;
+                const v = parseFloat(ev.target.value);
+                if (!Number.isFinite(v)) return;
+                e.alertConfig[key] = v;
+                // Keep the slider and its number box together.
+                document.querySelectorAll(`#modelScorePreview .score-threshold input[data-key="${key}"]`).forEach(o => { if (o !== ev.target) o.value = String(v); });
+                this._onThresholdChange(key);
+            });
+        });
+    },
+
+    // A threshold moved, from the Scores tab or the rail. Both controls follow,
+    // and the count is redone client-side when the distribution allows it.
+    _onThresholdChange(key) {
+        const e = this.editor;
+        this._markDirty();
+        const v = e.alertConfig[key];
+        const railIds = { confidence_threshold: 'alertConfidence', percent_threshold: 'alertPercent', z_threshold: 'alertZThreshold', beacon_threshold: 'alertBeaconThreshold', longconn_threshold: 'alertLongConnThreshold', alert_on_new: 'alertOnNew' };
+        const rail = document.getElementById(railIds[key]);
+        if (rail && document.activeElement !== rail) {
+            if (rail.type === 'checkbox') rail.checked = !!v; else rail.value = String(v);
+        }
+        document.querySelectorAll(`#modelScorePreview .score-threshold input[data-key="${key}"]`).forEach(o => { if (document.activeElement !== o) o.value = String(v); });
+        const scoreNew = document.getElementById('scoreAlertOnNew');
+        if (scoreNew && key === 'alert_on_new') scoreNew.checked = !!v;
+
+        if (e.resultMode !== 'scores' || !e.preview) return;
+        if (e.preview.model_type !== e.modelType) { this._schedulePreview(); return; }
+        if (this._countFlags(e.preview) || this._thresholdsAsScored(e.preview.model_type)) this._renderFlagCount();
+        else this._schedulePreview();
+    },
+
+    // True when the thresholds the count depends on are the ones the preview was
+    // scored with, so the server's would_flag and wording apply as they are.
+    _thresholdsAsScored(mt) {
+        const was = this.editor.previewCfg;
+        if (!was) return false;
+        const now = this.editor.alertConfig;
+        const keys = mt === 'first_seen' ? ['alert_on_new'] : (this.THRESHOLD_FIELDS[mt] || []).map(f => f[0]);
+        return keys.every(k => String(was[k]) === String(now[k]));
+    },
+
+    // Recounts would_flag from the preview's distribution (see ScoreDistribution
+    // in preview.go): { n, exact } or null when it cannot. Each rule mirrors the
+    // server's for the type, defaults included.
+    _countFlags(p) {
+        const c = this.editor.alertConfig;
+        if (p.model_type === 'first_seen' || p.model_type === 'tlsh') {
+            const s = p.stats || {};
+            return { n: Number(c.alert_on_new ? s.new_recent : s.entities) || 0, exact: true };
+        }
+        const d = p.distribution;
+        if (!d || d.truncated || !Array.isArray(d.cells)) return null;
+        const onGrid = (v, step) => Math.abs(v / step - Math.round(v / step)) < 1e-6;
+        let n = 0, exact = true;
+        if (p.model_type === 'rarity') {
+            const ct = Number(c.confidence_threshold) || 0, pt = Number(c.percent_threshold) || 0;
+            const cj = Math.round(ct * 100), pj = Math.round(pt * 10);
+            exact = onGrid(ct, 0.01) && onGrid(pt, 0.1);
+            for (const [cb, pb, cnt] of d.cells) {
+                if ((ct <= 0 || cb > cj) && (pt <= 0 || pb < pj)) n += cnt;
+            }
+        } else if (p.model_type === 'volume_baseline') {
+            const z = Number(c.z_threshold) > 0 ? Number(c.z_threshold) : 3.5;
+            const zj = Math.round(z * 10);
+            exact = onGrid(z, 0.1);
+            for (const [zb, cnt] of d.cells) if (zb > zj) n += cnt;
+        } else if (this._isNetworkType(p.model_type)) {
+            const raw = Number(p.model_type === 'beacon' ? c.beacon_threshold : c.longconn_threshold);
+            const t = raw > 0 ? raw : (p.model_type === 'beacon' ? 0.8 : 0.5);
+            const tj = Math.round(t * 100);
+            exact = onGrid(t, 0.01);
+            for (const [fb, cnt] of d.cells) if (fb >= tj) n += cnt;
+        } else {
+            return null;
+        }
+        return { n, exact };
     },
 
     // Builds the score-distribution chart markup, reusing the model viewer's

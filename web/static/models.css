@@ -140,6 +140,48 @@
 .badge-alert-active:hover { background: rgba(52,199,89,0.3); }
 .badge-paused:hover { background: rgba(255,204,0,0.3); cursor: pointer; }
 
+/* Listing health states (health.go). Theme tokens, so both themes keep contrast. */
+.badge-healthy  { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+.badge-learning { background: color-mix(in srgb, var(--info) 14%, transparent);    color: var(--info); }
+.badge-stale    { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
+.badge-progress { background: color-mix(in srgb, var(--accent-primary) 16%, transparent); color: var(--accent-secondary); }
+.badge-checking { background: var(--bg-tertiary); color: var(--text-muted); }
+.badge-checking .model-dot { animation: model-dot-pulse 1.2s ease-in-out infinite; }
+@keyframes model-dot-pulse { 50% { opacity: 0.3; } }
+
+/* A paused alert exists but cannot fire: an outline, not a fill. */
+.badge-shadow {
+    background: transparent;
+    border: 1px dashed var(--border-color);
+    color: var(--text-secondary);
+    padding: 1px 8px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.badge-shadow:hover { border-color: var(--accent-primary); color: var(--text-primary); }
+
+.model-collect-only,
+.model-muted { color: var(--text-muted); font-size: 12px; }
+
+.models-th-sub { font-size: 10px; color: var(--text-muted); opacity: 0.8; margin-left: 2px; }
+.model-state-cell,
+.model-findings-cell,
+.model-last-alert-cell { white-space: nowrap; }
+.model-last-alert { color: var(--text-secondary); font-size: 12px; }
+
+.model-findings {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 8px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.model-findings-n { min-width: 2.5ch; text-align: right; font-size: 12px; }
+.model-findings.has-findings { color: var(--text-primary); }
+.model-findings.has-findings .model-findings-n { font-weight: 600; }
+.model-spark { display: block; fill: color-mix(in srgb, var(--accent-primary) 75%, transparent); }
+.model-spark .spark-zero { fill: var(--border-color); }
+
 /* Marks a live state on a badge, in the badge's own colour. */
 .model-dot {
     width: 6px;
@@ -1189,6 +1231,66 @@
 .score-flag-text { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
 .score-flag-basis { font-size: 11px; color: var(--text-muted, #888); }
 
+/* Threshold controls in the Scores tab: they recount "would flag" in place. */
+.score-thresholds {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 20px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+.score-threshold { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+.score-threshold-label { white-space: nowrap; }
+.score-threshold-range { width: 150px; accent-color: var(--accent-primary); }
+.score-thresholds .toggle-label { border: none; background: none; padding: 0; font-size: 12px; color: var(--text-secondary); }
+
+/* Custom preview range: two absolute inputs beside the preset select. */
+.me-preview-range { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
+.me-preview-range[hidden] { display: none; }
+.me-range-input {
+    width: 140px;
+    padding: 6px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font: 12px var(--font-mono);
+}
+.me-range-input:focus { outline: none; border-color: var(--accent-primary); }
+.me-range-sep { font-size: 12px; color: var(--text-muted); }
+.me-range-apply { padding: 5px 10px; font-size: 12px; }
+
+/* Starter templates on a new model's bench. */
+.me-tpl-gallery { display: flex; flex-direction: column; gap: 12px; padding: 18px 16px; max-width: 980px; }
+.me-tpl-heading { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.me-tpl-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.me-tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.me-tpl-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+    text-align: left;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.me-tpl-card:hover { border-color: var(--accent-primary); background: var(--bg-hover); }
+.me-tpl-card:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+.me-tpl-head { display: flex; align-items: center; gap: 8px; color: var(--accent-primary); }
+.me-tpl-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.me-tpl-blurb { font-size: 12px; line-height: 1.4; }
+.me-tpl-meta { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.me-tpl-meta code { font-family: var(--font-mono); font-size: 10.5px; }
+.me-tpl-blank { align-self: flex-start; }
+
 .score-preview-hint {
     font-size: 13px;
     color: var(--text-muted, #888);
@@ -1562,11 +1664,26 @@ body.models-workspace #modelsView {
 .me-type-card:disabled { cursor: default; }
 .me-type-card-locked:not(.active) { opacity: 0.4; }
 
-.me-rail .full-input,
-.me-rail textarea.full-input {
+/* .full-input has no global rule: inside a .field-group the input/select rule
+   above themes it, but the Description textarea sits outside one and fell back to
+   the browser's light default. Theme every rail control here instead. */
+.me-rail .full-input {
     width: 100%;
     box-sizing: border-box;
+    padding: 5px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
 }
+.me-rail textarea.full-input {
+    font-family: var(--font-main);
+    line-height: 1.45;
+    resize: vertical;
+}
+.me-rail .full-input:focus { outline: none; border-color: var(--accent-primary); }
+.me-rail .full-input::placeholder { color: var(--text-muted); }
 
 /* The editor and viewer own the viewport only where there is room for two columns. */
 @media (min-width: 1000px) {

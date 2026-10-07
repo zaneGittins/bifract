@@ -41,6 +41,9 @@ type Manager struct {
 	bfSem     chan struct{}  // global single-flight gate
 	bfMu      sync.Mutex     // guards bfCancels
 	bfCancels map[string]context.CancelFunc
+
+	// health caches each model's state summary for the listing.
+	health *healthCache
 }
 
 // NewManager creates a new analytics model manager.
@@ -53,6 +56,7 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manag
 		bfCfg:     cfg,
 		bfSem:     make(chan struct{}, cfg.concurrency),
 		bfCancels: make(map[string]context.CancelFunc),
+		health:    newHealthCache(),
 	}
 }
 
@@ -474,6 +478,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if _, err = m.pg.Exec(ctx, `DELETE FROM analytics_models WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete model: %w", err)
 	}
+	m.health.forget(id)
 	// Fire-and-forget CH cleanup — slow ON CLUSTER DDL must not block the caller.
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -1217,13 +1222,6 @@ var (
 	volumeHistBucketExpr    = "least(toUInt64(floor(abs(z_score))), 5)"
 )
 
-// rarityConfidenceInner returns the SQL projecting one `confidence` column per
-// scored rarity row, ready for histogram bucketing. `source` is the scored-rows
-// FROM expression (see buildRarityScoredSQL).
-func rarityConfidenceInner(source, fidEsc string) string {
-	return "SELECT confidence FROM (" + buildRarityScoredSQL(source, fidEsc) + ")"
-}
-
 // firstSeenCountInner returns the SQL projecting one `event_count` column per
 // first_seen entity, ready for histogram bucketing.
 func firstSeenCountInner(source, fidEsc, keyCol string) string {
@@ -1436,7 +1434,8 @@ const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text
 	       COALESCE(created_by,''), created_at, updated_at,
 	       backfill_status, backfill_window, backfill_total, backfill_done,
 	       backfill_started_at, backfill_error, state_watermark,
-	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id)`
+	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
+	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id)`
 
 func scanModel(rows interface {
 	Scan(dest ...interface{}) error
@@ -1448,6 +1447,7 @@ func scanModelRow(row modelScannable) (*Model, error) {
 	var mo Model
 	var defRaw []byte
 	var alertEnabled sql.NullBool
+	var lastTriggered sql.NullTime
 	err := row.Scan(
 		&mo.ID, &mo.FractalID, &mo.PrismID,
 		&mo.Name, &mo.Description, &mo.ModelType,
@@ -1458,9 +1458,14 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.BackfillStartedAt, &mo.BackfillError,
 		&mo.StateWatermark,
 		&alertEnabled,
+		&lastTriggered,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if lastTriggered.Valid && mo.LinkedAlertID != "" {
+		t := lastTriggered.Time.UTC()
+		mo.LastAlertAt = &t
 	}
 	if err := json.Unmarshal(defRaw, &mo.Definition); err != nil {
 		mo.Definition = ModelDefinition{}

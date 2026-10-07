@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var namedGroupRe = regexp.MustCompile(`\(\?P?(?:<[a-zA-Z_][a-zA-Z0-9_]*>|'[a-zA-Z_][a-zA-Z0-9_]*')`)
@@ -751,12 +752,24 @@ FROM %s
 WHERE %s AND day >= today() - %d`, stateTable, fractalScopeClause(fractalID), windowDays)
 }
 
+// NetPreviewBounds is the window a network preview aggregates over: [Start, End)
+// on the event timestamp, Days its length rounded up (it sets the strobe limit).
+type NetPreviewBounds struct {
+	Start, End time.Time
+	Days       int
+}
+
+func (b NetPreviewBounds) sql() string {
+	return fmt.Sprintf("timestamp >= toDateTime64('%s', 3, 'UTC') AND timestamp < toDateTime64('%s', 3, 'UTC')",
+		b.Start.UTC().Format(chTimeLayout), b.End.UTC().Format(chTimeLayout))
+}
+
 // BuildNetPreviewAgg returns a one-off aggregation over raw logs for the model
 // builder preview, before any state table exists. It uses the same projection as the
 // state read (per-pair cnt/ts_list/size_list/duration) but groups directly over the
 // source table within the preview window, so the previewed scores match the warmed
 // model. sourceTable is the (distributed or local) logs table.
-func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, windowDays int) (string, error) {
+func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
@@ -769,7 +782,7 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 		lc := def.LongConn.WithDefaults()
 		having = fmt.Sprintf("HAVING total_duration >= %s", chFloatLiteral(lc.BaseSeconds))
 	} else {
-		windowSecs := int64(windowDays) * 86400
+		windowSecs := int64(bounds.Days) * 86400
 		bp := def.Beacon.WithDefaults(windowSecs)
 		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
 	}
@@ -782,7 +795,7 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	b.WriteString(fmt.Sprintf("    groupArray(%d)(%s) AS size_list,\n", netStateArrayCap, bytes))
 	b.WriteString(fmt.Sprintf("    sum(%s) AS total_duration\n", dur))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
 	preds, err := sourceFilterSQL(def)
 	if err != nil {
 		return "", err
@@ -798,14 +811,14 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 // BuildNetPreviewPrevalence returns the per-destination distinct-source counts over
 // raw logs for the preview window (no state table exists yet). It omits the pair
 // HAVING so prevalence counts ALL sources, not only qualifying pairs.
-func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, windowDays int) (string, error) {
+func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SELECT %s AS dst, uniqExact(%s) AS prev_total\n", dst, src))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
 	preds, err := sourceFilterSQL(def)
 	if err != nil {
 		return "", err
@@ -819,14 +832,14 @@ func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID strin
 
 // BuildNetPreviewNetworkSize returns the total distinct-source count over the preview
 // window, the denominator for the prevalence ratio.
-func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, windowDays int) (string, error) {
+func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SELECT uniqExact(%s) AS network_size\n", src))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND timestamp >= now() - INTERVAL %d DAY", fractalScopeClause(fractalID), src, dst, windowDays))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
 	preds, err := sourceFilterSQL(def)
 	if err != nil {
 		return "", err
