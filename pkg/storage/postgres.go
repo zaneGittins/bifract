@@ -94,7 +94,9 @@ func (c *PostgresClient) Initialize(ctx context.Context, initSQL string) error {
 }
 
 func NewPostgresClient(host string, port int, database, user, password string) (*PostgresClient, error) {
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+	// timezone=UTC: TIMESTAMP columns default to NOW(), which a non-UTC session
+	// would store as local wall time and every reader takes as UTC.
+	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable timezone=UTC",
 		host, port, user, password, database)
 
 	db, err := sql.Open("postgres", connStr)

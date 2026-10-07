@@ -358,13 +358,9 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 				err.Error(), id)
 			return nil, fmt.Errorf("recreate clickhouse objects: %w", err)
 		}
-		// Data was dropped; reset backfill state so the data viewer re-offers the
-		// "Seed history" CTA against the new definition.
+		// createCHObjects reset the backfill against the new, empty table.
 		_, _ = m.pg.Exec(context.Background(),
-			`UPDATE analytics_models SET status='active', error_message='',
-			    backfill_status='none', backfill_window='', backfill_total=0, backfill_done=0,
-			    backfill_anchor=NULL, backfill_started_at=NULL, backfill_error=''
-			 WHERE id=$1`, id)
+			`UPDATE analytics_models SET status='active', error_message='' WHERE id=$1`, id)
 	}
 
 	updated, err := m.Get(ctx, id)
@@ -611,8 +607,17 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	// No materialized view: state is maintained by StateMaintainer over
 	// logs.ingest_timestamp. Dropping any view left by an older release is what
 	// keeps the two from both writing and doubling every aggregate.
+	//
+	// The table is new and empty here (create, rebuild after an edit, or recreate
+	// after a log reset), so the backfill restarts, bounded by where live state
+	// resumes: everything ingested before the watermark is the backfill's.
 	if _, err := m.pg.Exec(ctx,
-		`UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1`, id); err != nil {
+		`UPDATE analytics_models
+		    SET state_watermark = COALESCE(state_watermark, NOW()),
+		        backfill_anchor = COALESCE(state_watermark, NOW()),
+		        backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0,
+		        backfill_started_at = NULL, backfill_error = ''
+		  WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("seed state watermark: %w", err)
 	}
 	if err := m.dropStateMV(ctx, mvName); err != nil {
