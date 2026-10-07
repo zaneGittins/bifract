@@ -889,7 +889,7 @@ func cleanOrphans(ctx context.Context, c *Catalog, ident icetable.Identifier, ol
 	}
 	res, err := tbl.DeleteOrphanFiles(ctx,
 		icetable.WithFilesOlderThan(olderThan),
-		icetable.WithMaxConcurrency(concurrency),
+		icetable.WithCleanupMaxConcurrency(concurrency),
 	)
 	if err != nil {
 		return 0, err
