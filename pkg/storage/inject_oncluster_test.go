@@ -17,6 +17,8 @@ func TestInjectOnCluster(t *testing.T) {
 			"CREATE OR REPLACE TABLE `dict_x_distributed` ON CLUSTER 'bftest' AS"},
 		{"alter table", "ALTER TABLE dict_x DELETE WHERE k IN ('a')", "ALTER TABLE dict_x ON CLUSTER 'bftest' DELETE"},
 		{"drop table", "DROP TABLE IF EXISTS dict_x", "DROP TABLE IF EXISTS dict_x ON CLUSTER 'bftest'"},
+		{"drop table sync", "DROP TABLE IF EXISTS `model_x` SYNC SETTINGS max_table_size_to_drop = 0",
+			"DROP TABLE IF EXISTS `model_x` ON CLUSTER 'bftest' SYNC SETTINGS max_table_size_to_drop = 0"},
 		{"create or replace dictionary", "CREATE OR REPLACE DICTIONARY `lookup_x` (\n a String)", "CREATE OR REPLACE DICTIONARY `lookup_x` ON CLUSTER 'bftest' ("},
 		{"drop dictionary", "DROP DICTIONARY IF EXISTS `lookup_x`", "DROP DICTIONARY IF EXISTS `lookup_x` ON CLUSTER 'bftest'"},
 		{"truncate", "TRUNCATE TABLE geoip_city", "TRUNCATE TABLE geoip_city ON CLUSTER 'bftest'"},
