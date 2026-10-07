@@ -2610,3 +2610,24 @@ body.col-reordering * {
 .share-query-btn { /* see .toolbar-icon-btn */ }
 
 /* Recent Queries Dropdown */
+
+/* Fact chips (factChips.js): one fact per chip against its baseline */
+.fact-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.fact-chip {
+    display: inline-flex; align-items: baseline; gap: 5px;
+    padding: 2px 8px; border-radius: 10px;
+    border: 1px solid var(--border-color); background: var(--bg-tertiary);
+    color: var(--text-secondary); font: 500 11px/1.5 var(--font-main);
+    white-space: nowrap;
+}
+.fact-chip-label { color: var(--text-muted); font-weight: 400; }
+.fact-chip b { color: var(--text-primary); font-weight: 600; }
+.fact-chip-alert { border-color: color-mix(in srgb, var(--error) 45%, transparent); background: color-mix(in srgb, var(--error) 10%, transparent); }
+.fact-chip-alert b { color: var(--error); }
+.fact-chip-warn { border-color: color-mix(in srgb, var(--warning) 45%, transparent); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.fact-chip-warn b { color: var(--warning); }
+.fact-chip-muted { opacity: 0.75; }
+.fact-chip-pivot { cursor: pointer; transition: var(--transition); }
+.fact-chip-pivot:hover { border-color: var(--accent-primary); }
+.fact-chip-pivot:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+.fact-chips-compact .fact-chip { padding: 0 6px; font-size: 10.5px; }
