@@ -103,6 +103,12 @@ const (
 // thin baseline alone. The floor keeps a young node damping rather than annihilating the score.
 const nodeStabilityFloor = "0.05"
 
+// hostDayPrecision is the uniqCombined64 precision host-days are counted with: exact up to 128
+// distinct (measured on CH 26.6), about 1.6% error above, and a few KB of state per group at most.
+// Leave-one-out needs exactness only where few host-days remain; an exact count would hold every
+// pair of a ubiquitous relationship in memory.
+const hostDayPrecision = 12
+
 // minStabilityDays is how many days of baseline the IN/OUT terms need before they carry any
 // information. Stability is the share of days a node gained no new edge, so its resolution is 1/d:
 // on a 2-day baseline nearly every node scores exactly 0.5 and the term is a constant that only
@@ -136,6 +142,31 @@ type ProvenanceParams struct {
 // edges first, then by anomaly. Matches the ordering pass-2's own SQL already applies internally,
 // so if Limit ever truncates, it drops low-signal leaves before process structure.
 var ProvenanceOrderBy = []string{"(event_type = 'spawn') DESC", "anomaly_score DESC"}
+
+// ProvenanceColumns is pgr()'s output shape, shared by the scoring SQL, the reconnection literals
+// and the query layer's re-emission so they cannot drift. The explanation columns say why an edge
+// scored what it did:
+//   - anomaly_score: the final score, after diffusion; edge_score: the edge's own score before it.
+//   - score_basis: transition (the source's own history), new_source (a binary that never ran
+//     elsewhere, scored by the target's rarity), no_source (ghost root), or reconnect (a bridge).
+//   - edge_host_days / source_host_days: host-days on which ANYONE ELSE made this relationship /
+//     made any relationship of this type from this source. All *_host_days are leave-one-out.
+//   - source_exec_host_days: other host-days the source binary was executed.
+//   - target_host_days: other host-days the target was touched from any source.
+//   - target_hosts / total_hosts: distinct hosts that touched the target (state-capped at 256),
+//     including this one, out of the fleet.
+//   - first_seen: the first day the relationship was ever observed.
+var ProvenanceColumns = []string{
+	"parent", "child", "label", "event_type", "anomaly_score", "edge_score", "score_basis", "first_seen",
+	"edge_host_days", "source_host_days", "source_exec_host_days", "target_host_days", "target_hosts", "total_hosts",
+	"log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label",
+}
+
+// ProvenanceNumericColumns is the subset of ProvenanceColumns that is Float64, so downstream
+// comparisons stay numeric and literal re-emission types them.
+var ProvenanceNumericColumns = []string{
+	"anomaly_score", "edge_score", "edge_host_days", "source_host_days", "source_exec_host_days", "target_host_days", "target_hosts", "total_hosts",
+}
 
 // provenanceDefaultLeafTypes are the branches generated when the user gives NO explicit include=.
 // remote_thread/process_access are excluded by default: they key off source_process_guid, which is
@@ -321,8 +352,10 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	aPath := func(col string) string { return abstractExpr(col, AbstractPath) }
 
 	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id,
-	// timestamp, fractal_id, host, parent_label -- log_id + timestamp + fractal_id are the columns
-	// the standard log-detail fetch (/logs/fields) needs, in a normal search row's shape.
+	// timestamp, fractal_id, host, parent_label, iday -- log_id + timestamp + fractal_id are the
+	// columns the standard log-detail fetch (/logs/fields) needs, in a normal search row's shape.
+	// iday is the ingest day, the day proc_freq bucketed the event under, so (host, iday) is the
+	// edge's own host-day in the baseline (the leaf rollup keeps only its latest ingest).
 	//
 	// parent_label carries the PARENT node's image for rows whose parent may have no row of its own
 	// in the result. A spawn row's parent_guid is only a tree node when its OWN process_creation is
@@ -332,7 +365,7 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	spawnEdges := fmt.Sprintf(
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
 			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host, "+
-			"parent_image AS parent_label FROM %s FINAL WHERE process_guid IN (%s)%s",
+			"parent_image AS parent_label, toDate(ingest_timestamp) AS iday FROM %s FINAL WHERE process_guid IN (%s)%s",
 		aPath("parent_image"), aPath("image"), procLineage, inList, frac())
 
 	// Leaf edges (file/net/dns) come from the process_edges rollup keyed by
@@ -365,7 +398,7 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 		}
 		leafEdges = fmt.Sprintf(
 			"SELECT process_guid AS src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id, "+
-				"toString(timestamp) AS timestamp, fractal_id, computer_name AS host, '' AS parent_label "+
+				"toString(timestamp) AS timestamp, fractal_id, computer_name AS host, '' AS parent_label, toDate(ingest_timestamp) AS iday "+
 				"FROM %s WHERE %s%s AND process_guid IN (%s) AND event_type IN (%s)",
 			edgeTable, edgeFrac, userWin, inList, strings.Join(leafTypes, ", "))
 	}
@@ -376,7 +409,7 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	p2pEdges := func(category, eventType string) string {
 		return fmt.Sprintf(
 			"SELECT fields.source_process_guid::String AS src_node, fields.target_process_guid::String AS dst_node, "+
-				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host, '' AS parent_label "+
+				"fields.target_image::String AS label, '%[7]s' AS event_type, %[1]s AS fkey_src, %[2]s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, fields.computer_name::String AS host, '' AS parent_label, toDate(ingest_timestamp) AS iday "+
 				"FROM %[3]s WHERE %[4]s%[5]s AND fields.source_process_guid::String IN (%[6]s) "+
 				"AND fields.bifract_category = '%[8]s' AND fields.image::String != '' AND fields.target_image::String != '' "+
 				"AND fields.target_process_guid::String != ''",
@@ -398,13 +431,10 @@ func buildProvenanceEdgeUnion(guids []string, edgeTypes map[string]bool, opts Qu
 	return strings.Join(parts, " UNION ALL "), nil
 }
 
-// BuildProvenanceTotalHostsSQL returns a query for the single scalar BuildProvenanceScoringSQL's
-// anomExpr uses as the global-rarity denominator (UNCAPPED true fleet size, see the comment on
-// anomExpr). provenanceScoreSQL runs this ONCE per pgr() call and passes the result in as
-// totalHosts -- it is not re-embedded as a live scalar subquery inside SQL that may be rebuilt
-// more than once within a single call (the diffuse-fallback rebuild), so it is never scanned
-// twice for the same invocation, and it is never cached ACROSS separate pgr() calls (always
-// fresh per call, exactly matching what the inline subquery it replaces would have returned).
+// BuildProvenanceTotalHostsSQL returns a query for the fleet size BuildProvenanceScoringSQL
+// reports as total_hosts (uncapped, from proc_lineage). provenanceScoreSQL runs it once per pgr()
+// call and passes the result in as a literal, so the diffuse-fallback rebuild never rescans it;
+// it is never cached across calls.
 func BuildProvenanceTotalHostsSQL(opts QueryOptions) string {
 	procLineage := opts.ProcLineageTable
 	if procLineage == "" {
@@ -439,7 +469,7 @@ func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 // subqueries, so nothing is re-scanned when the scoring SQL is rebuilt within the same call (the
 // diffuse-fallback path builds it twice). Never cached across calls.
 type ProvenanceBaseline struct {
-	// TotalHosts is the global-rarity denominator (BuildProvenanceTotalHostsSQL).
+	// TotalHosts is the fleet size reported as total_hosts (BuildProvenanceTotalHostsSQL).
 	TotalHosts int64
 	// SrcKeys/TgtKeys are the DISTINCT fkey_src / fkey_tgt of the tree's own edges
 	// (BuildProvenanceEdgeKeysSQL), scoping every proc_freq CTE to rows its join can match.
@@ -486,14 +516,13 @@ func keyInCond(col string, keys []string) string {
 
 // BuildProvenanceScoringSQL is pass 2: given the tree's guids, assemble every edge
 // (spawn from proc_lineage; file/net/injection/handle-access leaf edges from logs, bounded
-// by time + guid + category), score each against proc_freq (anomaly = 1 - freq(edge)/freq(src,rel,*)),
-// and keep the full spawn spine plus any non-spawn edge at/above threshold. Output columns:
-// parent, child, label, event_type, anomaly_score -- an edge list graph() renders directly.
-// edgeTypes selects which non-spawn edge branches to generate (nil/empty = all); spawn is
-// always included as the tree backbone.
+// by time + guid + category), score each against proc_freq in leave-one-out host-days, and keep
+// the full spawn spine plus any non-spawn edge at/above threshold. The output is
+// ProvenanceColumns. edgeTypes selects which non-spawn edge branches to generate (nil/empty =
+// all); spawn is always included as the tree backbone.
 //
-// bl carries the per-call baseline inputs: the global-rarity denominator and the tree's edge
-// key sets. See ProvenanceBaseline.
+// bl carries the per-call baseline inputs: the fleet size and the tree's edge key sets. See
+// ProvenanceBaseline.
 func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[string]bool, diffuse bool, bl ProvenanceBaseline, opts QueryOptions) (string, error) {
 	if len(guids) == 0 {
 		return "", fmt.Errorf("pgr: no process guids to score")
@@ -538,113 +567,172 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	inList := strings.Join(quoted, ", ")
 
 	// freqWhere composes a proc_freq WHERE from the fractal scope plus the caller's key
-	// restriction (empty conditions drop out).
-	freqWhere := func(extra string) string {
+	// restrictions (empty conditions drop out).
+	freqWhere := func(extra ...string) string {
 		var conds []string
 		if fractal != "" {
 			conds = append(conds, fractal)
 		}
-		if extra != "" {
-			conds = append(conds, extra)
+		for _, c := range extra {
+			if c != "" {
+				conds = append(conds, c)
+			}
 		}
 		if len(conds) == 0 {
 			return ""
 		}
 		return " WHERE " + strings.Join(conds, " AND ")
 	}
-	// Four restrictions, not two: which COLUMN a key set applies to depends on the CTE. fe/ft and
-	// ins are keyed by the edge's source (fe joins src_image, ins is grouped by the target_norm
-	// that IS that source node); gf and outs by its target. Crossing them silently changes scores.
-	feSrc := keyInCond("src_image", bl.SrcKeys)
-	gfTgt := keyInCond("target_norm", bl.TgtKeys)
-	insTgt := keyInCond("target_norm", bl.SrcKeys)
-	outsSrc := keyInCond("src_image", bl.TgtKeys)
+	// Which COLUMN a key set applies to depends on the CTE. fe/ft and ins are keyed by the edge's
+	// source (fe/ft join src_image, ins is grouped by the target_norm that IS that source node); fe,
+	// gf and outs by its target. Crossing them silently changes scores.
+	srcOnSrc := keyInCond("src_image", bl.SrcKeys)
+	tgtOnTgt := keyInCond("target_norm", bl.TgtKeys)
+	srcOnTgt := keyInCond("target_norm", bl.SrcKeys)
+	tgtOnSrc := keyInCond("src_image", bl.TgtKeys)
 
 	// Aggregate raw per-event leaf edges to one row per (src,dst,event_type). Without this a
 	// beaconing process (e.g. 10k connections to one C2) emits 10k identical edges that all get
 	// scored, sorted, and can eat the LIMIT -- pushing out other processes' edges. spawn edges
 	// are already one-per-process (proc_lineage FINAL). argMax/max keep a consistent latest
-	// (log_id,timestamp) pair for the detail lookup.
+	// (log_id,timestamp) pair for the detail lookup. hd_pairs are the edge's own host-days.
 	edgesAgg := fmt.Sprintf("SELECT src_node, dst_node, any(ev.label) AS label, event_type, any(ev.fkey_src) AS fkey_src, "+
 		"any(ev.fkey_tgt) AS fkey_tgt, argMax(ev.log_id, ev.timestamp) AS log_id, max(ev.timestamp) AS timestamp, any(ev.fractal_id) AS fractal_id, any(ev.host) AS host, "+
-		"any(ev.parent_label) AS parent_label "+
+		"any(ev.parent_label) AS parent_label, groupUniqArray((ev.host, ev.iday)) AS hd_pairs "+
 		"FROM (%s) AS ev GROUP BY src_node, dst_node, event_type", edges)
 
-	// Per-edge anomaly is NoDoze Eq.1 inverted: M = Freq(src,rel,target)/Freq(src,rel,*) is the
-	// transition probability (fe/ft) and 1-M is the edge anomaly. An event never seen before has
-	// M=0 and scores 1.0. This is an INTERMEDIATE only: NoDoze defines anomaly over a PATH
-	// (Eq.2/Eq.3), which diffuseProvenanceRows computes by propagating these values.
-	//
-	// Global rarity is NOT in the score. Combining it via greatest() measured strictly worse than
-	// either input alone -- the transition term sits near 1.0 on almost every edge, so the max was
-	// nearly always that term and the rarity signal was discarded, except when a benign
-	// single-host artifact out-scored it and added a false positive. It is emitted as its own
-	// prevalence column instead, for ordering and for callers that want it explicitly.
-	//
-	// Empty fkey_src scores 0: ghost roots (no parent_image) can never match a proc_freq row,
-	// whose MVs all require parent_image != '', so ft.tot=0 there is a failed join rather than a
-	// measurement. With no source there is nothing for the child to be unusual FOR.
-	gr := fmt.Sprintf("if(coalesce(gf.hostct, 0) >= %[1]d, 0, if(%[2]d = 0, 0, 1 - coalesce(gf.hostct, 0) / %[2]d))", procFreqHostsCap, bl.TotalHosts)
-	// m = NoDoze Eq.1, the transition probability Freq(src,rel,target)/Freq(src,rel,*). A source
-	// with no baseline at all yields 0, which is the paper's never-seen case.
-	m := "if(coalesce(ft.tot, 0) = 0, 0.0, coalesce(fe.cnt, 0) / ft.tot)"
-	// Per-edge regularity is Eq.2's summand: IN(SRC) * M * OUT(DST). A node absent from the
-	// stability CTEs never gained an edge in that direction, so every window is stable and the
-	// score is 1 (perfectly regular) -- that is what Eq.4/Eq.5 give for an empty new-edge set.
-	// NOTE: the paper's prose around dropper.exe reads in the opposite direction to its own
-	// equations; the equations are unambiguous, so they are what is implemented here.
-	reg := "coalesce(ins.stab, 1.0) * " + m + " * coalesce(outs.stab, 1.0)"
-	anomExpr := "if(e.fkey_src = '', 0.0, round(1 - " + reg + ", 4)) AS anomaly_score, " +
-		"round(" + gr + ", 4) AS prevalence, " +
-		"if(fe.first_seen = toDate(0), '', toString(fe.first_seen)) AS first_seen "
+	// Frequencies are HOST-DAYS, NoDoze's unit: an event counts once per host per day (Eq.7/8), so
+	// a process beaconing 10k times to one IP is one host-day, not 10k observations of normality.
+	// proc_freq keeps a host set per (relationship, day), so host-days are the distinct
+	// (day, host) pairs across its rows (unmerged parts and shards repeat them).
+	hostDayPairs := "arrayMap(h -> (day, h), finalizeAggregation(hosts))"
+	hostDays := fmt.Sprintf("uniqCombined64Array(%d)(%s)", hostDayPrecision, hostDayPairs)
 
 	var b strings.Builder
 	// ClickHouse INLINES a CTE at each reference, so each proc_freq CTE below is its own
-	// ReadFromMergeTree in the plan (five of them), and each carries its own key scope (see
-	// ProvenanceBaseline). fe/ft and outs restrict src_image, a PRIMARY-KEY prefix, so they prune
-	// granules; gf and ins restrict target_norm, which prunes none but collapses the GROUP BY --
-	// gf merges a 256-host aggregate state per group, and doing that fractal-wide is what
-	// exhausts the query memory cap. rel is inlined per CTE rather than shared because ins and
-	// outs need different restrictions, and span reads first_day directly instead of through it.
+	// ReadFromMergeTree in the plan, and each carries its own key scope (see ProvenanceBaseline).
+	// fe, ft and outs restrict src_image, a PRIMARY-KEY prefix, so they prune granules; gf and ins
+	// restrict target_norm, which prunes none but collapses the GROUP BY. rel is inlined per CTE
+	// rather than shared because ins and outs need different restrictions, and span reads
+	// first_day directly instead of through it.
 	//
 	// first_seen is the earliest day a relationship was ever observed. Rows written before
 	// proc_freq gained first_day carry the column default (1970-01-01); day is what a backfill
 	// would have set, so substitute it and let the value self-correct as new rows arrive.
 	firstSeen := "min(if(first_day = toDate(0), day, first_day))"
-	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, sum(event_count) AS cnt, %[3]s AS first_seen FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
-		procFreq, freqWhere(feSrc), firstSeen))
-	b.WriteString("ft AS (SELECT src_image, event_type, sum(cnt) AS tot FROM fe GROUP BY src_image, event_type), ")
-	b.WriteString(fmt.Sprintf("gf AS (SELECT event_type, target_norm, length(groupUniqArrayMerge(%[3]d)(hosts)) AS hostct FROM %[1]s%[2]s GROUP BY event_type, target_norm), ",
-		procFreq, freqWhere(gfTgt), procFreqHostsCap))
+	// fe: host-days per relationship. Only the tree's own (source, target) keys can join it.
+	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, %[3]s AS hd, %[4]s AS first_seen FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
+		procFreq, freqWhere(srcOnSrc, tgtOnTgt), hostDays, firstSeen))
+	// ft: Freq(src,rel,*) per Eq.8, the host-days on which the source made this relationship with
+	// ANY target (the wildcard event counted once per host-day). So M is the share of the source's
+	// active host-days that included this target, and a target it always reaches scores near 0.
+	// Never restricted by target.
+	b.WriteString(fmt.Sprintf("ft AS (SELECT src_image, event_type, %[3]s AS hd FROM %[1]s%[2]s GROUP BY src_image, event_type), ",
+		procFreq, freqWhere(srcOnSrc), hostDays))
+	// gf: the target's fleet footprint from any source -- distinct hosts (capped at the state's
+	// 256) for display, host-days for scoring a source with no history of its own.
+	b.WriteString(fmt.Sprintf("gf AS (SELECT event_type, target_norm, length(groupUniqArrayArray(%[3]d)(finalizeAggregation(hosts))) AS hosts_n, %[4]s AS hd FROM %[1]s%[2]s GROUP BY event_type, target_norm), ",
+		procFreq, freqWhere(tgtOnTgt), procFreqHostsCap, hostDays))
 	// The observed window ends at the QUERY's end, not today(): a historical investigation must not
 	// be credited with stable days that postdate what it is looking at.
 	asOf := fmt.Sprintf("toDate('%s')", opts.EndTime.UTC().Format("2006-01-02"))
 	// span = days the baseline covers, gating the stability terms (see minStabilityDays). It is the
 	// age of the WHOLE baseline, so it is never key-restricted.
 	b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', %[3]s, %[4]s) + 1 AS days FROM %[1]s%[2]s), ",
-		procFreq, freqWhere(""), firstSeen, asOf))
+		procFreq, freqWhere(), firstSeen, asOf))
 	// NoDoze Eq.4/Eq.5 node stability: a day is STABLE for a node when it gained no new edge, and
 	// stability is the share of stable days over the node's observed lifetime. rel holds one
 	// first-seen day per relationship, so counting distinct dates per node counts the days that
-	// node gained an edge. Long-established nodes score ~1 (regular); one sprouting new
-	// relationships daily scores ~0. nodeStabilityFloor stops a node observed on a single day from
-	// scoring a hard 0 and zeroing the whole Eq.2 product.
+	// node gained an edge. nodeStabilityFloor stops a node observed on a single day from scoring a
+	// hard 0 and zeroing the whole Eq.2 product.
 	//
-	// The restriction is on the grouping column itself, so every surviving group keeps all of its
-	// rows and the stability values are identical to the unrestricted form.
-	stab := func(key, restrict string) string {
-		rel := fmt.Sprintf("SELECT %[1]s AS node, %[4]s AS fd FROM %[2]s%[3]s GROUP BY src_image, target_norm",
-			key, procFreq, freqWhere(restrict), firstSeen)
-		return fmt.Sprintf("SELECT node, if((SELECT days FROM span) < %[4]d, 1.0, greatest(%[2]s, 1 - uniqExact(fd) / greatest(1, dateDiff('day', min(fd), %[3]s) + 1))) AS stab FROM (%[1]s) GROUP BY node",
-			rel, nodeStabilityFloor, asOf, minStabilityDays)
+	// The CTEs carry INSTABILITY (1 - stability) because an unmatched LEFT JOIN yields the column
+	// default, 0, not NULL: a node absent here never gained an edge in that direction, which is
+	// perfectly stable, and 1 - 0 says exactly that. The restriction is on the grouping column
+	// itself, so every surviving group keeps all of its rows.
+	stab := func(key, restrict, relExtra, nodeExtra string) string {
+		rel := fmt.Sprintf("SELECT %[1]s AS node, %[4]s AS fd%[5]s FROM %[2]s%[3]s GROUP BY src_image, target_norm",
+			key, procFreq, freqWhere(restrict), firstSeen, relExtra)
+		return fmt.Sprintf("SELECT node, if((SELECT days FROM span) < %[4]d, 0.0, least(1 - %[2]s, uniqExact(fd) / greatest(1, dateDiff('day', min(fd), %[3]s) + 1))) AS instab%[5]s FROM (%[1]s) GROUP BY node",
+			rel, nodeStabilityFloor, asOf, minStabilityDays, nodeExtra)
 	}
-	b.WriteString("outs AS (" + stab("src_image", outsSrc) + "), ")
-	b.WriteString("ins AS (" + stab("target_norm", insTgt) + "), ")
+	b.WriteString("outs AS (" + stab("src_image", tgtOnSrc, "", "") + "), ")
+	// ins already reads every row where the source node is a target, so it also counts the
+	// host-days the source binary was EXECUTED (spawn target): whether it is an established binary
+	// at all, as opposed to whether it ever made this relationship. The per-parent states merge
+	// into one distinct count per binary; summing per-parent counts would double a host-day on
+	// which two parents ran it.
+	b.WriteString("ins AS (" + stab("target_norm", srcOnTgt,
+		fmt.Sprintf(", uniqCombined64ArrayIfState(%d)(%s, event_type = 'spawn') AS xs", hostDayPrecision, hostDayPairs),
+		fmt.Sprintf(", uniqCombined64ArrayIfMerge(%d)(xs) AS exec_hd", hostDayPrecision),
+	) + "), ")
+	// sx: the tree's own executions of each binary, the host-days its processes added to the
+	// exec_hd above. Same keyhole lookup and filter as proc_freq's spawn MV.
+	procLineage := opts.ProcLineageTable
+	if procLineage == "" {
+		procLineage = "proc_lineage"
+	}
+	b.WriteString(fmt.Sprintf("sx AS (SELECT %[1]s AS node, length(groupUniqArray((computer_name, toDate(ingest_timestamp)))) AS self_exec FROM %[2]s FINAL WHERE process_guid IN (%[3]s)%[4]s AND parent_image != '' AND image != '' GROUP BY node), ",
+		abstractExpr("image", AbstractPath), procLineage, inList, frac()))
 	// pm = per-process command line + user, read query-only from the process_creation logs of
 	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
 	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
 	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(fields.commandline::String, 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
 		logs, timeWin, frac(), inList))
+
+	// joined: one row per edge with its baseline, plus the edge's OWN share of that baseline. The
+	// baseline includes the activity being scored, so each count is taken leave-one-out: the
+	// distinct host-days among every edge in this tree with the same relationship (self_edge), the
+	// same source and relationship to any target (self_src), and the same target from any
+	// source (self_tgt), which is exactly what those edges added to fe, ft and gf (sx does the same
+	// for exec_hd). A time cutoff cannot do this: proc_freq buckets by ingest day, and a replayed
+	// dataset lands on one.
+	joined := "SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.fkey_src AS fkey_src, " +
+		"e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, e.host AS host, e.parent_label AS parent_label, " +
+		"coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, " +
+		"fe.hd AS fe_hd, fe.first_seen AS fe_first, ft.hd AS ft_hd, gf.hd AS gf_hd, gf.hosts_n AS gf_hosts, ins.exec_hd AS exec_hd, sx.self_exec AS self_exec, " +
+		"(1 - ins.instab) * (1 - outs.instab) AS stability, " +
+		"length(groupUniqArrayArray(e.hd_pairs) OVER (PARTITION BY e.fkey_src, e.event_type, e.fkey_tgt)) AS self_edge, " +
+		"length(groupUniqArrayArray(e.hd_pairs) OVER (PARTITION BY e.fkey_src, e.event_type)) AS self_src, " +
+		"length(groupUniqArrayArray(e.hd_pairs) OVER (PARTITION BY e.event_type, e.fkey_tgt)) AS self_tgt " +
+		fmt.Sprintf("FROM (%s) AS e ", edgesAgg) +
+		"LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt " +
+		"LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type " +
+		"LEFT JOIN gf ON gf.event_type = e.event_type AND gf.target_norm = e.fkey_tgt " +
+		"LEFT JOIN ins ON ins.node = e.fkey_src " +
+		"LEFT JOIN outs ON outs.node = e.fkey_tgt " +
+		"LEFT JOIN sx ON sx.node = e.fkey_src " +
+		"LEFT JOIN pm ON pm.guid = e.dst_node"
+
+	// Per-edge anomaly is NoDoze Eq.1 inverted, 1 - IN(SRC) * M * OUT(DST), with M the transition
+	// probability Freq(src,rel,target) / Freq(src,rel,*) over everyone else's host-days. It is an
+	// INTERMEDIATE only: NoDoze scores a PATH (Eq.2/Eq.3), which diffuseProvenanceRows computes by
+	// propagating these values. Three cases, named in score_basis:
+	//   - transition: the source is an established binary (it made this kind of relationship, or
+	//     simply ran, on someone else's host-day). A target nobody else reached from it is M = 0,
+	//     the paper's never-seen case, and scores 1: Word spawning its first child is red.
+	//   - new_source: the binary never ran anywhere else. M is undefined, and calling it 0 would
+	//     paint every child of a new binary red. Its edges are scored by how rarely anyone else
+	//     touched the target, 1 / (1 + other host-days): a never-seen C2 scores 1, a shared resolver
+	//     near 0. The binary's own novelty is the edge INTO it, which the transition case scores.
+	//   - no_source: ghost roots (no parent_image) can never match proc_freq, whose MVs all require
+	//     parent_image != '', so there is nothing for the child to be unusual FOR. Scores 0.
+	// Global rarity is never folded into the transition score: greatest() of the two measured
+	// worse than either alone. The target's footprint ships as its own columns instead.
+	scored := "SELECT parent, child, label, event_type, log_id, timestamp, fractal_id, host, parent_label, command_line, proc_user, " +
+		"greatest(0, toFloat64(fe_hd) - self_edge) AS edge_host_days, " +
+		"greatest(0, toFloat64(ft_hd) - self_src) AS source_host_days, " +
+		"greatest(0, toFloat64(exec_hd) - self_exec) AS source_exec_host_days, " +
+		"greatest(0, toFloat64(gf_hd) - self_tgt) AS target_host_days, " +
+		"toFloat64(gf_hosts) AS target_hosts, " +
+		fmt.Sprintf("toFloat64(%d) AS total_hosts, ", bl.TotalHosts) +
+		"multiIf(fkey_src = '', 'no_source', source_host_days > 0 OR source_exec_host_days > 0, 'transition', 'new_source') AS score_basis, " +
+		"round(multiIf(score_basis = 'no_source', 0, score_basis = 'transition', " +
+		"1 - stability * if(source_host_days > 0, least(1, edge_host_days / source_host_days), 0), 1 / (1 + target_host_days)), 4) AS anomaly_score, " +
+		"anomaly_score AS edge_score, " +
+		"if(fe_first = toDate(0), '', toString(fe_first)) AS first_seen " +
+		"FROM (" + joined + ") AS joined"
+
 	// Leaf gating differs by mode. Non-diffuse: filter leaves by the user threshold in SQL and
 	// keep the top MaxRows non-spawn edges globally. Diffuse: the FINAL threshold is applied over
 	// the PROPAGATED score, so a promotable leaf must survive -- SQL keeps leaves above a low
@@ -658,21 +746,13 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 		partitionBy = "(event_type = 'spawn'), parent" // per-process leaf cap
 		capN, applyCap = diffusePerProcLeaves, true
 	}
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, prevalence, first_seen, log_id, timestamp, fractal_id, command_line, proc_user, host, parent_label FROM (")
-	b.WriteString("SELECT parent, child, label, event_type, anomaly_score, prevalence, first_seen, log_id, timestamp, fractal_id, command_line, proc_user, host, parent_label")
+	cols := strings.Join(ProvenanceColumns, ", ")
+	b.WriteString("SELECT " + cols + " FROM (")
+	b.WriteString("SELECT " + cols)
 	if applyCap {
 		b.WriteString(fmt.Sprintf(", row_number() OVER (PARTITION BY %s ORDER BY anomaly_score DESC) AS _rn", partitionBy))
 	}
-	b.WriteString(" FROM (")
-	b.WriteString("SELECT e.src_node AS parent, e.dst_node AS child, e.label AS label, e.event_type AS event_type, e.log_id AS log_id, e.timestamp AS timestamp, e.fractal_id AS fractal_id, e.host AS host, e.parent_label AS parent_label, coalesce(pm.command_line, '') AS command_line, coalesce(pm.proc_user, '') AS proc_user, ")
-	b.WriteString(anomExpr)
-	b.WriteString(fmt.Sprintf("FROM (%s) AS e ", edgesAgg))
-	b.WriteString("LEFT JOIN fe ON fe.src_image = e.fkey_src AND fe.event_type = e.event_type AND fe.target_norm = e.fkey_tgt ")
-	b.WriteString("LEFT JOIN ft ON ft.src_image = e.fkey_src AND ft.event_type = e.event_type ")
-	b.WriteString("LEFT JOIN gf ON gf.event_type = e.event_type AND gf.target_norm = e.fkey_tgt ")
-	b.WriteString("LEFT JOIN ins ON ins.node = e.fkey_src ")
-	b.WriteString("LEFT JOIN outs ON outs.node = e.fkey_tgt ")
-	b.WriteString("LEFT JOIN pm ON pm.guid = e.dst_node) AS scored ")
+	b.WriteString(" FROM (" + scored + ") AS scored ")
 	b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR anomaly_score >= %s) AS ranked ", leafFloor))
 	if applyCap {
 		b.WriteString(fmt.Sprintf("WHERE event_type = 'spawn' OR _rn <= %d ", capN))
@@ -936,8 +1016,7 @@ func BuildReconnectionSQL(guids []string, p ProvenanceParams, totalHosts, totalI
 // peer's connection / lookup) does name the image, so the node renders as its image rather than a
 // bare guid.
 func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
-	const cols = "parent, child, label, event_type, anomaly_score, prevalence, first_seen, log_id, timestamp, fractal_id, command_line, proc_user, host, parent_label"
-	base := "SELECT " + cols + " FROM (" + pass2SQL + ")"
+	base := "SELECT " + strings.Join(ProvenanceColumns, ", ") + " FROM (" + pass2SQL + ")"
 
 	seen := map[string]bool{}
 	var lits []string
@@ -950,11 +1029,16 @@ func AppendReconnectionEdges(pass2SQL string, peers []ReconnectPeer) string {
 			return
 		}
 		seen[key] = true
+		// A bridge's severity is a fixed per-type value, not a baseline measurement, so its counts
+		// are zero and score_basis says so.
+		a := strconv.FormatFloat(anomaly, 'f', 4, 64)
 		lits = append(lits, fmt.Sprintf(
-			"SELECT '%s' AS parent, '%s' AS child, '%s' AS label, '%s' AS event_type, toFloat64(%s) AS anomaly_score, toFloat64(0) AS prevalence, '' AS first_seen, "+
+			"SELECT '%s' AS parent, '%s' AS child, '%s' AS label, '%s' AS event_type, toFloat64(%s) AS anomaly_score, toFloat64(%s) AS edge_score, "+
+				"'reconnect' AS score_basis, '' AS first_seen, toFloat64(0) AS edge_host_days, toFloat64(0) AS source_host_days, toFloat64(0) AS source_exec_host_days, toFloat64(0) AS target_host_days, "+
+				"toFloat64(0) AS target_hosts, toFloat64(0) AS total_hosts, "+
 				"'%s' AS log_id, '%s' AS timestamp, '%s' AS fractal_id, '' AS command_line, '' AS proc_user, '%s' AS host, '%s' AS parent_label",
-			escapeString(parent), escapeString(child), escapeString(label), escapeString(eventType),
-			strconv.FormatFloat(anomaly, 'f', 4, 64), escapeString(logID), escapeString(ts), escapeString(fractal), escapeString(host), escapeString(parentLabel)))
+			escapeString(parent), escapeString(child), escapeString(label), escapeString(eventType), a, a,
+			escapeString(logID), escapeString(ts), escapeString(fractal), escapeString(host), escapeString(parentLabel)))
 	}
 
 	for _, pe := range peers {

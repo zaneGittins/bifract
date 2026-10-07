@@ -278,48 +278,163 @@ func TestInternalDomainExpr(t *testing.T) {
 	}
 }
 
-// A ghost root (proc_lineage row with no parent_image) yields fkey_src=”, which can never match
-// a proc_freq row because every proc_freq_* MV requires parent_image != ”. Without the guard it
-// scores max-anomalous, painting the root of most trees red.
-func TestScoringSQLGhostRootScoresZero(t *testing.T) {
+// cteBody returns the body of the named top-level CTE in a scoring statement, matching
+// parentheses outside string literals.
+func cteBody(t *testing.T, sql, name string) string {
+	t.Helper()
+	marker := name + " AS ("
+	start := strings.Index(sql, "WITH "+marker)
+	if start < 0 {
+		start = strings.Index(sql, ", "+marker)
+	}
+	if start < 0 {
+		t.Fatalf("no CTE %q in scoring SQL", name)
+	}
+	i := strings.Index(sql[start:], marker) + start + len(marker)
+	depth, inStr := 1, false
+	for j := i; j < len(sql); j++ {
+		switch c := sql[j]; {
+		case inStr && c == '\\':
+			j++
+		case c == '\'':
+			inStr = !inStr
+		case inStr:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return sql[i:j]
+			}
+		}
+	}
+	t.Fatalf("unterminated CTE %q", name)
+	return ""
+}
+
+func scoringSQL(t *testing.T, edgeTypes map[string]bool, bl ProvenanceBaseline) string {
+	t.Helper()
 	opts := reconOpts()
 	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, opts)
+	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, edgeTypes, false, bl, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(sql, "if(e.fkey_src = '', 0.0,") {
-		t.Error("empty fkey_src must short-circuit to 0 before the regularity product")
+	return sql
+}
+
+// A ghost root (proc_lineage row with no parent_image) yields an empty fkey_src, which can never
+// match a proc_freq row because every proc_freq_* MV requires a parent_image. Without the guard
+// it scores max-anomalous, painting the root of most trees red.
+func TestScoringSQLGhostRootScoresZero(t *testing.T) {
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
+	for _, want := range []string{"multiIf(fkey_src = '', 'no_source'", "multiIf(score_basis = 'no_source', 0,"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("empty fkey_src must score 0 before any baseline term: missing %q", want)
+		}
 	}
 }
 
-// Per-edge anomaly is NoDoze Eq.2/Eq.3: 1 - IN(SRC)*M*OUT(DST). Global rarity is a separate
-// column, never a factor -- combining it into the score measured worse than either input alone.
+// Per-edge anomaly is NoDoze Eq.2/Eq.3: 1 - IN(SRC)*M*OUT(DST). Global rarity is never a factor
+// of the transition score -- combining it measured worse than either input alone.
 func TestScoringSQLUsesNodeStabilityFactors(t *testing.T) {
-	opts := reconOpts()
-	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
 	for _, want := range []string{
-		"coalesce(ins.stab, 1.0)",                  // IN(SRC)
-		"coalesce(fe.cnt, 0) / ft.tot",             // M
-		"coalesce(outs.stab, 1.0)",                 // OUT(DST)
+		"(1 - ins.instab) * (1 - outs.instab) AS stability",
+		"1 - stability * if(source_host_days > 0, least(1, edge_host_days / source_host_days), 0)",
 		"LEFT JOIN ins ON ins.node = e.fkey_src",   // IN keys on the source node
 		"LEFT JOIN outs ON outs.node = e.fkey_tgt", // OUT keys on the destination node
-		"AS prevalence",                            // rarity survives, as its own column
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("scoring SQL missing %q", want)
 		}
 	}
-	// The anomaly expression must not fold global rarity in. Everything up to "AS anomaly_score"
-	// is that expression; gf.hostct belongs only to the prevalence column after it.
-	anom := sql[:strings.Index(sql, "AS anomaly_score")]
-	if i := strings.LastIndex(anom, "round(1 - "); i >= 0 {
-		if strings.Contains(anom[i:], "gf.hostct") {
-			t.Error("anomaly_score must not combine the transition term with global rarity")
+	// An unmatched LEFT JOIN yields the column default (0), not NULL, so coalescing a stability
+	// column to 1 never fires and a node absent from the CTE silently scores maximally unstable.
+	if strings.Contains(sql, "coalesce(ins.") || strings.Contains(sql, "coalesce(outs.") {
+		t.Error("stability must not rely on coalesce over a non-Nullable LEFT JOIN column")
+	}
+	transition := sql[strings.Index(sql, "score_basis = 'transition', "):strings.Index(sql, "AS anomaly_score")]
+	if strings.Contains(transition, "target_hosts") || strings.Contains(transition, "gf_hosts") {
+		t.Error("the transition score must not fold in the target's global footprint")
+	}
+}
+
+// Frequencies are host-days (NoDoze Eq.7/8): every proc_freq count merges the per-row host sets
+// into distinct (day, host) pairs. Raw event_count would let one beaconing process saturate its
+// own baseline.
+func TestScoringSQLCountsHostDays(t *testing.T) {
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
+	pairs := "uniqCombined64Array(12)(arrayMap(h -> (day, h), finalizeAggregation(hosts)))"
+	for _, cte := range []string{"fe", "ft", "gf"} {
+		body := cteBody(t, sql, cte)
+		if !strings.Contains(body, pairs) {
+			t.Errorf("%s must count host-days, got: %s", cte, body)
+		}
+		if strings.Contains(body, "event_count") {
+			t.Errorf("%s must not count raw events", cte)
+		}
+	}
+	// Eq.8's Freq(src,rel,*) counts the wildcard event once per host-day, so ft groups by the
+	// source and relationship only, never per target.
+	if ft := cteBody(t, sql, "ft"); !strings.HasSuffix(ft, "GROUP BY src_image, event_type") {
+		t.Errorf("ft must aggregate per (source, relationship): %s", ft)
+	}
+	// Whether the source binary ran elsewhere merges per-parent states, so a host-day on which two
+	// parents launched it counts once.
+	ins := cteBody(t, sql, "ins")
+	for _, want := range []string{"uniqCombined64ArrayIfState(12)(", "event_type = 'spawn') AS xs", "uniqCombined64ArrayIfMerge(12)(xs) AS exec_hd"} {
+		if !strings.Contains(ins, want) {
+			t.Errorf("ins missing %q", want)
+		}
+	}
+}
+
+// The baseline includes the activity being scored, so every count is taken leave-one-out: the
+// tree's own distinct host-days per key are subtracted, clamped at 0. Without it a never-seen
+// process's only connection is its source's entire history (M = 1) and scores 0.
+func TestScoringSQLLeavesOneOut(t *testing.T) {
+	sql := scoringSQL(t, map[string]bool{"file_write": true, "remote_thread": true}, ProvenanceBaseline{TotalHosts: 10})
+	if n := strings.Count(sql, "toDate(ingest_timestamp) AS iday"); n < 3 { // spawn + leaf + p2p
+		t.Errorf("every edge branch must carry its ingest day, got %d", n)
+	}
+	for _, want := range []string{
+		"groupUniqArray((ev.host, ev.iday)) AS hd_pairs",
+		"length(groupUniqArrayArray(e.hd_pairs) OVER (PARTITION BY e.fkey_src, e.event_type, e.fkey_tgt)) AS self_edge",
+		"length(groupUniqArrayArray(e.hd_pairs) OVER (PARTITION BY e.fkey_src, e.event_type)) AS self_src",
+		"length(groupUniqArrayArray(e.hd_pairs) OVER (PARTITION BY e.event_type, e.fkey_tgt)) AS self_tgt",
+		"greatest(0, toFloat64(fe_hd) - self_edge) AS edge_host_days",
+		"greatest(0, toFloat64(ft_hd) - self_src) AS source_host_days",
+		"greatest(0, toFloat64(gf_hd) - self_tgt) AS target_host_days",
+		"greatest(0, toFloat64(exec_hd) - self_exec) AS source_exec_host_days",
+		"LEFT JOIN sx ON sx.node = e.fkey_src",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("scoring SQL missing %q", want)
+		}
+	}
+	// sx must count executions exactly as the spawn MV does, or self_exec drifts from exec_hd.
+	sx := cteBody(t, sql, "sx")
+	for _, want := range []string{"FROM proc_lineage FINAL", "parent_image != '' AND image != ''", "process_guid IN ('g1')", "toDate(ingest_timestamp)"} {
+		if !strings.Contains(sx, want) {
+			t.Errorf("sx missing %q: %s", want, sx)
+		}
+	}
+}
+
+// A binary that never ran anywhere else has no transition probability. Calling it 0 would paint
+// every child of a new binary red, so its edges are scored by the target's own rarity instead,
+// while an established binary doing something new keeps the never-seen score of 1.
+func TestScoringSQLNewSourceScoresTargetRarity(t *testing.T) {
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
+	for _, want := range []string{
+		"source_host_days > 0 OR source_exec_host_days > 0, 'transition', 'new_source') AS score_basis",
+		"1 / (1 + target_host_days)), 4) AS anomaly_score",
+		"anomaly_score AS edge_score",
+		"toFloat64(10) AS total_hosts",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("scoring SQL missing %q", want)
 		}
 	}
 }
@@ -329,35 +444,40 @@ func TestScoringSQLUsesNodeStabilityFactors(t *testing.T) {
 // the fractal's whole proc_freq once per CTE -- work that grows with the retention window rather
 // than with the tree, and what exhausts the query memory cap on an aged fractal.
 func TestScoringSQLScopesBaselineToEdgeKeys(t *testing.T) {
-	opts := reconOpts()
-	opts.MaxRows = 100
 	bl := ProvenanceBaseline{TotalHosts: 10, SrcKeys: []string{"c:\\a.exe"}, TgtKeys: []string{"1.2.3.4", "d.example"}}
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, bl, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sql := scoringSQL(t, nil, bl)
 	// Which COLUMN each key set applies to depends on the CTE, and crossing them changes scores
-	// without erroring: fe/ft join src_image to the edge source, ins is grouped by the
-	// target_norm that IS that source node, gf joins target_norm to the edge target, and outs is
-	// grouped by the src_image that IS that target node.
-	srcKeys, tgtKeys := `('c:\\a.exe')`, `('1.2.3.4', 'd.example')`
+	// without erroring: fe/ft join src_image to the edge source (fe also its target), ins is
+	// grouped by the target_norm that IS that source node, gf joins target_norm to the edge
+	// target, and outs is grouped by the src_image that IS that target node.
+	src := "src_image IN ('c:\\\\a.exe')"
+	tgt := "target_norm IN ('1.2.3.4', 'd.example')"
+	srcAsTgt := "target_norm IN ('c:\\\\a.exe')"
+	tgtAsSrc := "src_image IN ('1.2.3.4', 'd.example')"
 	for _, c := range []struct {
-		cte, cond string
+		cte       string
+		want, not []string
 	}{
-		{"fe", "src_image IN " + srcKeys},
-		{"ins", "target_norm IN " + srcKeys},
-		{"gf", "target_norm IN " + tgtKeys},
-		{"outs", "src_image IN " + tgtKeys},
+		{"fe", []string{src, tgt}, []string{srcAsTgt, tgtAsSrc}},
+		{"ft", []string{src}, []string{tgt, srcAsTgt, tgtAsSrc}},
+		{"gf", []string{tgt}, []string{src, srcAsTgt, tgtAsSrc}},
+		{"ins", []string{srcAsTgt}, []string{src, tgt, tgtAsSrc}},
+		{"outs", []string{tgtAsSrc}, []string{src, tgt, srcAsTgt}},
 	} {
-		// Exactly once: a crossed pair shows up as a duplicate here and a zero elsewhere.
-		if got := strings.Count(sql, c.cond); got != 1 {
-			t.Errorf("%s scoped by %q %d times, want 1", c.cte, c.cond, got)
+		body := cteBody(t, sql, c.cte)
+		for _, w := range c.want {
+			if !strings.Contains(body, w) {
+				t.Errorf("%s must be scoped by %q", c.cte, w)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(body, n) {
+				t.Errorf("%s must not be scoped by %q", c.cte, n)
+			}
 		}
 	}
 	// span measures the age of the whole baseline, so it alone stays unrestricted.
-	span := sql[strings.Index(sql, "span AS ("):]
-	span = span[:strings.Index(span, "), ")]
-	if strings.Contains(span, "IN (") {
+	if span := cteBody(t, sql, "span"); strings.Contains(span, "IN (") {
 		t.Errorf("span must not be key-restricted: %s", span)
 	}
 }
@@ -366,13 +486,28 @@ func TestScoringSQLScopesBaselineToEdgeKeys(t *testing.T) {
 // unrestricted baseline: a partial key set would turn real baseline rows into missed joins and
 // silently change scores.
 func TestScoringSQLUnrestrictedWithoutEdgeKeys(t *testing.T) {
-	opts := reconOpts()
-	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
 	if strings.Contains(sql, "src_image IN (") || strings.Contains(sql, "target_norm IN (") {
 		t.Error("no edge keys must leave every proc_freq CTE unrestricted")
+	}
+}
+
+// The scoring SQL and the reconnection literals must project ProvenanceColumns in order, or the
+// UNION ALL binds columns positionally to the wrong names.
+func TestReconnectionEdgesProjectProvenanceColumns(t *testing.T) {
+	out := AppendReconnectionEdges("SELECT 1", []ReconnectPeer{
+		{ReconType: "file", PeerGUID: "exec", SrcGUID: "writer", Label: "c:\\a.exe", Anomaly: 1.0},
+	})
+	lit := out[strings.Index(out, " UNION ALL SELECT ")+len(" UNION ALL "):]
+	pos := 0
+	for _, c := range ProvenanceColumns {
+		i := strings.Index(lit[pos:], " AS "+c)
+		if i < 0 {
+			t.Fatalf("reconnection literal is missing %q (or out of order): %s", c, lit)
+		}
+		pos += i + len(" AS "+c)
+	}
+	if !strings.Contains(lit, "'reconnect' AS score_basis") || !strings.Contains(lit, "toFloat64(1.0000) AS edge_score") {
+		t.Errorf("a bridge must say it is a bridge and carry its own score: %s", lit)
 	}
 }

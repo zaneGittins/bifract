@@ -19,16 +19,30 @@ import (
 // resolve as bare columns for any downstream BQL (filter/aggregate/sort/table/pgraph).
 // parent_label is the parent node's image, emitted only where the parent may have no row of its
 // own (a spawn row's out-of-range ancestor, a reconnected peer) so the viz can name it instead of
-// showing a bare guid.
-var provenanceColumns = []string{"parent", "child", "label", "event_type", "anomaly_score", "prevalence", "first_seen", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
+// showing a bare guid. See parser.ProvenanceColumns for the explanation columns.
+var provenanceColumns = parser.ProvenanceColumns
 
 // provenanceNumericColumns is the subset of provenanceColumns that are already numeric in the
 // subquery (so downstream numeric comparisons must not string-coerce them).
-var provenanceNumericColumns = []string{"anomaly_score", "prevalence"}
+var provenanceNumericColumns = parser.ProvenanceNumericColumns
 
 // provenanceEmptyScoreSQL yields zero rows with the pgr output shape, so a query over an empty
 // tree behaves correctly (count() -> 0, etc.) without special-casing every caller.
-const provenanceEmptyScoreSQL = "SELECT '' AS parent, '' AS child, '' AS label, '' AS event_type, toFloat64(0) AS anomaly_score, toFloat64(0) AS prevalence, '' AS first_seen, '' AS log_id, '' AS timestamp, '' AS fractal_id, '' AS command_line, '' AS proc_user, '' AS host, '' AS parent_label WHERE 1 = 0"
+var provenanceEmptyScoreSQL = func() string {
+	numeric := map[string]bool{}
+	for _, c := range provenanceNumericColumns {
+		numeric[c] = true
+	}
+	parts := make([]string, len(provenanceColumns))
+	for i, c := range provenanceColumns {
+		v := "''"
+		if numeric[c] {
+			v = "toFloat64(0)"
+		}
+		parts[i] = v + " AS " + c
+	}
+	return "SELECT " + strings.Join(parts, ", ") + " WHERE 1 = 0"
+}()
 
 // provenanceScoreSQL runs pass 1 (tree traversal, collect guids) and returns the pass-2
 // scored-edge SQL, which becomes the query's subquery source. Returns a zero-row stub when the
@@ -99,19 +113,16 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	// Global-rarity denominator for every non-spawn edge scored (see BuildProvenanceScoringSQL's
-	// anomExpr). Fetched ONCE per call and passed as a literal so it is not silently re-scanned
-	// if the scoring SQL gets rebuilt within this same call (the diffuse-fallback path below
-	// calls BuildProvenanceScoringSQL again). Never cached across separate pgr() calls -- always
-	// fresh per call. On failure it stays 0, which the anomaly expression already treats as
-	// "no baseline" (global-rarity term forced to 0) -- a safe, pre-existing fallback.
+	// Fleet size, reported as total_hosts. Fetched once per call and passed as a literal so the
+	// diffuse-fallback rebuild below does not rescan it; never cached across calls. It is display
+	// only, so a failed lookup leaves it 0 and changes no score.
 	var baseline parser.ProvenanceBaseline
 	if ctx.Err() == nil {
 		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-			log.Printf("[pgr] total-hosts lookup failed, scoring with global-rarity term forced to 0: %v", tErr)
+			log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", tErr)
 		} else if len(totRows) > 0 {
 			baseline.TotalHosts = reconInt64(totRows[0]["total_hosts"])
 		}

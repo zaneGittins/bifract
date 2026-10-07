@@ -14,7 +14,7 @@ import (
 func spawnRow(parent, child string) map[string]interface{} {
 	return map[string]interface{}{
 		"parent": parent, "child": child, "label": "", "event_type": "spawn",
-		"anomaly_score": 0.5, "prevalence": 0.25, "log_id": "l", "timestamp": "t", "fractal_id": "f",
+		"anomaly_score": 0.5, "edge_score": 0.5, "score_basis": "transition", "target_hosts": 2.0, "total_hosts": 4.0, "log_id": "l", "timestamp": "t", "fractal_id": "f",
 		"command_line": "", "proc_user": "", "host": "h", "parent_label": "p.exe",
 	}
 }
@@ -22,7 +22,7 @@ func spawnRow(parent, child string) map[string]interface{} {
 func leafRow(parent, child string, score float64) map[string]interface{} {
 	return map[string]interface{}{
 		"parent": parent, "child": child, "label": "x", "event_type": "net_connect",
-		"anomaly_score": score, "prevalence": 0.25, "log_id": "l", "timestamp": "t", "fractal_id": "f",
+		"anomaly_score": score, "edge_score": score, "score_basis": "new_source", "target_hosts": 1.0, "total_hosts": 4.0, "log_id": "l", "timestamp": "t", "fractal_id": "f",
 		"command_line": "", "proc_user": "", "host": "h", "parent_label": "",
 	}
 }
@@ -64,7 +64,7 @@ func TestEmitLiteralEdgeSource_DropsLeavesOverBudget(t *testing.T) {
 		rows = append(rows, leafRow("b", "net:leaf", 0.9))
 	}
 	// Tiny budget: the spawn row fits, most leaves get dropped.
-	sql, dropped, overflow := emitLiteralEdgeSource(rows, provenanceColumns, provenanceNumericColumns, 400)
+	sql, dropped, overflow := emitLiteralEdgeSource(rows, provenanceColumns, provenanceNumericColumns, 1000)
 	if overflow {
 		t.Fatal("spawn backbone fits, should not overflow")
 	}

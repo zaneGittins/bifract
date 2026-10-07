@@ -60,6 +60,26 @@ That is the same canvas with process creation only: no anomaly scoring, no file/
 
 Every action gets an `anomaly_score` from 0 to 1, where 1 is never-seen-before and 0 is ubiquitous across your environment. Rare behavior surfaces; common noise fades. Scoring also follows the chain, so a sequence of individually-common steps (a classic living-off-the-land pattern) adds up and stands out even when no single step looks unusual on its own.
 
+How an action is scored:
+
+* **Host-days, not events.** Frequency counts each action once per host per day, so a process beaconing 10,000 times to one IP is one host-day, not 10,000 observations of normal behavior.
+* **Leave-one-out.** The tree being scored, including reconnected trees, is subtracted from the baseline first. An action counts as common only if *other* host-days did it, so an attack never vouches for itself, even when a replayed dataset lands on a single ingest day.
+* **Known source.** For a process image that has run elsewhere, the score is how rarely that source made this move on its other host-days: `winword.exe` starting its first-ever child scores 1.
+* **New source.** For a binary that never ran on another host, the score is how rarely anyone else touched the target: its connection to a never-seen IP scores 1, its lookup of a shared resolver scores near 0. The binary itself stands out through the edge that started it.
+
+Each row carries the evidence behind its score, and the graph's process and activity drawers show it as a **Why** line, for example `cmd.exe → node.exe: 0 of 1,240 other host-days · first seen today · target on 1 of 4 hosts · own 0.98, inherited +0.02`.
+
+| Column | Meaning |
+|--------|---------|
+| `edge_score` | The action's own score; `anomaly_score` minus it is what the chain above added |
+| `score_basis` | `transition` (known source), `new_source`, `no_source` (parent never logged), or `reconnect` |
+| `edge_host_days` | Other host-days on which this source made this exact move |
+| `source_host_days` | Other host-days on which this source made any move of this type |
+| `source_exec_host_days` | Other host-days on which this source binary ran |
+| `target_host_days` | Other host-days on which any process touched the target |
+| `target_hosts`, `total_hosts` | Hosts that touched the target (including this one, capped at 256) out of the fleet |
+| `first_seen` | First day the relationship was ever observed |
+
 ### Reconnection
 
 `pgr()` also pulls in **other** process trees that share a rare artifact with the one you seeded: a file this tree wrote that another tree then executed, or the same rare external IP or domain touched by both. That is how lateral spread shows up without you hunting for it. Only artifacts that are rare across your fleet bridge, so shared CDNs, resolvers, and update servers do not reconnect everything.
