@@ -130,6 +130,10 @@ type QueryPlan struct {
 	// layer time emitted a bare identifier the scan never projected (code 47).
 	HistogramValueExpr string
 
+	// ChartReadsAllRows marks a chart that summarizes every row, so the default
+	// display LIMIT must not truncate its input.
+	ChartReadsAllRows bool
+
 	// Z-score/MAD window-specific fields
 	ModifiedZScoreExpr string
 	OutlierThreshold   string
