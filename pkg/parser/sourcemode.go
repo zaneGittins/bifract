@@ -120,6 +120,8 @@ var icebergAllowedCommands = map[string]bool{
 	"table": true,
 	// time bucketing over aggregates
 	"timechart": true, "histogram": true, "bucket": true,
+	// whole-result numeric charts (window layers over the mode-aware projection)
+	"boxplot": true, "scatter": true,
 	// ATT&CK matrix: a GROUP BY over tags extracted from a mode-aware field ref
 	"mitre": true, "attack": true,
 }

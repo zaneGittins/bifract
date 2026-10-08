@@ -1117,6 +1117,40 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
+		Name:        "boxplot",
+		Category:    "Visualization",
+		Description: "Summarizes a numeric field's distribution as a box plot: quartiles, Tukey whiskers and the most extreme outliers, optionally one box per group. Values past a fence (Q1 - fence*IQR, Q3 + fence*IQR) are outliers; the fences are thresholds you can alert on. Quartiles are approximate (0.1% rank error).",
+		Syntax:      "| boxplot(field, by=group, fence=1.5, limit=20, outliers=10)",
+		Parameters: []Param{
+			{Name: "field", Type: "numeric", Required: true, Description: "The numeric field to summarize"},
+			{Name: "by", Type: "string", Required: false, Description: "Draw one box per value of this field (the most frequent groups)"},
+			{Name: "fence", Type: "number", Required: false, Description: "IQR multiplier for the outlier fences (default: 1.5)"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum groups, most frequent first (default: 20, max: 100)"},
+			{Name: "outliers", Type: "number", Required: false, Description: "Most extreme values kept at each end per group (default: 10, max: 100)"},
+		},
+		Examples: []string{
+			"* | len(commandline) | boxplot(_len, by=image)",
+			"* | groupby(computer_name) | boxplot(_count)",
+			"* | boxplot(duration, fence=3)",
+		},
+	},
+	{
+		Name:        "scatter",
+		Category:    "Visualization",
+		Description: "Plots two numeric fields against each other, one point per row. After an aggregation that is one point per group (the usual use: per-host totals); before one, the newest events that carry both values.",
+		Syntax:      "| scatter(x=field, y=field, label=field, limit=5000)",
+		Parameters: []Param{
+			{Name: "x", Type: "numeric", Required: true, Description: "Field for the X axis"},
+			{Name: "y", Type: "numeric", Required: true, Description: "Field for the Y axis"},
+			{Name: "label", Type: "string", Required: false, Description: "Field that names each point in the tooltip"},
+			{Name: "limit", Type: "number", Required: false, Description: "Maximum points (default: 5000, max: 50000)"},
+		},
+		Examples: []string{
+			"* | groupby(computer_name) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=computer_name)",
+			"* | scatter(x=duration, y=orig_bytes)",
+		},
+	},
+	{
 		Name:        "heatmap",
 		Category:    "Visualization",
 		Description: "Renders a 2D density heatmap with aggregated values",

@@ -130,6 +130,10 @@ type QueryPlan struct {
 	// layer time emitted a bare identifier the scan never projected (code 47).
 	HistogramValueExpr string
 
+	// ChartLayers wrap the result for a chart that reshapes it (boxplot,
+	// scatter); they run after any z-score layers. ChartFieldOrder is their output.
+	ChartLayers     []QueryLayer
+	ChartFieldOrder []string
 	// ChartReadsAllRows marks a chart that summarizes every row, so the default
 	// display LIMIT must not truncate its input.
 	ChartReadsAllRows bool
@@ -933,7 +937,7 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	if p.IsJoin || p.ModelLookupSQL != "" || p.usesBindingSet || p.rowLimitByCommand {
 		return false
 	}
-	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == ""
+	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == "" && len(p.ChartLayers) == 0
 }
 
 // SourceProjection is one column the source scan computes, as the alias it is

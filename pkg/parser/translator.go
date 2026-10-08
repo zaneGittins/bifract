@@ -1038,6 +1038,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		fieldOrder = []string{"_bin_lower", "_bin_upper", "_bin_count"}
 		plan.IsAggregated = true
 	}
+	if len(plan.ChartLayers) > 0 {
+		plan.WindowLayers = append(plan.WindowLayers, plan.ChartLayers...)
+		fieldOrder = plan.ChartFieldOrder
+		plan.IsAggregated = true
+	}
 
 	// --- Render SQL ---
 	sql, err := plan.Render(opts)
