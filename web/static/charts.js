@@ -940,6 +940,309 @@ window.BifractCharts = {
         return { chart };
     },
 
+    // ---- Numeric distribution charts (boxplot, scatter) ----
+
+    _num(v) {
+        if (v === null || v === undefined || v === '') return NaN;
+        return typeof v === 'number' ? v : parseFloat(v);
+    },
+
+    // Heavy-tailed positive values (bytes, durations) span decades; a log axis
+    // keeps the bulk readable instead of crushing it against zero.
+    _autoAxisType(values) {
+        let lo = Infinity, hi = -Infinity;
+        for (const v of values) {
+            if (!isFinite(v)) continue;
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+        return (lo > 0 && hi / lo >= 1000) ? 'logarithmic' : 'linear';
+    },
+
+    // Axis bounds that cover every drawn value with a little room. Chart.js
+    // derives a log axis minimum from the bars or the parsed range only, which
+    // clipped low points and whiskers.
+    _paddedRange(values, type) {
+        let lo = Infinity, hi = -Infinity;
+        for (const v of values) {
+            if (!isFinite(v) || (type === 'logarithmic' && v <= 0)) continue;
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+        if (lo > hi) return {};
+        if (type === 'logarithmic') {
+            // Label 1, 2 and 5 of each decade; Chart.js labels every minor tick.
+            const cv = this._cv();
+            return {
+                suggestedMin: lo / 1.2, suggestedMax: hi * 1.2,
+                ticks: {
+                    color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 },
+                    maxRotation: 0, autoSkip: false,
+                    callback: (v) => {
+                        const m = Math.round(v / Math.pow(10, Math.floor(Math.log10(v))) * 1000) / 1000;
+                        return (m === 1 || m === 2 || m === 5) ? this.formatValue(v) : '';
+                    }
+                }
+            };
+        }
+        const pad = (hi - lo) * 0.04 || Math.abs(hi) * 0.1 || 1;
+        return { suggestedMin: lo >= 0 ? Math.max(0, lo - pad) : lo - pad, suggestedMax: hi + pad };
+    },
+
+    _middleTruncate(s, max) {
+        s = String(s);
+        if (s.length <= max) return s;
+        const half = Math.floor((max - 1) / 2);
+        return s.slice(0, half) + '…' + s.slice(s.length - (max - 1 - half));
+    },
+
+    _axisTitle(text) {
+        const cv = this._cv();
+        return { display: true, text, color: cv('--chart-text-secondary'), font: { family: 'Inter', size: 11 } };
+    },
+
+    _pointerHover() {
+        return (evt, els) => {
+            const c = evt && evt.native && evt.native.target;
+            if (c) c.style.cursor = (els && els.length) ? 'pointer' : 'default';
+        };
+    },
+
+    // One horizontal box per row of boxplot() output: a floating bar spans Q1-Q3
+    // and a plugin draws the median, mean and Tukey whiskers over it. Outliers
+    // are a point dataset so they get tooltips and clicks of their own.
+    renderBoxplot(canvas, opts) {
+        const rows = (opts.data || []).filter(r => isFinite(this._num(r._q1)));
+        if (rows.length === 0) return null;
+        const cfg = opts.config || {};
+        const field = cfg.field || 'value';
+        const by = cfg.by || '';
+        const keep = parseInt(cfg.outliers, 10) || 0;
+        const cv = this._cv();
+        const accent = cv('--chart-accent');
+        const text = cv('--chart-text');
+        const n = r => this._num(r);
+        const labels = rows.map(r => by ? String(r._group) : field);
+        const outlierList = r => [].concat(r._outliers_low || [], r._outliers_high || []).map(n).filter(isFinite);
+
+        const points = [];
+        rows.forEach((r, i) => {
+            const seen = new Map();
+            outlierList(r).forEach(v => seen.set(v, (seen.get(v) || 0) + 1));
+            seen.forEach((times, v) => points.push({ x: v, y: labels[i], row: i, times }));
+        });
+        // The value axis spans what is drawn: whiskers and outliers, not the bars.
+        const extent = points.map(p => p.x);
+        rows.forEach(r => extent.push(n(r._whisker_low), n(r._whisker_high)));
+        const axisType = this._autoAxisType(extent);
+        const truncated = r => keep > 0 &&
+            ((r._outliers_low || []).length >= keep || (r._outliers_high || []).length >= keep);
+        const fmt = v => this.formatValue(v);
+
+        const whiskers = {
+            id: 'bifractBoxWhiskers',
+            afterDatasetsDraw: (chart) => {
+                const meta = chart.getDatasetMeta(0);
+                const xs = chart.scales.x;
+                const g = chart.ctx;
+                const area = chart.chartArea;
+                g.save();
+                g.beginPath();
+                g.rect(area.left, area.top, area.right - area.left, area.bottom - area.top);
+                g.clip();
+                rows.forEach((r, i) => {
+                    const bar = meta.data[i];
+                    if (!bar) return;
+                    const y = bar.y;
+                    const h = bar.height || 10;
+                    const px = v => xs.getPixelForValue(v);
+                    const wl = px(n(r._whisker_low)), q1 = px(n(r._q1)), q3 = px(n(r._q3)), wh = px(n(r._whisker_high));
+                    g.strokeStyle = accent;
+                    g.lineWidth = 1;
+                    g.beginPath();
+                    g.moveTo(wl, y); g.lineTo(q1, y);
+                    g.moveTo(q3, y); g.lineTo(wh, y);
+                    g.moveTo(wl, y - h / 4); g.lineTo(wl, y + h / 4);
+                    g.moveTo(wh, y - h / 4); g.lineTo(wh, y + h / 4);
+                    g.stroke();
+                    // Median: the line the eye compares across boxes.
+                    const med = px(n(r._median));
+                    g.strokeStyle = text;
+                    g.lineWidth = 2;
+                    g.beginPath();
+                    g.moveTo(med, y - h / 2); g.lineTo(med, y + h / 2);
+                    g.stroke();
+                    const mean = n(r._mean);
+                    if (isFinite(mean) && (axisType === 'linear' || mean > 0)) {
+                        const mx = px(mean), d = Math.min(4, h / 4);
+                        g.lineWidth = 1;
+                        g.beginPath();
+                        g.moveTo(mx, y - d); g.lineTo(mx + d, y); g.lineTo(mx, y + d); g.lineTo(mx - d, y); g.closePath();
+                        g.stroke();
+                    }
+                });
+                g.restore();
+            }
+        };
+
+        const click = typeof opts.onDataClick === 'function' ? {
+            onClick: (evt, els) => {
+                if (!els || !els.length) return;
+                const el = els[0];
+                if (el.datasetIndex === 1) {
+                    const p = points[el.index];
+                    const row = { [field]: p.x };
+                    if (by) row[by] = labels[p.row];
+                    opts.onDataClick({ row, field, value: p.x, series: null }, evt && evt.native);
+                } else if (by) {
+                    opts.onDataClick({ row: { [by]: labels[el.index] }, field: by, value: labels[el.index], series: null }, evt && evt.native);
+                }
+            },
+            onHover: this._pointerHover()
+        } : {};
+
+        return new Chart(canvas, {
+            data: {
+                labels,
+                datasets: [{
+                    type: 'bar',
+                    label: field,
+                    data: rows.map(r => [n(r._q1), n(r._q3)]),
+                    backgroundColor: accent + '40',
+                    borderColor: accent,
+                    borderWidth: 1,
+                    borderSkipped: false,
+                    barPercentage: 0.6,
+                    categoryPercentage: 0.9,
+                    maxBarThickness: 44
+                }, {
+                    type: 'scatter',
+                    label: 'Outliers',
+                    data: points,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    backgroundColor: accent + 'B0',
+                    borderWidth: 0
+                }]
+            },
+            options: Object.assign({
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: opts.maintainAspectRatio !== false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: Object.assign(this._themedTooltip(), {
+                        callbacks: {
+                            title: (items) => items.length ? labels[items[0].datasetIndex === 1 ? points[items[0].dataIndex].row : items[0].dataIndex] : '',
+                            label: (ctx) => {
+                                if (ctx.datasetIndex === 1) {
+                                    const p = points[ctx.dataIndex];
+                                    const out = [`Outlier: ${fmt(p.x)}` + (p.times > 1 ? ` (x${p.times})` : '')];
+                                    if (truncated(rows[p.row])) out.push(`Showing the ${keep} most extreme at each end`);
+                                    return out;
+                                }
+                                const r = rows[ctx.dataIndex];
+                                return [
+                                    `Count: ${fmt(n(r._count))}`,
+                                    `Max: ${fmt(n(r._max))}`,
+                                    `Upper whisker: ${fmt(n(r._whisker_high))}`,
+                                    `Q3: ${fmt(n(r._q3))}`,
+                                    `Median: ${fmt(n(r._median))}`,
+                                    `Q1: ${fmt(n(r._q1))}`,
+                                    `Lower whisker: ${fmt(n(r._whisker_low))}`,
+                                    `Min: ${fmt(n(r._min))}`,
+                                    `Mean: ${fmt(n(r._mean))}  SD: ${fmt(n(r._stddev))}`,
+                                    `Fences: ${fmt(n(r._lower_fence))} / ${fmt(n(r._upper_fence))}`
+                                ];
+                            }
+                        }
+                    })
+                },
+                scales: this._themedScales({
+                    x: { type: axisType, beginAtZero: false, ...this._paddedRange(extent, axisType), title: this._axisTitle(field + (axisType === 'logarithmic' ? ' (log)' : '')) },
+                    y: {
+                        type: 'category',
+                        beginAtZero: false,
+                        title: by ? this._axisTitle(by) : { display: false },
+                        ticks: {
+                            color: cv('--chart-text-secondary'),
+                            font: { family: 'Inter', size: 11 },
+                            callback: (v, i) => this._middleTruncate(labels[i], 40)
+                        }
+                    }
+                }),
+                layout: { padding: 10 }
+            }, click),
+            plugins: [whiskers]
+        });
+    },
+
+    // One point per row of scatter() output. Rows are usually per-entity
+    // aggregates, where the outliers are the points off the main trend.
+    renderScatter(canvas, opts) {
+        const data = opts.data || [];
+        const cfg = opts.config || {};
+        const xF = cfg.xField, yF = cfg.yField, lF = cfg.labelField || '';
+        if (!xF || !yF) return null;
+        const points = [];
+        data.forEach((r, i) => {
+            const x = this._num(r[xF]), y = this._num(r[yF]);
+            if (isFinite(x) && isFinite(y)) points.push({ x, y, i });
+        });
+        if (points.length === 0) return null;
+        const cv = this._cv();
+        const accent = cv('--chart-accent');
+        const xType = this._autoAxisType(points.map(p => p.x));
+        const yType = this._autoAxisType(points.map(p => p.y));
+        const fmt = v => this.formatValue(v);
+        const radius = points.length > 5000 ? 1.5 : points.length > 1000 ? 2 : 3;
+
+        const click = typeof opts.onDataClick === 'function' ? {
+            onClick: (evt, els) => {
+                if (!els || !els.length) return;
+                const row = data[points[els[0].index].i];
+                const f = lF || xF;
+                opts.onDataClick({ row, field: f, value: row[f], series: null }, evt && evt.native);
+            },
+            onHover: this._pointerHover()
+        } : {};
+
+        return new Chart(canvas, {
+            type: 'scatter',
+            data: {
+                datasets: [{
+                    label: `${yF} vs ${xF}`,
+                    data: points,
+                    pointRadius: radius,
+                    pointHoverRadius: radius + 2,
+                    backgroundColor: accent + '99',
+                    borderWidth: 0
+                }]
+            },
+            options: Object.assign({
+                responsive: true,
+                maintainAspectRatio: opts.maintainAspectRatio !== false,
+                animation: false,
+                parsing: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: Object.assign(this._themedTooltip(), {
+                        callbacks: {
+                            title: (items) => (lF && items.length) ? String(data[items[0].raw.i][lF]) : '',
+                            label: (ctx) => [`${xF}: ${fmt(ctx.raw.x)}`, `${yF}: ${fmt(ctx.raw.y)}`]
+                        }
+                    })
+                },
+                scales: this._themedScales({
+                    x: { type: xType, beginAtZero: false, ...this._paddedRange(points.map(p => p.x), xType), title: this._axisTitle(xF + (xType === 'logarithmic' ? ' (log)' : '')) },
+                    y: { type: yType, beginAtZero: false, ...this._paddedRange(points.map(p => p.y), yType), title: this._axisTitle(yF + (yType === 'logarithmic' ? ' (log)' : '')) }
+                }),
+                layout: { padding: 10 }
+            }, click)
+        });
+    },
+
     // ---- Single Value ----
 
     renderSingleVal(container, opts) {
@@ -1736,6 +2039,10 @@ window.BifractCharts = {
             return this.renderTimeChart(canvas, opts);
         } else if (chartType === 'histogram') {
             return this.renderHistogram(canvas, opts);
+        } else if (chartType === 'boxplot') {
+            return this.renderBoxplot(canvas, opts);
+        } else if (chartType === 'scatter') {
+            return this.renderScatter(canvas, opts);
         }
         return null;
     }
@@ -1753,6 +2060,7 @@ window.BifractCharts = {
 
     const TRACKED = [
         'renderPieChart', 'renderBarChart', 'renderTimeChart', 'renderHistogram',
+        'renderBoxplot', 'renderScatter',
         'renderSingleVal', 'renderHeatmap', 'renderGraphSimple', 'renderMeshSimple',
         'renderFromPreprocessed', 'renderOnCanvas'
     ];
