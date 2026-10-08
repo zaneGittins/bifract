@@ -119,6 +119,7 @@ var commandProbes = map[string]commandProbe{
 
 	"lowercase":    {base: `* | lowercase(user)`, with: map[string]string{"field": `* | lowercase(host)`, "output": `* | lowercase(user, zzmarker)`, "as": `* | lowercase(user, as=zzmarker)`}},
 	"uppercase":    {base: `* | uppercase(user)`, with: map[string]string{"field": `* | uppercase(host)`, "output": `* | uppercase(user, zzmarker)`, "as": `* | uppercase(user, as=zzmarker)`}},
+	"entropy":      {base: `* | entropy(query)`, with: map[string]string{"field": `* | entropy(other)`, "as": `* | entropy(query, as=zzmarker)`}},
 	"len":          {base: `* | len(cmdline)`, with: map[string]string{"field": `* | len(other)`, "as": `* | len(cmdline, as=zzmarker)`}},
 	"logsize":      {base: `* | logSize()`, with: map[string]string{"field": `* | logSize(cmdline)`, "as": `* | logSize(as=zzmarker)`}},
 	"base64decode": {base: `* | base64decode(cmdline)`, with: map[string]string{"field": `* | base64decode(other)`, "as": `* | base64decode(cmdline, as=zzmarker)`}},

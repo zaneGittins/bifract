@@ -702,6 +702,21 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
+		Name:        "entropy",
+		Category:    "Transformation",
+		Description: "Shannon entropy of a field's value in bits per character, as _entropy: 0 for an empty or single-symbol string, higher as the characters get more varied. Random or encoded text (generated domains, base64, tunneled DNS labels) scores high. Entropy also grows with length, so compare it against len() rather than using one cutoff for strings of every length. Also usable inside expressions: entropy(query) > 3.5.",
+		Syntax:      "| entropy(field)",
+		Parameters: []Param{
+			{Name: "field", Type: "string", Required: true, Description: "The field to measure"},
+			{Name: "as", Type: "string", Required: false, Description: "Output column name (default: _entropy)"},
+		},
+		Examples: []string{
+			"| entropy(query) | _entropy > 3.5",
+			"query=* | entropy(query) | len(query) | groupby(query) | multi(max(_entropy, as=h), max(_len, as=n)) | scatter(x=n, y=h, label=query, line=trend)",
+			"| eval(h = entropy(commandline)) | h > 5",
+		},
+	},
+	{
 		Name:        "logSize",
 		Category:    "Transformation",
 		Description: "Returns the byte size of a log as _size (defaults to the normalized event, norm_log). Sum or aggregate it to diagnose log growth.",
