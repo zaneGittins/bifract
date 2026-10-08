@@ -3,7 +3,7 @@
 // Rarity scoring end to end: ingest a known pattern of ports per host over 28
 // days, seed a rarity model from it, and check the exact scores. A host that
 // uses the same three ports every day and then one new one must flag the new
-// port with high confidence; a host that touches a new port most days must not.
+// port with high coverage; a host that touches a new port most days must not.
 //
 //	go test -tags integration ./test/integration/ -run TestRarityScoring -v
 
@@ -101,7 +101,7 @@ func TestRarityScoring(t *testing.T) {
 			"value_key":     "dst_port",
 			"min_sample":    1,
 			// Thresholds are scored at read time; the Findings view applies them.
-			"alert": map[string]any{"confidence_threshold": 0.9, "percent_threshold": 10},
+			"alert": map[string]any{"coverage_threshold": 0.9, "percent_threshold": 10},
 		},
 	}, &model)
 	t.Cleanup(func() { scoped.Status(t, "DELETE", "/models/"+model.ID, nil) })
@@ -144,7 +144,7 @@ func TestRarityScoring(t *testing.T) {
 		Results []map[string]any `json:"results"`
 	}
 	c.DoRaw(t, "POST", "/query", map[string]any{
-		"query": fmt.Sprintf("suite_marker=%q dst_port=\"22\" | modelLookup(model=%q, key=[computer_name, dst_port]) | head(1) | table(percent, confidence, model_count, model_total)",
+		"query": fmt.Sprintf("suite_marker=%q dst_port=\"22\" | modelLookup(model=%q, key=[computer_name, dst_port]) | head(1) | table(percent, coverage, model_count, model_total)",
 			marker, modelName),
 		"fractal_id": fractal.ID,
 		"start":      noon.AddDate(0, 0, -days-1).Format(time.RFC3339),
@@ -155,10 +155,10 @@ func TestRarityScoring(t *testing.T) {
 	}
 	expectRarity(t, map[string]map[string]any{"lookup": res.Results[0]}, "lookup", 1, days, 100.0/days, 1-1.0/85)
 
-	// Findings are exactly what the alert (confidence > 0.9, share < 10%) would
+	// Findings are exactly what the alert (coverage > 0.9, share < 10%) would
 	// raise, rarest first: WS02/22 on 1 of 28 days, then WS03/3389 on 2 of 28
-	// (WS03 has no one-day value, so its confidence is 1). DEV1's new ports are
-	// as rare but routine for DEV1 (confidence 0.58), so none of them alert.
+	// (WS03 has no one-day value, so its coverage is 1). DEV1's new ports are
+	// as rare but routine for DEV1 (coverage 0.58), so none of them alert.
 	expectRarity(t, byKey, "WS03/3389", 2, days, 200.0/days, 1)
 	findings, total := modelFindings(t, scoped, model.ID, "")
 	if got := rarityKeys(findings); total != 2 || got != "WS02/22,WS03/3389" {
@@ -206,7 +206,7 @@ func TestRarityScoring(t *testing.T) {
 				"partition_key": "computer_name",
 				"value_key":     "dst_port",
 				"min_sample":    days,
-				"alert":         map[string]any{"confidence_threshold": 0.9, "percent_threshold": 10},
+				"alert":         map[string]any{"coverage_threshold": 0.9, "percent_threshold": 10},
 			},
 		}, nil)
 	}
@@ -242,7 +242,7 @@ func rarityKeys(rows []map[string]any) string {
 	return strings.Join(keys, ",")
 }
 
-func expectRarity(t *testing.T, rows map[string]map[string]any, key string, seen, total int, percent, confidence float64) {
+func expectRarity(t *testing.T, rows map[string]map[string]any, key string, seen, total int, percent, coverage float64) {
 	t.Helper()
 	r, ok := rows[key]
 	if !ok {
@@ -264,7 +264,7 @@ func expectRarity(t *testing.T, rows map[string]map[string]any, key string, seen
 	if got := num("percent"); math.Abs(got-percent) > 0.001 {
 		t.Errorf("%s percent = %v, want %.4f", key, got, percent)
 	}
-	if got := num("confidence"); math.Abs(got-confidence) > 0.0001 {
-		t.Errorf("%s confidence = %v, want %.4f", key, got, confidence)
+	if got := num("coverage"); math.Abs(got-coverage) > 0.0001 {
+		t.Errorf("%s coverage = %v, want %.4f", key, got, coverage)
 	}
 }

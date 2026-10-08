@@ -114,7 +114,7 @@ type PreviewResult struct {
 	Window     string                   `json:"window"`
 	Start      time.Time                `json:"start"`
 	End        time.Time                `json:"end"`
-	Metric     string                   `json:"metric"` // confidence | z_score | event_count
+	Metric     string                   `json:"metric"` // coverage | z_score | event_count
 	Histogram  []histBucket             `json:"histogram"`
 	Stats      map[string]interface{}   `json:"stats"`
 	WouldFlag  uint64                   `json:"would_flag"`
@@ -282,10 +282,10 @@ func (m *Manager) runPreviewQueries(ctx context.Context, shapeSQL, metricsSQL, t
 	return shape, metrics, top, firstErr
 }
 
-// rarityDistSQL bins scored rarity rows by confidence (ceil, 0.01), percent
+// rarityDistSQL bins scored rarity rows by coverage (ceil, 0.01), percent
 // (floor, 0.1) and histogram band, with s = 1 when the row's group has the min history.
 func rarityDistSQL(scored string, minSample int) string {
-	return fmt.Sprintf(`SELECT toInt64(ceil(round(confidence * 100, 6))) AS c,
+	return fmt.Sprintf(`SELECT toInt64(ceil(round(coverage * 100, 6))) AS c,
     toInt64(floor(round(percent * 10, 6))) AS p,
     toInt64(%s) AS h,
     toInt64(model_total >= %d) AS s,
@@ -365,22 +365,22 @@ func (m *Manager) previewRarity(ctx context.Context, res *PreviewResult, source,
 	}
 	flagPred := preds.SQL()
 	res.FlagBasis = preds.Text()
-	res.Metric = "confidence"
+	res.Metric = "coverage"
 
 	// ifNotFinite guards avg() over an empty window (NaN), which would otherwise
 	// fail JSON encoding; sanitizeStats is a second line of defense.
 	metricsSQL := fmt.Sprintf(`SELECT
     toUInt64(count()) AS scored_values,
     toUInt64(uniqExact(partition_val)) AS partitions,
-    round(ifNotFinite(avg(confidence), 0), 4) AS avg_confidence,
-    round(ifNotFinite(max(confidence), 0), 4) AS max_confidence,
+    round(ifNotFinite(avg(coverage), 0), 4) AS avg_coverage,
+    round(ifNotFinite(max(coverage), 0), 4) AS max_coverage,
     toUInt64(countIf(%s)) AS would_flag
 FROM (%s)`, flagPred, scored)
 
-	topSQL := fmt.Sprintf(`SELECT partition_val, value_val, model_count, percent, confidence
+	topSQL := fmt.Sprintf(`SELECT partition_val, value_val, model_count, percent, coverage
 FROM (%s)
 WHERE model_total >= %d
-ORDER BY confidence DESC, percent ASC, model_count DESC
+ORDER BY coverage DESC, percent ASC, model_count DESC
 LIMIT 25`, scored, minSample)
 
 	shape, metrics, top, err := m.runPreviewQueries(ctx, rarityDistSQL(scored, minSample), metricsSQL, topSQL)
@@ -390,17 +390,17 @@ LIMIT 25`, scored, minSample)
 	hist, cells := splitDistRows(shape, rarityHistLabels, []string{"c", "p"}, "s")
 	res.Histogram = hist
 	res.Distribution = &ScoreDistribution{
-		Dims: []string{"confidence", "percent"}, Steps: []float64{0.01, 0.1}, Bins: []string{"ceil", "floor"},
+		Dims: []string{"coverage", "percent"}, Steps: []float64{0.01, 0.1}, Bins: []string{"ceil", "floor"},
 		Cells: cells, Truncated: len(shape) > previewDistCellCap,
 	}
 	res.Top = top
-	res.TopColumns = []string{"partition_val", "value_val", "model_count", "percent", "confidence"}
+	res.TopColumns = []string{"partition_val", "value_val", "model_count", "percent", "coverage"}
 	res.WouldFlag = numToUint64(metrics["would_flag"])
 	res.Stats = sanitizeStats(map[string]interface{}{
-		"scored_values":  metrics["scored_values"],
-		"partitions":     metrics["partitions"],
-		"avg_confidence": metrics["avg_confidence"],
-		"max_confidence": metrics["max_confidence"],
+		"scored_values": metrics["scored_values"],
+		"partitions":    metrics["partitions"],
+		"avg_coverage":  metrics["avg_coverage"],
+		"max_coverage":  metrics["max_coverage"],
 	})
 	return nil
 }

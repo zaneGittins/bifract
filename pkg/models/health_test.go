@@ -159,8 +159,8 @@ func TestHealthSummarySQL(t *testing.T) {
 		t.Errorf("rarity summary without thresholds counts findings:\n%s", rar)
 	}
 	// With thresholds the count is the Findings tab's own rule.
-	rarAlert := healthSummarySQL(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{ConfidenceThreshold: 0.9, PercentThreshold: 10}}, "model_r", "", "f", today)
-	if want := findingsRuleFor(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{ConfidenceThreshold: 0.9, PercentThreshold: 10}}).Where; !strings.Contains(rarAlert, "WHERE "+want+"), 0)) AS flagged") {
+	rarAlert := healthSummarySQL(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}, "model_r", "", "f", today)
+	if want := findingsRuleFor(ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}).Where; !strings.Contains(rarAlert, "WHERE "+want+"), 0)) AS flagged") {
 		t.Errorf("rarity count does not use the findings rule %q:\n%s", want, rarAlert)
 	}
 

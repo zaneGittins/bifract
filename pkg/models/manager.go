@@ -837,8 +837,8 @@ func buildRarityScoredSQL(source, fidEsc string) string {
 }
 
 func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
-	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "confidence": true}
-	where, order, none := dataPlan(q, allowed, "confidence", rule, plainSort)
+	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "coverage": true}
+	where, order, none := dataPlan(q, allowed, "coverage", rule, plainSort)
 	if none {
 		return nil, 0, nil
 	}
@@ -1136,7 +1136,7 @@ type histBucket struct {
 }
 
 // GetHistogram returns a type-aware score distribution so creators can see the
-// shape of a model's output: rarity -> confidence (0..1), volume_baseline ->
+// shape of a model's output: rarity -> coverage (0..1), volume_baseline ->
 // |z-score| bands, first_seen -> event_count on a log scale. It runs over the
 // already aggregated per-model result table (never the raw log table), so it is
 // a single cheap GROUP BY.
@@ -1225,7 +1225,7 @@ var (
 	rarityHistLabels        = []string{"0.0-0.1", "0.1-0.2", "0.2-0.3", "0.3-0.4", "0.4-0.5", "0.5-0.6", "0.6-0.7", "0.7-0.8", "0.8-0.9", "0.9-1.0"}
 	firstSeenHistLabels     = []string{"1-9", "10-99", "100-999", "1K-9.9K", "10K-99K", "100K+"}
 	volumeHistLabels        = []string{"0-1", "1-2", "2-3", "3-4", "4-5", "5+"}
-	rarityHistBucketExpr    = "least(toUInt64(floor(confidence * 10)), 9)"
+	rarityHistBucketExpr    = "least(toUInt64(floor(coverage * 10)), 9)"
 	firstSeenHistBucketExpr = "least(toUInt64(floor(log10(event_count))), 5)"
 	volumeHistBucketExpr    = "least(toUInt64(floor(abs(z_score))), 5)"
 )
@@ -1237,9 +1237,9 @@ func firstSeenCountInner(source, fidEsc, keyCol string) string {
 }
 
 // getRarityHistogram reports how many values the model's own alert thresholds
-// would flag. A confidence distribution used to be charted here, which no reader
+// would flag. A coverage distribution used to be charted here, which no reader
 // can act on: the alert needs a low percent as well, so being right of a
-// confidence marker is necessary and not sufficient, and confidence is a property
+// coverage marker is necessary and not sufficient, and coverage is a property
 // of the partition sampled once per value, which weights it by how many distinct
 // values each partition has.
 func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string, def ModelDefinition) (map[string]interface{}, error) {
@@ -1291,9 +1291,9 @@ func rarityFlagPredicates(def ModelDefinition) rarityFlags {
 		f.words = append(f.words, fmt.Sprintf("group seen on %d+ day%s", minSample, plural(minSample)))
 	}
 	if def.Alert != nil {
-		if t := def.Alert.ConfidenceThreshold; t > 0 {
-			f.sql = append(f.sql, fmt.Sprintf("confidence > %g", t))
-			f.words = append(f.words, fmt.Sprintf("confidence > %g", t))
+		if t := def.Alert.CoverageThreshold; t > 0 {
+			f.sql = append(f.sql, fmt.Sprintf("coverage > %g", t))
+			f.words = append(f.words, fmt.Sprintf("coverage > %g", t))
 			f.Thresholded = true
 		}
 		if t := def.Alert.PercentThreshold; t > 0 {

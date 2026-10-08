@@ -16,7 +16,7 @@ const (
 	// Differs from FieldKindPerRow only in that no toFloat64OrZero() coercion is needed.
 	FieldKindAssignment
 	// FieldKindJoined: a column produced by a JOIN wrapper -- model_lookup()
-	// (beacon_score, confidence, z_score, ...) or join() (_join_<col>). It only
+	// (beacon_score, coverage, z_score, ...) or join() (_join_<col>). It only
 	// exists AFTER the join wrap, so conditions on it must defer (post-join) and
 	// references resolve to the bare output column name (never a JSON sub-column).
 	FieldKindJoined

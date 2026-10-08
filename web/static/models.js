@@ -22,7 +22,7 @@ const AnalyticsModels = {
         minSample: 1,
         timeBucket: 'day',
         alertMode: 'paused',
-        alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5 },
+        alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5 },
         name: '',
         description: '',
         timeRange: '24h',
@@ -430,7 +430,7 @@ const AnalyticsModels = {
         if (!m) return;
         window.App?.pushSubPath(`${id}/edit`);
         const def = m.definition || {};
-        const alertCfg = { severity: 'medium', action_ids: [], confidence_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 };
+        const alertCfg = { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 };
         if (def.alert) Object.assign(alertCfg, def.alert);
         if (def.beacon && def.beacon.score_threshold != null) alertCfg.beacon_threshold = def.beacon.score_threshold;
         if (def.long_conn && def.long_conn.score_threshold != null) alertCfg.longconn_threshold = def.long_conn.score_threshold;
@@ -480,13 +480,17 @@ const AnalyticsModels = {
     // is resolved against the definition, so a column stored as partition_val
     // reads as the field the model was built from. Columns the table omits are
     // still shown in the row drawer. { why: true } places the fact-chip column.
+    COVERAGE_TIP: "How much of this group's normal you have already seen (Good-Turing coverage). " +
+        'Near 1: the group is stable and rarely does anything new, so a new value stands out. ' +
+        'Low: new values are routine there, so one more means little.',
+
     VIEW_SPEC: {
         rarity: {
-            sortDefault: 'confidence',
-            sortable: ['partition_val', 'value_val', 'model_count', 'percent', 'confidence'],
-            score: { col: 'confidence', threshold: d => d.alert?.confidence_threshold ?? 0.8 },
+            sortDefault: 'coverage',
+            sortable: ['partition_val', 'value_val', 'model_count', 'percent', 'coverage'],
+            score: { col: 'coverage', threshold: d => d.alert?.coverage_threshold ?? 0.8 },
             cols: [
-                { col: 'confidence', label: 'Confidence', fmt: 'meter', align: 'num' },
+                { col: 'coverage', label: 'Coverage', fmt: 'meter', align: 'num', tip: () => AnalyticsModels.COVERAGE_TIP },
                 { col: 'partition_val', label: d => d.partition_key || 'Partition' },
                 { col: 'value_val', label: d => d.value_key || 'Value' },
                 { why: true },
@@ -630,7 +634,7 @@ const AnalyticsModels = {
     // means "this crossed what you configured" rather than a fixed cut.
     // A row is in play only when it meets every condition its alert has. Colouring
     // from the score alone marked rows that can never fire: a rarity value can sit
-    // at 0.95 confidence and still be 97% of its partition, which no percent
+    // at 0.95 coverage and still be 97% of its partition, which no percent
     // threshold admits.
     _meetsOtherConditions(row, model) {
         if (!model || model.model_type !== 'rarity') return true;
@@ -996,9 +1000,9 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         }
         if (mt === 'rarity') {
             const minHist = def.min_sample || 1;
-            const conf = Number(def.alert?.confidence_threshold), share = Number(def.alert?.percent_threshold);
+            const conf = Number(def.alert?.coverage_threshold), share = Number(def.alert?.percent_threshold);
             rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'} per group`]);
-            rows.push(['Confidence threshold', conf > 0 ? conf.toFixed(2) : 'Not set']);
+            rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set', AnalyticsModels.COVERAGE_TIP]);
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
@@ -1032,8 +1036,8 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         el.innerHTML = `
 <div class="me-sec">
     <div class="me-sec-label">Definition</div>
-    <dl class="mv-kv">${rows.map(([k, val]) =>
-        `<dt>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
+    <dl class="mv-kv">${rows.map(([k, val, tip]) =>
+        `<dt${tip ? ` title="${_esc(tip)}"` : ''}>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
 </div>
 ${mt === 'rarity' ? `<div class="me-sec">
     <div class="me-sec-label">Group by</div>
@@ -1174,7 +1178,7 @@ ${m.description ? `<div class="me-sec">
         if (k === 'prevalence') return 'pct1';
         if (k === 'percent') return 'pct100';
         if (/_seen$|_at$|_bucket$/.test(k)) return 'ts';
-        if (/_score$|^confidence$|^mad$/.test(k)) return 'score';
+        if (/_score$|^coverage$|^mad$/.test(k)) return 'score';
         if (/_count$|_total$|^n_buckets$/.test(k)) return 'int';
         return '';
     },
@@ -1190,7 +1194,7 @@ ${m.description ? `<div class="me-sec">
     },
 
     // Score axis names for the editor preview's distribution chart.
-    METRIC_LABELS: { confidence: 'Confidence', z_score: 'Anomaly score (|z|)', event_count: 'Event count', beacon_score: 'Beacon score', longconn_score: 'Long-connection score', final_score: 'Score' },
+    METRIC_LABELS: { coverage: 'Coverage', z_score: 'Anomaly score (|z|)', event_count: 'Event count', beacon_score: 'Beacon score', longconn_score: 'Long-connection score', final_score: 'Score' },
 
     _fmtNum(v) {
         const n = Number(v);
@@ -1425,7 +1429,7 @@ ${m.description ? `<div class="me-sec">
             const active = c.sortable && v.sortCol === c.col ? (v.sortDir === 'asc' ? ' sort-asc' : ' sort-desc') : '';
             const cls = `${c.align === 'num' ? 'num ' : ''}${c.why ? 'mv-why ' : ''}${c.sortable ? 'sortable' : ''}${active}`.trim();
             const attr = c.sortable ? ` data-col="${_esc(c.col)}"` : '';
-            const tip = c.why ? 'What makes this row stand out' : (c.label !== c.col ? c.col : '');
+            const tip = c.why ? 'What makes this row stand out' : c.tip ? c.tip() : (c.label !== c.col ? c.col : '');
             const title = tip ? ` title="${_esc(tip)}"` : '';
             return `<th class="${cls}"${attr}${title}><span class="mv-h">${_esc(c.label)}</span>${c.sortable ? '<span class="sort-icon"></span>' : ''}</th>`;
         }).join('');
@@ -1487,7 +1491,7 @@ ${m.description ? `<div class="me-sec">
         if (mt === 'rarity' && !st.findings_rule) {
             return EmptyState.render({
                 icon: 'list', title: 'No alert thresholds set', action,
-                detail: 'Without a confidence or share-of-days threshold this model singles nothing out. Set them in Edit to see what would alert.',
+                detail: 'Without a coverage or share-of-days threshold this model singles nothing out. Set them in Edit to see what would alert.',
             });
         }
         if (mt === 'first_seen') {
@@ -1656,9 +1660,9 @@ ${m.description ? `<div class="me-sec">
 
         if (mt === 'rarity') {
             const pctThr = Number(def.alert?.percent_threshold) || 0;
-            const confThr = Number(def.alert?.confidence_threshold) || 0;
+            const confThr = Number(def.alert?.coverage_threshold) || 0;
             const pct = Number(row.percent);
-            const conf = Number(row.confidence);
+            const conf = Number(row.coverage);
             const minHist = Number(def.min_sample) || 1;
             const learning = Number(row.model_total) < minHist;
             return pick([
@@ -1667,9 +1671,9 @@ ${m.description ? `<div class="me-sec">
                 { label: 'Seen on', value: `${FactChips.of(row.model_count, row.model_total)} days`,
                   tone: pctThr > 0 && pct < pctThr ? 'alert' : '',
                   title: `${fix(pct, 1)}% of the days ${row.partition_val} was seen. Click to search them.`, query: pivot() },
-                { label: 'Group confidence', value: fix(conf),
+                { label: 'Group coverage', value: fix(conf),
                   tone: confThr > 0 && !(conf > confThr) ? 'muted' : '',
-                  title: 'How rarely this partition produces a new value (Good-Turing coverage). Low means new values are routine there.' },
+                  title: AnalyticsModels.COVERAGE_TIP },
                 days.length ? { label: 'First seen', value: FactChips.ago(days[0]) || days[0], title: days[0] } : null,
             ], learning ? [0, 1] : [1, 3]);
         }
@@ -1848,7 +1852,7 @@ ${m.description ? `<div class="me-sec">
             description: 'Scores how rarely each Office application launches a given child process.',
             query: 'bifract_category=process_creation\n| parent_image=$winword.exe,excel.exe,powerpnt.exe,outlook.exe,onenote.exe,msaccess.exe,mspub.exe',
             shape: { partitionKey: 'parent_image', valueKey: 'image', minSample: 14 },
-            alert: { confidence_threshold: 0.9, percent_threshold: 10 },
+            alert: { coverage_threshold: 0.9, percent_threshold: 10 },
         },
         {
             id: 'outbound_ports', title: 'New outbound ports per host',
@@ -1857,7 +1861,7 @@ ${m.description ? `<div class="me-sec">
             description: 'Scores how rarely each host connects to a destination port.',
             query: 'bifract_category=network_connect',
             shape: { partitionKey: 'computer_name', valueKey: 'dst_port', minSample: 14 },
-            alert: { confidence_threshold: 0.9, percent_threshold: 10 },
+            alert: { coverage_threshold: 0.9, percent_threshold: 10 },
         },
         {
             id: 'net_volume', title: 'Network volume spike per host',
@@ -1894,7 +1898,7 @@ ${m.description ? `<div class="me-sec">
             network: this._networkFromDef({}),
             window: '1d',
             alertMode: 'paused',
-            alertConfig: { severity: 'medium', action_ids: [], confidence_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
+            alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
             name: '',
             description: '',
             timeRange: '24h',
@@ -2551,8 +2555,8 @@ ${isBeacon ? `
             typeFields = `
     <div class="form-row" style="margin-top:10px">
         <div class="field-group">
-            <label>Min Confidence</label>
-            <input type="number" id="alertConfidence" class="model-num-input" value="${c.confidence_threshold}" min="0" max="1" step="0.05">
+            <label title="${_esc(AnalyticsModels.COVERAGE_TIP)}">Min coverage</label>
+            <input type="number" id="alertCoverage" class="model-num-input" value="${c.coverage_threshold}" min="0" max="1" step="0.05">
         </div>
         <div class="field-group">
             <label>Max % of days</label>
@@ -2632,7 +2636,7 @@ ${isBeacon ? `
             c[key] = v;
             this._onThresholdChange(key);
         });
-        num('alertConfidence', 'confidence_threshold');
+        num('alertCoverage', 'coverage_threshold');
         num('alertPercent', 'percent_threshold');
         num('alertZThreshold', 'z_threshold');
         num('alertBeaconThreshold', 'beacon_threshold');
@@ -3132,8 +3136,8 @@ ${isBeacon ? `
             chips = [
                 [num(s.scored_values), 'values'],
                 [num(s.partitions), 'partitions'],
-                [Number(s.max_confidence || 0).toFixed(2), 'max confidence'],
-                [Number(s.avg_confidence || 0).toFixed(2), 'avg confidence'],
+                [Number(s.max_coverage || 0).toFixed(2), 'max coverage'],
+                [Number(s.avg_coverage || 0).toFixed(2), 'avg coverage'],
             ];
         } else if (p.model_type === 'first_seen') {
             chips = [
@@ -3227,7 +3231,7 @@ ${isBeacon ? `
         const hist = document.getElementById('modelScoreHistogram');
         if (hist) {
             const c = e.alertConfig;
-            const fracKey = { rarity: 'confidence_threshold', beacon: 'beacon_threshold', long_connection: 'longconn_threshold' }[p.model_type];
+            const fracKey = { rarity: 'coverage_threshold', beacon: 'beacon_threshold', long_connection: 'longconn_threshold' }[p.model_type];
             let frac = fracKey ? Number(c[fracKey]) : null;
             if (frac != null && !(frac >= 0 && frac <= 1)) frac = null;
             const criterion = p.model_type !== 'rarity' ? '' : (asScored ? (p.flag_basis || '') : 'the thresholds above');
@@ -3237,7 +3241,7 @@ ${isBeacon ? `
 
     // Threshold fields per type: [alertConfig key, label, min, max, step, default].
     THRESHOLD_FIELDS: {
-        rarity: [['confidence_threshold', 'Min confidence', 0, 1, 0.01, 0.9], ['percent_threshold', 'Max % of days', 0.1, 100, 0.1, 10]],
+        rarity: [['coverage_threshold', 'Min coverage', 0, 1, 0.01, 0.9], ['percent_threshold', 'Max % of days', 0.1, 100, 0.1, 10]],
         volume_baseline: [['z_threshold', 'Z-score above', 0, 20, 0.1, 3.5]],
         beacon: [['beacon_threshold', 'Score at least', 0, 1, 0.01, 0.8]],
         long_connection: [['longconn_threshold', 'Score at least', 0, 1, 0.01, 0.5]],
@@ -3251,7 +3255,7 @@ ${isBeacon ? `
         const fields = this.THRESHOLD_FIELDS[mt];
         if (!fields) return '';
         return `<div class="score-thresholds">${fields.map(([key, label, min, max, step]) => `
-    <label class="score-threshold" data-key="${key}">
+    <label class="score-threshold" data-key="${key}"${key === 'coverage_threshold' ? ` title="${_esc(AnalyticsModels.COVERAGE_TIP)}"` : ''}>
         <span class="score-threshold-label">${_esc(label)}</span>
         <input type="range" class="score-threshold-range" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${_esc(String(c[key]))}">
         <input type="number" class="model-num-input model-num-mini score-threshold-num" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${_esc(String(c[key]))}">
@@ -3283,7 +3287,7 @@ ${isBeacon ? `
         const e = this.editor;
         this._markDirty();
         const v = e.alertConfig[key];
-        const railIds = { confidence_threshold: 'alertConfidence', percent_threshold: 'alertPercent', z_threshold: 'alertZThreshold', beacon_threshold: 'alertBeaconThreshold', longconn_threshold: 'alertLongConnThreshold', alert_on_new: 'alertOnNew' };
+        const railIds = { coverage_threshold: 'alertCoverage', percent_threshold: 'alertPercent', z_threshold: 'alertZThreshold', beacon_threshold: 'alertBeaconThreshold', longconn_threshold: 'alertLongConnThreshold', alert_on_new: 'alertOnNew' };
         const rail = document.getElementById(railIds[key]);
         if (rail && document.activeElement !== rail) {
             if (rail.type === 'checkbox') rail.checked = !!v; else rail.value = String(v);
@@ -3322,7 +3326,7 @@ ${isBeacon ? `
         const onGrid = (v, step) => Math.abs(v / step - Math.round(v / step)) < 1e-6;
         let n = 0, exact = true;
         if (p.model_type === 'rarity') {
-            const ct = Number(c.confidence_threshold) || 0, pt = Number(c.percent_threshold) || 0;
+            const ct = Number(c.coverage_threshold) || 0, pt = Number(c.percent_threshold) || 0;
             const cj = Math.round(ct * 100), pj = Math.round(pt * 10);
             exact = onGrid(ct, 0.01) && onGrid(pt, 0.1);
             for (const [cb, pb, cnt] of d.cells) {
@@ -3381,7 +3385,7 @@ ${isBeacon ? `
 
     _previewTopTableHTML(columns, rows) {
         if (!columns.length || !rows.length) return '';
-        const head = columns.map(c => `<th>${_esc(this._colLabel(c))}</th>`).join('');
+        const head = columns.map(c => `<th${c === 'coverage' ? ` title="${_esc(AnalyticsModels.COVERAGE_TIP)}"` : ''}>${_esc(this._colLabel(c))}</th>`).join('');
         const body = rows.map(r => `<tr>${columns.map(c => `<td>${this._fmtScoreVal(c, r[c])}</td>`).join('')}</tr>`).join('');
         return `<div class="score-top">
     <div class="score-top-title">Top results</div>
@@ -3391,7 +3395,7 @@ ${isBeacon ? `
 
     _colLabel(c) {
         const map = {
-            partition_val: 'Partition', value_val: 'Value', model_count: 'Days seen', percent: '%', confidence: 'Confidence',
+            partition_val: 'Partition', value_val: 'Value', model_count: 'Days seen', percent: '%', coverage: 'Coverage',
             entity_key: 'Entity', entity_val: 'Entity', first_seen: 'First seen', last_seen: 'Last seen', event_count: 'Events',
             latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'History', z_score: 'z-score',
             src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',
@@ -3403,7 +3407,7 @@ ${isBeacon ? `
 
     _fmtScoreVal(col, v) {
         if (v === null || v === undefined) return '';
-        if (col === 'confidence') return _esc(Number(v).toFixed(3));
+        if (col === 'coverage') return _esc(Number(v).toFixed(3));
         if (col === 'percent') return _esc(Number(v).toFixed(2) + '%');
         if (col === 'z_score' && this._isFlatZ(v)) return _esc(this.FLAT_Z_LABEL);
         if (col === 'z_score' || col === 'baseline_median' || col === 'mad') return _esc(Number(v).toFixed(2));

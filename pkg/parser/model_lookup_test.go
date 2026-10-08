@@ -95,7 +95,7 @@ func TestModelLookup_SourceFilterStaysInner(t *testing.T) {
 // rarity still works: one key field per model key column, so the ON is plain
 // equalities rather than a char(30)-encoded pair.
 func TestModelLookup_RarityJoinShape(t *testing.T) {
-	sql := translateML(t, `* | model_lookup(model="rare", key=[image, hash]) | confidence > 0.9`)
+	sql := translateML(t, `* | model_lookup(model="rare", key=[image, hash]) | coverage > 0.9`)
 	if !strings.Contains(sql, "ON _outer._mlk_k0 = _mlookup.partition_val AND _outer._mlk_k1 = _mlookup.value_val") {
 		t.Errorf("unexpected rarity ON clause, got:\n%s", sql)
 	}
@@ -951,5 +951,18 @@ func TestModelLookup_UnavailableModelColumnErrorsCleanly(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), wantErr) {
 			t.Errorf("expected error containing %q for %s, got: %v", wantErr, query, err)
 		}
+	}
+}
+
+// The rarity column was renamed from confidence to coverage; an old filter must
+// fail loudly rather than match nothing.
+func TestRarityConfidenceFilterNamesTheRename(t *testing.T) {
+	pipeline, err := ParseQuery(`* | model_lookup(model="rare", key=[image, hash]) | confidence > 0.9`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = TranslateToSQLWithOrder(pipeline, mlookupOpts())
+	if err == nil || !strings.Contains(err.Error(), "coverage") {
+		t.Fatalf("want an error naming coverage, got %v", err)
 	}
 }
