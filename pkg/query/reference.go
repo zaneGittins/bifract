@@ -456,6 +456,37 @@ var bqlFunctionDocs = []FunctionDoc{
 		},
 	},
 	{
+		Name:        "corr",
+		Category:    "Aggregation",
+		Description: "Pearson correlation of two numeric fields, from -1 to 1: how closely they follow a straight line. 1 means they rise together, -1 that one falls as the other rises, 0 no linear relationship. A few extreme values can dominate it; for byte counts and durations prefer rankcorr. NULL with fewer than two rows or a constant field.",
+		Syntax:      "| corr(x, y)",
+		Parameters: []Param{
+			{Name: "x", Type: "numeric", Required: true, Description: "First numeric field"},
+			{Name: "y", Type: "numeric", Required: true, Description: "Second numeric field"},
+			{Name: "as", Type: "string", Required: false, Description: "Output column name (default: _corr)"},
+		},
+		Examples: []string{
+			"| corr(orig_bytes, resp_bytes)",
+			"| groupby(src_ip) | multi(corr(orig_bytes, resp_bytes), count())",
+			"| groupby(src_ip) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | corr(sent, received)",
+		},
+	},
+	{
+		Name:        "rankcorr",
+		Category:    "Aggregation",
+		Description: "Spearman rank correlation of two numeric fields, from -1 to 1: whether one rises when the other does, at any rate. Robust to extreme values, so it suits byte counts and durations. A group larger than 100,000 rows is ranked from a random sample of that size, which keeps memory bounded; its result can differ by about 0.003 between runs. NULL with fewer than two rows or a constant field.",
+		Syntax:      "| rankcorr(x, y)",
+		Parameters: []Param{
+			{Name: "x", Type: "numeric", Required: true, Description: "First numeric field"},
+			{Name: "y", Type: "numeric", Required: true, Description: "Second numeric field"},
+			{Name: "as", Type: "string", Required: false, Description: "Output column name (default: _rankcorr)"},
+		},
+		Examples: []string{
+			"| rankcorr(duration, orig_bytes)",
+			"| groupby(src_ip) | multi(rankcorr(orig_bytes, resp_bytes, as=r), count()) | sort(r)",
+		},
+	},
+	{
 		Name:        "median",
 		Category:    "Aggregation",
 		Description: "Calculates the median (50th percentile) of a numeric field using an approximate t-digest algorithm, efficient on large datasets.",

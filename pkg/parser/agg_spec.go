@@ -83,7 +83,7 @@ var aggSpecNames = map[string]bool{
 	"percentile": true, "stddev": true, "skewness": true, "skew": true,
 	"kurtosis": true, "kurt": true, "iqr": true, "selectfirst": true,
 	"selectlast": true, "collect": true, "top": true, "median": true,
-	"mad": true, "multi": true,
+	"mad": true, "multi": true, "corr": true, "rankcorr": true,
 }
 
 // processAggSpec renders one aggregate spec into selectFields. ok is false when
@@ -140,6 +140,24 @@ func processAggSpec(spec *AggSpec, selectFields *[]string, computedFields map[st
 	}
 
 	switch name {
+	case "corr", "rankcorr":
+		xa, ya, ok := correlationOperands(spec.Args)
+		if !ok {
+			return false, fmt.Errorf("%s() needs two numeric fields, e.g. %s(orig_bytes, resp_bytes)", name, name)
+		}
+		alias, err := aggregateAlias(o.alias, name)
+		if err != nil {
+			return false, fmt.Errorf("%s(): %w", name, err)
+		}
+		x, err := aggOperandNumeric(xa, registry)
+		if err != nil {
+			return false, fmt.Errorf("%s(): %w", name, err)
+		}
+		y, err := aggOperandNumeric(ya, registry)
+		if err != nil {
+			return false, fmt.Errorf("%s(): %w", name, err)
+		}
+		return true, emit(alias, correlationSQL(name, x, y))
 	case "count":
 		switch {
 		case o.hasField && o.distinct:

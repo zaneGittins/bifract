@@ -110,3 +110,29 @@ func TestScatter(t *testing.T) {
 		t.Errorf("chart config = %v", res.ChartConfig)
 	}
 }
+
+// An aggregate over a prior aggregation's groups must see every group; the
+// display limit truncated it to the first MaxRows, an arbitrary subset.
+func TestChainedAggregatesReadEveryGroup(t *testing.T) {
+	for _, q := range []string{
+		`* | groupby(src_ip) | multi(sum(orig_bytes, as=s)) | avg(s)`,
+		`* | groupby(src_ip) | multi(sum(orig_bytes, as=s), sum(resp_bytes, as=r)) | corr(s, r)`,
+	} {
+		if sql := translateNumericViz(t, q).SQL; strings.Contains(sql, "LIMIT 1000") {
+			t.Errorf("%s: the groups are truncated by the display limit:\n%s", q, sql)
+		}
+	}
+}
+
+// groupby(function=[...]) means groupby(function=multi(...)); the list form used
+// to drop every aggregate in it without a word.
+func TestGroupbyFunctionList(t *testing.T) {
+	res := translateNumericViz(t, `* | groupby(src_ip, function=[sum(orig_bytes, as=sent), rankcorr(orig_bytes, resp_bytes, as=r)])`)
+	if got := strings.Join(res.FieldOrder, ","); got != "src_ip,sent,r" {
+		t.Errorf("field order = %s", got)
+	}
+	pipeline, _ := ParseQuery(`* | groupby(src_ip, function=[bytes, count()])`)
+	if _, err := TranslateToSQLWithOrder(pipeline, serverOpts()); err == nil {
+		t.Error("a bare field in function= must be rejected")
+	}
+}
