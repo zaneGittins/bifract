@@ -52,7 +52,7 @@ substr(commandline, length=50, start=1)
 | Category | Functions |
 |---|---|
 | Text | `lower`, `upper`, `length`, `substring`, `concat`, `coalesce`, `splitAt`, `replaceRegex`, `trim`, `base64Decode`, `urlDecode`, `hash`, `toString` |
-| Numbers | `abs`, `floor`, `ceil`, `round`, `editDistance`, `toNumber` |
+| Numbers | `abs`, `floor`, `ceil`, `round`, `editDistance`, `entropy`, `toNumber` |
 | Network | `isPrivateIP`, `isIPv4`, `isIPv6`, `ipPrefix`, `cidr` |
 | Time | `dateDiff` |
 | Conditions | `isEmpty`, `startsWith`, `endsWith`, `contains`, `if` |
@@ -79,7 +79,7 @@ event_id=3 | groupby(ipPrefix(src_ip, 24), function=count(dst_port, unique=true)
 * | dateDiff("hour", process_start, timestamp) > 24
 ```
 
-Where a pipeline command of the same name exists (`len`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`), the name means the same thing in either position. As a stage it binds its documented output column; inside an expression it returns a value.
+Where a pipeline command of the same name exists (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`), the name means the same thing in either position. As a stage it binds its documented output column; inside an expression it returns a value.
 
 ```
 * | len(commandline) | _len > 500
@@ -247,6 +247,27 @@ Returns the string length of a field as `_len`:
 * | len(program_name) | _len > 10
 * | len(message) | sort(_len, desc)
 ```
+
+### Entropy
+
+Returns the Shannon entropy of a field as `_entropy`, in bits per character:
+
+```
+* | entropy(query) | _entropy > 3.5
+* | entropy(commandline) > 5
+```
+
+It is 0 for an empty string or one character repeated, and rises as the characters get more varied and evenly used. Random or encoded text scores high: generated (DGA) domains, base64, DNS tunneling labels. Ordinary words and paths score lower.
+
+Entropy also grows with length, because a longer string has room for more distinct characters, so one cutoff for strings of every length flags long ordinary names. Compare it against length instead; the points above the trend are random for their length:
+
+```
+query=* | entropy(query) | len(query) | groupby(query)
+| multi(max(_entropy, as=h), max(_len, as=n))
+| scatter(x=n, y=h, label=query, line=trend)
+```
+
+Measure the part that varies: a subdomain label rather than the whole domain, or the encoded argument rather than the whole command line.
 
 ### Log Size
 
