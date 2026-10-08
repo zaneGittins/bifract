@@ -22,9 +22,9 @@ Rarity counts **days**, not events: a value seen 10,000 times on one day counts 
 | `model_count` | Days the value was seen |
 | `model_total` | Days the group was seen with any value |
 | `percent` | `model_count / model_total`, the share of the group's days the value appeared on |
-| `confidence` | Good-Turing coverage of the group: 1 minus (values seen on only one day / total value-days). Near 1 means the group rarely produces a new value; low means new values are routine there |
+| `coverage` | Good-Turing coverage of the group: 1 minus (values seen on only one day / total value-days). Near 1 means the group rarely produces a new value; low means new values are routine there |
 
-The alert fires on a value whose `percent` is below the share threshold while `confidence` is above its threshold. Port 22 appearing once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `confidence` 0.99; on a host that touches a new port most days, `confidence` stays low and new ports do not alert.
+The alert fires on a value whose `percent` is below the share threshold while `coverage` is above its threshold. Port 22 appearing once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `coverage` 0.99; on a host that touches a new port most days, `coverage` stays low and new ports do not alert.
 
 **Min history** is the learning period: the days a group must have been seen (`model_total`) before any of its values can alert. It defaults to 14, two weeks of normal. The share threshold adds its own floor, since a value seen on one day only falls below it once the group has more than 100 / threshold days (10% needs more than 10), so the effective learning period is the longer of the two. A value is never held back for being new: first sightings are what the model finds.
 
@@ -91,7 +91,7 @@ Each model has an alert mode:
 - **Paused** (recommended default) - the alert is created but does not fire until enabled.
 - **Active** - the alert fires when its threshold is exceeded.
 
-Thresholds depend on the model type (confidence and max share of days for Rarity, z-score for Volume Baseline, new-entities-only for First/Last Seen). Toggle the mode from the listing or the data viewer. See [Alerts](../alerting/alerts.md) for actions and feeds.
+Thresholds depend on the model type (coverage and max share of days for Rarity, z-score for Volume Baseline, new-entities-only for First/Last Seen). Toggle the mode from the listing or the data viewer. See [Alerts](../alerting/alerts.md) for actions and feeds.
 
 ## Model Health
 
@@ -115,14 +115,14 @@ The **Data** view opens on **Findings**: the rows the model's alert would raise,
 
 | Type | A finding is | Ordered by |
 |---|---|---|
-| Rarity | A value meeting the alert's confidence and share-of-days thresholds | Share of days, then confidence |
+| Rarity | A value meeting the alert's coverage and share-of-days thresholds | Share of days, then coverage |
 | Volume Baseline | An entity whose `z_score` is above the alert's threshold | `z_score`, highest first |
 | First / Last Seen | An entity first recorded by the model in the last 7 days | Newest first |
 | Beacon, Long Connection | A pair whose score is above the alert's threshold | Score, highest first |
 
 A rarity model with no thresholds has no findings, and a TLSH Index has no alert, so it shows only its rows. The same rows are available from the API as `GET /models/{id}/data?view=findings`.
 
-A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, group confidence, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
+A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, group coverage, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
 
 ## Import / Export
 
