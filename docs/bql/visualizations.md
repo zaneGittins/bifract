@@ -78,6 +78,50 @@ Distribute a numeric field into equal-width bins:
 | `field`   | Yes      | Numeric field to build distribution for |
 | `buckets` | No       | Number of equal-width bins (default: 20, max: 200) |
 
+## Box Plot
+
+Summarize a numeric field's distribution, optionally one box per group:
+
+```
+* | len(commandline) | boxplot(_len, by=image)
+* | groupby(computer_name) | boxplot(_count)
+* | boxplot(duration, fence=3)
+```
+
+The box spans the first to third quartile (Q1 to Q3) with a line at the median and a diamond at the mean. Values past a fence (`Q1 - fence * IQR`, `Q3 + fence * IQR`) are outliers and drawn as points. Each whisker ends at the most extreme value inside its fence. The fences are in the result table, ready to use as alert thresholds.
+
+Quartiles are approximate (0.1% rank error) so the chart stays fast on billions of rows. Up to `outliers` of the most extreme values are kept at each end of each box. If that many lie past a fence, more may exist, and the tooltip says so.
+
+### Parameters
+
+| Parameter  | Required | Description |
+|------------|----------|-------------|
+| `field`    | Yes      | Numeric field to summarize |
+| `by`       | No       | One box per value of this field, most frequent first |
+| `fence`    | No       | IQR multiplier for the outlier fences (default: 1.5) |
+| `limit`    | No       | Max groups (default: 20, max: 100) |
+| `outliers` | No       | Extreme values kept at each end per group (default: 10, max: 100) |
+
+## Scatter Plot
+
+Plot two numeric fields against each other, one point per row:
+
+```
+* | groupby(computer_name) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=computer_name)
+* | scatter(x=duration, y=orig_bytes)
+```
+
+After an aggregation each point is a group, which is the usual way to use it: hosts that break a trend the rest follow stand out. Before an aggregation each point is an event, taken from the newest events that carry both values. Axes switch to a log scale when positive values span three or more orders of magnitude.
+
+### Parameters
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `x`       | Yes      | Numeric field for the X axis |
+| `y`       | Yes      | Numeric field for the Y axis |
+| `label`   | No       | Field that names each point in the tooltip |
+| `limit`   | No       | Max points (default: 5000, max: 50000) |
+
 ## Heatmap
 
 Render a 2D density heatmap with aggregated values:

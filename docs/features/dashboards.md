@@ -16,7 +16,7 @@ Each widget is a self-contained panel with:
 - **Query** - a BQL query. The visualization is chosen by the query's final command, so `| piechart()`, `| timechart(...)`, `| mesh(...)` and so on each render as that chart; a query with no visualization command renders as a table
 - **Layout** - position and size on a 24-column grid (see [Editing](#editing))
 
-Available chart types are `table`, `piechart`, `barchart`, `timechart`, `singleval`, `histogram`, `heatmap`, `graph`, `mesh`, `pgraph`, and `worldmap`. See [Visualizations](../bql/visualizations.md).
+Available chart types are `table`, `piechart`, `barchart`, `timechart`, `singleval`, `histogram`, `boxplot`, `scatter`, `heatmap`, `graph`, `mesh`, `pgraph`, and `worldmap`. See [Visualizations](../bql/visualizations.md).
 
 Widget results are cached so the dashboard loads quickly on return visits.
 
