@@ -924,7 +924,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		}
 	}
 	if activeStage.Layer.Limit == "" {
-		if opts.MaxRows > 0 && !plan.ChartReadsAllRows {
+		// A chained aggregate (groupby | ... | avg(x)) reads every group, so the
+		// display limit belongs on its single result row, not on its input.
+		if opts.MaxRows > 0 && !plan.ChartReadsAllRows && len(plan.outerAggregations) == 0 {
 			activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
 		}
 	} else {

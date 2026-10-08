@@ -151,6 +151,8 @@ var commandProbes = map[string]commandProbe{
 	// Chart commands: their parameters steer the browser renderer, so they change
 	// the plan's chart config rather than the SQL.
 	"heatmap":    {base: `* | heatmap(x=user, y=host)`, with: map[string]string{"x": `* | heatmap(x=a, y=host)`, "y": `* | heatmap(x=user, y=b)`, "value": `* | heatmap(x=user, y=host, sum(bytes))`, "limit": `* | heatmap(x=user, y=host, limit=7)`}},
+	"corr":       {base: `* | corr(a, b)`, with: map[string]string{"x": `* | corr(c, b)`, "y": `* | corr(a, c)`, "as": `* | corr(a, b, as=zzmarker)`}},
+	"rankcorr":   {base: `* | rankcorr(a, b)`, with: map[string]string{"x": `* | rankcorr(c, b)`, "y": `* | rankcorr(a, c)`, "as": `* | rankcorr(a, b, as=zzmarker)`}},
 	"boxplot":    {base: `* | boxplot(bytes)`, with: map[string]string{"field": `* | boxplot(latency)`, "by": `* | boxplot(bytes, by=host)`, "fence": `* | boxplot(bytes, fence=3)`, "limit": `* | boxplot(bytes, limit=7)`, "outliers": `* | boxplot(bytes, outliers=7)`}},
 	"scatter":    {base: `* | scatter(x=a, y=b)`, with: map[string]string{"x": `* | scatter(x=c, y=b)`, "y": `* | scatter(x=a, y=c)`, "label": `* | scatter(x=a, y=b, label=host)`, "line": `* | scatter(x=a, y=b, line=trend)`, "limit": `* | scatter(x=a, y=b, limit=7)`}},
 	"piechart":   chartProbe(`* | groupby(user) | piechart(`),

@@ -669,14 +669,18 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	}
 
-	if spec := b.Agg("function"); spec != nil {
+	specs, err := groupbyFunctions(b)
+	if err != nil {
+		return err
+	}
+	if len(specs) > 0 {
 		hasFunction = true
 		prevAliases := make(map[string]bool)
 		for _, sel := range source.Layer.Selects {
 			prevAliases[extractFieldAlias(sel.String())] = true
 		}
 		selectFields := selectExprStrings(source.Layer.Selects)
-		if err := applyAggSpecs([]Argument{{Kind: ArgAggSpec, Agg: spec}}, &selectFields, computedFields, ctx); err != nil {
+		if err := applyAggSpecs(specs, &selectFields, computedFields, ctx); err != nil {
 			return err
 		}
 		source.Layer.Selects = nil
@@ -890,4 +894,30 @@ func stageOutputAliases(stage *QueryStage) map[string]bool {
 		}
 	}
 	return out
+}
+
+// groupbyFunctions reads groupby(function=): one aggregate, multi(...), or a
+// list of aggregates, which means the same as multi(). A list used to bind to
+// nothing, so its aggregates were silently dropped.
+func groupbyFunctions(b *Bound) ([]Argument, error) {
+	a, ok := b.First("function")
+	if !ok {
+		return nil, nil
+	}
+	if a.Agg != nil {
+		return []Argument{{Kind: ArgAggSpec, Agg: a.Agg}}, nil
+	}
+	items := []Argument{a}
+	if a.Kind == ArgList {
+		items = a.List
+	}
+	var specs []Argument
+	for _, item := range items {
+		spec, ok := asAggSpec(item)
+		if !ok {
+			return nil, fmt.Errorf("groupby(): function= takes aggregates such as count() or sum(bytes), got %s", item)
+		}
+		specs = append(specs, Argument{Kind: ArgAggSpec, Agg: spec})
+	}
+	return specs, nil
 }

@@ -12,10 +12,11 @@ func TestEveryAggregateNameRenders(t *testing.T) {
 			continue // a wrapper, expanded by applyAggSpecs
 		}
 		var selects []string
-		spec := &AggSpec{
-			Name: name,
-			Args: []Argument{{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: "bytes"}}},
+		args := []Argument{{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: "bytes"}}}
+		if name == "corr" || name == "rankcorr" {
+			args = append(args, Argument{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: "latency"}})
 		}
+		spec := &AggSpec{Name: name, Args: args}
 		ok, err := processAggSpec(spec, &selects, map[string]bool{}, NewFieldRegistry(SourceHot, nil))
 		if err != nil {
 			t.Errorf("%s(): %v", name, err)
