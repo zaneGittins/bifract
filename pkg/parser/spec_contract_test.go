@@ -151,6 +151,8 @@ var commandProbes = map[string]commandProbe{
 	// Chart commands: their parameters steer the browser renderer, so they change
 	// the plan's chart config rather than the SQL.
 	"heatmap":    {base: `* | heatmap(x=user, y=host)`, with: map[string]string{"x": `* | heatmap(x=a, y=host)`, "y": `* | heatmap(x=user, y=b)`, "value": `* | heatmap(x=user, y=host, sum(bytes))`, "limit": `* | heatmap(x=user, y=host, limit=7)`}},
+	"boxplot":    {base: `* | boxplot(bytes)`, with: map[string]string{"field": `* | boxplot(latency)`, "by": `* | boxplot(bytes, by=host)`, "fence": `* | boxplot(bytes, fence=3)`, "limit": `* | boxplot(bytes, limit=7)`, "outliers": `* | boxplot(bytes, outliers=7)`}},
+	"scatter":    {base: `* | scatter(x=a, y=b)`, with: map[string]string{"x": `* | scatter(x=c, y=b)`, "y": `* | scatter(x=a, y=c)`, "label": `* | scatter(x=a, y=b, label=host)`, "limit": `* | scatter(x=a, y=b, limit=7)`}},
 	"piechart":   chartProbe(`* | groupby(user) | piechart(`),
 	"barchart":   chartProbe(`* | groupby(user) | barchart(`),
 	"singleval":  {base: `* | count() | singleval()`, with: map[string]string{"field": `* | count() | singleval(user)`, "title": `* | count() | singleval(title="T")`}, inert: map[string]string{"field": "display only; the value comes from the preceding aggregate"}},

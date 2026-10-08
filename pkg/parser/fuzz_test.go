@@ -170,6 +170,9 @@ var bqlSeeds = []string{
 	`* | modifiedzscore(response_time)`,
 	`* | madoutlier(response_time)`,
 	`* | histogram(response_time)`,
+	`* | boxplot(response_time, by=host)`,
+	`* | groupBy(host) | boxplot(_count)`,
+	`* | scatter(x=bytes_in, y=bytes_out, label=host)`,
 	// Special commands
 	`* | table(timestamp, host, message)`,
 	`* | analyzefields()`,

@@ -730,6 +730,7 @@ const QueryExecutor = {
             piechart: 'Pie Chart', barchart: 'Bar Chart', graph: 'Graph', mesh: 'Mesh Network',
             pgraph: 'Provenance Graph',
             singleval: 'Single Value', timechart: 'Time Chart', histogram: 'Histogram',
+            boxplot: 'Box Plot', scatter: 'Scatter Plot',
             heatmap: 'Heat Map', worldmap: 'World Map', mitre: 'ATT&CK Matrix',
         };
         const outputLabel = document.getElementById('outputTypeLabel');
@@ -2440,7 +2441,9 @@ const QueryExecutor = {
                 return container.querySelector('.pie-chart-wrapper canvas');
             case 'barchart':
             case 'timechart':
-            case 'histogram': {
+            case 'histogram':
+            case 'boxplot':
+            case 'scatter': {
                 const canvas = document.getElementById('resultsChart');
                 return canvas && canvas.style.display !== 'none' ? canvas : null;
             }
@@ -2591,6 +2594,8 @@ const QueryExecutor = {
             this.renderTimeChart(results);
         } else if (this.chartType === 'histogram') {
             this.renderHistogram(results);
+        } else if (this.chartType === 'boxplot' || this.chartType === 'scatter') {
+            this.renderNumericChart(results);
         } else if (this.chartType === 'heatmap') {
             this.renderHeatmap(results);
         } else if (this.chartType === 'worldmap') {
@@ -6447,6 +6452,20 @@ const QueryExecutor = {
             config: this.chartConfig
         });
         if (result && result.chart) this.currentChart = result.chart;
+    },
+
+    renderNumericChart(results) {
+        const chartCanvas = document.getElementById('resultsChart');
+        const networkDiv = document.getElementById('networkGraph');
+        if (!chartCanvas) return;
+        chartCanvas.style.display = 'block';
+        if (networkDiv) networkDiv.style.display = 'none';
+        if (this.currentChart) { this.currentChart.destroy(); this.currentChart = null; }
+
+        this.currentChart = BifractCharts.renderOnCanvas(chartCanvas, this.chartType, {
+            data: results,
+            config: this.chartConfig
+        });
     },
 
     renderHeatmap(results) {

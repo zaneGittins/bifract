@@ -181,6 +181,7 @@ func (h *histogramHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	ctx.Plan.HistogramField = field
 	ctx.Plan.HistogramBuckets = buckets
+	ctx.Plan.ChartReadsAllRows = true
 	ctx.Plan.ChartType = "histogram"
 	ctx.Plan.ChartConfig["field"] = field
 	ctx.Plan.ChartConfig["buckets"] = buckets

@@ -911,7 +911,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 
 	// --- Set default ORDER BY and LIMIT ---
 	defaultTimeOrder := false
-	if len(activeStage.Layer.OrderBy) == 0 && len(activeStage.Layer.GroupBy) == 0 && !plan.IsAggregated {
+	if len(activeStage.Layer.OrderBy) == 0 && len(activeStage.Layer.GroupBy) == 0 && !plan.IsAggregated && !plan.ChartReadsAllRows {
 		if len(opts.SourceOrderBy) > 0 {
 			activeStage.Layer.OrderBy = opts.SourceOrderBy
 		} else if activeStage.IsSource {
@@ -924,7 +924,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		}
 	}
 	if activeStage.Layer.Limit == "" {
-		if opts.MaxRows > 0 {
+		if opts.MaxRows > 0 && !plan.ChartReadsAllRows {
 			activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
 		}
 	} else {
@@ -1036,6 +1036,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	if plan.HistogramBuckets > 0 {
 		buildHistogramLayers(plan, ctx)
 		fieldOrder = []string{"_bin_lower", "_bin_upper", "_bin_count"}
+		plan.IsAggregated = true
+	}
+	if len(plan.ChartLayers) > 0 {
+		plan.WindowLayers = append(plan.WindowLayers, plan.ChartLayers...)
+		fieldOrder = plan.ChartFieldOrder
 		plan.IsAggregated = true
 	}
 
