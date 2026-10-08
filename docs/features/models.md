@@ -32,15 +32,17 @@ The alert fires on a value whose `percent` is below the share threshold while `c
 
 Volume Baseline scores the latest **complete** time bucket (`latest_bucket`, yesterday for a daily model) against the entity's own history; the current incomplete bucket is excluded. History runs from the entity's first bucket in the window (90 days for daily, 30 days for hourly) up to, but not including, the scored bucket. Buckets with no events count as zero, so a quiet entity's bursts and drops show, and an empty scored bucket scores as 0 events.
 
+An hourly model compares an hour only with the same hour on the same kind of day: 3am on a weekday against past weekday 3am hours, Saturday 2pm against past weekend 2pm hours (UTC). Pooling every hour made a normal working morning an outlier against quiet nights, and let a night-time burst pass as an ordinary busy hour. Its history and min history therefore count past samples of that hour, one a day: a weekday hour gathers about 21 in the window and a weekend hour 8, so min history is at most 8.
+
 | Output | Meaning |
 |---|---|
 | `latest_count` | Events in `latest_bucket` (0 when it was empty) |
 | `baseline_median` | Median count per bucket over the history |
 | `mad` | Median absolute deviation of the history |
-| `n_buckets` | Buckets of history, empty ones included. An entity is scored once this reaches **min history** (default 7) |
+| `n_buckets` | Buckets of history, empty ones included: days for a daily model, past samples of the same hour for an hourly one. An entity is scored once this reaches **min history** (default 7 daily, 4 hourly) |
 | `z_score` | Modified z-score, `0.6745 * (latest_count - median) / mad`. 3.5 is the standard cutoff |
 
-When `mad` is 0 (most buckets equal the median), `z_score` falls back to `(latest_count - median) / (1.253314 * mean absolute deviation)`. When the history is perfectly flat (every bucket the same), any change scores `z_score` 1000000, or -1000000 for a drop, shown as "flat history, any change". Seasonality (weekday or hour-of-day baselines) is not modeled.
+When `mad` is 0 (most buckets equal the median), `z_score` falls back to `(latest_count - median) / (1.253314 * mean absolute deviation)`. When the history is perfectly flat (every bucket the same), any change scores `z_score` 1000000, or -1000000 for a drop, shown as "flat history, any change". Daily models do not separate weekdays from weekends.
 
 ### What "new" means for First / Last Seen
 
