@@ -145,7 +145,7 @@ func (h *boxplotHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
-// scatterHandler handles scatter(x=field, y=field, label=field, limit=5000). It
+// scatterHandler handles scatter(x=field, y=field, label=field, line=, limit=5000). It
 // plots rows as they are: after an aggregation one point per group, before one a
 // point per event (the newest limit= events).
 type scatterHandler struct{}
@@ -163,6 +163,11 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("scatter() requires x= and y=, e.g. groupby(host, function=[sum(bytes_in), sum(bytes_out)]) | scatter(x=_sum_bytes_in, y=_sum_bytes_out, label=host)")
 	}
 	limit := clampInt(b.Int("limit", 5000), 1, 50000)
+	// line= is drawn by the browser over the returned points; the query is the same.
+	line := b.Str("line", "")
+	if line != "" && line != "diagonal" && line != "trend" {
+		return fmt.Errorf("scatter(): line= accepts diagonal (y = x) or trend (best fit), got %q", line)
+	}
 
 	xName, yName := xArg.FieldName(), yArg.FieldName()
 	if xName != "" && xName == yName {
@@ -230,6 +235,7 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartConfig["yField"] = yName
 	ctx.Plan.ChartConfig["labelField"] = labelName
 	ctx.Plan.ChartConfig["limit"] = limit
+	ctx.Plan.ChartConfig["line"] = line
 	return nil
 }
 
@@ -244,6 +250,6 @@ func init() {
 		field("field"), namedField("by"), namedLit("fence"), namedLit("limit"), namedLit("outliers"),
 	}})
 	registerSpec(&CommandSpec{Name: "scatter", Params: []ParamSpec{
-		namedField("x"), namedField("y"), namedField("label"), namedLit("limit"),
+		namedField("x"), namedField("y"), namedField("label"), namedLit("line"), namedLit("limit"),
 	}})
 }

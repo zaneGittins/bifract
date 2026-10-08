@@ -1138,15 +1138,16 @@ var bqlFunctionDocs = []FunctionDoc{
 		Name:        "scatter",
 		Category:    "Visualization",
 		Description: "Plots two numeric fields against each other, one point per row. After an aggregation that is one point per group (the usual use: per-host totals); before one, the newest events that carry both values.",
-		Syntax:      "| scatter(x=field, y=field, label=field, limit=5000)",
+		Syntax:      "| scatter(x=field, y=field, label=field, line=trend, limit=5000)",
 		Parameters: []Param{
 			{Name: "x", Type: "numeric", Required: true, Description: "Field for the X axis"},
 			{Name: "y", Type: "numeric", Required: true, Description: "Field for the Y axis"},
 			{Name: "label", Type: "string", Required: false, Description: "Field that names each point in the tooltip"},
+			{Name: "line", Type: "string", Required: false, Description: "Reference line: diagonal (y = x) or trend (best fit, on log axes when they are log). Points above and below it are colored apart"},
 			{Name: "limit", Type: "number", Required: false, Description: "Maximum points (default: 5000, max: 50000)"},
 		},
 		Examples: []string{
-			"* | groupby(computer_name) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=computer_name)",
+			"* | groupby(src_ip) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=src_ip, line=trend)",
 			"* | scatter(x=duration, y=orig_bytes)",
 		},
 	},

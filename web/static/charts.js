@@ -1178,6 +1178,29 @@ window.BifractCharts = {
         });
     },
 
+    // A reference line for scatter(line=): y = x, or the least-squares fit in the
+    // space the axes are drawn in (log10 on a log axis), so the fit is the
+    // straight line the eye sees. Returns y for an x, or null when there is none.
+    _scatterLine(kind, points, xType, yType) {
+        if (kind === 'diagonal') return x => x;
+        if (kind !== 'trend') return null;
+        const tx = xType === 'logarithmic' ? Math.log10 : (v => v);
+        const ty = yType === 'logarithmic' ? Math.log10 : (v => v);
+        let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+        for (const p of points) {
+            const a = tx(p.x), b = ty(p.y);
+            if (!isFinite(a) || !isFinite(b)) continue;
+            n++; sx += a; sy += b; sxx += a * a; sxy += a * b;
+        }
+        const den = n * sxx - sx * sx;
+        if (n < 2 || den === 0) return null;
+        const slope = (n * sxy - sx * sy) / den, icpt = (sy - slope * sx) / n;
+        return x => {
+            const v = icpt + slope * tx(x);
+            return yType === 'logarithmic' ? Math.pow(10, v) : v;
+        };
+    },
+
     // One point per row of scatter() output. Rows are usually per-entity
     // aggregates, where the outliers are the points off the main trend.
     renderScatter(canvas, opts) {
@@ -1193,15 +1216,68 @@ window.BifractCharts = {
         if (points.length === 0) return null;
         const cv = this._cv();
         const accent = cv('--chart-accent');
-        const xType = this._autoAxisType(points.map(p => p.x));
-        const yType = this._autoAxisType(points.map(p => p.y));
+        // Against y = x both axes share one scale, so the diagonal is the 45 degree
+        // line and distance from it reads the same in either direction.
+        const shared = cfg.line === 'diagonal';
+        const xVals = points.map(p => p.x), yVals = points.map(p => p.y);
+        const both = shared ? xVals.concat(yVals) : null;
+        const xType = this._autoAxisType(shared ? both : xVals);
+        const yType = shared ? xType : this._autoAxisType(yVals);
+        const xRange = this._paddedRange(shared ? both : xVals, xType);
+        const yRange = this._paddedRange(shared ? both : yVals, yType);
         const fmt = v => this.formatValue(v);
         const radius = points.length > 5000 ? 1.5 : points.length > 1000 ? 2 : 3;
 
+        const lineAt = this._scatterLine(cfg.line, points, xType, yType);
+        const lineName = cfg.line === 'diagonal' ? `${yF} = ${xF}` : 'trend';
+        let datasets;
+        if (lineAt) {
+            const above = [], below = [];
+            points.forEach(p => (p.y > lineAt(p.x) ? above : below).push(p));
+            datasets = [
+                { label: `Above ${lineName} (${above.length.toLocaleString()})`, data: above, backgroundColor: '#ee5765B3' },
+                { label: `Below ${lineName} (${below.length.toLocaleString()})`, data: below, backgroundColor: '#3b8de8B3' }
+            ];
+        } else {
+            datasets = [{ label: `${yF} vs ${xF}`, data: points, backgroundColor: accent + '99' }];
+        }
+        datasets.forEach(d => Object.assign(d, { pointRadius: radius, pointHoverRadius: radius + 2, borderWidth: 0 }));
+
+        const refLine = {
+            id: 'bifractScatterLine',
+            beforeDatasetsDraw: (chart) => {
+                if (!lineAt) return;
+                const xs = chart.scales.x, ys = chart.scales.y, area = chart.chartArea, g = chart.ctx;
+                const steps = 64;
+                g.save();
+                g.beginPath();
+                g.rect(area.left, area.top, area.right - area.left, area.bottom - area.top);
+                g.clip();
+                g.strokeStyle = cv('--chart-text-secondary');
+                g.lineWidth = 1.5;
+                g.setLineDash([6, 4]);
+                g.beginPath();
+                let started = false;
+                for (let k = 0; k <= steps; k++) {
+                    const f = k / steps;
+                    const x = xType === 'logarithmic'
+                        ? Math.pow(10, Math.log10(xs.min) + f * (Math.log10(xs.max) - Math.log10(xs.min)))
+                        : xs.min + f * (xs.max - xs.min);
+                    const y = lineAt(x);
+                    if (!isFinite(y) || (yType === 'logarithmic' && y <= 0)) { started = false; continue; }
+                    const px = xs.getPixelForValue(x), py = ys.getPixelForValue(y);
+                    if (started) g.lineTo(px, py); else { g.moveTo(px, py); started = true; }
+                }
+                g.stroke();
+                g.restore();
+            }
+        };
+
+        const pointOf = el => datasets[el.datasetIndex].data[el.index];
         const click = typeof opts.onDataClick === 'function' ? {
             onClick: (evt, els) => {
                 if (!els || !els.length) return;
-                const row = data[points[els[0].index].i];
+                const row = data[pointOf(els[0]).i];
                 const f = lF || xF;
                 opts.onDataClick({ row, field: f, value: row[f], series: null }, evt && evt.native);
             },
@@ -1210,36 +1286,33 @@ window.BifractCharts = {
 
         return new Chart(canvas, {
             type: 'scatter',
-            data: {
-                datasets: [{
-                    label: `${yF} vs ${xF}`,
-                    data: points,
-                    pointRadius: radius,
-                    pointHoverRadius: radius + 2,
-                    backgroundColor: accent + '99',
-                    borderWidth: 0
-                }]
-            },
+            data: { datasets },
             options: Object.assign({
                 responsive: true,
                 maintainAspectRatio: opts.maintainAspectRatio !== false,
                 animation: false,
                 parsing: false,
                 plugins: {
-                    legend: { display: false },
+                    legend: lineAt ? this._themedLegend('top') : { display: false },
                     tooltip: Object.assign(this._themedTooltip(), {
                         callbacks: {
                             title: (items) => (lF && items.length) ? String(data[items[0].raw.i][lF]) : '',
-                            label: (ctx) => [`${xF}: ${fmt(ctx.raw.x)}`, `${yF}: ${fmt(ctx.raw.y)}`]
+                            label: (ctx) => {
+                                const out = [`${xF}: ${fmt(ctx.raw.x)}`, `${yF}: ${fmt(ctx.raw.y)}`];
+                                const ref = lineAt ? lineAt(ctx.raw.x) : NaN;
+                                if (ref > 0 && ctx.raw.y >= 0) out.push(`${(ctx.raw.y / ref).toLocaleString(undefined, { maximumFractionDigits: 1 })}x the ${lineName}`);
+                                return out;
+                            }
                         }
                     })
                 },
                 scales: this._themedScales({
-                    x: { type: xType, beginAtZero: false, ...this._paddedRange(points.map(p => p.x), xType), title: this._axisTitle(xF + (xType === 'logarithmic' ? ' (log)' : '')) },
-                    y: { type: yType, beginAtZero: false, ...this._paddedRange(points.map(p => p.y), yType), title: this._axisTitle(yF + (yType === 'logarithmic' ? ' (log)' : '')) }
+                    x: { type: xType, beginAtZero: false, ...xRange, title: this._axisTitle(xF + (xType === 'logarithmic' ? ' (log)' : '')) },
+                    y: { type: yType, beginAtZero: false, ...yRange, title: this._axisTitle(yF + (yType === 'logarithmic' ? ' (log)' : '')) }
                 }),
                 layout: { padding: 10 }
-            }, click)
+            }, click),
+            plugins: [refLine]
         });
     },
 
