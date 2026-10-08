@@ -480,13 +480,17 @@ const AnalyticsModels = {
     // is resolved against the definition, so a column stored as partition_val
     // reads as the field the model was built from. Columns the table omits are
     // still shown in the row drawer. { why: true } places the fact-chip column.
+    COVERAGE_TIP: "How much of this group's normal you have already seen (Good-Turing coverage). " +
+        'Near 1: the group is stable and rarely does anything new, so a new value stands out. ' +
+        'Low: new values are routine there, so one more means little.',
+
     VIEW_SPEC: {
         rarity: {
             sortDefault: 'coverage',
             sortable: ['partition_val', 'value_val', 'model_count', 'percent', 'coverage'],
             score: { col: 'coverage', threshold: d => d.alert?.coverage_threshold ?? 0.8 },
             cols: [
-                { col: 'coverage', label: 'Coverage', fmt: 'meter', align: 'num' },
+                { col: 'coverage', label: 'Coverage', fmt: 'meter', align: 'num', tip: () => AnalyticsModels.COVERAGE_TIP },
                 { col: 'partition_val', label: d => d.partition_key || 'Partition' },
                 { col: 'value_val', label: d => d.value_key || 'Value' },
                 { why: true },
@@ -998,7 +1002,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             const minHist = def.min_sample || 1;
             const conf = Number(def.alert?.coverage_threshold), share = Number(def.alert?.percent_threshold);
             rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'} per group`]);
-            rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set']);
+            rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set', AnalyticsModels.COVERAGE_TIP]);
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
@@ -1032,8 +1036,8 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
         el.innerHTML = `
 <div class="me-sec">
     <div class="me-sec-label">Definition</div>
-    <dl class="mv-kv">${rows.map(([k, val]) =>
-        `<dt>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
+    <dl class="mv-kv">${rows.map(([k, val, tip]) =>
+        `<dt${tip ? ` title="${_esc(tip)}"` : ''}>${_esc(k)}</dt><dd>${_esc(String(val))}</dd>`).join('')}</dl>
 </div>
 ${mt === 'rarity' ? `<div class="me-sec">
     <div class="me-sec-label">Group by</div>
@@ -1425,7 +1429,7 @@ ${m.description ? `<div class="me-sec">
             const active = c.sortable && v.sortCol === c.col ? (v.sortDir === 'asc' ? ' sort-asc' : ' sort-desc') : '';
             const cls = `${c.align === 'num' ? 'num ' : ''}${c.why ? 'mv-why ' : ''}${c.sortable ? 'sortable' : ''}${active}`.trim();
             const attr = c.sortable ? ` data-col="${_esc(c.col)}"` : '';
-            const tip = c.why ? 'What makes this row stand out' : (c.label !== c.col ? c.col : '');
+            const tip = c.why ? 'What makes this row stand out' : c.tip ? c.tip() : (c.label !== c.col ? c.col : '');
             const title = tip ? ` title="${_esc(tip)}"` : '';
             return `<th class="${cls}"${attr}${title}><span class="mv-h">${_esc(c.label)}</span>${c.sortable ? '<span class="sort-icon"></span>' : ''}</th>`;
         }).join('');
@@ -1669,7 +1673,7 @@ ${m.description ? `<div class="me-sec">
                   title: `${fix(pct, 1)}% of the days ${row.partition_val} was seen. Click to search them.`, query: pivot() },
                 { label: 'Group coverage', value: fix(conf),
                   tone: confThr > 0 && !(conf > confThr) ? 'muted' : '',
-                  title: 'How rarely this partition produces a new value (Good-Turing coverage). Low means new values are routine there.' },
+                  title: AnalyticsModels.COVERAGE_TIP },
                 days.length ? { label: 'First seen', value: FactChips.ago(days[0]) || days[0], title: days[0] } : null,
             ], learning ? [0, 1] : [1, 3]);
         }
@@ -2551,7 +2555,7 @@ ${isBeacon ? `
             typeFields = `
     <div class="form-row" style="margin-top:10px">
         <div class="field-group">
-            <label>Min coverage</label>
+            <label title="${_esc(AnalyticsModels.COVERAGE_TIP)}">Min coverage</label>
             <input type="number" id="alertCoverage" class="model-num-input" value="${c.coverage_threshold}" min="0" max="1" step="0.05">
         </div>
         <div class="field-group">
@@ -3251,7 +3255,7 @@ ${isBeacon ? `
         const fields = this.THRESHOLD_FIELDS[mt];
         if (!fields) return '';
         return `<div class="score-thresholds">${fields.map(([key, label, min, max, step]) => `
-    <label class="score-threshold" data-key="${key}">
+    <label class="score-threshold" data-key="${key}"${key === 'coverage_threshold' ? ` title="${_esc(AnalyticsModels.COVERAGE_TIP)}"` : ''}>
         <span class="score-threshold-label">${_esc(label)}</span>
         <input type="range" class="score-threshold-range" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${_esc(String(c[key]))}">
         <input type="number" class="model-num-input model-num-mini score-threshold-num" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${_esc(String(c[key]))}">
@@ -3381,7 +3385,7 @@ ${isBeacon ? `
 
     _previewTopTableHTML(columns, rows) {
         if (!columns.length || !rows.length) return '';
-        const head = columns.map(c => `<th>${_esc(this._colLabel(c))}</th>`).join('');
+        const head = columns.map(c => `<th${c === 'coverage' ? ` title="${_esc(AnalyticsModels.COVERAGE_TIP)}"` : ''}>${_esc(this._colLabel(c))}</th>`).join('');
         const body = rows.map(r => `<tr>${columns.map(c => `<td>${this._fmtScoreVal(c, r[c])}</td>`).join('')}</tr>`).join('');
         return `<div class="score-top">
     <div class="score-top-title">Top results</div>
