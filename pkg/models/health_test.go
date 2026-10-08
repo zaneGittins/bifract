@@ -112,7 +112,9 @@ func TestDeriveHealthLearning(t *testing.T) {
 		{"rarity 10% at 4 days", ModelTypeRarity, ModelDefinition{}, 3 * day, 11, "day", 4, HealthLearning},
 		{"rarity 10% at 11 days", ModelTypeRarity, ModelDefinition{}, 10 * day, 11, "day", 11, HealthHealthy},
 		{"rarity 5% at 11 days", ModelTypeRarity, ModelDefinition{Alert: &AlertConfig{PercentThreshold: 5}}, 10 * day, 21, "day", 11, HealthLearning},
-		{"volume hourly default", ModelTypeVolumeBaseline, ModelDefinition{TimeBucket: "hour"}, 5 * time.Hour, 7, "hour", 5, HealthLearning},
+		// 4 samples of a weekend hour take two weekends.
+		{"volume hourly default", ModelTypeVolumeBaseline, ModelDefinition{TimeBucket: "hour"}, 5 * day, 14, "day", 5, HealthLearning},
+		{"volume hourly learned", ModelTypeVolumeBaseline, ModelDefinition{TimeBucket: "hour", MinSample: 3}, 15 * day, 14, "day", 15, HealthHealthy},
 		{"volume daily min 3", ModelTypeVolumeBaseline, ModelDefinition{MinSample: 3}, 3 * day, 3, "day", 3, HealthHealthy},
 		{"first_seen week", ModelTypeFirstSeen, ModelDefinition{}, 2 * day, 7, "day", 3, HealthLearning},
 		{"beacon 7d window", ModelTypeBeacon, ModelDefinition{Window: "7d"}, 6 * day, 7, "day", 7, HealthHealthy},
@@ -200,5 +202,22 @@ func TestParseStateSummary(t *testing.T) {
 	}
 	if tl := parseStateSummary(ModelTypeTLSH, []map[string]interface{}{{"oldest": uint64(1788000000), "newest": uint64(1788000000)}}); tl.findings != nil {
 		t.Errorf("tlsh has findings: %+v", tl)
+	}
+}
+
+// A weekend hour has at most 8 samples in the 30-day window, so a higher hourly
+// min history would leave those hours unscored forever.
+func TestHourlyMinHistoryIsBounded(t *testing.T) {
+	def := ModelDefinition{KeyFields: []string{"computer_name"}, TimeBucket: "hour", MinSample: 9}
+	if err := validateDefinitionShape(ModelTypeVolumeBaseline, def); err == nil || !strings.Contains(err.Error(), "same hour") {
+		t.Errorf("min history 9 on an hourly model: got %v", err)
+	}
+	def.MinSample = 8
+	if err := validateDefinitionShape(ModelTypeVolumeBaseline, def); err != nil {
+		t.Errorf("min history 8 on an hourly model: %v", err)
+	}
+	def.TimeBucket, def.MinSample = "day", 30
+	if err := validateDefinitionShape(ModelTypeVolumeBaseline, def); err != nil {
+		t.Errorf("a daily model's min history is not bounded by the hourly slot: %v", err)
 	}
 }

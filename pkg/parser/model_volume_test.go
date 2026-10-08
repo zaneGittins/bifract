@@ -63,13 +63,30 @@ func TestVolumeScoredSQL_MADZeroFallback(t *testing.T) {
 }
 
 func TestVolumeScoredSQL_HourlyWindow(t *testing.T) {
-	sql := VolumeScoredSQL("`m` FINAL", "fractal_id = 'f'", "hour", 24, "", false)
+	sql := VolumeScoredSQL("`m` FINAL", "fractal_id = 'f'", "hour", 6, "", false)
 	mustContain(t, sql,
 		"toStartOfHour(now('UTC')) - INTERVAL 1 HOUR AS latest_bucket",
-		"dateDiff('hour', min(bucket), latest_bucket)",
 		"bucket >= toStartOfHour(now('UTC')) - INTERVAL 30 DAY AND bucket < toStartOfHour(now('UTC'))",
-		"WHERE n_buckets >= 24",
+		"WHERE n_buckets >= 6",
 	)
+	if !strings.Contains(VolumeScoredSQL("m", "s", "hour", 0, "", false), "WHERE n_buckets >= 4") {
+		t.Error("an hourly model defaults to 4 samples of its hour")
+	}
+}
+
+// An hour is compared only with the same hour on the same kind of day: pooling
+// every hour made working mornings outliers against quiet nights, and hid a
+// night-time burst on an entity busy most of the day.
+func TestVolumeScoredSQL_HourlyComparesTheSameSlot(t *testing.T) {
+	sql := VolumeScoredSQL("`m` FINAL", "fractal_id = 'f'", "hour", 4, "", false)
+	mustContain(t, sql,
+		"groupArrayIf(toFloat64(cnt), bucket < latest_bucket AND toHour(bucket) = toHour(latest_bucket) AND (toDayOfWeek(bucket) >= 6) = (toDayOfWeek(latest_bucket) >= 6)) AS hist",
+		"toUInt64(length(arrayFilter(t -> t >= min(bucket) AND (toDayOfWeek(t) >= 6) = (toDayOfWeek(latest_bucket) >= 6), arrayMap(k -> latest_bucket - toIntervalDay(k), range(1, 31))))) AS n_buckets",
+	)
+	daily := VolumeScoredSQL("`m` FINAL", "fractal_id = 'f'", "day", 7, "", false)
+	if strings.Contains(daily, "toHour") || strings.Contains(daily, "toDayOfWeek") {
+		t.Errorf("a daily model compares every day:\n%s", daily)
+	}
 }
 
 func TestVolumeScoredSQL_Options(t *testing.T) {
@@ -115,11 +132,11 @@ func TestModelLookup_VolumeUsesSharedScoring(t *testing.T) {
 // nothing reads the current time.
 func TestVolumeScoredSQLAt_PastInstant(t *testing.T) {
 	asOf := "toDateTime('2026-09-09 02:30:00', 'UTC')"
-	sql := VolumeScoredSQLAt("src", "fractal_id = 'f'", "hour", 24, "", asOf, false)
+	sql := VolumeScoredSQLAt("src", "fractal_id = 'f'", "hour", 5, "", asOf, false)
 	mustContain(t, sql,
 		"toStartOfHour("+asOf+") - INTERVAL 1 HOUR AS latest_bucket",
 		"bucket < toStartOfHour("+asOf+")",
-		"WHERE n_buckets >= 24",
+		"WHERE n_buckets >= 5",
 	)
 	if strings.Contains(sql, "now(") {
 		t.Errorf("a past-instant score must not read the clock:\n%s", sql)

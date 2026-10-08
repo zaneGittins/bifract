@@ -493,7 +493,7 @@ LIMIT 25`, scored)
 	res.Stats = sanitizeStats(map[string]interface{}{
 		"entities_scored": metrics["entities_scored"],
 		"max_z":           metrics["max_z"],
-		"min_buckets":     parser.VolumeMinBuckets(def.MinSample),
+		"min_buckets":     parser.VolumeMinBuckets(def.MinSample, def.TimeBucket),
 	})
 	return nil
 }
