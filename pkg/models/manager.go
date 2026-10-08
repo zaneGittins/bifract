@@ -1537,6 +1537,10 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		if def.TimeBucket != "" && def.TimeBucket != "day" && def.TimeBucket != "hour" {
 			return fmt.Errorf("invalid time_bucket for volume_baseline: %s (use day or hour)", def.TimeBucket)
 		}
+		if def.TimeBucket == "hour" && def.MinSample > parser.VolumeHourlyMaxSamples {
+			return fmt.Errorf("min history for an hourly model counts past samples of the same hour, and a weekend hour has at most %d in the 30-day window; use %d or less",
+				parser.VolumeHourlyMaxSamples, parser.VolumeHourlyMaxSamples)
+		}
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		// Field map defaults make src/dst near-always resolvable; only reject an
 		// explicitly blanked src/dst. The window must be one of the supported values.

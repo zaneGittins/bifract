@@ -351,10 +351,16 @@ const AnalyticsModels = {
 
     // min_sample is the learning period: days a rarity group must have been seen
     // before its values are scored, or buckets of history a volume entity needs.
-    _defaultMinSample(modelType) {
+    // An hourly volume model counts past samples of the same hour (one a day), so
+    // its default is lower than a daily model's days.
+    _defaultMinSample(modelType, timeBucket) {
         if (modelType === 'rarity') return 14;
-        return modelType === 'volume_baseline' ? 7 : 1;
+        if (modelType === 'volume_baseline') return timeBucket === 'hour' ? 4 : 7;
+        return 1;
     },
+
+    HOURLY_HISTORY_TIP: 'An hour is compared only with the same hour on the same kind of day (weekday or weekend, UTC), ' +
+        'so 3am is judged against past 3am hours, not busy afternoons. History counts those past hours.',
 
     _statusLabel(status) {
         const s = String(status || '');
@@ -442,7 +448,7 @@ const AnalyticsModels = {
             partitionKey: def.partition_key || '',
             valueKey: def.value_key || '',
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
-            minSample: def.min_sample || this._defaultMinSample(m.model_type || 'rarity'),
+            minSample: def.min_sample || this._defaultMinSample(m.model_type || 'rarity', def.time_bucket),
             timeBucket: def.time_bucket || 'day',
             network: this._networkFromDef(def),
             window: def.window || '1d',
@@ -1006,7 +1012,9 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
-            rows.push(['Min history', (def.min_sample || this._defaultMinSample(mt)) + ' buckets']);
+            const hourly = def.time_bucket === 'hour';
+            rows.push(['Min history', (def.min_sample || this._defaultMinSample(mt, def.time_bucket)) + (hourly ? ' same-hour samples' : ' days'),
+                hourly ? AnalyticsModels.HOURLY_HISTORY_TIP : '']);
             rows.push(['z threshold', (def.alert?.z_threshold || 3.5).toFixed(1)]);
         } else if (mt === 'beacon') {
             rows.push(['Window', def.window || '1d']);
@@ -1691,7 +1699,9 @@ ${m.description ? `<div class="me-sec">
                 { label: 'Latest', value: int(row.latest_count), tone: z > zThr ? 'alert' : '',
                   title: `Events in the latest complete ${unit}. Click to search it.`, query: pivot(latestRange) },
                 { label: 'Typical', value: Number(row.baseline_median || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }), title: `Median events per ${unit} over its history` },
-                { label: 'History', value: `${int(row.n_buckets)} ${unit}s` },
+                unit === 'hour'
+                    ? { label: 'History', value: `${int(row.n_buckets)} same-hour samples`, title: AnalyticsModels.HOURLY_HISTORY_TIP }
+                    : { label: 'History', value: `${int(row.n_buckets)} days` },
                 flat ? null : { label: 'z', value: fix(z), tone: z > zThr ? 'alert' : 'muted', title: `Modified z-score; the alert fires above ${zThr}` },
             ], flat ? [0, 1] : [1, 2]);
         }
@@ -1869,7 +1879,7 @@ ${m.description ? `<div class="me-sec">
             name: 'network_volume_per_host', type: 'volume_baseline',
             description: 'Flags hosts whose hourly connection count spikes against their own history.',
             query: 'bifract_category=network_connect',
-            shape: { keyFields: ['computer_name'], timeBucket: 'hour', minSample: 24 },
+            shape: { keyFields: ['computer_name'], timeBucket: 'hour' },
             alert: { z_threshold: 3.5 },
         },
         {
@@ -2180,7 +2190,7 @@ ${m.description ? `<div class="me-sec">
         e.partitionKey = sh.partitionKey || '';
         e.valueKey = sh.valueKey || '';
         e.keyFields = sh.keyFields ? [...sh.keyFields] : [''];
-        e.minSample = sh.minSample || this._defaultMinSample(t.type);
+        e.minSample = sh.minSample || this._defaultMinSample(t.type, sh.timeBucket);
         e.timeBucket = sh.timeBucket || 'day';
         e.window = sh.window || '1d';
         e.network = this._networkFromDef({ network: sh.network || {} });
@@ -2214,8 +2224,8 @@ ${m.description ? `<div class="me-sec">
                 e.modelType = card.dataset.type;
                 // The field means a different thing for the new type, so carrying
                 // the old number over would carry the old meaning with it.
-                if (e.minSample === this._defaultMinSample(prevType)) {
-                    e.minSample = this._defaultMinSample(e.modelType);
+                if (e.minSample === this._defaultMinSample(prevType, e.timeBucket)) {
+                    e.minSample = this._defaultMinSample(e.modelType, e.timeBucket);
                 }
                 // A tlsh model takes exactly one digest field, and its shape editor
                 // renders only the first row with no remove button. Extra fields
@@ -2447,11 +2457,13 @@ ${isBeacon ? `
         </select>
     </div>
     <div class="field-group">
-        <label>Min history (buckets)</label>
-        <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
+        <label>${e.timeBucket === 'hour' ? 'Min history (same-hour samples)' : 'Min history (days)'}</label>
+        <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1"${e.timeBucket === 'hour' ? ' max="8"' : ''}>
     </div>
 </div>
-<p class="config-hint">Scores each entity's last complete ${e.timeBucket === 'hour' ? 'hour' : 'day'} against its own history (modified z-score). Empty buckets count as zero.</p>`;
+<p class="config-hint">${e.timeBucket === 'hour'
+        ? 'Scores each entity\'s last complete hour against the same hour on past weekdays, or past weekend days (UTC), using the modified z-score. Empty hours count as zero.'
+        : 'Scores each entity\'s last complete day against its own history (modified z-score). Empty days count as zero.'}</p>`;
         }
         if (e.modelType === 'tlsh') {
             return `
@@ -2507,7 +2519,16 @@ ${isBeacon ? `
                 this._renderEditorShape();
             });
             if (e.modelType === 'volume_baseline') {
-                document.getElementById('shapeTimeBucket')?.addEventListener('change', ev => { e.timeBucket = ev.target.value; this._renderEditorShape(); this._schedulePreview(); });
+                document.getElementById('shapeTimeBucket')?.addEventListener('change', ev => {
+                    // Min history means samples of an hour, not days, once hourly, so a
+                    // default carries over as the other bucket's default.
+                    if (e.minSample === this._defaultMinSample(e.modelType, e.timeBucket)) {
+                        e.minSample = this._defaultMinSample(e.modelType, ev.target.value);
+                    }
+                    e.timeBucket = ev.target.value;
+                    this._renderEditorShape();
+                    this._schedulePreview();
+                });
                 document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; this._schedulePreview(); });
             }
         }

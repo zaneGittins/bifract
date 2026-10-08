@@ -164,11 +164,12 @@ func learningNeed(mt ModelType, def ModelDefinition) (int, string) {
 		}
 		return need, "day"
 	case ModelTypeVolumeBaseline:
-		unit := "day"
 		if def.TimeBucket == "hour" {
-			unit = "hour"
+			// Min history counts past samples of an hour's slot, and a weekend hour
+			// recurs only twice a week, so every slot has them after this many days.
+			return 7 * ((parser.VolumeMinBuckets(def.MinSample, def.TimeBucket) + 1) / 2), "day"
 		}
-		return parser.VolumeMinBuckets(def.MinSample), unit
+		return parser.VolumeMinBuckets(def.MinSample, def.TimeBucket), "day"
 	case ModelTypeFirstSeen:
 		return firstSeenLearnDays, "day"
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -188,18 +189,15 @@ func staleAfter(mt ModelType, def ModelDefinition) time.Duration {
 	return 48 * time.Hour
 }
 
-// historySpan is how much history lies between oldest and newest: buckets for
-// a volume model (the history before the newest bucket, as n_buckets counts
-// it), whole days inclusive otherwise.
-func historySpan(oldest, newest time.Time, unit string, mt ModelType) int {
+// historySpan is how much history lies between oldest and newest in days: the
+// whole days before the newest bucket for a volume model, as n_buckets counts a
+// daily model's history, and whole days inclusive otherwise.
+func historySpan(oldest, newest time.Time, mt ModelType) int {
 	if oldest.IsZero() || newest.IsZero() || newest.Before(oldest) {
 		return 0
 	}
 	d := newest.Sub(oldest)
 	if mt == ModelTypeVolumeBaseline {
-		if unit == "hour" {
-			return int(d / time.Hour)
-		}
 		return int(d / (24 * time.Hour))
 	}
 	return int(d/(24*time.Hour)) + 1
@@ -216,7 +214,7 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 			t := sum.newest
 			h.NewestData = &t
 		}
-		h.History = historySpan(sum.oldest, sum.newest, unit, m.ModelType)
+		h.History = historySpan(sum.oldest, sum.newest, m.ModelType)
 		h.Findings = sum.findings
 		h.FindingsSeries = sum.series
 		h.FindingsBasis = findingsBasis(m)

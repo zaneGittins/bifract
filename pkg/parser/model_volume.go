@@ -1,6 +1,9 @@
 package parser
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // VolumeFlatZ is the z_score of an entity whose history is perfectly flat (every
 // bucket the same count, so MAD and mean absolute deviation are both 0) when the
@@ -10,12 +13,38 @@ const VolumeFlatZ = 1000000
 
 // VolumeMinBuckets returns the minimum buckets of history (zero-filled, from the
 // entity's first bucket) an entity needs before it is scored; 0 means the default.
-func VolumeMinBuckets(minSample int) int {
+// For an hourly model a bucket of history is one past sample of the scored hour's
+// slot (see volumeSlotMatch), so the hourly default is lower.
+func VolumeMinBuckets(minSample int, timeBucket string) int {
 	if minSample > 0 {
 		return minSample
 	}
+	if timeBucket == "hour" {
+		return 4
+	}
 	return 7
 }
+
+// VolumeHourlyMaxSamples is the most samples an hourly slot can have in the
+// 30-day window: a weekend hour recurs on only 8 of the 29 days before it.
+const VolumeHourlyMaxSamples = 8
+
+// volumeSlotMatch is true when bucket t shares the scored bucket's slot: the same
+// UTC hour of day, on the same kind of day (weekday or weekend). An hour is only
+// comparable with that hour on similar days; pooling every hour made a normal
+// working morning an outlier against quiet nights, and a night-time burst look
+// ordinary on an entity busy most of the day.
+func volumeSlotMatch(t string) string {
+	return fmt.Sprintf("toHour(%[1]s) = toHour(latest_bucket) AND %[2]s", t, volumeDayKindMatch(t))
+}
+
+func volumeDayKindMatch(t string) string {
+	return fmt.Sprintf("(toDayOfWeek(%s) >= 6) = (toDayOfWeek(latest_bucket) >= 6)", t)
+}
+
+// volumeSlotDays lists the scored hour's slot on each of the 30 days before it,
+// newest first; the window bounds which of them hold history.
+const volumeSlotDays = "arrayFilter(t -> %s, arrayMap(k -> latest_bucket - toIntervalDay(k), range(1, 31)))"
 
 // volumeWindow holds the SQL bounds of a volume_baseline model's scoring window
 // on the bucket column: history starts at lower, latest is the latest complete
@@ -47,7 +76,8 @@ func volumeWindowAt(timeBucket, asOf string) volumeWindow {
 // complete bucket, with missing buckets counted as zero. The latest complete
 // bucket is scored (latest_count, 0 when it was empty) against the history
 // before it: baseline_median and mad are the median and median absolute
-// deviation of that history, n_buckets its length. z_score is the modified
+// deviation of that history, n_buckets its length. An hourly model's history is
+// the same hour on the same kind of day only (volumeSlotMatch). z_score is the modified
 // z-score 0.6745*(x - median)/MAD (Iglewicz and Hoaglin); when MAD is 0 it falls
 // back to (x - median)/(1.253314*MeanAD), and when the history is flat as well
 // any change scores +/-VolumeFlatZ. Zeros enter the medians
@@ -72,6 +102,12 @@ func VolumeScoredSQLAt(source, scope, timeBucket string, minSample int, lower, a
 	if lower == "" {
 		lower = w.lower
 	}
+	histCond := "bucket < latest_bucket"
+	nBuckets := fmt.Sprintf("dateDiff('%s', min(bucket), latest_bucket)", w.unit)
+	if timeBucket == "hour" {
+		histCond += " AND " + volumeSlotMatch("bucket")
+		nBuckets = "length(" + fmt.Sprintf(volumeSlotDays, "t >= min(bucket) AND "+volumeDayKindMatch("t")) + ")"
+	}
 	daysOut, daysMid, daysAgg := "", "", ""
 	if withDays {
 		daysOut, daysMid = ", days", ", days"
@@ -91,8 +127,8 @@ FROM (
         SELECT entity_val,
             %[4]s AS latest_bucket,
             sumIf(cnt, bucket = latest_bucket) AS latest_count,
-            groupArrayIf(toFloat64(cnt), bucket < latest_bucket) AS hist,
-            toUInt64(dateDiff('%[5]s', min(bucket), latest_bucket)) AS n_buckets,
+            groupArrayIf(toFloat64(cnt), %[5]s) AS hist,
+            toUInt64(%[12]s) AS n_buckets,
             toUInt64(n_buckets - length(hist)) AS zeros,
             arrayReduce('quantileExactWeightedInterpolated(0.5)', arrayPushBack(hist, 0.), arrayPushBack(arrayMap(x -> toUInt64(1), hist), zeros)) AS baseline_median%[6]s
         FROM (
@@ -105,8 +141,8 @@ FROM (
     )
 )
 WHERE n_buckets >= %[11]d`,
-		daysOut, VolumeFlatZ, daysMid, w.latest, w.unit, daysAgg,
-		source, scope, lower, w.upper, VolumeMinBuckets(minSample))
+		daysOut, VolumeFlatZ, daysMid, w.latest, histCond, daysAgg,
+		source, scope, lower, w.upper, VolumeMinBuckets(minSample, timeBucket), nBuckets)
 }
 
 // volumeScoredKeysPredicate selects, on the model table under alias, exactly the
@@ -114,6 +150,14 @@ WHERE n_buckets >= %[11]d`,
 // holds iff the entity has a bucket at least min buckets before the latest one.
 func volumeScoredKeysPredicate(alias, timeBucket string, minSample int) string {
 	w := volumeWindowFor(timeBucket)
+	if timeBucket == "hour" {
+		// The min-th slot sample back from the scored hour; an entity whose first
+		// bucket is at or before it has that many samples.
+		nth := fmt.Sprintf("arrayElement(%s, %d)",
+			strings.ReplaceAll(fmt.Sprintf(volumeSlotDays, volumeDayKindMatch("t")), "latest_bucket", "("+w.latest+")"),
+			VolumeMinBuckets(minSample, timeBucket))
+		return fmt.Sprintf("%[1]s.bucket >= %[2]s AND %[1]s.bucket <= %[3]s", alias, w.lower, nth)
+	}
 	return fmt.Sprintf("%[1]s.bucket >= %[2]s AND %[1]s.bucket <= %[3]s - INTERVAL %[4]d %[5]s",
-		alias, w.lower, w.latest, VolumeMinBuckets(minSample), w.unit)
+		alias, w.lower, w.latest, VolumeMinBuckets(minSample, timeBucket), w.unit)
 }
