@@ -8,7 +8,7 @@ import (
 
 // modelLookupHandler handles: model_lookup(model="name", key=[field1, field2])
 //
-// For rarity models it adds percent, confidence, model_count columns via a
+// For rarity models it adds percent, coverage, model_count columns via a
 // LEFT JOIN against a triple-nested scoring subquery over the model table.
 // For first_seen models it adds first_seen, last_seen, is_new columns.
 //
@@ -26,7 +26,7 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		// Model not found — register placeholder fields so downstream conditions
 		// don't fail during the Declare phase. Execute will return a real error.
 		ctx.Registry.Register("percent", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("confidence", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("coverage", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("model_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("model_total", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("event_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
@@ -64,7 +64,12 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 	}
 	switch info.ModelType {
 	case "rarity":
-		reg("percent", "confidence", "model_count", "model_total")
+		// confidence was the old name for coverage. A filter on it would read an
+		// absent log field and silently match nothing, so name the rename instead.
+		if conditionsReference(ctx.Pipeline.HavingConditions, "confidence") {
+			return fmt.Errorf("model_lookup(): rarity models report coverage, not confidence; filter on coverage instead")
+		}
+		reg("percent", "coverage", "model_count", "model_total")
 	case "first_seen":
 		reg("first_seen", "last_seen", "event_count", "is_new")
 	case "volume_baseline":
@@ -126,7 +131,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		rightCols = []string{"partition_val", "value_val"}
 		// Partitions still learning are scored away, so the raw key set is a superset.
 		exact = info.MinSample <= 1
-		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "confidence"}
+		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "coverage"}
 
 	case "first_seen":
 		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, ctx.Opts.ModelNewSince)
@@ -332,7 +337,7 @@ GROUP BY src_ip, dst_ip, dst_port`,
 // Counts are days, taken from the stored day set, so live and backfilled state
 // agree and replays cannot double count. model_count is the days the value was
 // seen, model_total the days its partition was seen, percent their ratio, and
-// confidence is Good-Turing coverage, 1 - (values seen on one day / total
+// coverage is Good-Turing coverage, 1 - (values seen on one day / total
 // value-days): how rarely the partition still produces something new.
 //
 // source must yield the rarity state shape (partition_val, value_val, days);
@@ -352,7 +357,7 @@ func RarityScoredSQL(source, scope string, minHistory int, withDays bool) string
     days_seen AS model_count,
     days_observed AS model_total,
     round(days_seen / days_observed * 100.0, 4) AS percent,
-    round(1 - singletons / value_days, 4) AS confidence%s
+    round(1 - singletons / value_days, 4) AS coverage%s
 FROM (
     SELECT partition_val, value_val, seen_days, days_seen,
         length(groupUniqArrayArray(seen_days) OVER w) AS days_observed,
@@ -476,4 +481,18 @@ func init() {
 		ParamSpec{Name: "key", Kind: ParamList, Required: true},
 		namedLit("require"), namedLit("strict"),
 	}}, "modelLookup", "model_lookup")
+}
+
+// conditionsReference reports whether any condition reads field on either side.
+func conditionsReference(conds []HavingCondition, field string) bool {
+	for _, c := range conds {
+		if c.IsCompound {
+			if conditionsReference(c.Children, field) {
+				return true
+			}
+		} else if c.Field == field || c.ValueField == field {
+			return true
+		}
+	}
+	return false
 }

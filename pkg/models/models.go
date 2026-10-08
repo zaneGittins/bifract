@@ -3,9 +3,12 @@ package models
 import (
 	"bifract/pkg/parser"
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // LinkedAlertSpec describes the alert backing an analytics model. It is kept free
@@ -104,13 +107,49 @@ type ExtractionStep struct {
 }
 
 type AlertConfig struct {
-	Severity            string   `json:"severity" yaml:"severity,omitempty"`
-	ActionIDs           []string `json:"action_ids" yaml:"action_ids,omitempty"`
-	ConfidenceThreshold float64  `json:"confidence_threshold" yaml:"confidence_threshold,omitempty"`
-	PercentThreshold    float64  `json:"percent_threshold" yaml:"percent_threshold,omitempty"`
-	AlertOnNew          bool     `json:"alert_on_new" yaml:"alert_on_new,omitempty"`
+	Severity          string   `json:"severity" yaml:"severity,omitempty"`
+	ActionIDs         []string `json:"action_ids" yaml:"action_ids,omitempty"`
+	CoverageThreshold float64  `json:"coverage_threshold" yaml:"coverage_threshold,omitempty"`
+	PercentThreshold  float64  `json:"percent_threshold" yaml:"percent_threshold,omitempty"`
+	AlertOnNew        bool     `json:"alert_on_new" yaml:"alert_on_new,omitempty"`
 	// ZThreshold is the modified z-score cutoff for volume_baseline alerts.
 	ZThreshold float64 `json:"z_threshold" yaml:"z_threshold,omitempty"`
+}
+
+// legacyAlertConfig reads coverage_threshold under its old name,
+// confidence_threshold, so exported definitions and older API clients keep their
+// threshold instead of silently alerting on every rare value.
+type legacyAlertConfig struct {
+	alertConfigFields   `yaml:",inline"`
+	ConfidenceThreshold float64 `json:"confidence_threshold" yaml:"confidence_threshold"`
+}
+
+type alertConfigFields AlertConfig
+
+func (l legacyAlertConfig) config() AlertConfig {
+	c := AlertConfig(l.alertConfigFields)
+	if c.CoverageThreshold == 0 {
+		c.CoverageThreshold = l.ConfidenceThreshold
+	}
+	return c
+}
+
+func (a *AlertConfig) UnmarshalJSON(b []byte) error {
+	var l legacyAlertConfig
+	if err := json.Unmarshal(b, &l); err != nil {
+		return err
+	}
+	*a = l.config()
+	return nil
+}
+
+func (a *AlertConfig) UnmarshalYAML(node *yaml.Node) error {
+	var l legacyAlertConfig
+	if err := node.Decode(&l); err != nil {
+		return err
+	}
+	*a = l.config()
+	return nil
 }
 
 type ModelDefinition struct {

@@ -21,8 +21,8 @@ func GenerateQuery(name string, def ModelDefinition, mt ModelType) string {
 		lines = append(lines, fmt.Sprintf("| modelLookup(model=%s, key=[%s])",
 			escapeBQLString(name), strings.Join(keyParts, ", ")))
 		if def.Alert != nil {
-			if def.Alert.ConfidenceThreshold > 0 {
-				lines = append(lines, fmt.Sprintf("| confidence > %.2f", def.Alert.ConfidenceThreshold))
+			if def.Alert.CoverageThreshold > 0 {
+				lines = append(lines, fmt.Sprintf("| coverage > %.2f", def.Alert.CoverageThreshold))
 			}
 			if def.Alert.PercentThreshold > 0 {
 				lines = append(lines, fmt.Sprintf("| percent < %.2f", def.Alert.PercentThreshold))

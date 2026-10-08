@@ -44,7 +44,7 @@ type findingsRule struct {
 func findingsRuleFor(mt ModelType, def ModelDefinition) findingsRule {
 	switch mt {
 	case ModelTypeRarity:
-		r := findingsRule{Order: "percent ASC, confidence DESC, partition_val, value_val"}
+		r := findingsRule{Order: "percent ASC, coverage DESC, partition_val, value_val"}
 		if f := rarityFlagPredicates(def); f.Thresholded {
 			r.Where, r.Text = f.SQL(), f.Text()
 		}

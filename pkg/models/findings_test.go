@@ -20,10 +20,10 @@ func TestFindingsRuleMatchesAlert(t *testing.T) {
 		{
 			name:  "rarity",
 			mt:    ModelTypeRarity,
-			def:   ModelDefinition{MinSample: 3, Alert: &AlertConfig{ConfidenceThreshold: 0.8, PercentThreshold: 5}},
-			where: "model_total >= 3 AND confidence > 0.8 AND percent < 5",
-			order: "percent ASC, confidence DESC, partition_val, value_val",
-			alert: "| confidence > 0.80\n| percent < 5.00",
+			def:   ModelDefinition{MinSample: 3, Alert: &AlertConfig{CoverageThreshold: 0.8, PercentThreshold: 5}},
+			where: "model_total >= 3 AND coverage > 0.8 AND percent < 5",
+			order: "percent ASC, coverage DESC, partition_val, value_val",
+			alert: "| coverage > 0.80\n| percent < 5.00",
 		},
 		{
 			name:  "volume default threshold",
@@ -79,7 +79,7 @@ func TestFindingsRuleMatchesAlert(t *testing.T) {
 
 // The findings count above the table and the rarity flag count share one rule.
 func TestRarityFindingsUsesFlagPredicates(t *testing.T) {
-	def := ModelDefinition{MinSample: 2, Alert: &AlertConfig{ConfidenceThreshold: 0.9, PercentThreshold: 10}}
+	def := ModelDefinition{MinSample: 2, Alert: &AlertConfig{CoverageThreshold: 0.9, PercentThreshold: 10}}
 	if got, want := findingsRuleFor(ModelTypeRarity, def).Where, rarityFlagPredicates(def).SQL(); got != want {
 		t.Fatalf("findings %q != flag predicate %q", got, want)
 	}

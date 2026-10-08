@@ -35737,7 +35737,7 @@
           "alert_on_new": {
             "type": "boolean"
           },
-          "confidence_threshold": {
+          "coverage_threshold": {
             "type": "number"
           },
           "percent_threshold": {
@@ -35753,7 +35753,7 @@
         "required": [
           "severity",
           "action_ids",
-          "confidence_threshold",
+          "coverage_threshold",
           "percent_threshold",
           "alert_on_new",
           "z_threshold"
