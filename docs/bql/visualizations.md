@@ -107,11 +107,13 @@ Quartiles are approximate (0.1% rank error) so the chart stays fast on billions 
 Plot two numeric fields against each other, one point per row:
 
 ```
-* | groupby(computer_name) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=computer_name)
+* | groupby(src_ip) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=src_ip, line=trend)
 * | scatter(x=duration, y=orig_bytes)
 ```
 
 After an aggregation each point is a group, which is the usual way to use it: hosts that break a trend the rest follow stand out. Before an aggregation each point is an event, taken from the newest events that carry both values. Axes switch to a log scale when positive values span three or more orders of magnitude.
+
+`line=` draws a reference line and colors the points above it apart from those below. `diagonal` is y = x, the line hosts that send as much as they receive sit on. `trend` is the best fit through the points (a straight line on the axes as drawn, so a power law on log axes). Most hosts download far more than they upload, so against y = x nearly every host is "below"; against the trend, the hosts that send unusually much for what they receive are the ones above. The tooltip shows each point as a multiple of the line.
 
 ### Parameters
 
@@ -120,6 +122,7 @@ After an aggregation each point is a group, which is the usual way to use it: ho
 | `x`       | Yes      | Numeric field for the X axis |
 | `y`       | Yes      | Numeric field for the Y axis |
 | `label`   | No       | Field that names each point in the tooltip |
+| `line`    | No       | `diagonal` (y = x) or `trend` (best fit); colors points above and below it |
 | `limit`   | No       | Max points (default: 5000, max: 50000) |
 
 ## Heatmap
