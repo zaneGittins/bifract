@@ -73,6 +73,7 @@ func TestNumericChartsRejectCollapsedFields(t *testing.T) {
 		`* | scatter(x=a, y=a)`,
 		`* | scatter(x=a)`,
 		`* | boxplot(bytes, fence=0)`,
+		`* | scatter(x=a, y=b, line=curve)`,
 	} {
 		pipeline, err := ParseQuery(q)
 		if err != nil {
