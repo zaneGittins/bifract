@@ -58,6 +58,22 @@ Count non-null values of a specific field, or use `unique=true` for distinct cou
 
 `median()` returns the median value (`_median`). `mad()` returns both the median (`_median`) and the median absolute deviation (`_mad`), a robust measure of variability resistant to outliers. Unlike standard deviation, MAD is not skewed by extreme values, making it ideal for anomaly detection on noisy data.
 
+## Correlation
+
+Measure whether two numeric fields move together, from -1 to 1:
+
+```
+* | rankcorr(duration, orig_bytes)
+* | groupBy(src_ip, function=multi(rankcorr(orig_bytes, resp_bytes, as=r), count())) | sort(r)
+* | groupBy(src_ip) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | corr(sent, received)
+```
+
+`corr()` is Pearson correlation (`_corr`): how closely the two follow a straight line. `rankcorr()` is Spearman rank correlation (`_rankcorr`): whether one rises when the other does, at any rate. 1 means they rise together, -1 that one falls as the other rises, 0 no relationship. Both are NULL for fewer than two rows or a field that never changes.
+
+Prefer `rankcorr()` for byte counts, durations and other heavy-tailed fields: a handful of huge values can drive `corr()` toward 1 or 0 on their own. A group larger than 100,000 rows is ranked from a random sample of that size to keep memory bounded, so its `rankcorr()` can differ by about 0.003 between runs.
+
+Use them to choose what to plot: a strong correlation means `scatter(..., line=trend)` has a trend worth comparing against. After a `groupBy`, the last example correlates one value per group, here across hosts.
+
 ## Select First / Last
 
 Return the value from the earliest or latest event in each group:
