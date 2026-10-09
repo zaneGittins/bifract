@@ -491,6 +491,58 @@ body {
     transform: translateY(0);
 }
 
+/* Shared destructive-action dialog (dangerConfirm.js) */
+/* Opens above other modals, e.g. Clear All Logs inside System Status. */
+.modal.danger-confirm {
+    z-index: 10001;
+}
+
+.danger-confirm .modal-content {
+    max-width: 480px;
+    width: calc(100% - 32px);
+}
+
+.danger-confirm .danger-confirm-title {
+    margin: 0;
+    color: var(--error);
+}
+
+.danger-confirm-body p {
+    margin: 0 0 10px 0;
+    overflow-wrap: anywhere;
+}
+
+.danger-confirm-body p.danger-confirm-muted {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.danger-confirm-extra:not(:empty) {
+    margin: 6px 0 16px 0;
+}
+
+.danger-confirm .danger-confirm-phrase {
+    margin: 6px 0 0 0;
+}
+
+.danger-confirm .danger-confirm-phrase strong {
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+/* Author display rules on .form-group would otherwise defeat the hidden attribute. */
+.danger-confirm [hidden] {
+    display: none !important;
+}
+
+.danger-confirm-error {
+    margin: 12px 0 0 0;
+    font-size: 0.875rem;
+    color: var(--error);
+}
+
 /* Fractal Details Modal */
 .fractal-details-grid {
     display: grid;

@@ -42,7 +42,7 @@ const SchemaFields = {
 
     init() {
         document.getElementById('schemaFieldAddBtn')?.addEventListener('click', () => this.openAddDrawer());
-        document.getElementById('schemaFieldResetBtn')?.addEventListener('click', () => this.openResetModal());
+        document.getElementById('schemaFieldResetBtn')?.addEventListener('click', () => this.confirmReset());
         document.getElementById('schemaExportBtn')?.addEventListener('click', () => this.exportYaml());
         document.getElementById('schemaImportBtn')?.addEventListener('click', () => document.getElementById('schemaImportInput')?.click());
         document.getElementById('schemaImportInput')?.addEventListener('change', e => this.importYaml(e));
@@ -68,12 +68,6 @@ const SchemaFields = {
 
         document.getElementById('schemaRefreshBtn')?.addEventListener('click', () => this.refreshMeasurements());
 
-        document.getElementById('schemaResetCancelBtn')?.addEventListener('click', () => this.closeResetModal());
-        document.getElementById('schemaResetConfirmInput')?.addEventListener('input', e => this._onResetPhraseInput(e));
-        document.getElementById('schemaResetDoBtn')?.addEventListener('click', () => this.executeReset());
-        document.getElementById('schemaResetModal')?.addEventListener('click', e => {
-            if (e.target === document.getElementById('schemaResetModal')) this.closeResetModal();
-        });
     },
 
     show() {
@@ -696,48 +690,28 @@ const SchemaFields = {
 
     // ---- Rebuild ------------------------------------------------------------
 
-    openResetModal() {
-        const modal = document.getElementById('schemaResetModal');
-        const input = document.getElementById('schemaResetConfirmInput');
-        const btn = document.getElementById('schemaResetDoBtn');
-        if (input) { input.value = ''; input.classList.remove('phrase-match'); }
-        if (btn) btn.disabled = true;
-        if (modal) modal.style.display = 'flex';
-        setTimeout(() => input?.focus(), 50);
-    },
-
-    closeResetModal() {
-        const modal = document.getElementById('schemaResetModal');
-        if (modal) modal.style.display = 'none';
-    },
-
-    _onResetPhraseInput(e) {
-        const match = e.target.value === 'DELETE ALL LOG DATA';
-        const btn = document.getElementById('schemaResetDoBtn');
-        e.target.classList.toggle('phrase-match', match);
-        if (btn) btn.disabled = !match;
-    },
-
-    async executeReset() {
-        const btn = document.getElementById('schemaResetDoBtn');
-        const cancelBtn = document.getElementById('schemaResetCancelBtn');
-        if (btn) { btn.disabled = true; btn.textContent = 'Rebuilding...'; }
-        if (cancelBtn) cancelBtn.disabled = true;
-        try {
-            await HttpUtils.safeFetch('/api/v1/admin/schema-fields/reset', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ confirm: 'DELETE ALL LOG DATA' }),
-            });
-            this.closeResetModal();
-            if (window.Toast) Toast.success('Schema rebuilt', 'All log data was deleted and the schema recreated.');
-            this.load();
-        } catch (err) {
-            if (window.Toast) Toast.error('Rebuild failed', err.message);
-        } finally {
-            if (btn) { btn.disabled = false; btn.textContent = 'Delete all logs and rebuild'; }
-            if (cancelBtn) cancelBtn.disabled = false;
-        }
+    confirmReset() {
+        const phrase = 'DELETE ALL LOG DATA';
+        DangerConfirm.open({
+            title: 'Reset Schema and Delete All Logs',
+            body: [
+                'This permanently deletes all ingested log data and rebuilds the field schema from the project defaults plus your current custom fields.',
+                { text: 'Any type hint outside that set is discarded, freeing its column. This is the only operation that removes one.', muted: true },
+                { text: 'Fractal configs, normalizers, and all other settings are not affected.', muted: true },
+            ],
+            phrase,
+            confirmLabel: 'Reset and Delete All Logs',
+            busyLabel: 'Rebuilding...',
+            onConfirm: async () => {
+                await HttpUtils.safeFetch('/api/v1/admin/schema-fields/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: phrase }),
+                });
+                if (window.Toast) Toast.success('Schema rebuilt', 'All log data was deleted and the schema recreated.');
+                this.load();
+            },
+        });
     },
 
     // ---- Import / export ----------------------------------------------------

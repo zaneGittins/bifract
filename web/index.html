@@ -1097,6 +1097,16 @@
                                         <button id="distQueueResetBtn" class="danger-btn">Reset Queue</button>
                                     </div>
                                 </div>
+                                <div class="sp-row" id="endpointBaselinesClearItem">
+                                    <div class="sp-row-info">
+                                        <span class="sp-row-label">Clear endpoint analytics baselines</span>
+                                        <p class="sp-row-desc">Empties the process lineage, frequency and edge baselines so they rebuild from newly ingested logs while Collect baselines is on. Log data is unaffected.</p>
+                                        <p class="sp-row-meta">Until the baselines refill, nearly every process edge is first-seen, so pgr() flags most activity as high severity.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <button id="endpointBaselinesClearBtn" class="danger-btn">Clear Baselines</button>
+                                    </div>
+                                </div>
                                 <div class="sp-row" id="schemaResetItem">
                                     <div class="sp-row-info">
                                         <span class="sp-row-label">Reset field schema</span>
@@ -1310,72 +1320,6 @@
             <!-- Field detail drawer: preserves table context, unlike a modal -->
             <div class="schema-scrim" id="schemaScrim"></div>
             <aside class="schema-drawer" id="schemaDrawer" role="dialog" aria-labelledby="schemaDrawerName" aria-hidden="true"></aside>
-            <!-- Schema Reset Confirmation Modal -->
-            <div id="schemaResetModal" class="modal" style="display:none;">
-                <div class="modal-content" style="max-width:480px;">
-                    <div class="modal-header">
-                        <h3 style="margin:0;color:var(--error,#f87171)">Reset Schema and Delete All Logs</h3>
-                    </div>
-                    <div class="modal-body">
-                        <p style="margin:0 0 10px 0">This will permanently delete <strong>all ingested log data</strong> and rebuild the field schema from the project defaults plus your current custom fields.</p>
-                        <p style="margin:0 0 10px 0;font-size:0.875rem;color:var(--text-muted)">Any type hint outside that set is discarded, freeing its column. This is the only operation that removes one.</p>
-                        <p style="margin:0 0 16px 0;font-size:0.875rem;color:var(--text-muted)">Fractal configs, normalizers, and all other settings are not affected.</p>
-                        <div class="form-group" style="margin:0">
-                            <label for="schemaResetConfirmInput">Type <strong>DELETE ALL LOG DATA</strong> to confirm</label>
-                            <input type="text" id="schemaResetConfirmInput" placeholder="DELETE ALL LOG DATA" autocomplete="off" spellcheck="false">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button id="schemaResetCancelBtn" class="btn-secondary">Cancel</button>
-                        <button id="schemaResetDoBtn" class="btn-danger" disabled>Reset and Delete All Logs</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Clear Iceberg Catalog confirmation (typed confirm, mirrors schema reset) -->
-            <div id="archiveClearCatalogModal" class="modal" style="display:none;">
-                <div class="modal-content" style="max-width:480px;">
-                    <div class="modal-header">
-                        <h3 style="margin:0;color:var(--error,#f87171)">Clear Iceberg Catalog</h3>
-                    </div>
-                    <div class="modal-body">
-                        <p style="margin:0 0 10px 0">This drops <strong>every archived table</strong> from the Iceberg catalog and resets the archive footprint to zero.</p>
-                        <p style="margin:0 0 16px 0;font-size:0.875rem;color:var(--text-muted)">Data files in object storage are not deleted. Empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables. Log data in ClickHouse is not affected.</p>
-                        <div class="form-group" style="margin:0">
-                            <label for="archiveClearCatalogConfirmInput">Type <strong>CLEAR CATALOG</strong> to confirm</label>
-                            <input type="text" id="archiveClearCatalogConfirmInput" placeholder="CLEAR CATALOG" autocomplete="off" spellcheck="false">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button id="archiveClearCatalogCancelBtn" class="btn-secondary">Cancel</button>
-                        <button id="archiveClearCatalogConfirmBtn" class="btn-danger" disabled>Clear Catalog</button>
-                    </div>
-                </div>
-            </div>
-
-            <div id="distQueueResetModal" class="modal" style="display:none;">
-                <div class="modal-content" style="max-width:480px;">
-                    <div class="modal-header">
-                        <h3 style="margin:0;color:var(--error,#f87171)">Reset Distribution Queue</h3>
-                    </div>
-                    <div class="modal-body">
-                        <p style="margin:0 0 10px 0">This drops and recreates <strong>logs_distributed</strong> on the selected shard, discarding its queued log batches. Other shards and this shard's own stored logs are unaffected.</p>
-                        <div class="form-group" style="margin:0 0 16px 0">
-                            <label for="distQueueResetShardSelect">Shard</label>
-                            <select id="distQueueResetShardSelect" class="setting-select" style="width:100%"></select>
-                        </div>
-                        <div class="form-group" style="margin:0">
-                            <label for="distQueueResetConfirmInput">Type <strong>RESET QUEUE</strong> to confirm</label>
-                            <input type="text" id="distQueueResetConfirmInput" placeholder="RESET QUEUE" autocomplete="off" spellcheck="false">
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button id="distQueueResetCancelBtn" class="btn-secondary">Cancel</button>
-                        <button id="distQueueResetConfirmBtn" class="btn-danger" disabled>Reset Queue</button>
-                    </div>
-                </div>
-            </div>
-
             <!-- Normalizers Tab Content (Admin Only) -->
             <div id="mainNormalizersTabContent" style="display: none;">
                 <div id="normalizersView" class="admin-only" style="display: none;">
@@ -4408,6 +4352,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/markdownEditor.js"></script>
 
     <script src="/static/toast.js"></script>
+    <script src="/static/dangerConfirm.js"></script>
     <script src="/static/fractalContext.js"></script>
     <script src="/static/fractalSelector.js"></script>
     <script src="/static/fractalListing.js"></script>

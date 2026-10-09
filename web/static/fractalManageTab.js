@@ -274,33 +274,29 @@ const FractalManageTab = {
         }
     },
 
-    async deletePrism() {
+    deletePrism() {
         if (!this._writeTargetId()) return;
+        const name = this.currentFractal.name;
+        DangerConfirm.open({
+            title: 'Delete Prism',
+            body: [`This permanently deletes the prism "${name}". Its member fractals and their data are not affected.`],
+            phrase: name,
+            confirmLabel: 'Delete Prism',
+            busyLabel: 'Deleting...',
+            onConfirm: async () => {
+                const data = await HttpUtils.safeFetch(`/api/v1/prisms/${this._requireTargetId()}`, { method: 'DELETE' });
+                if (data && data.success === false) throw new Error(data.error || 'Failed to delete prism');
+                if (window.App) App.showMainView('fractalListing');
+            },
+        });
+    },
 
-        const confirmation = prompt(`Type "${this.currentFractal.name}" to confirm deletion of this prism:`);
-        if (confirmation !== this.currentFractal.name) {
-            if (confirmation !== null && window.Toast) Toast.error('Delete Cancelled', 'Name did not match');
-            return;
-        }
-
-        // The prompt blocks, so confirm the context is still the one the user named.
-        const targetId = this._writeTargetId();
-        if (!targetId) return;
-
-        try {
-            const resp = await fetch(`/api/v1/prisms/${targetId}`, {
-                method: 'DELETE',
-                credentials: 'include'
-            });
-            const data = await resp.json();
-            if (!data.success) throw new Error(data.error || 'Failed to delete prism');
-
-            if (window.App) App.showMainView('fractalListing');
-        } catch (err) {
-            console.error('[FractalManageTab] deletePrism error:', err);
-            if (window.Toast) Toast.error('Delete Failed', err.message);
-            this.showPrismError(err.message);
-        }
+    // The dialog does not block the page, so re-check before acting that the fractal
+    // in context is still the one the user typed the name of.
+    _requireTargetId() {
+        const id = this._writeTargetId();
+        if (!id) throw new Error('The selected fractal changed. Reopen its settings and try again.');
+        return id;
     },
 
     showPrismError(message) {
@@ -386,74 +382,29 @@ const FractalManageTab = {
 
     confirmDeleteFractal() {
         if (!this.currentFractal) return;
-
         const fractal = this.currentFractal;
         if (fractal.is_default || fractal.is_system) {
-            if (window.Toast) {
-                Toast.error('Cannot Delete', 'System fractals cannot be deleted');
-            }
+            if (window.Toast) Toast.error('Cannot Delete', 'System fractals cannot be deleted');
             return;
         }
-
-        const logCountText = fractal.log_count ? `${fractal.log_count.toLocaleString()} logs` : 'no logs';
-        const sizeText = fractal.size_bytes ? this.formatBytes(fractal.size_bytes) : '0 B';
-
-        const message = `Are you sure you want to delete the fractal "${fractal.name}"?\n\n` +
-            `This fractal currently contains ${logCountText} (${sizeText}) and this action cannot be undone.\n\n` +
-            `Type "${fractal.name}" below to confirm:`;
-
-        const confirmation = prompt(message);
-        if (confirmation === fractal.name) {
-            this.executeDeleteFractal();
-        } else if (confirmation !== null) {
-            if (window.Toast) {
-                Toast.error('Delete Cancelled', 'Fractal name did not match');
-            }
-        }
+        DangerConfirm.open({
+            title: 'Delete Fractal',
+            body: [
+                `This permanently deletes the fractal "${fractal.name}" with ${this._logSummary(fractal)}, and its alerts, comments and permissions.`,
+            ],
+            phrase: fractal.name,
+            confirmLabel: 'Delete Fractal',
+            busyLabel: 'Deleting...',
+            onConfirm: async () => {
+                await HttpUtils.safeFetch(`/api/v1/fractals/${this._requireTargetId()}`, { method: 'DELETE' });
+                if (window.App) App.showMainView('fractalListing');
+            },
+        });
     },
 
-    async executeDeleteFractal() {
-        const targetId = this._writeTargetId();
-        if (!targetId) return;
-
-        const deleteBtn = document.getElementById('manageDeleteFractalBtn');
-
-        try {
-            if (deleteBtn) {
-                deleteBtn.disabled = true;
-                deleteBtn.innerHTML = '<span class="spinner"></span> Deleting...';
-            }
-            this.hideError();
-
-            const response = await fetch(`/api/v1/fractals/${targetId}`, {
-                method: 'DELETE',
-                credentials: 'include'
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error || `Failed to delete fractal: ${response.status}`);
-            }
-
-
-
-            // Navigate back to main fractal listing
-            if (window.App) {
-                App.showMainView('fractalListing');
-            }
-
-        } catch (error) {
-            console.error('Failed to delete fractal:', error);
-            this.showError(error.message);
-            if (window.Toast) {
-                Toast.error('Delete Failed', error.message);
-            }
-        } finally {
-            if (deleteBtn) {
-                deleteBtn.disabled = false;
-                deleteBtn.innerHTML = 'Delete';
-            }
-        }
+    _logSummary(fractal) {
+        const count = fractal.log_count ? `${fractal.log_count.toLocaleString()} logs` : 'no logs';
+        return `${count} (${this.formatBytes(fractal.size_bytes || 0)})`;
     },
 
     async saveRetentionSetting() {
@@ -534,69 +485,25 @@ const FractalManageTab = {
 
     confirmClearFractalLogs() {
         if (!this.currentFractal) return;
-
         const fractal = this.currentFractal;
-        const logCountText = fractal.log_count ? `${fractal.log_count.toLocaleString()} logs` : 'no logs';
-
-        const confirmation = confirm(
-            `Are you sure you want to clear all logs for fractal "${fractal.name}"?\n\n` +
-            `This will permanently delete ${logCountText} from this fractal. The fractal structure will remain.\n\n` +
-            `This action cannot be undone.`
-        );
-
-        if (confirmation) {
-            this.executeClearFractalLogs();
-        }
-    },
-
-    async executeClearFractalLogs() {
-        const targetId = this._writeTargetId();
-        if (!targetId) return;
-
-        const clearBtn = document.getElementById('manageClearFractalLogsBtn');
-
-        try {
-            if (clearBtn) {
-                clearBtn.disabled = true;
-                clearBtn.innerHTML = '<span class="spinner"></span> Clearing logs...';
-            }
-            this.hideError();
-
-            // Clear logs for the specific fractal using the existing logs API with fractal_id parameter
-            const response = await fetch(`/api/v1/logs?fractal_id=${encodeURIComponent(targetId)}`, {
-                method: 'DELETE',
-                credentials: 'include',
-                headers: {
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache'
-                }
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-            } else {
-                const errorMsg = data.error || 'Unknown error';
-                if (window.Toast) {
-                    Toast.error('Clear Failed', errorMsg);
-                } else {
-                    alert('Failed to clear fractal logs: ' + errorMsg);
-                }
-                this.showError(errorMsg);
-            }
-
-        } catch (error) {
-            console.error('Failed to clear fractal logs:', error);
-            this.showError(error.message);
-            if (window.Toast) {
-                Toast.error('Clear Failed', error.message);
-            }
-        } finally {
-            if (clearBtn) {
-                clearBtn.disabled = false;
-                clearBtn.innerHTML = 'Clear Fractal Logs';
-            }
-        }
+        DangerConfirm.open({
+            title: 'Clear Fractal Logs',
+            body: [
+                `This permanently deletes ${this._logSummary(fractal)} from "${fractal.name}", along with their comments.`,
+                { text: 'The fractal, its alerts and its settings remain. Large fractals finish deleting in the background.', muted: true },
+            ],
+            phrase: fractal.name,
+            confirmLabel: 'Clear Logs',
+            busyLabel: 'Clearing...',
+            onConfirm: async () => {
+                const id = this._requireTargetId();
+                const data = await HttpUtils.safeFetch(`/api/v1/logs?fractal_id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+                if (data && data.success === false) throw new Error(data.error || 'Failed to clear logs');
+                fractal.log_count = 0;
+                fractal.size_bytes = 0;
+                if (window.Toast) Toast.success('Logs Cleared', `All logs in "${fractal.name}" are being deleted.`);
+            },
+        });
     },
 
     showError(message) {
