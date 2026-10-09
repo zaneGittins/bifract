@@ -9,13 +9,34 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func RunInstall() error {
+// RunInstall installs from the wizard, or from an install config file when
+// opts.ConfigPath is set.
+func RunInstall(opts InstallOptions) error {
 	defer abandonStep() // clean up any in-progress spinner on an early error return
-	cfg := DefaultConfig()
 
-	cfg, err := RunWizard(cfg)
+	var cfg *SetupConfig
+	plan := installPlan{passwordOutput: AdminPasswordToStdout}
+	var err error
+	if opts.ConfigPath != "" {
+		f, loadErr := LoadInstallFile(opts.ConfigPath)
+		if loadErr != nil {
+			return loadErr
+		}
+		cfg, plan, err = f.ComposeConfig()
+	} else {
+		cfg, err = RunWizard(DefaultConfig())
+	}
 	if err != nil {
 		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.GeneratePasswords(); err != nil {
+		return fmt.Errorf("generate passwords: %w", err)
+	}
+	if err := plan.applyAdminPassword(cfg); err != nil {
+		return fmt.Errorf("hash admin password: %w", err)
 	}
 
 	// Post-wizard: show banner and progress in normal terminal
@@ -45,6 +66,12 @@ func RunInstall() error {
 	envPath := filepath.Join(cfg.InstallDir, ".env")
 	if _, err := os.Stat(envPath); err == nil {
 		return fmt.Errorf("existing installation found at %s (.env exists)\n  Use --upgrade to update, or remove %s to reinstall", cfg.InstallDir, envPath)
+	}
+
+	// Deliver the admin password before deploying so a failure cannot lose it.
+	passwordLine, shown, err := plan.reportAdminPassword(cfg.InstallDir, cfg.AdminPassword)
+	if err != nil {
+		return err
 	}
 
 	// Verify the Bifract image is available on the registry
@@ -138,6 +165,13 @@ func RunInstall() error {
 		}
 	}
 
+	var answersPath string
+	if !plan.fromFile {
+		if answersPath, err = saveInstallFile(cfg.InstallDir, composeInstallFile(cfg)); err != nil {
+			printWarn(fmt.Sprintf("Could not save install answers: %v", err))
+		}
+	}
+
 	// Final summary
 	fmt.Println()
 	fmt.Println(TitleStyle.Render("  Installation Complete"))
@@ -149,13 +183,20 @@ func RunInstall() error {
 		"%s  %s\n%s  %s\n%s  %s\n\n%s  %s",
 		PromptStyle.Render("URL:      "), ValueStyle.Render(url),
 		PromptStyle.Render("Username: "), ValueStyle.Render("admin"),
-		PromptStyle.Render("Password: "), lipgloss.NewStyle().Foreground(White).Bold(true).Render(cfg.AdminPassword),
+		PromptStyle.Render("Password: "), renderPasswordLine(passwordLine, shown),
 		PromptStyle.Render("Config:   "), DimStyle.Render(cfg.InstallDir),
 	)
+	if answersPath != "" {
+		summaryText += fmt.Sprintf("\n%s  %s", PromptStyle.Render("Answers:  "), DimStyle.Render(answersPath))
+	}
 	if clientCertPath != "" {
+		certPassword := renderPasswordLine(cfg.AdminPassword, true)
+		if !shown {
+			certPassword = ValueStyle.Render("same as the admin password")
+		}
 		summaryText += fmt.Sprintf("\n\n%s  %s\n%s  %s",
 			PromptStyle.Render("Client cert:"), DimStyle.Render(clientCertPath),
-			PromptStyle.Render("Cert password:"), lipgloss.NewStyle().Foreground(White).Bold(true).Render(cfg.AdminPassword),
+			PromptStyle.Render("Cert password:"), certPassword,
 		)
 	}
 
@@ -166,7 +207,9 @@ func RunInstall() error {
 		Render(summaryText)
 	fmt.Println(summary)
 	fmt.Println()
-	fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
+	if shown {
+		fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
+	}
 	if clientCertPath != "" {
 		fmt.Println(WarningStyle.Render("  Import the .p12 file into your browser to access Bifract."))
 	}

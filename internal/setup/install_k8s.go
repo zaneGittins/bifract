@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -297,6 +296,42 @@ type K8sConfig struct {
 	ArchiveMaintainCommitRetries int
 }
 
+// Validate is the single gate a k8s install config passes, whether it came
+// from the wizard or a config file.
+func (c *K8sConfig) Validate() error {
+	if c.OutputDir == "" {
+		return fmt.Errorf("an output directory is required")
+	}
+	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	if c.MTLSEnabled != (c.IPAccess == IPAccessMTLSApp) {
+		return fmt.Errorf("mTLS must be enabled exactly when IP access is %q", IPAccessMTLSApp)
+	}
+	if c.SizeProfile.Name == "" {
+		return fmt.Errorf("a size profile is required")
+	}
+	if c.CH.Bundled() {
+		if c.CHShards < MinCHShards {
+			return fmt.Errorf("ClickHouse shards must be at least %d", MinCHShards)
+		}
+		if c.CHStorageGB < MinCHStorageGB {
+			return fmt.Errorf("ClickHouse storage must be at least %d GB per shard", MinCHStorageGB)
+		}
+	}
+	return nil
+}
+
+// checkFreshK8sOutput refuses to render over an existing install, whose
+// secrets a fresh render would silently replace.
+func checkFreshK8sOutput(dir string) error {
+	secrets := filepath.Join(dir, "bifract", "secrets.yaml")
+	if _, err := os.Stat(secrets); err == nil {
+		return fmt.Errorf("existing manifests found at %s (%s exists)\n  Use --upgrade-k8s or --reconfigure-k8s, or choose another output directory", dir, secrets)
+	}
+	return nil
+}
+
 // Dashboard executor defaults (mirror the server's getEnvInt fallbacks).
 const (
 	defaultDashboardTick       = 5
@@ -368,9 +403,22 @@ type k8sWizardModel struct {
 	chUserInput     textinput.Model
 	chPassInput     textinput.Model
 	chValidationErr string
+	// inputErr reports a rejected domain, shard count or storage size.
+	inputErr string
 
 	width  int
 	height int
+}
+
+// newK8sConfig is the starting point for a k8s install, before any answers.
+func newK8sConfig() *K8sConfig {
+	return &K8sConfig{
+		SetupConfig: SetupConfig{ImageTag: Version},
+		SizeProfile: sizeProfiles[0],
+		CHShards:    1,
+		CHStorageGB: 100,
+		OutputDir:   "./bifract-k8s",
+	}
 }
 
 func newK8sWizardModel() k8sWizardModel {
@@ -409,14 +457,8 @@ func newK8sWizardModel() k8sWizardModel {
 	outputDir.TextStyle = lipgloss.NewStyle().Foreground(White)
 
 	return k8sWizardModel{
-		step: k8sStepWelcome,
-		config: &K8sConfig{
-			SetupConfig: SetupConfig{ImageTag: Version},
-			SizeProfile: sizeProfiles[0],
-			CHShards:    1,
-			CHStorageGB: 100,
-			OutputDir:   "./bifract-k8s",
-		},
+		step:            k8sStepWelcome,
+		config:          newK8sConfig(),
 		domainInput:     domain,
 		allowedIPsInput: allowedIPs,
 		shardsInput:     shards,
@@ -543,10 +585,12 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 
 	case k8sStepDomain:
 		domain := strings.TrimSpace(m.domainInput.Value())
-		if domain == "" {
+		if err := ValidateDomain(domain); err != nil {
+			m.inputErr = err.Error()
 			return m, nil
 		}
-		m.config.Domain = domain
+		m.inputErr = ""
+		m.config.ApplyDomain(domain)
 		m.step = k8sStepSSL
 		return m, nil
 
@@ -624,17 +668,10 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case k8sStepClickHouseHost:
-		val := strings.TrimSpace(m.chHostInput.Value())
-		if val == "" {
-			m.chValidationErr = "A host is required."
+		host, port, err := ParseCHEndpoint(m.chHostInput.Value())
+		if err != nil {
+			m.chValidationErr = err.Error()
 			return m, nil
-		}
-		host, port := val, 0
-		if h, p, err := net.SplitHostPort(val); err == nil {
-			host = h
-			if n, convErr := strconv.Atoi(p); convErr == nil {
-				port = n
-			}
 		}
 		m.config.CH.Host = host
 		m.config.CH.Port = port
@@ -671,30 +708,24 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case k8sStepCHShards:
-		val := strings.TrimSpace(m.shardsInput.Value())
-		if val == "" {
-			val = "1"
+		n, err := ParseMinInt("Shards", m.shardsInput.Value(), MinCHShards)
+		if err != nil {
+			m.inputErr = err.Error()
+			return m, nil
 		}
-		n := 1
-		fmt.Sscanf(val, "%d", &n)
-		if n < 1 {
-			n = 1
-		}
+		m.inputErr = ""
 		m.config.CHShards = n
 		m.step = k8sStepCHStorage
 		m.storageInput.Focus()
 		return m, textinput.Blink
 
 	case k8sStepCHStorage:
-		val := strings.TrimSpace(m.storageInput.Value())
-		if val == "" {
-			val = "100"
+		n, err := ParseMinInt("Storage", m.storageInput.Value(), MinCHStorageGB)
+		if err != nil {
+			m.inputErr = err.Error()
+			return m, nil
 		}
-		n := 100
-		fmt.Sscanf(val, "%d", &n)
-		if n < 10 {
-			n = 10
-		}
+		m.inputErr = ""
 		m.config.CHStorageGB = n
 		m.step = k8sStepOutputDir
 		m.outputDirInput.Focus()
@@ -706,15 +737,31 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 			dir = "./bifract-k8s"
 		}
 		m.config.OutputDir = dir
+		if err := checkFreshK8sOutput(dir); err != nil {
+			m.inputErr = err.Error()
+			return m, nil
+		}
+		m.inputErr = ""
 		m.step = k8sStepConfirm
 		return m, nil
 
 	case k8sStepConfirm:
+		if err := m.config.Validate(); err != nil {
+			m.inputErr = err.Error()
+			return m, nil
+		}
 		m.step = k8sStepDone
 		return m, tea.Quit
 	}
 
 	return m, nil
+}
+
+func (m k8sWizardModel) renderInputErr() string {
+	if m.inputErr == "" {
+		return ""
+	}
+	return "\n\n" + ErrorStyle.Render("  "+m.inputErr)
 }
 
 func (m k8sWizardModel) renderProgress() string {
@@ -770,6 +817,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(LabelStyle.Render("  Domain"))
 		b.WriteString("\n")
 		b.WriteString("  " + m.domainInput.View())
+		b.WriteString(m.renderInputErr())
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
 
@@ -895,6 +943,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(LabelStyle.Render("  Shards"))
 		b.WriteString("\n")
 		b.WriteString("  " + m.shardsInput.View())
+		b.WriteString(m.renderInputErr())
 		b.WriteString("\n\n")
 		b.WriteString(DimStyle.Render("Shards distribute data horizontally. Each shard is a single replica; Iceberg handles durability. 1 is fine for most workloads."))
 		content = b.String()
@@ -907,6 +956,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(LabelStyle.Render("  Storage per shard (GB)"))
 		b.WriteString("\n")
 		b.WriteString("  " + m.storageInput.View())
+		b.WriteString(m.renderInputErr())
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
 
@@ -917,6 +967,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(LabelStyle.Render("  Directory"))
 		b.WriteString("\n")
 		b.WriteString("  " + m.outputDirInput.View())
+		b.WriteString(m.renderInputErr())
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
 
@@ -934,6 +985,7 @@ func (m k8sWizardModel) View() string {
 		b.WriteString(row("CH Shards:        ", fmt.Sprintf("%d", m.config.CHShards)))
 		b.WriteString(row("CH Storage:       ", fmt.Sprintf("%dGi per shard", m.config.CHStorageGB)))
 		b.WriteString(row("Output:           ", m.config.OutputDir))
+		b.WriteString(m.renderInputErr())
 		content = b.String()
 		hint = "Enter to generate  |  Esc to go back  |  q to quit"
 	}
@@ -962,25 +1014,52 @@ func (m k8sWizardModel) View() string {
 	return out.String()
 }
 
-// RunInstallK8s runs the Kubernetes installation wizard and generates manifests.
-func RunInstallK8s() error {
-	defer abandonStep() // clean up any in-progress spinner on an early error return
-	model := newK8sWizardModel()
-	p := tea.NewProgram(model)
-	finalModel, err := p.Run()
-	if err != nil {
-		return fmt.Errorf("wizard error: %w", err)
+// runK8sWizard collects a k8s install config interactively.
+func runK8sWizard() (*K8sConfig, error) {
+	if err := requireTerminal("--install-k8s"); err != nil {
+		return nil, err
 	}
-
+	finalModel, err := tea.NewProgram(newK8sWizardModel()).Run()
+	if err != nil {
+		return nil, fmt.Errorf("wizard error: %w", err)
+	}
 	final := finalModel.(k8sWizardModel)
 	if final.err != nil {
-		return final.err
+		return nil, final.err
 	}
 	if final.step != k8sStepDone {
-		return fmt.Errorf("wizard did not complete")
+		return nil, fmt.Errorf("wizard did not complete")
 	}
+	return final.config, nil
+}
 
-	cfg := final.config
+// RunInstallK8s generates manifests from the wizard, or from an install config
+// file when opts.ConfigPath is set.
+func RunInstallK8s(opts InstallOptions) error {
+	defer abandonStep() // clean up any in-progress spinner on an early error return
+
+	var cfg *K8sConfig
+	plan := installPlan{passwordOutput: AdminPasswordToStdout}
+	if opts.ConfigPath != "" {
+		f, err := LoadInstallFile(opts.ConfigPath)
+		if err != nil {
+			return err
+		}
+		if cfg, plan, err = f.K8sConfig(); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		if cfg, err = runK8sWizard(); err != nil {
+			return err
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := checkFreshK8sOutput(cfg.OutputDir); err != nil {
+		return err
+	}
 
 	// Generate secure credentials
 	PrintBanner()
@@ -992,6 +1071,9 @@ func RunInstallK8s() error {
 	printStep("Generating secure credentials...")
 	if err := cfg.GeneratePasswords(); err != nil {
 		return fmt.Errorf("generate passwords: %w", err)
+	}
+	if err := plan.applyAdminPassword(&cfg.SetupConfig); err != nil {
+		return fmt.Errorf("hash admin password: %w", err)
 	}
 	if cfg.MTLSEnabled {
 		caCert, caKey, err := GenerateClientCAPEM()
@@ -1020,6 +1102,12 @@ func RunInstallK8s() error {
 	}
 	printDone("Directories created")
 
+	// Deliver the admin password before writing manifests so a failure cannot lose it.
+	passwordLine, shown, err := plan.reportAdminPassword(cfg.OutputDir, cfg.AdminPassword)
+	if err != nil {
+		return err
+	}
+
 	// Generate manifests
 	printStep("Writing manifests...")
 	if err := writeK8sManifests(cfg); err != nil {
@@ -1039,6 +1127,13 @@ func RunInstallK8s() error {
 	}
 	printDone("Manifests written to " + cfg.OutputDir)
 
+	var answersPath string
+	if !plan.fromFile {
+		if answersPath, err = saveInstallFile(cfg.OutputDir, k8sInstallFile(cfg)); err != nil {
+			printWarn(fmt.Sprintf("Could not save install answers: %v", err))
+		}
+	}
+
 	// Final summary
 	fmt.Println()
 	fmt.Println(TitleStyle.Render("  Kubernetes Manifests Ready"))
@@ -1048,9 +1143,12 @@ func RunInstallK8s() error {
 		"%s  %s\n%s  %s\n%s  %s\n\n%s  %s",
 		PromptStyle.Render("Domain:   "), ValueStyle.Render(cfg.Domain),
 		PromptStyle.Render("Username: "), ValueStyle.Render("admin"),
-		PromptStyle.Render("Password: "), lipgloss.NewStyle().Foreground(White).Bold(true).Render(cfg.AdminPassword),
+		PromptStyle.Render("Password: "), renderPasswordLine(passwordLine, shown),
 		PromptStyle.Render("Manifests:"), DimStyle.Render(cfg.OutputDir),
 	)
+	if answersPath != "" {
+		summaryText += fmt.Sprintf("\n%s  %s", PromptStyle.Render("Answers:  "), DimStyle.Render(answersPath))
+	}
 
 	summary := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1059,7 +1157,9 @@ func RunInstallK8s() error {
 		Render(summaryText)
 	fmt.Println(summary)
 	fmt.Println()
-	fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
+	if shown {
+		fmt.Println(WarningStyle.Render("  Save the admin password above. It will not be shown again."))
+	}
 	if cfg.MTLSEnabled {
 		fmt.Println()
 		fmt.Println(WarningStyle.Render("  mTLS is enabled. CA files are in " + filepath.Join(cfg.OutputDir, "client-ca") + "/"))
