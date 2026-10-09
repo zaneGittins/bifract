@@ -1168,7 +1168,7 @@ const SettingsView = {
         DangerConfirm.open({
             title: 'Clear All Logs',
             body: [
-                'This permanently deletes every log in every fractal, along with their comments.',
+                'This permanently deletes every log in every fractal, along with their comments and everything derived from them, including endpoint analytics baselines.',
                 { text: 'Fractals, alerts, dashboards and settings remain.', muted: true },
             ],
             phrase: 'DELETE ALL LOGS',
