@@ -36,7 +36,7 @@ const (
 	bcryptCost        = 12
 	inviteTokenBytes  = 32 // 64 hex chars
 	inviteExpiry      = 7 * 24 * time.Hour
-	minPasswordLength = 12
+	minPasswordLength = setup.MinPasswordLength
 
 	// Login rate limiting
 	loginMaxFailures    = 5 // failures before blocking

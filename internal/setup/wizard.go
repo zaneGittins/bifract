@@ -2,8 +2,6 @@ package setup
 
 import (
 	"fmt"
-	"net"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -50,7 +48,6 @@ type WizardModel struct {
 	step   WizardStep
 	config *SetupConfig
 	prereq PrereqResult
-	err    error
 
 	// Input fields
 	installDirInput textinput.Model
@@ -76,6 +73,9 @@ type WizardModel struct {
 	ipAccessCursor  int
 	allowedIPsInput textinput.Model
 	ipValidationErr string
+
+	// inputErr reports a rejected domain, TLS setting or final config.
+	inputErr string
 
 	// Spinner for async ops
 	spinner spinner.Model
@@ -462,6 +462,7 @@ func (m WizardModel) viewDomain() string {
 	s.WriteString(LabelStyle.Render("  Domain"))
 	s.WriteString("\n")
 	s.WriteString("  " + m.domainInput.View())
+	s.WriteString(m.renderInputErr())
 	return s.String()
 }
 
@@ -489,6 +490,7 @@ func (m WizardModel) viewSSLEmail() string {
 	s.WriteString(LabelStyle.Render("  Email"))
 	s.WriteString("\n")
 	s.WriteString("  " + m.emailInput.View())
+	s.WriteString(m.renderInputErr())
 	return s.String()
 }
 
@@ -518,6 +520,7 @@ func (m WizardModel) viewSSLCert() string {
 	s.WriteString(keyLabel)
 	s.WriteString("\n")
 	s.WriteString("  " + m.keyPathInput.View())
+	s.WriteString(m.renderInputErr())
 	return s.String()
 }
 
@@ -540,7 +543,15 @@ func (m WizardModel) viewConfirm() string {
 	s.WriteString(row("Image:    ", m.config.ImageTag))
 	s.WriteString("\n")
 	s.WriteString(DimStyle.Render("  Press Enter to begin installation, q to quit."))
+	s.WriteString(m.renderInputErr())
 	return s.String()
+}
+
+func (m WizardModel) renderInputErr() string {
+	if m.inputErr == "" {
+		return ""
+	}
+	return "\n\n" + ErrorStyle.Render("  "+m.inputErr)
 }
 
 // --- Update handlers (unchanged logic) ---
@@ -582,15 +593,16 @@ func (m WizardModel) updateInstallDir(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m WizardModel) updateDomain(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
-		val := m.domainInput.Value()
+		val := strings.TrimSpace(m.domainInput.Value())
 		if val == "" {
 			val = "localhost"
 		}
-		m.config.Domain = val
-		if val != "localhost" {
-			m.config.SecureCookies = true
-			m.config.CORSOrigins = fmt.Sprintf("https://%s", val)
+		if err := ValidateDomain(val); err != nil {
+			m.inputErr = err.Error()
+			return m, nil
 		}
+		m.inputErr = ""
+		m.config.ApplyDomain(val)
 		m.step = StepSSL
 		return m, nil
 	}
@@ -634,7 +646,13 @@ func (m WizardModel) updateSSL(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m WizardModel) updateSSLEmail(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
-		m.config.SSLEmail = m.emailInput.Value()
+		email := strings.TrimSpace(m.emailInput.Value())
+		if err := ValidateEmail(email); err != nil {
+			m.inputErr = err.Error()
+			return m, nil
+		}
+		m.inputErr = ""
+		m.config.SSLEmail = email
 		m.step = StepIPAccess
 		return m, nil
 	}
@@ -662,8 +680,14 @@ func (m WizardModel) updateSSLCert(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			}
 			if m.keyPathInput.Focused() {
-				m.config.CertPath = m.certPathInput.Value()
-				m.config.KeyPath = m.keyPathInput.Value()
+				certPath := strings.TrimSpace(m.certPathInput.Value())
+				keyPath := strings.TrimSpace(m.keyPathInput.Value())
+				if err := ValidateCertPair(certPath, keyPath); err != nil {
+					m.inputErr = err.Error()
+					return m, nil
+				}
+				m.inputErr = ""
+				m.config.CertPath, m.config.KeyPath = certPath, keyPath
 				m.step = StepIPAccess
 				return m, nil
 			}
@@ -740,19 +764,11 @@ func (m WizardModel) updateIPAccess(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case 2:
 				m.config.IPAccess = IPAccessMTLSApp
 				m.config.AllowedIPs = nil
-				if err := m.config.GeneratePasswords(); err != nil {
-					m.err = err
-					return m, tea.Quit
-				}
 				m.step = StepConfirm
 				return m, nil
 			case 3:
 				m.config.IPAccess = IPAccessAll
 				m.config.AllowedIPs = nil
-				if err := m.config.GeneratePasswords(); err != nil {
-					m.err = err
-					return m, tea.Quit
-				}
 				m.step = StepConfirm
 				return m, nil
 			}
@@ -773,10 +789,6 @@ func (m WizardModel) updateAllowedIPs(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ipValidationErr = ""
-		if err := m.config.GeneratePasswords(); err != nil {
-			m.err = err
-			return m, tea.Quit
-		}
 		m.step = StepConfirm
 		return m, nil
 	}
@@ -787,6 +799,10 @@ func (m WizardModel) updateAllowedIPs(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m WizardModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
+		if err := m.config.Validate(); err != nil {
+			m.inputErr = err.Error()
+			return m, nil
+		}
 		m.step = StepDone
 		return m, tea.Quit
 	}
@@ -795,6 +811,9 @@ func (m WizardModel) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // RunWizard executes the interactive wizard and returns the completed config.
 func RunWizard(cfg *SetupConfig) (*SetupConfig, error) {
+	if err := requireTerminal("--install"); err != nil {
+		return nil, err
+	}
 	model := NewWizardModel(cfg)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	finalModel, err := p.Run()
@@ -803,9 +822,6 @@ func RunWizard(cfg *SetupConfig) (*SetupConfig, error) {
 	}
 
 	final := finalModel.(WizardModel)
-	if final.err != nil {
-		return nil, final.err
-	}
 	if final.step != StepDone {
 		return nil, fmt.Errorf("setup cancelled")
 	}
@@ -859,17 +875,10 @@ func (m WizardModel) updateClickHouse(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m WizardModel) updateClickHouseHost(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "enter" {
-		val := strings.TrimSpace(m.chHostInput.Value())
-		if val == "" {
-			m.chValidationErr = "A host is required."
+		host, port, err := ParseCHEndpoint(m.chHostInput.Value())
+		if err != nil {
+			m.chValidationErr = err.Error()
 			return m, nil
-		}
-		host, port := val, 0
-		if h, p, err := net.SplitHostPort(val); err == nil {
-			host = h
-			if n, convErr := strconv.Atoi(p); convErr == nil {
-				port = n
-			}
 		}
 		m.config.CH.Host = host
 		m.config.CH.Port = port

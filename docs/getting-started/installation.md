@@ -18,6 +18,8 @@ sudo bifract --upgrade
 
 This automatically checks for a newer version of `bifract` itself, downloads it if available, then runs the upgrade.
 
+To install without the wizard, for example from cloud-init or CI, see [Non-interactive Install](non-interactive.md).
+
 ## Architecture
 
 ```mermaid

@@ -67,7 +67,7 @@ func main() {
 	var backupMode, restoreMode, listBackupsMode, nonInteractive, genClientCertMode bool
 	var startMode, stopMode, statusMode bool
 	var resetLogsMode, resetLogsK8sMode bool
-	var restoreFile, certName, certPassword string
+	var restoreFile, certName, certPassword, configPath string
 	var ipAccess, allowedIPs, domain, sizeProfile string
 	var shards int
 	dir := "/opt/bifract"
@@ -175,6 +175,14 @@ func main() {
 				fmt.Fprintln(os.Stderr, "Error: --restore-file requires a path argument")
 				os.Exit(1)
 			}
+		case "--config":
+			if i+1 < len(args) {
+				i++
+				configPath = args[i]
+			} else {
+				fmt.Fprintln(os.Stderr, "Error: --config requires a path argument")
+				os.Exit(1)
+			}
 		case "--dir":
 			if i+1 < len(args) {
 				i++
@@ -263,6 +271,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: --restore requires --restore-file")
 		os.Exit(1)
 	}
+	if configPath != "" && !installMode && !installK8sMode {
+		fmt.Fprintln(os.Stderr, "Error: --config only applies to --install and --install-k8s")
+		os.Exit(1)
+	}
 	if genClientCertMode && (certName == "" || certPassword == "") {
 		fmt.Fprintln(os.Stderr, "Error: --gen-client-cert requires --name and --password")
 		os.Exit(1)
@@ -275,7 +287,7 @@ func main() {
 
 	// K8s install/upgrade and client cert generation do not require Docker
 	if installK8sMode {
-		if err := setup.RunInstallK8s(); err != nil {
+		if err := setup.RunInstallK8s(setup.InstallOptions{ConfigPath: configPath}); err != nil {
 			fmt.Fprintf(os.Stderr, "\n%s %v\n", setup.ErrorStyle.Render("Error:"), err)
 			os.Exit(1)
 		}
@@ -334,7 +346,7 @@ func main() {
 	var err error
 	switch {
 	case installMode:
-		err = setup.RunInstall()
+		err = setup.RunInstall(setup.InstallOptions{ConfigPath: configPath})
 	case upgradeMode:
 		err = setup.RunUpgrade(dir)
 	case backupMode:
@@ -387,6 +399,7 @@ func printUsage() {
 	fmt.Println("  --mcp              Serve Bifract to an MCP client over stdio (see --mcp --help)")
 	fmt.Println()
 	fmt.Println("Options:")
+	fmt.Println("  --config FILE      Install without prompts from a config file (with --install, --install-k8s)")
 	fmt.Println("  --dir PATH         Installation directory (default: /opt/bifract)")
 	fmt.Println("  --restore-file F   Backup file to restore from (required with --restore)")
 	fmt.Println("  --name NAME        Client certificate common name (required with --gen-client-cert)")
