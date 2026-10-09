@@ -2,13 +2,16 @@ name: Sysmon
 description: >-
   Maps Windows Sysmon events onto Bifract's normalized field contract, including
   bifract_category, which gates proc_lineage, proc_freq and process_edges and therefore
-  everything pgr() can traverse.
+  everything pgr() can traverse. Accepts flat native Sysmon fields and the nested
+  System/EventData shape Velociraptor ships, which flatten_leaf reduces to the same names.
 
-transforms: []
+transforms:
+  - flatten_leaf
 
 field_mappings:
-  # Common
-  - sources: [EventID]
+  # Common. Velociraptor nests the ID as System.EventID.Value, which flattens to Value,
+  # or to System_EventID_Value when another Value leaf collides with it.
+  - sources: [EventID, Value, System_EventID_Value]
     target: event_id
   - sources: [Computer]
     target: computer_name
@@ -117,3 +120,6 @@ value_mappings:
 timestamp_fields:
   - field: UtcTime
     format: "2006-01-02 15:04:05.000"
+  # Velociraptor's System.TimeCreated.SystemTime, when UtcTime is absent.
+  - field: SystemTime
+    format: unix
