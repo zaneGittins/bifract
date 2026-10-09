@@ -19070,7 +19070,7 @@
     "/api/v1/logs": {
       "delete": {
         "operationId": "delete_api_v1_logs",
-        "summary": "Delete all log data in the fractal.",
+        "summary": "Delete all log data, or one fractal's when fractal_id is set.",
         "description": "Requires instance-wide administration.",
         "tags": [
           "logs"

@@ -379,7 +379,7 @@ func (s *Storage) DeleteFractal(ctx context.Context, fractalID string) error {
 
 	// Drop all ClickHouse partitions for this fractal. If it fails the fractal
 	// is already gone from PostgreSQL so we log and move on.
-	if err := s.ch.DeleteLogsByFractalID(ctx, fractalID); err != nil {
+	if err := s.ch.DeleteLogsByFractalID(ctx, fractalID, false); err != nil {
 		fmt.Printf("Warning: failed to delete ClickHouse data for fractal %s: %v\n", fractalID, err)
 	}
 

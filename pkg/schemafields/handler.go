@@ -279,7 +279,13 @@ func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
 	}
 	all := append(append([]SchemaField{}, ProjectDefaultFields...), custom...)
 
-	if err := h.ch.TruncateAndReschema(r.Context(), ToSpecs(all)); err != nil {
+	modelIDs, err := h.manager.pg.ModelIDs(r.Context())
+	if err != nil {
+		log.Printf("[SchemaFields] list analytics models before reset: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to list analytics models")
+		return
+	}
+	if err := h.ch.TruncateAndReschema(r.Context(), ToSpecs(all), modelIDs); err != nil {
 		log.Printf("[SchemaFields] reset: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Schema reset failed: "+err.Error())
 		return
@@ -295,11 +301,11 @@ func (h *Handler) HandleReset(w http.ResponseWriter, r *http.Request) {
 
 	h.notifyFieldChange(custom)
 
-	// Every measurement described data that no longer exists. Clearing them
-	// keeps deleted fields from lingering on the tab until the next sweep, and
-	// the sweep is asked to run so the page refills rather than staying blank.
-	if err := clearStats(r.Context(), h.manager.pg); err != nil {
-		log.Printf("[SchemaFields] clear stats after reset: %v", err)
+	// Every measurement, cursor and count described data that no longer exists.
+	// Clearing them keeps deleted fields from lingering on the tab until the next
+	// sweep, and the sweep is asked to run so the page refills rather than staying blank.
+	if err := h.manager.pg.ClearLogDataState(r.Context(), false); err != nil {
+		log.Printf("[SchemaFields] clear log data state after reset: %v", err)
 	}
 	if h.sweeper != nil {
 		h.sweeper.Refresh()

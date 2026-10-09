@@ -3745,7 +3745,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				},
 				Access:   api.AccessTenantAdmin,
 				Response: map[string]interface{}{},
-				Summary:  "Delete all log data in the fractal.",
+				Summary:  "Delete all log data, or one fractal's when fractal_id is set.",
 				Handler:  d.statusHandler.HandleClearLogs,
 			})
 

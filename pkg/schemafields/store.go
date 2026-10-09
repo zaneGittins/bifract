@@ -89,18 +89,6 @@ func saveStats(ctx context.Context, pg *storage.PostgresClient, results []fracta
 	return tx.Commit()
 }
 
-// clearStats discards every measurement, for the one case where they describe
-// data that no longer exists: a schema reset truncates the logs table.
-func clearStats(ctx context.Context, pg *storage.PostgresClient) error {
-	if _, err := pg.Exec(ctx, `DELETE FROM schema_field_stats`); err != nil {
-		return fmt.Errorf("clear field stats: %w", err)
-	}
-	if _, err := pg.Exec(ctx, `DELETE FROM schema_fractal_stats`); err != nil {
-		return fmt.Errorf("clear fractal stats: %w", err)
-	}
-	return nil
-}
-
 // aggregateStats is the cross-fractal view the schema tab renders. The schema is
 // table-wide, so the tab is too; the per-fractal rows exist because sampling has
 // to be stratified to be accurate, not because the configuration is per fractal.

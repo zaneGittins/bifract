@@ -872,25 +872,44 @@ func (c *PostgresClient) DeleteCommentsByLogIDs(ctx context.Context, logIDs []st
 	return nil
 }
 
-// DeleteAllComments deletes all comments (used when clearing all logs)
-func (c *PostgresClient) DeleteAllComments(ctx context.Context) error {
-	result, err := c.db.ExecContext(ctx, "DELETE FROM comments")
-
+// ClearLogDataState runs ClearedLogDataPostgresStatements in one transaction once
+// ClickHouse log data is gone. withComments also deletes every comment, which only
+// annotate logs that no longer exist.
+func (c *PostgresClient) ClearLogDataState(ctx context.Context, withComments bool) error {
+	stmts := ClearedLogDataPostgresStatements()
+	if withComments {
+		stmts = append(stmts, "DELETE FROM comments")
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to delete all comments: %w", err)
+		return err
 	}
+	defer tx.Rollback()
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return tx.Commit()
+}
 
-	rowsAffected, err := result.RowsAffected()
+// ModelIDs lists the analytics model ids, for expanding into the ClickHouse objects
+// each model owns.
+func (c *PostgresClient) ModelIDs(ctx context.Context) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx, ModelIDsQuery)
 	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
+		return nil, err
 	}
-
-	// Log the number of comments deleted
-	if rowsAffected > 0 {
-		fmt.Printf("Deleted %d comments during log cleanup\n", rowsAffected)
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
 	}
-
-	return nil
+	return ids, rows.Err()
 }
 
 // DeleteCommentsByFractalID deletes all comments for a specific fractal
