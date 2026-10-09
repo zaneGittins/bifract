@@ -20,6 +20,7 @@ const (
 	FormatJSONArray
 	FormatJSONObject
 	FormatCSV
+	FormatParquet
 	FormatUnknown
 )
 
@@ -33,6 +34,8 @@ func (f FileFormat) String() string {
 		return "JSON object"
 	case FormatCSV:
 		return "CSV"
+	case FormatParquet:
+		return "Parquet"
 	default:
 		return "unknown"
 	}
@@ -44,6 +47,9 @@ func DetectFormat(path string) (FileFormat, error) {
 	if ext == ".csv" || ext == ".tsv" {
 		return FormatCSV, nil
 	}
+	if ext == ".parquet" {
+		return FormatParquet, nil
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -52,6 +58,10 @@ func DetectFormat(path string) (FileFormat, error) {
 	defer f.Close()
 
 	reader := bufio.NewReader(f)
+
+	if magic, _ := reader.Peek(4); string(magic) == "PAR1" {
+		return FormatParquet, nil
+	}
 
 	// Skip whitespace/newlines to find first content byte
 	for {
@@ -101,6 +111,8 @@ func CountLogs(path string) (int64, error) {
 		return 1, nil
 	case FormatCSV:
 		return countCSVRows(path)
+	case FormatParquet:
+		return countParquetRows(path)
 	default:
 		return countLines(path)
 	}
@@ -218,6 +230,8 @@ func ReadFile(path string, batchSize, limit int, batchCh chan<- Batch, stats *St
 		return readJSONObject(path, batchCh, stats)
 	case FormatCSV:
 		return readCSV(path, batchSize, limit, batchCh, stats)
+	case FormatParquet:
+		return readParquet(path, batchSize, limit, batchCh, stats)
 	default:
 		return fmt.Errorf("unsupported format")
 	}

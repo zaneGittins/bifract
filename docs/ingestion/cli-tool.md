@@ -34,6 +34,19 @@ bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
 - NDJSON (newline-delimited JSON)
 - CSV
 - TSV
+- Parquet (detected by `.parquet` extension or file header)
+
+Parquet rows are sent as JSON objects, so normalizers and timestamp detection apply as usual. Nested structs, lists and maps become nested JSON. Values are converted so nothing is lost on the way in:
+
+| Parquet type | Sent as |
+|------|---------|
+| `TIMESTAMP`, `INT96` | RFC 3339 string in UTC |
+| `DATE`, `TIME` | `2006-01-02`, `15:04:05.999999999` |
+| `DECIMAL` | Exact decimal string |
+| Integers beyond ±2^53 | Decimal string (JSON numbers lose precision there) |
+| `UUID` | Canonical UUID string |
+| Binary that is not valid UTF-8 | Hex string |
+| `NaN`, `±Inf` | `"NaN"`, `"+Inf"`, `"-Inf"` |
 
 ## Options
 

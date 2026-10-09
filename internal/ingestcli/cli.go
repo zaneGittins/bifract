@@ -143,7 +143,7 @@ func RunIngest(args []string) error {
 					return nil
 				}
 				ext := strings.ToLower(filepath.Ext(path))
-				if ext == ".json" || ext == ".ndjson" || ext == ".csv" || ext == ".tsv" || ext == ".jsonl" {
+				if ext == ".json" || ext == ".ndjson" || ext == ".csv" || ext == ".tsv" || ext == ".jsonl" || ext == ".parquet" {
 					validFiles = append(validFiles, path)
 				}
 				return nil
@@ -208,12 +208,13 @@ func PrintIngestUsage() {
   concurrency at runtime based on server feedback.
 
 %s
-  JSON array, NDJSON, single JSON object, CSV, TSV
+  JSON array, NDJSON, single JSON object, CSV, TSV, Parquet
 
 %s
   bifract --ingest logs.json --token bifract_ingest_abc123
   bifract --ingest *.json --token bifract_ingest_abc123
   bifract --ingest access.csv --token bifract_ingest_abc123 --workers 8 --batch-size 2000
+  bifract --ingest export.parquet --token bifract_ingest_abc123
   bifract --ingest -r "*.json" --token bifract_ingest_abc123
   bifract --ingest logs.json --token bifract_ingest_abc123 --url https://bifract.local --insecure
 `,
