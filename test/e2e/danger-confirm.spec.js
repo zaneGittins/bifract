@@ -1,7 +1,7 @@
 // The shared destructive-action dialog. Every request it would send is intercepted,
 // so nothing on the stack is actually cleared.
 const { test, expect } = require('@playwright/test');
-const { login, openNav } = require('./fixtures');
+const { login, openNav, openFractal, listFractals } = require('./fixtures');
 
 async function openDangerZone(page) {
   await login(page);
@@ -74,4 +74,24 @@ test('a reversible action confirms without a phrase', async ({ page }) => {
 
   await d.locator('.danger-confirm-cancel').click();
   await expect(d).toBeHidden();
+});
+
+test('a fractal dialog refuses to act once the selected fractal changes', async ({ page }) => {
+  const fractals = await listFractals(page);
+  test.skip(fractals.length < 2, 'needs two fractals');
+  const [a, b] = fractals;
+  let calls = 0;
+  await page.route('**/api/v1/logs?*', route => { calls++; return route.abort(); });
+
+  await openFractal(page, 'manage', a.name);
+  await page.locator('.alerts-sub-tab[data-subtab="danger"][onclick*="switchSubTab"]').click();
+  await page.locator('#manageClearFractalLogsBtn').click();
+
+  const d = dialog(page);
+  await d.locator('#dangerConfirmInput').fill(a.name);
+  await page.evaluate(f => window.FractalContext.setCurrentFractal(f), b);
+  await d.locator('.danger-confirm-ok').click();
+
+  await expect(d.locator('.danger-confirm-error')).toContainText('selected fractal changed');
+  expect(calls).toBe(0);
 });
