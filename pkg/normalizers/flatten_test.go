@@ -268,23 +268,62 @@ func TestFlattenLeaf_ArrayOfObjectsExpanded(t *testing.T) {
 	}
 }
 
-// A multi-element array must never lose data. Leaf naming across elements is
-// order-dependent (the same intra-expansion collision rule objects follow), so
-// this asserts every value survives rather than a specific key layout.
-func TestFlattenLeaf_MultiElementArrayLossless(t *testing.T) {
+// Sibling elements repeat the same leaf, so every element falls back to its
+// indexed path.
+func TestFlattenLeaf_MultiElementArrayIndexed(t *testing.T) {
 	fields := map[string]string{
 		"c": `{"list":[{"ip":"1.1.1.1"},{"ip":"2.2.2.2"}]}`,
 	}
 	nested := map[string]bool{"c": true}
 	result := FlattenFields(fields, FlattenLeaf, nested)
 
-	values := make(map[string]bool)
-	for _, v := range result {
-		values[v] = true
+	if result["c_list_0_ip"] != "1.1.1.1" || result["c_list_1_ip"] != "2.2.2.2" {
+		t.Errorf("expected indexed paths for repeated leaf, got %v", result)
 	}
-	for _, want := range []string{"1.1.1.1", "2.2.2.2"} {
-		if !values[want] {
-			t.Errorf("value %q lost during multi-element expansion: %v", want, result)
+	if _, exists := result["ip"]; exists {
+		t.Errorf("colliding leaf must not keep the bare name, got %v", result)
+	}
+}
+
+// Regression: two leaves with the same name inside one object used to resolve
+// first-come, so which one kept the bare name depended on map iteration order.
+func TestFlattenLeaf_IntraObjectCollisionDeterministic(t *testing.T) {
+	fields := map[string]string{
+		"System": `{"EventID":{"Value":1},"Other":{"Value":99}}`,
+	}
+	nested := map[string]bool{"System": true}
+	for i := 0; i < 50; i++ {
+		result := FlattenFields(fields, FlattenLeaf, nested)
+		if result["System_EventID_Value"] != "1" || result["System_Other_Value"] != "99" {
+			t.Fatalf("expected both colliding leaves on full paths, got %v", result)
+		}
+		if _, exists := result["Value"]; exists {
+			t.Fatalf("colliding leaf must not keep the bare name, got %v", result)
+		}
+	}
+}
+
+// Regression: ProcessID and ProcessId only collide after snake_case, which used
+// to run after collision detection, so one silently overwrote the other at random.
+func TestFlattenLeaf_CollisionAfterRenameTransforms(t *testing.T) {
+	norm := (&Normalizer{
+		Transforms: []Transform{TransformFlattenLeaf, TransformSnakeCase, TransformLowercase},
+	}).Compile()
+	fields := map[string]string{
+		"System":    `{"Execution":{"ProcessID":1152},"Task":1}`,
+		"EventData": `{"ProcessId":6964,"Image":"a.exe"}`,
+	}
+	nested := map[string]bool{"System": true, "EventData": true}
+	for i := 0; i < 50; i++ {
+		result := norm.ApplyTransformsWithNested(fields, nested)
+		if result["system_execution_process_id"] != "1152" || result["event_data_process_id"] != "6964" {
+			t.Fatalf("expected both process ids on full paths, got %v", result)
+		}
+		if _, exists := result["process_id"]; exists {
+			t.Fatalf("colliding leaf must not keep the bare name, got %v", result)
+		}
+		if result["image"] != "a.exe" || result["task"] != "1" {
+			t.Fatalf("non-colliding leaves must keep leaf names, got %v", result)
 		}
 	}
 }

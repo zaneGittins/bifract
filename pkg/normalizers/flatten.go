@@ -44,31 +44,36 @@ func arrayOfObjects(arr []interface{}) bool {
 // Dots in all output keys are replaced with underscores to prevent ClickHouse's
 // JSON column from re-nesting dot-separated keys.
 //
-//   - FlattenLeaf: uses only the leaf key name. On collision, falls back to the
-//     full underscore-joined path.
+//   - FlattenLeaf: uses only the leaf key name. Every leaf whose name collides
+//     with another uses its full underscore-joined path instead.
 //   - FlattenFull: uses the parent key + "_" + child key (underscore-joined).
 func FlattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool) map[string]string {
+	return flattenFields(fields, mode, nestedKeys, nil)
+}
+
+// leaf is one scalar produced by flattening, with its leaf-mode name and full path.
+type leaf struct {
+	name, path, value string
+}
+
+// flattenFields is FlattenFields with rename applied to every output key. Leaf
+// collisions are judged on renamed keys, so names that only differ before the
+// rename (ProcessID vs ProcessId under snake_case) both fall back to full paths
+// rather than one overwriting the other at random.
+func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool, rename func(string) string) map[string]string {
 	if mode == FlattenNone {
 		return fields
 	}
+	if rename == nil {
+		rename = func(s string) string { return s }
+	}
 
-	out := make(map[string]string, len(fields))
+	leaves := make([]leaf, 0, len(fields))
 	truncated := false
 	truncReason := ""
 
-	// First pass: expand JSON-object values and collect leaf keys for collision detection.
-	// Track all leaf keys and their source paths for leaf-mode collision resolution.
-	type leafSource struct {
-		key      string // output key (leaf or full path)
-		fullPath string // full underscore-joined path
-		value    string
-	}
-	var allLeaves []leafSource
-	// Count how many distinct sources produce each leaf key (for collision detection).
-	leafCount := make(map[string]int)
-
 	for key, val := range fields {
-		if len(out) >= MaxFlattenFields {
+		if len(leaves) >= MaxFlattenFields {
 			truncated = true
 			truncReason = "max_fields"
 			break
@@ -88,88 +93,45 @@ func FlattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 		if isNested && len(val) > 1 && val[0] == '{' {
 			var obj map[string]interface{}
 			if err := json.Unmarshal([]byte(val), &obj); err == nil {
-				expanded := make(map[string]string)
-				flattenObject(obj, safeKey, expanded, mode, 0, &truncated, &truncReason)
-				for ek, ev := range expanded {
-					if len(out) >= MaxFlattenFields {
-						truncated = true
-						truncReason = "max_fields"
-						break
-					}
-					out[ek] = ev
-					if mode == FlattenLeaf {
-						allLeaves = append(allLeaves, leafSource{key: ek, fullPath: ek, value: ev})
-						leafCount[ek]++
-					}
-				}
+				flattenObject(obj, safeKey, &leaves, 0, &truncated, &truncReason)
 				continue
 			}
 		}
 
-		out[safeKey] = val
-		if mode == FlattenLeaf {
-			allLeaves = append(allLeaves, leafSource{key: safeKey, fullPath: safeKey, value: val})
-			leafCount[safeKey]++
-		}
+		leaves = append(leaves, leaf{name: safeKey, path: safeKey, value: val})
 	}
 
-	// Leaf mode: if any output key appears more than once, re-expand colliding keys
-	// using full paths instead.
-	if mode == FlattenLeaf {
-		hasCollisions := false
-		for _, count := range leafCount {
-			if count > 1 {
-				hasCollisions = true
-				break
-			}
+	out := make(map[string]string, len(leaves)+2)
+	if mode == FlattenFull {
+		for _, l := range leaves {
+			out[rename(l.path)] = l.value
 		}
-
-		if hasCollisions {
-			colliding := make(map[string]bool)
-			for k, count := range leafCount {
-				if count > 1 {
-					colliding[k] = true
-				}
+	} else {
+		names := make([]string, len(leaves))
+		counts := make(map[string]int, len(leaves))
+		for i, l := range leaves {
+			names[i] = rename(l.name)
+			counts[names[i]]++
+		}
+		for i, l := range leaves {
+			if counts[names[i]] > 1 {
+				names[i] = rename(l.path)
 			}
-
-			// Re-expand from scratch with collision awareness.
-			rebuilt := make(map[string]string, len(fields))
-			for key, val := range fields {
-				safeKey := strings.ReplaceAll(key, ".", "_")
-
-				shouldExpand := false
-				if nestedKeys != nil {
-					shouldExpand = nestedKeys[key]
-				} else {
-					shouldExpand = len(val) > 1 && val[0] == '{'
-				}
-
-				if shouldExpand && len(val) > 1 && val[0] == '{' {
-					var obj map[string]interface{}
-					if err := json.Unmarshal([]byte(val), &obj); err == nil {
-						flattenObjectWithCollisions(obj, safeKey, rebuilt, colliding, 0)
-						continue
-					}
-				}
-
-				// Non-expandable key: use safeKey (with dots replaced).
-				rebuilt[safeKey] = val
-			}
-			out = rebuilt
+			out[names[i]] = l.value
 		}
 	}
 
 	if truncated {
-		out["_bifract_truncated"] = "true"
-		out["_bifract_truncation_reason"] = truncReason
+		out[rename("_bifract_truncated")] = "true"
+		out[rename("_bifract_truncation_reason")] = truncReason
 	}
 
 	return out
 }
 
-// flattenObject recursively walks a parsed JSON object and writes leaf values
-// into the expanded map.
-func flattenObject(obj map[string]interface{}, prefix string, expanded map[string]string, mode FlattenMode, depth int, truncated *bool, truncReason *string) {
+// flattenObject recursively walks a parsed JSON object and appends its scalar
+// leaves.
+func flattenObject(obj map[string]interface{}, prefix string, leaves *[]leaf, depth int, truncated *bool, truncReason *string) {
 	if depth >= MaxFlattenDepth {
 		*truncated = true
 		*truncReason = "max_depth"
@@ -177,7 +139,7 @@ func flattenObject(obj map[string]interface{}, prefix string, expanded map[strin
 	}
 
 	for key, value := range obj {
-		if len(expanded) >= MaxFlattenFields {
+		if len(*leaves) >= MaxFlattenFields {
 			*truncated = true
 			*truncReason = "max_fields"
 			return
@@ -191,68 +153,20 @@ func flattenObject(obj map[string]interface{}, prefix string, expanded map[strin
 		}
 
 		if v, ok := value.(map[string]interface{}); ok {
-			flattenObject(v, fullPath, expanded, mode, depth+1, truncated, truncReason)
+			flattenObject(v, fullPath, leaves, depth+1, truncated, truncReason)
 			continue
 		}
 		// Expand arrays of objects element-wise so nested record fields become leaf
-		// keys; the element index sits in the prefix and surfaces only on leaf
+		// keys; the element index sits in the path and surfaces only on leaf
 		// collision. Other arrays fall through to scalar (whole-value) handling.
 		if arr, ok := value.([]interface{}); ok && len(arr) <= MaxArrayExpand && arrayOfObjects(arr) {
 			for i, el := range arr {
-				flattenObject(el.(map[string]interface{}), fullPath+"_"+strconv.Itoa(i), expanded, mode, depth+1, truncated, truncReason)
+				flattenObject(el.(map[string]interface{}), fullPath+"_"+strconv.Itoa(i), leaves, depth+1, truncated, truncReason)
 			}
 			continue
 		}
 
-		outKey := fullPath
-		if mode == FlattenLeaf {
-			outKey = safeKey
-		}
-		// On leaf collision within a single object expansion, fall back to full path.
-		if _, exists := expanded[outKey]; exists && mode == FlattenLeaf {
-			outKey = fullPath
-		}
-		expanded[outKey] = stringifyValue(value)
-	}
-}
-
-// flattenObjectWithCollisions expands using leaf keys but falls back to full
-// path for any key in the colliding set. Respects MaxFlattenDepth.
-func flattenObjectWithCollisions(obj map[string]interface{}, prefix string, out map[string]string, colliding map[string]bool, depth int) {
-	if depth >= MaxFlattenDepth {
-		return
-	}
-	for key, value := range obj {
-		safeKey := strings.ReplaceAll(key, ".", "_")
-		fullPath := safeKey
-		if prefix != "" {
-			fullPath = prefix + "_" + safeKey
-		}
-		if v, ok := value.(map[string]interface{}); ok {
-			flattenObjectWithCollisions(v, fullPath, out, colliding, depth+1)
-			continue
-		}
-		// Mirror flattenObject's array handling so the collision re-expansion
-		// produces the same leaf keys the first pass counted.
-		if arr, ok := value.([]interface{}); ok && len(arr) <= MaxArrayExpand && arrayOfObjects(arr) {
-			for i, el := range arr {
-				flattenObjectWithCollisions(el.(map[string]interface{}), fullPath+"_"+strconv.Itoa(i), out, colliding, depth+1)
-			}
-			continue
-		}
-		outKey := safeKey
-		if colliding[safeKey] {
-			outKey = fullPath
-		}
-		// Disambiguate intra-expansion duplicates too (repeated leaf keys across
-		// array elements or sibling objects under one top-level key). The first
-		// pass dedups these via expanded-map existence; without the same check
-		// here, a second occurrence would overwrite the first and lose data. The
-		// index/path in fullPath makes the fallback unique.
-		if _, exists := out[outKey]; exists {
-			outKey = fullPath
-		}
-		out[outKey] = stringifyValue(value)
+		*leaves = append(*leaves, leaf{name: safeKey, path: fullPath, value: stringifyValue(value)})
 	}
 }
 
