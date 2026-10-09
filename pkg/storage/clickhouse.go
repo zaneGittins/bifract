@@ -1466,49 +1466,53 @@ func (c *ClickHouseClient) ExecArgs(ctx context.Context, query string, args ...i
 	return nil
 }
 
-// DeleteLogsByFractalID drops all partitions belonging to a fractal. With
-// PARTITION BY (fractal_id, toDate(ingest_timestamp)) each partition holds one
-// fractal's data for one ingest day, and only the fractal half is matched here, so
-// the date axis does not matter. DROP PARTITION is an instant metadata operation:
-// no lightweight delete mutation or OPTIMIZE TABLE needed, no matter how much
-// data the fractal holds. Replication happens via ZooKeeper automatically on
-// ReplicatedMergeTree, so ON CLUSTER is not used.
+// fractalPartitionedTables are partitioned by (fractal_id, ingest day), so a fractal's
+// rows leave with its partitions.
+var fractalPartitionedTables = []string{"logs", "logs_raw"}
+
+// DeleteLogsByFractalID drops every partition belonging to a fractal on every shard.
+// Each partition holds one fractal's data for one ingest day, so only the fractal half
+// is matched. DROP PARTITION is a metadata operation that runs no mutation, whatever
+// the fractal holds. Each shard is listed separately because the load-balanced
+// connection only sees one node's partitions.
 func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID string) error {
-	rows, err := c.conn.Query(ctx,
-		"SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active = 1",
-	)
-	if err != nil {
-		return fmt.Errorf("failed to list partitions for fractal %s: %w", fractalID, err)
-	}
-
-	// Partition strings look like ('my-fractal','2024-01-15'). Match the prefix,
-	// escaping single quotes to match ClickHouse's canonical representation.
-	escapedID := escCHLiteral(fractalID)
-	prefix := fmt.Sprintf("('%s','", escapedID)
-
-	var partitions []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
+	// Canonical partition form is ('fractal-id','2024-01-15').
+	prefix := fmt.Sprintf("('%s','", escCHLiteral(fractalID))
+	dropped := 0
+	err := c.onEveryShard(ctx, "drop fractal partitions", func(conn driver.Conn) error {
+		for _, table := range fractalPartitionedTables {
+			rows, err := conn.Query(ctx,
+				"SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() AND table = ? AND active AND startsWith(partition, ?)",
+				table, prefix)
+			if err != nil {
+				return fmt.Errorf("list %s partitions: %w", table, err)
+			}
+			var partitions []string
+			for rows.Next() {
+				var p string
+				if err := rows.Scan(&p); err != nil {
+					rows.Close()
+					return fmt.Errorf("scan %s partition: %w", table, err)
+				}
+				partitions = append(partitions, p)
+			}
 			rows.Close()
-			return fmt.Errorf("failed to scan partition: %w", err)
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("list %s partitions: %w", table, err)
+			}
+			for _, p := range partitions {
+				if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(table)+" DROP PARTITION "+p); err != nil {
+					return fmt.Errorf("drop %s partition %s: %w", table, p, err)
+				}
+				dropped++
+			}
 		}
-		if strings.HasPrefix(p, prefix) {
-			partitions = append(partitions, p)
-		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("delete logs for fractal %s: %w", fractalID, err)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("partition query error for fractal %s: %w", fractalID, err)
-	}
-
-	for _, partition := range partitions {
-		if err := c.conn.Exec(ctx, "ALTER TABLE logs DROP PARTITION "+partition); err != nil {
-			return fmt.Errorf("failed to drop partition %s for fractal %s: %w", partition, fractalID, err)
-		}
-	}
-
-	log.Printf("Dropped %d partitions for fractal %s", len(partitions), fractalID)
+	log.Printf("Dropped %d partitions for fractal %s", dropped, fractalID)
 
 	// The rollup is fed by a materialized view on insert, so it outlives the
 	// partitions unless pruned here.
@@ -3008,13 +3012,19 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 // serializes DDL through Keeper's global queue, which a slow schema mutation can
 // clog. Returns the first error while still attempting every remaining shard.
 func (c *ClickHouseClient) execOnEveryShard(ctx context.Context, stmt, what string) error {
+	return c.onEveryShard(ctx, what, func(conn driver.Conn) error { return conn.Exec(ctx, stmt) })
+}
+
+// onEveryShard runs fn against every shard with one connection per node, for work that
+// must see each shard's local state (its own partitions) rather than the load-balanced
+// view. Returns the first error while still attempting every remaining shard.
+func (c *ClickHouseClient) onEveryShard(ctx context.Context, what string, fn func(conn driver.Conn) error) error {
 	if !c.topo.PerNodeAdmin {
-		return c.conn.Exec(ctx, stmt)
+		return fn(c.conn)
 	}
-	pool := adminNodePool
 	var firstErr error
 	for _, addr := range c.addrs {
-		conn, err := openClickHouseConn(c.nodeConnOptions(addr, pool))
+		conn, err := openClickHouseConn(c.nodeConnOptions(addr, adminNodePool))
 		if err != nil {
 			log.Printf("[ClickHouse] connect to %s for %s: %v", addr, what, err)
 			if firstErr == nil {
@@ -3022,7 +3032,7 @@ func (c *ClickHouseClient) execOnEveryShard(ctx context.Context, stmt, what stri
 			}
 			continue
 		}
-		if err := conn.Exec(ctx, stmt); err != nil {
+		if err := fn(conn); err != nil {
 			log.Printf("[ClickHouse] %s on %s: %v", what, addr, err)
 			if firstErr == nil {
 				firstErr = err
