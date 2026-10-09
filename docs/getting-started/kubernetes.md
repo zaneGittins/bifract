@@ -106,6 +106,8 @@ The resource profile sets CPU and memory requests/limits for all components base
 
 This generates a complete set of Kustomize manifests with secure credentials in the output directory. Save the admin password displayed at the end.
 
+To generate manifests from a config file instead of the wizard, see [Non-interactive Install](non-interactive.md).
+
 ## Step 3: Deploy
 
 ```bash
