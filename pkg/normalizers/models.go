@@ -106,7 +106,6 @@ type CompiledNormalizer struct {
 	Transforms      []Transform
 	FieldMappingMap map[string]string // source -> target for O(1) lookup
 	ValueMappings   []CompiledValueMapping
-	Flatten         FlattenMode
 	TimestampFields []TimestampField
 }
 
@@ -127,11 +126,6 @@ func (n *Normalizer) Compile() *CompiledNormalizer {
 		Transforms:      n.Transforms,
 		FieldMappingMap: make(map[string]string, len(n.FieldMappings)*4),
 		TimestampFields: n.TimestampFields,
-	}
-	for _, t := range n.Transforms {
-		if m := flattenMode(t); m != FlattenNone {
-			c.Flatten = m
-		}
 	}
 	for _, fm := range n.FieldMappings {
 		for _, src := range fm.Sources {
