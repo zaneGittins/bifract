@@ -9,7 +9,6 @@ const SettingsView = {
         const addUserBtn = document.getElementById('addUserBtnSettings');
         const createUserBtn = document.getElementById('createUserBtnSettings');
         const cancelBtn = document.getElementById('cancelAddUserBtnSettings');
-        const clearLogsBtn = document.getElementById('clearLogsBtnSettings');
 
         if (addUserBtn) {
             addUserBtn.addEventListener('click', () => this.showAddUserForm());
@@ -29,10 +28,6 @@ const SettingsView = {
 
         if (cancelBtn) {
             cancelBtn.addEventListener('click', () => this.hideAddUserForm());
-        }
-
-        if (clearLogsBtn) {
-            clearLogsBtn.addEventListener('click', () => this.clearLogs());
         }
 
         // Set up system limits dropdowns
@@ -1164,23 +1159,6 @@ const SettingsView = {
         }
     },
 
-    clearLogs() {
-        DangerConfirm.open({
-            title: 'Clear All Logs',
-            body: [
-                'This permanently deletes every log in every fractal, along with their comments and everything derived from them, including endpoint analytics baselines.',
-                { text: 'Fractals, alerts, dashboards and settings remain.', muted: true },
-            ],
-            phrase: 'DELETE ALL LOGS',
-            confirmLabel: 'Delete All Logs',
-            busyLabel: 'Deleting...',
-            onConfirm: async () => {
-                const data = await HttpUtils.safeFetch('/api/v1/logs', { method: 'DELETE' });
-                if (data && data.success === false) throw new Error(data.error || 'Failed to clear logs');
-                if (window.Toast) Toast.success('Logs Cleared', 'All logs and their comments were deleted.');
-            },
-        });
-    },
 
 };
 

@@ -797,12 +797,6 @@
     flex-wrap: wrap;
 }
 
-/* Reset modal confirm input */
-#schemaResetConfirmInput.phrase-match {
-    border-color: var(--error, #f87171);
-    box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.15);
-}
-
 @media (prefers-reduced-motion: reduce) {
     .schema-cap-bar i,
     .schema-drawer,

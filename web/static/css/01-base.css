@@ -369,7 +369,6 @@ body {
     }
 }
 
-
 .modal-header h2 {
     font-weight: 500;
     margin: 0;
@@ -402,27 +401,6 @@ body {
     overflow-y: auto;
 }
 
-.status-section {
-    margin-bottom: 1.5rem;
-    padding-bottom: 1.5rem;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.status-section:last-child {
-    border-bottom: none;
-    margin-bottom: 0;
-    padding-bottom: 0;
-}
-
-.status-section h3 {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 1rem;
-}
-
 .status-row {
     display: flex;
     justify-content: space-between;
@@ -431,36 +409,9 @@ body {
     font-size: 0.8125rem;
 }
 
-.status-grid {
-    flex-direction: column;
-    margin-bottom: 1.5rem;
-}
-
-.status-item {
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.875rem 1.25rem;
-    background: var(--bg-sunken);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    transition: all 0.2s ease;
-}
-
-.status-item:hover {
-    border-color: var(--accent-primary);
-    background: rgba(59, 130, 246, 0.05);
-}
-
 .status-label {
     font-weight: 500;
 }
-
-.status-value {
-    font-family: var(--font-mono);
-}
-
-
-
 
 .warning-text {
     color: var(--text-secondary);
@@ -492,7 +443,7 @@ body {
 }
 
 /* Shared destructive-action dialog (dangerConfirm.js) */
-/* Opens above other modals, e.g. Clear All Logs inside System Status. */
+/* Stacks above any modal it is opened from. */
 .modal.danger-confirm {
     z-index: 10001;
 }
@@ -935,7 +886,6 @@ body {
     margin-top: 1.5rem;
     border-top: 1px solid var(--border-color);
 }
-
 
 .btn-primary:hover {
     transform: translateY(-1px);
@@ -2374,12 +2324,10 @@ body.col-reordering * {
     pointer-events: none;
 }
 
-
 .results-table tbody tr {
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     transition: var(--transition);
 }
-
 
 /* Annotated by someone. Where the star gutter is present the mark lives in it
    as a 2px rule, so the row carries one channel rather than two competing ones;

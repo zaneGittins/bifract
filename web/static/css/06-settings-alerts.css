@@ -52,33 +52,11 @@
     color: var(--text-primary);
 }
 
-.status-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
-}
-
-.status-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-}
-
 .status-label {
     font-size: 0.8125rem;
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-}
-
-.status-value {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.status-ok {
-    color: var(--success);
 }
 
 .status-error {
@@ -140,7 +118,6 @@
 .btn-icon {
     font-size: 1rem;
 }
-
 
 .btn-icon.btn-delete:hover {
     background: var(--error);
@@ -460,7 +437,6 @@
     color: var(--text-primary);
     white-space: nowrap;
 }
-
 
 /* Alert References */
 .alert-references {
@@ -2947,7 +2923,6 @@ body.alert-panel-resizing .alert-details-panel {
     font-size: 0.85rem;
 }
 
-
 /* ============================================
    Alert detail tabs and history
    ============================================ */
@@ -3521,7 +3496,6 @@ body.alert-panel-resizing .alert-details-panel {
 .results-table th.tg-gutter {
     padding: 0;
 }
-
 
 .tg-mark {
     display: inline-flex;
