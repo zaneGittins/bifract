@@ -2,7 +2,7 @@ name: LimaCharlie WEL - Sysmon
 description: >-
   Maps Sysmon events as delivered by LimaCharlie's WEL (Windows Event Log) stream onto
   Bifract's normalized field contract. This is not the same shape as sysmon-normalizer.yaml,
-  which expects flat native Sysmon fields from a Sysmon-native shipper. LimaCharlie wraps
+  which expects native Sysmon fields, flat or in Velociraptor's System/EventData shape. LimaCharlie wraps
   every WEL record in an envelope, so the same data arrives as event.EVENT.System.* and
   event.EVENT.EventData.*, which flatten_full turns into event_EVENT_System_* and
   event_EVENT_EventData_*.
