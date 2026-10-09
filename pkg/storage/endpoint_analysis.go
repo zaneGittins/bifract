@@ -147,3 +147,20 @@ func loadEndpointMVSet(ctx context.Context, conn driver.Conn, query string) (map
 	}
 	return set, rows.Err()
 }
+
+// endpointAnalysisTables hold the baselines the endpoint-analysis MVs accumulate.
+var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges"}
+
+// ClearEndpointAnalysisBaselines empties the baseline tables on every node. TRUNCATE
+// removes whole parts without rewriting data, so it is instant at any size; the MVs stay
+// attached and the baselines rebuild from the next insert.
+func (c *ClickHouseClient) ClearEndpointAnalysisBaselines(ctx context.Context) error {
+	for _, t := range endpointAnalysisTables {
+		// max_table_size_to_drop (50GB by default) otherwise refuses large tables with code 359.
+		stmt := "TRUNCATE TABLE IF EXISTS " + quoteCHIdent(t) + " SETTINGS max_table_size_to_drop = 0"
+		if err := c.execOnEveryShard(ctx, stmt, "clear endpoint baselines"); err != nil {
+			return fmt.Errorf("truncate %s: %w", t, err)
+		}
+	}
+	return nil
+}

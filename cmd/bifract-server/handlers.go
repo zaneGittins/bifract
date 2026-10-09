@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"bifract/pkg/archive"
+	"bifract/pkg/auth"
 	"bifract/pkg/parser"
 	"bifract/pkg/pgrcal"
 	"bifract/pkg/query"
@@ -447,6 +448,18 @@ func (d routerDeps) handleSetEndpointAnalysis(w http.ResponseWriter, r *http.Req
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "enabled": body.Enabled})
+}
+
+func (d routerDeps) handleClearEndpointBaselines(w http.ResponseWriter, r *http.Request) {
+	actor := auth.AttributionUsername(r.Context())
+	if err := d.db.ClearEndpointAnalysisBaselines(r.Context()); err != nil {
+		log.Printf("[Admin] endpoint baseline clear failed (requested by %s): %v", actor, err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to clear endpoint analysis baselines")
+		return
+	}
+	log.Printf("[Admin] endpoint analysis baselines cleared by %s", actor)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 func (d routerDeps) handleGetSharedLinksEnabled(w http.ResponseWriter, r *http.Request) {

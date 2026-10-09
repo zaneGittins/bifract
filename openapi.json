@@ -28678,6 +28678,50 @@
         "x-bifract-access": "tenant_admin"
       }
     },
+    "/api/v1/system/endpoint-analysis/clear": {
+      "post": {
+        "operationId": "post_api_v1_system_endpoint_analysis_clear",
+        "summary": "Clear the endpoint analytics baselines so they rebuild from new data.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "system"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success."
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
     "/api/v1/system/pgr-calibration": {
       "get": {
         "operationId": "get_api_v1_system_pgr_calibration",

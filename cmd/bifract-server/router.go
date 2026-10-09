@@ -612,6 +612,13 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Summary: "Enable or disable advanced endpoint analysis.",
 				Handler: d.handleSetEndpointAnalysis,
 			})
+			r.Register(api.Route{
+				Method:  http.MethodPost,
+				Path:    "/system/endpoint-analysis/clear",
+				Access:  api.AccessTenantAdmin,
+				Summary: "Clear the endpoint analytics baselines so they rebuild from new data.",
+				Handler: d.handleClearEndpointBaselines,
+			})
 
 			// Shared Links global toggle (admin only): master switch for public,
 			// no-auth, read-only dashboard access. Default off (opt-in). When off,
