@@ -3,6 +3,8 @@ package ingest
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"bifract/pkg/ingesttokens"
@@ -98,72 +100,60 @@ func ExtractTimestamp(fields map[string]string, tsFields []ingesttokens.TsField,
 	return time.Time{}
 }
 
-func parseTimestampWithFormat(val interface{}, format string) time.Time {
-	switch v := val.(type) {
-	case string:
-		switch format {
-		case "unix":
-			var seconds int64
-			if _, err := fmt.Sscanf(v, "%d", &seconds); err == nil {
-				return time.Unix(seconds, 0)
-			}
-		case "unixmilli", "unixmillis", "unixms":
-			var millis int64
-			if _, err := fmt.Sscanf(v, "%d", &millis); err == nil {
-				return time.Unix(0, millis*int64(time.Millisecond))
-			}
-		case "unixmicro", "unixmicros", "unixμs":
-			var micros int64
-			if _, err := fmt.Sscanf(v, "%d", &micros); err == nil {
-				return time.Unix(0, micros*int64(time.Microsecond))
-			}
-		case "unixnano", "unixnanos", "unixns":
-			var nanos int64
-			if _, err := fmt.Sscanf(v, "%d", &nanos); err == nil {
-				return time.Unix(0, nanos)
-			}
-		default:
-			if t, err := time.Parse(format, v); err == nil {
-				return t
+func parseTimestampWithFormat(val, format string) time.Time {
+	var unit time.Duration
+	switch format {
+	case "unix":
+		unit = time.Second
+	case "unixmilli", "unixmillis", "unixms":
+		unit = time.Millisecond
+	case "unixmicro", "unixmicros", "unixμs":
+		unit = time.Microsecond
+	case "unixnano", "unixnanos", "unixns":
+		unit = time.Nanosecond
+	default:
+		t, _ := time.Parse(format, val)
+		return t
+	}
+	t, _ := parseEpoch(val, unit)
+	return t
+}
+
+// parseEpoch parses an integer or decimal count of unit since the epoch. The
+// fraction is read as digits rather than through a float so sub-second precision
+// survives exactly (Velociraptor emits 1791581172.686968).
+func parseEpoch(val string, unit time.Duration) (time.Time, bool) {
+	intPart, fracPart, hasFrac := strings.Cut(val, ".")
+	whole, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var fracNanos int64
+	if hasFrac {
+		if fracPart == "" {
+			return time.Time{}, false
+		}
+		for i := 0; i < len(fracPart); i++ {
+			if fracPart[i] < '0' || fracPart[i] > '9' {
+				return time.Time{}, false
 			}
 		}
-
-	case float64:
-		switch format {
-		case "unix":
-			return time.Unix(int64(v), 0)
-		case "unixmilli", "unixmillis", "unixms":
-			return time.Unix(0, int64(v)*int64(time.Millisecond))
-		case "unixmicro", "unixmicros", "unixμs":
-			return time.Unix(0, int64(v)*int64(time.Microsecond))
-		case "unixnano", "unixnanos", "unixns":
-			return time.Unix(0, int64(v))
-		default:
-			if v > 1e12 {
-				return time.Unix(0, int64(v)*int64(time.Millisecond))
-			}
-			return time.Unix(int64(v), 0)
+		// Nine digits is nanosecond precision for seconds; finer is noise.
+		if len(fracPart) > 9 {
+			fracPart = fracPart[:9]
 		}
-
-	case int64:
-		switch format {
-		case "unix":
-			return time.Unix(v, 0)
-		case "unixmilli", "unixmillis", "unixms":
-			return time.Unix(0, v*int64(time.Millisecond))
-		case "unixmicro", "unixmicros", "unixμs":
-			return time.Unix(0, v*int64(time.Microsecond))
-		case "unixnano", "unixnanos", "unixns":
-			return time.Unix(0, v)
-		default:
-			if v > 1e12 {
-				return time.Unix(0, v*int64(time.Millisecond))
-			}
-			return time.Unix(v, 0)
+		digits, _ := strconv.ParseInt(fracPart, 10, 64)
+		scale := int64(1)
+		for range fracPart {
+			scale *= 10
+		}
+		fracNanos = digits * int64(unit) / scale
+		if strings.HasPrefix(intPart, "-") {
+			fracNanos = -fracNanos
 		}
 	}
-
-	return time.Time{}
+	perSec := int64(time.Second / unit)
+	return time.Unix(whole/perSec, whole%perSec*int64(unit)+fracNanos), true
 }
 
 func parseTimestamp(val interface{}) time.Time {
