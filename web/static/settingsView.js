@@ -49,11 +49,11 @@ const SettingsView = {
         }
         const clearCatalogBtn = document.getElementById('archiveClearCatalogBtn');
         if (clearCatalogBtn) {
-            clearCatalogBtn.addEventListener('click', () => this.openClearCatalogModal());
+            clearCatalogBtn.addEventListener('click', () => this.confirmClearCatalog());
         }
         const clearSpoolBtn = document.getElementById('archiveClearSpoolBtn');
         if (clearSpoolBtn) {
-            clearSpoolBtn.addEventListener('click', () => this.clearSpool());
+            clearSpoolBtn.addEventListener('click', () => this.confirmClearSpool());
         }
         const endpointAnalysisToggle = document.getElementById('endpointAnalysisToggle');
         if (endpointAnalysisToggle) {
@@ -70,8 +70,10 @@ const SettingsView = {
 
         const distQueueResetBtn = document.getElementById('distQueueResetBtn');
         if (distQueueResetBtn) {
-            distQueueResetBtn.addEventListener('click', () => this.openDistQueueResetModal());
+            distQueueResetBtn.addEventListener('click', () => this.confirmDistQueueReset());
         }
+        document.getElementById('endpointBaselinesClearBtn')
+            ?.addEventListener('click', () => this.confirmClearEndpointBaselines());
 
         this.loadDistQueueShards();
         this.initSectionRail();
@@ -94,87 +96,53 @@ const SettingsView = {
         }
     },
 
-    // Opens the typed-confirmation dialog, mirroring openClearCatalogModal().
-    // Fetches fresh per-shard stats to populate the shard picker so it never
-    // shows stale numbers from whenever the Settings page first loaded.
-    async openDistQueueResetModal() {
-        const modal = document.getElementById('distQueueResetModal');
-        const select = document.getElementById('distQueueResetShardSelect');
-        const input = document.getElementById('distQueueResetConfirmInput');
-        const confirmBtn = document.getElementById('distQueueResetConfirmBtn');
-        if (!modal || !select || !input || !confirmBtn) return;
-
-        select.innerHTML = '<option>Loading shards...</option>';
+    // The shard picker is filled after the dialog opens, from fresh per-shard stats,
+    // so it never shows numbers from whenever the Settings page first loaded.
+    confirmDistQueueReset() {
+        const select = document.createElement('select');
+        select.className = 'setting-select';
+        select.style.width = '100%';
+        select.setAttribute('aria-label', 'Shard');
+        select.innerHTML = '<option value="">Loading shards...</option>';
         select.disabled = true;
-        input.value = '';
-        confirmBtn.disabled = true;
-        modal.style.display = 'flex';
+        select.addEventListener('change', () => DangerConfirm.revalidate());
 
-        try {
-            const res = await fetch('/api/v1/system/distribution-queue/shards', { credentials: 'include' });
-            const shards = res.ok ? await res.json() : [];
-            select.innerHTML = '';
-            (shards || []).forEach(s => {
-                const opt = document.createElement('option');
-                opt.value = String(s.shard_num);
-                if (s.unreachable) {
-                    opt.textContent = `Shard ${s.shard_num} -- unreachable`;
-                } else {
-                    const parts = [`${s.data_files} file(s) queued`];
-                    if (s.broken_data_files) parts.push(`${s.broken_data_files} broken`);
-                    if (s.error_count) parts.push(`${s.error_count} error(s)`);
-                    opt.textContent = `Shard ${s.shard_num} -- ${parts.join(', ')}`;
-                }
-                select.appendChild(opt);
-            });
-            if (!select.options.length) {
-                select.innerHTML = '<option value="">No shards found</option>';
-            }
-        } catch (err) {
-            select.innerHTML = '<option value="">Failed to load shards</option>';
-        }
-        select.disabled = false;
+        DangerConfirm.open({
+            title: 'Reset Distribution Queue',
+            body: [
+                'This drops and recreates logs_distributed on the selected shard, discarding its queued log batches.',
+                { text: "Other shards and this shard's own stored logs are unaffected.", muted: true },
+            ],
+            extra: select,
+            isReady: () => !select.disabled && !!select.value,
+            phrase: 'RESET QUEUE',
+            confirmLabel: 'Reset Queue',
+            busyLabel: 'Resetting...',
+            onConfirm: async () => {
+                const shardNum = Number(select.value);
+                await HttpUtils.safeFetch('/api/v1/system/distribution-queue/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ shard_num: shardNum }),
+                });
+                if (window.Toast) Toast.success('Distribution Queue Reset', `Shard ${shardNum}'s queue was cleared.`);
+            },
+        });
 
-        const phrase = 'RESET QUEUE';
-        const validate = () => {
-            confirmBtn.disabled = input.value.trim().toUpperCase() !== phrase || !select.value;
-        };
-        input.oninput = validate;
-        select.onchange = validate;
-        validate();
-        input.onkeydown = (e) => {
-            if (e.key === 'Enter' && !confirmBtn.disabled) this.resetDistQueue();
-            if (e.key === 'Escape') this.closeDistQueueResetModal();
-        };
-        confirmBtn.onclick = () => this.resetDistQueue();
-        document.getElementById('distQueueResetCancelBtn').onclick = () => this.closeDistQueueResetModal();
-    },
-
-    closeDistQueueResetModal() {
-        const modal = document.getElementById('distQueueResetModal');
-        if (modal) modal.style.display = 'none';
-    },
-
-    async resetDistQueue() {
-        const select = document.getElementById('distQueueResetShardSelect');
-        const shardNum = select ? select.value : '';
-        this.closeDistQueueResetModal();
-        if (!shardNum) return;
-        try {
-            const res = await fetch('/api/v1/system/distribution-queue/reset', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ shard_num: Number(shardNum) })
-            });
-            if (!res.ok) {
-                const msg = await Utils.errorMessage(res);
-                throw new Error(msg || 'Failed to reset distribution queue');
-            }
-            if (window.Toast) Toast.success('Distribution Queue Reset', `Shard ${shardNum}'s queue was cleared.`);
-        } catch (err) {
-            if (window.Toast) Toast.error('Reset Failed', (err.message || '').trim());
-        }
+        HttpUtils.safeFetch('/api/v1/system/distribution-queue/shards').then(shards => {
+            select.replaceChildren(...(shards || []).map(s => {
+                const parts = s.unreachable ? ['unreachable'] : [`${s.data_files} file(s) queued`];
+                if (!s.unreachable && s.broken_data_files) parts.push(`${s.broken_data_files} broken`);
+                if (!s.unreachable && s.error_count) parts.push(`${s.error_count} error(s)`);
+                return new Option(`Shard ${s.shard_num}: ${parts.join(', ')}`, String(s.shard_num));
+            }));
+            if (!select.options.length) select.replaceChildren(new Option('No shards found', ''));
+        }).catch(() => {
+            select.replaceChildren(new Option('Failed to load shards', ''));
+        }).finally(() => {
+            select.disabled = false;
+            DangerConfirm.revalidate();
+        });
     },
 
     // Section rail for the Settings sub-tab: click to scroll, and highlight the
@@ -237,48 +205,24 @@ const SettingsView = {
         });
     },
 
-    // Requests a spool clear across all ingest pods. Two-step arm (click, then
-    // confirm) rather than a typed modal: the spool is a transient buffer, so this
-    // is less catastrophic than clearing the catalog, but it still discards
-    // un-archived data, so it is not a single silent click.
-    async clearSpool() {
-        const btn = document.getElementById('archiveClearSpoolBtn');
-        if (!btn || btn.disabled) return;
-        if (!this._spoolArmed) {
-            this._spoolArmed = true;
-            btn.dataset.label = btn.textContent;
-            btn.textContent = 'Click again to confirm';
-            clearTimeout(this._spoolArmTimer);
-            this._spoolArmTimer = setTimeout(() => {
-                this._spoolArmed = false;
-                btn.textContent = btn.dataset.label || 'Clear Spool';
-            }, 5000);
-            return;
-        }
-        this._spoolArmed = false;
-        clearTimeout(this._spoolArmTimer);
-        const original = btn.dataset.label || 'Clear Spool';
-        try {
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span> Requesting...';
-            const res = await fetch('/api/v1/system/archive/spool/clear', {
-                method: 'POST',
-                credentials: 'include'
-            });
-            if (!res.ok) {
-                const msg = await Utils.errorMessage(res);
-                throw new Error(msg || 'Failed to clear spool');
-            }
-            const d = await res.json().catch(() => ({}));
-            if (window.Toast) {
-                Toast.success('Spool Clear Requested', d.message || 'Each ingest pod will clear its spool shortly.');
-            }
-        } catch (err) {
-            if (window.Toast) Toast.error('Clear Spool Failed', (err.message || '').trim());
-        } finally {
-            btn.innerHTML = original;
-            this.syncClearCatalogGuard(document.getElementById('archiveEnabledToggle')?.checked);
-        }
+    // The spool is a transient buffer, so no phrase is required, but it still discards
+    // un-archived data, so it is never a single click.
+    confirmClearSpool() {
+        DangerConfirm.open({
+            title: 'Clear Archive Spool',
+            body: [
+                'This discards un-archived buffered logs on every ingest pod. Each pod applies it within about 10 seconds.',
+                { text: 'Not needed when migrating backends: there the buffered tail correctly bridges the gap into the new archive.', muted: true },
+            ],
+            confirmLabel: 'Clear Spool',
+            busyLabel: 'Requesting...',
+            onConfirm: async () => {
+                const d = await HttpUtils.safeFetch('/api/v1/system/archive/spool/clear', { method: 'POST' });
+                if (window.Toast) {
+                    Toast.success('Spool Clear Requested', (d && d.message) || 'Each ingest pod will clear its spool shortly.');
+                }
+            },
+        });
     },
 
     // Loads the Iceberg archive enable state. The toggle is disabled (with a
@@ -339,73 +283,40 @@ const SettingsView = {
         }
     },
 
-    // Opens the typed-confirmation dialog. The destructive call itself lives in
-    // clearCatalog(), which the dialog invokes once the phrase matches.
-    openClearCatalogModal() {
-        const modal = document.getElementById('archiveClearCatalogModal');
-        const input = document.getElementById('archiveClearCatalogConfirmInput');
-        const confirmBtn = document.getElementById('archiveClearCatalogConfirmBtn');
-        if (!modal || !input || !confirmBtn) return;
-
-        input.value = '';
-        confirmBtn.disabled = true;
-        modal.style.display = 'flex';
-        setTimeout(() => input.focus(), 100);
-
-        const phrase = 'CLEAR CATALOG';
-        const validate = () => {
-            confirmBtn.disabled = input.value.trim().toUpperCase() !== phrase;
-        };
-        // Replace prior handlers so reopening the dialog never stacks listeners.
-        input.oninput = validate;
-        input.onkeydown = (e) => {
-            if (e.key === 'Enter' && !confirmBtn.disabled) this.clearCatalog();
-            if (e.key === 'Escape') this.closeClearCatalogModal();
-        };
-        confirmBtn.onclick = () => this.clearCatalog();
-        document.getElementById('archiveClearCatalogCancelBtn').onclick = () => this.closeClearCatalogModal();
+    // The server rejects this while archiving is on; the row guard mirrors that.
+    confirmClearCatalog() {
+        DangerConfirm.open({
+            title: 'Clear Iceberg Catalog',
+            body: [
+                'This drops every archived table from the Iceberg catalog and resets the archive footprint to zero.',
+                { text: 'Data files in object storage are not deleted. Empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables. Log data in ClickHouse is not affected.', muted: true },
+            ],
+            phrase: 'CLEAR CATALOG',
+            confirmLabel: 'Clear Catalog',
+            busyLabel: 'Clearing...',
+            onConfirm: async () => {
+                await HttpUtils.safeFetch('/api/v1/system/archive/clear', { method: 'POST' });
+                if (window.Toast) Toast.success('Catalog Cleared', 'The archive was reset to zero. Re-enable archiving to start fresh.');
+                this.loadArchiveToggle();
+            },
+        });
     },
 
-    closeClearCatalogModal() {
-        const modal = document.getElementById('archiveClearCatalogModal');
-        if (modal) modal.style.display = 'none';
-    },
-
-    // Clears the Iceberg catalog (all archived tables + namespace) via the
-    // admin-only endpoint, resetting the archive footprint to zero. The server
-    // also rejects this while archiving is enabled; the UI guard mirrors that.
-    async clearCatalog() {
-        this.closeClearCatalogModal();
-        const btn = document.getElementById('archiveClearCatalogBtn');
-        const original = btn ? btn.innerHTML : '';
-        try {
-            if (btn) {
-                btn.disabled = true;
-                btn.innerHTML = '<span class="spinner"></span> Clearing...';
-            }
-            const res = await fetch('/api/v1/system/archive/clear', {
-                method: 'POST',
-                credentials: 'include'
-            });
-            if (!res.ok) {
-                const msg = await Utils.errorMessage(res);
-                throw new Error(msg || 'Failed to clear catalog');
-            }
-            if (window.Toast) {
-                Toast.success('Catalog Cleared', 'The archive was reset to zero. Re-enable archiving to start fresh.');
-            }
-            // Refresh the toggle/status view (footprint is shown under System -> Archive).
-            this.loadArchiveToggle();
-        } catch (err) {
-            if (window.Toast) Toast.error('Clear Catalog Failed', err.message.trim());
-        } finally {
-            if (btn) {
-                btn.innerHTML = original;
-                // Restore the guard rather than blindly re-enabling: the archive
-                // may have been switched back on while the request was in flight.
-                this.syncClearCatalogGuard(document.getElementById('archiveEnabledToggle')?.checked);
-            }
-        }
+    confirmClearEndpointBaselines() {
+        DangerConfirm.open({
+            title: 'Clear Endpoint Analytics Baselines',
+            body: [
+                'This empties the process lineage, frequency and edge baselines on every node. They rebuild from newly ingested logs while Collect baselines is on.',
+                { text: 'Until they refill, nearly every process edge is first-seen, so pgr() flags most activity as high severity. Log data is not affected.', muted: true },
+            ],
+            phrase: 'CLEAR BASELINES',
+            confirmLabel: 'Clear Baselines',
+            busyLabel: 'Clearing...',
+            onConfirm: async () => {
+                await HttpUtils.safeFetch('/api/v1/system/endpoint-analysis/clear', { method: 'POST' });
+                if (window.Toast) Toast.success('Baselines Cleared', 'They rebuild from newly ingested logs.');
+            },
+        });
     },
 
     async loadEndpointAnalysisToggle() {
@@ -1253,41 +1164,22 @@ const SettingsView = {
         }
     },
 
-    async clearLogs() {
-        if (!confirm('Are you sure you want to delete ALL logs and comments? This cannot be undone!')) {
-            return;
-        }
-
-        if (!confirm('This will PERMANENTLY delete all logs and their associated comments. Are you absolutely sure?')) {
-            return;
-        }
-
-        try {
-            const response = await fetch('/api/v1/logs', {
-                method: 'DELETE',
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-                // logs cleared; nothing further to refresh here
-            } else {
-                const errorMsg = data.error || 'Unknown error';
-                if (window.Toast) {
-                    Toast.error('Cleanup Failed', errorMsg);
-                } else {
-                    alert('Failed to clear logs: ' + errorMsg);
-                }
-            }
-        } catch (error) {
-            console.error('Error clearing logs:', error);
-            if (window.Toast) {
-                Toast.error('Network Error', 'Please try again.');
-            } else {
-                alert('Network error. Please try again.');
-            }
-        }
+    clearLogs() {
+        DangerConfirm.open({
+            title: 'Clear All Logs',
+            body: [
+                'This permanently deletes every log in every fractal, along with their comments.',
+                { text: 'Fractals, alerts, dashboards and settings remain.', muted: true },
+            ],
+            phrase: 'DELETE ALL LOGS',
+            confirmLabel: 'Delete All Logs',
+            busyLabel: 'Deleting...',
+            onConfirm: async () => {
+                const data = await HttpUtils.safeFetch('/api/v1/logs', { method: 'DELETE' });
+                if (data && data.success === false) throw new Error(data.error || 'Failed to clear logs');
+                if (window.Toast) Toast.success('Logs Cleared', 'All logs and their comments were deleted.');
+            },
+        });
     },
 
 };

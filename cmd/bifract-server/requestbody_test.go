@@ -54,6 +54,7 @@ var bodylessRoutes = []string{
 	"POST /api/v1/system/archive/restore/{id}/cancel",
 	"POST /api/v1/system/archive/restore/{id}/resume",
 	"POST /api/v1/system/archive/spool/clear",
+	"POST /api/v1/system/endpoint-analysis/clear",
 	"POST /api/v1/webhooks/{id}/test",
 }
 

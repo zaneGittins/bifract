@@ -398,6 +398,7 @@ var routeTable = []string{
 	"GET /api/v1/system/distribution-queue/shards 9 auth tenant_admin",
 	"GET /api/v1/system/endpoint-analysis 9 auth tenant_admin",
 	"POST /api/v1/system/endpoint-analysis 9 auth body tenant_admin",
+	"POST /api/v1/system/endpoint-analysis/clear 9 auth tenant_admin",
 	"GET /api/v1/system/pgr-calibration 9 auth tenant_admin",
 	"GET /api/v1/system/pressure 9 auth viewer",
 	"GET /api/v1/system/shared-links 9 auth viewer",
