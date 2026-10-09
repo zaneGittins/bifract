@@ -28,23 +28,43 @@ func (c *CompiledNormalizer) ApplyFieldName(field string) string {
 // editor's Trace so the preview can never disagree with what ingestion does.
 func applyNameTransforms(fields map[string]string, nestedKeys map[string]bool, transforms []Transform) map[string]string {
 	result := fields
-	for _, t := range transforms {
-		switch t {
-		case TransformFlattenLeaf:
-			result = FlattenFields(result, FlattenLeaf, nestedKeys)
-			nestedKeys = nil // after first flatten, nested tracking no longer applies
-		case TransformFlattenFull:
-			result = FlattenFields(result, FlattenFull, nestedKeys)
-			nestedKeys = nil
-		default:
+	for i := 0; i < len(transforms); i++ {
+		mode := flattenMode(transforms[i])
+		if mode == FlattenNone {
 			renamed := make(map[string]string, len(result))
 			for k, v := range result {
-				renamed[applyFieldNameTransform(k, t)] = v
+				renamed[applyFieldNameTransform(k, transforms[i])] = v
 			}
 			result = renamed
+			continue
 		}
+		// Fold the renames that follow into the flatten so leaf collisions are
+		// judged on final names.
+		j := i + 1
+		for j < len(transforms) && flattenMode(transforms[j]) == FlattenNone {
+			j++
+		}
+		renames := transforms[i+1 : j]
+		result = flattenFields(result, mode, nestedKeys, func(name string) string {
+			for _, t := range renames {
+				name = applyFieldNameTransform(name, t)
+			}
+			return name
+		})
+		nestedKeys = nil // after first flatten, nested tracking no longer applies
+		i = j - 1
 	}
 	return result
+}
+
+func flattenMode(t Transform) FlattenMode {
+	switch t {
+	case TransformFlattenLeaf:
+		return FlattenLeaf
+	case TransformFlattenFull:
+		return FlattenFull
+	}
+	return FlattenNone
 }
 
 // ApplyTransforms applies all transforms in order to the full field map.

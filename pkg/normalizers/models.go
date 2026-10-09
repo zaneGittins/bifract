@@ -129,11 +129,8 @@ func (n *Normalizer) Compile() *CompiledNormalizer {
 		TimestampFields: n.TimestampFields,
 	}
 	for _, t := range n.Transforms {
-		switch t {
-		case TransformFlattenLeaf:
-			c.Flatten = FlattenLeaf
-		case TransformFlattenFull:
-			c.Flatten = FlattenFull
+		if m := flattenMode(t); m != FlattenNone {
+			c.Flatten = m
 		}
 	}
 	for _, fm := range n.FieldMappings {
