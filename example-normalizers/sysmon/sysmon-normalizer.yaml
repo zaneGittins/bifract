@@ -14,19 +14,21 @@ transforms:
 # Sources are names after the transforms. snake_case already produces most of the
 # contract (EventID -> event_id, ProcessGuid -> process_guid, SourceProcessGUID ->
 # source_process_guid), so only fields whose contract name differs are listed. Sigma
-# field names pass through the same transforms and mappings.
+# field names pass through the same transforms and mappings. Sources starting with $.
+# are paths into the raw event, matched before any transform.
 field_mappings:
-  # Velociraptor nests the ID as System.EventID.Value, which flattens to value, or to
-  # system_event_id_value when another Value leaf collides with it.
-  - sources: [value, system_event_id_value]
+  # Velociraptor nests the ID under System.EventID.Value.
+  - sources: [$.System.EventID.Value]
     target: event_id
   - sources: [computer]
     target: computer_name
 
-  # Velociraptor also carries System.Execution.ProcessID, the event log service, which
-  # collides with EventData.ProcessId and pushes both onto full paths.
-  - sources: [event_data_process_id]
-    target: process_id
+  # Velociraptor's System.Execution names the event log service, not the subject
+  # process, so it is kept apart from EventData.ProcessId and ThreadId.
+  - sources: [$.System.Execution.ProcessID]
+    target: execution_process_id
+  - sources: [$.System.Execution.ThreadID]
+    target: execution_thread_id
 
   # Image. Events 1/3/11/22 carry Image; events 8/10 carry SourceImage instead, and pgr
   # reads fields.image as the acting process for those too. No event carries both.
