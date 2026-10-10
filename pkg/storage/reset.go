@@ -109,6 +109,7 @@ func ResetLogDataStatements(extraViews, extraTables []string) []string {
 	for _, t := range resetShardedTables {
 		names = append(names, t, t+"_distributed")
 	}
+	names = append(names, repartitionWorkingTables()...)
 	names = append(names, resetBookkeepingTables...)
 	for _, name := range names {
 		// max_table_size_to_drop (50GB by default) otherwise refuses the logs table

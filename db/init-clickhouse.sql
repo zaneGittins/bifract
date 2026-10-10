@@ -137,14 +137,17 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
 -- inserts until merges catch up. The table stays tiny (tens of MB), so tolerating far more
 -- parts before throttling is low-risk.
 --
--- ingest_day matches the logs partition key so DropLogPartition can prune this rollup
--- exactly. Readers group by minute and sum across ingest_day, so it is invisible to them.
+-- Partitioned exactly like logs, so dropping a logs partition drops its counts with a
+-- partition drop rather than a mutation. Readers group by minute and sum across
+-- ingest_day, so it is invisible to them. Older deployments are converted in place
+-- (pkg/storage/repartition.go).
 CREATE TABLE IF NOT EXISTS logs_histogram (
     fractal_id LowCardinality(String),
     ingest_day Date,
     minute     DateTime('UTC'),
     cnt        UInt64
 ) ENGINE = SummingMergeTree(cnt)
+PARTITION BY (fractal_id, ingest_day)
 ORDER BY (fractal_id, ingest_day, minute)
 SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
 
@@ -257,6 +260,9 @@ CREATE TABLE IF NOT EXISTS proc_lineage (
     computer_name    LowCardinality(String),
     INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = ReplacingMergeTree(timestamp)
+-- Per fractal so clearing or deleting one drops its rows without a mutation (the same
+-- for proc_freq and process_edges). Converted in place by pkg/storage/repartition.go.
+PARTITION BY fractal_id
 ORDER BY (fractal_id, process_guid)
 -- Retention on the ingest axis, matching logs. On event time a source with a skewed
 -- clock (an event dated years back) has its lineage row deleted at the first merge.
@@ -300,6 +306,7 @@ CREATE TABLE IF NOT EXISTS proc_freq (
     event_count SimpleAggregateFunction(sum, UInt64),
     hosts       AggregateFunction(groupUniqArray(256), String)
 ) ENGINE = AggregatingMergeTree()
+PARTITION BY fractal_id
 ORDER BY (fractal_id, src_image, event_type, target_norm, day)
 TTL day + INTERVAL 730 DAY
 SETTINGS index_granularity = 8192;
@@ -417,6 +424,7 @@ CREATE TABLE IF NOT EXISTS process_edges (
     computer_name    SimpleAggregateFunction(anyLast, String),
     cnt              SimpleAggregateFunction(sum, UInt64)
 ) ENGINE = AggregatingMergeTree()
+PARTITION BY fractal_id
 ORDER BY (fractal_id, process_guid, event_type, dst_node)
 -- Ingest axis (see proc_lineage). max() means an edge lives 730 days past its last ingest.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY

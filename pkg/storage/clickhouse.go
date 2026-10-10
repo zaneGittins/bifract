@@ -1478,34 +1478,29 @@ const dropPartitionSettings = " SETTINGS max_partition_size_to_drop = 0"
 // well under max_query_size for fractals with years of daily partitions.
 const dropPartitionBatch = 200
 
-// DeleteLogsByFractalID drops every partition belonging to a fractal on every shard.
-// includeUnscoped also drops the rows stored under an empty fractal_id, which belong to
-// the default fractal. DROP PARTITION is a metadata operation that runs no mutation,
-// whatever the fractal holds. Each shard is listed separately because the load-balanced
-// connection only sees one node's partitions.
+// DeleteLogsByFractalID drops every partition belonging to a fractal on every shard, in
+// the log tables and in the per-fractal rollups and baselines. includeUnscoped also drops
+// the rows stored under an empty fractal_id, which belong to the default fractal. DROP
+// PARTITION is a metadata operation that runs no mutation, whatever the fractal holds.
+// Each shard is listed separately because the load-balanced connection only sees one
+// node's partitions.
 func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID string, includeUnscoped bool) error {
 	ids := []string{fractalID}
 	if includeUnscoped {
 		ids = append(ids, "")
 	}
-	dropped := 0
+	tables := append([]string{}, fractalPartitionedTables...)
+	for _, t := range repartitionTargets {
+		tables = append(tables, t.table)
+	}
 	err := c.onEveryShard(ctx, "drop fractal partitions", func(conn driver.Conn) error {
-		for _, table := range fractalPartitionedTables {
-			partitions, err := listFractalPartitions(ctx, conn, table, ids)
-			if err != nil {
+		// Before the live drop, so a conversion in progress cannot copy the rows back.
+		if err := markRepartitionSkip(ctx, conn, ids); err != nil {
+			return err
+		}
+		for _, table := range tables {
+			if err := dropFractalPartitions(ctx, conn, table, ids); err != nil {
 				return err
-			}
-			for start := 0; start < len(partitions); start += dropPartitionBatch {
-				batch := partitions[start:min(start+dropPartitionBatch, len(partitions))]
-				drops := make([]string, len(batch))
-				for i, p := range batch {
-					drops[i] = "DROP PARTITION " + p
-				}
-				stmt := "ALTER TABLE " + quoteCHIdent(table) + " " + strings.Join(drops, ", ") + dropPartitionSettings
-				if err := conn.Exec(ctx, stmt); err != nil {
-					return fmt.Errorf("drop %s partitions: %w", table, err)
-				}
-				dropped += len(batch)
 			}
 		}
 		return nil
@@ -1513,41 +1508,8 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 	if err != nil {
 		return fmt.Errorf("delete logs for fractal %s: %w", fractalID, err)
 	}
-	log.Printf("Dropped %d partitions for fractal %s", dropped, fractalID)
-
-	// The rollup is fed by a materialized view on insert, so it outlives the
-	// partitions unless pruned here.
-	for _, id := range ids {
-		if err := c.PruneHistogramRollup(ctx, id, ""); err != nil {
-			return fmt.Errorf("failed to prune histogram rollup for fractal %s: %w", fractalID, err)
-		}
-	}
+	log.Printf("Dropped partitions for fractal %s", fractalID)
 	return nil
-}
-
-// listFractalPartitions returns the active partitions of table on conn's node that
-// belong to any of the fractal ids, in ClickHouse's canonical form ('id','2024-01-15').
-func listFractalPartitions(ctx context.Context, conn driver.Conn, table string, ids []string) ([]string, error) {
-	prefixes := make([]string, len(ids))
-	for i, id := range ids {
-		prefixes[i] = fmt.Sprintf("('%s','", escCHLiteral(id))
-	}
-	rows, err := conn.Query(ctx,
-		"SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() AND table = ? AND active AND arrayExists(p -> startsWith(partition, p), ?)",
-		table, prefixes)
-	if err != nil {
-		return nil, fmt.Errorf("list %s partitions: %w", table, err)
-	}
-	defer rows.Close()
-	var partitions []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, fmt.Errorf("scan %s partition: %w", table, err)
-		}
-		partitions = append(partitions, p)
-	}
-	return partitions, rows.Err()
 }
 
 // RevertTieredStoragePolicy migrates the logs table off the legacy 'tiered'
@@ -3023,14 +2985,22 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 	if err := c.execOnEveryShard(ctx, "ALTER TABLE logs DROP PARTITION "+partition+dropPartitionSettings, "drop partition "+partition); err != nil {
 		return err
 	}
-	fractalID, day, ok := ParseLogPartition(partition)
-	if !ok {
-		// Without a day the prune would widen to the whole fractal, which is only
-		// ever correct when the fractal itself is being deleted.
-		log.Printf("[ClickHouse] Skipping histogram rollup prune: unparseable partition %s", partition)
+	// The rollup is fed by a materialized view and partitioned like logs, so the same
+	// (fractal, ingest day) partition holds the counts for the rows just dropped.
+	return c.onEveryShard(ctx, "drop histogram partition "+partition, func(conn driver.Conn) error {
+		ids, err := stringColumn(ctx, conn,
+			"SELECT DISTINCT partition_id FROM system.parts WHERE database = currentDatabase() AND table = 'logs_histogram' AND active AND partition = ?",
+			partition)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if err := conn.Exec(ctx, "ALTER TABLE logs_histogram DROP PARTITION ID '"+id+"'"+dropPartitionSettings); err != nil {
+				return err
+			}
+		}
 		return nil
-	}
-	return c.PruneHistogramRollup(ctx, fractalID, day.Format("2006-01-02"))
+	})
 }
 
 // execOnEveryShard runs a statement against every shard directly, bypassing the
@@ -3081,24 +3051,6 @@ func (c *ClickHouseClient) onEveryShard(ctx context.Context, what string, fn fun
 func escCHLiteral(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	return strings.ReplaceAll(s, "'", "''")
-}
-
-// PruneHistogramRollup removes the pre-aggregated counts belonging to log data
-// that has been dropped. logs_histogram is filled by a materialized view on
-// insert, so nothing removes its rows when a logs partition is dropped; without
-// this the rollup keeps counting data that no longer exists and any histogram
-// read from it reports phantom events. An empty day prunes the whole fractal.
-// An empty fractalID is the default fractal's real scope, not a missing value.
-//
-// day is an ingest date and matches ingest_day, the rollup's own ingest-axis key.
-// Matching the event minute instead would prune the wrong rows in both directions.
-func (c *ClickHouseClient) PruneHistogramRollup(ctx context.Context, fractalID, day string) error {
-	where := fmt.Sprintf("fractal_id = '%s'", escCHLiteral(fractalID))
-	if day != "" {
-		where += fmt.Sprintf(" AND ingest_day = '%s'", escCHLiteral(day))
-	}
-	stmt := "DELETE FROM logs_histogram WHERE " + where
-	return c.execOnEveryShard(ctx, stmt, "prune histogram rollup")
 }
 
 // jsonTypeHintRe matches one declared path inside a JSON column type.
