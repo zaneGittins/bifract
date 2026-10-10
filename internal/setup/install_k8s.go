@@ -757,6 +757,26 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// writeK8sOutput writes the manifests and, with mTLS, the client CA.
+func writeK8sOutput(cfg *K8sConfig) error {
+	if err := writeK8sManifests(cfg); err != nil {
+		return fmt.Errorf("write manifests: %w", err)
+	}
+	if cfg.MTLSEnabled {
+		caDir := filepath.Join(cfg.OutputDir, "client-ca")
+		if err := os.MkdirAll(caDir, 0700); err != nil {
+			return fmt.Errorf("create client-ca dir: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(caDir, "ca.pem"), []byte(cfg.MTLSCACert), 0644); err != nil {
+			return fmt.Errorf("write CA cert: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(caDir, "ca-key.pem"), []byte(cfg.MTLSCAKey), 0600); err != nil {
+			return fmt.Errorf("write CA key: %w", err)
+		}
+	}
+	return nil
+}
+
 func (m k8sWizardModel) renderInputErr() string {
 	if m.inputErr == "" {
 		return ""
@@ -1110,20 +1130,9 @@ func RunInstallK8s(opts InstallOptions) error {
 
 	// Generate manifests
 	printStep("Writing manifests...")
-	if err := writeK8sManifests(cfg); err != nil {
-		return fmt.Errorf("write manifests: %w", err)
-	}
-	if cfg.MTLSEnabled {
-		caDir := filepath.Join(cfg.OutputDir, "client-ca")
-		if err := os.MkdirAll(caDir, 0700); err != nil {
-			return fmt.Errorf("create client-ca dir: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(caDir, "ca.pem"), []byte(cfg.MTLSCACert), 0644); err != nil {
-			return fmt.Errorf("write CA cert: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(caDir, "ca-key.pem"), []byte(cfg.MTLSCAKey), 0600); err != nil {
-			return fmt.Errorf("write CA key: %w", err)
-		}
+	if err := writeK8sOutput(cfg); err != nil {
+		plan.discardAdminPassword(cfg.OutputDir, filepath.Join(cfg.OutputDir, "bifract", "secrets.yaml"))
+		return err
 	}
 	printDone("Manifests written to " + cfg.OutputDir)
 

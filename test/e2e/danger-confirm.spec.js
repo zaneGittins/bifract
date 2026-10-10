@@ -95,3 +95,15 @@ test('a fractal dialog refuses to act once the selected fractal changes', async 
   await expect(d.locator('.danger-confirm-error')).toContainText('selected fractal changed');
   expect(calls).toBe(0);
 });
+
+test('Tab stays inside the dialog', async ({ page }) => {
+  await openDangerZone(page);
+  await page.locator('#endpointBaselinesClearBtn').click();
+  const d = dialog(page);
+  await d.locator('#dangerConfirmInput').fill('CLEAR BASELINES');
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press(i % 2 ? 'Shift+Tab' : 'Tab');
+    expect(await page.evaluate(() => !!document.activeElement.closest('.modal.danger-confirm'))).toBe(true);
+  }
+  await page.keyboard.press('Escape');
+});

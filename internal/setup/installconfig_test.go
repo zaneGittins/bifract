@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )
@@ -301,5 +302,85 @@ func TestRunInstallK8sLeftoverPasswordFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "bifract", "secrets.yaml")); err == nil {
 		t.Error("manifests were written despite the password file conflict")
+	}
+}
+
+func TestIPv6AddressesRejected(t *testing.T) {
+	for _, d := range []string{"::1", "2001:db8::1"} {
+		if err := ValidateDomain(d); err == nil || !strings.Contains(err.Error(), "IPv6") {
+			t.Errorf("ValidateDomain(%q) = %v, want an IPv6 error", d, err)
+		}
+	}
+	if err := ValidateDomain("192.0.2.10"); err != nil {
+		t.Errorf("IPv4 domain rejected: %v", err)
+	}
+	for _, h := range []string{"[::1]:9000", "::1", "[2001:db8::1]"} {
+		if _, _, err := ParseCHEndpoint(h); err == nil || !strings.Contains(err.Error(), "IPv6") {
+			t.Errorf("ParseCHEndpoint(%q) = %v, want an IPv6 error", h, err)
+		}
+	}
+	if h, p, err := ParseCHEndpoint("ch.internal:9440"); err != nil || h != "ch.internal" || p != 9440 {
+		t.Errorf("ParseCHEndpoint(ch.internal:9440) = %q %d %v", h, p, err)
+	}
+	target := ClickHouseTarget{Backend: CHBackendExternal, Deployment: "cluster", Hosts: "a:9000,[::1]:9000", Cluster: "c", Port: 9000}
+	if err := target.Validate(); err == nil || !strings.Contains(err.Error(), "IPv6") {
+		t.Errorf("hosts with an IPv6 entry: %v, want an IPv6 error", err)
+	}
+}
+
+// A failed install must not leave a password file that blocks the rerun, unless the
+// file holding its hash was already written, in which case it is the only record.
+func TestDiscardAdminPassword(t *testing.T) {
+	plan := installPlan{passwordOutput: AdminPasswordToFile}
+	write := func(dir string) string {
+		path := filepath.Join(dir, AdminPasswordFileName)
+		if err := os.WriteFile(path, []byte("pw\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	dir := t.TempDir()
+	path := write(dir)
+	plan.discardAdminPassword(dir, filepath.Join(dir, ".env"))
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("password file kept although nothing was installed")
+	}
+
+	dir = t.TempDir()
+	path = write(dir)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan.discardAdminPassword(dir, filepath.Join(dir, ".env"))
+	if _, err := os.Stat(path); err != nil {
+		t.Error("password file removed although .env already holds its hash")
+	}
+
+	dir = t.TempDir()
+	path = write(dir)
+	installPlan{adminPassword: "operator-supplied", passwordOutput: AdminPasswordToFile}.discardAdminPassword(dir, filepath.Join(dir, ".env"))
+	if _, err := os.Stat(path); err != nil {
+		t.Error("a supplied password never writes the file, so it must not remove one")
+	}
+}
+
+// Answers left behind by stepping back through the wizard would be saved into the
+// replay file, which validation then rejects.
+func TestWizardClearsAbandonedTLSAnswers(t *testing.T) {
+	m := NewWizardModel(DefaultConfig())
+	m.config.SSLEmail, m.config.CertPath, m.config.KeyPath = "ops@example.com", "/c.pem", "/k.pem"
+	m.step, m.sslCursor = StepSSL, 0
+	next, _ := m.updateSSL(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(WizardModel).config
+	if got.SSLMode != SSLSelfSigned || got.SSLEmail != "" || got.CertPath != "" || got.KeyPath != "" {
+		t.Errorf("self-signed kept abandoned answers: %+v", got)
+	}
+
+	m.inputErr = "invalid email address"
+	m.step = StepSSLEmail
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if e := next.(WizardModel).inputErr; e != "" {
+		t.Errorf("Esc kept the previous step's error %q", e)
 	}
 }

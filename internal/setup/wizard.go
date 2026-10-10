@@ -196,6 +196,7 @@ func (m WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if m.step != StepWelcome && m.step != StepDone {
 				m.step = m.prevStep()
+				m.inputErr = ""
 				return m, nil
 			}
 		}
@@ -623,18 +624,23 @@ func (m WizardModel) updateSSL(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sslCursor++
 			}
 		case "enter":
+			// Answers for a mode left behind via Esc would be saved into the replay
+			// file, which then fails validation, so each choice clears the others.
 			switch m.sslCursor {
 			case 0:
 				m.config.SSLMode = SSLSelfSigned
+				m.config.SSLEmail, m.config.CertPath, m.config.KeyPath = "", "", ""
 				m.step = StepIPAccess
 				return m, nil
 			case 1:
 				m.config.SSLMode = SSLLetsEncrypt
+				m.config.CertPath, m.config.KeyPath = "", ""
 				m.step = StepSSLEmail
 				m.emailInput.Focus()
 				return m, textinput.Blink
 			case 2:
 				m.config.SSLMode = SSLCustom
+				m.config.SSLEmail = ""
 				m.step = StepSSLCert
 				m.certPathInput.Focus()
 				return m, textinput.Blink

@@ -3,6 +3,7 @@ package normalizers
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -121,12 +122,9 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 	}
 
 	out := make(map[string]string, len(leaves)+2)
-	if mode == FlattenFull {
-		for _, l := range leaves {
-			out[rename(l.path)] = l.value
-		}
-	} else {
-		names := make([]string, len(leaves))
+	var names []string
+	if mode == FlattenLeaf {
+		names = make([]string, len(leaves))
 		counts := make(map[string]int, len(leaves)+len(pinned))
 		for target := range pinned {
 			counts[target]++
@@ -139,8 +137,37 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 			if counts[names[i]] > 1 {
 				names[i] = rename(l.path)
 			}
-			out[names[i]] = l.value
 		}
+	}
+	nameOf := func(i int) string {
+		if names != nil {
+			return names[i]
+		}
+		return rename(leaves[i].path)
+	}
+	var contested map[string]bool
+	for i, l := range leaves {
+		var name string
+		if names != nil {
+			name = names[i]
+		} else {
+			name = rename(l.path)
+		}
+		_, taken := out[name]
+		if !taken && pinned != nil {
+			_, taken = pinned[name]
+		}
+		if taken {
+			if contested == nil {
+				contested = map[string]bool{}
+			}
+			contested[name] = true
+			continue
+		}
+		out[name] = l.value
+	}
+	if contested != nil {
+		settleContested(out, leaves, nameOf, contested, pinned)
 	}
 
 	if truncated {
@@ -149,6 +176,45 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 	}
 
 	return out, pinned
+}
+
+// settleContested names the leaves whose final names still clashed after collision
+// fallback: a full path equal to another field's name, or full paths that only differ
+// before a rename. Claimants are ordered top-level first, then by path, so the outcome
+// never depends on map order and no value is lost: the first keeps the name and the
+// rest are numbered. Names claimed by path sources are never taken.
+func settleContested(out map[string]string, leaves []leaf, nameOf func(int) string, contested map[string]bool, pinned map[string]pinnedField) {
+	var claim []int
+	for i := range leaves {
+		if contested[nameOf(i)] {
+			claim = append(claim, i)
+		}
+	}
+	for name := range contested {
+		delete(out, name)
+	}
+	sort.SliceStable(claim, func(a, b int) bool {
+		la, lb := leaves[claim[a]], leaves[claim[b]]
+		if topA, topB := la.name == la.path, lb.name == lb.path; topA != topB {
+			return topA
+		}
+		if la.path != lb.path {
+			return la.path < lb.path
+		}
+		return la.value < lb.value
+	})
+	for _, i := range claim {
+		base := nameOf(i)
+		name := base
+		for n := 2; ; n++ {
+			_, taken := out[name]
+			if _, pin := pinned[name]; !taken && !pin {
+				break
+			}
+			name = base + "_" + strconv.Itoa(n)
+		}
+		out[name] = leaves[i].value
+	}
 }
 
 // flattenObject recursively walks a parsed JSON object and appends its scalar

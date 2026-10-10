@@ -1035,7 +1035,7 @@ const Normalizers = {
         warn.innerHTML = collisionCount === 0 ? '' :
             `<div class="nz-warn"><strong>${collisionCount} name collision${collisionCount !== 1 ? 's' : ''}:</strong> ` +
             Object.keys(collisions).map(c => `<code>${Utils.escapeHtml(c)}</code>`).join(', ') +
-            '. Ingestion keeps only one value per colliding name, and which one is not deterministic.</div>';
+            '. Ingestion keeps one value per name: a <code>$.</code> path source first, then a field already carrying the name, then the earliest source in mapping order.</div>';
 
         const body = document.getElementById('normalizerPreviewResults');
         if (fields.length === 0) {

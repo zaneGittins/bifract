@@ -68,12 +68,6 @@ func RunInstall(opts InstallOptions) error {
 		return fmt.Errorf("existing installation found at %s (.env exists)\n  Use --upgrade to update, or remove %s to reinstall", cfg.InstallDir, envPath)
 	}
 
-	// Deliver the admin password before deploying so a failure cannot lose it.
-	passwordLine, shown, err := plan.reportAdminPassword(cfg.InstallDir, cfg.AdminPassword)
-	if err != nil {
-		return err
-	}
-
 	// Verify the Bifract image is available on the registry
 	if cfg.ImageTag != "dev" {
 		printStep("Checking image availability...")
@@ -83,9 +77,18 @@ func RunInstall(opts InstallOptions) error {
 		printDone("Image available")
 	}
 
+	// Deliver the admin password before deploying so a failure cannot lose it, and take
+	// it back if the config is never written, so a rerun is not blocked by a password
+	// for an install that does not exist.
+	passwordLine, shown, err := plan.reportAdminPassword(cfg.InstallDir, cfg.AdminPassword)
+	if err != nil {
+		return err
+	}
+
 	// Generate all config files
 	printStep("Generating configuration files...")
 	if err := WriteAllFiles(cfg); err != nil {
+		plan.discardAdminPassword(cfg.InstallDir, envPath)
 		return fmt.Errorf("write files: %w", err)
 	}
 	printDone("Configuration written to " + cfg.InstallDir)

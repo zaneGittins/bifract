@@ -19,6 +19,8 @@ func TestParseTimestampWithFormat_Epoch(t *testing.T) {
 		{"1791581172686968", "unixmicro", time.Unix(1791581172, 686968000)},
 		{"1791581172686968123", "unixns", time.Unix(1791581172, 686968123)},
 		{"-1.5", "unix", time.Unix(-2, 500000000)},
+		{" 1791581172 ", "unix", time.Unix(1791581172, 0)},
+		{"9223372036854775807", "unixns", time.Unix(0, 9223372036854775807)},
 	}
 	for _, c := range cases {
 		got := parseTimestampWithFormat(c.val, c.format)
@@ -29,7 +31,9 @@ func TestParseTimestampWithFormat_Epoch(t *testing.T) {
 }
 
 func TestParseTimestampWithFormat_EpochRejectsMalformed(t *testing.T) {
-	for _, val := range []string{"", "abc", "123abc", "1.", "1.2x", "1.2.3", " 123"} {
+	for _, val := range []string{"", "abc", "123abc", "1.", "1.2x", "1.2.3",
+		// A millisecond count read as seconds, and values that would overflow.
+		"1791581172686", "-9223372036854775808", "9223372036854775807"} {
 		if got := parseTimestampWithFormat(val, "unix"); !got.IsZero() {
 			t.Errorf("%q: expected zero time so the next field is tried, got %v", val, got)
 		}

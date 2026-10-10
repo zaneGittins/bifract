@@ -11,7 +11,9 @@ Without `--config` and without a terminal, both commands exit with an error inst
 
 ## Config File
 
-The file never contains secret values, only references to them.
+The file never contains secret values, only references to them. Each command reads only its own section, so a file has either `compose` or `k8s`, never both.
+
+A Docker Compose install with an external ClickHouse Cloud service:
 
 ```yaml
 version: 1                          # required
@@ -34,28 +36,40 @@ secrets:
 output:
   admin_password: file              # file | stdout | none
 
-compose:                            # --install only
+compose:
   install_dir: /opt/bifract
   tls:
     mode: letsencrypt               # self-signed | letsencrypt | custom
     email: ops@example.com
+```
 
-k8s:                                # --install-k8s only
+A Kubernetes install with the bundled ClickHouse uses the same top-level keys and a `k8s` section instead of `compose`:
+
+```yaml
+version: 1
+domain: bifract.example.com
+access:
+  mode: mtls-app
+
+k8s:
   size_profile: Small               # Dev | X-Small | Small | Medium | Large | X-Large
   ch_shards: 2
   ch_storage_gb: 500
   output_dir: ./bifract-k8s
 ```
 
+`sudo` clears the environment by default, so with a `*_env` reference run `sudo -E bifract ...` or use a `*_file` reference instead.
+
 ## Fields
 
 | Field | Default | Notes |
 |-------|---------|-------|
 | `version` | none | Must be `1`. |
-| `domain` | none | Bare hostname or IP, no scheme or path. |
+| `domain` | none | Bare hostname or IPv4 address, no scheme or path. |
 | `access.mode` | none | `allowed_ips` is required for `restrict-app` and `restrict-all`, and rejected for the other modes. |
 | `clickhouse.backend` | `bundled` | Connection fields are only accepted with `external`. |
 | `clickhouse.deployment` | inferred | `cloud` implies TLS and port 9440. |
+| `clickhouse.host`, `hosts` | none | Hostname or IPv4 address with an optional `:port`. |
 | `clickhouse.secure` | `false` | TLS for a self-managed server. |
 | `clickhouse.database` | `logs` | |
 | `clickhouse.cluster`, `fanout_cluster` | none | Self-managed clusters only. |
@@ -86,7 +100,7 @@ A `*_file` reference is read with trailing newlines removed. A `*_env` reference
 | `stdout` | Prints it in the summary, as the wizard does. Avoid this where output is logged. |
 | `none` | Writes and prints nothing. Only allowed with `secrets.admin_password_file` or `admin_password_env`, since a generated password would be lost. |
 
-A supplied admin password is never written or printed. If `admin-password` already exists from an earlier install, the install stops before deploying anything; remove the file and run again.
+A supplied admin password is never written or printed. If `admin-password` already exists from an earlier install, the install stops before deploying anything; remove the file and run again. A generated password file is removed again when the install fails before writing its configuration.
 
 ## Replaying a Wizard Install
 

@@ -123,7 +123,7 @@ func parseTimestampWithFormat(val, format string) time.Time {
 // fraction is read as digits rather than through a float so sub-second precision
 // survives exactly (Velociraptor emits 1791581172.686968).
 func parseEpoch(val string, unit time.Duration) (time.Time, bool) {
-	intPart, fracPart, hasFrac := strings.Cut(val, ".")
+	intPart, fracPart, hasFrac := strings.Cut(strings.TrimSpace(val), ".")
 	whole, err := strconv.ParseInt(intPart, 10, 64)
 	if err != nil {
 		return time.Time{}, false
@@ -153,8 +153,20 @@ func parseEpoch(val string, unit time.Duration) (time.Time, bool) {
 		}
 	}
 	perSec := int64(time.Second / unit)
+	// Outside the range the timestamp column stores, the value is in another unit (a
+	// millisecond count read as seconds) or garbage, so let the next field be tried.
+	// Checked on whole seconds, before time.Unix can overflow.
+	if secs := whole / perSec; secs < minEpochSeconds || secs > maxEpochSeconds {
+		return time.Time{}, false
+	}
 	return time.Unix(whole/perSec, whole%perSec*int64(unit)+fracNanos), true
 }
+
+// The DateTime64(3) timestamp column holds 1900-01-01 through 2299-12-31.
+var (
+	minEpochSeconds = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	maxEpochSeconds = time.Date(2299, 12, 31, 23, 59, 59, 0, time.UTC).Unix()
+)
 
 // fallbackTimestampLayouts are tried, in order, on the common timestamp field names
 // when no configured field matched.

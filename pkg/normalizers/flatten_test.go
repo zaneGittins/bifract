@@ -900,3 +900,57 @@ func TestStringifyValue(t *testing.T) {
 		}
 	}
 }
+
+// Regression: a fallback full path equal to a top-level field's name was settled by
+// map order, silently losing one value.
+func TestFlattenLeaf_FallbackClashDeterministic(t *testing.T) {
+	fields := map[string]string{"a_b": "top", "a": `{"b":"1"}`, "c": `{"b":"2"}`}
+	nested := map[string]bool{"a": true, "c": true}
+	for i := 0; i < 50; i++ {
+		got := FlattenFields(fields, FlattenLeaf, nested)
+		if got["a_b"] != "top" || got["a_b_2"] != "1" || got["c_b"] != "2" {
+			t.Fatalf("top-level field must keep its name and the clash be numbered, got %v", got)
+		}
+	}
+}
+
+// Regression: full paths that only differ before snake_case collapsed into one name.
+func TestFlattenFull_RenameClashDeterministic(t *testing.T) {
+	norm := (&Normalizer{Transforms: []Transform{TransformFlattenFull, TransformSnakeCase, TransformLowercase}}).Compile()
+	fields := map[string]string{"x": `{"ProcessID":"1","ProcessId":"2"}`}
+	for i := 0; i < 50; i++ {
+		got := norm.ApplyTransformsWithNested(fields, map[string]bool{"x": true})
+		if got["x_process_id"] != "1" || got["x_process_id_2"] != "2" {
+			t.Fatalf("expected path order to settle the clash losslessly, got %v", got)
+		}
+	}
+}
+
+// Several fields mapping to one target used to be settled by map order, so the stored
+// value could differ from run to run and from the editor's preview.
+func TestFieldMappingCollisionDeterministic(t *testing.T) {
+	n := &Normalizer{FieldMappings: []FieldMapping{{Sources: []string{"computer", "host"}, Target: "computer_name"}}}
+	c := n.Compile()
+	cases := []struct {
+		fields map[string]string
+		want   string
+	}{
+		{map[string]string{"host": "from-host", "computer": "from-computer"}, "from-computer"},
+		{map[string]string{"host": "from-host", "computer_name": "already-named"}, "already-named"},
+	}
+	for _, tc := range cases {
+		obj := map[string]interface{}{}
+		for k, v := range tc.fields {
+			obj[k] = v
+		}
+		for i := 0; i < 50; i++ {
+			if got := c.ApplyTransforms(tc.fields)["computer_name"]; got != tc.want {
+				t.Fatalf("%v: ingestion kept %q, want %q", tc.fields, got, tc.want)
+			}
+		}
+		trace := n.Trace(obj)
+		if len(trace.Collisions["computer_name"]) != 2 {
+			t.Errorf("%v: collision not surfaced: %v", tc.fields, trace.Collisions)
+		}
+	}
+}

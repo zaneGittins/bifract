@@ -177,7 +177,11 @@ func ValidateDomain(d string) error {
 	if d == "" {
 		return fmt.Errorf("a domain is required")
 	}
-	if net.ParseIP(d) != nil {
+	if ip := net.ParseIP(d); ip != nil {
+		// An IPv6 literal is not a valid Caddy site address or CORS origin unbracketed.
+		if ip.To4() == nil {
+			return fmt.Errorf("IPv6 address %q is not supported as the domain; use a hostname or IPv4 address", d)
+		}
 		return nil
 	}
 	if len(d) > 253 {
@@ -242,6 +246,9 @@ func ParseCHEndpoint(v string) (string, int, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return "", 0, fmt.Errorf("a ClickHouse host is required")
+	}
+	if strings.Contains(v, "[") || strings.Count(v, ":") > 1 {
+		return "", 0, fmt.Errorf("IPv6 ClickHouse address %q is not supported; use a hostname or IPv4 address", v)
 	}
 	h, p, err := net.SplitHostPort(v)
 	if err != nil {
