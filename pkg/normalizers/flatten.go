@@ -48,7 +48,8 @@ func arrayOfObjects(arr []interface{}) bool {
 //     with another uses its full underscore-joined path instead.
 //   - FlattenFull: uses the parent key + "_" + child key (underscore-joined).
 func FlattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool) map[string]string {
-	return flattenFields(fields, mode, nestedKeys, nil)
+	out, _ := flattenFields(fields, mode, nestedKeys, nil, nil)
+	return out
 }
 
 // leaf is one scalar produced by flattening, with its leaf-mode name and full path.
@@ -60,9 +61,17 @@ type leaf struct {
 // collisions are judged on renamed keys, so names that only differ before the
 // rename (ProcessID vs ProcessId under snake_case) both fall back to full paths
 // rather than one overwriting the other at random.
-func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool, rename func(string) string) map[string]string {
+//
+// Leaves matched by paths are returned separately under their targets, untouched by
+// rename. Their targets are reserved: any other leaf named the same falls back to its
+// full path, as on any collision.
+func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool, rename func(string) string, paths *pathNode) (map[string]string, map[string]pinnedField) {
 	if mode == FlattenNone {
-		return fields
+		return fields, nil
+	}
+	var pc *pinCollector
+	if paths != nil {
+		pc = &pinCollector{}
 	}
 	if rename == nil {
 		rename = func(s string) string { return s }
@@ -90,15 +99,25 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 		} else {
 			isNested = len(val) > 1 && val[0] == '{'
 		}
+		node := paths.child(key)
 		if isNested && len(val) > 1 && val[0] == '{' {
 			var obj map[string]interface{}
 			if err := json.Unmarshal([]byte(val), &obj); err == nil {
-				flattenObject(obj, safeKey, &leaves, 0, &truncated, &truncReason)
+				flattenObject(obj, safeKey, &leaves, 0, &truncated, &truncReason, node, pc)
 				continue
 			}
 		}
 
-		leaves = append(leaves, leaf{name: safeKey, path: safeKey, value: val})
+		l := leaf{name: safeKey, path: safeKey, value: val}
+		if node != nil && node.target != "" {
+			pc.pin(node, l, &leaves)
+			continue
+		}
+		leaves = append(leaves, l)
+	}
+	var pinned map[string]pinnedField
+	if pc != nil {
+		pinned = pc.pinned
 	}
 
 	out := make(map[string]string, len(leaves)+2)
@@ -108,7 +127,10 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 		}
 	} else {
 		names := make([]string, len(leaves))
-		counts := make(map[string]int, len(leaves))
+		counts := make(map[string]int, len(leaves)+len(pinned))
+		for target := range pinned {
+			counts[target]++
+		}
 		for i, l := range leaves {
 			names[i] = rename(l.name)
 			counts[names[i]]++
@@ -126,12 +148,13 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 		out[rename("_bifract_truncation_reason")] = truncReason
 	}
 
-	return out
+	return out, pinned
 }
 
 // flattenObject recursively walks a parsed JSON object and appends its scalar
-// leaves.
-func flattenObject(obj map[string]interface{}, prefix string, leaves *[]leaf, depth int, truncated *bool, truncReason *string) {
+// leaves. node is the path-source position matching obj (nil when no path continues
+// here) and pc collects the leaves paths claim.
+func flattenObject(obj map[string]interface{}, prefix string, leaves *[]leaf, depth int, truncated *bool, truncReason *string, node *pathNode, pc *pinCollector) {
 	if depth >= MaxFlattenDepth {
 		*truncated = true
 		*truncReason = "max_depth"
@@ -152,8 +175,9 @@ func flattenObject(obj map[string]interface{}, prefix string, leaves *[]leaf, de
 			fullPath = prefix + "_" + safeKey
 		}
 
+		child := node.child(key)
 		if v, ok := value.(map[string]interface{}); ok {
-			flattenObject(v, fullPath, leaves, depth+1, truncated, truncReason)
+			flattenObject(v, fullPath, leaves, depth+1, truncated, truncReason, child, pc)
 			continue
 		}
 		// Expand arrays of objects element-wise so nested record fields become leaf
@@ -161,12 +185,18 @@ func flattenObject(obj map[string]interface{}, prefix string, leaves *[]leaf, de
 		// collision. Other arrays fall through to scalar (whole-value) handling.
 		if arr, ok := value.([]interface{}); ok && len(arr) <= MaxArrayExpand && arrayOfObjects(arr) {
 			for i, el := range arr {
-				flattenObject(el.(map[string]interface{}), fullPath+"_"+strconv.Itoa(i), leaves, depth+1, truncated, truncReason)
+				idx := strconv.Itoa(i)
+				flattenObject(el.(map[string]interface{}), fullPath+"_"+idx, leaves, depth+1, truncated, truncReason, child.child(idx), pc)
 			}
 			continue
 		}
 
-		*leaves = append(*leaves, leaf{name: safeKey, path: fullPath, value: stringifyValue(value)})
+		l := leaf{name: safeKey, path: fullPath, value: stringifyValue(value)}
+		if child != nil && child.target != "" {
+			pc.pin(child, l, leaves)
+			continue
+		}
+		*leaves = append(*leaves, l)
 	}
 }
 

@@ -216,6 +216,9 @@ func validateRequest(name string, transforms []Transform, mappings []FieldMappin
 			return fmt.Errorf("field mapping target is required")
 		}
 	}
+	if err := ValidateFieldMappings(transforms, mappings); err != nil {
+		return err
+	}
 	for _, vm := range valueMappings {
 		if strings.TrimSpace(vm.FromField) == "" {
 			return fmt.Errorf("derived field requires a source field")

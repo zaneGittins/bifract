@@ -29,6 +29,9 @@ func LoadNormalizer(path string) (*normalizers.CompiledNormalizer, error) {
 	if export.Name == "" {
 		return nil, fmt.Errorf("%s: normalizer is missing a name", path)
 	}
+	if err := normalizers.ValidateFieldMappings(export.Transforms, export.FieldMappings); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 
 	n := normalizers.Normalizer{
 		Name:            export.Name,
