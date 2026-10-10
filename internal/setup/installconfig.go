@@ -400,6 +400,20 @@ func (p installPlan) reportAdminPassword(dir, password string) (string, bool, er
 	}
 }
 
+// discardAdminPassword removes the generated password file reportAdminPassword wrote,
+// for an install that failed before committing to it. secrets is the file that holds
+// the password's hash (.env, secrets.yaml): once it exists the install blocks a rerun
+// on its own, and the password file is the only record of the password, so it stays.
+func (p installPlan) discardAdminPassword(dir, secrets string) {
+	if p.adminPassword != "" || p.passwordOutput != AdminPasswordToFile {
+		return
+	}
+	if _, err := os.Stat(secrets); err == nil {
+		return
+	}
+	os.Remove(filepath.Join(dir, AdminPasswordFileName))
+}
+
 // createSecretFile creates path with 0600 permissions, refusing to follow or
 // replace anything already there.
 func createSecretFile(path, content string) error {

@@ -102,6 +102,11 @@ func (t ClickHouseTarget) Validate() error {
 	if t.Port <= 0 || t.Port > 65535 {
 		return fmt.Errorf("port %d is out of range", t.Port)
 	}
+	for _, h := range splitCSV(t.Hosts) {
+		if _, _, err := ParseCHEndpoint(h); err != nil {
+			return err
+		}
+	}
 	env := storage.ClickHouseEnv{
 		Deployment:    storage.DeploymentKind(t.Deployment),
 		Host:          t.Host,
