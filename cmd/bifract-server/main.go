@@ -298,6 +298,28 @@ func main() {
 		}
 	}
 
+	// Convert tables provisioned before their per-fractal partition keys, so clearing a
+	// fractal drops partitions instead of running mutations. One replica does it under an
+	// advisory lock; it is resumable, so a restart mid-copy carries on where it stopped.
+	go func() {
+		ctx := context.Background()
+		unlock, ok := pg.TryAdvisoryLock(ctx, storage.LockRepartition)
+		if !ok {
+			return
+		}
+		defer unlock()
+		keep, err := pg.FractalIDSet(ctx)
+		if err != nil {
+			log.Printf("Warning: partition conversion: list fractals: %v", err)
+			return
+		}
+		// Rows under an empty fractal_id belong to the default fractal.
+		keep[""] = true
+		if err := db.ConvertPartitioning(ctx, keep); err != nil {
+			log.Printf("Warning: partition conversion incomplete, will resume on next start: %v", err)
+		}
+	}()
+
 	// Ensure every logs materialized view runs with DEFINER privileges, then provision
 	// the least-privilege ingest ClickHouse user. Together these let the ingest tier
 	// insert (through the MVs) with no read access to log data, so a compromised ingest

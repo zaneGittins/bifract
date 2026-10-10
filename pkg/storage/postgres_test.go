@@ -12,6 +12,7 @@ func TestAdvisoryLockIDsAreDistinct(t *testing.T) {
 		"LockSchemaFieldSweep": LockSchemaFieldSweep,
 		"LockQuotaRollover":    LockQuotaRollover,
 		"LockModelState":       LockModelState,
+		"LockRepartition":      LockRepartition,
 	}
 	seen := map[int64]string{}
 	for name, id := range ids {

@@ -893,6 +893,24 @@ func (c *PostgresClient) ClearLogDataState(ctx context.Context, withComments boo
 	return tx.Commit()
 }
 
+// FractalIDSet returns the id of every fractal.
+func (c *PostgresClient) FractalIDSet(ctx context.Context) (map[string]bool, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT id::text FROM fractals`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
 // ModelIDs lists the analytics model ids, for expanding into the ClickHouse objects
 // each model owns.
 func (c *PostgresClient) ModelIDs(ctx context.Context) ([]string, error) {
@@ -1494,6 +1512,9 @@ const (
 	// it every replica reads the same window and inserts the same aggregates, which
 	// an AggregatingMergeTree sums rather than deduplicates.
 	LockModelState int64 = 0x6269667261637405
+	// LockRepartition elects the replica that converts tables to their per-fractal
+	// partition keys. Two converters copying the same fractal would duplicate its rows.
+	LockRepartition int64 = 0x6269667261637406
 )
 
 func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unlock func(), acquired bool) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -154,14 +155,14 @@ var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edge
 // ClearEndpointAnalysisBaselines empties the baseline tables on every node. The MVs
 // stay attached, so the baselines rebuild from the next insert.
 func (c *ClickHouseClient) ClearEndpointAnalysisBaselines(ctx context.Context) error {
-	return c.truncateOnEveryShard(ctx, endpointAnalysisTables, "clear endpoint baselines")
+	return c.truncateOnEveryShard(ctx, withConversionTables(endpointAnalysisTables), "clear endpoint baselines")
 }
 
 // ClearAllLogData empties every log table and everything derived from it on every node,
 // including the data tables of the given analytics models: the same set a log-data
 // reset drops, minus the schema.
 func (c *ClickHouseClient) ClearAllLogData(ctx context.Context, modelIDs []string) error {
-	tables := append([]string{}, resetShardedTables...)
+	tables := withConversionTables(resetShardedTables)
 	for _, id := range modelIDs {
 		tables = append(tables, ModelCHDataTables(id)...)
 	}
@@ -179,4 +180,17 @@ func (c *ClickHouseClient) truncateOnEveryShard(ctx context.Context, tables []st
 		}
 	}
 	return nil
+}
+
+// withConversionTables adds the copy-holding working tables of any table mid-conversion
+// (see ConvertPartitioning), so a clear cannot have earlier rows copied back afterwards.
+// TRUNCATE ... IF EXISTS makes them free when no conversion is running.
+func withConversionTables(tables []string) []string {
+	out := append([]string{}, tables...)
+	for _, t := range repartitionTargets {
+		if slices.Contains(tables, t.table) {
+			out = append(out, t.table+repartOld, t.table+repartStage)
+		}
+	}
+	return out
 }
