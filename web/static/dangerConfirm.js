@@ -13,6 +13,8 @@ const DangerConfirm = {
     //   onConfirm: async; the dialog stays open and busy until it settles, closes on
     //   success, and shows a thrown error inline so the user can retry or cancel.
     open(opts) {
+        // A second destructive action must not replace one that is still running.
+        if (this._busy) return;
         const els = this._build();
         this._opts = opts;
         this._busy = false;
@@ -81,6 +83,16 @@ const DangerConfirm = {
         }
     },
 
+    // Keeps Tab inside the dialog, so focus cannot reach a trigger behind the overlay.
+    _trapFocus(e) {
+        const focusable = [...this._els.modal.querySelectorAll('input, button, select, textarea, [tabindex]:not([tabindex="-1"])')]
+            .filter(el => !el.disabled && el.offsetParent !== null);
+        if (!focusable.length) return;
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    },
+
     _build() {
         if (this._els) return this._els;
         const modal = document.createElement('div');
@@ -126,6 +138,7 @@ const DangerConfirm = {
         modal.addEventListener('keydown', e => {
             if (e.key === 'Escape') { e.stopPropagation(); this.close(); }
             if (e.key === 'Enter' && e.target === els.input) { e.preventDefault(); this._submit(); }
+            if (e.key === 'Tab') this._trapFocus(e);
         });
         return els;
     },
