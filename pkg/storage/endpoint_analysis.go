@@ -157,10 +157,15 @@ func (c *ClickHouseClient) ClearEndpointAnalysisBaselines(ctx context.Context) e
 	return c.truncateOnEveryShard(ctx, endpointAnalysisTables, "clear endpoint baselines")
 }
 
-// ClearAllLogData empties every log table and everything derived from it on every node:
-// the same set a log-data reset drops, minus the schema.
-func (c *ClickHouseClient) ClearAllLogData(ctx context.Context) error {
-	return c.truncateOnEveryShard(ctx, resetShardedTables, "clear log data")
+// ClearAllLogData empties every log table and everything derived from it on every node,
+// including the data tables of the given analytics models: the same set a log-data
+// reset drops, minus the schema.
+func (c *ClickHouseClient) ClearAllLogData(ctx context.Context, modelIDs []string) error {
+	tables := append([]string{}, resetShardedTables...)
+	for _, id := range modelIDs {
+		tables = append(tables, ModelCHDataTables(id)...)
+	}
+	return c.truncateOnEveryShard(ctx, tables, "clear log data")
 }
 
 // truncateOnEveryShard empties tables on every node. TRUNCATE removes whole parts

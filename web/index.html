@@ -3496,25 +3496,6 @@
         </div>
     </div>
 
-    <!-- Status Modal -->
-    <div id="statusModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>System Status</h2>
-                <button id="closeStatusBtn" class="close-btn">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="detailedStatus"></div>
-
-                <div class="status-section danger-section admin-only" style="display: none;">
-                    <h3>Danger Zone</h3>
-                    <p class="warning-text">This action cannot be undone. All logs will be permanently deleted.</p>
-                    <button id="clearLogsBtn" class="danger-btn">Clear All Logs</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Fractal Management Modals -->
     <div id="createFractalModal" class="modal">
         <div class="modal-content">
@@ -3532,7 +3513,7 @@
                     </div>
                     <div class="form-group">
                         <label for="newFractalName">Name</label>
-                        <input type="text" id="newFractalName" name="name" placeholder="Enter fractal name" required pattern="[A-Za-z][A-Za-z0-9_-]*" title="Letters, numbers, hyphens, and underscores only. Must start with a letter.">
+                        <input type="text" id="newFractalName" name="name" placeholder="Enter fractal name" required pattern="[A-Za-z][A-Za-z0-9_\-]*" title="Letters, numbers, hyphens, and underscores only. Must start with a letter.">
                         <small class="form-hint">Letters, numbers, hyphens, and underscores only.</small>
                     </div>
                     <div class="form-group">
@@ -3559,7 +3540,7 @@
                 <form id="editFractalForm">
                     <div class="form-group">
                         <label for="editFractalName">Name</label>
-                        <input type="text" id="editFractalName" name="name" placeholder="Enter fractal name" required pattern="[A-Za-z][A-Za-z0-9_-]*" title="Letters, numbers, hyphens, and underscores only. Must start with a letter.">
+                        <input type="text" id="editFractalName" name="name" placeholder="Enter fractal name" required pattern="[A-Za-z][A-Za-z0-9_\-]*" title="Letters, numbers, hyphens, and underscores only. Must start with a letter.">
                         <small class="form-hint">Letters, numbers, hyphens, and underscores only.</small>
                     </div>
                     <div class="form-group">
@@ -3572,145 +3553,6 @@
                     </div>
                     <div id="editFractalError" class="error-message" style="display: none;"></div>
                 </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- Fractal Details/Management Modal -->
-    <div id="fractalDetailsModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 id="fractalDetailsModalTitle">Fractal Details</h2>
-                <button class="close-btn" onclick="FractalManagement.hideFractalDetailsModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div class="fractal-details-grid">
-                    <div class="detail-section">
-                        <h3>Basic Information</h3>
-                        <div class="detail-row">
-                            <span class="detail-label">Name:</span>
-                            <span id="detailFractalName" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Description:</span>
-                            <span id="detailFractalDescription" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Created by:</span>
-                            <span id="detailFractalCreatedBy" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Created:</span>
-                            <span id="detailFractalCreatedAt" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Last updated:</span>
-                            <span id="detailFractalUpdatedAt" class="detail-value"></span>
-                        </div>
-                    </div>
-
-                    <div class="detail-section">
-                        <h3>Statistics</h3>
-                        <div class="detail-row highlight">
-                            <span class="detail-label">Total logs:</span>
-                            <span id="detailFractalLogCount" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row highlight">
-                            <span class="detail-label">Storage size:</span>
-                            <span id="detailFractalSizeBytes" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Earliest log:</span>
-                            <span id="detailFractalEarliestLog" class="detail-value"></span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label">Latest log:</span>
-                            <span id="detailFractalLatestLog" class="detail-value"></span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="fractal-settings">
-                    <h3>Retention</h3>
-
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="fractalRetentionSelect" class="setting-label">Log Retention Period</label>
-                            <p class="setting-description">Automatically delete logs this long after they were ingested. Replayed history is kept for its full window rather than dropped on arrival. Runs hourly. Default is unlimited.</p>
-                        </div>
-                        <select id="fractalRetentionSelect" class="setting-select">
-                            <option value="">Unlimited</option>
-                            <option value="7">7 days</option>
-                            <option value="14">14 days</option>
-                            <option value="30">30 days</option>
-                            <option value="90">90 days</option>
-                            <option value="180">180 days</option>
-                            <option value="365">365 days</option>
-                        </select>
-                    </div>
-
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="fractalArchiveRetentionInput" class="setting-label">Archive Retention Period</label>
-                            <p class="setting-description">Drop archived data older than this many days. Applies to the Iceberg archive only, independently of log retention above. Leave blank to keep forever.</p>
-                        </div>
-                        <input type="number" id="fractalArchiveRetentionInput" class="setting-input" min="1" step="1" placeholder="Keep forever">
-                    </div>
-                </div>
-
-                <div class="settings-section">
-                    <h3>Disk Quota</h3>
-
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="fractalQuotaInput" class="setting-label">Maximum Disk Usage</label>
-                            <p class="setting-description">Limit how much disk this fractal can consume (measured as raw log bytes). Leave empty for no limit.</p>
-                        </div>
-                        <div class="quota-input-group">
-                            <input type="number" id="fractalQuotaInput" class="setting-input" min="0" step="1" placeholder="No limit" style="width:90px;">
-                            <span class="quota-unit">GB</span>
-                        </div>
-                    </div>
-
-                    <div class="setting-item">
-                        <div class="setting-info">
-                            <label for="fractalQuotaActionSelect" class="setting-label">When Quota is Reached</label>
-                            <p class="setting-description">Reject stops accepting new logs and returns 429. Rollover deletes the oldest logs to make room.</p>
-                        </div>
-                        <select id="fractalQuotaActionSelect" class="setting-select">
-                            <option value="reject">Reject new logs</option>
-                            <option value="rollover">Rollover (delete oldest)</option>
-                        </select>
-                    </div>
-
-                    <div class="setting-item" style="justify-content:flex-end;">
-                        <button onclick="FractalManagement.saveDiskQuota()" class="btn-primary btn-sm">Save Quota</button>
-                    </div>
-                </div>
-
-                <div class="management-actions">
-                    <h3>Management Actions</h3>
-                    <div class="action-buttons">
-                        <button id="refreshFractalStatsBtn" onclick="FractalManagement.refreshSingleFractalStats()" class="btn-secondary">
-                            Refresh Statistics
-                        </button>
-                        <button id="deleteFractalBtn" onclick="FractalManagement.confirmDeleteFractal()" class="btn-danger">
-                            Delete Fractal
-                        </button>
-                    </div>
-                </div>
-
-                <div class="danger-section">
-                    <h3>Danger Zone</h3>
-                    <div class="danger-warning">
-                        <p class="warning-text">This action cannot be undone. All logs for this fractal will be permanently deleted, but the fractal structure will remain.</p>
-                        <button id="clearFractalLogsBtn" onclick="FractalManagement.confirmClearFractalLogs()" class="danger-btn">
-                            Clear Fractal Logs
-                        </button>
-                    </div>
-                </div>
-
-                <div id="fractalDetailsError" class="error-message" style="display: none;"></div>
             </div>
         </div>
     </div>

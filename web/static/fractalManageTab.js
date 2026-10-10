@@ -275,7 +275,8 @@ const FractalManageTab = {
     },
 
     deletePrism() {
-        if (!this._writeTargetId()) return;
+        const id = this._writeTargetId();
+        if (!id) return;
         const name = this.currentFractal.name;
         DangerConfirm.open({
             title: 'Delete Prism',
@@ -284,18 +285,19 @@ const FractalManageTab = {
             confirmLabel: 'Delete Prism',
             busyLabel: 'Deleting...',
             onConfirm: async () => {
-                const data = await HttpUtils.safeFetch(`/api/v1/prisms/${this._requireTargetId()}`, { method: 'DELETE' });
+                const data = await HttpUtils.safeFetch(`/api/v1/prisms/${this._requireUnchanged(id)}`, { method: 'DELETE' });
                 if (data && data.success === false) throw new Error(data.error || 'Failed to delete prism');
                 if (window.App) App.showMainView('fractalListing');
             },
         });
     },
 
-    // The dialog does not block the page, so re-check before acting that the fractal
-    // in context is still the one the user typed the name of.
-    _requireTargetId() {
-        const id = this._writeTargetId();
-        if (!id) throw new Error('The selected fractal changed. Reopen its settings and try again.');
+    // The dialog does not block the page, so the selection can change while it is
+    // open. Act only on the fractal whose name the user typed, captured at open.
+    _requireUnchanged(id) {
+        if (window.FractalContext?.currentFractal?.id !== id) {
+            throw new Error('The selected fractal changed. Reopen its settings and try again.');
+        }
         return id;
     },
 
@@ -327,12 +329,7 @@ const FractalManageTab = {
         document.getElementById('manageFractalUpdatedAt').textContent = TZ.format(fractal.updated_at, 'friendly');
 
         // Populate statistics
-        document.getElementById('manageFractalLogCount').textContent = (fractal.log_count || 0).toLocaleString();
-        document.getElementById('manageFractalSizeBytes').textContent = this.formatBytes(fractal.size_bytes || 0);
-        document.getElementById('manageFractalEarliestLog').textContent =
-            fractal.earliest_log ? TZ.format(fractal.earliest_log, 'friendly') : 'None';
-        document.getElementById('manageFractalLatestLog').textContent =
-            fractal.latest_log ? TZ.format(fractal.latest_log, 'friendly') : 'None';
+        this._renderStats(fractal);
 
         // Hide delete action for default/system fractals
         const isProtected = fractal.is_default || fractal.is_system;
@@ -381,7 +378,8 @@ const FractalManageTab = {
     },
 
     confirmDeleteFractal() {
-        if (!this.currentFractal) return;
+        const id = this._writeTargetId();
+        if (!id) return;
         const fractal = this.currentFractal;
         if (fractal.is_default || fractal.is_system) {
             if (window.Toast) Toast.error('Cannot Delete', 'System fractals cannot be deleted');
@@ -396,10 +394,19 @@ const FractalManageTab = {
             confirmLabel: 'Delete Fractal',
             busyLabel: 'Deleting...',
             onConfirm: async () => {
-                await HttpUtils.safeFetch(`/api/v1/fractals/${this._requireTargetId()}`, { method: 'DELETE' });
+                await HttpUtils.safeFetch(`/api/v1/fractals/${this._requireUnchanged(id)}`, { method: 'DELETE' });
                 if (window.App) App.showMainView('fractalListing');
             },
         });
+    },
+
+    _renderStats(fractal) {
+        document.getElementById('manageFractalLogCount').textContent = (fractal.log_count || 0).toLocaleString();
+        document.getElementById('manageFractalSizeBytes').textContent = this.formatBytes(fractal.size_bytes || 0);
+        document.getElementById('manageFractalEarliestLog').textContent =
+            fractal.earliest_log ? TZ.format(fractal.earliest_log, 'friendly') : 'None';
+        document.getElementById('manageFractalLatestLog').textContent =
+            fractal.latest_log ? TZ.format(fractal.latest_log, 'friendly') : 'None';
     },
 
     _logSummary(fractal) {
@@ -484,24 +491,25 @@ const FractalManageTab = {
     },
 
     confirmClearFractalLogs() {
-        if (!this.currentFractal) return;
+        const id = this._writeTargetId();
+        if (!id) return;
         const fractal = this.currentFractal;
         DangerConfirm.open({
             title: 'Clear Fractal Logs',
             body: [
                 `This permanently deletes ${this._logSummary(fractal)} from "${fractal.name}", along with their comments.`,
-                { text: 'The fractal, its alerts and its settings remain. Large fractals finish deleting in the background.', muted: true },
+                { text: 'The fractal, its alerts and its settings remain.', muted: true },
             ],
             phrase: fractal.name,
             confirmLabel: 'Clear Logs',
             busyLabel: 'Clearing...',
             onConfirm: async () => {
-                const id = this._requireTargetId();
-                const data = await HttpUtils.safeFetch(`/api/v1/logs?fractal_id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+                const target = encodeURIComponent(this._requireUnchanged(id));
+                const data = await HttpUtils.safeFetch(`/api/v1/logs?fractal_id=${target}`, { method: 'DELETE' });
                 if (data && data.success === false) throw new Error(data.error || 'Failed to clear logs');
-                fractal.log_count = 0;
-                fractal.size_bytes = 0;
-                if (window.Toast) Toast.success('Logs Cleared', `All logs in "${fractal.name}" are being deleted.`);
+                Object.assign(fractal, { log_count: 0, size_bytes: 0, earliest_log: null, latest_log: null });
+                this._renderStats(fractal);
+                if (window.Toast) Toast.success('Logs Cleared', `All logs in "${fractal.name}" were deleted.`);
             },
         });
     },
@@ -514,12 +522,6 @@ const FractalManageTab = {
         }
     },
 
-    hideError() {
-        const errorDiv = document.getElementById('manageFractalError');
-        if (errorDiv) {
-            errorDiv.style.display = 'none';
-        }
-    },
 
     formatBytes(bytes) {
         if (bytes === 0) return '0 B';

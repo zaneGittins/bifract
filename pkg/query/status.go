@@ -269,31 +269,24 @@ func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := h.db.ClearAllLogData(r.Context()); err != nil {
+	ctx := context.WithoutCancel(r.Context())
+	modelIDs, err := h.pg.ModelIDs(ctx)
+	if err != nil {
+		log.Printf("clear all logs: list analytics models: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to clear logs")
+		return
+	}
+	if err := h.db.ClearAllLogData(ctx, modelIDs); err != nil {
 		log.Printf("clear all logs failed: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to clear logs")
 		return
 	}
-	if h.pg != nil {
-		if err := h.pg.DeleteAllComments(r.Context()); err != nil {
-			log.Printf("logs cleared but deleting comments failed: %v", err)
-			api.WriteError(w, http.StatusInternalServerError, "Logs were cleared but their comments could not be deleted")
-			return
-		}
-		rows, err := h.pg.Query(r.Context(),
-			`UPDATE fractals SET log_count = 0, size_bytes = 0, earliest_log = NULL, latest_log = NULL, updated_at = NOW() RETURNING id`)
-		if err != nil {
-			log.Printf("failed to zero fractal stats: %v", err)
-		} else {
-			for rows.Next() {
-				var id string
-				if rows.Scan(&id) == nil && h.quotaClearer != nil {
-					h.quotaClearer.NotifyCleared(id)
-				}
-			}
-			rows.Close()
-		}
+	if err := h.pg.ClearLogDataState(ctx, true); err != nil {
+		log.Printf("logs cleared but resetting their Postgres state failed: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Logs were cleared but their comments and stats could not be reset")
+		return
 	}
+	h.notifyAllCleared(ctx)
 	log.Printf("[Admin] all logs cleared by %s", auth.AttributionUsername(r.Context()))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -301,40 +294,64 @@ func (h *StatusHandler) HandleClearLogs(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// notifyAllCleared resets every fractal's in-memory quota counters after a global
+// clear, so usage reflects the wipe without waiting for the next refresh.
+func (h *StatusHandler) notifyAllCleared(ctx context.Context) {
+	if h.quotaClearer == nil {
+		return
+	}
+	rows, err := h.pg.Query(ctx, `SELECT id FROM fractals`)
+	if err != nil {
+		log.Printf("list fractals for quota reset: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			h.quotaClearer.NotifyCleared(id)
+		}
+	}
+}
+
+// clearFractalTimeout bounds a fractal clear: one batched DROP PARTITION per table per
+// shard, all metadata operations, so this is generous.
+const clearFractalTimeout = 5 * time.Minute
+
 func (h *StatusHandler) clearFractalLogs(w http.ResponseWriter, r *http.Request, fractalID string) {
-	// Reset quota counters immediately so the fractal can accept new logs
-	// right away rather than waiting for the next stats refresh.
+	var isDefault bool
+	if err := h.pg.QueryRow(r.Context(), "SELECT is_default FROM fractals WHERE id = $1", fractalID).Scan(&isDefault); err != nil {
+		api.WriteError(w, http.StatusNotFound, "Fractal not found")
+		return
+	}
+
+	// A client disconnect must not abandon the clear half way through.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), clearFractalTimeout)
+	defer cancel()
+
+	// The default fractal also owns rows stored under an empty fractal_id.
+	if err := h.db.DeleteLogsByFractalID(ctx, fractalID, isDefault); err != nil {
+		log.Printf("clear logs failed for fractal %s: %v", fractalID, err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to clear logs")
+		return
+	}
 	if h.quotaClearer != nil {
 		h.quotaClearer.NotifyCleared(fractalID)
 	}
-
-	// Zero out cached stats so the UI reflects the clear immediately.
-	if h.pg != nil {
-		if _, err := h.pg.Exec(r.Context(),
-			`UPDATE fractals SET log_count = 0, size_bytes = 0, earliest_log = NULL, latest_log = NULL, updated_at = NOW() WHERE id = $1`,
-			fractalID); err != nil {
-			log.Printf("failed to zero stats for fractal %s: %v", fractalID, err)
-		}
+	if _, err := h.pg.Exec(ctx,
+		`UPDATE fractals SET log_count = 0, size_bytes = 0, earliest_log = NULL, latest_log = NULL, updated_at = NOW() WHERE id = $1`,
+		fractalID); err != nil {
+		log.Printf("failed to zero stats for fractal %s: %v", fractalID, err)
 	}
-
-	// Dropping a fractal with many ingest days takes one statement per partition per
-	// shard, so it runs in the background rather than holding the request open.
-	go func(id string) {
-		ctx := context.Background()
-		if err := h.db.DeleteLogsByFractalID(ctx, id); err != nil {
-			log.Printf("background delete failed for fractal %s: %v", id, err)
-			return
-		}
-		if h.pg != nil {
-			if err := h.pg.DeleteCommentsByFractalID(ctx, id); err != nil {
-				log.Printf("logs cleared but deleting comments failed for fractal %s: %v", id, err)
-			}
-		}
-	}(fractalID)
+	if err := h.pg.DeleteCommentsByFractalID(ctx, fractalID); err != nil {
+		log.Printf("logs cleared but deleting comments failed for fractal %s: %v", fractalID, err)
+		api.WriteError(w, http.StatusInternalServerError, "Logs were cleared but their comments could not be deleted")
+		return
+	}
 
 	log.Printf("[Admin] logs for fractal %s cleared by %s", fractalID, auth.AttributionUsername(r.Context()))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
-		"message": fmt.Sprintf("All logs and associated comments for fractal %s are being cleared", fractalID),
+		"message": fmt.Sprintf("All logs and associated comments for fractal %s have been cleared", fractalID),
 	})
 }

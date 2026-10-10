@@ -218,6 +218,12 @@ func ModelCHObjectNames(id string) (views, tables []string) {
 		}
 }
 
+// ModelCHDataTables are the per-shard tables a model keeps data in. Its view and
+// distributed tables hold none, so a truncate of log data skips them.
+func ModelCHDataTables(id string) []string {
+	return []string{ModelCHTableName(id), ModelCHStateName(id)}
+}
+
 // ModelIDsQuery lists the analytics model ids. The caller expands each into the
 // ClickHouse objects it owns via ModelCHObjectNames: the two names recorded in
 // Postgres omit a scheduled model's rolling-state table and both distributed
@@ -225,21 +231,19 @@ func ModelCHObjectNames(id string) (views, tables []string) {
 // rather than a driver.
 const ModelIDsQuery = `SELECT id::text FROM analytics_models`
 
-// ResetPostgresStateStatements clears the Postgres rows that describe ClickHouse
-// log data a reset just destroyed. Everything else survives: users, fractals, saved
-// searches, notebooks, dashboards, alert definitions, and the Iceberg archive's own
-// bookkeeping, which still describes real data.
+// ClearedLogDataPostgresStatements clears the Postgres rows that describe ClickHouse
+// log data once it is gone, whether a reset dropped it or a clear truncated it.
+// Everything else survives: users, fractals, saved searches, notebooks, dashboards,
+// alert definitions, and the Iceberg archive's own bookkeeping, which still describes
+// real data.
 //
 // The caller runs these in one transaction so a partial clear cannot leave a cursor
 // pointing at data that is gone.
-func ResetPostgresStateStatements() []string {
+func ClearedLogDataPostgresStatements() []string {
 	return []string{
 		// Alert cursors point into deleted data. The same five-minute rewind the
 		// re-enable path uses, so the first tick after a reset is not a backfill.
 		`UPDATE alerts SET last_evaluated_at = NOW() - INTERVAL '5 minutes'`,
-		// Custom type hints and skip indexes live here, and the recreated schema
-		// carries only the built-in defaults until they are reconciled again.
-		`UPDATE clickhouse_schema_fields SET sync_status = 'pending', sync_error = '' WHERE sync_status = 'active'`,
 		// Caches of ClickHouse part metadata.
 		`TRUNCATE schema_field_stats`,
 		`TRUNCATE schema_fractal_stats`,
@@ -252,4 +256,13 @@ func ResetPostgresStateStatements() []string {
 		// An in-flight restore would resume mid-window against an empty target.
 		`UPDATE archive_restore_jobs SET status = 'canceled' WHERE status IN ('running', 'pending')`,
 	}
+}
+
+// ResetPostgresStateStatements is ClearedLogDataPostgresStatements for a reset, which
+// also recreates the schema: custom type hints and skip indexes live in
+// clickhouse_schema_fields, and the new schema carries only the built-in defaults
+// until they are reconciled again.
+func ResetPostgresStateStatements() []string {
+	return append(ClearedLogDataPostgresStatements(),
+		`UPDATE clickhouse_schema_fields SET sync_status = 'pending', sync_error = '' WHERE sync_status = 'active'`)
 }

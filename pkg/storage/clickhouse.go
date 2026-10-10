@@ -1470,41 +1470,42 @@ func (c *ClickHouseClient) ExecArgs(ctx context.Context, query string, args ...i
 // rows leave with its partitions.
 var fractalPartitionedTables = []string{"logs", "logs_raw"}
 
+// dropPartitionSettings lifts max_partition_size_to_drop (50GB by default), which
+// otherwise refuses any partition from a fractal ingesting more than that in a day.
+const dropPartitionSettings = " SETTINGS max_partition_size_to_drop = 0"
+
+// dropPartitionBatch bounds how many partitions one ALTER names, keeping the statement
+// well under max_query_size for fractals with years of daily partitions.
+const dropPartitionBatch = 200
+
 // DeleteLogsByFractalID drops every partition belonging to a fractal on every shard.
-// Each partition holds one fractal's data for one ingest day, so only the fractal half
-// is matched. DROP PARTITION is a metadata operation that runs no mutation, whatever
-// the fractal holds. Each shard is listed separately because the load-balanced
+// includeUnscoped also drops the rows stored under an empty fractal_id, which belong to
+// the default fractal. DROP PARTITION is a metadata operation that runs no mutation,
+// whatever the fractal holds. Each shard is listed separately because the load-balanced
 // connection only sees one node's partitions.
-func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID string) error {
-	// Canonical partition form is ('fractal-id','2024-01-15').
-	prefix := fmt.Sprintf("('%s','", escCHLiteral(fractalID))
+func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID string, includeUnscoped bool) error {
+	ids := []string{fractalID}
+	if includeUnscoped {
+		ids = append(ids, "")
+	}
 	dropped := 0
 	err := c.onEveryShard(ctx, "drop fractal partitions", func(conn driver.Conn) error {
 		for _, table := range fractalPartitionedTables {
-			rows, err := conn.Query(ctx,
-				"SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() AND table = ? AND active AND startsWith(partition, ?)",
-				table, prefix)
+			partitions, err := listFractalPartitions(ctx, conn, table, ids)
 			if err != nil {
-				return fmt.Errorf("list %s partitions: %w", table, err)
+				return err
 			}
-			var partitions []string
-			for rows.Next() {
-				var p string
-				if err := rows.Scan(&p); err != nil {
-					rows.Close()
-					return fmt.Errorf("scan %s partition: %w", table, err)
+			for start := 0; start < len(partitions); start += dropPartitionBatch {
+				batch := partitions[start:min(start+dropPartitionBatch, len(partitions))]
+				drops := make([]string, len(batch))
+				for i, p := range batch {
+					drops[i] = "DROP PARTITION " + p
 				}
-				partitions = append(partitions, p)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("list %s partitions: %w", table, err)
-			}
-			for _, p := range partitions {
-				if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(table)+" DROP PARTITION "+p); err != nil {
-					return fmt.Errorf("drop %s partition %s: %w", table, p, err)
+				stmt := "ALTER TABLE " + quoteCHIdent(table) + " " + strings.Join(drops, ", ") + dropPartitionSettings
+				if err := conn.Exec(ctx, stmt); err != nil {
+					return fmt.Errorf("drop %s partitions: %w", table, err)
 				}
-				dropped++
+				dropped += len(batch)
 			}
 		}
 		return nil
@@ -1516,10 +1517,37 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 
 	// The rollup is fed by a materialized view on insert, so it outlives the
 	// partitions unless pruned here.
-	if err := c.PruneHistogramRollup(ctx, fractalID, ""); err != nil {
-		return fmt.Errorf("failed to prune histogram rollup for fractal %s: %w", fractalID, err)
+	for _, id := range ids {
+		if err := c.PruneHistogramRollup(ctx, id, ""); err != nil {
+			return fmt.Errorf("failed to prune histogram rollup for fractal %s: %w", fractalID, err)
+		}
 	}
 	return nil
+}
+
+// listFractalPartitions returns the active partitions of table on conn's node that
+// belong to any of the fractal ids, in ClickHouse's canonical form ('id','2024-01-15').
+func listFractalPartitions(ctx context.Context, conn driver.Conn, table string, ids []string) ([]string, error) {
+	prefixes := make([]string, len(ids))
+	for i, id := range ids {
+		prefixes[i] = fmt.Sprintf("('%s','", escCHLiteral(id))
+	}
+	rows, err := conn.Query(ctx,
+		"SELECT DISTINCT partition FROM system.parts WHERE database = currentDatabase() AND table = ? AND active AND arrayExists(p -> startsWith(partition, p), ?)",
+		table, prefixes)
+	if err != nil {
+		return nil, fmt.Errorf("list %s partitions: %w", table, err)
+	}
+	defer rows.Close()
+	var partitions []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scan %s partition: %w", table, err)
+		}
+		partitions = append(partitions, p)
+	}
+	return partitions, rows.Err()
 }
 
 // RevertTieredStoragePolicy migrates the logs table off the legacy 'tiered'
@@ -2875,7 +2903,7 @@ func dropHotPartitionsOnConn(ctx context.Context, conn driver.Conn, label string
 		return
 	}
 	for _, partition := range partitions {
-		if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION '%s'", partition)); err != nil {
+		if err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE logs_hot DROP PARTITION '%s'", partition)+dropPartitionSettings); err != nil {
 			log.Printf("[HotTableCleaner] drop partition %s on %s: %v", partition, label, err)
 		}
 	}
@@ -2992,7 +3020,7 @@ func (c *ClickHouseClient) FractalPartitionUsage(ctx context.Context) ([]Fractal
 // global queue, which a slow schema mutation can clog. partition must be a value
 // returned by FractalPartitionUsage (ClickHouse's canonical form).
 func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition string) error {
-	if err := c.execOnEveryShard(ctx, "ALTER TABLE logs DROP PARTITION "+partition, "drop partition "+partition); err != nil {
+	if err := c.execOnEveryShard(ctx, "ALTER TABLE logs DROP PARTITION "+partition+dropPartitionSettings, "drop partition "+partition); err != nil {
 		return err
 	}
 	fractalID, day, ok := ParseLogPartition(partition)
@@ -3338,7 +3366,7 @@ func (c *ClickHouseClient) applySchemaFieldIndexes(ctx context.Context, fields [
 // because it strips user-added hints and rewrites every part. Here both are
 // intended and neither is costly: dropping unwanted hints IS the request, and
 // the TRUNCATE above leaves zero parts, so the rewrite has nothing to rewrite.
-func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []SchemaFieldSpec) error {
+func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []SchemaFieldSpec, modelIDs []string) error {
 	// Read the hints that exist now, before truncating: their skip indexes must
 	// be dropped too, and they are not necessarily in the desired set.
 	existing, err := c.currentFieldHints(ctx)
@@ -3346,11 +3374,8 @@ func (c *ClickHouseClient) TruncateAndReschema(ctx context.Context, fields []Sch
 		return fmt.Errorf("read current type hints: %w", err)
 	}
 
-	for _, tbl := range []string{"logs_histogram", "logs", "logs_hot"} {
-		sql := fmt.Sprintf("TRUNCATE TABLE %s", tbl)
-		if err := c.conn.Exec(ctx, c.InjectOnCluster(sql)); err != nil {
-			return fmt.Errorf("truncate %s: %w", tbl, err)
-		}
+	if err := c.ClearAllLogData(ctx, modelIDs); err != nil {
+		return err
 	}
 
 	// Drop indexes for the union of current and desired fields. Dropping only the

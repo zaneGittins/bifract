@@ -156,43 +156,25 @@ func parseEpoch(val string, unit time.Duration) (time.Time, bool) {
 	return time.Unix(whole/perSec, whole%perSec*int64(unit)+fracNanos), true
 }
 
-func parseTimestamp(val interface{}) time.Time {
-	switch v := val.(type) {
-	case string:
-		formats := []string{
-			time.RFC3339,
-			time.RFC3339Nano,
-			"2006-01-02T15:04:05.999999999Z07:00",
-			"2006-01-02T15:04:05.000Z07:00",
-			"2006-01-02T15:04:05.000Z",
-			"2006-01-02T15:04:05Z",
-			"2006-01-02 15:04:05",
-			"2006-01-02 15:04:05.000",
-			"2006-01-02 15:04:05.000 -07:00",
-		}
+// fallbackTimestampLayouts are tried, in order, on the common timestamp field names
+// when no configured field matched.
+var fallbackTimestampLayouts = []string{
+	time.RFC3339,
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05.999999999Z07:00",
+	"2006-01-02T15:04:05.000Z07:00",
+	"2006-01-02T15:04:05.000Z",
+	"2006-01-02T15:04:05Z",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04:05.000",
+	"2006-01-02 15:04:05.000 -07:00",
+}
 
-		for _, format := range formats {
-			if t, err := time.Parse(format, v); err == nil {
-				return t
-			}
+func parseTimestamp(val string) time.Time {
+	for _, layout := range fallbackTimestampLayouts {
+		if t, err := time.Parse(layout, val); err == nil {
+			return t
 		}
-
-	case float64:
-		if v > 1e15 {
-			return time.Unix(0, int64(v)*int64(time.Microsecond))
-		} else if v > 1e12 {
-			return time.Unix(0, int64(v)*int64(time.Millisecond))
-		}
-		return time.Unix(int64(v), 0)
-
-	case int64:
-		if v > 1e15 {
-			return time.Unix(0, v*int64(time.Microsecond))
-		} else if v > 1e12 {
-			return time.Unix(0, v*int64(time.Millisecond))
-		}
-		return time.Unix(v, 0)
 	}
-
 	return time.Time{}
 }

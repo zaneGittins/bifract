@@ -488,41 +488,6 @@ const App = {
 
         // Line numbers for query editors
         this.setupQueryLineNumbers();
-
-        // Status modal
-        const statusIndicator = document.getElementById('statusIndicator');
-        const statusModal = document.getElementById('statusModal');
-        const closeStatusBtn = document.getElementById('closeStatusBtn');
-        const clearLogsBtn = document.getElementById('clearLogsBtn');
-
-        if (statusIndicator && statusModal) {
-            statusIndicator.addEventListener('click', () => {
-                statusModal.style.display = 'flex';
-                this.loadDetailedStatus();
-            });
-        }
-
-        if (closeStatusBtn && statusModal) {
-            closeStatusBtn.addEventListener('click', () => {
-                statusModal.style.display = 'none';
-            });
-        }
-
-        if (statusModal) {
-            statusModal.addEventListener('click', (e) => {
-                if (e.target === statusModal) {
-                    statusModal.style.display = 'none';
-                }
-            });
-        }
-
-        if (clearLogsBtn) {
-            clearLogsBtn.addEventListener('click', async () => {
-                if (confirm('Are you sure you want to delete all logs? This cannot be undone.')) {
-                    await this.clearAllLogs();
-                }
-            });
-        }
     },
 
     // Wires an editor's definition rail: drag to resize, and fold away while a log
@@ -802,66 +767,6 @@ const App = {
                 statusContainer.title = 'ClickHouse Disconnected';
             }
         }
-    },
-
-    async loadDetailedStatus() {
-        const detailedStatus = document.getElementById('detailedStatus');
-        if (!detailedStatus) return;
-
-        detailedStatus.innerHTML = '<div class="loading">Loading...</div>';
-
-        try {
-            const response = await fetch('/api/v1/status');
-            const data = await response.json();
-
-            const ch = data.clickhouse || {};
-            const isConnected = data.success && ch.connected;
-
-            let html = '<div class="status-grid">';
-            html += `<div class="status-item"><span class="status-label">ClickHouse Status:</span><span class="status-value ${isConnected ? 'status-ok' : 'status-error'}">${isConnected ? 'Connected' : 'Disconnected'}</span></div>`;
-
-            if (isConnected) {
-                html += `<div class="status-item"><span class="status-label">Storage Used:</span><span class="status-value">${ch.table_size || this.formatBytes(ch.storage_bytes || 0)}</span></div>`;
-                html += `<div class="status-item"><span class="status-label">First Ingest:</span><span class="status-value">${ch.oldest_log || 'N/A'}</span></div>`;
-                html += `<div class="status-item"><span class="status-label">Last Ingest:</span><span class="status-value">${ch.newest_log || 'N/A'}</span></div>`;
-            }
-
-            html += '</div>';
-            detailedStatus.innerHTML = html;
-        } catch (error) {
-            detailedStatus.innerHTML = '<div class="error">Failed to load status</div>';
-        }
-    },
-
-    async clearAllLogs() {
-        try {
-            const response = await fetch('/api/v1/logs', {
-                method: 'DELETE'
-            });
-
-            const data = await response.json();
-
-            if (data.success) {
-                alert('All logs have been deleted');
-                // Reload status
-                this.loadDetailedStatus();
-                // Clear results
-                const resultsTable = document.getElementById('resultsTable');
-                if (resultsTable) resultsTable.innerHTML = '';
-            } else {
-                alert('Failed to delete logs: ' + (data.error || 'Unknown error'));
-            }
-        } catch (error) {
-            alert('Failed to delete logs: ' + error.message);
-        }
-    },
-
-    formatBytes(bytes) {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     },
 
     currentViewLevel: 'main', // 'main' or 'fractal'
