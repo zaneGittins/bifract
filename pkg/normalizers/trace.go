@@ -1,6 +1,9 @@
 package normalizers
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // TracedField is one output field of a normalizer run, carrying enough
 // provenance for the editor to explain why the field ended up with its name.
@@ -31,7 +34,8 @@ type TraceResult struct {
 // silently overwritten, so the editor can show what is competing.
 func (n *Normalizer) Trace(obj map[string]interface{}) TraceResult {
 	built := BuildFieldsWithNested(obj)
-	preMapping := applyNameTransforms(built.Fields, built.NestedKeys, n.Transforms)
+	c := n.Compile()
+	preMapping, pinned := applyNameTransforms(built.Fields, built.NestedKeys, n.Transforms, c.paths)
 
 	// alias -> which mapping rule claims it. Matching is exact, mirroring
 	// CompiledNormalizer.FieldMappingMap.
@@ -45,7 +49,9 @@ func (n *Normalizer) Trace(obj map[string]interface{}) TraceResult {
 			continue
 		}
 		for _, src := range fm.Sources {
-			owners[src] = aliasOwner{index: i, target: fm.Target}
+			if !strings.HasPrefix(src, PathSourcePrefix) {
+				owners[src] = aliasOwner{index: i, target: fm.Target}
+			}
 		}
 	}
 
@@ -73,6 +79,23 @@ func (n *Normalizer) Trace(obj map[string]interface{}) TraceResult {
 		fields = append(fields, f)
 	}
 
+	// Path-claimed fields, attributed to the path source that matched.
+	targets := make([]string, 0, len(pinned))
+	for t := range pinned {
+		targets = append(targets, t)
+	}
+	sort.Strings(targets)
+	for _, t := range targets {
+		p := pinned[t]
+		fields = append(fields, TracedField{
+			Name:         t,
+			Value:        p.value,
+			Source:       p.node.source,
+			MappingIndex: p.node.mapping,
+			MatchedAlias: p.node.source,
+		})
+	}
+
 	// Resolved view for the value-mapping stage. Where several sources collide the
 	// first sorted one wins; ingestion picks arbitrarily, so this is one of the
 	// possible outcomes rather than a guarantee, which is exactly why the
@@ -84,6 +107,10 @@ func (n *Normalizer) Trace(obj map[string]interface{}) TraceResult {
 			resolved[f.Name] = f.Value
 		}
 		claimedBy[f.Name] = append(claimedBy[f.Name], f.Source)
+	}
+	// As at ingest, a path-claimed field wins over any other field with its name.
+	for t, p := range pinned {
+		resolved[t] = p.value
 	}
 
 	collisions := make(map[string][]string)
@@ -100,7 +127,7 @@ func (n *Normalizer) Trace(obj map[string]interface{}) TraceResult {
 
 	// Value mappings run after field mappings and never remove the source.
 	// Compile applies the same trimming and validation used at ingest.
-	for _, vm := range n.Compile().ValueMappings {
+	for _, vm := range c.ValueMappings {
 		srcVal, ok := resolved[vm.FromField]
 		if !ok {
 			continue

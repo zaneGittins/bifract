@@ -105,6 +105,7 @@ type CompiledNormalizer struct {
 	Version         int
 	Transforms      []Transform
 	FieldMappingMap map[string]string // source -> target for O(1) lookup
+	paths           *pathNode         // path sources; nil when the normalizer has none
 	ValueMappings   []CompiledValueMapping
 	TimestampFields []TimestampField
 }
@@ -129,9 +130,12 @@ func (n *Normalizer) Compile() *CompiledNormalizer {
 	}
 	for _, fm := range n.FieldMappings {
 		for _, src := range fm.Sources {
-			c.FieldMappingMap[src] = fm.Target
+			if !strings.HasPrefix(src, PathSourcePrefix) {
+				c.FieldMappingMap[src] = fm.Target
+			}
 		}
 	}
+	c.paths = compilePathSources(n.FieldMappings)
 	for _, vm := range n.ValueMappings {
 		from := strings.TrimSpace(vm.FromField)
 		to := strings.TrimSpace(vm.ToField)

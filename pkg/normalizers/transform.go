@@ -26,7 +26,15 @@ func (c *CompiledNormalizer) ApplyFieldName(field string) string {
 // applyNameTransforms runs the structural flatten and per-key name transforms in
 // order, stopping before field mappings. Shared by the ingest hot path and the
 // editor's Trace so the preview can never disagree with what ingestion does.
-func applyNameTransforms(fields map[string]string, nestedKeys map[string]bool, transforms []Transform) map[string]string {
+//
+// Path sources are matched against raw keys: by the first flatten, or before any
+// rename when there is no flatten. The fields they claim come back separately.
+func applyNameTransforms(fields map[string]string, nestedKeys map[string]bool, transforms []Transform, paths *pathNode) (map[string]string, map[string]pinnedField) {
+	var pinned map[string]pinnedField
+	if paths != nil && !hasFlatten(transforms) {
+		fields, pinned = pinTopLevel(fields, paths)
+		paths = nil
+	}
 	result := fields
 	for i := 0; i < len(transforms); i++ {
 		mode := flattenMode(transforms[i])
@@ -45,16 +53,30 @@ func applyNameTransforms(fields map[string]string, nestedKeys map[string]bool, t
 			j++
 		}
 		renames := transforms[i+1 : j]
-		result = flattenFields(result, mode, nestedKeys, func(name string) string {
+		var claimed map[string]pinnedField
+		result, claimed = flattenFields(result, mode, nestedKeys, func(name string) string {
 			for _, t := range renames {
 				name = applyFieldNameTransform(name, t)
 			}
 			return name
-		})
+		}, paths)
+		if claimed != nil {
+			pinned = claimed
+		}
 		nestedKeys = nil // after first flatten, nested tracking no longer applies
+		paths = nil      // and paths only ever match the raw event
 		i = j - 1
 	}
-	return result
+	return result, pinned
+}
+
+func hasFlatten(transforms []Transform) bool {
+	for _, t := range transforms {
+		if flattenMode(t) != FlattenNone {
+			return true
+		}
+	}
+	return false
 }
 
 func flattenMode(t Transform) FlattenMode {
@@ -79,11 +101,11 @@ func (c *CompiledNormalizer) ApplyTransforms(fields map[string]string) map[strin
 // expanded by flatten transforms, preventing string values that happen to
 // contain valid JSON from being incorrectly flattened.
 func (c *CompiledNormalizer) ApplyTransformsWithNested(fields map[string]string, nestedKeys map[string]bool) map[string]string {
-	result := applyNameTransforms(fields, nestedKeys, c.Transforms)
+	result, pinned := applyNameTransforms(fields, nestedKeys, c.Transforms, c.paths)
 
 	// Apply field mappings last.
 	if len(c.FieldMappingMap) > 0 {
-		mapped := make(map[string]string, len(result))
+		mapped := make(map[string]string, len(result)+len(pinned))
 		for k, v := range result {
 			if target, ok := c.FieldMappingMap[k]; ok {
 				mapped[target] = v
@@ -92,6 +114,10 @@ func (c *CompiledNormalizer) ApplyTransformsWithNested(fields map[string]string,
 			}
 		}
 		result = mapped
+	}
+	// Path-claimed fields skip leaf mappings and win over any field with their name.
+	for target, p := range pinned {
+		result[target] = p.value
 	}
 
 	// Apply additive value mappings (derived fields) after field mappings, so
