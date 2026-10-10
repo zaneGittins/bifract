@@ -96,15 +96,16 @@ func (n *Normalizer) Trace(obj map[string]interface{}) TraceResult {
 		})
 	}
 
-	// Resolved view for the value-mapping stage. Where several sources collide the
-	// first sorted one wins; ingestion picks arbitrarily, so this is one of the
-	// possible outcomes rather than a guarantee, which is exactly why the
-	// collision is surfaced to the user.
+	// Resolved view for the value-mapping stage. Where several sources collide, the
+	// winner is the one ingestion keeps (mappingRank); the collision is still surfaced,
+	// since the losing values are dropped.
 	resolved := make(map[string]string, len(fields))
+	resolvedRank := make(map[string]int, len(fields))
 	claimedBy := make(map[string][]string, len(fields))
 	for _, f := range fields {
-		if _, seen := resolved[f.Name]; !seen {
-			resolved[f.Name] = f.Value
+		rank := c.mappingRank(f.Source, f.Name)
+		if prev, seen := resolvedRank[f.Name]; !seen || rank < prev {
+			resolved[f.Name], resolvedRank[f.Name] = f.Value, rank
 		}
 		claimedBy[f.Name] = append(claimedBy[f.Name], f.Source)
 	}

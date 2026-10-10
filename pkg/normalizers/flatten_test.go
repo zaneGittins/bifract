@@ -925,3 +925,32 @@ func TestFlattenFull_RenameClashDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// Several fields mapping to one target used to be settled by map order, so the stored
+// value could differ from run to run and from the editor's preview.
+func TestFieldMappingCollisionDeterministic(t *testing.T) {
+	n := &Normalizer{FieldMappings: []FieldMapping{{Sources: []string{"computer", "host"}, Target: "computer_name"}}}
+	c := n.Compile()
+	cases := []struct {
+		fields map[string]string
+		want   string
+	}{
+		{map[string]string{"host": "from-host", "computer": "from-computer"}, "from-computer"},
+		{map[string]string{"host": "from-host", "computer_name": "already-named"}, "already-named"},
+	}
+	for _, tc := range cases {
+		obj := map[string]interface{}{}
+		for k, v := range tc.fields {
+			obj[k] = v
+		}
+		for i := 0; i < 50; i++ {
+			if got := c.ApplyTransforms(tc.fields)["computer_name"]; got != tc.want {
+				t.Fatalf("%v: ingestion kept %q, want %q", tc.fields, got, tc.want)
+			}
+		}
+		trace := n.Trace(obj)
+		if len(trace.Collisions["computer_name"]) != 2 {
+			t.Errorf("%v: collision not surfaced: %v", tc.fields, trace.Collisions)
+		}
+	}
+}

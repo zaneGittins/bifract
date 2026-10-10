@@ -38,6 +38,8 @@ Map multiple source names to a single target:
 
 This is useful when ingesting logs from different vendors that use different field names for the same concept.
 
+When one event has several fields that resolve to the same target, ingestion keeps one value: a field already named the target, otherwise the earliest source, counting mappings from the top. The editor's preview flags these collisions.
+
 ### Mapping by raw path
 
 A source starting with `$.` names a path in the raw event instead of a field name after transforms. Use it when two nested fields would otherwise get the same name, such as Velociraptor's `System.Execution.ProcessID` (the event log service) and `EventData.ProcessId` (the process the event is about):
@@ -52,7 +54,7 @@ field_mappings:
 |----------|--------|
 | Matching | Segments are split on `.` and compared to the raw JSON keys, case-sensitively. A number selects an element of an array of up to 16 objects (`$.args.0.name`). Keys that contain a dot cannot be addressed. |
 | Naming | The field is stored under the target exactly as written. Transforms do not rename it, and other mappings do not remap it. |
-| Precedence | The path source's value always wins its target. Under `flatten_leaf`, another field that would get the same name keeps its full path instead (`event_data_process_id`); under `flatten_full`, or when a name-based mapping has the same target, the other value is dropped. If two path sources share a target and both match, the one listed first wins. |
+| Precedence | The path source's value always wins its target. Under `flatten_leaf`, another field that would get the same name keeps its full path instead (`event_data_process_id`); under `flatten_full` it is numbered (`execution_process_id_2`); when a name-based mapping has the same target, the other value is dropped. If two path sources share a target and both match, the one listed first wins. |
 | Transforms | A nested path needs `flatten_leaf` or `flatten_full`, placed before any rename transform. Without a flatten, only top-level keys (`$.EventID`) can be matched. |
 | Sigma | Sigma rules use field names, so path sources never apply to them. |
 

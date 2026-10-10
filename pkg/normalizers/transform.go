@@ -1,6 +1,7 @@
 package normalizers
 
 import (
+	"math"
 	"strings"
 	"unicode"
 )
@@ -96,6 +97,37 @@ func (c *CompiledNormalizer) ApplyTransforms(fields map[string]string) map[strin
 	return c.ApplyTransformsWithNested(fields, nil)
 }
 
+// mappingRank orders the fields competing for one output name: a field already carrying
+// the name comes first, then sources in the order the mappings list them. Trace uses
+// the same order, so the editor shows the value ingestion keeps.
+func (c *CompiledNormalizer) mappingRank(source, target string) int {
+	if source == target {
+		return 0
+	}
+	if r, ok := c.sourceRank[source]; ok {
+		return r
+	}
+	return math.MaxInt
+}
+
+// mappingWinner returns the field of fields that keeps target when several map to it.
+func (c *CompiledNormalizer) mappingWinner(fields map[string]string, target string) string {
+	best, bestRank := "", math.MaxInt
+	for k := range fields {
+		t, ok := c.FieldMappingMap[k]
+		if !ok {
+			t = k
+		}
+		if t != target {
+			continue
+		}
+		if r := c.mappingRank(k, target); r < bestRank || (r == bestRank && k < best) {
+			best, bestRank = k, r
+		}
+	}
+	return best
+}
+
 // ApplyTransformsWithNested is like ApplyTransforms but accepts a set of keys
 // that are known to contain serialized nested objects. Only these keys will be
 // expanded by flatten transforms, preventing string values that happen to
@@ -106,12 +138,22 @@ func (c *CompiledNormalizer) ApplyTransformsWithNested(fields map[string]string,
 	// Apply field mappings last.
 	if len(c.FieldMappingMap) > 0 {
 		mapped := make(map[string]string, len(result)+len(pinned))
+		var contested map[string]bool
 		for k, v := range result {
-			if target, ok := c.FieldMappingMap[k]; ok {
-				mapped[target] = v
-			} else {
-				mapped[k] = v
+			target, ok := c.FieldMappingMap[k]
+			if !ok {
+				target = k
 			}
+			if _, taken := mapped[target]; taken {
+				if contested == nil {
+					contested = map[string]bool{}
+				}
+				contested[target] = true
+			}
+			mapped[target] = v
+		}
+		for target := range contested {
+			mapped[target] = result[c.mappingWinner(result, target)]
 		}
 		result = mapped
 	}
