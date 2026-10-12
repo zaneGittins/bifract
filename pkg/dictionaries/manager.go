@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"bifract/pkg/storage"
 )
@@ -125,17 +126,10 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 
 	var dicts []*Dictionary
 	for rows.Next() {
-		d := &Dictionary{}
-		var colsJSON []byte
-		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		d, err := scanDictionary(rows)
+		if err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(colsJSON, &d.Columns); err != nil {
-			d.Columns = []DictionaryColumn{}
-		}
-		d.CHTableName = chTableName(d.ID)
-		d.CHDictName = chDictName(d.ID)
 		dicts = append(dicts, d)
 	}
 	return dicts, rows.Err()
@@ -143,29 +137,44 @@ func (m *Manager) ListDictionaries(ctx context.Context, fractalID, prismID strin
 
 // GetDictionary returns a single dictionary by ID.
 func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, error) {
+	return scanDictionary(m.pg.QueryRow(ctx, `SELECT `+dictColumns+` FROM dictionaries WHERE id = $1`, id))
+}
+
+// dictColumns is the column list EVERY dictionary read selects, in the order
+// scanDictionary expects. One constant and one scanner, so a new column cannot
+// reach one read and miss another.
+const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, case_insensitive_keys, COALESCE(kind, 'value'), COALESCE(created_by, ''), created_at, updated_at, source, source_status`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanDictionary reads one row selected with dictColumns.
+func scanDictionary(row rowScanner) (*Dictionary, error) {
 	d := &Dictionary{}
-	var colsJSON []byte
-	err := m.pg.QueryRow(ctx,
-		`SELECT `+dictColumns+`
-		 FROM dictionaries WHERE id = $1`, id).
-		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
-	if err != nil {
+	var colsJSON, sourceJSON, statusJSON []byte
+	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
+		&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
+		&sourceJSON, &statusJSON); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(colsJSON, &d.Columns); err != nil {
 		d.Columns = []DictionaryColumn{}
 	}
+	if len(sourceJSON) > 0 {
+		d.Source = &Source{}
+		if err := json.Unmarshal(sourceJSON, d.Source); err != nil {
+			return nil, fmt.Errorf("dictionary %s has an unreadable source: %w", d.ID, err)
+		}
+		d.SourceStatus = &SourceStatus{}
+		if len(statusJSON) > 0 {
+			_ = json.Unmarshal(statusJSON, d.SourceStatus)
+		}
+	}
 	d.CHTableName = chTableName(d.ID)
 	d.CHDictName = chDictName(d.ID)
 	return d, nil
 }
-
-// dictColumns is the column list EVERY dictionary read selects, in the order the
-// Scan calls expect. It is one constant because it was two: adding a column to the
-// list query and the by-name query separately left the by-name SELECT one short,
-// which Scan (being variadic) reports only at runtime, on every call.
-const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, case_insensitive_keys, COALESCE(kind, 'value'), COALESCE(created_by, ''), created_at, updated_at`
 
 // GetDictionaryByName returns a dictionary by name within a fractal or prism scope.
 // Pass fractalID or prismID (not both). The matching scope column is used for the lookup.
@@ -221,8 +230,6 @@ func (m *Manager) GetOwnedDictionaryByName(ctx context.Context, fractalID, prism
 }
 
 func (m *Manager) dictionaryByName(ctx context.Context, fractalID, prismID, name, fractalSQL, prismSQL string) (*Dictionary, error) {
-	d := &Dictionary{}
-	var colsJSON []byte
 	var q string
 	var arg string
 	// A global dictionary is owned by one fractal but visible from every scope, so
@@ -240,18 +247,7 @@ func (m *Manager) dictionaryByName(ctx context.Context, fractalID, prismID, name
 		q = fractalSQL
 		arg = fractalID
 	}
-	err := m.pg.QueryRow(ctx, q, arg, name).
-		Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
-			&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(colsJSON, &d.Columns); err != nil {
-		d.Columns = []DictionaryColumn{}
-	}
-	d.CHTableName = chTableName(d.ID)
-	d.CHDictName = chDictName(d.ID)
-	return d, nil
+	return scanDictionary(m.pg.QueryRow(ctx, q, arg, name))
 }
 
 // ---- Create / Update / Delete ----
@@ -271,8 +267,11 @@ type CreateOptions struct {
 	Columns     []DictionaryColumn
 	CreatedBy   string
 	IsGlobal    bool
-	// Kind is KindValue or KindNetwork; empty means a value list.
+	// Kind is KindValue, KindNetwork or KindPattern; empty means a value list.
 	Kind string
+	// Source, when set, fills the list from a URL. Its columns come from the
+	// first load, which CreateDictionary runs before it returns.
+	Source *Source
 }
 
 func (m *Manager) CreateDictionary(ctx context.Context, opts CreateOptions) (*Dictionary, error) {
@@ -286,6 +285,19 @@ func (m *Manager) CreateDictionary(ctx context.Context, opts CreateOptions) (*Di
 	}
 	if err := ValidateColumnsFor(kind, opts.Columns); err != nil {
 		return nil, badInput("%s", err.Error())
+	}
+	var sourceJSON, statusJSON any
+	if opts.Source != nil {
+		if len(opts.Columns) > 0 {
+			return nil, badInput("a list filled from a URL takes its columns from the file")
+		}
+		if err := opts.Source.normalize(kind); err != nil {
+			return nil, err
+		}
+		sourceJSON, _ = json.Marshal(opts.Source)
+		// Marked checked so the scheduler leaves the first load to this call.
+		now := time.Now().UTC()
+		statusJSON, _ = json.Marshal(SourceStatus{CheckedAt: &now})
 	}
 
 	// When columns are provided (e.g. from ExecuteDictionaryAction), ensure the key column is set.
@@ -319,11 +331,24 @@ func (m *Manager) CreateDictionary(ctx context.Context, opts CreateOptions) (*Di
 
 	var id string
 	err = m.pg.QueryRow(ctx,
-		`INSERT INTO dictionaries (name, description, fractal_id, prism_id, key_column, columns, is_global, kind, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		name, description, fractalIDPtr, prismIDPtr, keyColumn, colsJSON, isGlobal, kind, storage.NullableUser(createdBy)).Scan(&id)
+		`INSERT INTO dictionaries (name, description, fractal_id, prism_id, key_column, columns, is_global, kind, created_by, source, source_status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		name, description, fractalIDPtr, prismIDPtr, keyColumn, colsJSON, isGlobal, kind, storage.NullableUser(createdBy), sourceJSON, statusJSON).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert dictionary: %w", err)
+	}
+
+	if opts.Source != nil {
+		// errSourceLoading travels with the list: it exists, and fills in the background.
+		loadErr := m.firstLoad(ctx, id)
+		if loadErr != nil && !errors.Is(loadErr, errSourceLoading) {
+			return nil, loadErr
+		}
+		dict, err := m.GetDictionary(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		return dict, loadErr
 	}
 
 	dict, err := m.GetDictionary(ctx, id)
@@ -354,14 +379,22 @@ func (m *Manager) UpdateDictionary(ctx context.Context, id, name, description st
 	return m.GetDictionary(ctx, id)
 }
 
-// DeleteDictionary deletes a dictionary and drops its ClickHouse objects.
+// DeleteDictionary deletes a dictionary and drops its ClickHouse objects. It
+// holds the list's source lock, so it never runs under a refresh that would go
+// on writing to the tables it drops.
 func (m *Manager) DeleteDictionary(ctx context.Context, id string) error {
-	dict, err := m.GetDictionary(ctx, id)
-	if err != nil {
-		return err
-	}
+	return m.withSourceLock(ctx, id, func() error {
+		dict, err := m.GetDictionary(ctx, id)
+		if err != nil {
+			return err
+		}
+		return m.deleteDictionary(ctx, dict)
+	})
+}
+
+func (m *Manager) deleteDictionary(ctx context.Context, dict *Dictionary) error {
 	_ = m.dropCHObjects(ctx, dict)
-	_, err = m.pg.Exec(ctx, `DELETE FROM dictionaries WHERE id = $1`, id)
+	_, err := m.pg.Exec(ctx, `DELETE FROM dictionaries WHERE id = $1`, dict.ID)
 	return err
 }
 
@@ -374,6 +407,14 @@ func (m *Manager) AddColumn(ctx context.Context, id, colName string) (*Dictionar
 	if err != nil {
 		return nil, err
 	}
+	if err := requireEditable(dict); err != nil {
+		return nil, err
+	}
+	return m.addColumn(ctx, dict, colName)
+}
+
+func (m *Manager) addColumn(ctx context.Context, dict *Dictionary, colName string) (*Dictionary, error) {
+	id := dict.ID
 	for _, c := range dict.Columns {
 		if c.Name == colName {
 			return nil, badInput("column %q already exists", colName)
@@ -431,6 +472,14 @@ func (m *Manager) RemoveColumn(ctx context.Context, id, colName string) (*Dictio
 	if err != nil {
 		return nil, err
 	}
+	if err := requireEditable(dict); err != nil {
+		return nil, err
+	}
+	return m.removeColumn(ctx, dict, colName)
+}
+
+func (m *Manager) removeColumn(ctx context.Context, dict *Dictionary, colName string) (*Dictionary, error) {
+	id := dict.ID
 	if colName == dict.KeyColumn {
 		return nil, badInput("cannot remove the key column")
 	}
@@ -824,6 +873,9 @@ func (m *Manager) UpsertRows(ctx context.Context, id string, rows []DictionaryRo
 	if err != nil {
 		return err
 	}
+	if err := requireEditable(dict); err != nil {
+		return err
+	}
 	if len(rows) == 0 || len(dict.Columns) == 0 {
 		return nil
 	}
@@ -963,6 +1015,9 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireEditable(dict); err != nil {
+		return err
+	}
 	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
 		escCH(m.rowTable(dict)), escCH(dict.KeyColumn), escCHStr(key)))
 	if err != nil {
@@ -999,17 +1054,24 @@ func (m *Manager) deleteRowsByKeys(ctx context.Context, dict *Dictionary, quoted
 	if len(quotedKeys) == 0 {
 		return nil
 	}
+	if extra != "" {
+		extra = " AND " + extra
+	}
+	return m.deleteRowsWhere(ctx, dict, fmt.Sprintf("`%s` IN (%s)%s",
+		escCH(dict.KeyColumn), strings.Join(quotedKeys, ", "), extra))
+}
+
+// deleteRowsWhere deletes the rows matching predicate, already-escaped SQL, and
+// waits for the mutation.
+func (m *Manager) deleteRowsWhere(ctx context.Context, dict *Dictionary, predicate string) error {
 	sync := 1
 	if m.ch.Topology().ReplicatedEngines {
 		sync = 2
 	}
-	if extra != "" {
-		extra = " AND " + extra
-	}
-	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE `%s` IN (%s)%s SETTINGS mutations_sync = %d",
-		escCH(dict.CHTableName), escCH(dict.KeyColumn), strings.Join(quotedKeys, ", "), extra, sync)
+	deleteSQL := fmt.Sprintf("ALTER TABLE `%s` DELETE WHERE %s SETTINGS mutations_sync = %d",
+		escCH(dict.CHTableName), predicate, sync)
 	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(deleteSQL)); err != nil {
-		return fmt.Errorf("failed to delete row: %w", err)
+		return fmt.Errorf("failed to delete rows: %w", err)
 	}
 	return nil
 }
@@ -1049,6 +1111,9 @@ type ImportOptions struct {
 func (m *Manager) ImportCSV(ctx context.Context, id string, r io.Reader, opts ImportOptions) (int, error) {
 	dict, err := m.GetDictionary(ctx, id)
 	if err != nil {
+		return 0, err
+	}
+	if err := requireEditable(dict); err != nil {
 		return 0, err
 	}
 
@@ -1107,21 +1172,7 @@ func newCSVImport(r io.Reader) (*csv.Reader, []string, error) {
 func streamCSVBatches(reader *csv.Reader, headers []string, keyColumn string, firstSeq uint64, batchSize int,
 	insert func([]DictionaryRow, []uint64) error) (int, error) {
 
-	imported, seq := 0, firstSeq
-	batch := make([]DictionaryRow, 0, batchSize)
-	seqs := make([]uint64, 0, batchSize)
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		if err := insert(batch, seqs); err != nil {
-			return err
-		}
-		imported += len(batch)
-		batch, seqs = batch[:0], seqs[:0]
-		return nil
-	}
-
+	b := newRowBatcher(firstSeq, batchSize, insert)
 	for line := 1; ; line++ {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -1129,8 +1180,8 @@ func streamCSVBatches(reader *csv.Reader, headers []string, keyColumn string, fi
 		}
 		if err != nil {
 			// Whatever is in hand is real data, so commit it before reporting.
-			_ = flush()
-			return imported, badInput("CSV parse error at row %d: %v", line, err)
+			_ = b.flush()
+			return b.inserted, badInput("CSV parse error at row %d: %v", line, err)
 		}
 
 		fields := make(map[string]string, len(headers))
@@ -1143,17 +1194,49 @@ func streamCSVBatches(reader *csv.Reader, headers []string, keyColumn string, fi
 		if fields[keyColumn] == "" {
 			continue
 		}
-
-		seq++
-		batch = append(batch, DictionaryRow{Key: fields[keyColumn], Fields: fields})
-		seqs = append(seqs, seq)
-		if len(batch) == batchSize {
-			if err := flush(); err != nil {
-				return imported, err
-			}
+		if err := b.add(DictionaryRow{Key: fields[keyColumn], Fields: fields}); err != nil {
+			return b.inserted, err
 		}
 	}
-	return imported, flush()
+	err := b.flush()
+	return b.inserted, err
+}
+
+// rowBatcher numbers rows on from an ordinal and hands them to insert in
+// batches, so a load of any size costs one batch of memory.
+type rowBatcher struct {
+	insert   func([]DictionaryRow, []uint64) error
+	size     int
+	seq      uint64
+	rows     []DictionaryRow
+	seqs     []uint64
+	inserted int
+}
+
+func newRowBatcher(lastSeq uint64, size int, insert func([]DictionaryRow, []uint64) error) *rowBatcher {
+	return &rowBatcher{insert: insert, size: size, seq: lastSeq,
+		rows: make([]DictionaryRow, 0, size), seqs: make([]uint64, 0, size)}
+}
+
+func (b *rowBatcher) add(row DictionaryRow) error {
+	b.seq++
+	b.rows, b.seqs = append(b.rows, row), append(b.seqs, b.seq)
+	if len(b.rows) == b.size {
+		return b.flush()
+	}
+	return nil
+}
+
+func (b *rowBatcher) flush() error {
+	if len(b.rows) == 0 {
+		return nil
+	}
+	if err := b.insert(b.rows, b.seqs); err != nil {
+		return err
+	}
+	b.inserted += len(b.rows)
+	b.rows, b.seqs = b.rows[:0], b.seqs[:0]
+	return nil
 }
 
 // maxImportColumns bounds how wide an import may make a dictionary. Adding a
@@ -1175,7 +1258,7 @@ func (m *Manager) addMissingColumns(ctx context.Context, dict *Dictionary, heade
 		if len(known) >= maxImportColumns {
 			return nil, badInput("a dictionary holds at most %d columns, and this file needs more", maxImportColumns)
 		}
-		added, err := m.AddColumn(ctx, dict.ID, h)
+		added, err := m.addColumn(ctx, dict, h)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add column %q: %w", h, err)
 		}
@@ -1523,7 +1606,10 @@ func (m *Manager) dropCHObjects(ctx context.Context, dict *Dictionary) error {
 		}
 	}
 	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(chDistTableName(dict.ID)))))
-	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", escCH(dict.CHTableName))))
+	// SYNC clears the replica's Keeper path now rather than after the Atomic drop
+	// delay. A rebuild re-creates the table under the same name, and would
+	// otherwise attach to the old replica metadata and its old columns.
+	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s` SYNC SETTINGS max_table_size_to_drop = 0", escCH(dict.CHTableName))))
 	return nil
 }
 
@@ -2002,6 +2088,9 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 			return 0, fmt.Errorf("failed to create dictionary %q: %w", action.DictionaryName, err)
 		}
 	} else {
+		if err := requireEditable(dict); err != nil {
+			return 0, err
+		}
 		// Dictionary exists - rebuild schema to match current log fields.
 		if err := m.rebuildDictionarySchema(ctx, dict, keyCol, colOrder); err != nil {
 			return 0, fmt.Errorf("failed to rebuild dictionary schema: %w", err)

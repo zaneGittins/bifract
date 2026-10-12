@@ -50,7 +50,8 @@ const Dictionaries = {
         document.getElementById('dictCreateBtn')?.addEventListener('click', () => this.showCreateForm());
         document.getElementById('dictCreateSaveBtn')?.addEventListener('click', () => this.saveCreateDictionary());
         document.getElementById('dictCreateCancelBtn')?.addEventListener('click', () => this.hideCreateForm());
-        document.getElementById('dictNewKind')?.addEventListener('change', () => this.updateKindHint());
+        document.getElementById('dictNewKind')?.addEventListener('change', () => { this.updateKindHint(); this.updateNewSourceFields(); });
+        document.getElementById('dictNewSourceMode')?.addEventListener('change', () => this.updateNewSourceFields());
         document.getElementById('dictNewName')?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') this.saveCreateDictionary();
             if (e.key === 'Escape') this.hideCreateForm();
@@ -140,7 +141,7 @@ const Dictionaries = {
 
         tbody.innerHTML = dicts.map(d => `
 <tr class="dict-list-row">
-    <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}</a></td>
+    <td><a href="#" class="dict-link" data-id="${d.id}">${this.esc(d.name)}</a>${d.source ? '<span class="dict-src-tag" title="Fetched from a URL">URL</span>' : ''}</td>
     <td class="dict-col-desc" title="${this.esc(d.description || '')}">${this.esc(d.description || '')}</td>
     <td class="dict-col-meta" title="${this.esc(this.KINDS[this.kindOf(d)].hint)}">${this.esc(this.KINDS[this.kindOf(d)].label)}</td>
     <td class="dict-col-meta${d.is_global ? ' dict-col-scope-global' : ''}">${this.esc(this.scopeLabel(d))}</td>
@@ -185,6 +186,14 @@ const Dictionaries = {
         if (globalCb) globalCb.checked = false;
         const kind = document.getElementById('dictNewKind');
         if (kind) { kind.value = 'value'; this.updateKindHint(); }
+        // Only an administrator may point the server at a URL.
+        const sourceGroup = document.getElementById('dictNewSourceGroup');
+        if (sourceGroup) sourceGroup.style.display = this.isAdmin() ? '' : 'none';
+        const mode = document.getElementById('dictNewSourceMode');
+        if (mode) mode.value = 'manual';
+        const fields = document.getElementById('dictNewSourceFields');
+        if (fields) fields.innerHTML = this.sourceFieldsHTML(null, 'dictNewSrc');
+        this.updateNewSourceFields();
         if (err) err.style.display = 'none';
         modal.style.display = 'flex';
         setTimeout(() => nameInput?.focus(), 100);
@@ -201,7 +210,8 @@ const Dictionaries = {
     // Order is part of what a Patterns list means: the first expression that
     // matches is the one that answers. Say so where the rows are edited.
     kindNote(d) {
-        return this.kindOf(d) === 'pattern'
+        // A list filled from a URL keeps the file's order, which cannot be edited.
+        return this.kindOf(d) === 'pattern' && !d.source
             ? 'Patterns are tried from the top. The first one that matches is the one that answers, so put the specific ones above the general ones.'
             : '';
     },
@@ -239,6 +249,89 @@ const Dictionaries = {
         return d && d.prism_id ? 'Prism' : 'Fractal';
     },
 
+    isAdmin() {
+        return !!window.Auth?.currentUser?.is_admin;
+    },
+
+    REFRESH_CHOICES: [[15, '15 minutes'], [60, 'hour'], [360, '6 hours'], [1440, 'day'], [10080, 'week']],
+
+    refreshLabel(minutes) {
+        const hit = this.REFRESH_CHOICES.find(([m]) => m === minutes);
+        return hit ? hit[1] : `${minutes} minutes`;
+    },
+
+    // The fields describing a source, shared by the create form and the source
+    // editor. prefix keeps their ids unique; read back with readSourceFields.
+    sourceFieldsHTML(src, prefix) {
+        src = src || {};
+        const refresh = src.refresh_minutes || 60;
+        const choices = this.REFRESH_CHOICES.some(([m]) => m === refresh)
+            ? this.REFRESH_CHOICES : [...this.REFRESH_CHOICES, [refresh, `${refresh} minutes`]];
+        const formats = [['', 'Detect'], ['csv', 'CSV'], ['tsv', 'TSV'], ['json', 'JSON array'], ['ndjson', 'NDJSON'], ['lines', 'One value per line']];
+        const id = (k) => `${prefix}-${k}`;
+        const text = (k, label, value, placeholder, type = 'text') => `
+    <div class="form-group">
+        <label for="${id(k)}">${label}</label>
+        <input type="${type}" id="${id(k)}" class="form-input" placeholder="${placeholder}" value="${this.esc(value)}" spellcheck="false">
+    </div>`;
+        return `${text('url', 'URL', src.url, 'https://example.com/list.csv', 'url')}
+<div class="dict-source-grid">
+    ${text('key_field', 'Key column', src.key_field, 'Column holding the key')}
+    <div class="form-group">
+        <label for="${id('format')}">Format</label>
+        <select id="${id('format')}" class="form-input">${formats.map(([v, l]) => `<option value="${v}"${(src.format || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+    </div>
+    ${text('columns', 'Other columns to keep', (src.columns || []).join(', '), 'All of them')}
+    ${text('split_key', 'Split key cells on', src.split_key, "Don't split")}
+</div>
+<div class="dict-source-grid">
+    <div class="form-group">
+        <label for="${id('refresh')}">Refresh every</label>
+        <select id="${id('refresh')}" class="form-input">${choices.map(([m, l]) => `<option value="${m}"${m === refresh ? ' selected' : ''}>${l}</option>`).join('')}</select>
+    </div>
+    <div class="form-group dict-source-glob">
+        <label class="dict-global-label"><input type="checkbox" id="${id('glob')}"${src.key_format === 'glob' ? ' checked' : ''}> Keys are globs
+            <span class="form-hint">* and ? wildcards, matched ignoring case</span></label>
+    </div>
+</div>
+<p class="form-hint dict-source-hint">The server fetches the file on this schedule and replaces every row with what it holds. Rows can't be edited by hand.</p>`;
+    },
+
+    readSourceFields(prefix, kind) {
+        const val = (k) => document.getElementById(`${prefix}-${k}`);
+        return {
+            url: (val('url')?.value || '').trim(),
+            key_field: (val('key_field')?.value || '').trim(),
+            format: val('format')?.value || '',
+            columns: (val('columns')?.value || '').split(',').map(c => c.trim()).filter(Boolean),
+            split_key: val('split_key')?.value || '',
+            refresh_minutes: parseInt(val('refresh')?.value || '60', 10),
+            key_format: kind === 'pattern' && val('glob')?.checked ? 'glob' : '',
+        };
+    },
+
+    // Glob keys only mean something on a Patterns list.
+    showGlobFor(root, kind) {
+        const glob = root?.querySelector('.dict-source-glob');
+        if (glob) glob.style.visibility = kind === 'pattern' ? '' : 'hidden';
+    },
+
+    // A load that outlives the request answers 202 and goes on in the background.
+    sourceToast(resp, data, done) {
+        if (resp.status === 202) this.showToast(data.message || 'Still loading', 'info');
+        else this.showToast(done, 'success');
+    },
+
+    updateNewSourceFields() {
+        const fields = document.getElementById('dictNewSourceFields');
+        if (!fields) return;
+        const url = this.isAdmin() && document.getElementById('dictNewSourceMode')?.value === 'url';
+        fields.style.display = url ? '' : 'none';
+        this.showGlobFor(fields, document.getElementById('dictNewKind')?.value || 'value');
+        const save = document.getElementById('dictCreateSaveBtn');
+        if (save) save.textContent = url ? 'Create and fetch' : 'Create';
+    },
+
     updateKindHint() {
         const sel = document.getElementById('dictNewKind');
         const hint = document.getElementById('dictNewKindHint');
@@ -265,22 +358,31 @@ const Dictionaries = {
         }
         if (err) err.style.display = 'none';
 
+        const body = { name, description: desc, columns: [], is_global: isGlobal, kind };
+        const fields = document.getElementById('dictNewSourceFields');
+        if (fields && fields.style.display !== 'none') body.source = this.readSourceFields('dictNewSrc', kind);
+        const save = document.getElementById('dictCreateSaveBtn');
+        const label = save?.textContent;
+        if (save && body.source) { save.disabled = true; save.textContent = 'Fetching...'; }
+
         try {
             const resp = await fetch('/api/v1/dictionaries', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, description: desc, columns: [], is_global: isGlobal, kind }),
+                body: JSON.stringify(body),
             });
             const data = await resp.json();
             if (!data.success) throw new Error(data.error);
             this.hideCreateForm();
-            this.showToast('Lookup created', 'success');
+            this.sourceToast(resp, data, 'Lookup created');
             this.allDictionaries.unshift(data.data);
             this.filterDictionaries(document.getElementById('dictSearchInput')?.value || '');
             this.openDictionary(data.data.id);
         } catch (e) {
             if (err) { err.textContent = e.message; err.style.display = 'block'; }
+        } finally {
+            if (save) { save.disabled = false; save.textContent = label; }
         }
     },
 
@@ -320,9 +422,11 @@ const Dictionaries = {
         </div>
     </div>
     <div class="dict-detail-header-right">
-        <button id="dictImportBtn" class="btn-secondary">Import CSV</button>
+        ${d.source
+            ? '<button id="dictSyncBtn" class="btn-secondary" title="Fetch the source now">Refresh now</button>'
+            : `<button id="dictImportBtn" class="btn-secondary">Import CSV</button>${this.isAdmin() ? '<button id="dictSourceAttachBtn" class="btn-secondary" title="Replace the rows with a file fetched from a URL, kept up to date">Fetch from URL</button>' : ''}`}
         <button id="dictExportBtn" class="btn-secondary">Export CSV</button>
-        <button id="dictReloadBtn" class="btn-secondary" title="Reload ClickHouse dictionary">Reload</button>
+        ${d.source ? '' : '<button id="dictReloadBtn" class="btn-secondary" title="Reload ClickHouse dictionary">Reload</button>'}
         <button id="dictDeleteBtn" class="btn-secondary" style="color:var(--error);">Delete</button>
     </div>
 </div>
@@ -336,6 +440,18 @@ const Dictionaries = {
     <span class="dict-meta-syntax" id="dictMetaSyntax"></span>
 </div>
 ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNote(d))}</p>` : ''}
+${d.source ? `<div class="dict-source-bar">${this.sourceBarHTML(d)}</div>` : ''}
+
+<div id="dictSourcePanel" class="dict-import-panel" style="display:none;">
+    <div class="dict-import-inner">
+        <div id="dictSourcePanelFields"></div>
+        <div id="dictSourceError" class="form-error" style="display:none;"></div>
+        <div class="dict-import-actions">
+            <button id="dictSourceCancelBtn" class="btn-secondary btn-sm">Cancel</button>
+            <button id="dictSourceSaveBtn" class="btn-primary btn-sm">Save and fetch</button>
+        </div>
+    </div>
+</div>
 
 <div id="dictImportPanel" class="dict-import-panel" style="display:none;">
     <div class="dict-import-inner">
@@ -388,6 +504,12 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             if (this.rowPage < max) { this.rowPage++; this.loadRows(); }
         });
         document.getElementById('dictImportBtn')?.addEventListener('click', () => this.toggleImportPanel());
+        document.getElementById('dictSyncBtn')?.addEventListener('click', () => this.syncSource());
+        document.getElementById('dictSourceAttachBtn')?.addEventListener('click', () => this.toggleSourcePanel());
+        document.getElementById('dictSourceEditBtn')?.addEventListener('click', () => this.toggleSourcePanel());
+        document.getElementById('dictSourceDetachBtn')?.addEventListener('click', () => this.detachSource());
+        document.getElementById('dictSourceCancelBtn')?.addEventListener('click', () => this.hideSourcePanel());
+        document.getElementById('dictSourceSaveBtn')?.addEventListener('click', () => this.saveSource());
         document.getElementById('dictExportBtn')?.addEventListener('click', () => this.doExport());
         document.getElementById('cancelImportBtn')?.addEventListener('click', () => this.hideImportPanel());
         document.getElementById('doImportBtn')?.addEventListener('click', () => this.doImport());
@@ -467,6 +589,14 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
         const wrap = document.getElementById('dictDataTable');
         if (!wrap) return;
         const cols = dict.columns || [];
+        // A list filled from a URL is replaced on every refresh, so hand edits
+        // are not offered. Promoting a column to a lookup key still is.
+        const readOnly = !!dict.source;
+
+        if (readOnly && cols.length === 0) {
+            wrap.innerHTML = '<table class="dict-table dict-sheet"><tbody><tr><td class="dict-empty-cell">No rows yet.</td></tr></tbody></table>';
+            return;
+        }
 
         // Empty sheet - no columns yet
         if (cols.length === 0) {
@@ -504,9 +634,10 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
                 inner += `<span class="dict-key-badge dict-key-badge-hdr" title="${this.esc(keyBadge.title)}">${this.esc(keyBadge.label)}</span>`;
             } else if (isSecondary) {
                 inner += `<button class="dict-col-key-active-btn" data-col="${this.esc(c.name)}" title="Remove as lookup key">key</button>`;
-                inner += `<button class="dict-col-del-btn" data-col="${this.esc(c.name)}" title="Remove column">&times;</button>`;
             } else {
                 inner += `<button class="dict-col-key-btn" data-col="${this.esc(c.name)}" title="${this.esc(this.secondaryKeyHint(dict))}">key</button>`;
+            }
+            if (!isPrimary && !readOnly) {
                 inner += `<button class="dict-col-del-btn" data-col="${this.esc(c.name)}" title="Remove column">&times;</button>`;
             }
             return `<th class="${thClass}" data-col="${this.esc(c.name)}">${inner}</th>`;
@@ -516,12 +647,12 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             const num = this.rowPage * this.rowPageSize + i + 1;
             const cells = cols.map(c => {
                 const val = row.fields ? (row.fields[c.name] || '') : '';
-                return `<td class="dict-td dict-td-editable" data-col="${this.esc(c.name)}" data-key="${this.esc(row.key)}">${this.esc(val)}</td>`;
+                return `<td class="dict-td${readOnly ? '' : ' dict-td-editable'}" data-col="${this.esc(c.name)}" data-key="${this.esc(row.key)}">${this.esc(val)}</td>`;
             }).join('');
             return `<tr class="dict-row" data-key="${this.esc(row.key)}">
                 <td class="dict-td dict-td-num">
                     <span class="dict-row-num">${num}</span>
-                    <button class="dict-delete-row" data-key="${this.esc(row.key)}" title="Delete row">&times;</button>
+                    ${readOnly ? '' : `<button class="dict-delete-row" data-key="${this.esc(row.key)}" title="Delete row">&times;</button>`}
                 </td>
                 ${cells}
                 <td class="dict-td dict-td-add-col-spacer"></td>
@@ -536,14 +667,14 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             <thead><tr>
                 <th class="dict-th dict-th-num"></th>
                 ${colHeaders}
-                <th class="dict-th dict-th-add-col"><button class="dict-add-col-btn" title="Add column">+</button></th>
+                <th class="dict-th dict-th-add-col">${readOnly ? '' : '<button class="dict-add-col-btn" title="Add column">+</button>'}</th>
             </tr></thead>
             <tbody id="dictRowsBody">
                 ${bodyRows}${emptyRow}
-                <tr class="dict-add-row-tr">
+                ${readOnly ? '' : `<tr class="dict-add-row-tr">
                     <td class="dict-td dict-td-num"><button class="dict-add-row-btn" title="Add row">+</button></td>
                     <td colspan="${cols.length + 1}" class="dict-td dict-td-add-row-spacer"></td>
-                </tr>
+                </tr>`}
             </tbody>
         </table>`;
 
@@ -960,6 +1091,128 @@ ${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNo
             `Only one row per key stays reachable, and which one is not defined.\n\n` +
             (examples ? `${examples}\n\n` : '') +
             `Ignore case anyway?`);
+    },
+
+    // ---- Source ----
+
+    sourceBarHTML(d) {
+        const src = d.source;
+        const st = d.source_status || {};
+        let shown = src.url;
+        try { const u = new URL(src.url); shown = u.host + u.pathname; } catch (_) { /* shown as stored */ }
+        const ago = (t) => t ? `<span title="${this.esc(Utils.formatTimestamp(t))}">${this.esc(Utils.timeAgo(t))}</span>` : 'never';
+        const admin = this.isAdmin()
+            ? '<button id="dictSourceEditBtn" class="dict-source-action">Edit source</button><button id="dictSourceDetachBtn" class="dict-source-action">Detach</button>'
+            : '';
+        let html = `<div class="dict-source-line">
+            <span class="dict-source-label">From</span>
+            <a class="dict-source-url" href="${this.esc(src.url)}" target="_blank" rel="noopener noreferrer" title="${this.esc(src.url)}">${this.esc(shown)}</a>
+            <span class="dict-source-sep">·</span><span>every ${this.esc(this.refreshLabel(src.refresh_minutes))}</span>
+            <span class="dict-source-sep">·</span><span>checked ${ago(st.checked_at)}</span>
+            <span class="dict-source-sep">·</span><span>changed ${ago(st.changed_at)}</span>
+            ${admin}
+        </div>`;
+        if (st.error) html += `<div class="dict-source-error">Last refresh failed: ${this.esc(st.error)}</div>`;
+        if (st.skipped) html += `<div class="dict-source-note">${st.skipped.toLocaleString()} record${st.skipped === 1 ? '' : 's'} skipped, e.g. ${this.esc(st.skip_sample || '')}</div>`;
+        return html;
+    },
+
+    toggleSourcePanel() {
+        const panel = document.getElementById('dictSourcePanel');
+        if (!panel) return;
+        if (panel.style.display !== 'none') { this.hideSourcePanel(); return; }
+        const d = this.currentDictionary;
+        const fields = document.getElementById('dictSourcePanelFields');
+        if (fields) {
+            fields.innerHTML = this.sourceFieldsHTML(d.source, 'dictSrc');
+            this.showGlobFor(fields, this.kindOf(d));
+        }
+        const err = document.getElementById('dictSourceError');
+        if (err) err.style.display = 'none';
+        this.hideImportPanel();
+        panel.style.display = 'block';
+        document.getElementById('dictSrc-url')?.focus();
+    },
+
+    hideSourcePanel() {
+        const panel = document.getElementById('dictSourcePanel');
+        if (panel) panel.style.display = 'none';
+    },
+
+    async saveSource() {
+        const d = this.currentDictionary;
+        if (!d) return;
+        const source = this.readSourceFields('dictSrc', this.kindOf(d));
+        // Attaching a source to a hand-built list replaces its rows for good.
+        if (!d.source && (d.row_count || 0) > 0) {
+            DangerConfirm.open({
+                title: 'Replace rows from a URL',
+                body: [`The ${(d.row_count || 0).toLocaleString()} rows in "${d.name}" are replaced by the file at this URL, and can't be edited by hand afterwards.`],
+                phrase: d.name,
+                confirmLabel: 'Replace rows',
+                busyLabel: 'Fetching...',
+                onConfirm: () => this._putSource(d, source),
+            });
+            return;
+        }
+        const err = document.getElementById('dictSourceError');
+        const btn = document.getElementById('dictSourceSaveBtn');
+        if (err) err.style.display = 'none';
+        if (btn) { btn.disabled = true; btn.textContent = 'Fetching...'; }
+        try {
+            await this._putSource(d, source);
+        } catch (e) {
+            if (err) { err.textContent = e.message; err.style.display = 'block'; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Save and fetch'; }
+        }
+    },
+
+    async _putSource(d, source) {
+        const resp = await fetch(`/api/v1/dictionaries/${d.id}/source`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(source),
+        });
+        const data = await resp.json();
+        if (!data.success) throw new Error(data.error);
+        this.currentDictionary = data.data;
+        this.sourceToast(resp, data, 'Source saved');
+        this.showDetailView();
+    },
+
+    async syncSource() {
+        const d = this.currentDictionary;
+        const btn = document.getElementById('dictSyncBtn');
+        if (!d) return;
+        if (btn) { btn.disabled = true; btn.textContent = 'Refreshing...'; }
+        try {
+            const resp = await fetch(`/api/v1/dictionaries/${d.id}/sync`, { method: 'POST', credentials: 'include' });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error);
+            this.currentDictionary = data.data;
+            this.sourceToast(resp, data, 'Refreshed');
+            this.showDetailView();
+        } catch (e) {
+            this.showToast(e.message, 'error');
+            // The failure is recorded on the list; show it where it lives.
+            this.openDictionary(d.id);
+        }
+    },
+
+    async detachSource() {
+        const d = this.currentDictionary;
+        if (!d || !confirm(`Stop refreshing "${d.name}" from its URL? The rows it holds stay and become editable.`)) return;
+        try {
+            const resp = await fetch(`/api/v1/dictionaries/${d.id}/source`, { method: 'DELETE', credentials: 'include' });
+            const data = await resp.json();
+            if (!data.success) throw new Error(data.error);
+            this.currentDictionary = data.data;
+            this.showToast('Source detached', 'success');
+            this.showDetailView();
+        } catch (e) {
+            this.showToast('Failed to detach: ' + e.message, 'error');
+        }
     },
 
     // ---- Delete / Reload ----

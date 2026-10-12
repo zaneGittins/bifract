@@ -2682,6 +2682,31 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Summary:  "Force ClickHouse to reload a dictionary.",
 				Handler:  d.dictionaryHandler.HandleReloadDictionary,
 			})
+			r.Register(api.Route{
+				Method:   http.MethodPut,
+				Path:     "/dictionaries/{id}/source",
+				Access:   api.AccessTenantAdmin,
+				Request:  dictionaries.Source{},
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Fill a dictionary from a URL, replacing its rows on every refresh.",
+				Handler:  d.dictionaryHandler.HandleSetSource,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodDelete,
+				Path:     "/dictionaries/{id}/source",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Stop refreshing a dictionary from its URL; its rows stay and become editable.",
+				Handler:  d.dictionaryHandler.HandleDetachSource,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/dictionaries/{id}/sync",
+				Access:   api.AccessAnalyst,
+				Response: api.Response[*dictionaries.Dictionary]{},
+				Summary:  "Refresh a dictionary from its URL now.",
+				Handler:  d.dictionaryHandler.HandleSyncSource,
+			})
 
 			// Analytics models
 			r.Register(api.Route{

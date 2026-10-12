@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"bifract/pkg/aitools"
+	"bifract/pkg/rowfile"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -43,12 +44,8 @@ const (
 	maxSkipsReported = 5
 )
 
-// bom is the byte-order mark a Windows editor leaves at the head of a file. It
-// would otherwise become part of the first column's name.
-const bom = "\uFEFF"
-
 // uploadFormats are the file shapes understood, in the order they are offered.
-var uploadFormats = []string{"auto", "csv", "tsv", "json", "ndjson", "lines"}
+var uploadFormats = append([]string{"auto"}, rowfile.Formats...)
 
 type uploadDictionaryFileArgs struct {
 	Path string `json:"path" jsonschema:"Path to the file on the machine this MCP server runs on. A .gz file is decompressed as it is read."`
@@ -158,7 +155,7 @@ func uploadDictionaryFile(ctx context.Context, c *Client, in uploadDictionaryFil
 	}
 	defer file.Close()
 
-	source, err := decompressed(bufio.NewReaderSize(file, 1<<16))
+	source, err := rowfile.Decompressed(bufio.NewReaderSize(file, 1<<16))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
@@ -185,22 +182,31 @@ func uploadDictionaryFile(ctx context.Context, c *Client, in uploadDictionaryFil
 	// named key field, or its leading column once the first row names it.
 	key := aitools.Field[string](dict, "key_column")
 	if key == "" && in.KeyField != "" {
-		key = columnName(in.KeyField)
+		key = rowfile.ColumnName(in.KeyField)
 	}
 
-	rows, err := newRowReader(format, source, uploadMapping{
-		keyField: strings.TrimSpace(in.KeyField),
-		key:      key,
-		column:   strings.TrimSpace(in.Column),
-	})
+	// A lines file fills one column: the one named, else the key, else "value"
+	// for a new dictionary that has no key column yet.
+	listColumn := strings.TrimSpace(in.Column)
+	if listColumn == "" {
+		listColumn = key
+	}
+	if listColumn == "" {
+		listColumn = "value"
+	}
+	reader, err := rowfile.NewReader(format, source, rowfile.ColumnName(listColumn))
 	if err != nil {
 		return nil, err
+	}
+	var rows rowfile.Reader = reader
+	if format != "lines" {
+		rows = mappedReader{Reader: reader, mapping: uploadMapping{keyField: strings.TrimSpace(in.KeyField), key: key}}
 	}
 
 	up := &uploader{
 		client:  c,
 		dict:    dict,
-		order:   rows.ordered(),
+		order:   rows.Columns(),
 		key:     key,
 		dryRun:  in.DryRun,
 		report:  report,
@@ -215,24 +221,6 @@ func uploadDictionaryFile(ctx context.Context, c *Client, in uploadDictionaryFil
 		return up.summary(path, format, created, err), err
 	}
 	return up.summary(path, format, created, nil), nil
-}
-
-// decompressed unwraps a gzip stream, which a large list is usually shipped as.
-// Detected from the magic bytes rather than the extension, since a file saved
-// from a browser often keeps neither.
-func decompressed(r *bufio.Reader) (*bufio.Reader, error) {
-	magic, err := r.Peek(2)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	if len(magic) < 2 || magic[0] != 0x1f || magic[1] != 0x8b {
-		return r, nil
-	}
-	gz, err := gzip.NewReader(r)
-	if err != nil {
-		return nil, fmt.Errorf("looks gzip-compressed but cannot be decompressed: %w", err)
-	}
-	return bufio.NewReaderSize(gz, 1<<16), nil
 }
 
 // resolveFormat settles what the file is, from the argument, then the extension,
@@ -261,32 +249,7 @@ func resolveFormat(requested, path string, r *bufio.Reader) (string, error) {
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
 		return "", err
 	}
-	return sniffFormat(head), nil
-}
-
-// sniffFormat reads the shape out of the first bytes of a file with nothing
-// useful in its name.
-func sniffFormat(head []byte) string {
-	trimmed := bytes.TrimLeft(head, " \t\r\n"+bom)
-	switch {
-	case len(trimmed) == 0:
-		return "lines"
-	case trimmed[0] == '[':
-		return "json"
-	case trimmed[0] == '{':
-		return "ndjson"
-	}
-	line := trimmed
-	if end := bytes.IndexByte(line, '\n'); end >= 0 {
-		line = line[:end]
-	}
-	switch {
-	case bytes.ContainsRune(line, '\t'):
-		return "tsv"
-	case bytes.ContainsRune(line, ','):
-		return "csv"
-	}
-	return "lines"
+	return rowfile.Sniff(head), nil
 }
 
 // resolveTargetDictionary finds the dictionary to load into, creating one where a
@@ -341,245 +304,22 @@ type uploadMapping struct {
 	// keyField is the file column holding the key, renamed to key as rows are
 	// read. Empty when the file already names the key column.
 	keyField string
-	// key is the dictionary's key column, and the column a lines file fills.
+	// key is the dictionary's key column.
 	key string
-	// column overrides which column a lines file fills.
-	column string
 }
 
-// rowReader yields a file's rows, one at a time. Every format is streamed: the
-// file is never held in memory, only the chunk being built.
-type rowReader interface {
-	// next returns the next row, or io.EOF at the end of the file. A row that
-	// carries nothing usable returns a skip reason instead.
-	next() (row map[string]string, skip string, err error)
-	// ordered is the file's own column order, where it has one. It decides the
-	// key of a dictionary this file is creating, so a CSV keys on its leftmost
-	// column rather than on whichever name happens to sort first.
-	ordered() []string
-}
-
-func newRowReader(format string, r *bufio.Reader, m uploadMapping) (rowReader, error) {
-	switch format {
-	case "csv":
-		return newDelimitedReader(r, ',', m)
-	case "tsv":
-		return newDelimitedReader(r, '\t', m)
-	case "json":
-		return newJSONArrayReader(r, m)
-	case "ndjson":
-		return &ndjsonReader{lines: newLineReader(r), mapping: m}, nil
-	case "lines":
-		column := m.column
-		if column == "" {
-			column = m.key
-		}
-		if column == "" {
-			// A new dictionary has no key column until its first column names it.
-			column = "value"
-		}
-		return &listReader{lines: newLineReader(r), column: columnName(column)}, nil
-	}
-	return nil, fmt.Errorf("unknown format %q", format)
-}
-
-// delimitedReader reads CSV or TSV, whose first record names the columns.
-type delimitedReader struct {
-	csv     *csv.Reader
-	headers []string
+// mappedReader applies the key rename to every row a file yields.
+type mappedReader struct {
+	rowfile.Reader
 	mapping uploadMapping
 }
 
-func newDelimitedReader(r *bufio.Reader, comma rune, m uploadMapping) (*delimitedReader, error) {
-	reader := csv.NewReader(r)
-	reader.Comma = comma
-	// A short record pads and a long one is truncated to the header, below. One
-	// ragged line in a large file should cost that line, not the whole load.
-	reader.FieldsPerRecord = -1
-	reader.ReuseRecord = true
-	reader.LazyQuotes = true
-
-	headers, err := reader.Read()
-	if err != nil {
-		return nil, fmt.Errorf("the file has no header row: %w", err)
+func (m mappedReader) Next() (map[string]string, string, error) {
+	row, skip, err := m.Reader.Next()
+	if err != nil || skip != "" {
+		return row, skip, err
 	}
-	cleaned := make([]string, len(headers))
-	for i, h := range headers {
-		cleaned[i] = strings.TrimSpace(strings.TrimPrefix(h, bom))
-	}
-	return &delimitedReader{csv: reader, headers: cleaned, mapping: m}, nil
-}
-
-func (d *delimitedReader) ordered() []string { return d.headers }
-
-func (d *delimitedReader) next() (map[string]string, string, error) {
-	record, err := d.csv.Read()
-	if err != nil {
-		return nil, "", err
-	}
-	row := make(map[string]string, len(d.headers))
-	for i, header := range d.headers {
-		if header == "" || i >= len(record) {
-			continue
-		}
-		row[header] = record[i]
-	}
-	return applyMapping(row, d.mapping), "", nil
-}
-
-// jsonArrayReader streams the elements of a JSON array, so a file that is one
-// large array is still read a row at a time.
-type jsonArrayReader struct {
-	decoder *json.Decoder
-	mapping uploadMapping
-}
-
-func newJSONArrayReader(r *bufio.Reader, m uploadMapping) (*jsonArrayReader, error) {
-	decoder := json.NewDecoder(r)
-	decoder.UseNumber()
-	token, err := decoder.Token()
-	if err != nil {
-		return nil, fmt.Errorf("the file is not readable as JSON: %w", err)
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != '[' {
-		return nil, errors.New("the file is JSON but not an array of objects. Use the ndjson format for one object per line")
-	}
-	return &jsonArrayReader{decoder: decoder, mapping: m}, nil
-}
-
-// ordered is nil: a JSON object has no column order Go preserves.
-func (j *jsonArrayReader) ordered() []string { return nil }
-
-func (j *jsonArrayReader) next() (map[string]string, string, error) {
-	if !j.decoder.More() {
-		return nil, "", io.EOF
-	}
-	var element any
-	if err := j.decoder.Decode(&element); err != nil {
-		return nil, "", fmt.Errorf("JSON element could not be read: %w", err)
-	}
-	row, skip := jsonRow(element)
-	if skip != "" {
-		return nil, skip, nil
-	}
-	return applyMapping(row, j.mapping), "", nil
-}
-
-// ndjsonReader reads one JSON object per line.
-type ndjsonReader struct {
-	lines   *lineReader
-	mapping uploadMapping
-}
-
-func (n *ndjsonReader) ordered() []string { return nil }
-
-func (n *ndjsonReader) next() (map[string]string, string, error) {
-	line, err := n.lines.next()
-	if err != nil {
-		return nil, "", err
-	}
-	var element any
-	decoder := json.NewDecoder(strings.NewReader(line))
-	decoder.UseNumber()
-	if err := decoder.Decode(&element); err != nil {
-		return nil, "not JSON: " + truncateValue(line), nil
-	}
-	row, skip := jsonRow(element)
-	if skip != "" {
-		return nil, skip, nil
-	}
-	return applyMapping(row, n.mapping), "", nil
-}
-
-// listReader reads a plain list, one value per line, which is how an indicator
-// feed usually arrives. Blank lines and # comments are not values.
-type listReader struct {
-	lines  *lineReader
-	column string
-	read   bool
-}
-
-func (l *listReader) ordered() []string { return []string{l.column} }
-
-func (l *listReader) next() (map[string]string, string, error) {
-	for {
-		line, err := l.lines.next()
-		if err != nil {
-			return nil, "", err
-		}
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// A single-column CSV reads as a list, so its header would otherwise load
-		// as an indicator. A first line that is the column's own name is one.
-		first := !l.read
-		l.read = true
-		if first && strings.EqualFold(line, l.column) {
-			continue
-		}
-		return map[string]string{l.column: line}, "", nil
-	}
-}
-
-// lineReader reads lines of any length. bufio.Scanner would stop at its buffer
-// limit part way through a file and report the end of it.
-type lineReader struct {
-	r *bufio.Reader
-}
-
-func newLineReader(r *bufio.Reader) *lineReader { return &lineReader{r: r} }
-
-func (l *lineReader) next() (string, error) {
-	for {
-		line, err := l.r.ReadString('\n')
-		trimmed := strings.TrimRight(strings.TrimPrefix(line, bom), "\r\n")
-		trimmed = strings.TrimSpace(trimmed)
-		if err != nil {
-			if errors.Is(err, io.EOF) && trimmed != "" {
-				return trimmed, nil
-			}
-			return "", err
-		}
-		if trimmed != "" {
-			return trimmed, nil
-		}
-	}
-}
-
-// jsonRow flattens one decoded element into string fields. A nested value keeps
-// its JSON text: a dictionary column is a string, and dropping it would lose
-// data the file carried.
-func jsonRow(element any) (map[string]string, string) {
-	object, ok := element.(map[string]any)
-	if !ok {
-		return nil, "not an object: " + truncateValue(fmt.Sprint(element))
-	}
-	row := make(map[string]string, len(object))
-	for name, value := range object {
-		row[name] = jsonValue(value)
-	}
-	return row, ""
-}
-
-func jsonValue(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return typed
-	case json.Number:
-		return typed.String()
-	case bool:
-		if typed {
-			return "true"
-		}
-		return "false"
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Sprint(value)
-	}
-	return string(encoded)
+	return applyMapping(row, m.mapping), "", nil
 }
 
 // applyMapping renames the file's key column to the dictionary's, so a file that
@@ -593,34 +333,6 @@ func applyMapping(row map[string]string, m uploadMapping) map[string]string {
 		row[m.key] = value
 	}
 	return row
-}
-
-// columnName maps a file's column onto a name the dictionary schema accepts:
-// a letter or underscore, then letters, digits, underscores and hyphens, and
-// never the _bf_ prefix the row table reserves.
-func columnName(raw string) string {
-	cleaned := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-			return r
-		}
-		return '_'
-	}, strings.TrimSpace(raw))
-
-	if cleaned == "" {
-		cleaned = "column"
-	}
-	if first := cleaned[0]; !(first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' || first == '_') {
-		cleaned = "_" + cleaned
-	}
-	if strings.HasPrefix(strings.ToLower(cleaned), "_bf_") {
-		cleaned = "f" + cleaned
-	}
-	// Every rune left is one byte, so this cannot split one.
-	if len(cleaned) > 255 {
-		cleaned = cleaned[:255]
-	}
-	return cleaned
 }
 
 // uploader turns a stream of rows into chunked CSV requests.
@@ -653,7 +365,7 @@ type uploader struct {
 	widened bool
 }
 
-func (u *uploader) run(ctx context.Context, rows rowReader) error {
+func (u *uploader) run(ctx context.Context, rows rowfile.Reader) error {
 	u.renames = map[string]string{}
 	u.columns = map[string]bool{}
 	u.folded = map[string]string{}
@@ -672,7 +384,7 @@ func (u *uploader) run(ctx context.Context, rows rowReader) error {
 	defer u.finalize(ctx)
 
 	for {
-		row, skip, err := rows.next()
+		row, skip, err := rows.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -699,7 +411,7 @@ func (u *uploader) run(ctx context.Context, rows rowReader) error {
 func (u *uploader) add(ctx context.Context, row map[string]string) error {
 	normalized := make(map[string]string, len(row))
 	for raw, value := range row {
-		name := columnName(raw)
+		name := rowfile.ColumnName(raw)
 		if existing, ok := u.folded[strings.ToLower(name)]; ok {
 			name = existing
 		}
@@ -931,7 +643,7 @@ func worthRetrying(err error) bool {
 // file key on the same column.
 func (u *uploader) leadColumn(row map[string]string) string {
 	for _, raw := range u.order {
-		if name := columnName(raw); row[name] != "" {
+		if name := rowfile.ColumnName(raw); row[name] != "" {
 			return name
 		}
 	}
@@ -942,11 +654,4 @@ func (u *uploader) leadColumn(row map[string]string) string {
 		}
 	}
 	return first
-}
-
-func truncateValue(s string) string {
-	if len(s) <= 80 {
-		return s
-	}
-	return s[:80] + "..."
 }

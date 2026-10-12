@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"bifract/pkg/aitools"
+	"bifract/pkg/rowfile"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -317,7 +318,7 @@ func TestFormatsAreRecognisedFromTheFile(t *testing.T) {
 		{
 			name:    "csv with a byte-order mark",
 			file:    "feed.csv",
-			content: bom + "ioc,source\na,feed\n",
+			content: rowfile.BOM + "ioc,source\na,feed\n",
 			want:    []map[string]string{{"ioc": "a", "source": "feed"}},
 		},
 	} {

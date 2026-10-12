@@ -13072,6 +13072,257 @@
         "x-bifract-access": "analyst"
       }
     },
+    "/api/v1/dictionaries/{id}/source": {
+      "put": {
+        "operationId": "put_api_v1_dictionaries_byId_source",
+        "summary": "Fill a dictionary from a URL, replacing its rows on every refresh.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "dictionaries"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/dictionaries.Source"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/dictionaries.Dictionary"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      },
+      "delete": {
+        "operationId": "delete_api_v1_dictionaries_byId_source",
+        "summary": "Stop refreshing a dictionary from its URL; its rows stay and become editable.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "dictionaries"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/dictionaries.Dictionary"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
+    "/api/v1/dictionaries/{id}/sync": {
+      "post": {
+        "operationId": "post_api_v1_dictionaries_byId_sync",
+        "summary": "Refresh a dictionary from its URL now.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "dictionaries"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/dictionaries.Dictionary"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/dictionary-actions": {
       "get": {
         "operationId": "get_api_v1_dictionary_actions",
@@ -34066,6 +34317,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/dictionaries.Source"
           }
         },
         "required": [
@@ -34128,6 +34382,12 @@
           },
           "row_count": {
             "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/dictionaries.Source"
+          },
+          "source_status": {
+            "$ref": "#/components/schemas/dictionaries.SourceStatus"
           },
           "updated_at": {
             "type": "string",
@@ -34315,6 +34575,68 @@
           "samples",
           "collisions_capped"
         ]
+      },
+      "dictionaries.Source": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "format": {
+            "type": "string"
+          },
+          "key_field": {
+            "type": "string"
+          },
+          "key_format": {
+            "type": "string"
+          },
+          "refresh_minutes": {
+            "type": "integer"
+          },
+          "split_key": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "key_field",
+          "refresh_minutes"
+        ]
+      },
+      "dictionaries.SourceStatus": {
+        "type": "object",
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          },
+          "failures": {
+            "type": "integer"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "skip_sample": {
+            "type": "string"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        }
       },
       "dictionaries.UpdateDictionaryRequest": {
         "type": "object",
@@ -38675,6 +38997,9 @@
           "api_key_rate_limit": {
             "type": "integer"
           },
+          "dictionary_sources_allow_private": {
+            "type": "boolean"
+          },
           "pgr_sensitivity_percent": {
             "type": "number"
           },
@@ -38731,7 +39056,8 @@
           "schema_sweep_interval_minutes",
           "api_key_rate_limit",
           "pgr_sensitivity_percent",
-          "require_mfa"
+          "require_mfa",
+          "dictionary_sources_allow_private"
         ]
       },
       "settings.SettingsResponse": {

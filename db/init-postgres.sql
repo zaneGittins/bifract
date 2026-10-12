@@ -537,6 +537,8 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     is_global BOOLEAN NOT NULL DEFAULT false,
     case_insensitive_keys BOOLEAN NOT NULL DEFAULT false,
     kind VARCHAR(16) NOT NULL DEFAULT 'value',
+    source JSONB,
+    source_status JSONB,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -545,6 +547,8 @@ CREATE TABLE IF NOT EXISTS dictionaries (
 
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS case_insensitive_keys BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'value';
+ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS source JSONB;
+ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS source_status JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_dictionaries_fractal_id ON dictionaries(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_dictionaries_name ON dictionaries(name);
@@ -896,6 +900,8 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     is_global BOOLEAN NOT NULL DEFAULT false,
     case_insensitive_keys BOOLEAN NOT NULL DEFAULT false,
     kind VARCHAR(16) NOT NULL DEFAULT 'value',
+    source JSONB,
+    source_status JSONB,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
