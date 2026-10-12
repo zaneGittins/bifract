@@ -5615,3 +5615,17 @@ func TestPostAggregationFilterOnMissingColumn(t *testing.T) {
 		mustTranslate(t, q, opts)
 	}
 }
+
+// A HAVING filter binds to the aggregation in effect where it is written, so
+// filtering before and after a group-counting count() are different queries.
+func TestHavingBindsToStageAtFilterPosition(t *testing.T) {
+	opts := QueryOptions{FractalID: "f"}
+	after := mustTranslate(t, `* | groupby(user) | count() | _count > 3`, opts)
+	if !strings.Contains(after, "GROUP BY user) HAVING _count > 3)") {
+		t.Errorf("a filter after count() must filter the count: %s", after)
+	}
+	before := mustTranslate(t, `* | groupby(user) | _count > 3 | count()`, opts)
+	if !strings.Contains(before, "GROUP BY user HAVING _count > 3)") {
+		t.Errorf("a filter before count() must filter the groups: %s", before)
+	}
+}

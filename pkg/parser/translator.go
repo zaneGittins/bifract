@@ -390,6 +390,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		if err := handler.Execute(cmd, ctx); err != nil {
 			return nil, err
 		}
+		ctx.Plan.stageAfterCmd = append(ctx.Plan.stageAfterCmd, len(ctx.Plan.Stages)-1)
 	}
 
 	// ---------------------------------------------------------------
@@ -1071,6 +1072,24 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		TimeScopedSubquery:  plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
 		Chain:               plan.Chain,
 	}, nil
+}
+
+// pushAggregationStage finalizes the current aggregation stage and pushes an
+// empty stage that aggregates over its output rows, which are all it can see.
+func pushAggregationStage(ctx *CommandContext) error {
+	prevStage := ctx.Plan.CurrentStage()
+	if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+		return err
+	}
+	prevOutputs := stageOutputAliases(prevStage)
+	ctx.Plan.PushStage()
+	ctx.Plan.CurrentStage().Aggregates = true
+	ctx.Plan.IsAggregated = false
+	ctx.Plan.aggregationOutputs = make(map[string]string)
+	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outerAggFieldOrder = nil
+	ctx.Registry.ScopeToOutputs(prevOutputs)
+	return nil
 }
 
 // pushCarryForwardStage finalizes the current aggregation stage and pushes a new

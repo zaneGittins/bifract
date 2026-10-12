@@ -490,11 +490,20 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 			plan.Stages[idx].Layer.Where = append(plan.Stages[idx].Layer.Where, clause)
 		}
 	}
-	// HAVING binds to the outermost aggregation stage, not the innermost source
-	// stage, so chained-groupby filters apply to the final aggregates.
-	if clause := materializeCondGroup(plan.pendingHavingConditions, registry, nil); clause != "" {
-		havingStage := plan.havingStage()
-		havingStage.Layer.Having = append(havingStage.Layer.Having, clause)
+	// HAVING binds to the aggregation stage in effect where the filter is written.
+	havingByStage := make(map[int][]HavingCondition)
+	var havingOrder []int
+	for _, cond := range plan.pendingHavingConditions {
+		idx := plan.havingStageIndexAt(cond.CmdIndex)
+		if _, seen := havingByStage[idx]; !seen {
+			havingOrder = append(havingOrder, idx)
+		}
+		havingByStage[idx] = append(havingByStage[idx], cond)
+	}
+	for _, idx := range havingOrder {
+		if clause := materializeCondGroup(havingByStage[idx], registry, nil); clause != "" {
+			plan.Stages[idx].Layer.Having = append(plan.Stages[idx].Layer.Having, clause)
+		}
 	}
 	// Deferred conditions land above the source scan, so any source expression they
 	// reference must be exported there under a hidden alias (see deferredScope).
