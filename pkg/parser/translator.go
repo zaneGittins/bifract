@@ -289,6 +289,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
 	}
+	// Captured before Execute, whose stage pushes scope the registry and drop
+	// columns a later command will still add.
+	declared := registry.ProducedNames()
 
 	// ---------------------------------------------------------------
 	// 5. Process field assignments
@@ -399,6 +402,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	//     SQL from the now-complete registry and binds HAVING to its proper stage.
 	// ---------------------------------------------------------------
 	if err := resolveCommandConditions(pipeline.HavingConditions, opts); err != nil {
+		return nil, err
+	}
+	if err := validatePostAggregationFields(pipeline, registry, declared); err != nil {
 		return nil, err
 	}
 	if err := classifyConditions(pipeline.HavingConditions, registry, plan); err != nil {

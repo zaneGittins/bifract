@@ -5584,3 +5584,34 @@ func TestModelLookupKeyResolvesAComputedColumn(t *testing.T) {
 		t.Errorf("the prefilter and the join key should both use the lookup, found %d uses:\n%s", n, res.SQL)
 	}
 }
+
+// A name that no stage produces resolved as a log field and was pushed into the
+// pre-aggregation scan, so a misspelled alias silently matched nothing.
+func TestPostAggregationFilterOnMissingColumn(t *testing.T) {
+	opts := QueryOptions{FractalID: "f"}
+	for _, q := range []string{
+		`* | groupby(image) | _cuont > 1`,
+		`* | groupby(user, function=sum(bytes)) | sum_bytes > 1000`,
+		`* | groupby(user, function=sum(bytes)) | _count > 1`,
+		`* | groupby(image) | user="bob"`,
+		`* | groupby(a) | (_count > 1 OR b="x")`,
+		`* | count() | user="bob"`,
+	} {
+		_, err := TranslateToSQL(mustParse(t, q), opts)
+		if err == nil || !strings.Contains(err.Error(), "does not exist after") {
+			t.Errorf("%s: want a missing-column error, got %v", q, err)
+		}
+	}
+	for _, q := range []string{
+		`* | user="bob" | groupby(image) | _count > 1`,
+		`* | groupby(image) | image=/cmd/i`,
+		`* | groupby(lower(user)) | lower_user="bob"`,
+		`* | groupby(a, function=count()) | _count > 1`,
+		`* | groupby(a, function=count(as=n)) | n > 1`,
+		`* | groupby(a) | r := _count * 2 | r > 4`,
+		`* | groupby(a) | sprintf("%s!", a, as=hx) | hx = "x!"`,
+		`* | chain(user) { a="x"; b="y" } | user="bob"`,
+	} {
+		mustTranslate(t, q, opts)
+	}
+}

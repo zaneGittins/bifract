@@ -627,8 +627,11 @@ type groupbyHandler struct{}
 func (h *groupbyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.HasGroupBy = true
 	ctx.Plan.GroupByCount++
-	// groupby always produces _count (explicit or default COUNT(*))
-	ctx.Registry.Register("_count", FieldKindAggregate, "COUNT(*)", ctx.CmdIndex)
+	// Without function= a groupby counts, producing _count. With it, the specs
+	// name their own outputs and _count exists only if one of them is a count.
+	if b, err := BindCommand(cmd); err != nil || !b.Has("function") {
+		ctx.Registry.Register("_count", FieldKindAggregate, "COUNT(*)", ctx.CmdIndex)
+	}
 	return nil
 }
 

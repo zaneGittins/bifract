@@ -80,6 +80,7 @@ type HavingCondition struct {
 	LiteralTerm string
 	Logic       string // "AND", "OR", ""
 	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
+	CmdIndex    int    // number of pipeline commands that precede this condition
 
 	// Compound node support for arbitrary nesting depth.
 	// When IsCompound is true, Children holds the sub-expression tree and
@@ -218,12 +219,22 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		pipeline.Filter = filter
 	}
 
+	// Each segment's conditions are stamped with how many commands precede them
+	// before the next segment can append a command.
+	stamped := 0
+	stampConditionPositions := func() {
+		for ; stamped < len(pipeline.HavingConditions); stamped++ {
+			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands))
+		}
+	}
+
 	// Parse pipeline commands, assignments, and HAVING conditions
 	// Commands/assignments can start with a pipe OR start directly (when no filter)
 	for p.current().Type == TokenPipe || p.current().Type == TokenFunction || p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenRegex || p.current().Type == TokenAnd || p.current().Type == TokenOr || p.current().Type == TokenNot || p.current().Type == TokenLParen || p.current().Type == TokenBinding {
 		if err := p.checkIterationLimit(); err != nil {
 			return nil, err
 		}
+		stampConditionPositions()
 		// Guard against stalled parsing: if position doesn't advance in a full
 		// iteration, we'd loop forever. Break with an error instead.
 		startPos := p.pos
@@ -437,6 +448,8 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			return nil, newPosError(cur, "unexpected %s in pipeline", describeToken(cur))
 		}
 	}
+
+	stampConditionPositions()
 
 	// Anything left over is a token no stage could consume. Stopping here
 	// silently would drop the rest of the query, commands included.
@@ -1623,6 +1636,15 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	cmd.Block = block
 
 	return cmd, nil
+}
+
+// setConditionPosition stamps a condition and every nested leaf, since a compound
+// may later be split into its conjuncts.
+func setConditionPosition(c *HavingCondition, cmdIndex int) {
+	c.CmdIndex = cmdIndex
+	for i := range c.Children {
+		setConditionPosition(&c.Children[i], cmdIndex)
+	}
 }
 
 func ParseQuery(query string) (*PipelineNode, error) {

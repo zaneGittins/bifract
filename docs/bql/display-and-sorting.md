@@ -11,8 +11,8 @@ Select specific columns to display:
 
 Aggregations are projected under a fixed generated alias, not the function name and not the field name: `count()` produces `_count`, `sum(bytes)` produces `_sum`, `avg(x)` produces `_avg`, `min`/`max` produce `_min`/`_max`. Reference that alias in `table()`, `sort()`, and post-aggregation filters, or set your own with `as=`.
 
-!!! warning "Referencing a wrong alias fails silently"
-    An unknown name is treated as a log field, not an error. `| sum_bytes > 1000` compiles to a filter on a `sum_bytes` log field that does not exist, so the query runs and returns nothing useful. Use `_sum`, or name the column yourself: `function=sum(bytes, as=sum_bytes)`.
+!!! note "Filters after an aggregation"
+    After `groupBy()` or a stats command, only its grouping keys and aggregate columns exist. A filter on any other name, such as `| sum_bytes > 1000` or `| user="bob"`, is an error naming the columns that do exist. Use `_sum`, name the column yourself with `function=sum(bytes, as=sum_bytes)`, or move a log-field filter before the aggregation.
 
 Note the difference between the two ways to combine `groupBy` with `count()`:
 
