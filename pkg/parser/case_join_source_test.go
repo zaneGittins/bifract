@@ -69,3 +69,16 @@ func TestJoinRejectsSecondKey(t *testing.T) {
 		t.Fatalf("want a second join key rejected, got %v", err)
 	}
 }
+
+// TestJoinBeforeCountNamesTheFilter verifies the error explains that the join runs
+// on the aggregated rows and points at in() for filtering before aggregating.
+func TestJoinBeforeCountNamesTheFilter(t *testing.T) {
+	pipeline, err := ParseQuery(`* | join(host) { * | groupby(host) } | count()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = TranslateToSQLWithOrder(pipeline, serverOpts())
+	if err == nil || !strings.Contains(err.Error(), "applied to the aggregated rows") || !strings.Contains(err.Error(), "in(host, &keys)") {
+		t.Fatalf("want the join-after-aggregation explanation, got %v", err)
+	}
+}

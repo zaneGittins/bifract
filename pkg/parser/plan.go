@@ -401,7 +401,9 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	}
 	if p.JoinKeyExpr != "" {
 		if err := p.validateJoinKeysSurviveAggregation(source, "join() key", []string{p.JoinKeyExpr}, []string{p.JoinKey}); err != nil {
-			return "", err
+			// The aggregation runs before the join, which is not what a reader of
+			// `join() | count()` expects, so name the filter that does run first.
+			return "", fmt.Errorf("join() is applied to the aggregated rows, so the aggregation must keep the key %[1]s: group by it, or to count or aggregate only the rows the subquery matches, filter first with let &keys := <subquery>; ... | in(%[1]s, &keys)", p.JoinKey)
 		}
 		selectClause += fmt.Sprintf(", %s AS %s", p.JoinKeyExpr, joinHiddenKeyCol)
 	}
