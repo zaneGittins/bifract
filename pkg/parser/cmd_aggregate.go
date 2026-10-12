@@ -31,16 +31,9 @@ func (h *countHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Bare count() after groupby: push second stage to count the number of groups.
 	// count(field) or count(field, unique=true) still adds to the groupby stage.
 	if ctx.Plan.HasGroupBy && len(source.Layer.GroupBy) > 0 && !hasField && !unique {
-		if err := assembleGroupBySelects(ctx, source, nil); err != nil {
+		if err := pushAggregationStage(ctx); err != nil {
 			return fmt.Errorf("count (stage finalize): %w", err)
 		}
-		prevOutputs := stageOutputAliases(source)
-		ctx.Plan.PushStage()
-		ctx.Plan.IsAggregated = false
-		ctx.Plan.aggregationOutputs = make(map[string]string)
-		ctx.Plan.outerAggregations = nil
-		ctx.Plan.outerAggFieldOrder = nil
-		ctx.Registry.ScopeToOutputs(prevOutputs)
 		ctx.Plan.HasGroupBy = false
 
 		newSource := ctx.Plan.CurrentStage()
@@ -627,8 +620,11 @@ type groupbyHandler struct{}
 func (h *groupbyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.HasGroupBy = true
 	ctx.Plan.GroupByCount++
-	// groupby always produces _count (explicit or default COUNT(*))
-	ctx.Registry.Register("_count", FieldKindAggregate, "COUNT(*)", ctx.CmdIndex)
+	// Without function= a groupby counts, producing _count. With it, the specs
+	// name their own outputs and _count exists only if one of them is a count.
+	if b, err := BindCommand(cmd); err != nil || !b.Has("function") {
+		ctx.Registry.Register("_count", FieldKindAggregate, "COUNT(*)", ctx.CmdIndex)
+	}
 	return nil
 }
 
@@ -636,25 +632,9 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	isMultiStage := len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0
 
 	if isMultiStage {
-		// Finalize the previous stage's SELECT before pushing a new stage.
-		prevStage := ctx.Plan.CurrentStage()
-		if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+		if err := pushAggregationStage(ctx); err != nil {
 			return fmt.Errorf("groupby (stage finalize): %w", err)
 		}
-		// Record what the previous stage outputs so the new stage can reference them.
-		prevOutputs := stageOutputAliases(prevStage)
-
-		ctx.Plan.PushStage()
-
-		// Reset aggregation state for the new stage.
-		ctx.Plan.IsAggregated = false
-		ctx.Plan.aggregationOutputs = make(map[string]string)
-		ctx.Plan.outerAggregations = nil
-		ctx.Plan.outerAggFieldOrder = nil
-
-		// Snapshot the registry: clear non-output fields so the new stage
-		// only sees what the previous stage produces.
-		ctx.Registry.ScopeToOutputs(prevOutputs)
 	}
 
 	source := ctx.Plan.CurrentStage()

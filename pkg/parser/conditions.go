@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -489,11 +490,20 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 			plan.Stages[idx].Layer.Where = append(plan.Stages[idx].Layer.Where, clause)
 		}
 	}
-	// HAVING binds to the outermost aggregation stage, not the innermost source
-	// stage, so chained-groupby filters apply to the final aggregates.
-	if clause := materializeCondGroup(plan.pendingHavingConditions, registry, nil); clause != "" {
-		havingStage := plan.havingStage()
-		havingStage.Layer.Having = append(havingStage.Layer.Having, clause)
+	// HAVING binds to the aggregation stage in effect where the filter is written.
+	havingByStage := make(map[int][]HavingCondition)
+	var havingOrder []int
+	for _, cond := range plan.pendingHavingConditions {
+		idx := plan.havingStageIndexAt(cond.CmdIndex)
+		if _, seen := havingByStage[idx]; !seen {
+			havingOrder = append(havingOrder, idx)
+		}
+		havingByStage[idx] = append(havingByStage[idx], cond)
+	}
+	for _, idx := range havingOrder {
+		if clause := materializeCondGroup(havingByStage[idx], registry, nil); clause != "" {
+			plan.Stages[idx].Layer.Having = append(plan.Stages[idx].Layer.Having, clause)
+		}
 	}
 	// Deferred conditions land above the source scan, so any source expression they
 	// reference must be exported there under a hidden alias (see deferredScope).
@@ -944,4 +954,82 @@ func hasTopLevelOR(clause string) bool {
 		}
 	}
 	return false
+}
+
+// closedOutputCommands produce a fully known column set: a groupby's keys and
+// aggregates, or a single stats row. Other aggregating commands (chain, charts,
+// window scores) pass identity or row fields through, so they are not listed.
+var closedOutputCommands = map[string]bool{
+	"groupby": true, "count": true, "sum": true, "avg": true, "max": true, "min": true,
+	"median": true, "percentile": true, "stddev": true, "skewness": true, "kurtosis": true,
+	"multi": true, "mad": true, "iqr": true, "corr": true, "rankcorr": true,
+	"selectfirst": true, "selectlast": true, "top": true,
+}
+
+// validatePostAggregationFields rejects a filter on a name that does not exist
+// after the aggregation before it. Such a name resolves as a log field and is
+// pushed into the scan, so a typo like `_cuont > 1` silently matched nothing.
+func validatePostAggregationFields(pipeline *PipelineNode, registry *FieldRegistry, declared map[string]bool) error {
+	for _, cond := range pipeline.HavingConditions {
+		agg := lastAggregatingCommandBefore(pipeline.Commands, cond.CmdIndex)
+		if agg == "" || !closedOutputCommands[agg] {
+			continue
+		}
+		if name := firstMissingPostAggField(cond, registry, declared); name != "" {
+			return fmt.Errorf("%s does not exist after %s(): filter on a grouping key or an aggregate output (%s), or move the filter before the aggregation",
+				name, agg, strings.Join(aggregateOutputNames(registry), ", "))
+		}
+	}
+	return nil
+}
+
+// lastAggregatingCommandBefore names the last aggregating command among the
+// first n, or "" when none precedes.
+func lastAggregatingCommandBefore(commands []CommandNode, n int) string {
+	for i := min(n, len(commands)) - 1; i >= 0; i-- {
+		if IsAggregatingCommand(commands[i].Name) {
+			return strings.ToLower(commands[i].Name)
+		}
+	}
+	return ""
+}
+
+// firstMissingPostAggField returns the first operand of a condition tree that is
+// a plain log field rather than a column the pipeline computes. A field()
+// comparison is left to validateOperandStages, which explains it better.
+func firstMissingPostAggField(cond HavingCondition, registry *FieldRegistry, declared map[string]bool) string {
+	if cond.IsCompound {
+		for _, child := range cond.Children {
+			if name := firstMissingPostAggField(child, registry, declared); name != "" {
+				return name
+			}
+		}
+		return ""
+	}
+	if cond.Command != nil || cond.Expr != nil || cond.ValueField != "" || cond.Field == "" {
+		return ""
+	}
+	if isBareAggregate(cond.Field) || isGroupKey(registry, cond.Field) || declared[cond.Field] {
+		return ""
+	}
+	if e := registry.Get(cond.Field); e != nil && e.ClassifyKind() != FieldKindJSON {
+		return ""
+	}
+	return cond.Field
+}
+
+// aggregateOutputNames lists the grouping keys and aggregate columns in scope,
+// for an error that names what the author can filter on.
+func aggregateOutputNames(registry *FieldRegistry) []string {
+	var out []string
+	for name := range registry.groupKeys {
+		out = append(out, name)
+	}
+	for _, name := range registry.order {
+		if e := registry.fields[name]; e != nil && e.ClassifyKind() == FieldKindAggregate {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

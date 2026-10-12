@@ -169,6 +169,20 @@ func (r *FieldRegistry) Register(name string, kind FieldKind, expr string, produ
 	}
 }
 
+// ProducedNames returns the names some command or assignment computes, as
+// opposed to log fields.
+func (r *FieldRegistry) ProducedNames() map[string]bool {
+	out := make(map[string]bool)
+	for name, e := range r.fields {
+		switch e.ClassifyKind() {
+		case FieldKindBase, FieldKindJSON:
+		default:
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // Get returns the field entry for a name, or nil if not found.
 func (r *FieldRegistry) Get(name string) *FieldEntry {
 	return r.fields[name]

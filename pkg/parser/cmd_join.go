@@ -168,9 +168,7 @@ func init() {
 }
 
 func init() {
-	// Arguments[0] is the raw subquery body, so positional counting and unknown
-	// names cannot apply: the block carries the sub-pipeline's own syntax.
-	registerSpec(&CommandSpec{Name: "join", FreeForm: true, Params: []ParamSpec{
+	registerSpec(&CommandSpec{Name: "join", Params: []ParamSpec{
 		field("key"), namedLit("type"), namedLit("max"), namedList("include"),
 	}})
 }

@@ -80,6 +80,7 @@ type HavingCondition struct {
 	LiteralTerm string
 	Logic       string // "AND", "OR", ""
 	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
+	CmdIndex    int    // number of pipeline commands that precede this condition
 
 	// Compound node support for arbitrary nesting depth.
 	// When IsCompound is true, Children holds the sub-expression tree and
@@ -218,12 +219,22 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		pipeline.Filter = filter
 	}
 
+	// Each segment's conditions are stamped with how many commands precede them
+	// before the next segment can append a command.
+	stamped := 0
+	stampConditionPositions := func() {
+		for ; stamped < len(pipeline.HavingConditions); stamped++ {
+			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands))
+		}
+	}
+
 	// Parse pipeline commands, assignments, and HAVING conditions
 	// Commands/assignments can start with a pipe OR start directly (when no filter)
 	for p.current().Type == TokenPipe || p.current().Type == TokenFunction || p.current().Type == TokenField || p.current().Type == TokenString || p.current().Type == TokenRegex || p.current().Type == TokenAnd || p.current().Type == TokenOr || p.current().Type == TokenNot || p.current().Type == TokenLParen || p.current().Type == TokenBinding {
 		if err := p.checkIterationLimit(); err != nil {
 			return nil, err
 		}
+		stampConditionPositions()
 		// Guard against stalled parsing: if position doesn't advance in a full
 		// iteration, we'd loop forever. Break with an error instead.
 		startPos := p.pos
@@ -437,6 +448,8 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			return nil, newPosError(cur, "unexpected %s in pipeline", describeToken(cur))
 		}
 	}
+
+	stampConditionPositions()
 
 	// Anything left over is a token no stage could consume. Stopping here
 	// silently would drop the rest of the query, commands included.
@@ -949,19 +962,26 @@ func (p *Parser) parseCommand() (*CommandNode, error) {
 		return p.parseJoinCommand()
 	}
 
-	// Expect (
-	if _, err := p.expect(TokenLParen); err != nil {
+	if err := p.parseParenArguments(cmd); err != nil {
 		return nil, err
 	}
-	// The arguments are parsed from these tokens by parseArguments, guided by the
-	// command's schema. Here we only need to find where they end: the first ')'
-	// that is not inside a nested call or list.
+	return cmd, nil
+}
+
+// parseParenArguments reads a command's parenthesized argument list and parses
+// it against the command's schema. The arguments are parsed from these tokens by
+// parseArguments; here we only find where they end: the first ')' that is not
+// inside a nested call or list.
+func (p *Parser) parseParenArguments(cmd *CommandNode) error {
+	if _, err := p.expect(TokenLParen); err != nil {
+		return err
+	}
 	argStart := p.pos
 	parens, brackets := 0, 0
 scan:
 	for p.current().Type != TokenEOF {
 		if err := p.checkIterationLimit(); err != nil {
-			return nil, err
+			return err
 		}
 		switch p.current().Type {
 		case TokenLParen:
@@ -984,14 +1004,9 @@ scan:
 	}
 	argEnd := p.pos
 	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, err
+		return err
 	}
-
-	if err := p.attachArguments(cmd, argStart, argEnd); err != nil {
-		return nil, err
-	}
-
-	return cmd, nil
+	return p.attachArguments(cmd, argStart, argEnd)
 }
 
 // attachArguments parses cmd.Args from the token span between the command's
@@ -1541,57 +1556,8 @@ closed:
 // parseChainCommand parses chain(field, within=5m) { step1; step2; ... } syntax
 func (p *Parser) parseChainCommand() (*CommandNode, error) {
 	cmd := &CommandNode{Name: "chain"}
-
-	// Expect (
-	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, newPosError(p.current(), "expected '(' after chain, got %s", describeToken(p.current()))
-	}
-
-	// Parse arguments: grouping fields, optional within=DURATION and order=BOOL
-	var groupFields []string
-	var withinValue string
-	orderValue := "true"
-
-	for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
-		tok := p.current()
-		if tok.Type == TokenComma {
-			p.advance()
-			continue
-		}
-		val := tok.Value
-		if strings.HasPrefix(val, "within=") {
-			withinValue = strings.TrimPrefix(val, "within=")
-		} else if strings.HasPrefix(val, "order=") {
-			orderValue = strings.TrimPrefix(val, "order=")
-		} else if val == "within" || val == "order" {
-			p.advance()
-			// Handle name=VALUE where = is a separate token
-			if p.current().Type == TokenEqual {
-				p.advance() // skip =
-				if val == "within" {
-					withinValue = p.current().Value
-				} else {
-					orderValue = p.current().Value
-				}
-				p.advance()
-				continue
-			}
-			// Without = it is a field name
-			groupFields = append(groupFields, val)
-			continue
-		} else {
-			groupFields = append(groupFields, val)
-		}
-		p.advance()
-	}
-
-	// Expect )
-	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, newPosError(p.current(), "expected ')' after chain arguments, got %s", describeToken(p.current()))
-	}
-
-	if len(groupFields) == 0 {
-		return nil, newPosError(p.current(), "chain() requires at least one grouping field, e.g. chain(user)")
+	if err := p.parseParenArguments(cmd); err != nil {
+		return nil, err
 	}
 
 	// Expect {
@@ -1611,107 +1577,17 @@ func (p *Parser) parseChainCommand() (*CommandNode, error) {
 		return nil, newPosError(p.current(), "expected '}' to close chain block, got %s", describeToken(p.current()))
 	}
 
-	cmd.Args = chainArgs(groupFields, withinValue, orderValue)
 	cmd.BlockTokens = blockTokens
 	cmd.BlockSource = p.input
 
 	return cmd, nil
 }
 
-// chainArgs builds chain's typed arguments. Its block is parsed separately, so
-// the values are already in hand and need no re-parsing. The group fields are
-// raw token values, so a bracket list's brackets and a quoted "a,b" list are
-// unwrapped here rather than becoming field names of their own.
-func chainArgs(groupFields []string, within, order string) []Argument {
-	var args []Argument
-	for _, f := range chainGroupFields(groupFields) {
-		args = append(args, Argument{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: f}})
-	}
-	if within != "" {
-		args = append(args, Argument{Name: "within", Kind: ArgLiteral, Text: within})
-	}
-	if order != "" {
-		args = append(args, Argument{Name: "order", Kind: ArgLiteral, Text: order})
-	}
-	return args
-}
-
-// chainGroupFields flattens chain()'s grouping tokens into plain field names.
-func chainGroupFields(tokens []string) []string {
-	var out []string
-	for _, t := range tokens {
-		t = strings.Trim(strings.TrimSpace(t), "[]")
-		for _, part := range strings.Split(t, ",") {
-			if part = strings.TrimSpace(part); part != "" {
-				out = append(out, part)
-			}
-		}
-	}
-	return out
-}
-
 // parseJoinCommand parses join(key, type=inner, max=10000, include=[f1,f2]) { subquery } syntax
 func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	cmd := &CommandNode{Name: "join"}
-
-	// Expect (
-	if _, err := p.expect(TokenLParen); err != nil {
-		return nil, newPosError(p.current(), "expected '(' after join, got %s", describeToken(p.current()))
-	}
-
-	// Parse arguments: join key, optional type=, max=, include=[]
-	for p.current().Type != TokenRParen && p.current().Type != TokenEOF {
-		tok := p.current()
-		if tok.Type == TokenComma {
-			p.advance()
-			continue
-		}
-
-		name := tok.Value
-		p.advance()
-		if p.current().Type != TokenEqual {
-			cmd.Args = append(cmd.Args, Argument{Kind: ArgExpr, Expr: &ExprNode{Kind: ExprField, Value: name}, Pos: tok.Pos})
-			continue
-		}
-
-		p.advance() // skip =
-		if p.current().Type == TokenLBracket {
-			p.advance() // skip [
-			list := Argument{Name: strings.ToLower(name), Kind: ArgList, Pos: tok.Pos}
-			for p.current().Type != TokenRBracket && p.current().Type != TokenEOF {
-				if err := p.checkIterationLimit(); err != nil {
-					return nil, err
-				}
-				switch p.current().Type {
-				case TokenField, TokenString, TokenValue:
-					list.List = append(list.List, Argument{Kind: ArgLiteral, Text: p.current().Value, Pos: p.current().Pos})
-				case TokenComma:
-				default:
-					return nil, newPosError(p.current(), "unexpected %s in array", describeToken(p.current()))
-				}
-				p.advance()
-			}
-			if p.current().Type == TokenRBracket {
-				p.advance()
-			}
-			cmd.Args = append(cmd.Args, list)
-			continue
-		}
-		value := Argument{Name: strings.ToLower(name), Kind: ArgLiteral, Pos: tok.Pos}
-		switch p.current().Type {
-		case TokenField, TokenString, TokenValue:
-			value.Text = p.current().Value
-			value.Quoted = p.current().Type == TokenString
-			p.advance()
-		}
-		// An empty value is still bound, so the handler reports it rather than
-		// taking its default: join(user, max=) must not silently run unbounded.
-		cmd.Args = append(cmd.Args, value)
-	}
-
-	// Expect )
-	if _, err := p.expect(TokenRParen); err != nil {
-		return nil, newPosError(p.current(), "expected ')' after join arguments, got %s", describeToken(p.current()))
+	if err := p.parseParenArguments(cmd); err != nil {
+		return nil, err
 	}
 
 	// Expect {
@@ -1760,6 +1636,15 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	cmd.Block = block
 
 	return cmd, nil
+}
+
+// setConditionPosition stamps a condition and every nested leaf, since a compound
+// may later be split into its conjuncts.
+func setConditionPosition(c *HavingCondition, cmdIndex int) {
+	c.CmdIndex = cmdIndex
+	for i := range c.Children {
+		setConditionPosition(&c.Children[i], cmdIndex)
+	}
 }
 
 func ParseQuery(query string) (*PipelineNode, error) {

@@ -75,11 +75,19 @@ func (l *QueryLayer) UpsertSelect(expr SelectExpr) {
 type QueryStage struct {
 	Layer    QueryLayer
 	IsSource bool // true for the innermost stage (FROM logs)
+	// IsChain marks the stage chain() aggregates in. Its columns are fixed, so a
+	// later stats command aggregates over its rows in a stage of its own.
+	IsChain bool
+	// Aggregates marks a stage pushed to aggregate the previous stage's rows,
+	// which may have no GROUP BY (count() after groupby() is one COUNT(*)).
+	Aggregates bool
 }
 
 // QueryPlan holds the structured representation of a query before rendering to SQL.
 type QueryPlan struct {
 	Stages           []QueryStage // pipeline of aggregation stages (first = innermost)
+	// stageAfterCmd[i] is the current stage index once command i has executed.
+	stageAfterCmd []int
 	WindowLayers     []QueryLayer // z-score, histogram wrapping (applied after all stages)
 	DeferredWhere    []string     // conditions on window fields
 	DeferredOrder    []string     // ORDER BY on window fields
@@ -233,6 +241,22 @@ func (p *QueryPlan) SourceStage() *QueryStage {
 // correctly resolves to the groupby stage that produced the referenced aggregate.
 func (p *QueryPlan) havingStage() *QueryStage {
 	return &p.Stages[p.havingStageIndex()]
+}
+
+// havingStageIndexAt returns the stage a HAVING filter written after cmdIndex
+// commands binds to: the nearest aggregating stage that existed at that point.
+// A filter between groupby() and a following count() filters the groups, one
+// after it filters the count. Without positions it is the outermost.
+func (p *QueryPlan) havingStageIndexAt(cmdIndex int) int {
+	if cmdIndex <= 0 || cmdIndex > len(p.stageAfterCmd) {
+		return p.havingStageIndex()
+	}
+	for i := p.stageAfterCmd[cmdIndex-1]; i >= 0; i-- {
+		if len(p.Stages[i].Layer.GroupBy) > 0 || p.Stages[i].Aggregates {
+			return i
+		}
+	}
+	return p.havingStageIndex()
 }
 
 // havingStageIndex returns the index of the stage havingStage() resolves to.
@@ -401,7 +425,9 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	}
 	if p.JoinKeyExpr != "" {
 		if err := p.validateJoinKeysSurviveAggregation(source, "join() key", []string{p.JoinKeyExpr}, []string{p.JoinKey}); err != nil {
-			return "", err
+			// The aggregation runs before the join, which is not what a reader of
+			// `join() | count()` expects, so name the filter that does run first.
+			return "", fmt.Errorf("join() is applied to the aggregated rows, so the aggregation must keep the key %[1]s: group by it, or to count or aggregate only the rows the subquery matches, filter first with let &keys := <subquery>; ... | in(%[1]s, &keys)", p.JoinKey)
 		}
 		selectClause += fmt.Sprintf(", %s AS %s", p.JoinKeyExpr, joinHiddenKeyCol)
 	}

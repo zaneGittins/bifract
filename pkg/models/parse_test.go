@@ -40,7 +40,7 @@ func TestParseSourceQuerySubsetRejections(t *testing.T) {
 		wantSubst string // substring expected in one of the errors
 	}{
 		{"model_lookup", `level = "a" | model_lookup(model="m", key=[a,b])`, "another model's output"},
-		{"join", `level = "a" | join(on=host) { env = "p" }`, "reads a second query"},
+		{"join", `level = "a" | join(host) { env = "p" }`, "reads a second query"},
 		{"chain", `level = "a" | chain(host, within=10m) { event_id = "1"; event_id = "3" }`, "straddle the window"},
 		{"groupby", `level = "a" | groupby(host)`, "collapses rows"},
 		{"sort", `level = "a" | sort(host)`, "reorders or drops rows"},

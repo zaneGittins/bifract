@@ -289,6 +289,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
 	}
+	// Captured before Execute, whose stage pushes scope the registry and drop
+	// columns a later command will still add.
+	declared := registry.ProducedNames()
 
 	// ---------------------------------------------------------------
 	// 5. Process field assignments
@@ -383,10 +386,18 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 				return nil, fmt.Errorf("%s (post-aggregation stage): %w", cmd.Name, err)
 			}
 		}
+		// A stats command after chain() aggregates the matched entities, not
+		// the events inside each one.
+		if ctx.Plan.CurrentStage().IsChain && closedOutputCommands[strings.ToLower(cmd.Name)] && !strings.EqualFold(cmd.Name, "groupby") {
+			if err := pushAggregationStage(ctx); err != nil {
+				return nil, fmt.Errorf("%s (post-chain stage): %w", cmd.Name, err)
+			}
+		}
 		handler := getCommandHandler(cmd.Name)
 		if err := handler.Execute(cmd, ctx); err != nil {
 			return nil, err
 		}
+		ctx.Plan.stageAfterCmd = append(ctx.Plan.stageAfterCmd, len(ctx.Plan.Stages)-1)
 	}
 
 	// ---------------------------------------------------------------
@@ -399,6 +410,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	//     SQL from the now-complete registry and binds HAVING to its proper stage.
 	// ---------------------------------------------------------------
 	if err := resolveCommandConditions(pipeline.HavingConditions, opts); err != nil {
+		return nil, err
+	}
+	if err := validatePostAggregationFields(pipeline, registry, declared); err != nil {
 		return nil, err
 	}
 	if err := classifyConditions(pipeline.HavingConditions, registry, plan); err != nil {
@@ -1065,6 +1079,24 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		TimeScopedSubquery:  plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
 		Chain:               plan.Chain,
 	}, nil
+}
+
+// pushAggregationStage finalizes the current aggregation stage and pushes an
+// empty stage that aggregates over its output rows, which are all it can see.
+func pushAggregationStage(ctx *CommandContext) error {
+	prevStage := ctx.Plan.CurrentStage()
+	if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+		return err
+	}
+	prevOutputs := stageOutputAliases(prevStage)
+	ctx.Plan.PushStage()
+	ctx.Plan.CurrentStage().Aggregates = true
+	ctx.Plan.IsAggregated = false
+	ctx.Plan.aggregationOutputs = make(map[string]string)
+	ctx.Plan.outerAggregations = nil
+	ctx.Plan.outerAggFieldOrder = nil
+	ctx.Registry.ScopeToOutputs(prevOutputs)
+	return nil
 }
 
 // pushCarryForwardStage finalizes the current aggregation stage and pushes a new

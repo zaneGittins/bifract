@@ -66,6 +66,7 @@ event_id=1 | join(user) {
 ## Limitations
 
 - **No nested joins** - the subquery cannot itself contain a `join()`.
-- **Single join key** - only one field can be used as the join key.
+- **Single join key** - only one field can be used as the join key; a second is an error.
+- **Aggregation runs first** - an aggregation after `join()` runs on the outer rows before the join, so it must keep the join key. To count or aggregate only the rows another query matches, filter first with a [result-set binding](basics.md#result-sets): `let &keys := <subquery>; ... | in(field, &keys) | count()`.
 - **Max subquery rows** - capped at 100,000 to prevent memory issues. Use `max=` to adjust within this limit.
 - **Join types** - only `inner` and `left` are supported.
