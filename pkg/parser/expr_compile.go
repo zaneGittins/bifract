@@ -419,17 +419,16 @@ func assignmentError(field string, err error) error {
 
 // compileExpressionText parses and compiles an expression given as raw text,
 // for callers that hold a string rather than a parsed pipeline (eval()).
-func compileExpressionText(text string, registry *FieldRegistry, selfField string) (string, error) {
+func compileExpressionText(text string, registry *FieldRegistry, selfField string) (string, ExprType, error) {
 	runes := []rune(text)
 	expr, end, err := ParseExpressionAt(runes, 0)
 	if err != nil {
-		return "", err
+		return "", TypeAny, err
 	}
 	// Anything after the first complete expression was silently discarded, so the
 	// column held whatever the leading fragment resolved to.
 	if trailing := strings.TrimSpace(string(runes[end:])); trailing != "" {
-		return "", fmt.Errorf("unexpected %q after the expression", trailing)
+		return "", TypeAny, fmt.Errorf("unexpected %q after the expression", trailing)
 	}
-	sql, _, err := compileExpr(expr, registry, selfField)
-	return sql, err
+	return compileExpr(expr, registry, selfField)
 }

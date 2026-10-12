@@ -176,7 +176,7 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if prior := stageSelectExpr(source, name); prior != "" {
 			ctx.Registry.RegisterInlineExpr(name, prior, ctx.CmdIndex)
 		}
-		sqlExpr, err := evalAssignmentSQL(a, ctx.Registry)
+		sqlExpr, exprType, err := evalAssignmentSQL(a, ctx.Registry)
 		if err != nil {
 			return fmt.Errorf("eval(): %w", err)
 		}
@@ -187,6 +187,10 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
 		source.Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(name, expr)
+		// A filter coerces text with toFloat64OrZero, which rejects a number.
+		if exprType == TypeNumber {
+			ctx.Registry.SetNumeric(name)
+		}
 	}
 	return nil
 }
@@ -208,13 +212,17 @@ func evalTarget(a Argument) string {
 // evalAssignmentSQL compiles the right-hand side of one eval() assignment. No
 // selfField: unlike `x := x * 100`, where x means the log field, eval() assigns
 // into the same SELECT.
-func evalAssignmentSQL(a Argument, registry *FieldRegistry) (string, error) {
+func evalAssignmentSQL(a Argument, registry *FieldRegistry) (string, ExprType, error) {
 	if a.Name != "" {
-		return ResolveArg(a, registry)
+		if a.Kind == ArgExpr && a.Expr != nil && a.Expr.Kind != ExprField {
+			return compileExpr(a.Expr, registry, "")
+		}
+		sql, err := ResolveArg(a, registry)
+		return sql, TypeAny, err
 	}
 	_, expression, found := strings.Cut(a.Value(), "=")
 	if !found {
-		return "", nil
+		return "", TypeAny, nil
 	}
 	return compileExpressionText(strings.TrimSpace(expression), registry, "")
 }
