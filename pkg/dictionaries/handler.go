@@ -4,6 +4,7 @@ import (
 	"bifract/pkg/api"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -63,8 +64,10 @@ type CreateDictionaryRequest struct {
 	KeyColumn   string             `json:"key_column"`
 	Columns     []DictionaryColumn `json:"columns"`
 	IsGlobal    bool               `json:"is_global"`
-	// Kind is "value" (the default) or "network" for a CIDR list.
+	// Kind is "value" (the default), "network" for a CIDR list or "pattern".
 	Kind string `json:"kind"`
+	// Source fills the list from a URL. Setting one needs an administrator.
+	Source *Source `json:"source,omitempty"`
 }
 
 func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request) {
@@ -87,19 +90,112 @@ func (h *Handler) HandleCreateDictionary(w http.ResponseWriter, r *http.Request)
 		h.respondError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if req.Source != nil && !h.requireSourceAdmin(w, r) {
+		return
+	}
 
 	username := auth.AttributionUsername(r.Context())
 	dict, err := h.manager.CreateDictionary(r.Context(), CreateOptions{
 		FractalID: fractalID, PrismID: prismID, Name: req.Name, Description: req.Description,
 		KeyColumn: req.KeyColumn, Columns: req.Columns, CreatedBy: username,
-		IsGlobal: req.IsGlobal, Kind: req.Kind,
+		IsGlobal: req.IsGlobal, Kind: req.Kind, Source: req.Source,
 	})
+	if req.Source != nil {
+		h.respondSourceResult(w, dict, err)
+		return
+	}
 	if err != nil {
 		log.Printf("[Dictionaries] Failed to create dictionary: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to create dictionary")
+		h.respondManagerError(w, "Failed to create dictionary", err)
 		return
 	}
 	h.respondSuccess(w, dict)
+}
+
+// requireSourceAdmin restricts choosing what a source URL points at to
+// administrators: the server makes the request, from inside its own network.
+func (h *Handler) requireSourceAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if !api.Granted(r, api.AccessTenantAdmin) {
+		h.respondError(w, http.StatusForbidden, "Only an administrator can fill a lookup from a URL")
+		return false
+	}
+	return true
+}
+
+// HandleSetSource attaches or replaces a list's source and loads it now.
+func (h *Handler) HandleSetSource(w http.ResponseWriter, r *http.Request) {
+	if !h.requireSourceAdmin(w, r) {
+		return
+	}
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	var req Source
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	dict, err := h.manager.SetSource(r.Context(), existing.ID, req)
+	h.respondSourceResult(w, dict, err)
+}
+
+// HandleDetachSource stops refreshing a list and makes its rows editable.
+func (h *Handler) HandleDetachSource(w http.ResponseWriter, r *http.Request) {
+	if !h.requireSourceAdmin(w, r) {
+		return
+	}
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	dict, err := h.manager.DetachSource(r.Context(), existing.ID)
+	if errors.Is(err, errSourceBusy) {
+		h.respondError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		log.Printf("[Dictionaries] Failed to detach source from dictionary %s: %v", existing.ID, err)
+		h.respondError(w, http.StatusInternalServerError, "Failed to detach the source")
+		return
+	}
+	h.respondSuccess(w, dict)
+}
+
+// HandleSyncSource refreshes a list from its source now.
+func (h *Handler) HandleSyncSource(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	existing := h.getDictionaryScoped(w, r)
+	if existing == nil {
+		return
+	}
+	dict, err := h.manager.SyncSource(r.Context(), existing.ID)
+	h.respondSourceResult(w, dict, err)
+}
+
+// respondSourceResult answers a call that loads a source: the list once the
+// load is done, a 202 with the list while it goes on in the background, and
+// otherwise why it failed. A source problem is the caller's to fix and is
+// described; anything else stays in the server log.
+func (h *Handler) respondSourceResult(w http.ResponseWriter, dict *Dictionary, err error) {
+	switch {
+	case err == nil:
+		h.respondSuccess(w, dict)
+	case errors.Is(err, errSourceLoading):
+		api.WriteJSON(w, http.StatusAccepted, api.Response[*Dictionary]{Success: true, Data: dict,
+			Message: "Still loading; the list fills in when it finishes"})
+	case errors.Is(err, errSourceBusy):
+		h.respondError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, errSourceCooldown):
+		h.respondError(w, http.StatusTooManyRequests, err.Error())
+	case IsInvalidInput(err):
+		h.respondError(w, http.StatusBadRequest, "Could not load the source: "+err.Error())
+	default:
+		log.Printf("[Dictionaries] source load failed: %v", err)
+		h.respondError(w, http.StatusInternalServerError, "Could not load the source: "+sourceErrorText(err))
+	}
 }
 
 func (h *Handler) HandleGetDictionary(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +247,10 @@ func (h *Handler) HandleDeleteDictionary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	id := existing.ID
-	if err := h.manager.DeleteDictionary(r.Context(), id); err != nil {
+	if err := h.manager.DeleteDictionary(r.Context(), id); errors.Is(err, errSourceBusy) {
+		h.respondError(w, http.StatusConflict, err.Error())
+		return
+	} else if err != nil {
 		log.Printf("[Dictionaries] Failed to delete dictionary %s: %v", id, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to delete dictionary")
 		return
@@ -478,7 +577,7 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.read += int64(n)
 	if c.read > c.max {
-		return n, badInput("the request expands to more than %d bytes", c.max)
+		return n, badInput("the data expands to more than %d bytes", c.max)
 	}
 	return n, err
 }

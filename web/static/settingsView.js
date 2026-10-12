@@ -62,6 +62,10 @@ const SettingsView = {
         if (sharedLinksToggle) {
             sharedLinksToggle.addEventListener('change', () => this.saveSharedLinksEnabled());
         }
+        const dictSourcesToggle = document.getElementById('dictSourcesAllowPrivateToggle');
+        if (dictSourcesToggle) {
+            dictSourcesToggle.addEventListener('change', () => this.saveSettings(dictSourcesToggle.closest('.toggle-switch')));
+        }
 
         const distQueueResetBtn = document.getElementById('distQueueResetBtn');
         if (distQueueResetBtn) {
@@ -616,6 +620,10 @@ const SettingsView = {
                 if (requireMFAToggle) {
                     requireMFAToggle.checked = data.settings.require_mfa === true;
                 }
+                const dictSourcesToggle = document.getElementById('dictSourcesAllowPrivateToggle');
+                if (dictSourcesToggle) {
+                    dictSourcesToggle.checked = data.settings.dictionary_sources_allow_private === true;
+                }
             }
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -656,7 +664,8 @@ const SettingsView = {
                     recall_memory_percent: parseInt(document.getElementById('recallMemoryPercentSettings')?.value || '25', 10),
                     schema_sweep_interval_minutes: parseInt(document.getElementById('schemaSweepIntervalSettings')?.value || '15', 10),
                     pgr_sensitivity_percent: parseFloat(document.getElementById('pgrSensitivitySettings')?.value || '2'),
-                    require_mfa: document.getElementById('requireMFAToggle')?.checked === true
+                    require_mfa: document.getElementById('requireMFAToggle')?.checked === true,
+                    dictionary_sources_allow_private: document.getElementById('dictSourcesAllowPrivateToggle')?.checked === true
                 })
             });
 

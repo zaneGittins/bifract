@@ -131,13 +131,11 @@ func TestOwnedLookupExcludesGlobalsWhileReadLookupIncludesThem(t *testing.T) {
 	}
 }
 
-// Every dictionary read scans into the same 14 struct fields, so the column list
-// must name 14 columns. Scan is variadic, so a list one column short compiles
-// cleanly and fails only at runtime, on every call: that is how the by-name
-// lookup shipped broken when case_insensitive_keys was added to the other reads
-// and not to this one. Counting top-level commas catches the divergence here.
+// scanDictionary reads 16 fields, so the column list must name 16 columns. Scan
+// is variadic, so a list one column short compiles cleanly and fails only at
+// runtime, on every call. Counting top-level commas catches it here.
 func TestDictColumnsMatchesScanArity(t *testing.T) {
-	const wantColumns = 14 // id..updated_at, see scanDictionary
+	const wantColumns = 16 // id..source_status, see scanDictionary
 
 	depth, got := 0, 1
 	for _, r := range dictColumns {
@@ -156,7 +154,7 @@ func TestDictColumnsMatchesScanArity(t *testing.T) {
 		t.Errorf("dictColumns selects %d columns but every Scan expects %d; add the column to dictColumns and to every Scan:\n%s",
 			got, wantColumns, dictColumns)
 	}
-	for _, col := range []string{"case_insensitive_keys", "kind"} {
+	for _, col := range []string{"case_insensitive_keys", "kind", "source", "source_status"} {
 		if !strings.Contains(dictColumns, col) {
 			t.Errorf("dictColumns must select %s:\n%s", col, dictColumns)
 		}

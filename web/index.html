@@ -1057,6 +1057,19 @@
                                         </label>
                                     </div>
                                 </div>
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="dictSourcesAllowPrivateToggle" class="sp-row-label">Lookup sources on the internal network</label>
+                                        <p class="sp-row-desc">Lets a lookup filled from a URL fetch from private and loopback addresses, for lists hosted inside your network.</p>
+                                        <p class="sp-row-meta sp-row-cost">When off, a source URL can only reach public addresses. Cloud metadata endpoints are refused either way.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="dictSourcesAllowPrivateToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </section>
 
@@ -3722,6 +3735,14 @@ throttleTimeSeconds: 3600"></textarea>
                     </select>
                     <span class="form-hint" id="dictNewKindHint">Keys are matched byte for byte. Use this for names, hashes and indicators.</span>
                 </div>
+                <div class="form-group" id="dictNewSourceGroup" style="display:none;">
+                    <label for="dictNewSourceMode">Rows</label>
+                    <select id="dictNewSourceMode" class="form-input">
+                        <option value="manual" selected>Added here or imported from a file</option>
+                        <option value="url">Fetched from a URL and kept up to date</option>
+                    </select>
+                </div>
+                <div id="dictNewSourceFields" style="display:none;"></div>
                 <div class="form-group">
                     <label class="dict-global-label">
                         <input type="checkbox" id="dictNewGlobal"> Global

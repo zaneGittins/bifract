@@ -81,12 +81,16 @@ type Dictionary struct {
 	// CaseInsensitiveKeys builds the ClickHouse dictionary objects over lower(key),
 	// so match() hits regardless of the casing the log carries.
 	CaseInsensitiveKeys bool `json:"case_insensitive_keys"`
-	// Kind is KindValue or KindNetwork. It decides the ClickHouse layout, and a
-	// network dictionary is probed with an address rather than a string.
+	// Kind is KindValue, KindNetwork or KindPattern. It decides the ClickHouse
+	// layout, and so how a lookup probes the key.
 	Kind      string    `json:"kind"`
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Source is set on a list filled from a URL. Its rows are then read-only:
+	// every refresh replaces them.
+	Source       *Source       `json:"source,omitempty"`
+	SourceStatus *SourceStatus `json:"source_status,omitempty"`
 
 	// CHTableName is the ClickHouse backing table name (not stored in PG).
 	CHTableName string `json:"ch_table_name,omitempty"`

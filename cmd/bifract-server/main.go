@@ -441,11 +441,11 @@ func main() {
 		n, err := dictionaryManager.ReconcileDictionaries(ctx)
 		if err != nil {
 			log.Printf("Warning: Dictionary reconciliation failed: %v", err)
-			return
-		}
-		if n > 0 {
+		} else if n > 0 {
 			log.Printf("Dictionaries reconciled (%d)", n)
 		}
+		// Lookups filled from a URL refresh on their own interval.
+		dictionaryManager.StartSourceRefresh(ctx)
 	}()
 
 	// Initialize analytics model manager

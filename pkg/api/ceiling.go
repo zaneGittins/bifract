@@ -1,6 +1,9 @@
 package api
 
-import "context"
+import (
+	"context"
+	"net/http"
+)
 
 // ceilingKey types the context value so nothing outside this package can set it.
 type ceilingKey struct{}
@@ -45,4 +48,14 @@ func (ceiling Access) Permits(required Access) bool {
 	}
 	r, c := required.rank(), ceiling.rank()
 	return r > 0 && c > 0 && r <= c
+}
+
+// Granted reports whether a request may do what access guards, under any ceiling
+// in force. A handler checks a requirement stricter than its route's with this,
+// so an in-process caller is held to the same ceiling the route enforces.
+func Granted(r *http.Request, access Access) bool {
+	if ceiling, capped := CeilingFromContext(r.Context()); capped && !ceiling.Permits(access) {
+		return false
+	}
+	return access.Allows(r)
 }

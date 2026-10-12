@@ -101,8 +101,12 @@ type Settings struct {
 	// their second factor, and API keys are unaffected: they are not interactive
 	// logins and carry their own scoping and revocation.
 	RequireMFA bool `json:"require_mfa"`
-	mu         sync.RWMutex
-	pg         *storage.PostgresClient
+	// DictionarySourcesAllowPrivate lets a lookup's source URL reach private and
+	// loopback addresses, for a list hosted inside the deployment's own network.
+	// Off by default so a source URL cannot be pointed at internal services.
+	DictionarySourcesAllowPrivate bool `json:"dictionary_sources_allow_private"`
+	mu                            sync.RWMutex
+	pg                            *storage.PostgresClient
 }
 
 // queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
@@ -256,6 +260,10 @@ func Init(pg *storage.PostgresClient) error {
 		globalSettings.RequireMFA = v == "true"
 	}
 
+	if v, err := pg.GetSetting(ctx, "dictionary_sources_allow_private"); err == nil && v != "" {
+		globalSettings.DictionarySourcesAllowPrivate = v == "true"
+	}
+
 	// Load api_key_rate_limit (0 = uncapped)
 	if v, err := pg.GetSetting(ctx, "api_key_rate_limit"); err == nil && v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -365,22 +373,23 @@ func Get() Settings {
 	globalSettings.mu.RLock()
 	defer globalSettings.mu.RUnlock()
 	return Settings{
-		APIKeyRateLimit:            globalSettings.APIKeyRateLimit,
-		PgrSensitivityPercent:      globalSettings.PgrSensitivityPercent,
-		RequireMFA:                 globalSettings.RequireMFA,
-		TimestampFields:            globalSettings.TimestampFields,
-		AlertTimeoutSeconds:        globalSettings.AlertTimeoutSeconds,
-		QueryTimeoutSeconds:        globalSettings.QueryTimeoutSeconds,
-		AlertEvalIntervalSeconds:   globalSettings.AlertEvalIntervalSeconds,
-		AlertRevisionRetention:     globalSettings.AlertRevisionRetention,
-		RecallTimeoutSeconds:       globalSettings.RecallTimeoutSeconds,
-		RecallMaxBytesRead:         globalSettings.RecallMaxBytesRead,
-		RecallConcurrency:          globalSettings.RecallConcurrency,
-		QueryCPUPercent:            globalSettings.QueryCPUPercent,
-		QueryMemoryPercent:         globalSettings.QueryMemoryPercent,
-		RecallCPUPercent:           globalSettings.RecallCPUPercent,
-		RecallMemoryPercent:        globalSettings.RecallMemoryPercent,
-		SchemaSweepIntervalMinutes: globalSettings.SchemaSweepIntervalMinutes,
+		APIKeyRateLimit:               globalSettings.APIKeyRateLimit,
+		PgrSensitivityPercent:         globalSettings.PgrSensitivityPercent,
+		RequireMFA:                    globalSettings.RequireMFA,
+		DictionarySourcesAllowPrivate: globalSettings.DictionarySourcesAllowPrivate,
+		TimestampFields:               globalSettings.TimestampFields,
+		AlertTimeoutSeconds:           globalSettings.AlertTimeoutSeconds,
+		QueryTimeoutSeconds:           globalSettings.QueryTimeoutSeconds,
+		AlertEvalIntervalSeconds:      globalSettings.AlertEvalIntervalSeconds,
+		AlertRevisionRetention:        globalSettings.AlertRevisionRetention,
+		RecallTimeoutSeconds:          globalSettings.RecallTimeoutSeconds,
+		RecallMaxBytesRead:            globalSettings.RecallMaxBytesRead,
+		RecallConcurrency:             globalSettings.RecallConcurrency,
+		QueryCPUPercent:               globalSettings.QueryCPUPercent,
+		QueryMemoryPercent:            globalSettings.QueryMemoryPercent,
+		RecallCPUPercent:              globalSettings.RecallCPUPercent,
+		RecallMemoryPercent:           globalSettings.RecallMemoryPercent,
+		SchemaSweepIntervalMinutes:    globalSettings.SchemaSweepIntervalMinutes,
 	}
 }
 
@@ -439,6 +448,7 @@ func Update(s *Settings) error {
 	globalSettings.APIKeyRateLimit = s.APIKeyRateLimit
 	globalSettings.PgrSensitivityPercent = s.PgrSensitivityPercent
 	globalSettings.RequireMFA = s.RequireMFA
+	globalSettings.DictionarySourcesAllowPrivate = s.DictionarySourcesAllowPrivate
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
 	globalSettings.RecallConcurrency = s.RecallConcurrency
@@ -495,6 +505,9 @@ func Update(s *Settings) error {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "require_mfa", fmt.Sprintf("%t", s.RequireMFA)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "dictionary_sources_allow_private", fmt.Sprintf("%t", s.DictionarySourcesAllowPrivate)); err != nil {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "schema_sweep_interval_minutes", fmt.Sprintf("%d", s.SchemaSweepIntervalMinutes)); err != nil {

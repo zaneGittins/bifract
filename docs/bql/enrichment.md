@@ -86,7 +86,8 @@ so put the specific expressions above the general ones. A list holding `mimikatz
 executable.
 
 Matching is case-sensitive. Write `(?i)` at the front of an expression that should ignore case:
-`(?i)powershell` matches `POWERSHELL.EXE`.
+`(?i)powershell` matches `POWERSHELL.EXE`. A list filled from a URL can instead take
+[glob keys](../features/dictionaries.md#glob-keys), which ignore case.
 
 Asking for the key column reports membership here too, and does so correctly even when the
 matched row's other columns are empty.
