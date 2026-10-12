@@ -561,6 +561,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	ctx.Plan.IsAggregated = true
 	ctx.Plan.IsChain = true
+	source.IsChain = true
 	ctx.Plan.Chain = meta
 	ctx.Registry.SetResolveExpr("chain_count", countExpr)
 	source.Layer.OrderBy = append(source.Layer.OrderBy, "chain_count DESC")

@@ -386,6 +386,13 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 				return nil, fmt.Errorf("%s (post-aggregation stage): %w", cmd.Name, err)
 			}
 		}
+		// A stats command after chain() aggregates the matched entities, not
+		// the events inside each one.
+		if ctx.Plan.CurrentStage().IsChain && closedOutputCommands[strings.ToLower(cmd.Name)] && !strings.EqualFold(cmd.Name, "groupby") {
+			if err := pushAggregationStage(ctx); err != nil {
+				return nil, fmt.Errorf("%s (post-chain stage): %w", cmd.Name, err)
+			}
+		}
 		handler := getCommandHandler(cmd.Name)
 		if err := handler.Execute(cmd, ctx); err != nil {
 			return nil, err

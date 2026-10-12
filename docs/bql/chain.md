@@ -70,6 +70,15 @@ event_source=Security | chain(user, within=1h) {
 } | limit(10)
 ```
 
+A stats command after `chain()` aggregates the matches, one row per entity, so this counts the users who completed the sequence:
+
+```
+chain(user, within=1h) {
+  event_id=4624;
+  event_id=4688
+} | count()
+```
+
 ## How It Works
 
 - Rows group by identity. With several fields, a row is expanded into one row per identity value it carries, so an event lands in every group it belongs to.

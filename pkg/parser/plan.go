@@ -75,6 +75,9 @@ func (l *QueryLayer) UpsertSelect(expr SelectExpr) {
 type QueryStage struct {
 	Layer    QueryLayer
 	IsSource bool // true for the innermost stage (FROM logs)
+	// IsChain marks the stage chain() aggregates in. Its columns are fixed, so a
+	// later stats command aggregates over its rows in a stage of its own.
+	IsChain bool
 	// Aggregates marks a stage pushed to aggregate the previous stage's rows,
 	// which may have no GROUP BY (count() after groupby() is one COUNT(*)).
 	Aggregates bool

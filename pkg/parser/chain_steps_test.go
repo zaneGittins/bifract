@@ -340,3 +340,32 @@ func TestChainPrefilterSkippedBehindEarlierAggregation(t *testing.T) {
 		t.Errorf("prefilter leaked into a scan feeding an earlier aggregation:\n%s", res.SQL)
 	}
 }
+
+// A stats command after chain() was folded into the chain's per-entity GROUP BY,
+// so count() added a per-entity event count instead of counting matches.
+func TestChainFollowedByStatsAggregatesMatches(t *testing.T) {
+	translate := func(q string) string {
+		t.Helper()
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.SQL
+	}
+	if sql := translate(`* | chain(user) { a="x"; b="y" } | count()`); !strings.HasPrefix(sql, "SELECT _count FROM (SELECT COUNT(*) AS _count FROM (SELECT ") {
+		t.Errorf("count() must count the matched entities: %s", sql)
+	}
+	if sql := translate(`* | chain(user) { a="x"; b="y" } | sum(chain_count)`); !strings.Contains(sql, "SELECT sum(toFloat64(chain_count)) AS _sum FROM (SELECT ") {
+		t.Errorf("sum(chain_count) must aggregate the chain rows: %s", sql)
+	}
+	if sql := translate(`* | chain(user) { a="x"; b="y" } | count() | _count > 3`); !strings.HasSuffix(sql, ") HAVING _count > 3)") {
+		t.Errorf("a filter after count() must apply to the count: %s", sql)
+	}
+	if sql := translate(`* | chain(user) { a="x"; b="y" } | chain_count > 2 | count()`); !strings.Contains(sql, "= 1 AND chain_count > 2") {
+		t.Errorf("a filter before count() must apply to the chain rows: %s", sql)
+	}
+}
