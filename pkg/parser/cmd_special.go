@@ -369,7 +369,8 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
-	chainFields := b.Strings("fields")
+	// CSV keeps the legacy quoted spelling, chain("user,host"), meaning two fields.
+	chainFields := b.CSV("fields")
 	if len(chainFields) == 0 {
 		return fmt.Errorf("chain() requires grouping field(s) and step definitions")
 	}
@@ -383,7 +384,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if !ordered && withinSeconds > 0 {
 		// An unordered window needs a sliding span over the matching events, which
 		// no single aggregate expresses; approximating it drops real matches.
-		return fmt.Errorf("chain(): within= cannot be combined with order=false")
+		return fmt.Errorf("chain(): within= cannot be combined with sequence=any")
 	}
 
 	steps, stepFields, err := parseChainSteps(cmd.BlockTokens, cmd.BlockSource, ctx.Opts, ctx.Registry)
@@ -664,9 +665,9 @@ func init() {
 func init() {
 	registerSpec(&CommandSpec{Name: "table", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
 	registerSpec(&CommandSpec{Name: "analyzefields", Params: []ParamSpec{fields("fields"), namedLit("limit")}})
-	// chain(field, ...) { steps } and case { branches } carry a block the handler
-	// parses itself.
-	registerSpec(&CommandSpec{Name: "chain", FreeForm: true, Params: []ParamSpec{
+	// chain's step block is kept out of its arguments; case { branches } has no
+	// argument list, only a block the handler parses itself.
+	registerSpec(&CommandSpec{Name: "chain", Params: []ParamSpec{
 		fields("fields"), namedLit("within"), namedLit("sequence"), namedLit("order"),
 	}})
 	registerSpec(&CommandSpec{Name: "case", FreeForm: true, Params: []ParamSpec{reqLit("branches")}})

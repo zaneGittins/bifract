@@ -66,6 +66,6 @@ event_id=1 | join(user) {
 ## Limitations
 
 - **No nested joins** - the subquery cannot itself contain a `join()`.
-- **Single join key** - only one field can be used as the join key.
+- **Single join key** - only one field can be used as the join key; a second is an error.
 - **Max subquery rows** - capped at 100,000 to prevent memory issues. Use `max=` to adjust within this limit.
 - **Join types** - only `inner` and `left` are supported.

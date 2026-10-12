@@ -185,6 +185,34 @@ func TestChainOrderParam(t *testing.T) {
 		}
 	})
 
+	// sequence=any was once read as three more identity fields and ran ordered.
+	t.Run("sequence=any matches order=false", func(t *testing.T) {
+		translate := func(q string) string {
+			pl, err := ParseQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return res.SQL
+		}
+		anySQL := translate(`* | chain(user, sequence=any) { a="x"; b="y" }`)
+		if anySQL != translate(`* | chain(user, order=false) { a="x"; b="y" }`) {
+			t.Errorf("sequence=any must compile like order=false: %s", anySQL)
+		}
+		if strings.Contains(anySQL, "sequenceMatch") {
+			t.Errorf("sequence=any must be unordered: %s", anySQL)
+		}
+	})
+
+	t.Run("unknown parameter is rejected", func(t *testing.T) {
+		if _, err := ParseQuery(`* | chain(user, until=x) { a="x"; b="y" }`); err == nil {
+			t.Fatal("expected until= to be rejected")
+		}
+	})
+
 	t.Run("invalid order value is rejected", func(t *testing.T) {
 		pl, _ := ParseQuery(`* | chain(user, order=maybe) { a="x"; b="y" }`)
 		if _, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"}); err == nil {

@@ -57,3 +57,15 @@ func TestJoinBlockKeepsSource(t *testing.T) {
 		}
 	}
 }
+
+// TestJoinRejectsSecondKey verifies a second key is an error: join() matches on
+// one key, and an ignored second one silently widens the join.
+func TestJoinRejectsSecondKey(t *testing.T) {
+	pipeline, err := ParseQuery(`* | join(host, user) { * | groupby(host, user) }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TranslateToSQLWithOrder(pipeline, serverOpts()); err == nil || !strings.Contains(err.Error(), "fills no remaining parameter") {
+		t.Fatalf("want a second join key rejected, got %v", err)
+	}
+}
