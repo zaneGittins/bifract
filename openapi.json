@@ -19533,6 +19533,63 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/logs/export/stream": {
+      "post": {
+        "operationId": "post_api_v1_logs_export_stream",
+        "summary": "Stream every log a filter query matches as JSON Lines, with no row limit.",
+        "description": "Requires the admin role on the fractal or prism in scope.",
+        "tags": [
+          "logs"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/query.QueryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Newline-delimited JSON, streamed as rows arrive.",
+            "content": {
+              "application/x-ndjson": {}
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "fractal_admin"
+      }
+    },
     "/api/v1/logs/fields": {
       "get": {
         "operationId": "get_api_v1_logs_fields",

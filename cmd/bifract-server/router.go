@@ -389,6 +389,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler: d.queryHandler.HandleGetRecentLogs,
 			})
 			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     api.ExportPath,
+				Request:  query.QueryRequest{},
+				Produces: "application/x-ndjson",
+				Access:   api.AccessFractalAdmin,
+				Summary:  "Stream every log a filter query matches as JSON Lines, with no row limit.",
+				Handler:  d.queryHandler.HandleExport,
+			})
+			r.Register(api.Route{
 				Method:  http.MethodGet,
 				Path:    "/logs/histogram",
 				Access:  api.AccessViewer,

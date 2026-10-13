@@ -2083,8 +2083,23 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 	if queryID != "" {
 		opts = append(opts, clickhouse.WithQueryID(queryID))
 	}
-	ctx = clickhouse.Context(ctx, opts...)
+	return c.streamRows(clickhouse.Context(ctx, opts...), query, onRow)
+}
 
+// StreamLowPriority streams a bulk read such as an export. It yields to
+// interactive searches, and caps rows per block because merging sorted part
+// streams otherwise emits 65k-row blocks of wide log text, each decoded whole.
+func (c *ClickHouseClient) StreamLowPriority(ctx context.Context, queryID, query string, onRow func(map[string]interface{}) error) error {
+	settings := c.applyQuerySettings(ctx, clickhouse.Settings{
+		"priority":       5,
+		"max_block_size": 8192,
+	})
+	return c.streamRows(clickhouse.Context(ctx, clickhouse.WithSettings(settings), clickhouse.WithQueryID(queryID)), query, onRow)
+}
+
+// streamRows runs query and hands each row to onRow as it arrives. An onRow
+// error stops the read and is returned as-is.
+func (c *ClickHouseClient) streamRows(ctx context.Context, query string, onRow func(map[string]interface{}) error) error {
 	rows, err := c.connFor(ctx).Query(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)

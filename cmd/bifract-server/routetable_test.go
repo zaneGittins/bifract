@@ -274,6 +274,7 @@ var routeTable = []string{
 	"DELETE /api/v1/logs 9 auth resp tenant_admin",
 	"POST /api/v1/logs/by-timestamp 9 auth body resp viewer",
 	"GET /api/v1/logs/commented 9 auth resp viewer",
+	"POST /api/v1/logs/export/stream 9 auth body fractal_admin",
 	"GET /api/v1/logs/fields 9 auth resp viewer",
 	"GET /api/v1/logs/histogram 9 auth viewer",
 	"GET /api/v1/logs/recent 9 auth viewer",
