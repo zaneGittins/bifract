@@ -37,7 +37,7 @@ const Activity = {
     // still names the exact feature.
     SOURCE_NAMES: {
         search: 'Search', dashboard: 'Dashboard', notebook: 'Notebook',
-        alert: 'Alert', recall: 'Recall', model: 'Model', chat: 'Assistant',
+        alert: 'Alert', recall: 'Recall', model: 'Model', chat: 'Assistant', export: 'Export',
         ingest: 'Ingest', system: 'System'
     },
     CLASS_NAMES: { search: 'Search', alert: 'Alerts', ingest: 'Ingest', system: 'System' },

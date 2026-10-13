@@ -18,7 +18,7 @@ A key is authorized exactly like a person: it holds one role on the fractal or p
 |------|-------------|
 | `viewer` | Read logs, comments, alerts, notebooks, and dashboards |
 | `analyst` | Everything a viewer can do, plus create and edit them |
-| `admin` | Everything an analyst can do, plus manage the scope itself |
+| `admin` | Everything an analyst can do, plus manage the scope itself and [export its logs](exporting-logs.md) |
 
 ## Instance-wide keys
 

@@ -163,6 +163,9 @@ type TranslationResult struct {
 	// rows whose join partner sits outside the window, so the caller must not
 	// slice the range.
 	TimeScopedSubquery bool
+	// RowCapped is true when an embedded subquery (join, result-set binding) is
+	// truncated at a row cap, so the rows the query selects may be incomplete.
+	RowCapped bool
 	// Chain is set for chain() queries, describing how to fetch the events behind
 	// each matched sequence. Nil otherwise.
 	Chain *ChainMeta
@@ -805,7 +808,7 @@ func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) (string, 
 // sub-second remainder of the range end. Never use it for a plain DateTime column
 // (e.g. logs_histogram.minute): those reject a fractional literal with code 53.
 func chTimeLiteral(t time.Time) string {
-	return t.Format("2006-01-02 15:04:05.000")
+	return t.UTC().Format("2006-01-02 15:04:05.000")
 }
 
 // addBaseConditions adds time range and fractal isolation conditions.
@@ -1000,8 +1003,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// 2M-row day: 130k rows read instead of 2M). On a cluster it also makes each
 		// shard limit its own output before the coordinator merge-sorts, rather than
 		// shipping every matching row. Join queries null out Formatters after this
-		// block, so only mirror when formatters will actually be rendered.
-		if defaultTimeOrder && len(plan.Formatters) > 0 && !plan.IsJoin && plan.ModelLookupSQL == "" {
+		// block, so only mirror when formatters will actually be rendered. Without a
+		// LIMIT the outer sort would buffer and re-sort every row on the String alias.
+		if defaultTimeOrder && activeStage.Layer.Limit != "" && len(plan.Formatters) > 0 && !plan.IsJoin && plan.ModelLookupSQL == "" {
 			plan.FormatterOrderBy = activeStage.Layer.OrderBy
 			plan.FormatterLimit = activeStage.Layer.Limit
 		}
@@ -1077,6 +1081,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		ChartConfig:         plan.ChartConfig,
 		DefaultTimeOrder:    defaultTimeOrder,
 		TimeScopedSubquery:  plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
+		RowCapped:           plan.IsJoin || plan.usesBindingSet,
 		Chain:               plan.Chain,
 	}, nil
 }

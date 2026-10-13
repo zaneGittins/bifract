@@ -461,11 +461,22 @@ func (h *QueryHandler) SetPostgresClient(pg *storage.PostgresClient) {
 	h.pg = pg
 }
 
+// queryPurpose selects what prepareQuery builds: a paged search, or an export
+// that reads every matching row and needs the admin role.
+type queryPurpose int
+
+const (
+	purposeSearch queryPurpose = iota
+	purposeExport
+)
+
 // preparedQuery holds everything resolved from a search request (auth, fractal
 // scoping, translated SQL, cursor/limit, histogram) that the buffered and
 // streaming handlers both need. It is produced by prepareQuery.
 type preparedQuery struct {
 	req                 QueryRequest
+	emptyScope          bool   // export of a prism with no member fractals
+	prismID             string // set when the query runs in a prism scope
 	sql                 string
 	fieldOrder          []string
 	isAggregated        bool
@@ -549,8 +560,8 @@ func fractalScopeSQL(opts parser.QueryOptions) string {
 // bucket boundary, so a minute landing on it belongs to the next bucket.
 func histogramRollupSQL(table string, opts parser.QueryOptions, start, end time.Time, bucketSec int) string {
 	conds := []string{
-		fmt.Sprintf("minute >= '%s'", start.Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("minute < '%s'", end.Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("minute >= '%s'", start.UTC().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("minute < '%s'", end.UTC().Format("2006-01-02 15:04:05")),
 	}
 	if scope := fractalScopeSQL(opts); scope != "" {
 		conds = append(conds, scope)
@@ -634,19 +645,18 @@ func (p *preparedQuery) buildChunkSQL(c streamChunk, limit int) (string, error) 
 	return result.SQL, nil
 }
 
-// prepareQuery handles auth, fractal/prism resolution, BQL parsing, SQL
-// translation, cursor/limit injection, and histogram SQL construction shared by
-// HandleQuery and HandleQueryStream. On any failure or short-circuit it writes
-// the response itself and returns nil (named return), so callers only check for
-// nil. The named return lets the existing early-exit `return` statements stay
-// unchanged.
-func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (prep *preparedQuery) {
+// prepareQuery resolves auth, scope, and the translated SQL shared by the search
+// and export handlers. On failure it writes the response and returns nil.
+func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purpose queryPurpose) (prep *preparedQuery) {
+	minRole := rbac.RoleViewer
+	if purpose == purposeExport {
+		minRole = rbac.RoleAdmin
+	}
 	if r.Method != http.MethodPost {
 		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
-	// Viewer+ required to execute queries
 	user, ok := r.Context().Value("user").(*storage.User)
 	if !ok || user == nil {
 		respondJSON(w, http.StatusUnauthorized, QueryResponse{
@@ -657,7 +667,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	}
 	fractalRole := rbac.RoleFromContext(r.Context())
 	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleViewer) && !rbac.HasAccess(user, prismRole, rbac.RoleViewer) {
+	if !rbac.HasAccess(user, fractalRole, minRole) && !rbac.HasAccess(user, prismRole, minRole) {
 		respondJSON(w, http.StatusForbidden, QueryResponse{
 			Success: false,
 			Error:   "Insufficient permissions",
@@ -733,7 +743,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		// Verify the user has access to the requested fractal
 		if user, ok := r.Context().Value("user").(*storage.User); ok && !user.IsAdmin && h.rbacResolver != nil {
 			role := h.rbacResolver.ResolveRole(r.Context(), user, req.FractalID)
-			if !rbac.HasAccess(user, role, rbac.RoleViewer) {
+			if !rbac.HasAccess(user, role, minRole) {
 				respondJSON(w, http.StatusForbidden, QueryResponse{
 					Success: false,
 					Error:   "Insufficient permissions on target fractal",
@@ -800,27 +810,23 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	selectedPrismID, _ := r.Context().Value("selected_prism").(string)
 	isPrismContext := selectedPrismID != "" && req.FractalID == ""
 	if isPrismContext {
-		// Verify user has at least viewer access on this prism
 		hasAccess := false
 		if user, ok := r.Context().Value("user").(*storage.User); ok {
 			if user.IsAdmin {
 				hasAccess = true
-			} else if ctxRole := rbac.PrismRoleFromContext(r.Context()); ctxRole.Satisfies(rbac.RoleViewer) {
+			} else if ctxRole := rbac.PrismRoleFromContext(r.Context()); ctxRole.Satisfies(minRole) {
 				// Context role is set by auth middleware for both session and API key auth
 				hasAccess = true
 			} else if h.rbacResolver != nil {
 				if role, err := h.rbacResolver.ResolvePrismRole(r.Context(), user.Username, selectedPrismID); err == nil {
-					hasAccess = role.Satisfies(rbac.RoleViewer)
+					hasAccess = role.Satisfies(minRole)
 				}
 			}
 		}
 		if !hasAccess {
-			respondJSON(w, http.StatusOK, QueryResponse{
-				Success:    true,
-				Results:    []map[string]interface{}{},
-				Count:      0,
-				Query:      req.Query,
-				FieldOrder: []string{},
+			respondJSON(w, http.StatusForbidden, QueryResponse{
+				Success: false,
+				Error:   "Insufficient permissions",
 			})
 			return
 		}
@@ -829,6 +835,9 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 			prismFractalIDs, _ = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
 		}
 		if len(prismFractalIDs) == 0 {
+			if purpose == purposeExport {
+				return &preparedQuery{req: req, emptyScope: true, prismID: selectedPrismID}
+			}
 			respondJSON(w, http.StatusOK, QueryResponse{
 				Success:    true,
 				Results:    []map[string]interface{}{},
@@ -1001,6 +1010,11 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		// whose results are cached and read by everyone) overrides that.
 		DisplayTimezone: requestTimezone(r.Context(), req.Timezone),
 	}
+	if purpose == purposeExport {
+		opts.MaxRows = 0
+		opts.IncludeShardNum = false
+		opts.IncludeIngestTime = false
+	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source rather than filtering the
 	// logs table. Resolve the source command into a SQL subquery source (opts.SourceSubquery)
@@ -1010,6 +1024,10 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	var sourceFocus string
 	var sourceQuerySettings string
 	if src, ok := parser.FirstSourceCommand(pipeline); ok {
+		if purpose == purposeExport {
+			respondJSON(w, http.StatusBadRequest, QueryResponse{Success: false, Query: req.Query, Error: errExportNotFilter})
+			return
+		}
 		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
 			respondJSON(w, http.StatusBadRequest, QueryResponse{
 				Success: false, Query: req.Query, ErrorType: "translate", Error: perr.Error(),
@@ -1092,7 +1110,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 	chunkable := streamable && !translationResult.TimeScopedSubquery && req.Cursor == ""
 
 	// Add LIMIT to queries that don't already have one
-	if !sqlLimitRE.MatchString(sql) {
+	if purpose == purposeSearch && !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
 			sql += " LIMIT 10000"
 		} else if hasSubquerySource {
@@ -1126,7 +1144,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 
 	// Build histogram query for non-aggregated raw log queries (skip on cursor pages — already
 	// shown, and for composed pgr() whose source has no scannable timestamp partition).
-	needsHistogram := !isAggregated && chartType == "" && req.Cursor == "" && !hasSubquerySource
+	needsHistogram := purpose == purposeSearch && !isAggregated && chartType == "" && req.Cursor == "" && !hasSubquerySource
 	var histogramSQL string
 	var histBucketSec, histBucketCount int
 	var histBucketStart, histBucketEnd time.Time
@@ -1197,6 +1215,9 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request) (pre
 		pipeline:            pipeline,
 		translationOpts:     opts,
 		translated:          translated,
+	}
+	if isPrismContext {
+		prep.prismID = selectedPrismID
 	}
 	return
 }
@@ -1403,7 +1424,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 // HandleQuery executes a BQL search and returns the full result set in one
 // buffered JSON response. Used by API consumers, alerts, and saved-query runs.
 func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
-	prep := h.prepareQuery(w, r)
+	prep := h.prepareQuery(w, r, purposeSearch)
 	if prep == nil {
 		return
 	}
@@ -1661,7 +1682,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {
 		username = user.Username
 	}
-	go h.logQueryAudit(req.Query, "bql", selectedIndex, username, executionTime, len(results))
+	go h.logQueryAudit(req.Query, "bql", selectedIndex, username, executionTime, len(results), nil)
 
 	respondJSON(w, http.StatusOK, response)
 }
@@ -1736,7 +1757,7 @@ const (
 // they fall back to a single buffered batch delivered through the same frame
 // protocol (meta -> rows -> done), keeping the frontend path uniform.
 func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request) {
-	prep := h.prepareQuery(w, r)
+	prep := h.prepareQuery(w, r, purposeSearch)
 	if prep == nil {
 		return // prepareQuery already wrote the response
 	}
@@ -2099,7 +2120,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {
 		username = user.Username
 	}
-	go h.logQueryAudit(prep.req.Query, "bql", prep.selectedIndex, username, executionMs, count)
+	go h.logQueryAudit(prep.req.Query, "bql", prep.selectedIndex, username, executionMs, count, nil)
 }
 
 func (h *QueryHandler) parseTimeRange(start, end string) (time.Time, time.Time, error) {
@@ -2129,7 +2150,8 @@ func (h *QueryHandler) parseTimeRange(start, end string) (time.Time, time.Time, 
 		return time.Time{}, time.Time{}, fmt.Errorf("start time must be before end time")
 	}
 
-	return startTime, endTime, nil
+	// SQL literals carry no zone, so an offset left on the time shifts the window.
+	return startTime.UTC(), endTime.UTC(), nil
 }
 
 // isRawLogRegexQuery detects if this is a raw log regex search that could return massive results
@@ -2999,8 +3021,9 @@ func (h *QueryHandler) getAuditFractalID(ctx context.Context) string {
 	return h.auditFractalID
 }
 
-// logQueryAudit writes a query audit entry to the audit fractal asynchronously.
-func (h *QueryHandler) logQueryAudit(query, queryType, fractalID, username string, executionMs int64, resultCount int) {
+// logQueryAudit writes a query audit entry to the audit fractal. extra adds
+// fields for a query type that records more.
+func (h *QueryHandler) logQueryAudit(query, queryType, fractalID, username string, executionMs int64, resultCount int, extra map[string]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3010,22 +3033,25 @@ func (h *QueryHandler) logQueryAudit(query, queryType, fractalID, username strin
 	}
 
 	now := time.Now()
-	rawLog := fmt.Sprintf(`{"event":"query","user":%q,"query_type":%q,"fractal_id":%q,"execution_ms":%d,"result_count":%d}`,
-		username, queryType, fractalID, executionMs, resultCount)
+	fields := map[string]string{
+		"event":        "query",
+		"user":         username,
+		"query_type":   queryType,
+		"fractal_id":   fractalID,
+		"execution_ms": strconv.FormatInt(executionMs, 10),
+		"result_count": strconv.Itoa(resultCount),
+	}
+	for k, v := range extra {
+		fields[k] = v
+	}
+	rawLog, _ := json.Marshal(fields)
+	fields["query"] = query
 	entry := storage.LogEntry{
 		Timestamp: now,
 		LogID:     storage.GenerateLogID(now, query+username+strconv.FormatInt(now.UnixNano(), 10)),
 		FractalID: auditID,
-		RawLog:    rawLog,
-		Fields: map[string]string{
-			"event":        "query",
-			"user":         username,
-			"query":        query,
-			"query_type":   queryType,
-			"fractal_id":   fractalID,
-			"execution_ms": strconv.FormatInt(executionMs, 10),
-			"result_count": strconv.Itoa(resultCount),
-		},
+		RawLog:    string(rawLog),
+		Fields:    fields,
 	}
 
 	if err := h.db.InsertLogs(ctx, []storage.LogEntry{entry}); err != nil {

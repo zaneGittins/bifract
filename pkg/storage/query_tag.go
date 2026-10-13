@@ -19,6 +19,7 @@ const (
 	SourceRecall    = "recall"
 	SourceModel     = "model"
 	SourceChat      = "chat"
+	SourceExport    = "export"
 	SourceIngest    = "ingest"
 	SourceSystem    = "system"
 )

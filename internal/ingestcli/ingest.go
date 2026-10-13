@@ -349,7 +349,8 @@ func (c *Client) nextBackoff(current time.Duration) time.Duration {
 	return next + jitter
 }
 
-func formatBytes(b int64) string {
+// FormatBytes renders a byte count in binary units.
+func FormatBytes(b int64) string {
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%d B", b)

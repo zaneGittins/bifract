@@ -80,6 +80,7 @@ nav:
     - API Keys: administration/ingest-tokens.md
     - Schema Fields: administration/schema-fields.md
     - Backup & Archive: administration/backup-restore.md
+    - Exporting Logs: administration/exporting-logs.md
     - Reverse Proxy: administration/reverse-proxy.md
     - Disk Quotas: administration/disk-quotas.md
     - Support Bundle: administration/support-bundle.md
