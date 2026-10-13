@@ -303,6 +303,31 @@ func (c *Client) Upload(ctx context.Context, path string, query url.Values, cont
 	return aitools.Decode(http.MethodPost, path, resp.StatusCode, payload)
 }
 
+// Stream posts a JSON body and returns the response for the caller to read and
+// close. Only ctx bounds it. Accept-Encoding is set explicitly, so a gzip body
+// arrives compressed for the caller to keep or decode.
+func (c *Client) Stream(ctx context.Context, path string, body any) (*http.Response, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("could not encode the request body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.APIBase()+path, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("could not build the request for POST %s: %w", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	if scope := c.scope(ctx); scope != "" {
+		req.Header.Set("X-Bifract-Scope", scope)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := c.upload.Do(req)
+	if err != nil {
+		return nil, c.transportError(http.MethodPost, path, err)
+	}
+	return resp, nil
+}
+
 func (c *Client) transportError(method, path string, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
 		return fmt.Errorf(

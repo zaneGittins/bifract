@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 
+	"bifract/internal/exportcli"
 	"bifract/internal/ingestcli"
 	"bifract/internal/mcpserver"
 	"bifract/internal/ruletest"
@@ -44,6 +45,17 @@ func main() {
 	for i, arg := range args {
 		if arg == "--ingest" {
 			if err := ingestcli.RunIngest(args[i+1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	// --export is handled separately: all args after it belong to the exporter.
+	for i, arg := range args {
+		if arg == "--export" {
+			if err := exportcli.RunExport(args[i+1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
 				os.Exit(1)
 			}
@@ -395,6 +407,7 @@ func printUsage() {
 	fmt.Println("  --reset-logs       DESTRUCTIVE: drop all ClickHouse log data and re-provision")
 	fmt.Println("  --reset-logs-k8s   DESTRUCTIVE: same, against a Kubernetes deployment")
 	fmt.Println("  --ingest           Bulk log ingestion (see --ingest --help)")
+	fmt.Println("  --export           Export logs as JSON Lines (see --export --help)")
 	fmt.Println("  --test             Test detection rules against sample logs (see --test --help)")
 	fmt.Println("  --mcp              Serve Bifract to an MCP client over stdio (see --mcp --help)")
 	fmt.Println()

@@ -232,7 +232,7 @@ func (m ProgressModel) renderSummary() string {
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
 		DimStyle.Render("~"),
-		fmt.Sprintf("Data sent:   %s", DimStyle.Render(formatBytes(bytesSent)))))
+		fmt.Sprintf("Data sent:   %s", DimStyle.Render(FormatBytes(bytesSent)))))
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
 		DimStyle.Render("~"),
