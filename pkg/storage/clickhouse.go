@@ -1092,7 +1092,6 @@ func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
 			Password: o.Password,
 		},
 		Settings: clickhouse.Settings{
-			"use_uncompressed_cache": 1,
 			"output_format_native_use_flattened_dynamic_and_json_serialization": 1,
 			// pgr()'s machine-generated scoring SQL repeats the (bounded) process guid IN-list across
 			// its edge branches and inlines reconnection/command-line data as literals, so a midsize
