@@ -51,6 +51,8 @@ BIFRACT_OIDC_ALLOWED_DOMAINS=example.com,subsidiary.example.com
 
 Users with email addresses outside these domains will be rejected at login.
 
+The check trusts the domain of the email the provider sends, so when an allowlist is set, Bifract also refuses a login whose ID token says `email_verified: false`. Providers that leave the claim out entirely (Entra ID does) are accepted as before; the domain check alone applies to them.
+
 ## Provider Examples
 
 **Entra ID (Azure AD)**
