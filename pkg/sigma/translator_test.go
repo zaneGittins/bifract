@@ -1043,3 +1043,53 @@ func TestTranslateRegexWithSlash(t *testing.T) {
 		})
 	}
 }
+
+// The same rule always translates to the same query: fields within a selection and
+// selections under a quantifier come out sorted by name, not in Go's random map order.
+func TestTranslateIsDeterministic(t *testing.T) {
+	const yaml = `
+title: Determinism
+detection:
+  sel_d:
+    Image|endswith: '\\d.exe'
+  sel_b:
+    Image|endswith: '\\b.exe'
+  sel_c:
+    Image|endswith: '\\c.exe'
+  sel_a:
+    Image|endswith: '\\a.exe'
+  filter:
+    User: x
+    EventID: 1
+    Computer: y
+    ParentImage: z
+    CommandLine|contains: w
+  condition: 1 of sel_* and not filter or all of them
+`
+	var first string
+	for i := 0; i < 50; i++ {
+		rule, err := ParseSigmaRule(yaml)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Translate(rule, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if got != first {
+			t.Fatalf("translation changed between runs:\n%s\n%s", first, got)
+		}
+	}
+	for _, frag := range []string{
+		`(Image=$"\\a.exe" OR Image=$"\\b.exe" OR Image=$"\\c.exe" OR Image=$"\\d.exe")`,
+		`(CommandLine=~w AND Computer=/^y$/i AND EventID="1" AND ParentImage=/^z$/i AND User=/^x$/i)`,
+	} {
+		if !strings.Contains(first, frag) {
+			t.Errorf("translation is missing %s:\n%s", frag, first)
+		}
+	}
+}

@@ -68,7 +68,8 @@ func Translate(rule *SigmaRule, fieldMapper func(string) string) (string, error)
 
 	// Translate each named selection into a BQL sub-expression
 	selectionExprs := make(map[string]string)
-	for name, sg := range rule.Detection.Selections {
+	for _, name := range sortedKeys(rule.Detection.Selections) {
+		sg := rule.Detection.Selections[name]
 		expr, err := translateSelection(sg, fieldMapper)
 		if err != nil {
 			return "", fmt.Errorf("selection '%s': %w", name, err)
@@ -783,17 +784,17 @@ func (p *condParser) parseQuantifier() (string, error) {
 	if strings.ToLower(target) == "them" {
 		// All selections, except those named with a leading underscore: Sigma reserves
 		// those for helpers a condition references by name or explicit pattern only.
-		for name, expr := range p.exprs {
+		for _, name := range sortedKeys(p.exprs) {
 			if !strings.HasPrefix(name, "_") {
-				matchedExprs = append(matchedExprs, expr)
+				matchedExprs = append(matchedExprs, p.exprs[name])
 			}
 		}
 	} else if strings.HasSuffix(target, "*") {
 		// Glob match on selection names
 		prefix := strings.TrimSuffix(target, "*")
-		for name, expr := range p.exprs {
+		for _, name := range sortedKeys(p.exprs) {
 			if strings.HasPrefix(name, prefix) {
-				matchedExprs = append(matchedExprs, expr)
+				matchedExprs = append(matchedExprs, p.exprs[name])
 			}
 		}
 	} else {
