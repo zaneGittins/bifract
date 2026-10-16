@@ -398,7 +398,7 @@ func evalBool(t *testing.T, expr string, vals map[string]bool) bool {
 }
 
 func TestConditionSemantics(t *testing.T) {
-	names := []string{"a", "b", "c", "filter_1", "filter_2"}
+	names := []string{"a", "b", "c", "filter_1", "filter_2", "_aux"}
 	exprs := map[string]string{}
 	for _, n := range names {
 		exprs[n] = strings.ToUpper(n)
@@ -420,6 +420,12 @@ func TestConditionSemantics(t *testing.T) {
 		{"a and not all of filter_*", func(v env) bool { return v["a"] && !(v["filter_1"] && v["filter_2"]) }},
 		{"1 of them", func(v env) bool { return v["a"] || v["b"] || v["c"] || v["filter_1"] || v["filter_2"] }},
 		{"all of them", func(v env) bool { return v["a"] && v["b"] && v["c"] && v["filter_1"] && v["filter_2"] }},
+		// them leaves out underscore-prefixed selections; naming or a pattern still reaches them.
+		{"a and _aux", func(v env) bool { return v["a"] && v["_aux"] }},
+		{"1 of _a*", func(v env) bool { return v["_aux"] }},
+		{"all of them and not _aux", func(v env) bool {
+			return v["a"] && v["b"] && v["c"] && v["filter_1"] && v["filter_2"] && !v["_aux"]
+		}},
 		{"ALL OF filter*", func(v env) bool { return v["filter_1"] && v["filter_2"] }},
 		{"1 of c*", func(v env) bool { return v["c"] }},
 		{"1 of b", func(v env) bool { return v["b"] }},

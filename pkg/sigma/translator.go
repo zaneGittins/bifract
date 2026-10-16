@@ -781,9 +781,12 @@ func (p *condParser) parseQuantifier() (string, error) {
 	var matchedExprs []string
 
 	if strings.ToLower(target) == "them" {
-		// All selections
-		for _, expr := range p.exprs {
-			matchedExprs = append(matchedExprs, expr)
+		// All selections, except those named with a leading underscore: Sigma reserves
+		// those for helpers a condition references by name or explicit pattern only.
+		for name, expr := range p.exprs {
+			if !strings.HasPrefix(name, "_") {
+				matchedExprs = append(matchedExprs, expr)
+			}
 		}
 	} else if strings.HasSuffix(target, "*") {
 		// Glob match on selection names
