@@ -168,6 +168,13 @@ Implicit AND: multiple conditions without an operator are ANDed together.
 event_id=1 image=/powershell/i
 ```
 
+A condition that starts with a field binds like AND (`a=1 OR b=2 c=3` is `a=1 OR (b=2 AND c=3)`). Any other term written without an operator (NOT, a search string, a function, a bracketed group) ANDs with everything before it, so this line-per-condition query means `(status=error OR status=critical) AND NOT image=/svchost/`:
+
+```
+status=error OR status=critical
+NOT image=/svchost/
+```
+
 Condition functions are operands like any other, so they group and negate the same way:
 
 ```
