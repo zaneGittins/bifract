@@ -182,8 +182,10 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 		{[]string{"utf16", "base64"}, "'utf16'"},
 		{[]string{"wide", "base64"}, "'wide'"},
 		{[]string{"cased"}, "'cased'"},
-		{[]string{"re", "m"}, "'m'"},
-		{[]string{"re", "s"}, "'s'"},
+		// i, m and s are |re sub-modifiers and mean nothing elsewhere.
+		{[]string{"contains", "i"}, "'i'"},
+		{[]string{"m"}, "'m'"},
+		{[]string{"endswith", "s"}, "'s'"},
 		{[]string{"contains", "nosuchmodifier"}, "'nosuchmodifier'"},
 		// Two comparison modifiers have no Sigma meaning; the last one used to win.
 		{[]string{"contains", "endswith"}, "'contains', 'endswith' cannot be combined"},
@@ -936,5 +938,59 @@ detection:
 		if !strings.Contains(sql, frag) {
 			t.Errorf("SQL is missing %s\n%s", frag, sql)
 		}
+	}
+}
+
+// |re|i, |re|m and |re|s set RE2 flags on the author's pattern: i as BQL's /i, m and
+// s inline so they cover every alternative of a consolidated list.
+func TestTranslateRegexFlags(t *testing.T) {
+	cases := []struct {
+		name  string
+		cond  FieldCondition
+		bql   string
+		sql   string
+		match []string
+		miss  []string
+	}{
+		{"re is case-sensitive", fc("CommandLine", []string{"re"}, `Invoke-\w+`), `CommandLine=/Invoke-\w+/`,
+			"match(" + cmdRef + ", 'Invoke-\\\\w+')", []string{"Invoke-Expr"}, []string{"invoke-expr"}},
+		{"re|i", fc("CommandLine", []string{"re", "i"}, `Invoke-\w+`), `CommandLine=/Invoke-\w+/i`,
+			"match(" + cmdRef + ", '(?i)Invoke-\\\\w+')", []string{"invoke-expr", "INVOKE-X"}, []string{"Invoke-"}},
+		{"re|m", fc("CommandLine", []string{"re", "m"}, `^whoami$`), `CommandLine=/(?m)^whoami$/`,
+			"", []string{"cd x\nwhoami\nexit"}, []string{"whoami /all", "WHOAMI"}},
+		{"re|s", fc("CommandLine", []string{"re", "s"}, `a.b`), `CommandLine=/(?s)a.b/`,
+			"", []string{"a\nb"}, []string{"ab"}},
+		{"re|i|m|s", fc("CommandLine", []string{"re", "s", "i", "m"}, `^A.B$`), `CommandLine=/(?ms)^A.B$/i`,
+			"match(" + cmdRef + ", '(?i)(?ms)^A.B$')", []string{"x\na\nb\ny"}, []string{"a\n\nb"}},
+		{"re|i list", fc("CommandLine", []string{"re", "i"}, `^a`, `b$`), `CommandLine=/(?:^a)|(?:b$)/i`,
+			"", []string{"Ax", "xB"}, []string{"xa", "bx"}},
+		{"re|m list covers every alternative", fc("CommandLine", []string{"re", "m"}, `^a$`, `^b$`), `CommandLine=/(?m)(?:^a$)|(?:^b$)/`,
+			"", []string{"x\na", "b\nx"}, []string{"ab", "A"}},
+		{"re|i|all", fc("CommandLine", []string{"re", "i", "all"}, `a`, `b`), `(CommandLine=/a/i AND CommandLine=/b/i)`,
+			"", []string{"AB"}, []string{"A"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(tc.cond), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.bql {
+				t.Fatalf("BQL\n got  %s\n want %s", got, tc.bql)
+			}
+			if sql := toSQL(t, got); tc.sql != "" && !strings.Contains(sql, tc.sql) {
+				t.Errorf("SQL is missing %s\n%s", tc.sql, sql)
+			}
+			for _, v := range tc.match {
+				if !matchBQL(t, got, v) {
+					t.Errorf("%s should match %q", got, v)
+				}
+			}
+			for _, v := range tc.miss {
+				if matchBQL(t, got, v) {
+					t.Errorf("%s should not match %q", got, v)
+				}
+			}
+		})
 	}
 }

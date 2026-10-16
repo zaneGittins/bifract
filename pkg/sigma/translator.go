@@ -177,17 +177,18 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		return "*", nil
 	}
 
-	// re: the author's own pattern, matched case-sensitively as Sigma specifies. No
-	// wildcard or case handling applies.
+	// re: the author's own pattern, matched case-sensitively as Sigma specifies
+	// unless |i says otherwise. No wildcard or case handling applies.
 	if matchType == "regex" {
+		inline, suffix := regexFlags(fc.Modifiers)
 		if hasAll || len(fc.Values) == 1 {
 			parts := make([]string, len(fc.Values))
 			for i, v := range fc.Values {
-				parts[i] = fmt.Sprintf("%s=/%s/", field, v)
+				parts[i] = fmt.Sprintf("%s=/%s%s/%s", field, inline, v, suffix)
 			}
 			return joinExprs(parts, " AND "), nil
 		}
-		return buildCombinedRegexExpr(field, fc.Values), nil
+		return buildCombinedRegexExpr(field, fc.Values, inline, suffix), nil
 	}
 
 	// Keywords (no field): a case-insensitive substring search over the whole event.
@@ -215,17 +216,40 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 // may appear: Sigma gives no meaning to combining them.
 var matchModifiers = map[string]bool{"contains": true, "startswith": true, "endswith": true, "re": true}
 
+// regexFlagModifiers are the |re sub-modifiers: case-insensitive, multi-line (^ and $
+// match at line breaks) and single-line (. matches a line break).
+var regexFlagModifiers = map[string]bool{"i": true, "m": true, "s": true}
+
+// regexFlags renders |re|i|m|s as BQL: i as the /i flag, m and s as an inline RE2
+// flag group, which applies to the whole pattern including every alternative.
+func regexFlags(mods []string) (inline, suffix string) {
+	var group string
+	for _, f := range []string{"m", "s"} {
+		if containsModifier(mods, f) {
+			group += f
+		}
+	}
+	if group != "" {
+		inline = "(?" + group + ")"
+	}
+	if containsModifier(mods, "i") {
+		suffix = "i"
+	}
+	return inline, suffix
+}
+
 // checkModifiers refuses any modifier the translator does not implement. A modifier
 // silently dropped would deploy a different rule than the one written (windash, a
 // value transform, or gt/lt, a different comparison, would match something else
 // entirely), so the rule fails instead, naming what it could not express.
 func checkModifiers(fc FieldCondition) error {
 	var unsupported, match []string
+	isRegex := containsModifier(fc.Modifiers, "re")
 	for _, mod := range fc.Modifiers {
 		switch {
 		case matchModifiers[mod]:
 			match = append(match, mod)
-		case mod == "all":
+		case mod == "all", isRegex && regexFlagModifiers[mod]:
 		default:
 			unsupported = append(unsupported, "'"+mod+"'")
 		}
@@ -512,12 +536,12 @@ func isBQLKeyword(v string) bool {
 // buildCombinedRegexExpr consolidates OR'd |re values into one alternation, each
 // wrapped in a non-capturing group so its own anchors and alternation keep their
 // precedence. One match() call instead of one per value, with identical results.
-func buildCombinedRegexExpr(field string, values []string) string {
+func buildCombinedRegexExpr(field string, values []string, inline, suffix string) string {
 	pieces := make([]string, len(values))
 	for i, v := range values {
 		pieces[i] = "(?:" + v + ")"
 	}
-	return fmt.Sprintf("%s=/%s/", field, strings.Join(pieces, "|"))
+	return fmt.Sprintf("%s=/%s%s/%s", field, inline, strings.Join(pieces, "|"), suffix)
 }
 
 // escapeRegex escapes special regex characters in a value for safe embedding in /pattern/.
