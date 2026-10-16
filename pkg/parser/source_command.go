@@ -61,7 +61,11 @@ func ValidateSourceCommandPlacement(pipeline *PipelineNode) error {
 	if srcIdx == -1 {
 		return nil
 	}
-	if pipeline.Filter != nil && len(pipeline.Filter.Conditions) > 0 {
+	filterBefore := pipeline.Filter != nil && len(pipeline.Filter.Conditions) > 0
+	for _, c := range pipeline.HavingConditions {
+		filterBefore = filterBefore || c.CmdIndex <= srcIdx
+	}
+	if filterBefore {
 		return fmt.Errorf("%s() must be the first command: a filter before it (e.g. `event_id=1 | %s(...)`) is ignored, because %s() is scoped only by its arguments, the time range, and the fractal. Filter after it instead: `%s(...) | field=value`", srcName, srcName, srcName, srcName)
 	}
 	if srcIdx != 0 {
