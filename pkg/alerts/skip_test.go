@@ -37,6 +37,8 @@ func TestShouldSkipAlert(t *testing.T) {
 	}{
 		{"new data after cursor", newEngine(true, now.Add(-1*time.Minute)), alert(nil), false,
 			"data arrived after the cursor: must evaluate"},
+		{"data exactly at cursor", newEngine(true, now.Add(-2*time.Minute)), alert(nil), false,
+			"windows exclude their end, so a row on the cursor has not been read yet"},
 		{"no new data", newEngine(true, now.Add(-5*time.Minute)), alert(nil), true,
 			"newest data predates the cursor: safe to skip"},
 		{"fractal absent from hot", newEngine(true, time.Time{}), alert(nil), true,

@@ -26,19 +26,28 @@ func parsedAlert(t *testing.T, a *Alert) *Alert {
 	return a
 }
 
-var ingestBounds = regexp.MustCompile(`ingest_timestamp >= '([^']+)' AND ingest_timestamp <=? '([^']+)'`)
+var ingestBounds = regexp.MustCompile(`ingest_timestamp >= '([^']+)' AND ingest_timestamp (<=?) '([^']+)'`)
 
 // windowOf extracts the ingest window an alert query read.
 func windowOf(t *testing.T, sql string) (from, to string) {
+	t.Helper()
+	from, _, to = boundsOf(t, sql)
+	return from, to
+}
+
+// boundsOf extracts the ingest window and the operator bounding its end.
+func boundsOf(t *testing.T, sql string) (from, endOp, to string) {
 	t.Helper()
 	m := ingestBounds.FindStringSubmatch(sql)
 	if m == nil {
 		t.Fatalf("query is not bounded on ingest_timestamp: %s", sql)
 	}
-	return m[1], m[2]
+	return m[1], m[2], m[3]
 }
 
-func alertQueries(ch *fakedb.CH) []string { return ch.QueriedMatching("ingest_timestamp >=") }
+// alertQueries are the window reads, not the recent-ingest probe, whose bound is a
+// toDateTime64 call rather than a literal.
+func alertQueries(ch *fakedb.CH) []string { return ch.QueriedMatching("ingest_timestamp >= '") }
 
 // The cursor is the only thing that decides what an event alert reads. Catching up
 // from a cursor older than the window cap must advance in slices that abut: the
@@ -68,6 +77,13 @@ func TestCursorCatchesUpInAbuttingSlices(t *testing.T) {
 	}
 	if from2 != to1 {
 		t.Errorf("tick 2 starts at %s but tick 1 ended at %s: logs between them are never read", from2, to1)
+	}
+	// Abutting windows share the boundary, so each must exclude its end or a row
+	// stamped on it is read by both.
+	for i, q := range queries {
+		if _, op, _ := boundsOf(t, q); op != "<" {
+			t.Errorf("tick %d bounds its end with %q, want an exclusive <", i+1, op)
+		}
 	}
 	// Routed to the hot table: the cursor is inside its retention.
 	if !strings.Contains(queries[0], "logs_hot") {
@@ -391,7 +407,8 @@ func TestScheduledAlertReadsItsQueryWindow(t *testing.T) {
 	if d := before.Add(-time.Hour).Sub(got); d < -2*time.Second || d > 2*time.Second {
 		t.Errorf("window starts %v, want query_window_seconds before now", got)
 	}
-	if len(pg.Matching(sqlLastEvaluated)) != 1 || alert.LastEvaluatedAt.Before(before) {
+	// The run time, to the whole millisecond the window ends on.
+	if len(pg.Matching(sqlLastEvaluated)) != 1 || alert.LastEvaluatedAt.Before(before.Truncate(time.Millisecond)) {
 		t.Error("a run stamps the cursor at the run time")
 	}
 
@@ -697,5 +714,144 @@ func TestRecordExecution(t *testing.T) {
 	pg.answer(sqlExecution, fakedb.PGResult{Err: errors.New("disk full")})
 	if err := e.recordExecution(context.Background(), "a1", "f1", "", 1, 0, false, "", 1, nil, nil, nil); err == nil {
 		t.Error("any other failure is reported")
+	}
+}
+
+// A row whose ingest time sits exactly on the boundary between two consecutive
+// windows is read by exactly one of them, so it is delivered once. The fake answers
+// from the bounds the query actually rendered, as ClickHouse would.
+func TestBoundaryRowIsDeliveredOnce(t *testing.T) {
+	e, pg, ch := newTestEngine(t)
+	start := time.Now().Add(-45 * time.Minute).Truncate(time.Millisecond)
+	boundary := chTime(start.Add(maxEvalWindow))
+	ch.Respond(func(q string, _ []any) (fakedb.CHResult, bool) {
+		m := ingestBounds.FindStringSubmatch(q)
+		if m == nil {
+			return fakedb.CHResult{}, false
+		}
+		from, op, to := m[1], m[2], m[3]
+		// Same fixed-width format, so the literals order as strings.
+		inside := from <= boundary && (boundary < to || (op == "<=" && boundary == to))
+		if !inside {
+			return fakedb.CHResult{}, true
+		}
+		return fakedb.CHResult{Cols: []fakedb.Col{{Column: "log_id", Type: "String"}}, Rows: [][]any{{"on-boundary"}}}, true
+	})
+	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: start})
+
+	for tick := 0; tick < 2; tick++ {
+		if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+	}
+	if n := len(alertQueries(ch)); n != 2 {
+		t.Fatalf("want two consecutive windows, got %d queries", n)
+	}
+	if n := len(pg.Matching(sqlExecution)); n != 1 {
+		t.Errorf("a row on the window boundary was delivered %d times, want once", n)
+	}
+}
+
+// Every alert window ends on a whole millisecond, exclusive. The stored cursor is
+// that same value: the query literal is milliseconds and Postgres keeps
+// microseconds, so a finer end would be read at its floor but stored rounded, and
+// the next window could start past a millisecond nothing read.
+func TestWindowEndIsAWholeMillisecondAndExclusive(t *testing.T) {
+	wholeMs := func(t *testing.T, what string, v time.Time) {
+		t.Helper()
+		if !v.Equal(v.Truncate(time.Millisecond)) {
+			t.Errorf("%s %v is not a whole millisecond", what, v)
+		}
+	}
+	// A cursor with a sub-millisecond remainder, as an older build may have stored.
+	cursor := time.Now().Add(-10 * time.Minute).Truncate(time.Millisecond).Add(456789 * time.Nanosecond)
+
+	t.Run("event", func(t *testing.T) {
+		e, pg, ch := newTestEngine(t)
+		alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: cursor})
+		if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+			t.Fatal(err)
+		}
+		q := alertQueries(ch)
+		if len(q) != 1 {
+			t.Fatalf("want one query, got %d", len(q))
+		}
+		from, op, to := boundsOf(t, q[0])
+		if op != "<" {
+			t.Errorf("end operator %q, want <", op)
+		}
+		if from != chTime(cursor) {
+			t.Errorf("starts at %s, want the cursor %s", from, chTime(cursor))
+		}
+		writes := pg.args(sqlLastEvaluated)
+		if len(writes) != 1 {
+			t.Fatalf("want one cursor write, got %d", len(writes))
+		}
+		stored := writes[0][1].(time.Time)
+		wholeMs(t, "stored cursor", stored)
+		if chTime(stored) != to {
+			t.Errorf("stored cursor %s, but the query read up to %s", chTime(stored), to)
+		}
+		if !stored.Equal(stored.Round(time.Microsecond)) {
+			t.Error("the stored cursor does not survive Postgres' microsecond rounding unchanged")
+		}
+		if !alert.LastEvaluatedAt.Equal(stored) {
+			t.Errorf("in-memory cursor %v, stored %v", alert.LastEvaluatedAt, stored)
+		}
+	})
+
+	t.Run("compound", func(t *testing.T) {
+		e, pg, ch := newTestEngine(t)
+		window := 300
+		alert := parsedAlert(t, &Alert{ID: "c1", Name: "c", AlertType: "compound", FractalID: "f1",
+			QueryString: `status=500 | groupby(host)`, WindowDuration: &window, LastEvaluatedAt: cursor})
+		if err := e.evaluateCompoundAlert(context.Background(), alert, nil); err != nil {
+			t.Fatal(err)
+		}
+		q := alertQueries(ch)
+		if len(q) != 1 {
+			t.Fatalf("want one query, got %d", len(q))
+		}
+		if _, op, to := boundsOf(t, q[0]); op != "<" || to != chTime(alert.LastEvaluatedAt) {
+			t.Errorf("window end %s %s, cursor %s", op, to, chTime(alert.LastEvaluatedAt))
+		}
+		wholeMs(t, "stored cursor", pg.args(sqlLastEvaluated)[0][1].(time.Time))
+	})
+
+	t.Run("scheduled", func(t *testing.T) {
+		e, pg, ch := newTestEngine(t)
+		qw := 3600
+		sched, err := cronParser().Parse("*/5 * * * *")
+		if err != nil {
+			t.Fatal(err)
+		}
+		alert := parsedAlert(t, &Alert{ID: "s1", Name: "s", AlertType: "scheduled", FractalID: "f1",
+			QueryString: `status=500 | count()`, QueryWindowSeconds: &qw, CronSchedule: sched, LastEvaluatedAt: cursor})
+		if err := e.evaluateScheduledAlert(context.Background(), alert, nil); err != nil {
+			t.Fatal(err)
+		}
+		q := alertQueries(ch)
+		if len(q) != 1 {
+			t.Fatalf("want one query, got %d", len(q))
+		}
+		if _, op, to := boundsOf(t, q[0]); op != "<" || to != chTime(alert.LastEvaluatedAt) {
+			t.Errorf("window end %s %s, cursor %s", op, to, chTime(alert.LastEvaluatedAt))
+		}
+		wholeMs(t, "stored cursor", pg.args(sqlLastEvaluated)[0][1].(time.Time))
+	})
+}
+
+// The recent-ingest probe counts a row stamped exactly at the floor cursor: that
+// row belongs to the window starting there, which has not run yet.
+func TestRecentIngestProbeIncludesTheCursor(t *testing.T) {
+	e, _, ch := newTestEngine(t)
+	cursor := time.Now().Add(-5 * time.Minute).Truncate(time.Millisecond)
+	e.refreshRecentIngest(context.Background(), cursor)
+	q := ch.QueriedMatching("last_ingest")
+	if len(q) != 1 {
+		t.Fatalf("want one probe, got %d", len(q))
+	}
+	if want := "ingest_timestamp >= toDateTime64('" + chTime(cursor) + "'"; !strings.Contains(q[0], want) {
+		t.Errorf("probe %s, want %s", q[0], want)
 	}
 }
