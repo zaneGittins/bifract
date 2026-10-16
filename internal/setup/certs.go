@@ -143,50 +143,16 @@ func GenerateClientCA(caDir string) error {
 		return fmt.Errorf("create client-ca directory: %w", err)
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	certPEM, keyPEM, err := GenerateClientCAPEM()
 	if err != nil {
-		return fmt.Errorf("generate CA key: %w", err)
+		return err
 	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return fmt.Errorf("generate serial: %w", err)
-	}
-
-	now := time.Now()
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization: []string{"Bifract"},
-			CommonName:   "Bifract Client CA",
-		},
-		NotBefore:             now,
-		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		MaxPathLen:            0,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return fmt.Errorf("create CA certificate: %w", err)
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+	if err := os.WriteFile(certPath, []byte(certPEM), 0644); err != nil {
 		return fmt.Errorf("write CA certificate: %w", err)
 	}
-
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("marshal CA key: %w", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+	if err := os.WriteFile(keyPath, []byte(keyPEM), 0600); err != nil {
 		return fmt.Errorf("write CA key: %w", err)
 	}
-
 	return nil
 }
 
@@ -203,61 +169,9 @@ func GenerateClientCert(caDir, name, password, outputPath string) error {
 		return fmt.Errorf("read CA key: %w", err)
 	}
 
-	caCertBlock, _ := pem.Decode(caCertPEM)
-	if caCertBlock == nil {
-		return fmt.Errorf("failed to decode CA certificate PEM")
-	}
-	caCert, err := x509.ParseCertificate(caCertBlock.Bytes)
+	p12Data, err := GenerateClientCertBytes(caCertPEM, caKeyPEM, name, password)
 	if err != nil {
-		return fmt.Errorf("parse CA cert: %w", err)
-	}
-
-	caKeyBlock, _ := pem.Decode(caKeyPEM)
-	if caKeyBlock == nil {
-		return fmt.Errorf("failed to decode CA key PEM")
-	}
-	caKey, err := x509.ParseECPrivateKey(caKeyBlock.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse CA key: %w", err)
-	}
-
-	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return fmt.Errorf("generate client key: %w", err)
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return fmt.Errorf("generate serial: %w", err)
-	}
-
-	now := time.Now()
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization: []string{"Bifract"},
-			CommonName:   name,
-		},
-		NotBefore:             now,
-		NotAfter:              now.Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-	}
-
-	clientCertDER, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &clientKey.PublicKey, caKey)
-	if err != nil {
-		return fmt.Errorf("sign client cert: %w", err)
-	}
-
-	clientCert, err := x509.ParseCertificate(clientCertDER)
-	if err != nil {
-		return fmt.Errorf("parse signed cert: %w", err)
-	}
-
-	p12Data, err := pkcs12.Modern.Encode(clientKey, clientCert, []*x509.Certificate{caCert}, password)
-	if err != nil {
-		return fmt.Errorf("create PKCS#12 bundle: %w", err)
+		return err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
@@ -293,7 +207,10 @@ func GenerateClientCAPEM() (certPEM, keyPEM string, err error) {
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		MaxPathLen:            0,
+		// Leaf client certs only. MaxPathLen 0 alone encodes as "no limit";
+		// MaxPathLenZero is what makes it a real pathLenConstraint of 0.
+		MaxPathLen:     0,
+		MaxPathLenZero: true,
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {

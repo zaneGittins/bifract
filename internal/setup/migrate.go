@@ -21,7 +21,9 @@ type Migration struct {
 	SQL    string
 }
 
-func LoadMigrations(fsys embed.FS, dir string) ([]Migration, error) {
+// LoadMigrations reads every NNN_name.sql file under dir, ordered by number. A
+// file whose name does not start with a number and an underscore is skipped.
+func LoadMigrations(fsys fs.FS, dir string) ([]Migration, error) {
 	var migrations []Migration
 
 	err := fs.WalkDir(fsys, dir, func(path string, d fs.DirEntry, err error) error {
@@ -42,7 +44,7 @@ func LoadMigrations(fsys embed.FS, dir string) ([]Migration, error) {
 			return nil
 		}
 
-		content, err := fsys.ReadFile(path)
+		content, err := fs.ReadFile(fsys, path)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", path, err)
 		}

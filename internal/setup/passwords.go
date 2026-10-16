@@ -10,20 +10,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const passwordChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
-
-func GeneratePassword(length int) (string, error) {
-	b := make([]byte, length)
-	for i := range b {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(passwordChars))))
-		if err != nil {
-			return "", err
-		}
-		b[i] = passwordChars[n.Int64()]
-	}
-	return string(b), nil
-}
-
 func GenerateAlphanumeric(length int) (string, error) {
 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, length)

@@ -396,10 +396,16 @@ func RunUpgrade(dir string) error {
 	return nil
 }
 
+// copyFile copies src to dst with src's permission bits, so a backup of a
+// secret (.env, secrets.yaml) is no more readable than the original.
 func copyFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	return os.WriteFile(dst, data, info.Mode().Perm())
 }
