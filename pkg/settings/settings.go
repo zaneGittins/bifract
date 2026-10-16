@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/clientip"
 	"bifract/pkg/mfa"
 	"bifract/pkg/storage"
 )
@@ -105,8 +106,13 @@ type Settings struct {
 	// loopback addresses, for a list hosted inside the deployment's own network.
 	// Off by default so a source URL cannot be pointed at internal services.
 	DictionarySourcesAllowPrivate bool `json:"dictionary_sources_allow_private"`
-	mu                            sync.RWMutex
-	pg                            *storage.PostgresClient
+	// TrustedProxyCIDRs lists the reverse proxies whose X-Forwarded-For and
+	// X-Real-IP headers are believed when working out a client's address for
+	// login and ingest rate limits and audit records. A request from any other
+	// peer is keyed on the peer itself. Empty trusts no proxy.
+	TrustedProxyCIDRs []string `json:"trusted_proxy_cidrs"`
+	mu                sync.RWMutex
+	pg                *storage.PostgresClient
 }
 
 // queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
@@ -181,6 +187,7 @@ func Init(pg *storage.PostgresClient) error {
 		SchemaSweepIntervalMinutes: defaultSchemaSweepIntervalMinutes,
 		APIKeyRateLimit:            defaultAPIKeyRateLimit,
 		PgrSensitivityPercent:      defaultPgrSensitivityPercent,
+		TrustedProxyCIDRs:          append([]string(nil), clientip.DefaultTrustedProxies...),
 		pg:                         pg,
 	}
 
@@ -262,6 +269,23 @@ func Init(pg *storage.PostgresClient) error {
 
 	if v, err := pg.GetSetting(ctx, "dictionary_sources_allow_private"); err == nil && v != "" {
 		globalSettings.DictionarySourcesAllowPrivate = v == "true"
+	}
+
+	// Load trusted_proxy_cidrs. Stored as a JSON array; an empty array is a
+	// deliberate "trust no proxy". A row that does not parse keeps the defaults
+	// rather than silently trusting nothing or everything.
+	if v, err := pg.GetSetting(ctx, "trusted_proxy_cidrs"); err == nil && v != "" {
+		var list []string
+		if err := json.Unmarshal([]byte(v), &list); err != nil {
+			log.Printf("[Settings] Ignoring unreadable trusted_proxy_cidrs: %v", err)
+		} else if norm, err := clientip.Normalize(list); err != nil {
+			log.Printf("[Settings] Ignoring invalid trusted_proxy_cidrs: %v", err)
+		} else {
+			globalSettings.TrustedProxyCIDRs = norm
+		}
+	}
+	if err := clientip.SetTrustedProxies(globalSettings.TrustedProxyCIDRs); err != nil {
+		log.Printf("[Settings] Failed to apply trusted proxies: %v", err)
 	}
 
 	// Load api_key_rate_limit (0 = uncapped)
@@ -368,6 +392,7 @@ func Get() Settings {
 			RecallCPUPercent:           storage.DefaultRecallCPUPercent,
 			RecallMemoryPercent:        storage.DefaultRecallMemoryPercent,
 			SchemaSweepIntervalMinutes: defaultSchemaSweepIntervalMinutes,
+			TrustedProxyCIDRs:          append([]string(nil), clientip.DefaultTrustedProxies...),
 		}
 	}
 	globalSettings.mu.RLock()
@@ -377,6 +402,7 @@ func Get() Settings {
 		PgrSensitivityPercent:         globalSettings.PgrSensitivityPercent,
 		RequireMFA:                    globalSettings.RequireMFA,
 		DictionarySourcesAllowPrivate: globalSettings.DictionarySourcesAllowPrivate,
+		TrustedProxyCIDRs:             append([]string{}, globalSettings.TrustedProxyCIDRs...),
 		TimestampFields:               globalSettings.TimestampFields,
 		AlertTimeoutSeconds:           globalSettings.AlertTimeoutSeconds,
 		QueryTimeoutSeconds:           globalSettings.QueryTimeoutSeconds,
@@ -417,6 +443,16 @@ func Update(s *Settings) error {
 	if s.RequireMFA && !mfa.KeyAvailable() {
 		return validationErrorf("Two-factor authentication needs BIFRACT_PASSWORD_PEPPER set so enrollment secrets can be encrypted at rest")
 	}
+	// nil is what a client that never sent the field leaves behind when it
+	// decodes onto a zero value; only an explicit empty list trusts nobody.
+	if s.TrustedProxyCIDRs == nil {
+		s.TrustedProxyCIDRs = Get().TrustedProxyCIDRs
+	}
+	trustedProxies, err := clientip.Normalize(s.TrustedProxyCIDRs)
+	if err != nil {
+		return validationErrorf("Trusted proxies: %v", err)
+	}
+	s.TrustedProxyCIDRs = trustedProxies
 	if s.SchemaSweepIntervalMinutes < minSchemaSweepIntervalMinutes {
 		return validationErrorf("Schema measurement interval must be at least %d minutes", minSchemaSweepIntervalMinutes)
 	}
@@ -449,6 +485,7 @@ func Update(s *Settings) error {
 	globalSettings.PgrSensitivityPercent = s.PgrSensitivityPercent
 	globalSettings.RequireMFA = s.RequireMFA
 	globalSettings.DictionarySourcesAllowPrivate = s.DictionarySourcesAllowPrivate
+	globalSettings.TrustedProxyCIDRs = s.TrustedProxyCIDRs
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
 	globalSettings.RecallConcurrency = s.RecallConcurrency
@@ -456,6 +493,11 @@ func Update(s *Settings) error {
 	// Unlocked before persisting: the ClickHouse workload DDL below can take seconds
 	// on a cluster, and every search reads Get() under this lock.
 	globalSettings.mu.Unlock()
+	// Already validated above, so this cannot fail; it takes effect for the
+	// next request.
+	if err := clientip.SetTrustedProxies(s.TrustedProxyCIDRs); err != nil {
+		return err
+	}
 
 	// Persist to database
 	ctx := context.Background()
@@ -508,6 +550,13 @@ func Update(s *Settings) error {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "dictionary_sources_allow_private", fmt.Sprintf("%t", s.DictionarySourcesAllowPrivate)); err != nil {
+		return err
+	}
+	trustedProxiesJSON, err := json.Marshal(s.TrustedProxyCIDRs)
+	if err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, "trusted_proxy_cidrs", string(trustedProxiesJSON)); err != nil {
 		return err
 	}
 	if err := globalSettings.pg.SetSetting(ctx, "schema_sweep_interval_minutes", fmt.Sprintf("%d", s.SchemaSweepIntervalMinutes)); err != nil {

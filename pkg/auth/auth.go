@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"path/filepath"
 
 	"bifract/internal/setup"
+	"bifract/pkg/clientip"
 	"bifract/pkg/fractals"
 	"bifract/pkg/ingest"
 	"bifract/pkg/rbac"
@@ -562,27 +562,10 @@ func (h *AuthHandler) deleteSession(sessionID string) {
 	h.store.Delete(sessionID)
 }
 
-// clientIP extracts the real client IP, accounting for reverse proxy headers.
+// clientIP is the address the login limiter keys on and auth events record.
+// Forwarding headers count only from a trusted proxy (see pkg/clientip).
 func clientIP(r *http.Request) string {
-	// X-Forwarded-For may contain multiple IPs; the leftmost is the original client
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if parts := strings.SplitN(xff, ",", 2); len(parts) > 0 {
-			ip := strings.TrimSpace(parts[0])
-			if ip != "" {
-				return ip
-			}
-		}
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-	// Strip the port. SplitHostPort, not a cut at the first colon: an IPv6
-	// RemoteAddr is "[2001:db8::1]:443", which a cut would reduce to "[2001",
-	// putting every client in that range in one login rate limit bucket.
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return clientip.FromRequest(r)
 }
 
 // HandleLogin handles user login

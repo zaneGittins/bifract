@@ -2,11 +2,11 @@ package ingest
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
+
+	"bifract/pkg/clientip"
 )
 
 // tokenBucket implements a single token bucket.
@@ -122,31 +122,12 @@ func (rl *RateLimiter) cleanup() {
 	}
 }
 
-// clientIP extracts the real client IP from proxy headers, falling back to RemoteAddr.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if parts := strings.SplitN(xff, ",", 2); len(parts) > 0 {
-			if ip := strings.TrimSpace(parts[0]); ip != "" {
-				return ip
-			}
-		}
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return ip
-}
-
 // RateLimitMiddleware creates an HTTP middleware that enforces per-IP rate
 // limiting on ingestion endpoints. Returns 429 with Retry-After header when exceeded.
 func RateLimitMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
+			ip := clientip.FromRequest(r)
 			if !rl.Allow(ip) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", "1")

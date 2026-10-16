@@ -2,7 +2,10 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,4 +274,41 @@ func TestNewAuthHandlerWiring(t *testing.T) {
 	}
 	// Auth events need ClickHouse; without it logging is a no-op, not a panic.
 	h.LogAuthEvent("login_success", "alice", "203.0.113.9", "")
+}
+
+// A client connecting directly cannot escape the per-address limit by sending a
+// fresh X-Forwarded-For with each guess: only a trusted proxy's header counts.
+func TestHandleLoginForwardedForSpoofing(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+
+	guess := func(peer, xff string) int {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+			strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"wrong"}`, "nobody")))
+		r.RemoteAddr = peer + ":40000"
+		r.Header.Set("X-Forwarded-For", xff)
+		rec := httptest.NewRecorder()
+		h.HandleLogin(rec, r)
+		return rec.Code
+	}
+
+	blocked := false
+	for i := 0; i < 50 && !blocked; i++ {
+		blocked = guess("203.0.113.50", fmt.Sprintf("198.51.100.%d", i)) == http.StatusTooManyRequests
+	}
+	if !blocked {
+		t.Fatal("rotating X-Forwarded-For from an untrusted peer never hit the limit")
+	}
+
+	// Behind the bundled proxy the header is the client, so two clients
+	// behind it are limited separately.
+	for i := 0; i < 50; i++ {
+		if guess("172.18.0.5", "198.51.100.200") == http.StatusTooManyRequests {
+			break
+		}
+	}
+	if code := guess("172.18.0.5", "198.51.100.201"); code == http.StatusTooManyRequests {
+		t.Error("a client behind the proxy was blocked by another client's failures")
+	}
 }

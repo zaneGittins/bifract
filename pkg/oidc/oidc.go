@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/clientip"
 	"bifract/pkg/storage"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -306,7 +307,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Domain restriction
-	ip := r.RemoteAddr
+	ip := clientip.FromRequest(r)
 	if len(h.config.AllowedDomains) > 0 {
 		// The allow-list trusts the email's domain, which means nothing if
 		// the provider says it never verified the address: anyone able to
