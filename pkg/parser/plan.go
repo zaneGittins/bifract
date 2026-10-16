@@ -206,6 +206,9 @@ type QueryPlan struct {
 	// the source WHERE their clause goes: ahead of anything a command adds.
 	firstStage        *FieldRegistry
 	firstStageWhereAt int
+	// baseWhereLen counts the source WHERE entries that scope the scan (time range,
+	// fractal) rather than filter it.
+	baseWhereLen int
 
 	// Source expressions exported to the deferred layer as hidden columns.
 	deferred *deferredScope
