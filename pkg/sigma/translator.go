@@ -22,7 +22,12 @@ import (
 //	    create_stream_hash rule matching on Hashes fired on every process-creation
 //	    event, which also carries an IMPHASH.
 //	v5: collapse Sigma's four registry categories onto registry_event.
-const TranslatorVersion = "v5"
+//	v6: honor '*' and '?' wildcards and match every non-regex value
+//	    case-insensitively, as Sigma specifies; refuse unsupported modifiers
+//	    instead of dropping them; support |re|i|m|s; escape '/' in |re values;
+//	    leave underscore selections out of "them"; emit fields and quantified
+//	    selections in sorted order.
+const TranslatorVersion = "v6"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
