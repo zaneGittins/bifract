@@ -104,7 +104,6 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 	// Middleware
 	mux.Use(middleware.Recoverer)
 	mux.Use(middleware.RequestID)
-	mux.Use(middleware.RealIP)
 	// Timeout middleware, bypassed for SSE and chat streaming endpoints.
 	mux.Use(func(next http.Handler) http.Handler {
 		timeoutHandler := middleware.Timeout(60 * time.Second)(next)
