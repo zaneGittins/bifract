@@ -465,6 +465,8 @@ type chFake struct {
 	// columns lists the columns system.columns reports, per table, beyond what an
 	// ALTER added. A table not listed has every column.
 	columns map[string][]string
+	// blankRows lists the first_seen tables holding the blank entity.
+	blankRows map[string]bool
 	// existing are tables that were there before the test sent any DDL.
 	existing map[string]bool
 }
@@ -550,6 +552,15 @@ func (f *chFake) respond(q string, args []any) (fakedb.CHResult, bool) {
 	case strings.Contains(q, "FROM system.columns WHERE database = currentDatabase() AND table = ? AND name = ?"):
 		if f.hasColumn(fmt.Sprint(args[0]), fmt.Sprint(args[1])) {
 			return fakedb.Count(1), true
+		}
+		return fakedb.Count(0), true
+	case strings.Contains(q, "SELECT count() FROM `") && strings.Contains(q, "WHERE entity_key = "):
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for tbl := range f.blankRows {
+			if strings.Contains(q, "`"+tbl+"`") {
+				return fakedb.Count(1), true
+			}
 		}
 		return fakedb.Count(0), true
 	case strings.Contains(q, "engine = 'MaterializedView'"):

@@ -213,6 +213,39 @@ func TestMigrateDefaultAdminHash(t *testing.T) {
 		}
 	})
 
+	// An older release re-peppered the default password and cleared the forced
+	// change with it. While the password is still the default, startup puts the
+	// flag back; a password the admin chose is left alone.
+	t.Run("already re-peppered without the flag", func(t *testing.T) {
+		t.Setenv("BIFRACT_ADMIN_PASSWORD_HASH", "")
+		t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+		peppered, err := hashPassword(defaultAdminPassword)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, db := newDBHandler(t)
+		db.addUser("admin", func(r row) {
+			r["password_hash"] = peppered
+			r["is_admin"] = true
+			r["force_password_change"] = false
+		})
+		db.addUser("other", asAdmin)
+		h.migrateDefaultAdminHash()
+		if db.user("admin")["force_password_change"] != true {
+			t.Error("default password left without a forced change")
+		}
+		if db.user("admin")["password_hash"] != peppered {
+			t.Error("the default hash was rewritten")
+		}
+
+		h, db = newDBHandler(t)
+		db.addUser("admin", asAdmin)
+		h.migrateDefaultAdminHash()
+		if db.user("admin")["force_password_change"] == true || len(db.pg.Matching("UPDATE users")) != 0 {
+			t.Error("a chosen admin password was flagged for change")
+		}
+	})
+
 	t.Run("password already changed", func(t *testing.T) {
 		t.Setenv("BIFRACT_ADMIN_PASSWORD_HASH", "$2a$12$deploymentgeneratedhashvalue")
 		h, db := newDBHandler(t)

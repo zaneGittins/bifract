@@ -318,6 +318,14 @@ func IsDDLTimeout(err error) bool {
 	return false
 }
 
+// AsyncDDL returns ctx with ON CLUSTER statements in async mode
+// (distributed_ddl_task_timeout = 0): the statement is queued for every host and
+// returns at once, and a host that is down applies it when it is back. For
+// idempotent repairs that must not hold up startup while a shard is down.
+func AsyncDDL(ctx context.Context) context.Context {
+	return clickhouse.Context(ctx, clickhouse.WithSettings(clickhouse.Settings{"distributed_ddl_task_timeout": 0}))
+}
+
 // InjectOnCluster inserts an ON CLUSTER clause into the DDL statements listed in
 // injectOnClusterPatterns. No-op for single-node deployments.
 func (c *ClickHouseClient) InjectOnCluster(sql string) string {

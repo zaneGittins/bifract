@@ -373,7 +373,33 @@ func (c *ClickHouseClient) EnsureColumn(ctx context.Context, local, dist, column
 		}
 		return syncDistributedColumns(ctx, conn, c.logsDatabase(), dist, local)
 	}
+	return c.onEveryNode(fmt.Sprintf("ensure column %s on %s", column, local), apply)
+}
 
+// DeleteRowsWhere deletes the rows of a runtime-created local table that match
+// where, on every node (see EnsureColumn). A count goes first, so a table holding
+// none costs one lookup and no mutation; where should hit the sorting key.
+func (c *ClickHouseClient) DeleteRowsWhere(ctx context.Context, local, where string) error {
+	return c.onEveryNode("delete from "+local, func(conn driver.Conn) error {
+		if ok, err := chTableExists(ctx, conn, local); err != nil || !ok {
+			return err
+		}
+		table := "`" + escapeCHBacktickIdent(local) + "`"
+		var n uint64
+		if err := conn.QueryRow(ctx, "SELECT count() FROM "+table+" WHERE "+where).Scan(&n); err != nil || n == 0 {
+			return err
+		}
+		if err := conn.Exec(ctx, "DELETE FROM "+table+" WHERE "+where); err != nil {
+			return err
+		}
+		log.Printf("Deleted %d rows from %s where %s", n, local, where)
+		return nil
+	})
+}
+
+// onEveryNode runs apply on the load-balanced connection, or on a cluster on each
+// node directly, logging per-node failures and returning the first.
+func (c *ClickHouseClient) onEveryNode(what string, apply func(driver.Conn) error) error {
 	if !c.topo.PerNodeAdmin {
 		return apply(c.conn)
 	}
@@ -385,7 +411,7 @@ func (c *ClickHouseClient) EnsureColumn(ctx context.Context, local, dist, column
 			conn.Close()
 		}
 		if err != nil {
-			log.Printf("[ClickHouse] ensure column %s on %s (%s): %v", column, local, addr, err)
+			log.Printf("[ClickHouse] %s (%s): %v", what, addr, err)
 			if firstErr == nil {
 				firstErr = err
 			}
