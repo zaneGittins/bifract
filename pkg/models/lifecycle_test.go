@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -720,6 +721,64 @@ func TestReconcileStateViews(t *testing.T) {
 	}
 	if !b.watermark.Equal(wm) {
 		t.Errorf("an existing watermark moved: %v", b.watermark)
+	}
+}
+
+// A view that fails to drop keeps its model off the maintainer: the model is not
+// handed over (it keeps its view name and its NULL watermark), and a model an
+// older release already handed over despite a live view is skipped too, with the
+// reason on the model. A later startup that drops the view hands it over.
+func TestReconcileStateViewsKeepsModelsWhoseViewSurvived(t *testing.T) {
+	env := newClusterEnv(t)
+	s := NewStateMaintainer(env.db.client, env.ch.client, env.mgr)
+	wm := ms(time.Now().Add(-time.Hour))
+	stuck := seedModel(env, ModelTypeRarity, rarityDef, nil)   // view will not drop, no watermark
+	dropped := seedModel(env, ModelTypeRarity, rarityDef, nil) // view drops, no watermark
+	// Handed over by an older release although its view was still writing.
+	early := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) { r.chMV, r.watermark = "", &wm })
+	early.chMV = ""
+	env.ch.views = []string{stuck.chMV, dropped.chMV, chModelMVName(early.id)}
+
+	var failing atomic.Bool
+	failing.Store(true)
+	env.ch.FailExecFunc(func(stmt string) error {
+		if failing.Load() && strings.HasPrefix(stmt, "DROP VIEW") && !strings.Contains(stmt, dropped.chMV) {
+			return errors.New("keeper unavailable")
+		}
+		return nil
+	})
+
+	env.mgr.ReconcileStateViews(context.Background())
+
+	if got, _ := env.db.get(stuck.id); got.chMV != stuck.chMV || got.watermark != nil {
+		t.Errorf("a model whose view survived was handed over: %+v", got)
+	}
+	if got, _ := env.db.get(dropped.id); got.chMV != "" || got.watermark == nil {
+		t.Errorf("a model whose view dropped was not handed over: %+v", got)
+	}
+
+	// The freed models start at the handover instant, so the only one with a
+	// window to read is the one whose view is still live.
+	s.cycle(context.Background())
+	if inserts := env.ch.ExecutedMatching("INSERT INTO"); len(inserts) != 0 {
+		t.Fatalf("a model whose view is live was maintained:\n%s", strings.Join(inserts, "\n"))
+	}
+	if got, _ := env.db.get(early.id); !got.watermark.Equal(wm) || !strings.Contains(got.errorMessage, "could not be dropped") {
+		t.Errorf("a model with a live view was maintained or not told why: %q %v", got.errorMessage, got.watermark)
+	}
+
+	// The next startup drops both and hands them over.
+	failing.Store(false)
+	env.mgr.ReconcileStateViews(context.Background())
+	if got, _ := env.db.get(stuck.id); got.chMV != "" || got.watermark == nil {
+		t.Errorf("not handed over once its view dropped: %+v", got)
+	}
+	s.cycle(context.Background())
+	if len(env.ch.ExecutedMatching("INSERT INTO `"+chModelDistName(early.id)+"`")) != 1 {
+		t.Error("model not maintained after its view dropped")
+	}
+	if got, _ := env.db.get(early.id); got.errorMessage != "" {
+		t.Errorf("stale reason kept: %q", got.errorMessage)
 	}
 }
 

@@ -180,7 +180,12 @@ func (s *StateMaintainer) cycle(ctx context.Context) {
 	for _, r := range rows {
 		live[r.id] = true
 		msg := ""
-		if err := s.maintain(ctx, r); err != nil {
+		if s.mgr.stateViewLive(r.id) {
+			// Its insert-time view is still writing this state. Writing it here too
+			// would double every aggregate, so the model waits for the next startup
+			// to retry the drop.
+			msg = fmt.Sprintf("insert-time view %s could not be dropped; state maintenance resumes once a restart drops it", chModelMVName(r.id))
+		} else if err := s.maintain(ctx, r); err != nil {
 			msg = err.Error()
 		}
 		s.recordOutcome(ctx, r, msg)

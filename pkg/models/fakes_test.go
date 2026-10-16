@@ -343,10 +343,11 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 			res.Rows = append(res.Rows, []driver.Value{r.id, r.fractalID, r.modelType, r.definition, r.chTable, r.chMV})
 		}
 		return res, true
-	case "UPDATE analytics_models SET ch_mv_name = '', state_watermark = COALESCE(state_watermark, NOW()) WHERE COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL":
+	case "UPDATE analytics_models SET ch_mv_name = '', state_watermark = COALESCE(state_watermark, NOW()) WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL) AND NOT (COALESCE(ch_mv_name, '') = ANY($1))":
+		survived := setOf(pqArray(args[0]))
 		k := 0
 		for _, r := range db.rows {
-			if r.chMV != "" || r.watermark == nil {
+			if (r.chMV != "" || r.watermark == nil) && !survived[r.chMV] {
 				r.chMV = ""
 				if r.watermark == nil {
 					r.watermark = tptr(now)

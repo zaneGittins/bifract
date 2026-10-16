@@ -44,6 +44,12 @@ type Manager struct {
 
 	// health caches each model's state summary for the listing.
 	health *healthCache
+
+	// liveViews are the insert-time views the last ReconcileStateViews failed to
+	// drop, by name. The state maintainer skips their models: the view is still
+	// writing their state, and writing it too would double every aggregate.
+	viewMu    sync.Mutex
+	liveViews map[string]bool
 }
 
 // NewManager creates a new analytics model manager.
@@ -1739,25 +1745,57 @@ func (m *Manager) ReconcileStateViews(ctx context.Context) {
 		}
 	}
 
+	survived := []string{}
 	for _, mv := range views {
 		if err := m.dropStateMV(ctx, mv); err != nil {
 			// Left for the next startup: the maintainer must not run alongside a
 			// view that survived, so this is reported rather than swallowed.
 			log.Printf("models: reconcile state views: %s: %v (will retry next startup)", mv, err)
+			survived = append(survived, mv)
 			continue
 		}
 		log.Printf("models: dropped insert-time state view %s", mv)
 	}
+	m.setLiveStateViews(survived)
 
 	// Hand over every model the sweep freed: the views stopped writing at this
 	// instant, so this is where the maintainer must start. Done here rather than
 	// in a migration because the app's own upgrade path does not run them.
+	//
+	// A model whose view survived is not freed. It keeps its ch_mv_name and its
+	// watermark, NULL for a model that never had one, which keeps it out of the
+	// maintainer until a later startup drops the view and hands it over.
 	if _, err := m.pg.Exec(ctx,
 		`UPDATE analytics_models SET ch_mv_name = '',
 		        state_watermark = COALESCE(state_watermark, NOW())
-		 WHERE COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL`); err != nil {
+		 WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL)
+		   AND NOT (COALESCE(ch_mv_name, '') = ANY($1))`, pq.Array(survived)); err != nil {
 		log.Printf("models: reconcile state views: hand over: %v", err)
 	}
+}
+
+// setLiveStateViews records the insert-time views that are still in place.
+func (m *Manager) setLiveStateViews(names []string) {
+	live := make(map[string]bool, len(names))
+	for _, n := range names {
+		live[n] = true
+	}
+	m.viewMu.Lock()
+	m.liveViews = live
+	m.viewMu.Unlock()
+}
+
+// stateViewLive reports whether a model's insert-time view survived the startup
+// sweep, so its state is still written at insert. A model can carry a watermark
+// and still have one: an older release handed every model over whether or not
+// its view had dropped.
+func (m *Manager) stateViewLive(modelID string) bool {
+	if m == nil {
+		return false
+	}
+	m.viewMu.Lock()
+	defer m.viewMu.Unlock()
+	return m.liveViews[chModelMVName(modelID)]
 }
 
 // TLSHIndex describes one fractal's TLSH digest index: the table tlsh() probes for
