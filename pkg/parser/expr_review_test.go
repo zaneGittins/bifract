@@ -235,10 +235,8 @@ func TestExprOrAggregateStaysOneCondition(t *testing.T) {
 	}
 }
 
-// buildWhereClause passes a nil registry; without the base-column check,
-// norm_log resolved as a JSON path, so the histogram filtered differently from
-// the query it is meant to describe.
-func TestExprBaseColumnsWithoutRegistry(t *testing.T) {
+// A base column in a first-stage expression is the column, not a JSON path.
+func TestExprBaseColumnInFirstStage(t *testing.T) {
 	pipeline := mustParseRev(t, `contains(norm_log, "powershell")`)
 	sql, err := TranslateToSQL(pipeline, revOpts())
 	if err != nil {
