@@ -40,7 +40,7 @@ type Manager struct {
 	bfHealth  BackfillHealth // pause source: yields to ingest backpressure
 	bfSem     chan struct{}  // global single-flight gate
 	bfMu      sync.Mutex     // guards bfCancels
-	bfCancels map[string]context.CancelFunc
+	bfCancels map[string]*backfillRun
 
 	// health caches each model's state summary for the listing.
 	health *healthCache
@@ -61,7 +61,7 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manag
 		chDB:      "logs",
 		bfCfg:     cfg,
 		bfSem:     make(chan struct{}, cfg.concurrency),
-		bfCancels: make(map[string]context.CancelFunc),
+		bfCancels: make(map[string]*backfillRun),
 		health:    newHealthCache(),
 	}
 }

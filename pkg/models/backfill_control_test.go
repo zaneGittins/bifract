@@ -78,9 +78,9 @@ func TestStartBackfillGuards(t *testing.T) {
 func TestBackfillCancellation(t *testing.T) {
 	m := testManager()
 	first, cancelFirst := context.WithCancel(context.Background())
-	m.registerCancel("a", cancelFirst)
+	firstRun := m.registerCancel("a", cancelFirst)
 	second, cancelSecond := context.WithCancel(context.Background())
-	m.registerCancel("a", cancelSecond)
+	secondRun := m.registerCancel("a", cancelSecond)
 	if first.Err() == nil {
 		t.Error("a replaced run must be cancelled")
 	}
@@ -95,7 +95,15 @@ func TestBackfillCancellation(t *testing.T) {
 	if other.Err() != nil {
 		t.Error("CancelBackfill reached another model's backfill")
 	}
-	m.unregisterCancel("a")
+	// The replaced run finishing must not drop its successor's registration.
+	m.unregisterCancel(firstRun)
+	if m.bfCancels["a"] != secondRun {
+		t.Error("a superseded run unregistered the run that replaced it")
+	}
+	m.unregisterCancel(secondRun)
+	if _, ok := m.bfCancels["a"]; ok {
+		t.Error("a finished run stayed registered")
+	}
 	m.CancelBackfill("a") // nothing registered: a no-op
 	m.CancelBackfill("never-ran")
 }
