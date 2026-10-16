@@ -433,6 +433,15 @@ func (h *AuthHandler) migrateDefaultAdminHash() {
 
 	// Only migrate if the stored hash still matches the default unpeppered password.
 	if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(defaultAdminPassword)) != nil {
+		// Older releases re-peppered the default and cleared the forced change with
+		// it; while the password is still the default, put the flag back.
+		if pepper != "" && verifyPassword(storedHash, defaultAdminPassword) == nil {
+			if _, err := h.pg.DB().ExecContext(ctx,
+				"UPDATE users SET force_password_change = TRUE WHERE username = 'admin' AND password_hash = $1",
+				storedHash); err != nil {
+				log.Printf("[Auth] Warning: failed to restore the forced change of the default admin password: %v", err)
+			}
+		}
 		return
 	}
 
