@@ -35498,7 +35498,13 @@
           "create": {
             "$ref": "#/components/schemas/ingest.ElasticIndexResult"
           },
+          "delete": {
+            "$ref": "#/components/schemas/ingest.ElasticIndexResult"
+          },
           "index": {
+            "$ref": "#/components/schemas/ingest.ElasticIndexResult"
+          },
+          "update": {
             "$ref": "#/components/schemas/ingest.ElasticIndexResult"
           }
         }
@@ -35535,7 +35541,7 @@
             "type": "string"
           },
           "error": {
-            "type": "string"
+            "$ref": "#/components/schemas/ingest.ElasticItemError"
           },
           "result": {
             "type": "string"
@@ -35547,6 +35553,21 @@
         "required": [
           "_index",
           "status"
+        ]
+      },
+      "ingest.ElasticItemError": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "reason"
         ]
       },
       "ingest.IngestResponse": {
@@ -39095,6 +39116,12 @@
             "items": {
               "$ref": "#/components/schemas/settings.TimestampField"
             }
+          },
+          "trusted_proxy_cidrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -39114,7 +39141,8 @@
           "api_key_rate_limit",
           "pgr_sensitivity_percent",
           "require_mfa",
-          "dictionary_sources_allow_private"
+          "dictionary_sources_allow_private",
+          "trusted_proxy_cidrs"
         ]
       },
       "settings.SettingsResponse": {

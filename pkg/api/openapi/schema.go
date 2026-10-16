@@ -161,7 +161,7 @@ func (g *schemaGen) addFields(out *Schema, t reflect.Type) {
 			name = f.Name
 		}
 		out.Properties[name] = g.schemaFor(f.Type)
-		if !strings.Contains(opts, "omitempty") {
+		if !strings.Contains(opts, "omitempty") && !strings.Contains(opts, "omitzero") {
 			out.Required = append(out.Required, name)
 		}
 	}
