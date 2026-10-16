@@ -19,13 +19,6 @@ func (p *Parser) substitutePipeline(pipeline *PipelineNode) error {
 	if len(p.bindings) == 0 || pipeline == nil {
 		return nil
 	}
-	if pipeline.Filter != nil {
-		for i := range pipeline.Filter.Conditions {
-			if err := p.substituteFilterCondition(&pipeline.Filter.Conditions[i]); err != nil {
-				return err
-			}
-		}
-	}
 	for i := range pipeline.Assignments {
 		if err := p.substituteExpr(pipeline.Assignments[i].Expr); err != nil {
 			return err
@@ -168,21 +161,6 @@ func (p *Parser) substituteHavingCondition(c *HavingCondition) error {
 	}
 	for i := range c.Children {
 		if err := p.substituteHavingCondition(&c.Children[i]); err != nil {
-			return err
-		}
-	}
-	if c.Command != nil {
-		return p.substituteCommand(c.Command)
-	}
-	return nil
-}
-
-func (p *Parser) substituteFilterCondition(c *ConditionNode) error {
-	if err := p.substituteExpr(c.Expr); err != nil {
-		return err
-	}
-	for i := range c.Children {
-		if err := p.substituteFilterCondition(&c.Children[i]); err != nil {
 			return err
 		}
 	}

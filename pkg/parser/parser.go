@@ -10,54 +10,7 @@ type ASTNode interface {
 	Type() string
 }
 
-type FilterNode struct {
-	Conditions []ConditionNode
-}
-
-func (f FilterNode) Type() string { return "filter" }
-
-type ConditionNode struct {
-	Field    string
-	Operator string // "=", "!=", "~" (regex), "=~", "=^", "=$"
-	Value    string
-	Values   []string // multi-value list for =~, =^, =$ operators
-	IsRegex  bool
-	// ValueField names the right-hand operand when it was written as field(name),
-	// making the comparison field-to-field rather than field-to-literal. Value
-	// carries the same name for display; SQL generation must use this.
-	ValueField string
-	// LiteralTerm holds the unmodified analyst-typed text of a bare-term search,
-	// which Value stores only in already-regex-escaped form. norm_log serializes
-	// differently per source mode, so the final pattern is built at translation
-	// time (where the mode is known) from this literal.
-	LiteralTerm string
-	Negate      bool
-	Logic       string // "AND", "OR", ""
-	GroupID     int    // Tracks parenthetical grouping for SQL generation
-	GroupNegate bool   // True when NOT is applied to the entire group (NOT (A OR B))
-	ParenDepth  int    // Tracks nesting depth of parentheses
-
-	// Compound node support for deeply nested boolean expressions.
-	// When a parenthesized group contains sub-groups (inner parens), the flat
-	// GroupID approach cannot preserve nesting. Instead we create a compound
-	// node that holds the children as a proper tree.
-	IsCompound bool
-	Children   []ConditionNode
-
-	// Command holds a condition function used as a boolean operand, e.g.
-	// a="x" OR cidr(ip, "10.0.0.0/8").
-	Command *CommandNode
-	// Expr holds a scalar expression used as a filter, e.g. lower(image)="cmd.exe".
-	Expr *ExprNode
-	// PredicateSQL is the compiled form of Command or Expr, filled in during
-	// translation once the handler options and the field registry exist.
-	PredicateSQL string
-}
-
-func (c ConditionNode) Type() string { return "condition" }
-
 type PipelineNode struct {
-	Filter           *FilterNode
 	Commands         []CommandNode
 	Assignments      []AssignmentNode
 	HavingConditions []HavingCondition
@@ -76,7 +29,10 @@ type HavingCondition struct {
 	IsRegex  bool
 	// ValueField names the right-hand operand when it was written as field(name).
 	ValueField string
-	// LiteralTerm mirrors ConditionNode.LiteralTerm for bare-term searches.
+	// LiteralTerm holds the unmodified analyst-typed text of a bare-term search,
+	// which Value stores only in already-regex-escaped form. norm_log serializes
+	// differently per source mode, so the final pattern is built at translation
+	// time (where the mode is known) from this literal.
 	LiteralTerm string
 	Logic       string // "AND", "OR", ""
 	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
@@ -136,11 +92,10 @@ func (a AssignmentNode) Type() string { return "assignment" }
 const maxParserIterations = 100000
 
 type Parser struct {
-	tokens         []Token
-	pos            int
-	groupIDCounter int    // Tracks parenthetical group IDs
-	iterations     int    // Safety counter to prevent infinite loops
-	input          []rune // original source, for faithful raw-text capture (case blocks)
+	tokens     []Token
+	pos        int
+	iterations int    // Safety counter to prevent infinite loops
+	input      []rune // original source, for faithful raw-text capture (case blocks)
 	// bindings holds the let statements declared ahead of the pipeline, keyed by
 	// name with the sigil. Substitution happens as each reference is parsed.
 	bindings     map[string]*BindingNode
@@ -381,7 +336,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if err != nil {
 					return nil, err
 				}
-				having := havingFromCondition(*cond)
+				having := *cond
 				if pipelineNegate {
 					negateHavingCondition(&having)
 				}
@@ -487,227 +442,6 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	return pipeline, nil
 }
 
-func (p *Parser) parseFilter() (*FilterNode, error) {
-	// If we immediately see a pipe, EOF, or function, there's no filter. An
-	// expression filter is the exception: it is a condition, not a command.
-	if p.current().Type == TokenPipe || p.current().Type == TokenEOF ||
-		(p.current().Type == TokenFunction && !p.atExprFilter()) {
-		return nil, nil
-	}
-
-	// If we see ! followed by a function (e.g., !in()), treat as negated command, not filter
-	if p.current().Type == TokenNot && p.peek().Type == TokenFunction {
-		return nil, nil
-	}
-
-	// Handle wildcard "*" - means no filter
-	if (p.current().Type == TokenValue && p.current().Value == "*") || p.current().Type == TokenMultiply {
-		p.advance() // skip the *
-		return nil, nil
-	}
-
-	// Handle bare regex/string queries like /powershell/ or "powershell" (search raw_log)
-	// These are routed through parseConditionsWithPrecedence so that
-	// OR/AND chains like: "foo" OR "bar" are handled correctly.
-	if p.current().Type == TokenRegex || p.current().Type == TokenString {
-		filter := &FilterNode{}
-		conditions, err := p.parseConditions()
-		if err != nil {
-			return nil, err
-		}
-		filter.Conditions = conditions
-		return filter, nil
-	}
-
-	// Check if this is an assignment (field := ...) rather than a filter
-	if p.current().Type == TokenField && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TokenAssign {
-		return nil, nil
-	}
-
-	filter := &FilterNode{}
-	conditions, err := p.parseConditions()
-	if err != nil {
-		return nil, err
-	}
-	filter.Conditions = conditions
-
-	return filter, nil
-}
-
-func (p *Parser) parseConditions() ([]ConditionNode, error) {
-	return p.parseConditionsWithPrecedence(0)
-}
-
-// parseConditionsWithPrecedence handles operator precedence and parentheses
-func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNode, error) {
-	var conditions []ConditionNode
-
-	for {
-		// Check for negation
-		negate := false
-		if p.current().Type == TokenNot {
-			negate = true
-			p.advance()
-		}
-
-		var currentConditions []ConditionNode
-
-		// Handle parentheses
-		if p.current().Type == TokenLParen {
-			p.advance() // consume (
-			groupedConditions, err := p.parseConditionsWithPrecedence(0)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := p.expect(TokenRParen); err != nil {
-				return nil, err
-			}
-
-			// Check if inner conditions contain multiple distinct sub-groups.
-			// If so, we must use a compound node to preserve the nested boolean
-			// structure, because the flat GroupID scheme cannot represent multiple
-			// levels of nesting correctly.
-
-			// Special case: a single compound child means redundant wrapper
-			// parens like ((compound)). Just pass through, applying negate.
-			if len(groupedConditions) == 1 && groupedConditions[0].IsCompound {
-				if negate {
-					groupedConditions[0].Negate = !groupedConditions[0].Negate
-				}
-				currentConditions = groupedConditions
-			} else {
-				// Count distinct non-zero GroupIDs and check for ungrouped conditions
-				hasSubGroups := false
-				groupIDs := map[int]bool{}
-				hasUngrouped := false
-				for _, gc := range groupedConditions {
-					if gc.IsCompound {
-						hasSubGroups = true
-						break
-					}
-					if gc.GroupID > 0 {
-						groupIDs[gc.GroupID] = true
-					} else {
-						hasUngrouped = true
-					}
-				}
-				if !hasSubGroups {
-					// Multiple distinct GroupIDs, or a mix of grouped and ungrouped
-					if len(groupIDs) > 1 || (len(groupIDs) >= 1 && hasUngrouped) {
-						hasSubGroups = true
-					}
-				}
-
-				if hasSubGroups {
-					// Create a compound node that wraps the children as a tree.
-					// This correctly preserves NOT semantics across nested groups
-					// (the old flat approach would distribute NOT to individual
-					// sub-groups without flipping AND/OR per De Morgan's law).
-					compound := ConditionNode{
-						IsCompound: true,
-						Children:   groupedConditions,
-						Negate:     negate,
-						GroupID:    0, // will be assigned by parent if needed
-					}
-					currentConditions = []ConditionNode{compound}
-				} else {
-					// Simple flat group (no sub-groups) - use existing GroupID approach.
-					p.groupIDCounter++
-					for i := range groupedConditions {
-						if groupedConditions[i].GroupID == 0 {
-							groupedConditions[i].GroupID = p.groupIDCounter
-						}
-						if negate {
-							// Toggle (not set) so double negation cancels correctly:
-							// NOT (NOT (A OR B)) -> (A OR B)
-							groupedConditions[i].GroupNegate = !groupedConditions[i].GroupNegate
-						}
-					}
-					currentConditions = groupedConditions
-				}
-			}
-		} else if p.current().Type == TokenRegex {
-			// Bare regex always searches raw_log
-			cond := &ConditionNode{
-				Field:    normLogColumn,
-				Operator: "=",
-				Value:    p.current().Value,
-				IsRegex:  true,
-				Negate:   negate,
-				GroupID:  0,
-			}
-			p.advance()
-			currentConditions = []ConditionNode{*cond}
-		} else if p.current().Type == TokenString {
-			// Bare string always searches raw_log
-			cond := &ConditionNode{
-				Field:       normLogColumn,
-				Operator:    "~",
-				Value:       caseInsensitiveSearch(p.current().Value),
-				LiteralTerm: p.current().Value,
-				IsRegex:     true,
-				Negate:      negate,
-				GroupID:     0,
-			}
-			p.advance()
-			currentConditions = []ConditionNode{*cond}
-		} else {
-			// Parse a single condition
-			cond, err := p.parseCondition()
-			if err != nil {
-				return nil, err
-			}
-			cond.Negate = negate
-			// Single conditions without parentheses get GroupID 0 (ungrouped)
-			cond.GroupID = 0
-			currentConditions = []ConditionNode{*cond}
-		}
-
-		conditions = append(conditions, currentConditions...)
-
-		// Check for AND/OR with precedence (OR has lower precedence than AND)
-		tok := p.current()
-		var precedence int
-		var operator string
-
-		if tok.Type == TokenAnd {
-			precedence = 2
-			operator = "AND"
-		} else if tok.Type == TokenOr {
-			precedence = 1
-			operator = "OR"
-		} else if tok.Type == TokenField {
-			// Implicit AND if we see another field
-			precedence = 2
-			operator = "AND"
-		} else {
-			// No more operators, break
-			break
-		}
-
-		// Handle operator precedence
-		if precedence < minPrecedence {
-			break
-		}
-
-		if tok.Type == TokenAnd || tok.Type == TokenOr {
-			p.advance()
-		}
-
-		// Set the logic operator on the last condition
-		if len(conditions) > 0 {
-			conditions[len(conditions)-1].Logic = operator
-		}
-
-		// Check for end of expression
-		if p.current().Type == TokenPipe || p.current().Type == TokenEOF || p.current().Type == TokenRParen {
-			break
-		}
-	}
-
-	return conditions, nil
-}
-
 // parseValueList reads a comma-separated list of values for =~, =^, =$ operators.
 // Values can be bare identifiers, numbers, or quoted strings.
 // Reading stops at the first token that is not a value type or comma.
@@ -785,8 +519,8 @@ func (p *Parser) fieldOperandUnsupported(operator string) error {
 	return newPosError(p.current(), "field() cannot be used with %s; it is supported with =, !=, >, <, >= and <=", operator)
 }
 
-func (p *Parser) parseCondition() (*ConditionNode, error) {
-	cond := &ConditionNode{}
+func (p *Parser) parseCondition() (*HavingCondition, error) {
+	cond := &HavingCondition{}
 
 	// A condition function or an expression is an operand like any other leaf,
 	// e.g. a="x" OR cidr(ip, "10.0.0.0/8"), or lower(image)="cmd.exe".
@@ -1229,7 +963,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			if err != nil {
 				return nil, err
 			}
-			having := havingFromCondition(*cond)
+			having := *cond
 			if negate {
 				negateHavingCondition(&having)
 			}
@@ -1310,24 +1044,6 @@ func (p *Parser) readExprMatchOperator() (string, []string, error) {
 	p.advance()
 	values, err := p.parseValueList()
 	return op, values, err
-}
-
-// havingFromCondition converts a parsed filter leaf into its pipeline-stage
-// equivalent. Every value-carrying field must be copied: dropping Values
-// silently truncates a comma list to its first term.
-func havingFromCondition(cond ConditionNode) HavingCondition {
-	return HavingCondition{
-		Command:     cond.Command,
-		Expr:        cond.Expr,
-		Field:       cond.Field,
-		Operator:    cond.Operator,
-		Value:       cond.Value,
-		Values:      cond.Values,
-		ValueField:  cond.ValueField,
-		IsRegex:     cond.IsRegex,
-		LiteralTerm: cond.LiteralTerm,
-		Negate:      cond.Negate,
-	}
 }
 
 // isAssignment checks if current position represents a field assignment (field := expression)

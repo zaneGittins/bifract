@@ -272,19 +272,6 @@ func referencedFields(bql string) []string {
 		out = append(out, f)
 	}
 
-	var walk func(conds []parser.ConditionNode)
-	walk = func(conds []parser.ConditionNode) {
-		for _, c := range conds {
-			if c.IsCompound {
-				walk(c.Children)
-				continue
-			}
-			add(c.Field)
-		}
-	}
-	if pipeline.Filter != nil {
-		walk(pipeline.Filter.Conditions)
-	}
 	var walkStage func(conds []parser.HavingCondition)
 	walkStage = func(conds []parser.HavingCondition) {
 		for _, c := range conds {

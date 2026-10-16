@@ -202,12 +202,11 @@ type QueryPlan struct {
 	pendingDeferredConditions []HavingCondition
 
 	// firstStage is the registry conditions before the first command resolve
-	// against (FieldRegistry.firstStageView), and firstStageWhereAt the place in
-	// the source WHERE their clause goes: ahead of anything a command adds.
-	firstStage        *FieldRegistry
-	firstStageWhereAt int
+	// against (FieldRegistry.firstStageView).
+	firstStage *FieldRegistry
 	// baseWhereLen counts the source WHERE entries that scope the scan (time range,
-	// fractal) rather than filter it.
+	// fractal) rather than filter it. First-stage conditions follow them, ahead of
+	// anything a command adds.
 	baseWhereLen int
 
 	// Source expressions exported to the deferred layer as hidden columns.

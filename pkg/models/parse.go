@@ -77,25 +77,6 @@ func ParseSourceQuery(query string) ParsedSource {
 	// Filter expression. Lowering is best effort from here on: SourceBQL is what
 	// runs, so a condition the structured form cannot hold is skipped rather than
 	// refused. Its fields still reach CandidateFields so the editor can offer them.
-	if ast.Filter != nil {
-		flatAnd := func(c parser.ConditionNode) bool {
-			return !c.IsCompound && c.GroupID == 0 && !c.GroupNegate && !strings.EqualFold(c.Logic, "OR")
-		}
-		for _, c := range ast.Filter.Conditions {
-			collectConditionFields(c, &referenced)
-			if !flatAnd(c) || c.Field == "" {
-				res.FilterComplete = false
-				continue
-			}
-			fc, ok := conditionToFilter(c)
-			if !ok {
-				res.FilterComplete = false
-				continue
-			}
-			res.Filter = append(res.Filter, fc)
-		}
-	}
-
 	// Conditions before the first command are the source's filter; each one the
 	// structured form can hold becomes a chip. A plain AND of them distributes.
 	firstStage, later := splitFirstStage(ast.HavingConditions)
@@ -204,23 +185,6 @@ func ParseSourceQuery(query string) ParsedSource {
 	return res
 }
 
-// collectConditionFields appends every field a condition references, walking
-// compound children so a grouped or OR filter still offers its fields.
-func collectConditionFields(c parser.ConditionNode, out *[]string) {
-	if c.IsCompound {
-		for _, child := range c.Children {
-			collectConditionFields(child, out)
-		}
-		return
-	}
-	if c.Field != "" {
-		*out = append(*out, c.Field)
-	}
-	if c.ValueField != "" {
-		*out = append(*out, c.ValueField)
-	}
-}
-
 // collectHavingFields is collectConditionFields for a pipeline-stage condition.
 func collectHavingFields(c parser.HavingCondition, out *[]string) {
 	for _, child := range c.Children {
@@ -322,40 +286,6 @@ func singleFieldArg(cmd parser.CommandNode) (string, bool) {
 	}
 	field := b.Str("field", "")
 	return field, field != ""
-}
-
-// conditionToFilter maps a parsed filter condition to a model FilterCondition.
-// The second result is false for a condition the structured form cannot hold; the
-// query still runs it, so there is nothing to report, only a chip not to draw.
-func conditionToFilter(c parser.ConditionNode) (FilterCondition, bool) {
-	switch c.Operator {
-	case "=", "":
-		if c.IsRegex {
-			op := "~"
-			if c.Negate {
-				op = "!~"
-			}
-			// Undo the forward-slash escaping applied by bqlRegexLiteral.
-			return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, true
-		}
-		if c.Negate {
-			return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, true
-		}
-		return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, true
-	case "!=":
-		if c.Negate {
-			return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, true
-		}
-		return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, true
-	case "~", "!~":
-		op := "~"
-		if c.Operator == "!~" || c.Negate {
-			op = "!~"
-		}
-		return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, true
-	default:
-		return FilterCondition{}, false
-	}
 }
 
 // cidrArgs extracts the field and range from a cidr() command's arguments,

@@ -94,21 +94,6 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	reg := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
 
-	if pl.Filter != nil {
-		if err := resolveCommandConditionNodes(pl.Filter.Conditions, opts); err != nil {
-			return eff, err
-		}
-		// Resolve branch-condition fields against the parent pipeline registry so
-		// a computed column (e.g. a prior assignment or aggregate) is referenced
-		// directly instead of as a raw JSON sub-column.
-		w, err := buildWhereClauseCtx(pl.Filter.Conditions, parentReg)
-		if err != nil {
-			return eff, err
-		}
-		if w != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
-		}
-	}
 	// Conditions before the segment's first command resolve against the parent
 	// pipeline too, ahead of what the segment's commands add; later ones see those
 	// commands' outputs.

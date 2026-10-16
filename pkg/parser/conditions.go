@@ -496,7 +496,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	}
 	if clause := materializeCondGroup(firstStage, plan.firstStage, nil); clause != "" {
 		source := plan.SourceStage()
-		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.firstStageWhereAt, len(source.Layer.Where)), clause)
+		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), clause)
 	}
 	for _, idx := range stageOrder {
 		if clause := materializeCondGroup(byStage[idx], registry, nil); clause != "" {
@@ -931,27 +931,6 @@ func negatedCommandPredicate(cmd CommandNode, opts QueryOptions) (string, error)
 		return "NOT (" + sql + ")", nil
 	}
 	return sql, nil
-}
-
-// resolveCommandConditionNodes is resolveCommandConditions for filter conditions.
-func resolveCommandConditionNodes(conditions []ConditionNode, opts QueryOptions) error {
-	for i := range conditions {
-		if conditions[i].IsCompound {
-			if err := resolveCommandConditionNodes(conditions[i].Children, opts); err != nil {
-				return err
-			}
-			continue
-		}
-		if conditions[i].Command == nil {
-			continue
-		}
-		sql, err := negatedCommandPredicate(*conditions[i].Command, opts)
-		if err != nil {
-			return err
-		}
-		conditions[i].PredicateSQL = sql
-	}
-	return nil
 }
 
 // andJoin combines WHERE parts with AND, bracketing any part that carries a

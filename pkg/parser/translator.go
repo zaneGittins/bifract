@@ -248,29 +248,6 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	plan.baseWhereLen = len(plan.SourceStage().Layer.Where)
 
 	// ---------------------------------------------------------------
-	// 2. Process filter conditions from the parser
-	// ---------------------------------------------------------------
-	if pipeline.Filter != nil {
-		// Condition functions used as boolean operands compile to SQL here, before
-		// the tree is materialized.
-		if err := resolveCommandConditionNodes(pipeline.Filter.Conditions, opts); err != nil {
-			return nil, err
-		}
-		// Pass the (base-fields-only) registry so filter conditions pick up the
-		// source mode. In hot mode this is behavior-identical to the old nil arg
-		// (no computed fields are declared yet); in iceberg mode it routes field
-		// refs to MAP access + the promoted-column predicate.
-		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, registry)
-		if err != nil {
-			return nil, err
-		}
-		if whereSQL != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
-		}
-	}
-	plan.firstStageWhereAt = len(plan.SourceStage().Layer.Where)
-
-	// ---------------------------------------------------------------
 	// 3. DECLARE PHASE: every command registers what fields it produces
 	// ---------------------------------------------------------------
 	for i, cmd := range pipeline.Commands {
@@ -1259,12 +1236,8 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		// This minimal projection keys on UseIngestTimestamp, which Recall also
 		// sets for ingest-time pruning; exclude iceberg so Recall gets the normal
 		// full projection.
-		hasConditions := ctx.Pipeline.Filter != nil || len(ctx.Pipeline.HavingConditions) > 0
-		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && hasConditions {
+		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && len(ctx.Pipeline.HavingConditions) > 0 {
 			fields := map[string]bool{}
-			if ctx.Pipeline.Filter != nil {
-				fields = collectConditionFields(ctx.Pipeline.Filter.Conditions)
-			}
 			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
 			// Include alert-configured extra fields (throttle field, template fields)
 			for _, f := range ctx.Opts.AlertExtraFields {
