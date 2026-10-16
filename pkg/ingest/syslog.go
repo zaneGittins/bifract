@@ -1,8 +1,6 @@
 package ingest
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -44,8 +42,7 @@ var severityNames = []string{
 func (h *IngestHandler) parseSyslogLogs(data []byte, token *ingesttokens.ValidatedToken) ([]storage.LogEntry, error) {
 	var logs []storage.LogEntry
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), 10*1024*1024) // 10MB max line
+	scanner := newLineScanner(data)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" {
@@ -75,6 +72,9 @@ func (h *IngestHandler) parseSyslogLogs(data []byte, token *ingesttokens.Validat
 		entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 		logs = append(logs, entry)
+	}
+	if err := lineScanErr(scanner); err != nil {
+		return nil, err
 	}
 
 	if len(logs) == 0 {

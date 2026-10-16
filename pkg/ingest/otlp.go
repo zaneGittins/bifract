@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,15 +59,13 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce body size limit
-	bodyReader := io.Reader(r.Body)
-	if h.handler.maxBodySize > 0 {
-		bodyReader = http.MaxBytesReader(w, r.Body, h.handler.maxBodySize)
-	}
+	defer r.Body.Close()
 
-	body, err := io.ReadAll(bodyReader)
+	// OTLP/HTTP servers must accept Content-Encoding: gzip, which collectors send by
+	// default. The size limit applies before and after decompression.
+	body, err := readRequestBody(w, r, h.handler.maxBodySize)
 	if err != nil {
-		if err.Error() == "http: request body too large" {
+		if errors.Is(err, errBodyTooLarge) {
 			h.respondError(w, r, http.StatusRequestEntityTooLarge,
 				fmt.Sprintf("Request body exceeds %d byte limit", h.handler.maxBodySize))
 			return
@@ -74,7 +73,6 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, r, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
-	defer r.Body.Close()
 
 	// Parse the OTLP request based on content type
 	req := &collectorlogs.ExportLogsServiceRequest{}
@@ -376,7 +374,9 @@ func anyValueToString(v *commonpb.AnyValue) string {
 	case *commonpb.AnyValue_IntValue:
 		return fmt.Sprintf("%d", val.IntValue)
 	case *commonpb.AnyValue_DoubleValue:
-		return fmt.Sprintf("%g", val.DoubleValue)
+		// Plain decimal, never an exponent, matching how JSON ingest stores numbers
+		// (normalizers.stringifyValue) so equality search behaves the same.
+		return strconv.FormatFloat(val.DoubleValue, 'f', -1, 64)
 	case *commonpb.AnyValue_BytesValue:
 		return hex.EncodeToString(val.BytesValue)
 	case *commonpb.AnyValue_ArrayValue:

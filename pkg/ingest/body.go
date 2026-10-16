@@ -1,6 +1,8 @@
 package ingest
 
 import (
+	"bufio"
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -47,4 +49,31 @@ func readRequestBody(w http.ResponseWriter, r *http.Request, maxBodySize int64) 
 		return nil, errBodyTooLarge
 	}
 	return body, nil
+}
+
+// maxLineBytes caps one line of a line-oriented body (NDJSON, KV, syslog, bulk).
+const maxLineBytes = 10 << 20
+
+// errLineTooLong signals a line-oriented body holding a line over maxLineBytes.
+var errLineTooLong = fmt.Errorf("a log line exceeds the %dMB line limit", maxLineBytes>>20)
+
+// newLineScanner returns a line scanner over an in-memory body. Callers must check
+// lineScanErr after the loop.
+func newLineScanner(data []byte) *bufio.Scanner {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), maxLineBytes)
+	return scanner
+}
+
+// lineScanErr reports why a line scan stopped early. An over-long line ends the
+// scan, so ignoring this would drop every line after it while still acknowledging
+// the request.
+func lineScanErr(scanner *bufio.Scanner) error {
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return errLineTooLong
+		}
+		return err
+	}
+	return nil
 }

@@ -574,7 +574,7 @@ func (q *IngestQueue) Healthy() bool {
 	return time.Now().Unix()-q.lastFailureUnix.Load() > int64(unhealthyCooldown.Seconds())
 }
 
-// monitorCPU polls ClickHouse OS CPU and disk metrics, toggling backpressure.
+// monitorCPU runs the backpressure monitors on a fixed interval until Shutdown.
 func (q *IngestQueue) monitorCPU() {
 	defer q.wg.Done()
 	ticker := time.NewTicker(cpuPollInterval)
@@ -584,41 +584,48 @@ func (q *IngestQueue) monitorCPU() {
 		case <-q.stop:
 			return
 		case <-ticker.C:
-			pct, cpuOK, err := q.queryClickHouseCPU()
-			if err != nil || !cpuOK {
-				// Unmeasurable is not "idle": leave the streak reset and do not
-				// let a missing metric look like healthy headroom.
-				q.cpuState.highStreak.Store(0)
-			} else if pct >= cpuPressureTrigger {
-				if q.cpuState.highStreak.Add(1) >= cpuPressureSustainSamples {
-					q.raisePressure(&q.cpuState, fmt.Sprintf("%.1f", pct), fmt.Sprintf("%.1f", cpuPressureTrigger),
-						fmt.Sprintf("ClickHouse CPU at %.1f%% (threshold %.1f%%)", pct, cpuPressureTrigger))
-				}
-			} else {
-				q.cpuState.highStreak.Store(0)
-				if pct < cpuPressureRelease {
-					q.clearPressure(&q.cpuState, fmt.Sprintf("%.1f", pct))
-				}
-			}
-
-			if diskPct, diskOK, diskErr := q.queryClickHouseDisk(); diskErr == nil && diskOK {
-				if diskPct >= diskPressureTrigger {
-					q.raisePressure(&q.diskState, fmt.Sprintf("%.1f", diskPct), fmt.Sprintf("%.1f", diskPressureTrigger),
-						fmt.Sprintf("ClickHouse disk at %.1f%% used (threshold %.1f%%)", diskPct, diskPressureTrigger))
-				} else if diskPct < diskPressureRelease {
-					q.clearPressure(&q.diskState, fmt.Sprintf("%.1f", diskPct))
-				}
-			}
-
-			q.monitorMemory()
-
-			q.monitorSpool()
-
-			q.reassertPressure()
-
-			q.flushDropEvents()
+			q.pollPressure()
 		}
 	}
+}
+
+// pollPressure is one monitor pass: it samples ClickHouse CPU, disk and memory and
+// the archive spool, toggles each backpressure condition, keeps active conditions'
+// notifications current, and flushes accumulated drop counts.
+func (q *IngestQueue) pollPressure() {
+	pct, cpuOK, err := q.queryClickHouseCPU()
+	if err != nil || !cpuOK {
+		// Unmeasurable is not "idle": leave the streak reset and do not
+		// let a missing metric look like healthy headroom.
+		q.cpuState.highStreak.Store(0)
+	} else if pct >= cpuPressureTrigger {
+		if q.cpuState.highStreak.Add(1) >= cpuPressureSustainSamples {
+			q.raisePressure(&q.cpuState, fmt.Sprintf("%.1f", pct), fmt.Sprintf("%.1f", cpuPressureTrigger),
+				fmt.Sprintf("ClickHouse CPU at %.1f%% (threshold %.1f%%)", pct, cpuPressureTrigger))
+		}
+	} else {
+		q.cpuState.highStreak.Store(0)
+		if pct < cpuPressureRelease {
+			q.clearPressure(&q.cpuState, fmt.Sprintf("%.1f", pct))
+		}
+	}
+
+	if diskPct, diskOK, diskErr := q.queryClickHouseDisk(); diskErr == nil && diskOK {
+		if diskPct >= diskPressureTrigger {
+			q.raisePressure(&q.diskState, fmt.Sprintf("%.1f", diskPct), fmt.Sprintf("%.1f", diskPressureTrigger),
+				fmt.Sprintf("ClickHouse disk at %.1f%% used (threshold %.1f%%)", diskPct, diskPressureTrigger))
+		} else if diskPct < diskPressureRelease {
+			q.clearPressure(&q.diskState, fmt.Sprintf("%.1f", diskPct))
+		}
+	}
+
+	q.monitorMemory()
+
+	q.monitorSpool()
+
+	q.reassertPressure()
+
+	q.flushDropEvents()
 }
 
 // monitorSpool sets/clears spoolPressure from the archive spool's disk usage
@@ -1027,9 +1034,6 @@ func (q *IngestQueue) Shutdown() {
 func (q *IngestQueue) Depth() int {
 	return len(q.ch) + int(q.accumRows.Load())/maxEnqueueBatch
 }
-
-// BufferedBytes returns the bytes currently held in the accumulator.
-func (q *IngestQueue) BufferedBytes() int64 { return q.accumBytes.Load() }
 
 // envInt reads a positive integer env var, falling back to def when unset,
 // unparseable, or non-positive.

@@ -275,3 +275,53 @@ func TestAccumulatorEnforcesKeyCap(t *testing.T) {
 		t.Errorf("flushed %d buckets, want %d", flushed, maxKeys*4)
 	}
 }
+
+// TestAccumulatorEnforcesByteCap: once buffered bytes pass the cap the largest
+// partitions are flushed first, since each yields the most headroom per part
+// written, and only until the buffer is back under the cap.
+func TestAccumulatorEnforcesByteCap(t *testing.T) {
+	q := &IngestQueue{
+		ch:            make(chan []storage.LogEntry, 4),
+		flushCh:       make(chan *partBucket, 64),
+		batchRows:     1 << 30,
+		batchBytes:    1 << 30,
+		flushInterval: time.Hour,
+		bufferBytes:   3000,
+		maxKeys:       1 << 20,
+	}
+	q.wg.Add(1)
+	go q.accumulator()
+
+	ts := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	mk := func(fid string, n int) []storage.LogEntry {
+		out := make([]storage.LogEntry, n)
+		for i := range out {
+			out[i] = storage.LogEntry{FractalID: fid, IngestTimestamp: ts, RawLog: "x"} // 513 bytes each
+		}
+		return out
+	}
+	// small: 1 entry, big: 4 entries, mid: 2 entries = 7 * 513 = 3591 > 3000.
+	q.ch <- append(append(mk("small", 1), mk("big", 4)...), mk("mid", 2)...)
+
+	select {
+	case b := <-q.flushCh:
+		if b.key.fractalID != "big" {
+			t.Fatalf("flushed %q first, want the largest partition", b.key.fractalID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("byte cap did not force a flush")
+	}
+	select {
+	case b := <-q.flushCh:
+		t.Fatalf("flushed %q although the buffer was back under its cap", b.key.fractalID)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := q.accumBytes.Load(); got != 3*513 {
+		t.Errorf("accumBytes = %d, want %d still buffered", got, 3*513)
+	}
+
+	close(q.ch)
+	for range q.flushCh {
+	}
+	q.wg.Wait()
+}

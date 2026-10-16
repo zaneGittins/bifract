@@ -3,6 +3,7 @@ package ingest
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -112,7 +113,10 @@ func parseTimestampWithFormat(val, format string) time.Time {
 	case "unixnano", "unixnanos", "unixns":
 		unit = time.Nanosecond
 	default:
-		t, _ := time.Parse(format, val)
+		t, err := time.Parse(format, val)
+		if err != nil || !storable(t) {
+			return time.Time{}
+		}
 		return t
 	}
 	t, _ := parseEpoch(val, unit)
@@ -153,20 +157,32 @@ func parseEpoch(val string, unit time.Duration) (time.Time, bool) {
 		}
 	}
 	perSec := int64(time.Second / unit)
-	// Outside the range the timestamp column stores, the value is in another unit (a
-	// millisecond count read as seconds) or garbage, so let the next field be tried.
-	// Checked on whole seconds, before time.Unix can overflow.
-	if secs := whole / perSec; secs < minEpochSeconds || secs > maxEpochSeconds {
+	// Outside the storable range, the value is in another unit (a millisecond count
+	// read as seconds) or garbage, so let the next field be tried. Checked on whole
+	// seconds first, before time.Unix can overflow, then on the exact instant.
+	if secs := whole / perSec; secs < minStorableTime.Unix() || secs > maxStorableTime.Unix() {
 		return time.Time{}, false
 	}
-	return time.Unix(whole/perSec, whole%perSec*int64(unit)+fracNanos), true
+	t := time.Unix(whole/perSec, whole%perSec*int64(unit)+fracNanos)
+	if !storable(t) {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
-// The DateTime64(3) timestamp column holds 1900-01-01 through 2299-12-31.
+// The storable range of an event timestamp. The DateTime64(3) column starts at
+// 1900, and the ClickHouse driver (like log_id and the archive spool codec) encodes
+// a time through UnixNano, which cannot represent anything after 2262-04-11: a
+// later value would be written as a silently wrapped, wrong time. A value outside
+// the range is treated as absent, so the next field, or the ingest time, is used.
 var (
-	minEpochSeconds = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	maxEpochSeconds = time.Date(2299, 12, 31, 23, 59, 59, 0, time.UTC).Unix()
+	minStorableTime = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxStorableTime = time.Unix(0, math.MaxInt64).UTC()
 )
+
+func storable(t time.Time) bool {
+	return !t.Before(minStorableTime) && !t.After(maxStorableTime)
+}
 
 // fallbackTimestampLayouts are tried, in order, on the common timestamp field names
 // when no configured field matched.
@@ -185,6 +201,9 @@ var fallbackTimestampLayouts = []string{
 func parseTimestamp(val string) time.Time {
 	for _, layout := range fallbackTimestampLayouts {
 		if t, err := time.Parse(layout, val); err == nil {
+			if !storable(t) {
+				return time.Time{}
+			}
 			return t
 		}
 	}
