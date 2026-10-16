@@ -2160,12 +2160,8 @@ const bareSearchColumn = "norm_log"
 // isRawLogRegexQuery detects if this is a raw log regex search that could return massive results
 func isRawLogRegexQuery(pipeline *parser.PipelineNode) bool {
 	// Check for bare regex/string searches (which search the whole log text)
-	if len(pipeline.HavingConditions) > 0 {
-		for _, having := range pipeline.HavingConditions {
-			if having.Field == bareSearchColumn && having.IsRegex {
-				return true
-			}
-		}
+	if hasBareSearch(pipeline.HavingConditions) {
+		return true
 	}
 
 	// Check for filter conditions targeting raw_log with regex
@@ -2187,6 +2183,16 @@ func hasRawLogRegexCondition(conditions []parser.ConditionNode) bool {
 				return true
 			}
 		} else if cond.Field == bareSearchColumn && cond.IsRegex {
+			return true
+		}
+	}
+	return false
+}
+
+// hasBareSearch is hasRawLogRegexCondition for pipeline-stage conditions.
+func hasBareSearch(conditions []parser.HavingCondition) bool {
+	for _, c := range conditions {
+		if hasBareSearch(c.Children) || c.Field == bareSearchColumn && c.IsRegex {
 			return true
 		}
 	}
