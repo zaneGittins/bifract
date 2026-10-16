@@ -626,9 +626,8 @@ func fieldOwningStage(field string, plan *QueryPlan) int {
 	return 0
 }
 
-// materializeCondGroup builds SQL for a group of conditions and joins them.
-// Handles both flat conditions (with GroupID-based grouping) and compound
-// nodes (tree-based nesting) for arbitrary expression depth.
+// materializeCondGroup builds SQL for a group of conditions, recursing into
+// compound nodes, and joins them with their connectors.
 func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry, scope *deferredScope) string {
 	if len(conditions) == 0 {
 		return ""

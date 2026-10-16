@@ -35,7 +35,6 @@ type HavingCondition struct {
 	// time (where the mode is known) from this literal.
 	LiteralTerm string
 	Logic       string // "AND", "OR", ""
-	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
 	CmdIndex    int    // number of pipeline commands that precede this condition
 	AssignIndex int    // number of assignments that precede this condition
 
