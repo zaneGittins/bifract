@@ -204,7 +204,7 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 			{"logs_raw_distributed", "logs_raw"},
 		} {
 			syncCtx, syncCancel := context.WithTimeout(ctx, 30*time.Second)
-			if err := syncDistributedColumns(syncCtx, conn, c.Database, pair[0], pair[1]); err != nil {
+			if err := syncDistributedColumns(syncCtx, conn, c.logsDatabase(), pair[0], pair[1]); err != nil {
 				log.Printf("Warning: column sync %s on %s: %v", pair[0], st.addr, err)
 			}
 			syncCancel()
