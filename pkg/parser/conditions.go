@@ -920,6 +920,16 @@ func negateHavingCondition(h *HavingCondition) {
 	}
 }
 
+// cloneConditions deep-copies a condition tree, so compiling one never writes
+// into another.
+func cloneConditions(conds []HavingCondition) []HavingCondition {
+	out := slices.Clone(conds)
+	for i := range out {
+		out[i].Children = cloneConditions(out[i].Children)
+	}
+	return out
+}
+
 // resolveCommandConditions compiles condition-function operands into SQL. It runs
 // before classification so the rest of the pipeline treats them as ordinary leaves.
 func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) error {

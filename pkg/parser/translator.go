@@ -443,13 +443,15 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	//     (e.g. _avg from multi() would land in WHERE). Materialization then emits
 	//     SQL from the now-complete registry and binds HAVING to its proper stage.
 	// ---------------------------------------------------------------
-	if err := resolveCommandConditions(pipeline.HavingConditions, opts); err != nil {
+	// Compiled into a copy: the parsed pipeline is planned more than once.
+	conditions := cloneConditions(pipeline.HavingConditions)
+	if err := resolveCommandConditions(conditions, opts); err != nil {
 		return nil, err
 	}
 	if err := validatePostAggregationFields(pipeline, registry, declared); err != nil {
 		return nil, err
 	}
-	if err := classifyConditions(pipeline.HavingConditions, registry, plan); err != nil {
+	if err := classifyConditions(conditions, registry, plan); err != nil {
 		return nil, err
 	}
 	materializeConditions(registry, plan)
