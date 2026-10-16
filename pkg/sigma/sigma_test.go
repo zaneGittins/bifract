@@ -224,8 +224,8 @@ func TestTranslate_ExactMatch(t *testing.T) {
 	}
 
 	// Sigma matches case-insensitively, so a value with letters is an anchored /i regex.
-	if result != `User=/^admin$/i` {
-		t.Errorf("expected User=/^admin$/i, got %s", result)
+	if want := `in(lower(User), values=["admin"])`; result != want {
+		t.Errorf("expected %s, got %s", want, result)
 	}
 	assertValidBQL(t, result)
 }
@@ -445,7 +445,7 @@ func TestTranslate_ExactMultiValue_Consolidated(t *testing.T) {
 	}
 
 	// Case-insensitive exact values share one anchored alternation.
-	expected := `User=/^admin$|^root$/i`
+	expected := `in(lower(User), values=["admin","root"])`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}

@@ -1,9 +1,14 @@
 package normalizers
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"math/big"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -146,5 +151,84 @@ func FuzzPlainNumber(f *testing.F) {
 		if !ok1 || !ok2 || want.Cmp(have) != 0 {
 			t.Fatalf("plainNumber(%q) = %q changes the value", s, got)
 		}
+	})
+}
+
+// exactDecode is the reference: json.Decoder with every number as json.Number and
+// trailing data refused.
+func exactDecode[T any](data []byte, v *T) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("trailing data")
+	}
+	return nil
+}
+
+// render prints a decoded value the way its leaves are stored as fields.
+func render(v any) string {
+	switch val := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = strconv.Quote(k) + ":" + render(val[k])
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	case []any:
+		parts := make([]string, len(val))
+		for i, e := range val {
+			parts[i] = render(e)
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	case []map[string]any:
+		parts := make([]string, len(val))
+		for i, e := range val {
+			parts[i] = render(e)
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	case nil:
+		return "null"
+	default:
+		return strconv.Quote(stringifyValue(val))
+	}
+}
+
+func agreesWithExact[T map[string]any | []map[string]any](t *testing.T, s string) {
+	t.Helper()
+	var want, got T
+	wantErr := exactDecode([]byte(s), &want)
+	gotErr := DecodeJSON([]byte(s), &got)
+	if (gotErr != nil) != (wantErr != nil) {
+		t.Fatalf("%q into %T: error %v, exact decoding %v", s, got, gotErr, wantErr)
+	}
+	if gotErr == nil && render(got) != render(want) {
+		t.Fatalf("%q into %T: stored %s, exact decoding stores %s", s, got, render(got), render(want))
+	}
+}
+
+// DecodeJSON stores exactly what exact decoding stores, for any input.
+func FuzzDecodeJSONMatchesExactDecoding(f *testing.F) {
+	for _, s := range []string{
+		`{"pid":4321,"ratio":0.25,"big":9007199254740993,"ns":1760616000123456789}`,
+		`{"a":1234567890.123456789,"b":0.30000000000000004,"c":-1.5e3,"d":1e21}`,
+		`{"over":1e400,"under":1e-400,"sub":5e-324}`, `{"":1e-700}`,
+		`{"id":"12345678901234567890","n":123456789012345}`,
+		`[{"x":1},{"y":[1,2.5,-0]},null]`, `[1]`, `[]`, `null`, `{}`,
+		`{"a":1,"a":2}`, "{\"bad\":\"\xff\xfe\"}", `{"esc":"\u00e9\ud83d\ude00\n"}`,
+		`{"a":1} trailing`, `{"a":1}{"b":2}`, `{"a":`, `not json`, ``, ` {"a":1} `,
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		agreesWithExact[map[string]any](t, s)
+		agreesWithExact[[]map[string]any](t, s)
 	})
 }

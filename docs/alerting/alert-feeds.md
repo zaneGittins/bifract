@@ -82,11 +82,14 @@ Bifract matches Sigma values the way the Sigma specification defines them:
 - **`Field: null`** matches events where the field is absent or empty, and a value of
   `'*'` matches events where it has any non-empty value.
 
-Each value becomes the cheapest query that matches it exactly. A value with no letters
-(`EventID: 4688`) stays an equality, which can use the field's skip index. A value with a
-wildcard only at one end becomes a prefix, suffix or substring match. Anything else (a
-value with letters under an exact match, or a wildcard in the middle) becomes a
-case-insensitive regular expression.
+Each value becomes the cheapest query that matches it exactly:
+
+| Value | Query | Notes |
+|-------|-------|-------|
+| No letters (`EventID: 4688`) | Equality | Can use the field's skip index |
+| Letters, exact match (`OriginalFileName: Cmd.Exe`) | `in(lower(field), values=[...])` | Values with non-ASCII letters use a regular expression instead |
+| Wildcard at one end only | Prefix, suffix or substring match | |
+| Wildcard in the middle, or `?` | Case-insensitive regular expression | |
 
 ### Supported modifiers
 
