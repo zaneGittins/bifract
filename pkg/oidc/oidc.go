@@ -296,6 +296,15 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The subject is the account key: users are found and provisioned by it. The
+	// verifier does not require one, and an empty subject would match or create
+	// an account keyed on "", so a token without one is refused.
+	if claims.Sub == "" {
+		log.Printf("[OIDC] ID token has no subject")
+		http.Redirect(w, r, "/login.html?error=oidc_failed", http.StatusFound)
+		return
+	}
+
 	// Domain restriction
 	ip := r.RemoteAddr
 	if len(h.config.AllowedDomains) > 0 {

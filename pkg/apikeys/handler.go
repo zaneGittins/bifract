@@ -164,12 +164,11 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve fractal name for key format
+	// The key carries the fractal's name so an operator can tell keys apart; the
+	// ID stands in when the name cannot be read.
 	fractalName := fractalID
-	if h.rbacResolver != nil {
-		if name, err := h.resolveFractalName(r.Context(), fractalID); err == nil && name != "" {
-			fractalName = name
-		}
+	if name, err := h.storage.GetFractalName(r.Context(), fractalID); err == nil && name != "" {
+		fractalName = name
 	}
 
 	fullKey, keyID, err := h.storage.GenerateAPIKey(r.Context(), fractalName)
@@ -765,11 +764,6 @@ func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
 		}
 	}
 	return nil
-}
-
-// resolveFractalName looks up the fractal name by ID. Used for key generation.
-func (h *Handler) resolveFractalName(ctx context.Context, fractalID string) (string, error) {
-	return h.storage.GetFractalName(ctx, fractalID)
 }
 
 // sendSuccess sends a successful JSON response
