@@ -183,13 +183,31 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	// A stage's conditions filter as one unit: grouped at the pipe, an OR among
 	// them cannot reach the next stage's condition.
 	segmentStart, segmentCommands, sawPipe := 0, 0, false
+	// Without AND/OR, a condition starting with a field binds like AND; any other
+	// operand ANDs with everything before it in the stage, which is grouped first.
+	runStart := 0
+	closeRun := func() {
+		if run := pipeline.HavingConditions[runStart:]; len(run) > 1 {
+			grouped := HavingCondition{IsCompound: true, Children: append([]HavingCondition(nil), run...), CmdIndex: run[0].CmdIndex}
+			pipeline.HavingConditions = append(pipeline.HavingConditions[:runStart], grouped)
+		}
+		runStart = len(pipeline.HavingConditions)
+	}
 	closeSegment := func() {
 		stampConditionPositions()
+		// A trailing AND/OR has nothing on its right and joins nothing.
+		if n := len(pipeline.HavingConditions); n > segmentStart {
+			pipeline.HavingConditions[n-1].Logic = ""
+		}
+		if runStart > segmentStart {
+			closeRun()
+		}
 		pipeline.HavingConditions = append(pipeline.HavingConditions[:segmentStart],
 			groupByPosition(pipeline.HavingConditions[segmentStart:])...)
 		segmentStart = len(pipeline.HavingConditions)
 		segmentCommands = len(pipeline.Commands)
 		stamped = segmentStart
+		runStart = segmentStart
 	}
 
 	// Parse pipeline commands, assignments, and HAVING conditions
@@ -214,37 +232,37 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			if len(pipeline.HavingConditions) == segmentStart && len(pipeline.Commands) == segmentCommands {
 				return nil, newPosError(p.current(), "%s needs a condition on its left", p.current().Value)
 			}
-			// A command immediately before the operator is an operand, not an
-			// independent conjunct: move it into the boolean chain so the operator
-			// is honoured instead of dropped.
-			if len(pipeline.HavingConditions) == 0 && len(pipeline.Commands) > 0 {
-				last := pipeline.Commands[len(pipeline.Commands)-1]
-				pipeline.Commands = pipeline.Commands[:len(pipeline.Commands)-1]
-				pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(last))
-			}
 			if len(pipeline.HavingConditions) > 0 {
 				pipeline.HavingConditions[len(pipeline.HavingConditions)-1].Logic = p.current().Value
 			}
 			p.advance()
 			continue
 		}
+		if n := len(pipeline.HavingConditions); n > runStart && pipeline.HavingConditions[n-1].Logic == "" && p.current().Type != TokenField {
+			closeRun()
+		}
 		// Track whether a NOT was consumed for this iteration.
 		// NOT + function is handled as a negated command (special case).
 		// All other NOT cases set pipelineNegate so the condition branches
 		// below can apply the negation to whatever they parse.
-		pipelineNegate := false
-		if p.current().Type == TokenNot {
+		pipelineNegate, sawNot := false, false
+		for p.current().Type == TokenNot {
 			p.advance()
-			// A negated expression filter, e.g. !contains(commandline, "-enc").
-			// Parsed above AND/OR so the NOT binds to this leaf alone, matching how
-			// a negated plain condition behaves.
+			pipelineNegate, sawNot = !pipelineNegate, true
+		}
+		if sawNot {
+			// A negated expression filter, e.g. !contains(commandline, "-enc"). The
+			// leaf ends before AND/OR, so the NOT binds to it alone, as it does to
+			// a negated plain condition.
 			if p.atExprFilter() {
-				expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
+				cond, err := p.parseCondition()
 				if err != nil {
 					return nil, err
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions,
-					HavingCondition{Expr: expr, Negate: true})
+				if pipelineNegate {
+					negateHavingCondition(cond)
+				}
+				pipeline.HavingConditions = append(pipeline.HavingConditions, *cond)
 				continue
 			}
 			// Negated function call (e.g., !in()) produces a Command, not a condition
@@ -253,7 +271,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if err != nil {
 					return nil, err
 				}
-				cmd.Negate = true
+				cmd.Negate = pipelineNegate
 				if p.commandIsBooleanOperand(pipeline) {
 					pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(*cmd))
 				} else {
@@ -261,7 +279,6 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 				continue
 			}
-			pipelineNegate = true
 			if t := p.current().Type; t == TokenPipe || t == TokenEOF {
 				return nil, newPosError(p.current(), "NOT needs a condition after it")
 			}
@@ -279,7 +296,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if pipelineNegate && len(conditions) > 0 {
 					negateHavingCondition(&conditions[0])
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 			} else if p.current().Type == TokenString {
 				operator := "~"
 				if pipelineNegate {
@@ -330,7 +347,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if pipelineNegate && len(conditions) > 0 {
 					negateHavingCondition(&conditions[0])
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 			} else {
 				cond, err := p.parseCondition()
 				if err != nil {
@@ -358,7 +375,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					negateHavingCondition(&conditions[0])
 				}
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else if p.current().Type == TokenBinding && !p.atBindingChain() && !p.atBindingExpr() {
 			cond, err := p.parseBindingCondition(pipelineNegate)
 			if err != nil {
@@ -373,7 +390,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			if pipelineNegate && len(conditions) > 0 {
 				negateHavingCondition(&conditions[0])
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else if p.atExprFilter() || p.atBindingExpr() {
 			// A whole stage that is one expression stays one expression, brackets and
 			// all. Only when the expression grammar cannot take the stage on its own
@@ -399,7 +416,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					negateHavingCondition(&conditions[0])
 				}
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else if p.current().Type == TokenField && !sawPipe {
 			// Before the first pipe a bare word is a condition missing its operator
 			// (after one it starts a command): let the condition parser say so.
@@ -534,12 +551,8 @@ func (p *Parser) parseCondition() (*HavingCondition, error) {
 				return nil, err
 			}
 			cond.Expr = expr
-			cond.Operator, cond.Values, err = p.readExprMatchOperator()
-			if err != nil {
+			if err := p.readExprMatchOperator(cond); err != nil {
 				return nil, err
-			}
-			if len(cond.Values) > 0 {
-				cond.Value = cond.Values[0]
 			}
 			return cond, nil
 		}
@@ -862,23 +875,9 @@ func (p *Parser) parseCompoundHavingConditions() ([]HavingCondition, error) {
 	return p.parseHavingConditionsWithPrecedence(0)
 }
 
-// wrapHavingConditions wraps multiple conditions in a compound node so they
-// stay grouped when combined with conditions from other pipeline stages.
-// Without this, OR in one stage bleeds into adjacent stages.
-func wrapHavingConditions(conditions []HavingCondition) []HavingCondition {
-	if len(conditions) > 1 {
-		return []HavingCondition{{
-			IsCompound: true,
-			Children:   conditions,
-		}}
-	}
-	return conditions
-}
-
-// parseHavingConditionsWithPrecedence parses boolean expressions in pipeline
-// stages, producing HavingCondition nodes (including compound nodes for
-// parenthesized sub-expressions). This mirrors parseConditionsWithPrecedence
-// but produces HavingCondition directly, supporting arbitrary nesting depth.
+// parseHavingConditionsWithPrecedence parses a stage's boolean expression into
+// HavingCondition nodes, with compound nodes for bracketed sub-expressions at any
+// depth.
 func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]HavingCondition, error) {
 	var conditions []HavingCondition
 
@@ -1027,23 +1026,26 @@ func (p *Parser) atExprMatchOperator() bool {
 	return false
 }
 
-// readExprMatchOperator reads the multi-value match operator and values that may
-// follow an expression leaf, or nothing.
-func (p *Parser) readExprMatchOperator() (string, []string, error) {
-	var op string
+// readExprMatchOperator attaches the multi-value match operator and values that
+// may follow an expression leaf, when one does.
+func (p *Parser) readExprMatchOperator(cond *HavingCondition) error {
 	switch p.current().Type {
 	case TokenContainsAny:
-		op = "=~"
+		cond.Operator = "=~"
 	case TokenStartsWithAny:
-		op = "=^"
+		cond.Operator = "=^"
 	case TokenEndsWithAny:
-		op = "=$"
+		cond.Operator = "=$"
 	default:
-		return "", nil, nil
+		return nil
 	}
 	p.advance()
 	values, err := p.parseValueList()
-	return op, values, err
+	if err != nil {
+		return err
+	}
+	cond.Values, cond.Value = values, values[0]
+	return nil
 }
 
 // isAssignment checks if current position represents a field assignment (field := expression)
@@ -1242,8 +1244,6 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	return cmd, nil
 }
 
-// setConditionPosition stamps a condition and every nested leaf, since a compound
-// may later be split into its conjuncts.
 // groupByPosition wraps each run of conditions that share a pipeline position into
 // one compound, so the run binds as a unit.
 func groupByPosition(conds []HavingCondition) []HavingCondition {
@@ -1268,6 +1268,8 @@ func groupByPosition(conds []HavingCondition) []HavingCondition {
 	return out
 }
 
+// setConditionPosition stamps a condition and every nested leaf, since a compound
+// may later be split into its conjuncts.
 func setConditionPosition(c *HavingCondition, cmdIndex int) {
 	c.CmdIndex = cmdIndex
 	for i := range c.Children {
