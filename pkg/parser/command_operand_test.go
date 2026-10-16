@@ -203,3 +203,38 @@ func TestArchiveGateSeesOperands(t *testing.T) {
 		t.Error("cidr() as an operand must be caught by the archive allowlist")
 	}
 }
+
+// Each pipe stage filters on its own: an OR inside one never reaches across the
+// pipe to swallow the next stage's condition, however its operands were written.
+func TestStageDisjunctionStaysInItsStage(t *testing.T) {
+	// depth is the bracket nesting at an offset of the SQL.
+	depth := func(sql string, at int) int {
+		d := 0
+		for _, c := range sql[:at] {
+			switch c {
+			case '(':
+				d++
+			case ')':
+				d--
+			}
+		}
+		return d
+	}
+	// The OR joining the stage's two operands is the one right before or after a.
+	for q, orAfterA := range map[string]bool{
+		`a="1" OR cidr(dst_ip,"10.0.0.0/8") | b="2"`:     true,
+		`* | a="1" OR cidr(dst_ip,"10.0.0.0/8") | b="2"`: true,
+		`* | cidr(dst_ip,"10.0.0.0/8") OR a="1" | b="2"`: false,
+	} {
+		sql := positionSQL(t, q)
+		a := strings.Index(sql, "fields.`a`::String = '1'")
+		or := strings.LastIndex(sql[:max(a, 0)], " OR ")
+		if orAfterA {
+			or = a + strings.Index(sql[a:], " OR ")
+		}
+		b := strings.Index(sql, "fields.`b`::String = '2'")
+		if a < 0 || b < 0 || or < 0 || depth(sql, b) >= depth(sql, or) {
+			t.Errorf("%s: the next stage's condition is inside the OR:\n%s", q, sql)
+		}
+	}
+}

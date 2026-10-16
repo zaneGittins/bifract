@@ -229,6 +229,16 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands))
 		}
 	}
+	// A stage's conditions filter as one unit: grouped at the pipe, an OR among
+	// them cannot reach the next stage's condition.
+	segmentStart := 0
+	closeSegment := func() {
+		stampConditionPositions()
+		pipeline.HavingConditions = append(pipeline.HavingConditions[:segmentStart],
+			groupByPosition(pipeline.HavingConditions[segmentStart:])...)
+		segmentStart = len(pipeline.HavingConditions)
+		stamped = segmentStart
+	}
 
 	// Parse pipeline commands, assignments, and HAVING conditions
 	// Commands/assignments can start with a pipe OR start directly (when no filter)
@@ -242,6 +252,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		startPos := p.pos
 		// Skip pipe if present
 		if p.current().Type == TokenPipe {
+			closeSegment()
 			p.advance()
 		}
 
@@ -451,7 +462,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		}
 	}
 
-	stampConditionPositions()
+	closeSegment()
 
 	// Anything left over is a token no stage could consume. Stopping here
 	// silently would drop the rest of the query, commands included.
@@ -1645,6 +1656,30 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 
 // setConditionPosition stamps a condition and every nested leaf, since a compound
 // may later be split into its conjuncts.
+// groupByPosition wraps each run of conditions that share a pipeline position into
+// one compound, so the run binds as a unit.
+func groupByPosition(conds []HavingCondition) []HavingCondition {
+	var out []HavingCondition
+	for i := 0; i < len(conds); {
+		j := i + 1
+		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex {
+			j++
+		}
+		run := append([]HavingCondition(nil), conds[i:j]...)
+		if len(run) == 1 {
+			out = append(out, run[0])
+		} else {
+			// The run's last condition may carry the AND/OR that joined it to a
+			// command before the next run; the group carries it now.
+			logic := run[len(run)-1].Logic
+			run[len(run)-1].Logic = ""
+			out = append(out, HavingCondition{IsCompound: true, Children: run, CmdIndex: conds[i].CmdIndex, Logic: logic})
+		}
+		i = j
+	}
+	return out
+}
+
 func setConditionPosition(c *HavingCondition, cmdIndex int) {
 	c.CmdIndex = cmdIndex
 	for i := range c.Children {
