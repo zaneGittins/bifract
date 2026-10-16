@@ -157,7 +157,31 @@ func (h *PerformanceHandler) HandleActivityStream(w http.ResponseWriter, r *http
 	limit := activityLimit(r)
 	windowMin, _ := activityRange(q.Get("range"))
 
-	topo := h.db.Topology()
+	sql := activityStreamSQL(h.db.Topology(), state, class, text, node, limit, windowMin)
+	rows, err := h.db.Query(ctx, sql)
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"success": false, "error": fmt.Sprintf("activity query failed: %v", err),
+		})
+		return
+	}
+	if rows == nil {
+		rows = []map[string]interface{}{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"rows":    rows,
+		"nodes":   h.activityNodes(ctx),
+	})
+}
+
+// activityStreamSQL builds the stream's query: a running branch over
+// system.processes and a finished branch over system.query_log, unioned and
+// ordered running-first. state narrows it: "error" drops the running branch (a
+// running query cannot have failed yet), "running" drops the finished one, and
+// "slow" bounds both by duration. The states are exclusive, so at least one
+// branch always remains.
+func activityStreamSQL(topo storage.Topology, state, class, text, node string, limit, windowMin int) string {
 	procSource := topo.FanoutSystemTable("system.processes")
 	logSource := topo.FanoutSystemTable("system.query_log")
 
@@ -242,30 +266,9 @@ FROM (
 )`, activityClassSQL, logSource, where, limit))
 	}
 
-	if len(branches) == 0 {
-		respondJSON(w, http.StatusOK, map[string]interface{}{"success": true, "rows": []interface{}{}})
-		return
-	}
-
-	sql := fmt.Sprintf(`SELECT * FROM (%s)
+	return fmt.Sprintf(`SELECT * FROM (%s)
 ORDER BY state IN ('running', 'stopping') DESC, event_time DESC, duration_ms DESC
 LIMIT %d`, strings.Join(branches, "\nUNION ALL\n"), limit+activityRunningCap)
-
-	rows, err := h.db.Query(ctx, sql)
-	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"success": false, "error": fmt.Sprintf("activity query failed: %v", err),
-		})
-		return
-	}
-	if rows == nil {
-		rows = []map[string]interface{}{}
-	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"rows":    rows,
-		"nodes":   h.activityNodes(ctx),
-	})
 }
 
 // activityNodes lists the nodes the view can pin to. Single-node returns nothing,

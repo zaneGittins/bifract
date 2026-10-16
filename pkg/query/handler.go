@@ -80,7 +80,7 @@ func tlshSkipWarnings(field string, skipped []tlshresolve.SkippedFractal) []stri
 // The alert engine builds the same thing from its own, so a query and an alert
 // resolve tlsh() identically.
 func (h *QueryHandler) tlshResolver() *tlshresolve.Resolver {
-	return &tlshresolve.Resolver{Models: h.modelManager, Dicts: h.dictionaryManager, DB: h.db}
+	return tlshresolve.NewResolver(h.modelManager, h.dictionaryManager, h.db)
 }
 
 // SetPgrRecorder wires severity calibration. Set once at startup, before serving.
@@ -1408,6 +1408,39 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		// whose results are cached and read by everyone) overrides that.
 		DisplayTimezone: requestTimezone(r.Context(), req.Timezone),
 	}
+	// A source command (pgr()) builds the pipeline's source from the database, which
+	// validation must not touch. Check its placement and arguments, then translate
+	// the rest of the pipeline over a stand-in with the same columns, as execution
+	// would over the resolved source. Without this every pgr() query reads as an
+	// unsupported command.
+	if src, ok := parser.FirstSourceCommand(pipeline); ok {
+		invalid := func(err error) {
+			respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: err.Error(), ErrorType: "translate"})
+		}
+		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
+			invalid(perr)
+			return
+		}
+		stub, ok := sourceStubs[src.Name]
+		if !ok {
+			invalid(fmt.Errorf("unknown source command: %s()", src.Name))
+			return
+		}
+		rs, serr := stub(src)
+		if serr != nil {
+			invalid(serr)
+			return
+		}
+		opts.SourceSubquery = rs.SQL
+		opts.SourceColumns = rs.Columns
+		opts.SourceNumericColumns = rs.NumericColumns
+		if rs.Limit > 0 {
+			opts.MaxRows = rs.Limit
+		}
+		opts.SourceOrderBy = rs.OrderBy
+		pipeline = parser.StripCommand(pipeline, src.Name)
+	}
+
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{
 			Valid:     false,
@@ -1636,6 +1669,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 				}
 
 				response.SQL = sql
+				h.auditSearch(r, req.Query, selectedIndex, executionTime, len(results))
 				respondJSON(w, http.StatusOK, response)
 				return
 			}
@@ -1676,15 +1710,18 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.SQL = sql
+	h.auditSearch(r, req.Query, selectedIndex, executionTime, len(results))
+	respondJSON(w, http.StatusOK, response)
+}
 
-	// Log query to audit fractal asynchronously
+// auditSearch records a completed search in the audit fractal, asynchronously.
+// Every search that returned rows is recorded, however its response was shaped.
+func (h *QueryHandler) auditSearch(r *http.Request, query, fractalID string, executionMs int64, resultCount int) {
 	username := ""
 	if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {
 		username = user.Username
 	}
-	go h.logQueryAudit(req.Query, "bql", selectedIndex, username, executionTime, len(results), nil)
-
-	respondJSON(w, http.StatusOK, response)
+	go h.logQueryAudit(query, "bql", fractalID, username, executionMs, resultCount, nil)
 }
 
 // bucketHistogram folds histogram query rows ({bucket, cnt}) into a fixed-size
@@ -2116,11 +2153,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 		writeFrame(map[string]interface{}{"type": "histogram_end", "complete": false})
 	}
 
-	username := ""
-	if user, ok := r.Context().Value("user").(*storage.User); ok && user != nil {
-		username = user.Username
-	}
-	go h.logQueryAudit(prep.req.Query, "bql", prep.selectedIndex, username, executionMs, count, nil)
+	h.auditSearch(r, prep.req.Query, prep.selectedIndex, executionMs, count)
 }
 
 func (h *QueryHandler) parseTimeRange(start, end string) (time.Time, time.Time, error) {
@@ -2154,12 +2187,17 @@ func (h *QueryHandler) parseTimeRange(start, end string) (time.Time, time.Time, 
 	return startTime.UTC(), endTime.UTC(), nil
 }
 
+// bareSearchColumn is the column the parser targets for a bare regex or string
+// search. It was raw_log until the schema moved full-text search to norm_log;
+// matching the old name here silently stopped recognising any bare search.
+const bareSearchColumn = "norm_log"
+
 // isRawLogRegexQuery detects if this is a raw log regex search that could return massive results
 func isRawLogRegexQuery(pipeline *parser.PipelineNode) bool {
-	// Check for bare regex/string searches (which search raw_log by default)
+	// Check for bare regex/string searches (which search the whole log text)
 	if len(pipeline.HavingConditions) > 0 {
 		for _, having := range pipeline.HavingConditions {
-			if having.Field == "raw_log" && having.IsRegex {
+			if having.Field == bareSearchColumn && having.IsRegex {
 				return true
 			}
 		}
@@ -2176,14 +2214,14 @@ func isRawLogRegexQuery(pipeline *parser.PipelineNode) bool {
 }
 
 // hasRawLogRegexCondition recursively checks conditions (including compound nodes)
-// for any raw_log regex filter.
+// for any bare-search regex filter.
 func hasRawLogRegexCondition(conditions []parser.ConditionNode) bool {
 	for _, cond := range conditions {
 		if cond.IsCompound {
 			if hasRawLogRegexCondition(cond.Children) {
 				return true
 			}
-		} else if cond.Field == "raw_log" && cond.IsRegex {
+		} else if cond.Field == bareSearchColumn && cond.IsRegex {
 			return true
 		}
 	}

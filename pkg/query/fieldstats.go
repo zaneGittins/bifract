@@ -92,6 +92,14 @@ func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	json.NewEncoder(w).Encode(fieldStatsFromRows(rows, sampleSize))
+}
+
+// fieldStatsFromRows shapes the field-stats aggregation into the response. One
+// row per field carries its coverage, cardinality, and top values; a "__rows__"
+// sentinel row carries the number of rows actually sampled, which is both the
+// coverage denominator and how a capped sample is recognised.
+func fieldStatsFromRows(rows []map[string]interface{}, sampleSize int) FieldStatsResponse {
 	resp := FieldStatsResponse{Success: true, Supported: true, Fields: make([]FieldStat, 0, len(rows))}
 	for _, row := range rows {
 		name, _ := row["key"].(string)
@@ -126,7 +134,7 @@ func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) 
 	// distribution is an approximation of the full matched set.
 	resp.Approximate = resp.SampleSize >= uint64(sampleSize)
 
-	json.NewEncoder(w).Encode(resp)
+	return resp
 }
 
 func asUint64(v interface{}) uint64 {

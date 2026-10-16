@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -789,6 +790,16 @@ var sourceResolvers = map[string]sourceResolver{
 	"pgr": resolvePgrSource,
 }
 
+// sourceStubs give each source command a stand-in with the resolved source's shape but no rows,
+// built from the command's arguments alone. Validation translates the rest of the pipeline over
+// it, so a live editor can check a pgr() query without the database the real resolution needs.
+// Every source command in sourceResolvers needs one here.
+var sourceStubs = map[string]func(cmd parser.CommandNode) (*resolvedSource, error){
+	"pgr": stubPgrSource,
+}
+
+var errPgrNeedsStart = errors.New("pgr() requires start=\"<process_guid>\"")
+
 // resolveSourceCommand resolves a source command into its subquery source.
 func (h *QueryHandler) resolveSourceCommand(ctx context.Context, cmd parser.CommandNode, opts parser.QueryOptions) (*resolvedSource, error) {
 	r, ok := sourceResolvers[cmd.Name]
@@ -805,7 +816,7 @@ func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNo
 	}
 	p, ok := parser.ParseProvenanceParams(cmd)
 	if !ok {
-		return nil, fmt.Errorf("pgr() requires start=\"<process_guid>\"")
+		return nil, errPgrNeedsStart
 	}
 	// Diffusion (when enabled) is applied server-side in provenanceScoreSQL, so the propagated
 	// anomaly_score is what every consumer sees -- pgraph() is a pure renderer of these rows.
@@ -823,6 +834,23 @@ func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNo
 		// Budget the downstream scan (the diffuse=false scoring scan runs here, not in the
 		// resolver) so a pathological tree aborts server-side instead of pegging every shard.
 		QuerySettings: storage.ProvenanceQuerySettings,
+	}, nil
+}
+
+// stubPgrSource checks pgr()'s arguments and stands in for its scored-edge source with the
+// zero-row stub, which carries the same columns, numeric columns, and ordering.
+func stubPgrSource(cmd parser.CommandNode) (*resolvedSource, error) {
+	p, ok := parser.ParseProvenanceParams(cmd)
+	if !ok {
+		return nil, errPgrNeedsStart
+	}
+	return &resolvedSource{
+		SQL:            provenanceEmptyScoreSQL,
+		Columns:        provenanceColumns,
+		NumericColumns: provenanceNumericColumns,
+		Focus:          p.Start,
+		Limit:          p.Limit,
+		OrderBy:        parser.ProvenanceOrderBy,
 	}, nil
 }
 

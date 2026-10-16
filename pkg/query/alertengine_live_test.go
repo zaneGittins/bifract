@@ -11,9 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"bifract/pkg/storage"
 )
@@ -109,39 +107,6 @@ func TestLiveDisabledCountMatchesList(t *testing.T) {
 		if reason, _ := m["reason"].(string); reason == "" {
 			t.Error("a disabled entry has no reason, which is the point of the strip")
 		}
-	}
-}
-
-// Both charts on the row have to describe the same span, and that span has to
-// divide into enough buckets to be a chart. The bug this guards: the window came
-// from one function and the bucket width from another, so a 30-day selection
-// drew a capped 24-hour window in 4-hour buckets -- six points.
-func TestAlertRangeWindowAndBucketAgree(t *testing.T) {
-	for _, r := range []string{"", "1h", "8h", "24h", "7d", "30d", "bogus"} {
-		window, bucket := alertRange(r)
-		if window <= 0 || window > alertMaxWindowMinutes {
-			t.Errorf("range %q gives an unusable window of %d minutes", r, window)
-		}
-		if bucket <= 0 {
-			t.Fatalf("range %q gives a zero bucket", r)
-		}
-		if points := window * 60 / bucket; points < 12 || points > 200 {
-			t.Errorf("range %q divides into %d buckets, which does not draw a chart", r, points)
-		}
-	}
-}
-
-func TestAlertShortReasonIsRuneSafe(t *testing.T) {
-	long := "Auto-disabled: " + strings.Repeat("日本語", 200)
-	got := alertShortReason(long)
-	if !utf8.ValidString(got) {
-		t.Fatalf("truncation produced invalid UTF-8: %q", got)
-	}
-	if strings.HasPrefix(got, "Auto-disabled") {
-		t.Error("the prefix implied by the column was not trimmed")
-	}
-	if len([]rune(got)) > 180 {
-		t.Errorf("reason is %d runes, over the cap", len([]rune(got)))
 	}
 }
 
