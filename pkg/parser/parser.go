@@ -192,6 +192,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			pipeline.HavingConditions = append(pipeline.HavingConditions[:runStart], grouped)
 		}
 		runStart = len(pipeline.HavingConditions)
+		stamped = runStart
 	}
 	closeSegment := func() {
 		stampConditionPositions()

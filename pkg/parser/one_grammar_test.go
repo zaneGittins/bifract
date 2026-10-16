@@ -177,3 +177,23 @@ func TestAdjacentOperandIsANewConjunct(t *testing.T) {
 		}
 	}
 }
+
+// Grouping a stage's operands keeps every one at the position it was written.
+func TestGroupedOperandsKeepTheirPosition(t *testing.T) {
+	pl, err := ParseQuery(`* | head(1) | a="1" OR b="2" NOT c="3" OR d="4"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(c HavingCondition)
+	walk = func(c HavingCondition) {
+		if c.CmdIndex != 1 {
+			t.Errorf("%s at command %d, want 1", describeCondition(c), c.CmdIndex)
+		}
+		for _, child := range c.Children {
+			walk(child)
+		}
+	}
+	for _, c := range pl.HavingConditions {
+		walk(c)
+	}
+}
