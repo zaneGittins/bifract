@@ -457,3 +457,31 @@ func TestQueuedRunSupersededBeforeItStarts(t *testing.T) {
 		t.Errorf("superseded run acted: %q %q, %d inserts", got.bfStatus, got.bfError, len(log.accepted()))
 	}
 }
+
+// A run recovered or resumed with no anchor recorded (it predates the column)
+// bounds its chunks at the model's creation, the fallback a fresh start applies,
+// instead of at the zero time, which would select nothing and still complete.
+func TestRecoveredRunWithoutAnchorUsesCreation(t *testing.T) {
+	env, log, r := backfillEnv(t, false)
+	started := time.Date(2026, 10, 12, 15, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 9, 20, 8, 15, 0, 0, time.UTC)
+	env.db.mu.Lock()
+	row := env.db.rows[r.id]
+	row.bfStatus, row.bfWindow, row.bfDone, row.bfTotal, row.bfStartedAt = "running", "7d", 0, 8, &started
+	row.bfAnchor, row.createdAt = nil, created
+	env.db.mu.Unlock()
+
+	env.mgr.RecoverBackfills(context.Background())
+	if got := waitBackfill(t, env, r.id); got.bfStatus != "completed" {
+		t.Fatalf("row: %q %q", got.bfStatus, got.bfError)
+	}
+	inserts := log.accepted()
+	if len(inserts) != len(backfillChunks(started, 7)) {
+		t.Fatalf("%d chunks run", len(inserts))
+	}
+	for _, stmt := range inserts {
+		if w := chunkOf(t, stmt); w.anchor != created.Format(chTimeLayout) {
+			t.Fatalf("chunk bounded at ingest_timestamp < %s, want the model's creation %s", w.anchor, created.Format(chTimeLayout))
+		}
+	}
+}

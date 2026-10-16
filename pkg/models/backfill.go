@@ -319,6 +319,12 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 		m.finishBackfill(run, "failed", "invalid backfill window")
 		return
 	}
+	if anchor.IsZero() {
+		// A run from before the anchor was recorded. created_at is the fallback a
+		// fresh start applies; the zero time would bound every chunk to rows
+		// ingested before year 1, so the run would complete having read nothing.
+		anchor = model.CreatedAt
+	}
 	// Resolved once: every chunk renders the same predicates, and compiling per
 	// chunk would re-read the scope's dictionaries on each pass.
 	def, err := m.ResolveSource(context.Background(), model.Definition, model.FractalID, "")
