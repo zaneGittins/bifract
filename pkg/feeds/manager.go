@@ -109,7 +109,7 @@ func (m *Manager) Get(ctx context.Context, id string) (*Feed, error) {
 	`
 
 	row := m.pg.QueryRow(ctx, query, id)
-	return m.scanFeedRow(row)
+	return m.scanFeed(row)
 }
 
 // Create creates a new feed scoped to either a fractal or a prism.
@@ -274,13 +274,18 @@ func (m *Manager) validateRequest(name, repoURL, schedule string) error {
 	if strings.TrimSpace(repoURL) == "" {
 		return fmt.Errorf("repository URL is required")
 	}
+	// Rejected here too, not only at clone time: a feed saved with an ssh:// or
+	// file:// URL would otherwise sit enabled, failing on every scheduled sync.
+	if err := validateRepoURL(repoURL); err != nil {
+		return err
+	}
 	if !ValidSchedules[schedule] {
 		return fmt.Errorf("invalid sync schedule %q, must be one of: never, hourly, daily, weekly, monthly", schedule)
 	}
 	return nil
 }
 
-// scanFeed scans a feed row from a Rows result.
+// scanFeed scans a feed row from a Rows or QueryRow result.
 func (m *Manager) scanFeed(rows interface {
 	Scan(dest ...interface{}) error
 }) (*Feed, error) {
@@ -316,11 +321,4 @@ func (m *Manager) scanFeed(rows interface {
 	}
 
 	return &f, nil
-}
-
-// scanFeedRow scans a single feed row from QueryRow.
-func (m *Manager) scanFeedRow(row interface {
-	Scan(dest ...interface{}) error
-}) (*Feed, error) {
-	return m.scanFeed(row)
 }

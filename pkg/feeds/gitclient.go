@@ -2,6 +2,7 @@ package feeds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,6 +19,12 @@ import (
 func validateRepoURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
+		// url.Error quotes the whole input, credentials included, and this
+		// error ends up in the feed's sync status. Keep only the reason.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 	scheme := strings.ToLower(u.Scheme)
@@ -71,36 +78,46 @@ func CloneRepo(ctx context.Context, repoURL, branch, authToken string) (string, 
 
 // ListYAMLFiles recursively finds all .yml and .yaml files under the given
 // subPath within repoDir. Returns paths relative to repoDir.
+//
+// The returned paths key each feed alert, and a path missing from them deletes
+// that alert, so a listing must never come back silently short.
 func ListYAMLFiles(repoDir, subPath string) ([]string, error) {
 	searchDir := repoDir
 	if subPath != "" {
 		searchDir = filepath.Join(repoDir, subPath)
 	}
 
-	// Prevent path traversal via symlinks or ".." components.
-	repoAbs, err := filepath.Abs(repoDir)
+	// Prevent path traversal via symlinks or ".." components. Both sides are
+	// resolved: comparing a resolved path against an unresolved root rejects
+	// every path when the temp dir itself sits behind a symlink (macOS /var).
+	repoReal, err := resolvePath(repoDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repo dir: %w", err)
 	}
-	searchAbs, err := filepath.EvalSymlinks(searchDir)
+	searchReal, err := resolvePath(searchDir)
 	if err != nil {
 		return nil, fmt.Errorf("path %q does not exist in the repository", subPath)
 	}
-	if !strings.HasPrefix(searchAbs, repoAbs+string(filepath.Separator)) && searchAbs != repoAbs {
+	if !strings.HasPrefix(searchReal, repoReal+string(filepath.Separator)) && searchReal != repoReal {
 		return nil, fmt.Errorf("path %q escapes the repository", subPath)
 	}
 
-	if info, err := os.Stat(searchDir); err != nil || !info.IsDir() {
+	if info, err := os.Stat(searchReal); err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("path %q does not exist in the repository", subPath)
 	}
 
+	// Walk the resolved directory: Walk does not follow a symlinked root, so a
+	// feed path naming a symlinked directory would otherwise list nothing. Paths
+	// are reported under searchDir as configured, keeping alert keys stable.
 	var files []string
-	err = filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(searchReal, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		if info.IsDir() {
-			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+			// Hidden directories (.git, .github) are skipped, but never the
+			// configured root itself: a feed path of ".rules" is a choice.
+			if path != searchReal && strings.HasPrefix(info.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -108,7 +125,11 @@ func ListYAMLFiles(repoDir, subPath string) ([]string, error) {
 
 		ext := strings.ToLower(filepath.Ext(info.Name()))
 		if ext == ".yml" || ext == ".yaml" {
-			rel, relErr := filepath.Rel(repoDir, path)
+			underSearch, relErr := filepath.Rel(searchReal, path)
+			if relErr != nil {
+				return nil
+			}
+			rel, relErr := filepath.Rel(repoDir, filepath.Join(searchDir, underSearch))
 			if relErr != nil {
 				return nil
 			}
@@ -123,19 +144,28 @@ func ListYAMLFiles(repoDir, subPath string) ([]string, error) {
 	return files, nil
 }
 
+// resolvePath returns the absolute path with every symlink resolved.
+func resolvePath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
 // ReadFile reads the content of a file within the cloned repo.
 func ReadFile(repoDir, filePath string) ([]byte, error) {
 	fullPath := filepath.Join(repoDir, filePath)
 	// Resolve symlinks and verify the path stays within the repo boundary.
-	repoAbs, err := filepath.Abs(repoDir)
+	repoReal, err := resolvePath(repoDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repo dir: %w", err)
 	}
-	realPath, err := filepath.EvalSymlinks(fullPath)
+	realPath, err := resolvePath(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("read file %s: %w", filePath, err)
 	}
-	if !strings.HasPrefix(realPath, repoAbs+string(filepath.Separator)) {
+	if !strings.HasPrefix(realPath, repoReal+string(filepath.Separator)) {
 		return nil, fmt.Errorf("path %q escapes the repository", filePath)
 	}
 	data, err := os.ReadFile(realPath)

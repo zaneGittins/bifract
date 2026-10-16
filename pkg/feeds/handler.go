@@ -32,10 +32,6 @@ func NewHandler(manager *Manager, alertManager *alerts.Manager, fractalManager *
 	}
 }
 
-// apiResponse is the shared API envelope. The alias keeps the package-local
-// name while there is one type, and one schema, behind it.
-type apiResponse = api.Response[any]
-
 func (h *Handler) respond(w http.ResponseWriter, status int, data interface{}, errMsg string) {
 	api.WriteJSON(w, status, api.Response[any]{Success: errMsg == "", Data: data, Error: errMsg})
 }
@@ -207,13 +203,13 @@ func (h *Handler) HandleGetFeedAlerts(w http.ResponseWriter, r *http.Request) {
 
 // HandleEnableAllAlerts enables all alerts for a feed (admin only).
 func (h *Handler) HandleEnableAllAlerts(w http.ResponseWriter, r *http.Request) {
-	user := h.getCurrentUser(r)
-
 	id := chi.URLParam(r, "id")
 	if h.getFeedScoped(w, r, id) == nil {
 		return
 	}
-	if err := h.alertManager.EnableFeedAlerts(r.Context(), id, true, user.Username); err != nil {
+	// updated_by is a foreign key on users: an API key's synthetic principal has
+	// no row, so the write is credited to the key's creator.
+	if err := h.alertManager.EnableFeedAlerts(r.Context(), id, true, storage.AttributionUser(r.Context())); err != nil {
 		log.Printf("[Feeds] Failed to enable alerts for feed %s: %v", id, err)
 		h.respond(w, http.StatusInternalServerError, nil, "Failed to enable feed alerts")
 		return
@@ -223,13 +219,13 @@ func (h *Handler) HandleEnableAllAlerts(w http.ResponseWriter, r *http.Request) 
 
 // HandleDisableAllAlerts disables all alerts for a feed (admin only).
 func (h *Handler) HandleDisableAllAlerts(w http.ResponseWriter, r *http.Request) {
-	user := h.getCurrentUser(r)
-
 	id := chi.URLParam(r, "id")
 	if h.getFeedScoped(w, r, id) == nil {
 		return
 	}
-	if err := h.alertManager.EnableFeedAlerts(r.Context(), id, false, user.Username); err != nil {
+	// updated_by is a foreign key on users: an API key's synthetic principal has
+	// no row, so the write is credited to the key's creator.
+	if err := h.alertManager.EnableFeedAlerts(r.Context(), id, false, storage.AttributionUser(r.Context())); err != nil {
 		log.Printf("[Feeds] Failed to disable alerts for feed %s: %v", id, err)
 		h.respond(w, http.StatusInternalServerError, nil, "Failed to disable feed alerts")
 		return
