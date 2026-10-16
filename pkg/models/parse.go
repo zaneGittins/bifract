@@ -149,10 +149,37 @@ func ParseSourceQuery(query string) ParsedSource {
 		}
 	}
 
+	// Conditions before the first command are the source's filter; each one the
+	// structured form can hold becomes a chip. A plain AND of them distributes.
+	firstStage, later := splitFirstStage(ast.HavingConditions)
+	var lower func(c parser.HavingCondition)
+	lower = func(c parser.HavingCondition) {
+		if andGroup(c) {
+			for _, child := range c.Children {
+				lower(child)
+			}
+			return
+		}
+		fc, ok := havingToFilter(c)
+		if !ok {
+			res.FilterComplete = false
+			return
+		}
+		res.Filter = append(res.Filter, fc)
+	}
+	for i, c := range firstStage {
+		collectHavingFields(c, &referenced)
+		if strings.EqualFold(c.Logic, "OR") || (i > 0 && strings.EqualFold(firstStage[i-1].Logic, "OR")) {
+			res.FilterComplete = false
+			continue
+		}
+		lower(c)
+	}
+
 	// Each comparison must reference a len() output field; map it back to the
 	// extraction it measures and set MinLength. Named len outputs (len(x, as=x_len))
 	// keep multiple length filters independent, so there is no collision.
-	for _, hv := range ast.HavingConditions {
+	for _, hv := range later {
 		field, ok := lenOutputs[hv.Field]
 		if !ok {
 			res.FilterComplete = false
@@ -192,6 +219,69 @@ func collectConditionFields(c parser.ConditionNode, out *[]string) {
 	if c.ValueField != "" {
 		*out = append(*out, c.ValueField)
 	}
+}
+
+// collectHavingFields is collectConditionFields for a pipeline-stage condition.
+func collectHavingFields(c parser.HavingCondition, out *[]string) {
+	for _, child := range c.Children {
+		collectHavingFields(child, out)
+	}
+	if c.Field != "" {
+		*out = append(*out, c.Field)
+	}
+	if c.ValueField != "" {
+		*out = append(*out, c.ValueField)
+	}
+}
+
+// splitFirstStage separates the conditions written before the first command from
+// those after one.
+func splitFirstStage(conds []parser.HavingCondition) (first, later []parser.HavingCondition) {
+	for _, c := range conds {
+		if c.CmdIndex == 0 {
+			first = append(first, c)
+		} else {
+			later = append(later, c)
+		}
+	}
+	return first, later
+}
+
+// andGroup reports whether a condition is a bracketed plain AND of conditions,
+// which distributes into separate chips.
+func andGroup(c parser.HavingCondition) bool {
+	if !c.IsCompound || c.Negate {
+		return false
+	}
+	for _, child := range c.Children[:max(len(c.Children)-1, 0)] {
+		if child.Logic != "" && !strings.EqualFold(child.Logic, "AND") {
+			return false
+		}
+	}
+	return true
+}
+
+// havingToFilter maps a filter condition to a model FilterCondition. Negation is
+// already folded into the operator. The second result is false for a condition the
+// structured form cannot hold; the query still runs it.
+func havingToFilter(c parser.HavingCondition) (FilterCondition, bool) {
+	if c.IsCompound || c.Expr != nil || c.Command != nil || c.ValueField != "" || c.Field == "" || len(c.Values) > 1 {
+		return FilterCondition{}, false
+	}
+	value := c.Value
+	if c.IsRegex {
+		// Undo the forward-slash escaping applied by bqlRegexLiteral.
+		value = strings.ReplaceAll(value, `\/`, "/")
+	}
+	switch {
+	case c.IsRegex && (c.Operator == "=" || c.Operator == "~"):
+		return FilterCondition{Field: c.Field, Op: "~", Value: value}, true
+	case c.IsRegex && c.Operator == "!=":
+		return FilterCondition{Field: c.Field, Op: "!~", Value: value}, true
+	case c.Operator == "=" || c.Operator == "!=":
+		return FilterCondition{Field: c.Field, Op: c.Operator, Value: value}, true
+	}
+	return FilterCondition{}, false
 }
 
 // minLengthFromHaving converts a `_len <op> n` comparison to a MinLength value.
