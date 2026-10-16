@@ -800,6 +800,36 @@ var sourceStubs = map[string]func(cmd parser.CommandNode) (*resolvedSource, erro
 
 var errPgrNeedsStart = errors.New("pgr() requires start=\"<process_guid>\"")
 
+// applySourceCommand resolves the pipeline's source command, when it has one, into
+// opts and returns the pipeline without it. Search, validation and ExecuteBQL all
+// go through here, so a source's columns, row cap and order apply the same way in
+// each. The source's cap and order replace the generic MaxQueryRows and
+// timestamp-DESC defaults, since its rows are already ranked (pgr() puts spawn
+// structure before leaves); an explicit limit() or sort() downstream still wins.
+func applySourceCommand(pipeline *parser.PipelineNode, opts *parser.QueryOptions, resolve func(parser.CommandNode) (*resolvedSource, error)) (*parser.PipelineNode, *resolvedSource, error) {
+	src, ok := parser.FirstSourceCommand(pipeline)
+	if !ok {
+		return pipeline, nil, nil
+	}
+	if err := parser.ValidateSourceCommandPlacement(pipeline); err != nil {
+		return nil, nil, err
+	}
+	rs, err := resolve(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	opts.SourceSubquery = rs.SQL
+	opts.SourceColumns = rs.Columns
+	opts.SourceNumericColumns = rs.NumericColumns
+	if rs.Limit > 0 {
+		opts.MaxRows = rs.Limit
+	}
+	if len(rs.OrderBy) > 0 {
+		opts.SourceOrderBy = rs.OrderBy
+	}
+	return parser.StripCommand(pipeline, src.Name), rs, nil
+}
+
 // resolveSourceCommand resolves a source command into its subquery source.
 func (h *QueryHandler) resolveSourceCommand(ctx context.Context, cmd parser.CommandNode, opts parser.QueryOptions) (*resolvedSource, error) {
 	r, ok := sourceResolvers[cmd.Name]

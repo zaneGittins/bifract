@@ -10,12 +10,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"bifract/internal/fakedb"
 	"bifract/pkg/api"
+	"bifract/pkg/parser"
 )
 
 // The server-side execution paths built on the same resolution as a search:
@@ -243,4 +245,33 @@ func TestHandleExportFailures(t *testing.T) {
 		runExport(t, e, false)
 		t.Error("a failed export ended cleanly")
 	})
+}
+
+// A source command's preferred row cap and order (pgr() ranks spawn structure ahead
+// of leaves) hold for a dashboard widget as they do for a search: cut at the generic
+// cap and re-sorted by time, the widget drops structure instead of noise.
+func TestExecuteBQLHonorsSourcePreferences(t *testing.T) {
+	stub := sourceResolvers["pgr"]
+	t.Cleanup(func() { sourceResolvers["pgr"] = stub })
+	sourceResolvers["pgr"] = func(_ *QueryHandler, _ context.Context, cmd parser.CommandNode, _ parser.QueryOptions) (*resolvedSource, error) {
+		rs, err := stubPgrSource(cmd)
+		if err == nil {
+			rs.Limit = 7
+		}
+		return rs, err
+	}
+	e := scopeEnv(t)
+	e.respond(func(string) ([]map[string]interface{}, error) { return nil, nil })
+	scope := execWindow
+	scope.FractalID = "f1"
+	res, err := e.h.ExecuteBQL(context.Background(), `pgr(start="g1")`, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "ORDER BY " + strings.Join(parser.ProvenanceOrderBy, ", "); !strings.Contains(res.SQL, want) {
+		t.Errorf("sql is missing %q: %s", want, res.SQL)
+	}
+	if !regexp.MustCompile(`\bLIMIT 7\b`).MatchString(res.SQL) {
+		t.Errorf("sql does not cap at the source's 7 rows: %s", res.SQL)
+	}
 }
