@@ -8,7 +8,7 @@ Admins manage feeds from **Alerts > Feeds** within a fractal.
 
 1. Bifract clones the configured Git repository on each sync cycle.
 2. YAML files in the specified path are parsed as Sigma rules or Bifract alert definitions.
-3. New rules are created as alerts. Changed rules are updated. Removed rules are deleted, unless the path lists no YAML files at all, which is treated as a misconfigured path and deletes nothing.
+3. New rules are created as alerts. Changed rules are updated. Removed rules are deleted, unless the path lists no YAML files at all, which is treated as a misconfigured path: nothing is deleted and the sync reports an error.
 4. A normalizer (explicit or default) maps Sigma field names to your log schema.
 5. The rule's `logsource.category` becomes a `bifract_category` prefilter, so the detection only runs against the event type it was written for.
 

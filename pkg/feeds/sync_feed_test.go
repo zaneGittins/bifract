@@ -528,3 +528,28 @@ func TestSyncFeedMapsFieldsThroughNormalizer(t *testing.T) {
 		}
 	})
 }
+
+// A path that lists no rule files is a wrong path or branch far more often than
+// an emptied repo, so it keeps every alert the feed owns and says why.
+func TestSyncFeedWithNoRuleFilesKeepsAlerts(t *testing.T) {
+	isolateTempDir(t)
+	repo := newGitRepo(t, map[string]string{
+		"rules/a.yml":    sigmaRuleWith("A", "high", "stable"),
+		"docs/README.md": "not a rule",
+	})
+	env := newSyncEnv(t)
+	env.seed("rules/a.yml", sigmaRuleWith("A", "high", "stable"))
+	feed := testFeed(repo.URL)
+	feed.Path = "docs"
+
+	res, err := env.syncer.SyncFeed(context.Background(), feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ran := env.keepPaths(); ran {
+		t.Fatal("delete pass ran with no rule files listed")
+	}
+	if !slices.ContainsFunc(res.Errors, func(e string) bool { return strings.Contains(e, "no rule files found") }) {
+		t.Errorf("errors = %q, want the empty listing reported", res.Errors)
+	}
+}

@@ -447,6 +447,10 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 
 	if ok, reason := shouldRunDeletePass(incomplete, len(yamlFiles), len(foundPaths), errCount); !ok {
 		log.Printf("[Feeds] Skipping delete pass for %q: %s", feed.Name, reason)
+		if errCount == 0 {
+			// Nothing else explains why removed rules were kept, so the sync says it.
+			recordErr("%s; no alerts were deleted", reason)
+		}
 	} else {
 		deleted, delErr := s.alertManager.DeleteFeedAlertsNotIn(ctx, feed.ID, foundPaths)
 		if delErr != nil {
