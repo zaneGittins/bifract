@@ -865,9 +865,9 @@ func conditionsPredicate(conds []HavingCondition, registry *FieldRegistry, opts 
 	return materializeCondGroup(conds, registry, nil), nil
 }
 
-// splitFirstStage separates the conditions written before a pipeline's first
+// SplitFirstStage separates the conditions written before a pipeline's first
 // command from those after one.
-func splitFirstStage(conds []HavingCondition) (first, later []HavingCondition) {
+func SplitFirstStage(conds []HavingCondition) (first, later []HavingCondition) {
 	for _, c := range conds {
 		if c.CmdIndex == 0 {
 			first = append(first, c)

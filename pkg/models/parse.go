@@ -75,12 +75,10 @@ func ParseSourceQuery(query string) ParsedSource {
 
 	var referenced []string
 
-	// Filter expression. Lowering is best effort from here on: SourceBQL is what
-	// runs, so a condition the structured form cannot hold is skipped rather than
-	// refused. Its fields still reach CandidateFields so the editor can offer them.
-	// Conditions before the first command are the source's filter; each one the
-	// structured form can hold becomes a chip. A plain AND of them distributes.
-	firstStage, later := splitFirstStage(ast.HavingConditions)
+	// Conditions before the first command are the source's filter. Lowering them
+	// to chips is best effort, since SourceBQL is what runs: one the structured
+	// form cannot hold is skipped, its fields still offered as candidates.
+	firstStage, later := parser.SplitFirstStage(ast.HavingConditions)
 	var lower func(c parser.HavingCondition)
 	lower = func(c parser.HavingCondition) {
 		if andGroup(c) {
@@ -186,7 +184,7 @@ func ParseSourceQuery(query string) ParsedSource {
 	return res
 }
 
-// collectHavingFields is collectConditionFields for a pipeline-stage condition.
+// collectHavingFields appends every field a condition reads.
 func collectHavingFields(c parser.HavingCondition, out *[]string) {
 	for _, child := range c.Children {
 		collectHavingFields(child, out)
@@ -197,19 +195,6 @@ func collectHavingFields(c parser.HavingCondition, out *[]string) {
 	if c.ValueField != "" {
 		*out = append(*out, c.ValueField)
 	}
-}
-
-// splitFirstStage separates the conditions written before the first command from
-// those after one.
-func splitFirstStage(conds []parser.HavingCondition) (first, later []parser.HavingCondition) {
-	for _, c := range conds {
-		if c.CmdIndex == 0 {
-			first = append(first, c)
-		} else {
-			later = append(later, c)
-		}
-	}
-	return first, later
 }
 
 // assignedBefore reports whether a condition reads a name assigned ahead of it,

@@ -1341,7 +1341,7 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 
 	// Conditions before the step's first command resolve before its projections
 	// are registered, ahead of them; later ones (`a=1 | _len > 500`) after.
-	first, later := splitFirstStage(pl.HavingConditions)
+	first, later := SplitFirstStage(pl.HavingConditions)
 	if w, err := conditionsPredicate(first, reg.rowLevelClone(), opts); err != nil {
 		return "", nil, fmt.Errorf("chain step: %w", err)
 	} else if w != "" {

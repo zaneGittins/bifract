@@ -97,7 +97,7 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	// Conditions before the segment's first command resolve against the parent
 	// pipeline too, ahead of what the segment's commands add; later ones see those
 	// commands' outputs.
-	first, later := splitFirstStage(pl.HavingConditions)
+	first, later := SplitFirstStage(pl.HavingConditions)
 	condReg := reg
 	if parentReg != nil {
 		condReg = parentReg
