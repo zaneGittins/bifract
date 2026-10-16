@@ -379,3 +379,21 @@ func TestResolveForTableSeparatesDataScopeFromDictionaryScope(t *testing.T) {
 		t.Errorf("digest scan should read the scratch table:\n%v", db.queries)
 	}
 }
+
+// Callers hold their dependencies as concrete pointers that may be nil. Stored
+// straight into the interface fields, a nil pointer becomes a non-nil interface and
+// Resolve panics instead of naming what is missing; NewResolver must not do that.
+func TestNewResolverWithMissingDependenciesErrors(t *testing.T) {
+	params := parser.TLSHParams{Field: "file_tlsh", Hashes: []string{digestA}, Threshold: 50}
+	scope := Scope{FractalIDs: []string{"f1"}}
+
+	_, err := NewResolver(nil, nil, nil).Resolve(context.Background(), params, scope)
+	if err == nil || !strings.Contains(err.Error(), "analytics models are not available") {
+		t.Fatalf("no model manager: got %v, want the models-unavailable error", err)
+	}
+
+	_, err = NewResolver(&models.Manager{}, nil, nil).Resolve(context.Background(), params, scope)
+	if err == nil || !strings.Contains(err.Error(), "no log store available") {
+		t.Fatalf("no ClickHouse client: got %v, want the log-store-unavailable error", err)
+	}
+}

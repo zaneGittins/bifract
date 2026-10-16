@@ -75,6 +75,24 @@ type Resolver struct {
 	DB     LogQuerier
 }
 
+// NewResolver builds a Resolver from the server's concrete dependencies, any of
+// which may be nil. Only the ones that exist are assigned: a nil *Manager stored in
+// an interface field is a non-nil interface, which slips past Resolve's "not
+// available in this deployment" guards and panics on first use instead.
+func NewResolver(m *models.Manager, d *dictionaries.Manager, db *storage.ClickHouseClient) *Resolver {
+	r := &Resolver{}
+	if m != nil {
+		r.Models = m
+	}
+	if d != nil {
+		r.Dicts = d
+	}
+	if db != nil {
+		r.DB = db
+	}
+	return r
+}
+
 // Scope is what the resolution runs against. No time window: the index holds a
 // fractal's distinct digests regardless of when they were seen, which is a superset
 // of anything a windowed query can match, and a superset is exactly what the probe
