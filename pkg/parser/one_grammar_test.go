@@ -111,23 +111,22 @@ func TestIncompleteConditionErrors(t *testing.T) {
 // were written (fields, condition functions, expressions): AND binds tighter
 // than OR across all of them.
 func TestStagePrecedenceAcrossOperandKinds(t *testing.T) {
-	norm := strings.NewReplacer("(", "", ")", "")
-	for q, want := range map[string]string{
-		`lower(x)="y" a="1" OR b="2"`:       "lowerfields.`x`::String = 'y' AND fields.`a`::String = '1' OR fields.`b`::String = '2'",
-		`in(user,["u"]) AND a="1" OR b="2"`: "fields.`user`::String IN 'u' AND fields.`a`::String = '1' OR fields.`b`::String = '2'",
-		`a="1" OR b="2" AND lower(x)="y"`:   "fields.`a`::String = '1' OR fields.`b`::String = '2' AND lowerfields.`x`::String = 'y'",
-	} {
-		for _, form := range []string{q, "* | " + q} {
-			sql := positionSQL(t, form)
-			// Bracket-free text, so check precedence by the brackets SQL itself
-			// would need: the clause must equal the bracket-free reading.
-			// The broken grouping brackets the OR on its own after another operand
-			// ('y') or ('u'), or brackets it before one.
-			grouped := strings.Contains(sql, "') AND (fields.`a`::String = '1' OR") ||
-				strings.Contains(sql, "'2') AND (lower(")
-			if !strings.Contains(norm.Replace(sql), want) || grouped {
-				t.Errorf("%s: wrong grouping:\n%s", form, sql)
-			}
+	lowerX, a, b := "lower(fields.`x`::String) = 'y'", "fields.`a`::String = '1'", "fields.`b`::String = '2'"
+	andOr := func(v ...bool) bool { return v[0] && v[1] || v[2] }
+	cases := []struct {
+		query string
+		atoms []string
+		want  func(v ...bool) bool
+	}{
+		{`lower(x)="y" a="1" OR b="2"`, []string{lowerX, a, b}, andOr},
+		{`in(user,["u"]) AND a="1" OR b="2"`, []string{"fields.`user`::String IN ('u')", a, b}, andOr},
+		{`a="1" OR b="2" AND lower(x)="y"`, []string{a, b, lowerX}, func(v ...bool) bool { return v[0] || v[1] && v[2] }},
+	}
+	for _, tc := range cases {
+		for _, form := range []string{tc.query, "* | " + tc.query} {
+			t.Run(form, func(t *testing.T) {
+				sameLogic(t, len(tc.atoms), scanLogic(t, positionSQL(t, form), tc.atoms...), tc.want)
+			})
 		}
 	}
 }
@@ -161,19 +160,29 @@ func TestNegatedExpressionLeaf(t *testing.T) {
 // Without a connector, a condition starting with a field binds like AND, while
 // any other operand ANDs with everything written before it in the stage.
 func TestAdjacentOperandIsANewConjunct(t *testing.T) {
-	for q, want := range map[string]string{
-		`a="1" OR b="2" NOT c="3"`:                "(fields.`a`::String = '1' OR fields.`b`::String = '2') AND (fields.`c`::String IS NULL",
-		`a="1" OR b="2" lower(x)="y"`:             "(fields.`a`::String = '1' OR fields.`b`::String = '2') AND (lower(",
-		`a="1" OR b="2" (c="3" OR d="4")`:         "(fields.`a`::String = '1' OR fields.`b`::String = '2') AND (fields.`c`::String = '3' OR",
-		`a="1" OR b="2" "x"`:                      "(fields.`a`::String = '1' OR fields.`b`::String = '2') AND match(",
-		`a="1" OR b="2" c="3"`:                    "fields.`a`::String = '1' OR fields.`b`::String = '2' AND fields.`c`::String = '3'",
-		`lower(x)="y" a="1" OR b="2"`:             "(lower(fields.`x`::String) = 'y') AND fields.`a`::String = '1' OR fields.`b`::String = '2'",
-		`a="1" b="2" OR c="3" NOT d="4" OR e="5"`: "(fields.`a`::String = '1' AND fields.`b`::String = '2' OR fields.`c`::String = '3') AND ((fields.`d`::String IS NULL OR fields.`d`::String != '4') OR fields.`e`::String = '5')",
-	} {
-		for _, form := range []string{q, "* | " + q} {
-			if sql := positionSQL(t, form); !strings.Contains(sql, want) {
-				t.Errorf("%s: want %s in:\n%s", form, want, sql)
-			}
+	a, b, c, d := "fields.`a`::String = '1'", "fields.`b`::String = '2'", "fields.`c`::String = '3'", "fields.`d`::String = '4'"
+	cNull, cNot := "fields.`c`::String IS NULL", "fields.`c`::String != '3'"
+	orThenAnd := func(v ...bool) bool { return (v[0] || v[1]) && v[2] }
+	orThenOr := func(v ...bool) bool { return (v[0] || v[1]) && (v[2] || v[3]) }
+	cases := []struct {
+		query string
+		atoms []string
+		want  func(v ...bool) bool
+	}{
+		{`a="1" OR b="2" NOT c="3"`, []string{a, b, cNull, cNot}, orThenOr},
+		{`a="1" OR b="2" lower(x)="y"`, []string{a, b, "lower(fields.`x`::String) = 'y'"}, orThenAnd},
+		{`a="1" OR b="2" "x"`, []string{a, b, "match(lower(norm_log), 'x')"}, orThenAnd},
+		{`a="1" OR b="2" (c="3" OR d="4")`, []string{a, b, c, d}, orThenOr},
+		{`a="1" OR b="2" c="3"`, []string{a, b, c}, func(v ...bool) bool { return v[0] || v[1] && v[2] }},
+		{`lower(x)="y" a="1" OR b="2"`, []string{"lower(fields.`x`::String) = 'y'", a, b}, func(v ...bool) bool { return v[0] && v[1] || v[2] }},
+		{`a="1" OR b="2" NOT c="3" OR d="4"`, []string{a, b, cNull, cNot, d},
+			func(v ...bool) bool { return (v[0] || v[1]) && (v[2] || v[3] || v[4]) }},
+	}
+	for _, tc := range cases {
+		for _, form := range []string{tc.query, "* | " + tc.query} {
+			t.Run(form, func(t *testing.T) {
+				sameLogic(t, len(tc.atoms), scanLogic(t, positionSQL(t, form), tc.atoms...), tc.want)
+			})
 		}
 	}
 }

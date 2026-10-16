@@ -287,23 +287,28 @@ func TestExprAliasCollisionRejected(t *testing.T) {
 // and was dropped, taking the whole group with it. Adding brackets to a rule
 // silently widened it to every row.
 func TestExprLeafInsideCompoundSurvives(t *testing.T) {
-	cases := []struct{ query, want string }{
-		{`* | (lower(a)="x" OR b="y") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
-		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, "NOT positionCaseInsensitivefields.`a`::String, 'b' > 0 OR positionCaseInsensitivefields.`c`::String, 'd' > 0"},
-		{`* | c="z" AND (contains(a,"b") OR b="y")`, "(positionCaseInsensitive(fields.`a`::String, 'b') > 0)"},
-		{`* | (lower(a)="x") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
+	lowerA, b, c := "lower(fields.`a`::String) = 'x'", "fields.`b`::String = 'y'", "fields.`c`::String = 'z'"
+	containsAB := "positionCaseInsensitive(fields.`a`::String, 'b') > 0"
+	containsCD := "positionCaseInsensitive(fields.`c`::String, 'd') > 0"
+	image := "fields.`image`::String = 'p'"
+	cases := []struct {
+		query string
+		atoms []string
+		want  func(v ...bool) bool
+	}{
+		{`* | (lower(a)="x" OR b="y") AND c="z"`, []string{lowerA, b, c},
+			func(v ...bool) bool { return (v[0] || v[1]) && v[2] }},
+		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, []string{containsAB, containsCD, image},
+			func(v ...bool) bool { return !(v[0] || v[1]) && v[2] }},
+		{`* | c="z" AND (contains(a,"b") OR b="y")`, []string{c, containsAB, b},
+			func(v ...bool) bool { return v[0] && (v[1] || v[2]) }},
+		{`* | (lower(a)="x") AND c="z"`, []string{lowerA, c},
+			func(v ...bool) bool { return v[0] && v[1] }},
 	}
-	for _, c := range cases {
-		sql := revSQL(t, c.query)
-		// Bracketing is the SQL builder's business; what matters is the group survives.
-		unbracket := strings.NewReplacer("(", "", ")", "")
-		if !strings.Contains(unbracket.Replace(sql), unbracket.Replace(c.want)) {
-			t.Errorf("%s\n  group dropped, want %q in: %s", c.query, c.want, sql)
-		}
-		// The rest of the conjunction must survive too.
-		if !strings.Contains(sql, "fields.`c`::String = 'z'") && !strings.Contains(sql, "fields.`image`::String = 'p'") {
-			t.Errorf("%s: the neighbouring conjunct was lost: %s", c.query, sql)
-		}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			sameLogic(t, len(tc.atoms), scanLogic(t, revSQL(t, tc.query), tc.atoms...), tc.want)
+		})
 	}
 }
 
