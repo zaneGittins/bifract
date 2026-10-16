@@ -1701,12 +1701,14 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 			continue
 		}
 		if exists {
-			// The probe saw this table on one node. Its Distributed companions are
-			// reissued ON CLUSTER regardless, before the column patch reaches them.
-			m.ensureDistributedCompanions(ctx, t.id, t.mt, t.table)
 			if err := m.ensureStateColumns(ctx, t.id, t.mt, t.table); err != nil {
 				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
 			}
+			// The probe saw this table on one node, so its Distributed companions are
+			// reissued ON CLUSTER regardless. Queued without waiting, so a down shard
+			// does not hold startup per model; after the column patch, so a companion
+			// created late copies the patched table.
+			m.ensureDistributedCompanions(storage.AsyncDDL(ctx), t.id, t.mt, t.table)
 			continue
 		}
 		if err := m.createCHObjects(ctx, t.id, t.fractalID, t.def, t.mt, t.table, t.mv); err != nil {
