@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // TranslatorVersion identifies the Sigma->BQL translation behavior. It is mixed
@@ -27,7 +28,8 @@ import (
 //	    instead of dropping them; support |re|i|m|s; escape '/' in |re values;
 //	    leave underscore selections out of "them"; emit fields and quantified
 //	    selections in sorted order.
-const TranslatorVersion = "v6"
+//	v7: compare cased exact values as lower(field) IN (...) instead of a regex.
+const TranslatorVersion = "v7"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -344,6 +346,15 @@ func globRegex(toks []globToken) (pattern string, wild bool) {
 	return b.String(), wild
 }
 
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
 // hasCaseVariants reports whether some other string equals s case-insensitively.
 // When it does not (digits, punctuation), a case-sensitive equality is exact.
 func hasCaseVariants(s string) bool {
@@ -360,6 +371,7 @@ type matchKind int
 const (
 	matchAny    matchKind = iota // the value matches every present value
 	matchEqual                   // equality; only for values with no case variants
+	matchLower                   // lower(field) equality; ASCII values only
 	matchNative                  // =~ / =^ / =$, case-insensitive literal operators
 	matchRegex                   // case-insensitive RE2
 )
@@ -368,7 +380,7 @@ const (
 type valueMatch struct {
 	kind    matchKind
 	op      string // matchNative: "=~", "=^" or "=$"
-	value   string // matchEqual, matchNative: the literal
+	value   string // matchEqual, matchNative: the literal; matchLower: lowercased
 	pattern string // matchRegex: anchored RE2
 	wild    bool   // matchRegex: pattern holds a wildcard
 }
@@ -382,11 +394,12 @@ type valueMatch struct {
 //   - A literal under a substring, prefix or suffix match uses =~, =^ or =$, which
 //     are case-insensitive. A '*' at one end of an exact value makes it one of
 //     these, so the common '*\cmd.exe' is a suffix match, not a regex.
-//   - Everything else is a case-insensitive regex: a cased exact value, a wildcard
-//     in the middle, '?', or a literal comma (which would split the native list).
-//     BQL has no case-insensitive equality that survives every place the
-//     translator puts one (lower(f)="v" fails to parse beside a =~ leaf), and none
-//     would use the skip index anyway: the index is over the value as stored.
+//   - A cased ASCII value under an exact match compares lower(field), about four
+//     times cheaper than an anchored regex. It cannot use the skip index, which is
+//     over the value as stored. ClickHouse lower() folds ASCII only, so a value
+//     with other letters stays a regex.
+//   - Everything else is a case-insensitive regex: a wildcard in the middle, '?',
+//     or a literal comma (which would split the native list).
 func classifyValue(v string, matchType string) valueMatch {
 	anchorStart := matchType == "exact" || matchType == "startswith"
 	anchorEnd := matchType == "exact" || matchType == "endswith"
@@ -411,6 +424,9 @@ func classifyValue(v string, matchType string) valueMatch {
 			if !hasCaseVariants(lit) {
 				return valueMatch{kind: matchEqual, value: lit}
 			}
+			if isASCII(lit) {
+				return valueMatch{kind: matchLower, value: strings.ToLower(lit)}
+			}
 		case !strings.Contains(lit, ","):
 			op := "=~"
 			if anchorStart {
@@ -433,11 +449,13 @@ func classifyValue(v string, matchType string) valueMatch {
 }
 
 // renderMatches ORs the values of one field. Each form is consolidated: equalities
-// stay separate (each can use the skip index), native values share one operator
-// list per operator, and regexes share one alternation, so the SQL runs one
-// multiSearch or match() per field instead of one per value.
+// stay separate (each can use the skip index), lowercase equalities share one set,
+// native values share one operator list per operator, and regexes share one
+// alternation, so the SQL runs one IN, multiSearch or match() per field instead of
+// one per value. The set is written as in() because lower(f)="v" does not parse
+// before a =~ leaf.
 func renderMatches(field string, matches []valueMatch) string {
-	var parts, patterns []string
+	var parts, lowers, patterns []string
 	native := map[string][]string{}
 	wild := false
 	for _, m := range matches {
@@ -446,12 +464,17 @@ func renderMatches(field string, matches []valueMatch) string {
 			return field + "=*"
 		case matchEqual:
 			parts = append(parts, fmt.Sprintf(`%s="%s"`, field, escapeBQLString(m.value)))
+		case matchLower:
+			lowers = append(lowers, `"`+escapeBQLString(m.value)+`"`)
 		case matchNative:
 			native[m.op] = append(native[m.op], m.value)
 		case matchRegex:
 			patterns = append(patterns, m.pattern)
 			wild = wild || m.wild
 		}
+	}
+	if len(lowers) > 0 {
+		parts = append(parts, fmt.Sprintf("in(lower(%s), values=[%s])", field, strings.Join(lowers, ",")))
 	}
 	for _, op := range []string{"=~", "=^", "=$"} {
 		if vals := native[op]; len(vals) > 0 {
