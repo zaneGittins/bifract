@@ -120,12 +120,7 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 	// logs_hot is sorted and partitioned by ingest_timestamp, so also bound the read
 	// by the query's own window in its own basis, or the fetch scans the whole table.
 	if !opts.StartTime.IsZero() && !opts.EndTime.IsZero() {
-		col := "timestamp"
-		if opts.UseIngestTimestamp {
-			col = "ingest_timestamp"
-		}
-		where = append(where, fmt.Sprintf("%s >= '%s' AND %s <= '%s'",
-			col, chTimeLiteral(opts.StartTime), col, chTimeLiteral(opts.EndTime)))
+		where = append(where, windowConditions(opts)...)
 	}
 	// Narrow to the entities on this page. arrayJoin'd multi-identity values have
 	// no single source column to compare, so those fall back to anchors only.

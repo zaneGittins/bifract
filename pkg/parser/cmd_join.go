@@ -181,6 +181,7 @@ func subqueryOptions(ctx *CommandContext, maxRows int) QueryOptions {
 		bindingWork:           ctx.Opts.bindingWork,
 		StartTime:             ctx.Opts.StartTime,
 		EndTime:               ctx.Opts.EndTime,
+		EndExclusive:          ctx.Opts.EndExclusive,
 		MaxRows:               maxRows,
 		FractalID:             ctx.Opts.FractalID,
 		FractalIDs:            ctx.Opts.FractalIDs,

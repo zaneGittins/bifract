@@ -811,6 +811,23 @@ func chTimeLiteral(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05.000")
 }
 
+// windowConditions bounds a logs read to the query window, in the window's own
+// time basis, honoring EndExclusive.
+func windowConditions(opts QueryOptions) []string {
+	col := "timestamp"
+	if opts.UseIngestTimestamp {
+		col = "ingest_timestamp"
+	}
+	endOp := "<="
+	if opts.EndExclusive {
+		endOp = "<"
+	}
+	return []string{
+		fmt.Sprintf("%s >= '%s'", col, chTimeLiteral(opts.StartTime)),
+		fmt.Sprintf("%s %s '%s'", col, endOp, chTimeLiteral(opts.EndTime)),
+	}
+}
+
 // addBaseConditions adds time range and fractal isolation conditions.
 func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 	// A subquery source (pgr composition) is already scoped by time + fractal inside the
@@ -820,19 +837,7 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 		return
 	}
 	source := plan.SourceStage()
-
-	tsCol := "timestamp"
-	if opts.UseIngestTimestamp {
-		tsCol = "ingest_timestamp"
-	}
-	endOp := "<="
-	if opts.EndExclusive {
-		endOp = "<"
-	}
-	source.Layer.Where = append(source.Layer.Where,
-		fmt.Sprintf("%s >= '%s'", tsCol, chTimeLiteral(opts.StartTime)),
-		fmt.Sprintf("%s %s '%s'", tsCol, endOp, chTimeLiteral(opts.EndTime)),
-	)
+	source.Layer.Where = append(source.Layer.Where, windowConditions(opts)...)
 
 	if opts.MaxEventLagSeconds > 0 {
 		source.Layer.Where = append(source.Layer.Where,
