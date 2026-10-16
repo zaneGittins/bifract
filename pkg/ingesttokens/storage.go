@@ -141,7 +141,7 @@ func (s *Storage) CreateDefaultToken(ctx context.Context, fractalID, fractalName
 			timestamp_fields, is_active, is_default,
 			COALESCE(created_by, ''), created_at, updated_at, last_used_at, usage_count, log_count
 	`, "Default", fmt.Sprintf("Default ingest token for %s", fractalName),
-		prefix, tokenHash, fullToken, fractalID, defaultNormID, username,
+		prefix, tokenHash, fullToken, fractalID, defaultNormID, storage.NullableUser(username),
 	).Scan(
 		&token.ID, &token.Name, &token.Description, &token.TokenPrefix, &token.TokenValue, &token.FractalID,
 		&token.ParserType, &normID, &normName,

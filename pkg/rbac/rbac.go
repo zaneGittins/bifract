@@ -186,13 +186,6 @@ func (r *Resolver) ResolveRole(ctx context.Context, user *storage.User, fractalI
 	return role
 }
 
-// apiKeyRole returns the role an API key carries for fractalID, or RoleNone.
-//
-// An API key authenticates as a synthetic apikey_<id> principal that owns no row
-// in fractal_permissions, so resolving it by username always denies. The key's
-// real grant is put in the request context by the auth middleware when the key is
-// validated. It is trusted only for the one fractal the key is bound to, so a key
-// cannot carry its role into a fractal it was never issued for.
 // apiKeyPrismRole mirrors apiKeyRole for prism scope. A machine principal has no
 // prism_permissions row, so without this every prism-scoped key resolves to RoleNone and
 // is refused on endpoints that check a prism role.
@@ -212,6 +205,13 @@ func apiKeyPrismRole(ctx context.Context, prismID string) Role {
 	return RoleNone
 }
 
+// apiKeyRole returns the role an API key carries for fractalID, or RoleNone.
+//
+// An API key authenticates as a synthetic apikey_<id> principal that owns no row
+// in fractal_permissions, so resolving it by username always denies. The key's
+// real grant is put in the request context by the auth middleware when the key is
+// validated. It is trusted only for the one fractal the key is bound to, so a key
+// cannot carry its role into a fractal it was never issued for.
 func apiKeyRole(ctx context.Context, fractalID string) Role {
 	scoped, _ := ctx.Value("selected_fractal").(string)
 	if scoped == "" || scoped != fractalID {
@@ -313,7 +313,7 @@ func (r *Resolver) GetAccessiblePrisms(ctx context.Context, username string) ([]
 	return result, rows.Err()
 }
 
-// ResolvePrismRole resolves a user's role on a specific prism, handling tenant admin bypass.
+// ResolvePrismRoleWithAdmin resolves a user's role on a specific prism, handling tenant admin bypass.
 func (r *Resolver) ResolvePrismRoleWithAdmin(ctx context.Context, user *storage.User, prismID string) Role {
 	if user == nil {
 		return RoleNone

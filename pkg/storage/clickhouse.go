@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1037,6 +1038,14 @@ func NewClickHouseClient(opts ClientOptions) (*ClickHouseClient, error) {
 	return c, nil
 }
 
+// NewClickHouseClientFromConn wraps a connection the caller already holds, such as
+// a scripted fake in a test. It has no addresses, so per-node and shard-direct work
+// falls back to conn, and its schema is treated as ready: nothing here runs
+// Initialize.
+func NewClickHouseClientFromConn(conn driver.Conn, database string, topo Topology) *ClickHouseClient {
+	return &ClickHouseClient{conn: conn, Database: database, topo: topo}
+}
+
 // ensureDatabase runs CREATE DATABASE IF NOT EXISTS from a bootstrap connection
 // to the server's default database, because the target may not exist yet.
 //
@@ -1422,6 +1431,11 @@ func (e LogEntry) IngestTime() time.Time {
 // Best-effort: failures are logged, not returned, since logs_raw only backs the detail
 // "Raw" tab and normalizer preview. Rows with an empty raw_log are skipped.
 func (c *ClickHouseClient) insertRawLogs(ctx context.Context, logs []LogEntry) {
+	// PrepareBatch is a server round trip (it sends the INSERT and reads back the
+	// block header), so skip it when there is nothing to write.
+	if !slices.ContainsFunc(logs, func(l LogEntry) bool { return l.RawLog != "" }) {
+		return
+	}
 	batch, err := c.conn.PrepareBatch(ctx, "INSERT INTO "+c.RawWriteTable()+" (timestamp, fractal_id, log_id, raw_log, ingest_timestamp)")
 	if err != nil {
 		log.Printf("[InsertLogs] prepare logs_raw batch failed (raw tab/preview degraded): %v", err)
@@ -1450,15 +1464,6 @@ func (c *ClickHouseClient) insertRawLogs(ctx context.Context, logs []LogEntry) {
 
 func (c *ClickHouseClient) Exec(ctx context.Context, query string) error {
 	err := c.conn.Exec(ctx, query)
-	if err != nil {
-		return fmt.Errorf("failed to execute statement: %w", err)
-	}
-	return nil
-}
-
-// ExecArgs executes a ClickHouse statement with parameterized arguments.
-func (c *ClickHouseClient) ExecArgs(ctx context.Context, query string, args ...interface{}) error {
-	err := c.conn.Exec(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to execute statement: %w", err)
 	}
@@ -1572,13 +1577,6 @@ func (c *ClickHouseClient) RevertTieredStoragePolicy(ctx context.Context) error 
 	}
 	log.Printf("Reverted logs table off 'tiered' storage policy (moved %d cold partitions back to hot)", len(toMove))
 	return nil
-}
-
-// QueryWithID executes a query with a fixed query_id so the run can be
-// correlated with system.query_log entries for profiling.
-func (c *ClickHouseClient) QueryWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
-	return c.Query(ctx, query)
 }
 
 // QueryStats is what a query actually cost server-side, accumulated from the
@@ -1780,16 +1778,12 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 	return c.query(ctx, query, nil)
 }
 
-// QueryUserSearch runs an interactive user search, tagged with its workload when ctx
-// was marked by UserSearchContext and that workload is provisioned. The tag is
-// applied here rather than inside Query because clickhouse-go's WithSettings replaces
-// the context's settings map wholesale, which would drop the budgets that
-// QueryProvenance and QueryLowPriority put there.
-func (c *ClickHouseClient) QueryUserSearch(ctx context.Context, query string) ([]map[string]interface{}, error) {
-	return c.query(ctx, query, c.applyQuerySettings(ctx, nil))
-}
-
-// QueryUserSearchWithID is QueryUserSearch with a fixed query_id for profiling.
+// QueryUserSearchWithID runs an interactive user search under a fixed query_id for
+// profiling, tagged with its workload when ctx was marked by UserSearchContext and
+// that workload is provisioned. The tag is applied here rather than inside Query
+// because clickhouse-go's WithSettings replaces the context's settings map
+// wholesale, which would drop the budgets that QueryProvenance and QueryLowPriority
+// put there.
 func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
 	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
 	return c.query(ctx, query, c.applyQuerySettings(ctx, nil))
@@ -2012,7 +2006,7 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 		case *float32:
 			row[colName] = float64(*v)
 		case *time.Time:
-			row[colName] = v.Format("2006-01-02 15:04:05.000")
+			row[colName] = v.Format(chRowTimeLayout)
 		case *[]string:
 			row[colName] = *v
 		case *[]float64:
@@ -2186,73 +2180,11 @@ func (c *ClickHouseClient) scanLogRow(ctx context.Context, query string, args []
 		return nil, nil
 	}
 
-	values := make([]interface{}, len(columnTypes))
-	for i, col := range columnTypes {
-		typeName := unwrapSimpleAggregateFunction(col.DatabaseTypeName())
-		switch {
-		case typeName == "String" || typeName == "Nullable(String)":
-			values[i] = new(string)
-		case typeName == "UInt64" || typeName == "Nullable(UInt64)":
-			values[i] = new(uint64)
-		case typeName == "Int64" || typeName == "Nullable(Int64)":
-			values[i] = new(int64)
-		case typeName == "Float64" || typeName == "Nullable(Float64)":
-			values[i] = new(float64)
-		case isCHDateTimeType(typeName):
-			values[i] = new(time.Time)
-		default:
-			values[i] = new(string)
-		}
-	}
-
-	if err := rows.Scan(values...); err != nil {
-		return nil, fmt.Errorf("failed to scan row: %w", err)
-	}
-
-	row := make(map[string]interface{})
-	for i, col := range columnTypes {
-		colName := col.Name()
-		switch v := values[i].(type) {
-		case *string:
-			val := *v
-			if colName == "fields" || colName == "_all_fields" {
-				var m map[string]interface{}
-				if json.Unmarshal([]byte(val), &m) == nil {
-					row[colName] = m
-					continue
-				}
-			}
-			row[colName] = val
-		case *uint64:
-			row[colName] = *v
-		case *int64:
-			row[colName] = *v
-		case *float64:
-			row[colName] = *v
-		case *time.Time:
-			row[colName] = v.Format("2006-01-02 15:04:05.000")
-		default:
-			row[colName] = v
-		}
-	}
-
-	return row, nil
+	// The same scanner as every other row map, so a log read here and the same
+	// log read through Query come back in the same shape.
+	return scanRowMap(columnTypes, rows)
 }
 
-// GetLogFieldsByID fetches the parsed fields for a single log by an exact
-// (timestamp, log_id) key, optionally scoped to a fractal. The log table is
-// ORDER BY (timestamp, log_id), so the timestamp equality pins the primary index
-// to one granule per part, and a non-empty fractalID prunes to one fractal -
-// turning a whole-table bloom-filter scan into a near-pinpoint read. Partitions
-// are keyed on ingest time, so the timestamp does not prune them.
-// The frontend supplies the exact ClickHouse timestamp from the search result,
-// so it bit-matches the DateTime64(3) value.
-//
-// The timestamp is required: this is the single, deterministic lookup path. A
-// non-empty fractalID is normally left to the caller, which either passes a
-// session-validated value as a partition-pruning filter or leaves it empty and
-// verifies the row's own fractal_id against the accessible set afterwards.
-// Returns nil (no error) when no matching row exists.
 // typeHintFieldSet returns (lazily loading and caching) the set of declared typed
 // sub-paths in the fields JSON column. On query failure it returns an empty set, which
 // means no empties are stripped (safe: shows a little noise rather than hiding data).
@@ -2280,27 +2212,10 @@ func (c *ClickHouseClient) typeHintFieldSet(ctx context.Context) map[string]bool
 		"SELECT type FROM system.columns WHERE database = ? AND table = 'logs' AND name = 'fields'",
 		c.logsDatabase(),
 	).Scan(&typ); err == nil {
-		// type looks like JSON(artifact String, user String, max_dynamic_paths=1024, ...).
-		// Each declared sub-path is "name Type"; parse the leading identifier of each
-		// comma-separated entry, skipping settings like max_dynamic_paths=N.
-		if i := strings.IndexByte(typ, '('); i >= 0 {
-			inner := typ[i+1:]
-			if j := strings.LastIndexByte(inner, ')'); j >= 0 {
-				inner = inner[:j]
-			}
-			for _, part := range strings.Split(inner, ",") {
-				part = strings.TrimSpace(part)
-				if part == "" || strings.ContainsRune(part, '=') {
-					continue
-				}
-				name := part
-				if sp := strings.IndexAny(part, " \t"); sp >= 0 {
-					name = part[:sp]
-				}
-				if name = strings.Trim(name, "`"); name != "" {
-					set[name] = true
-				}
-			}
+		// Same parser ReconcileSchemaFields uses, so the two can never disagree about
+		// which paths are hinted.
+		for _, name := range parseJSONTypeHints(typ) {
+			set[name] = true
 		}
 	}
 	c.typeHintFields = set
@@ -2333,6 +2248,20 @@ func (c *ClickHouseClient) parseLogFields(ctx context.Context, fieldsStr string)
 	return m
 }
 
+// GetLogFieldsByID fetches the parsed fields for a single log by an exact
+// (timestamp, log_id) key, optionally scoped to a fractal. The log table is
+// ORDER BY (timestamp, log_id), so the timestamp equality pins the primary index
+// to one granule per part, and a non-empty fractalID prunes to one fractal -
+// turning a whole-table bloom-filter scan into a near-pinpoint read. Partitions
+// are keyed on ingest time, so the timestamp does not prune them.
+// The frontend supplies the exact ClickHouse timestamp from the search result,
+// so it bit-matches the DateTime64(3) value.
+//
+// The timestamp is required: this is the single, deterministic lookup path. A
+// non-empty fractalID is normally left to the caller, which either passes a
+// session-validated value as a partition-pruning filter or leaves it empty and
+// verifies the row's own fractal_id against the accessible set afterwards.
+// Returns nil (no error) when no matching row exists.
 func (c *ClickHouseClient) GetLogFieldsByID(ctx context.Context, logID string, ts time.Time, fractalID string) (map[string]interface{}, error) {
 	if logID == "" {
 		return nil, fmt.Errorf("log_id is required")

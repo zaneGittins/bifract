@@ -38,11 +38,6 @@ func (d *DockerOps) Down() (string, error) {
 	return string(out), err
 }
 
-func (d *DockerOps) Restart(container string) (string, error) {
-	out, err := exec.Command("docker", "restart", container).CombinedOutput()
-	return string(out), err
-}
-
 func (d *DockerOps) IsRunning() bool {
 	out, err := d.compose("ps", "--status", "running", "-q").Output()
 	if err != nil {

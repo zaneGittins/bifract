@@ -120,6 +120,13 @@ func NewPostgresClient(host string, port int, database, user, password string) (
 	return &PostgresClient{db: db, connStr: connStr}, nil
 }
 
+// NewPostgresClientFromDB wraps a pool the caller already holds, such as one over
+// a scripted fake in a test. It has no connection string, so LISTEN/NOTIFY, which
+// needs its own dedicated connection, is unavailable.
+func NewPostgresClientFromDB(db *sql.DB) *PostgresClient {
+	return &PostgresClient{db: db}
+}
+
 // ConnString returns the libpq connection string. Needed by pq.NewListener,
 // which manages its own dedicated connection rather than using the pool.
 func (c *PostgresClient) ConnString() string {
@@ -182,19 +189,6 @@ func (c *PostgresClient) GetUser(ctx context.Context, username string) (*User, e
 	}
 
 	return user, nil
-}
-
-func (c *PostgresClient) CreateUser(ctx context.Context, user User) error {
-	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO users (username, password_hash, display_name, is_admin)
-		VALUES ($1, $2, $3, $4)
-	`, user.Username, user.PasswordHash, user.DisplayName, user.IsAdmin)
-
-	if err != nil {
-		return fmt.Errorf("failed to create user: %w", err)
-	}
-
-	return nil
 }
 
 func (c *PostgresClient) UpdateLastLogin(ctx context.Context, username string) error {
@@ -539,49 +533,6 @@ func (c *PostgresClient) GetComment(ctx context.Context, id string) (*Comment, e
 	return comment, nil
 }
 
-func (c *PostgresClient) GetCommentsByLogID(ctx context.Context, logID string) ([]Comment, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT c.id, c.log_id, c.log_timestamp, c.text, c.author, c.tags, c.query, c.created_at, c.updated_at,
-		       COALESCE(c.fractal_id::text, ''), COALESCE(c.prism_id::text, ''),
-		       COALESCE(u.display_name, ''), COALESCE(u.gravatar_color, ''), COALESCE(u.gravatar_initial, '')
-		FROM comments c
-		LEFT JOIN users u ON c.author = u.username
-		WHERE c.log_id = $1
-		ORDER BY c.created_at ASC
-	`, logID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get comments by log ID: %w", err)
-	}
-	defer rows.Close()
-
-	var comments []Comment
-	for rows.Next() {
-		var comment Comment
-		err := rows.Scan(
-			&comment.ID,
-			&comment.LogID,
-			&comment.LogTimestamp,
-			&comment.Text,
-			&comment.Author,
-			pq.Array(&comment.Tags),
-			&comment.Query,
-			&comment.CreatedAt,
-			&comment.UpdatedAt,
-			&comment.FractalID,
-			&comment.PrismID,
-			&comment.AuthorDisplayName,
-			&comment.AuthorGravatarColor,
-			&comment.AuthorGravatarInitial,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan comment: %w", err)
-		}
-		comments = append(comments, comment)
-	}
-
-	return comments, nil
-}
-
 // GetCommentsByLogIDAndFractal gets comments for a log within a specific fractal
 func (c *PostgresClient) GetCommentsByLogIDAndFractal(ctx context.Context, logID, fractalID string) ([]Comment, error) {
 	rows, err := c.db.QueryContext(ctx, `
@@ -844,34 +795,6 @@ func (c *PostgresClient) DeleteCommentsByLogID(ctx context.Context, logID string
 	return nil
 }
 
-// DeleteCommentsByLogIDs deletes all comments associated with multiple log_ids
-func (c *PostgresClient) DeleteCommentsByLogIDs(ctx context.Context, logIDs []string) error {
-	if len(logIDs) == 0 {
-		return nil
-	}
-
-	result, err := c.db.ExecContext(ctx, `
-		DELETE FROM comments
-		WHERE log_id = ANY($1)
-	`, pq.Array(logIDs))
-
-	if err != nil {
-		return fmt.Errorf("failed to delete comments for %d log_ids: %w", len(logIDs), err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	// Log the number of comments deleted
-	if rowsAffected > 0 {
-		fmt.Printf("Deleted %d comments for %d log_ids\n", rowsAffected, len(logIDs))
-	}
-
-	return nil
-}
-
 // ClearLogDataState runs ClearedLogDataPostgresStatements in one transaction once
 // ClickHouse log data is gone. withComments also deletes every comment, which only
 // annotate logs that no longer exist.
@@ -951,31 +874,6 @@ func (c *PostgresClient) DeleteCommentsByFractalID(ctx context.Context, fractalI
 	return nil
 }
 
-func (c *PostgresClient) GetCommentedLogIDs(ctx context.Context, start, end time.Time) ([]string, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT DISTINCT log_id
-		FROM comments
-		WHERE log_timestamp >= $1 AND log_timestamp <= $2
-		ORDER BY log_id
-	`, start, end)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get commented log IDs: %w", err)
-	}
-	defer rows.Close()
-
-	var logIDs []string
-	for rows.Next() {
-		var logID string
-		err := rows.Scan(&logID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan log ID: %w", err)
-		}
-		logIDs = append(logIDs, logID)
-	}
-
-	return logIDs, nil
-}
-
 // GetCommentedLogIDsFiltered returns distinct log_ids matching the given comment filters.
 // Used by the comment() BQL function to resolve log_ids at query time.
 func (c *PostgresClient) GetCommentedLogIDsFiltered(ctx context.Context, fractalID, prismID string, start, end time.Time, tags []string, keyword string) ([]string, error) {
@@ -1001,10 +899,11 @@ func (c *PostgresClient) GetCommentedLogIDsFiltered(ctx context.Context, fractal
 		argIdx++
 	}
 
-	// Keyword filter (case-insensitive substring match on comment text)
+	// Keyword filter (case-insensitive substring match on comment text). LIKE
+	// wildcards in the keyword are escaped so "50%" or "a_b" match literally.
 	if keyword != "" {
-		query += fmt.Sprintf(" AND text ILIKE $%d", argIdx)
-		args = append(args, "%"+keyword+"%")
+		query += fmt.Sprintf(` AND text ILIKE $%d ESCAPE '\'`, argIdx)
+		args = append(args, "%"+likeEscaper.Replace(keyword)+"%")
 		argIdx++
 	}
 
@@ -1030,66 +929,6 @@ func (c *PostgresClient) GetCommentedLogIDsFiltered(ctx context.Context, fractal
 	}
 
 	return logIDs, nil
-}
-
-func (c *PostgresClient) GetAllCommentedLogs(ctx context.Context, limit, offset int) ([]map[string]interface{}, int, error) {
-	// First get total count
-	var total int
-	err := c.db.QueryRowContext(ctx, `
-		SELECT COUNT(DISTINCT log_id) FROM comments
-	`).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
-	}
-
-	// Get paginated results
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT
-			c.log_id,
-			c.log_timestamp,
-			json_agg(json_build_object(
-				'id', c.id,
-				'text', c.text,
-				'author', c.author,
-				'author_display_name', u.display_name,
-				'author_gravatar_color', u.gravatar_color,
-				'author_gravatar_initial', u.gravatar_initial,
-				'tags', c.tags,
-				'query', c.query,
-				'created_at', c.created_at,
-				'updated_at', c.updated_at
-			) ORDER BY c.created_at ASC) as comments
-		FROM comments c
-		LEFT JOIN users u ON c.author = u.username
-		GROUP BY c.log_id, c.log_timestamp
-		ORDER BY c.log_timestamp DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get commented logs: %w", err)
-	}
-	defer rows.Close()
-
-	var results []map[string]interface{}
-	for rows.Next() {
-		var logID string
-		var logTimestamp time.Time
-		var commentsJSON []byte
-
-		err := rows.Scan(&logID, &logTimestamp, &commentsJSON)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan commented log: %w", err)
-		}
-
-		results = append(results, map[string]interface{}{
-			"log_id":        logID,
-			"log_timestamp": logTimestamp,
-			"comments_json": string(commentsJSON),
-			"tags":          []string{}, // Empty since we removed tags from UI
-		})
-	}
-
-	return results, total, nil
 }
 
 // GetAllCommentedLogsByFractal gets all logs that have comments within a specific fractal
@@ -2458,21 +2297,7 @@ func (c *PostgresClient) GetNotebookPresence(ctx context.Context, notebookID str
 	return presence, nil
 }
 
-// CleanupStalePresence removes presence records older than 5 minutes
-func (c *PostgresClient) CleanupStalePresence(ctx context.Context) error {
-	_, err := c.db.ExecContext(ctx, `
-		DELETE FROM notebook_presence
-		WHERE last_seen_at < NOW() - INTERVAL '5 minutes'
-	`)
-
-	if err != nil {
-		return fmt.Errorf("failed to cleanup stale presence: %w", err)
-	}
-
-	return nil
-}
-
-// ResourcePresence is a generic presence record used for chat conversations and dashboards.
+// ResourcePresence is a generic presence record, currently used for dashboards.
 type ResourcePresence struct {
 	ResourceID          string    `json:"resource_id"`
 	Username            string    `json:"username"`
@@ -2480,42 +2305,6 @@ type ResourcePresence struct {
 	UserDisplayName     string    `json:"user_display_name"`
 	UserGravatarColor   string    `json:"user_gravatar_color"`
 	UserGravatarInitial string    `json:"user_gravatar_initial"`
-}
-
-func (c *PostgresClient) UpdateChatPresence(ctx context.Context, conversationID, username string) error {
-	_, err := c.db.ExecContext(ctx, `
-		INSERT INTO chat_presence (conversation_id, username, last_seen_at)
-		VALUES ($1, $2, NOW())
-		ON CONFLICT (conversation_id, username)
-		DO UPDATE SET last_seen_at = NOW()
-	`, conversationID, username)
-	return err
-}
-
-func (c *PostgresClient) GetChatPresence(ctx context.Context, conversationID string) ([]ResourcePresence, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT cp.conversation_id, cp.username, cp.last_seen_at,
-		       u.display_name, u.gravatar_color, u.gravatar_initial
-		FROM chat_presence cp
-		JOIN users u ON cp.username = u.username
-		WHERE cp.conversation_id = $1 AND cp.last_seen_at > NOW() - INTERVAL '30 seconds'
-		ORDER BY cp.last_seen_at DESC
-	`, conversationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var presence []ResourcePresence
-	for rows.Next() {
-		var p ResourcePresence
-		if err := rows.Scan(&p.ResourceID, &p.Username, &p.LastSeenAt,
-			&p.UserDisplayName, &p.UserGravatarColor, &p.UserGravatarInitial); err != nil {
-			return nil, err
-		}
-		presence = append(presence, p)
-	}
-	return presence, nil
 }
 
 func (c *PostgresClient) UpdateDashboardPresence(ctx context.Context, dashboardID, username string) error {
@@ -3159,31 +2948,6 @@ func (c *PostgresClient) ListGroupMembers(ctx context.Context, groupID string) (
 		members = append(members, m)
 	}
 	return members, rows.Err()
-}
-
-func (c *PostgresClient) GetUserGroups(ctx context.Context, username string) ([]Group, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT g.id, g.name, g.description, COALESCE(g.created_by, ''), g.created_at, g.updated_at,
-		       (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
-		FROM groups g
-		JOIN group_members gm ON g.id = gm.group_id
-		WHERE gm.username = $1
-		ORDER BY g.name ASC
-	`, username)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user groups: %w", err)
-	}
-	defer rows.Close()
-
-	var groups []Group
-	for rows.Next() {
-		var g Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.CreatedBy, &g.CreatedAt, &g.UpdatedAt, &g.MemberCount); err != nil {
-			return nil, fmt.Errorf("failed to scan group: %w", err)
-		}
-		groups = append(groups, g)
-	}
-	return groups, rows.Err()
 }
 
 // ============================

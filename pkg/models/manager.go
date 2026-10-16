@@ -104,7 +104,7 @@ func (m *Manager) List(ctx context.Context, fractalID string) ([]*Model, error) 
 
 	var models []*Model
 	for rows.Next() {
-		model, err := scanModel(rows)
+		model, err := scanModelRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -637,7 +637,9 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			distName, tableName, storage.EscCHStr(m.ch.Topology().DDLCluster), tableName,
 		)
-		if err := m.ch.ExecSchema(ctx, distSQL); err != nil {
+		// ON CLUSTER like the table under it: created on one node only, a read or
+		// state insert landing on any other fails on an unknown table.
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(distSQL)); err != nil && !isCHDDLTimeout(err) {
 			log.Printf("model %s: create distributed table: %v", id, err)
 		}
 	}
@@ -707,14 +709,14 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			chModelDistName(id), tableName, cl, tableName,
 		)
-		if err := m.ch.ExecSchema(ctx, distResults); err != nil {
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(distResults)); err != nil && !isCHDDLTimeout(err) {
 			log.Printf("model %s: create distributed results table: %v", id, err)
 		}
 		distState := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
 			chModelStateDistName(id), stateName, cl, stateName,
 		)
-		if err := m.ch.ExecSchema(ctx, distState); err != nil {
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(distState)); err != nil && !isCHDDLTimeout(err) {
 			log.Printf("model %s: create distributed state table: %v", id, err)
 		}
 	}
@@ -1445,12 +1447,6 @@ const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text
 	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
 	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id)`
 
-func scanModel(rows interface {
-	Scan(dest ...interface{}) error
-}) (*Model, error) {
-	return scanModelRow(rows)
-}
-
 func scanModelRow(row modelScannable) (*Model, error) {
 	var mo Model
 	var defRaw []byte
@@ -1693,16 +1689,6 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 	}
 }
 
-// ReconcileMVFractalScope rewrites any model materialized view whose source scan is
-// not scoped to its owning fractal. Such an MV aggregates every fractal's inserts
-// into one fractal's table: an ingest-time cost paid by fractals that never read it,
-// and cross-fractal rows held back by nothing but the read-side predicate.
-//
-// Only the MV (an insert trigger) is dropped and recreated, never the target table,
-// so this loses no data and needs no backfill. It is fix-forward by design: rows
-// already indexed from other fractals stay put, unreadable, until their parts age out.
-//
-// Idempotent and safe at every startup; best-effort, so one bad model never blocks boot.
 // ReconcileStateViews removes the insert-time views that used to maintain model
 // state. Model state is now kept by StateMaintainer over logs.ingest_timestamp; a
 // view left behind by an older release would write the same rows the maintainer

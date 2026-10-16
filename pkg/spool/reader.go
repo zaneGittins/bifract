@@ -173,17 +173,9 @@ func (r *Reader) ensureFile() error {
 		return nil
 	}
 	r.closeFile()
-	if r.cur.Segment == 0 {
-		// No segment has been established yet; discover the earliest one.
-		seqs, err := listSegments(r.dir)
-		if err != nil {
-			return err
-		}
-		if len(seqs) == 0 {
-			return nil
-		}
-		r.cur = Checkpoint{Segment: seqs[0], Offset: 0}
-	}
+	// Segment 0 is a real segment (the first one a fresh or reset writer opens), so
+	// a checkpoint into it is honored like any other. An empty spool, or a cursor
+	// whose segment is gone, falls through to the earliest-segment path below.
 	f, err := os.Open(segmentPath(r.dir, r.cur.Segment))
 	if err != nil {
 		if os.IsNotExist(err) {

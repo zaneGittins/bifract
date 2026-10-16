@@ -2,8 +2,6 @@ package ingest
 
 import (
 	"bifract/pkg/api"
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -97,6 +95,13 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logs, err := h.parseLogsWithToken(body, tokenData)
+	if errors.Is(err, errLineTooLong) {
+		respondJSON(w, http.StatusRequestEntityTooLarge, IngestResponse{
+			Success: false,
+			Error:   "Request rejected: " + err.Error(),
+		})
+		return
+	}
 	if err != nil {
 		respondJSON(w, http.StatusBadRequest, IngestResponse{
 			Success: false,
@@ -255,8 +260,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 	}
 
 	// Try to parse as newline-delimited JSON (NDJSON)
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), 10*1024*1024) // 10MB max line
+	scanner := newLineScanner(data)
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = strings.TrimSpace(line)
@@ -275,6 +279,9 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 		}
 		logs = append(logs, log)
 	}
+	if err := lineScanErr(scanner); err != nil {
+		return nil, err
+	}
 
 	if len(logs) > 0 {
 		return logs, nil
@@ -287,8 +294,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedToken) ([]storage.LogEntry, error) {
 	var logs []storage.LogEntry
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), 10*1024*1024) // 10MB max line
+	scanner := newLineScanner(data)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) == "" {
@@ -318,6 +324,9 @@ func (h *IngestHandler) parseKVLogs(data []byte, token *ingesttokens.ValidatedTo
 		entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
 		logs = append(logs, entry)
+	}
+	if err := lineScanErr(scanner); err != nil {
+		return nil, err
 	}
 
 	if len(logs) == 0 {

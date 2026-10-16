@@ -141,8 +141,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return
 		}
-		if errors.Is(err, ErrInvalidAlert) ||
-			strings.Contains(err.Error(), "invalid query syntax") || strings.Contains(err.Error(), "cannot use aggregate") {
+		if errors.Is(err, ErrInvalidAlert) || strings.Contains(err.Error(), "invalid query syntax") {
 			h.respondError(w, http.StatusBadRequest, err.Error())
 		} else if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
 			h.respondError(w, http.StatusConflict, "Alert name already exists")
@@ -246,10 +245,10 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 		if h.gateRequiredResponse(w, err) || h.policyBlockedResponse(w, err) {
 			return
 		}
-		if strings.Contains(err.Error(), "not found") {
-			h.respondError(w, http.StatusNotFound, "Alert not found")
-		} else if strings.Contains(err.Error(), "invalid query syntax") || strings.Contains(err.Error(), "cannot use aggregate") {
+		if errors.Is(err, ErrInvalidAlert) || strings.Contains(err.Error(), "invalid query syntax") {
 			h.respondError(w, http.StatusBadRequest, err.Error())
+		} else if strings.Contains(err.Error(), "not found") {
+			h.respondError(w, http.StatusNotFound, "Alert not found")
 		} else {
 			log.Printf("[Alerts] Failed to update alert: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to update alert")
@@ -390,6 +389,9 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 // importRefusal reports an import refused for what its document says, which is the
 // caller's to fix rather than a server failure.
 func importRefusal(err error) bool {
+	if errors.Is(err, ErrInvalidAlert) {
+		return true
+	}
 	msg := err.Error()
 	for _, s := range []string{
 		"failed to parse YAML", "invalid query syntax", "failed to parse Sigma",

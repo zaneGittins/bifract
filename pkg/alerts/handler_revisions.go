@@ -140,7 +140,7 @@ func (h *Handler) HandleRestoreRevision(w http.ResponseWriter, r *http.Request) 
 				Code:    api.CodeForStatus(http.StatusConflict),
 				Data:    blocked.Missing,
 			})
-		case strings.Contains(err.Error(), "invalid query syntax"), strings.Contains(err.Error(), "cannot use aggregate"):
+		case errors.Is(err, ErrInvalidAlert), strings.Contains(err.Error(), "invalid query syntax"):
 			h.respondError(w, http.StatusBadRequest, err.Error())
 		default:
 			log.Printf("[Alerts] Failed to restore revision: %v", err)

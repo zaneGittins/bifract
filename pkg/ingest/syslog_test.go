@@ -2,7 +2,9 @@ package ingest
 
 import (
 	"testing"
+	"time"
 
+	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
 )
 
@@ -322,5 +324,112 @@ func TestParseRFC5424Timestamp(t *testing.T) {
 				t.Errorf("expected zero timestamp for %q", tt.input)
 			}
 		})
+	}
+}
+
+func TestParseRFC3164TagForms(t *testing.T) {
+	tests := []struct {
+		name, input              string
+		appname, procid, message string
+	}{
+		{"pid, no space after colon", `<13>Oct 11 22:14:15 h cron[42]:job ran`, "cron", "42", "job ran"},
+		{"tag, no space after colon", `<13>Oct 11 22:14:15 h app:started`, "app", "", "started"},
+		{"no tag at all", `<13>Oct 11 22:14:15 h just a message`, "", "", "just a message"},
+		{"bracket that is not a pid suffix", `<13>Oct 11 22:14:15 h a[1]b: msg`, "a[1]b", "", "msg"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := map[string]string{}
+			if !tryParseRFC3164(tc.input, fields) {
+				t.Fatal("parse failed")
+			}
+			if fields["appname"] != tc.appname || fields["procid"] != tc.procid || fields["message"] != tc.message {
+				t.Fatalf("appname=%q procid=%q message=%q", fields["appname"], fields["procid"], fields["message"])
+			}
+			if fields["hostname"] != "h" {
+				t.Fatalf("hostname = %q", fields["hostname"])
+			}
+		})
+	}
+}
+
+// TestSyslogRejectsOutOfRangePriority: PRI tops out at 191 (facility 23,
+// severity 7); anything above is not syslog and is kept whole as the message.
+func TestSyslogRejectsOutOfRangePriority(t *testing.T) {
+	for _, line := range []string{
+		`<192>1 2024-02-28T10:15:30Z host app - - - msg`,
+		`<999>Oct 11 22:14:15 host app: msg`,
+	} {
+		fields := map[string]string{}
+		parseSyslogLine(line, fields)
+		if fields["message"] != line || fields["priority"] != "" {
+			t.Errorf("%q parsed as syslog: %v", line, fields)
+		}
+	}
+}
+
+// TestRFC3164TimestampYear: the format has no year, so the current one is
+// assumed, except that a date more than a day ahead is last year's (a December
+// line read in January). The time is read as UTC.
+func TestRFC3164TimestampYear(t *testing.T) {
+	now := time.Now()
+	past := now.AddDate(0, 0, -3)
+	future := now.AddDate(0, 0, 3)
+	if past.Year() != now.Year() || future.Year() != now.Year() {
+		t.Skip("dates straddle a year boundary; the rule under test needs both in this year")
+	}
+	stamp := func(d time.Time) string { return d.Format("Jan _2") + " 10:00:00" }
+
+	got := parseRFC3164Timestamp(stamp(past))
+	if want := time.Date(now.Year(), past.Month(), past.Day(), 10, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("recent date: got %v, want %v", got, want)
+	}
+	got = parseRFC3164Timestamp(stamp(future))
+	if want := time.Date(now.Year()-1, future.Month(), future.Day(), 10, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("date ahead of now: got %v, want last year's %v", got, want)
+	}
+}
+
+// TestParseSyslogLogsEventTime: the parsed syslog time becomes the event time;
+// an RFC 5424 time that does not parse is kept as text and the ingest time used.
+func TestParseSyslogLogsEventTime(t *testing.T) {
+	h := &IngestHandler{}
+	body := "<134>1 2024-02-28T10:15:30.5+02:00 host app - - - one\n" +
+		"<134>1 yesterday host app - - - two\n" +
+		"<134>1 - host app - - - three\n"
+	logs, err := h.parseSyslogLogs([]byte(body), &ingesttokens.ValidatedToken{})
+	if err != nil || len(logs) != 3 {
+		t.Fatalf("logs=%d err=%v", len(logs), err)
+	}
+	if want := time.Date(2024, 2, 28, 8, 15, 30, 500000000, time.UTC); !logs[0].Timestamp.Equal(want) {
+		t.Errorf("event time = %v, want %v", logs[0].Timestamp, want)
+	}
+	if logs[1].Fields["timestamp"] != "yesterday" || !logs[1].Timestamp.Equal(logs[1].IngestTimestamp) {
+		t.Errorf("unparseable time: field %q ts %v", logs[1].Fields["timestamp"], logs[1].Timestamp)
+	}
+	if _, ok := logs[2].Fields["timestamp"]; ok || !logs[2].Timestamp.Equal(logs[2].IngestTimestamp) {
+		t.Errorf("nil time: fields %v", logs[2].Fields)
+	}
+	if logs[0].RawLog != "<134>1 2024-02-28T10:15:30.5+02:00 host app - - - one" {
+		t.Errorf("RawLog = %q", logs[0].RawLog)
+	}
+	if _, err := h.parseSyslogLogs([]byte("\n\n"), &ingesttokens.ValidatedToken{}); err == nil {
+		t.Error("blank body should be an error")
+	}
+}
+
+func TestExtractStructuredDataEdges(t *testing.T) {
+	for _, tc := range []struct{ in, sd, msg string }{
+		{"", "", ""},
+		{"plain message", "", "plain message"},
+		{"-", "", ""},
+		{`[id a="x]y"] msg`, `[id a="x]y"]`, "msg"}, // ] inside a quoted value
+		{`[unclosed a="1" msg`, "", `[unclosed a="1" msg`},
+		{`[a][b]`, `[a][b]`, ""},
+	} {
+		sd, msg := extractStructuredData(tc.in)
+		if sd != tc.sd || msg != tc.msg {
+			t.Errorf("%q: sd=%q msg=%q, want %q %q", tc.in, sd, msg, tc.sd, tc.msg)
+		}
 	}
 }

@@ -92,6 +92,8 @@ func TestReconfigureGeneratesMissingIngestPasswords(t *testing.T) {
 
 func writeMinimalInstall(t *testing.T, dir string, extra map[string]string) {
 	t.Helper()
+	// Reconfigure checks whether the stack is running; keep that off the real Docker.
+	withoutExternalCommands(t)
 	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte("services: {}\n"), 0644); err != nil {
 		t.Fatal(err)
 	}

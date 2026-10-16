@@ -221,9 +221,6 @@ func NewManager(pg *storage.PostgresClient, engine *Engine, normalizerMgr *norma
 	}
 }
 
-// ImportFromYAML parses YAML content and creates/updates an alert.
-// If the YAML is a Sigma rule, it is automatically translated to BQL.
-// normalizerID optionally specifies a normalizer to map Sigma field names.
 // yamlImport is a parsed import: the definition the document describes, and the alert
 // it would replace when one of that name already exists.
 type yamlImport struct {
@@ -411,14 +408,6 @@ func (p yamlImport) changeInput() ChangeRequestInput {
 	return in
 }
 
-// CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
-// validateThrottleField rejects a throttle field that cannot be rendered as a column
-// name. It lives here rather than in the HTTP handlers because the handlers are not
-// the only sink: a YAML import and a revision restore both build these requests
-// directly. A field that gets past this is dropped from the alert query's projection
-// (see the alert branch of translator.go), and throttleKey then falls back to
-// throttling the alert globally instead of per value -- suppressing firings with no
-// error anywhere.
 // validateMaxEventLag rejects a negative lag. Zero is off; any positive value is a
 // real threshold, so there is no upper bound to enforce.
 func validateMaxEventLag(seconds int) error {
@@ -428,6 +417,13 @@ func validateMaxEventLag(seconds int) error {
 	return nil
 }
 
+// validateThrottleField rejects a throttle field that cannot be rendered as a column
+// name. It lives here rather than in the HTTP handlers because the handlers are not
+// the only sink: a YAML import and a revision restore both build these requests
+// directly. A field that gets past this is dropped from the alert query's projection
+// (see the alert branch of translator.go), and rowThrottleKey then falls back to
+// throttling the alert globally instead of per value -- suppressing firings with no
+// error anywhere.
 func validateThrottleField(field string) error {
 	if field == "" || parser.IsPlainFieldName(field) {
 		return nil
@@ -436,25 +432,62 @@ func validateThrottleField(field string) error {
 	return fmt.Errorf("%w: throttle field %q is not a field name, use letters, digits, dot, dash or underscore", ErrInvalidAlert, field)
 }
 
-func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, createdBy string, fractalID, prismID string) (*Alert, error) {
-	// Validate query syntax
-	if err := validateAlertType(string(req.AlertType)); err != nil {
+// validateDefinition checks everything about a definition that can be judged without
+// the database, and returns the parsed query.
+//
+// Create, update, restore, import and a proposal all reach a definition differently,
+// and each used to run only part of this, some of it after opening a transaction: a
+// proposal could be approved and claimed for merge before the create it described
+// failed, and an update could store an alert type no engine evaluates. Every failure
+// is the caller's to fix, so each is ErrInvalidAlert, except a query that does not
+// parse, whose wording the editor and handlers already key on.
+func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
+	if err := validateAlertType(c.AlertType); err != nil {
+		return nil, err
+	}
+	if err := validateThrottleField(c.ThrottleField); err != nil {
+		return nil, err
+	}
+	if err := validateMaxEventLag(c.MaxEventLagSeconds); err != nil {
 		return nil, err
 	}
 
-	if err := validateThrottleField(req.ThrottleField); err != nil {
-		return nil, err
-	}
-
-	if err := validateMaxEventLag(req.MaxEventLagSeconds); err != nil {
-		return nil, err
-	}
-
-	parsedQuery, err := parser.ParseQuery(req.QueryString)
+	parsed, err := parser.ParseQuery(c.QueryString)
 	if err != nil {
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
-	if err := validateWindowContract(parsedQuery); err != nil {
+	if err := validateWindowContract(parsed); err != nil {
+		return nil, err
+	}
+
+	switch AlertType(c.AlertType) {
+	case AlertTypeCompound:
+		if c.WindowDuration == nil || *c.WindowDuration <= 0 {
+			return nil, fmt.Errorf("%w: compound alerts require a positive window_duration", ErrInvalidAlert)
+		}
+	case AlertTypeScheduled:
+		if c.ScheduleCron == nil || strings.TrimSpace(*c.ScheduleCron) == "" {
+			return nil, fmt.Errorf("%w: scheduled alerts require a cron expression (schedule_cron)", ErrInvalidAlert)
+		}
+		if c.QueryWindowSeconds == nil || *c.QueryWindowSeconds <= 0 {
+			return nil, fmt.Errorf("%w: scheduled alerts require a positive query_window_seconds", ErrInvalidAlert)
+		}
+		cronParser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, err := cronParser.Parse(*c.ScheduleCron); err != nil {
+			return nil, fmt.Errorf("%w: invalid cron expression: %v", ErrInvalidAlert, err)
+		}
+	default: // event, the default for an unset type
+		if queryHasAggregation(parsed) {
+			return nil, fmt.Errorf("%w: event alerts cannot use aggregate functions (groupby, count, sum, etc.); use a compound alert instead", ErrInvalidAlert)
+		}
+	}
+	return parsed, nil
+}
+
+// CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
+func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, createdBy string, fractalID, prismID string) (*Alert, error) {
+	parsedQuery, err := validateDefinition(revisionContentFromRequest(AlertUpdateRequest(req), string(req.AlertType), string(req.Severity)))
+	if err != nil {
 		return nil, err
 	}
 
@@ -514,31 +547,6 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 		prismIDPtr = prismID
 	} else {
 		fractalIDPtr = fractalID
-	}
-	// Validate compound alert requirements
-	if alertType == "compound" {
-		if req.WindowDuration == nil || *req.WindowDuration <= 0 {
-			return nil, fmt.Errorf("compound alerts require a positive window_duration")
-		}
-	}
-
-	// Event alerts must not use aggregate functions
-	if alertType == "event" && queryHasAggregation(parsedQuery) {
-		return nil, fmt.Errorf("event alerts cannot use aggregate functions (groupby, count, sum, etc.); use a compound alert instead")
-	}
-
-	// Validate scheduled alert requirements
-	if alertType == "scheduled" {
-		if req.ScheduleCron == nil || strings.TrimSpace(*req.ScheduleCron) == "" {
-			return nil, fmt.Errorf("scheduled alerts require a cron expression (schedule_cron)")
-		}
-		if req.QueryWindowSeconds == nil || *req.QueryWindowSeconds <= 0 {
-			return nil, fmt.Errorf("scheduled alerts require a positive query_window_seconds")
-		}
-		cronParser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := cronParser.Parse(*req.ScheduleCron); err != nil {
-			return nil, fmt.Errorf("invalid cron expression: %w", err)
-		}
 	}
 
 	query := `
@@ -622,20 +630,8 @@ func (m *Manager) CreateAlert(ctx context.Context, req AlertCreateRequest, creat
 
 // UpdateAlert updates an existing alert
 func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpdateRequest, username string) (*Alert, error) {
-	if err := validateThrottleField(req.ThrottleField); err != nil {
-		return nil, err
-	}
-
-	if err := validateMaxEventLag(req.MaxEventLagSeconds); err != nil {
-		return nil, err
-	}
-
-	// Validate query syntax
-	parsedQuery, err := parser.ParseQuery(req.QueryString)
+	parsedQuery, err := validateDefinition(revisionContentFromRequest(req, string(req.AlertType), string(req.Severity)))
 	if err != nil {
-		return nil, fmt.Errorf("invalid query syntax: %w", err)
-	}
-	if err := validateWindowContract(parsedQuery); err != nil {
 		return nil, err
 	}
 
@@ -713,46 +709,9 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 		return nil, fmt.Errorf("failed to lock alert: %w", err)
 	}
 
-	// Determine alert type (preserve existing if not specified)
-	alertType := req.AlertType
-	if alertType == "" {
-		alertType = "event"
-	}
-
-	// Validate compound alert requirements
-	if alertType == "compound" {
-		if req.WindowDuration == nil || *req.WindowDuration <= 0 {
-			return nil, fmt.Errorf("compound alerts require a positive window_duration")
-		}
-	}
-
-	// Event alerts must not use aggregate functions
-	if alertType == "event" && queryHasAggregation(parsedQuery) {
-		return nil, fmt.Errorf("event alerts cannot use aggregate functions (groupby, count, sum, etc.); use a compound alert instead")
-	}
-
-	// Validate scheduled alert requirements
-	if alertType == "scheduled" {
-		if req.ScheduleCron == nil || strings.TrimSpace(*req.ScheduleCron) == "" {
-			return nil, fmt.Errorf("scheduled alerts require a cron expression (schedule_cron)")
-		}
-		if req.QueryWindowSeconds == nil || *req.QueryWindowSeconds <= 0 {
-			return nil, fmt.Errorf("scheduled alerts require a positive query_window_seconds")
-		}
-		cronParser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := cronParser.Parse(*req.ScheduleCron); err != nil {
-			return nil, fmt.Errorf("invalid cron expression: %w", err)
-		}
-	}
-
-	severity := req.Severity
-	if severity == "" {
-		severity = "medium"
-	}
-
 	// Record the new definition before anything is written, so the pre-edit state is
 	// still readable for the seed revision on alerts that predate history.
-	if err := writeRevision(ctx, tx, alertID, revisionContentFromRequest(req, string(alertType), string(severity)), username, username, revisionRetention()); err != nil {
+	if err := writeRevision(ctx, tx, alertID, revisionContentFromRequest(req, string(updateType), string(updateSeverity)), username, username, revisionRetention()); err != nil {
 		return nil, err
 	}
 
@@ -782,7 +741,7 @@ func (m *Manager) UpdateAlert(ctx context.Context, alertID string, req AlertUpda
 	result, err := tx.Exec(ctx, query,
 		alertID, req.Name, req.Description, req.QueryString, req.Enabled,
 		req.ThrottleTimeSeconds, req.ThrottleField, pq.Array(req.Labels),
-		pq.Array(req.References), severity, storage.NullableUser(username), alertType, req.WindowDuration,
+		pq.Array(req.References), updateSeverity, storage.NullableUser(username), updateType, req.WindowDuration,
 		req.ScheduleCron, req.QueryWindowSeconds, req.MaxEventLagSeconds,
 	)
 	if err != nil {
@@ -1137,9 +1096,14 @@ func (m *Manager) ListAlerts(ctx context.Context, enabledOnly bool, fractalID, p
 			return nil, fmt.Errorf("failed to parse fractal actions: %w", err)
 		}
 
-		// Parse dictionary action refs from JSON
+		// Parse dictionary action refs from JSON. The ids are filled from them too:
+		// bundle export and policy compliance read an alert's actions by id, and
+		// without this every listed alert reported no dictionary actions.
 		if err := json.Unmarshal(dictionaryActionsJSON, &alert.DictionaryActionRefs); err != nil {
 			return nil, fmt.Errorf("failed to parse dictionary actions: %w", err)
+		}
+		for _, ref := range alert.DictionaryActionRefs {
+			alert.DictionaryActionIDs = append(alert.DictionaryActionIDs, ref.ID)
 		}
 
 		// Parse email action refs from JSON
@@ -1696,6 +1660,9 @@ func (m *Manager) GetWebhookAction(ctx context.Context, webhookID string) (*Webh
 		&webhook.FractalID, &webhook.PrismID,
 		&webhook.BodyMode, &webhook.BodyTemplate, &webhook.ContentType,
 	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("webhook action not found")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get webhook action: %w", err)
 	}
@@ -2073,6 +2040,9 @@ func (m *Manager) GetFractalAction(ctx context.Context, fractalActionID string) 
 		&action.FractalID, &action.PrismID,
 	)
 
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("fractal action not found")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fractal action: %w", err)
 	}
@@ -2507,6 +2477,7 @@ func (m *Manager) DuplicateAlert(ctx context.Context, alertID, createdBy string)
 		Description:         source.Description,
 		QueryString:         source.QueryString,
 		AlertType:           AlertType(source.AlertType),
+		Severity:            Severity(source.Severity),
 		Labels:              source.Labels,
 		References:          source.References,
 		Enabled:             false,
@@ -2563,6 +2534,9 @@ func (m *Manager) GetEmailAction(ctx context.Context, id string) (*EmailAction, 
 		 FROM email_actions WHERE id = $1`, id,
 	).Scan(&action.ID, &action.Name, pq.Array(&action.Recipients), &action.SubjectTemplate, &action.BodyTemplate, &action.Enabled,
 		&action.FractalID, &action.PrismID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("email action not found")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get email action: %w", err)
 	}
@@ -2656,7 +2630,7 @@ func (m *Manager) DeleteEmailAction(ctx context.Context, id string) error {
 func validateWindowContract(pipeline *parser.PipelineNode) error {
 	lookback, completion := parser.QueryWindowContract(pipeline)
 	if completion != "" && lookback <= 0 {
-		return fmt.Errorf("this query correlates events across time and needs a bound to run as an alert; add within= (e.g. within=5m)")
+		return fmt.Errorf("%w: this query correlates events across time and needs a bound to run as an alert; add within= (e.g. within=5m)", ErrInvalidAlert)
 	}
 	return nil
 }

@@ -120,12 +120,6 @@ func TagContext(ctx context.Context, tag QueryTag) context.Context {
 	return context.WithValue(ctx, tagKey{}, tag)
 }
 
-// SystemTagContext marks ctx as Bifract's own background work, labelled so the
-// activity view can name it.
-func SystemTagContext(ctx context.Context, label string) context.Context {
-	return TagContext(ctx, QueryTag{Source: SourceSystem, Label: label})
-}
-
 // ContextTag returns the tag ctx carries, or the zero value.
 func ContextTag(ctx context.Context) QueryTag {
 	tag, _ := ctx.Value(tagKey{}).(QueryTag)

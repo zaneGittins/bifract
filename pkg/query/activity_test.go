@@ -1,6 +1,9 @@
 package query
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -84,5 +87,114 @@ func TestActivityRangeIsBounded(t *testing.T) {
 		if bucket <= 0 || window*60/bucket < 8 {
 			t.Errorf("range %q gives %d buckets, too few to chart", r, window*60/bucket)
 		}
+	}
+}
+
+// The stream's state chip decides which side of the union runs: an error cannot
+// be running yet and a running query has not finished, so each of those drops a
+// branch; "slow" bounds both sides by duration.
+func TestActivityStreamSQLStates(t *testing.T) {
+	single := storage.Topology{}
+	const running, finished = "FROM system.processes", "FROM system.query_log"
+	cases := []struct {
+		state                 string
+		wantRunning, wantDone bool
+		wantPreds             []string
+	}{
+		{"", true, true, nil},
+		{"running", true, false, nil},
+		{"error", false, true, []string{"type = 'ExceptionWhileProcessing'"}},
+		{"slow", true, true, []string{"elapsed > 5", "query_duration_ms > 5000"}},
+		{"bogus", true, true, nil},
+	}
+	for _, tc := range cases {
+		sql := activityStreamSQL(single, tc.state, "", "", "", 60, 60)
+		if strings.Contains(sql, running) != tc.wantRunning || strings.Contains(sql, finished) != tc.wantDone {
+			t.Errorf("state %q: running=%v finished=%v, want %v %v", tc.state,
+				strings.Contains(sql, running), strings.Contains(sql, finished), tc.wantRunning, tc.wantDone)
+		}
+		if (tc.wantRunning && tc.wantDone) != strings.Contains(sql, "UNION ALL") {
+			t.Errorf("state %q: union mismatch", tc.state)
+		}
+		for _, p := range tc.wantPreds {
+			if !strings.Contains(sql, p) {
+				t.Errorf("state %q: missing %q", tc.state, p)
+			}
+		}
+	}
+}
+
+// Every read is bounded and excludes the view's own queries, and on a cluster
+// it reads every replica rather than whichever node the driver picked.
+func TestActivityStreamSQLBoundsAndFanout(t *testing.T) {
+	sql := activityStreamSQL(storage.Topology{FanoutCluster: "c1"}, "", "search", "o'brien", "node-2", 75, 480)
+	for _, want := range []string{
+		"clusterAllReplicas('c1', system.processes)",
+		"clusterAllReplicas('c1', system.query_log)",
+		"INTERVAL 480 MINUTE",
+		"LIMIT 75\n)",                                  // inner finished-side limit
+		fmt.Sprintf("LIMIT %d", activityRunningCap),    // running side
+		fmt.Sprintf("LIMIT %d", 75+activityRunningCap), // outer
+		"Settings['log_comment'] != '" + storage.EscCHStr(activityTag) + "'",
+		"log_comment != '" + storage.EscCHStr(activityTag) + "'",
+		`o\'brien`,
+		"hostName() = 'node-2'",
+		"= 'search'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+func TestActivityLimit(t *testing.T) {
+	cases := map[string]int{"": activityDefaultRows, "x": activityDefaultRows, "-4": activityDefaultRows, "0": activityDefaultRows, "25": 25, "100000": activityMaxRows}
+	for in, want := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/?limit="+in, nil)
+		if got := activityLimit(r); got != want {
+			t.Errorf("limit=%q -> %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestActivityProcTextFilter(t *testing.T) {
+	if activityProcTextFilter("  ") != "" {
+		t.Error("blank text should not add a predicate")
+	}
+	got := activityProcTextFilter("o'brien")
+	if strings.Contains(got, "'o'brien'") || !strings.Contains(got, "positionCaseInsensitive(user,") {
+		t.Errorf("proc filter: %s", got)
+	}
+	if strings.Count(activityProcTextFilter(strings.Repeat("z", 500)), "z") > 3*200 {
+		t.Error("proc text filter did not bound its input")
+	}
+}
+
+// Query ids reach SQL literals and KILL statements, so only the characters a
+// real id carries are accepted.
+func TestValidActivityQueryID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"bif-search-0b6e1d2a-1c2d-4e5f-8a9b-0c1d2e3f4a5b-h3": true,
+		"a_b-C9":                 true,
+		"x' OR 1=1 --":           false,
+		"id;DROP":                false,
+		"tab\tbed":               false,
+		strings.Repeat("a", 129): false,
+		strings.Repeat("a", 128): true,
+	} {
+		if got := validActivityQueryID(id); got != want {
+			t.Errorf("validActivityQueryID(%q) = %v, want %v", id, got, want)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	(&PerformanceHandler{}).HandleActivityDetail(rec, httptest.NewRequest(http.MethodGet, "/?query_id=x%27", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid id: status %d, want 400", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	(&PerformanceHandler{}).HandleActivityDetail(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing id: status %d, want 400", rec.Code)
 	}
 }

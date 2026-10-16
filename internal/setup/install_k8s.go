@@ -364,6 +364,17 @@ const (
 	k8sStepDone
 )
 
+// takesText reports whether the step reads a text field, so a typed character
+// belongs to the field rather than to a shortcut.
+func (s k8sStep) takesText() bool {
+	switch s {
+	case k8sStepDomain, k8sStepAllowedIPs, k8sStepClickHouseHost, k8sStepClickHouseAuth,
+		k8sStepCHShards, k8sStepCHStorage, k8sStepOutputDir:
+		return true
+	}
+	return false
+}
+
 // Steps that show in the k8s progress bar (excludes conditional sub-steps)
 var k8sStepLabels = []struct {
 	step  k8sStep
@@ -487,9 +498,15 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			m.err = fmt.Errorf("cancelled")
 			return m, tea.Quit
+		case "q":
+			// In a text field "q" is input: a domain, path or password may contain it.
+			if !m.step.takesText() {
+				m.err = fmt.Errorf("cancelled")
+				return m, tea.Quit
+			}
 		case "enter":
 			return m.handleEnter()
 		case "tab", "shift+tab":
@@ -1545,10 +1562,8 @@ func renderK8sTemplate(name string, data k8sTemplateData) (string, error) {
 	return buf.String(), nil
 }
 
-// buildCHHostsList generates the comma-separated ClickHouse host list for the
-// Bifract deployment env var based on the official operator's naming convention.
-// Pods are named: bifract-ch-clickhouse-{shard}-{replica}-0
-// Each shard runs a single replica (replica index 0), so the list is one host per shard.
+// formatStorageSize renders a GB count as a Kubernetes quantity, in Ti when it
+// divides evenly.
 func formatStorageSize(gb int) string {
 	if gb >= 1024 && gb%1024 == 0 {
 		return fmt.Sprintf("%dTi", gb/1024)
@@ -1582,6 +1597,10 @@ func parseK8sMemToBytes(s string) int64 {
 	return n * mult
 }
 
+// buildCHHostsList generates the comma-separated ClickHouse host list for the
+// Bifract deployment env var based on the official operator's naming convention.
+// Pods are named: bifract-ch-clickhouse-{shard}-{replica}-0
+// Each shard runs a single replica (replica index 0), so the list is one host per shard.
 func buildCHHostsList(cfg *K8sConfig) string {
 	if !cfg.CH.Bundled() {
 		// An external cluster's addresses are the operator's to choose; the pod

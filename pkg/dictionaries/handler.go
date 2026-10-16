@@ -26,10 +26,6 @@ type Handler struct {
 	fractalManager *fractals.Manager
 }
 
-// APIResponse is the shared API envelope. The alias keeps the package-local
-// name while there is one type, and one schema, behind it.
-type APIResponse = api.Response[any]
-
 // NewHandler creates a new dictionary handler.
 func NewHandler(manager *Manager, fractalManager *fractals.Manager) *Handler {
 	return &Handler{manager: manager, fractalManager: fractalManager}

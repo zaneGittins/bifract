@@ -603,6 +603,14 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	respondJSON(w, http.StatusOK, ingestDailyResponse(rows, fractalFilter, days, time.Now().UTC()))
+}
+
+// ingestDailyResponse folds system.parts partition rows into the per-day ingest
+// chart: a zero-filled day window ending today, per-day totals across the selected
+// fractals, and, for the all-fractals view, a per-fractal stacked series capped to
+// the top contributors with the remainder rolled into "__other__".
+func ingestDailyResponse(rows []map[string]interface{}, fractalFilter string, days int, now time.Time) map[string]interface{} {
 	type dayAgg struct {
 		raw  float64
 		disk float64
@@ -647,7 +655,6 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 	// Ingest dates are stamped by our own servers, so unlike event timestamps they
 	// cannot run years ahead; the window only ever needs one day of slack to cover
 	// a writer whose clock is briefly past UTC midnight.
-	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	start := today.AddDate(0, 0, -days+1)
 	end := today
@@ -700,8 +707,15 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		for id := range byFractalDay {
 			ranked = append(ranked, id)
 		}
+		// Ties break on the id: ranked comes from map iteration, so without it two
+		// equal fractals would swap legend order, and which one falls into "Other",
+		// from one poll to the next.
 		sort.Slice(ranked, func(i, j int) bool {
-			return totalByFractal[ranked[i]] > totalByFractal[ranked[j]]
+			a, b := ranked[i], ranked[j]
+			if totalByFractal[a] != totalByFractal[b] {
+				return totalByFractal[a] > totalByFractal[b]
+			}
+			return a < b
 		})
 
 		other := []string{}
@@ -749,7 +763,7 @@ func (h *PerformanceHandler) HandleIngestDaily(w http.ResponseWriter, r *http.Re
 		resp["series"] = series
 	}
 
-	respondJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // HandleHotTableStats reports on logs_hot: partition count, rows, size, and the
@@ -771,40 +785,45 @@ func (h *PerformanceHandler) HandleHotTableStats(w http.ResponseWriter, r *http.
 	if err != nil {
 		log.Printf("[HotTable] stats: %v", err)
 	} else if len(hotRows) > 0 {
-		row := hotRows[0]
-		hotStats := map[string]interface{}{
-			"partition_count": toFloat64(row["partition_count"]),
-			"row_count":       toFloat64(row["row_count"]),
-			"disk_bytes":      toFloat64(row["disk_bytes"]),
-		}
-		// min_time/max_time are Nullable(DateTime); the driver may hand back
-		// time.Time, *time.Time, or a formatted string depending on the
-		// ClickHouse version, so all three are handled.
-		parsePartTime := func(v interface{}) (time.Time, bool) {
-			switch t := v.(type) {
-			case time.Time:
-				return t, !t.IsZero()
-			case *time.Time:
-				if t != nil && !t.IsZero() {
-					return *t, true
-				}
-			case string:
-				if parsed, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
-					return parsed, !parsed.IsZero()
-				}
-			}
-			return time.Time{}, false
-		}
-		if oldest, ok := parsePartTime(row["oldest"]); ok {
-			if newest, ok2 := parsePartTime(row["newest"]); ok2 {
-				hotStats["coverage_minutes"] = int64(math.Round(newest.Sub(oldest).Minutes()))
-				hotStats["oldest"] = oldest.UTC().Format("2006-01-02 15:04:05")
-				hotStats["newest"] = newest.UTC().Format("2006-01-02 15:04:05")
-			}
-		}
-		result["hot_table"] = hotStats
+		result["hot_table"] = hotTableStats(hotRows[0])
 	}
 	respondJSON(w, http.StatusOK, result)
+}
+
+// hotTableStats shapes the logs_hot system.parts summary row for the System tab,
+// adding the covered window when both part bounds are readable.
+func hotTableStats(row map[string]interface{}) map[string]interface{} {
+	hotStats := map[string]interface{}{
+		"partition_count": toFloat64(row["partition_count"]),
+		"row_count":       toFloat64(row["row_count"]),
+		"disk_bytes":      toFloat64(row["disk_bytes"]),
+	}
+	// min_time/max_time are Nullable(DateTime); the driver may hand back
+	// time.Time, *time.Time, or a formatted string depending on the
+	// ClickHouse version, so all three are handled.
+	parsePartTime := func(v interface{}) (time.Time, bool) {
+		switch t := v.(type) {
+		case time.Time:
+			return t, !t.IsZero()
+		case *time.Time:
+			if t != nil && !t.IsZero() {
+				return *t, true
+			}
+		case string:
+			if parsed, err := time.Parse("2006-01-02 15:04:05", t); err == nil {
+				return parsed, !parsed.IsZero()
+			}
+		}
+		return time.Time{}, false
+	}
+	if oldest, ok := parsePartTime(row["oldest"]); ok {
+		if newest, ok2 := parsePartTime(row["newest"]); ok2 {
+			hotStats["coverage_minutes"] = int64(math.Round(newest.Sub(oldest).Minutes()))
+			hotStats["oldest"] = oldest.UTC().Format("2006-01-02 15:04:05")
+			hotStats["newest"] = newest.UTC().Format("2006-01-02 15:04:05")
+		}
+	}
+	return hotStats
 }
 
 func toFloat64(v interface{}) float64 {

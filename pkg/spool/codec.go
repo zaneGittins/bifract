@@ -111,6 +111,11 @@ func decodeBatch(payload []byte) ([]storage.LogEntry, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Same guard as the record count: a field is at least its two length
+		// prefixes, so refuse a count the payload cannot hold before it sizes the map.
+		if remain := len(r.b) - r.pos; int64(fieldCount)*8 > int64(remain) {
+			return nil, fmt.Errorf("spool: field count %d exceeds payload capacity (%d bytes)", fieldCount, remain)
+		}
 		if fieldCount > 0 {
 			e.Fields = make(map[string]string, fieldCount)
 			for j := uint32(0); j < fieldCount; j++ {

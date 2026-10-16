@@ -285,8 +285,11 @@ func alertRowFilters(q, fractal, nameCol, fractalCol string, args *[]interface{}
 	// the value just appended is $len. Adding one leaves a gap and Postgres
 	// rejects the statement with "could not determine data type of parameter".
 	if q = strings.TrimSpace(q); q != "" {
-		if len(q) > 120 {
-			q = q[:120]
+		// Cut on a rune boundary: a byte cut can split a multi-byte character, and
+		// Postgres rejects the resulting invalid UTF-8 parameter outright, failing
+		// the whole table instead of searching a slightly shorter term.
+		if runes := []rune(q); len(runes) > 120 {
+			q = string(runes[:120])
 		}
 		*args = append(*args, "%"+q+"%")
 		where += fmt.Sprintf(" AND %s ILIKE $%d", nameCol, len(*args))

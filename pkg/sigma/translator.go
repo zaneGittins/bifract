@@ -256,10 +256,12 @@ func buildNativeOpExpr(field string, values []string, matchType string) (string,
 }
 
 // encodeBQLNativeValue encodes a value for use in =~/=^/=$ value lists.
-// Values whose characters are all safe for the BQL identifier lexer are
-// returned bare; all others are returned as a double-quoted BQL string.
+// Values the BQL lexer reads back as one bare word are returned bare; all others
+// are returned as a double-quoted BQL string. A bare word must start with a
+// letter, digit or underscore ("-enc" would lex as a minus sign and fail the
+// whole rule) and must not be a boolean keyword.
 func encodeBQLNativeValue(v string) string {
-	safe := len(v) > 0
+	safe := len(v) > 0 && isBareWordStart(v[0]) && !isBQLKeyword(v)
 	for _, ch := range v {
 		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' ||
 			ch >= '0' && ch <= '9' || ch == '_' || ch == '-' || ch == '.' || ch == '*') {
@@ -280,6 +282,14 @@ func encodeBQLNativeValue(v string) string {
 	}
 	b.WriteRune('"')
 	return b.String()
+}
+
+func isBareWordStart(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+}
+
+func isBQLKeyword(v string) bool {
+	return strings.EqualFold(v, "and") || strings.EqualFold(v, "or") || strings.EqualFold(v, "not")
 }
 
 // valuesHaveComma reports whether any value contains a literal comma, which

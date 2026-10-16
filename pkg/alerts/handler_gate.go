@@ -302,7 +302,8 @@ func (h *Handler) changeRequestError(w http.ResponseWriter, err error) {
 	// Bad input is the caller's mistake, not the server's. Falling through to the
 	// default told a client its request had crashed something when it was simply
 	// rejected, and buried the reason in a log line.
-	case strings.Contains(err.Error(), "must be"), strings.Contains(err.Error(), "needs a"),
+	case errors.Is(err, ErrInvalidAlert), strings.Contains(err.Error(), "invalid query syntax"),
+		strings.Contains(err.Error(), "must be"), strings.Contains(err.Error(), "needs a"),
 		strings.Contains(err.Error(), "needs an"), strings.Contains(err.Error(), "is required"),
 		strings.Contains(err.Error(), "has no alert yet"), strings.Contains(err.Error(), "say why"),
 		strings.Contains(err.Error(), "at most"), strings.Contains(err.Error(), "duplicate"):

@@ -447,28 +447,6 @@ func (s *Storage) toggleAPIKey(ctx context.Context, keyID string, scope scopeFil
 	return s.getAPIKeyByID(ctx, keyID)
 }
 
-// GetAPIKeysByUser returns all API keys created by a specific user
-func (s *Storage) GetAPIKeysByUser(ctx context.Context, username string) ([]APIKey, error) {
-	query := fmt.Sprintf(`SELECT %s %s WHERE ak.created_by = $1 ORDER BY ak.created_at DESC`, selectColumns, fromClause)
-
-	rows, err := s.pg.DB().QueryContext(ctx, query, username)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list API keys by user: %w", err)
-	}
-	defer rows.Close()
-
-	var keys []APIKey
-	for rows.Next() {
-		key, err := scanAPIKey(rows)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan API key: %w", err)
-		}
-		keys = append(keys, *key)
-	}
-
-	return keys, nil
-}
-
 // GetFractalName returns the name of a fractal by ID.
 func (s *Storage) GetFractalName(ctx context.Context, fractalID string) (string, error) {
 	var name string

@@ -227,8 +227,6 @@ func (m *Manager) unregisterCancel(id string) {
 // inserts into the model's existing data table, so it can never orphan a table
 // or materialized view.
 func (m *Manager) runBackfill(ctx context.Context, id string) {
-	defer m.unregisterCancel(id)
-
 	// Global single-flight: wait for a slot (cancellable).
 	select {
 	case m.bfSem <- struct{}{}:
@@ -386,7 +384,13 @@ func (m *Manager) getBackfillState(ctx context.Context, id string) (window strin
 	return
 }
 
+// finishBackfill records a run's terminal status. Every exit from runBackfill
+// goes through here, and the run's cancel is dropped before the status leaves
+// 'running': a new run can only register once it has, so the finishing run can
+// never remove the cancel of the run that replaced it, which would leave that one
+// running on through a later rebuild or delete.
 func (m *Manager) finishBackfill(id, status, errMsg string) {
+	m.unregisterCancel(id)
 	_, _ = m.pg.Exec(context.Background(),
 		`UPDATE analytics_models SET backfill_status=$1, backfill_error=$2 WHERE id=$3`,
 		status, errMsg, id)

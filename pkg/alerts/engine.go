@@ -646,7 +646,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 			if len(scopeFractals) == 0 && alert.FractalID != "" {
 				scopeFractals = []string{alert.FractalID}
 			}
-			resolver := &tlshresolve.Resolver{Models: e.modelManager, Dicts: e.dictManager, DB: e.ch}
+			resolver := tlshresolve.NewResolver(e.modelManager, e.dictManager, e.ch)
 			res, rerr := resolver.Resolve(ctx, params, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: alert.PrismID})
 			if rerr != nil {
 				return opts, rerr
@@ -1210,9 +1210,14 @@ func (e *Engine) refreshAlertsCache(ctx context.Context) ([]*Alert, error) {
 			schedule, cronErr := cronParser.Parse(*alert.ScheduleCron)
 			if cronErr != nil {
 				log.Printf("[Alert Engine] Failed to parse cron for alert %s: %v", alert.Name, cronErr)
-				reason := fmt.Sprintf("Auto-disabled: invalid cron expression: %v", cronErr)
-				if disableErr := e.disableAlertWithReason(ctx, alert.ID, reason); disableErr != nil {
-					log.Printf("[Alert Engine] Failed to disable alert %s: %v", alert.Name, disableErr)
+				// The row is left out of the cache below, so there is nothing to refresh.
+				// Only an enabled alert is disabled: the refresh reads every row, and a
+				// disabled one would otherwise be rewritten on every refresh.
+				if alert.Enabled {
+					reason := fmt.Sprintf("Auto-disabled: invalid cron expression: %v", cronErr)
+					if disableErr := e.markAlertDisabled(ctx, alert.ID, reason); disableErr != nil {
+						log.Printf("[Alert Engine] Failed to disable alert %s: %v", alert.Name, disableErr)
+					}
 				}
 				continue
 			}
@@ -1325,6 +1330,17 @@ func (e *Engine) recordExecution(ctx context.Context, alertID string, fractalID 
 }
 
 func (e *Engine) disableAlertWithReason(ctx context.Context, alertID string, reason string) error {
+	if err := e.markAlertDisabled(ctx, alertID, reason); err != nil {
+		return err
+	}
+	e.RefreshAlerts(ctx)
+	return nil
+}
+
+// markAlertDisabled records the disable without refreshing the cache, for the cache
+// refresh itself: refreshing from inside a refresh recursed without bound on a row
+// that kept failing to load.
+func (e *Engine) markAlertDisabled(ctx context.Context, alertID string, reason string) error {
 	_, err := e.pg.Exec(ctx,
 		`UPDATE alerts SET enabled = false, disabled_reason = $1, updated_at = NOW() WHERE id = $2`,
 		reason, alertID,
@@ -1332,7 +1348,6 @@ func (e *Engine) disableAlertWithReason(ctx context.Context, alertID string, rea
 	if err != nil {
 		return fmt.Errorf("failed to disable alert: %w", err)
 	}
-	e.RefreshAlerts(ctx)
 	return nil
 }
 

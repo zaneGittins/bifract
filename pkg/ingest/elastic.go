@@ -1,8 +1,6 @@
 package ingest
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -87,15 +85,21 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 	}
 
 	logs, items, err := h.parseBulkRequest(body, tokenData.Normalizer, tokenData.TimestampFields)
+	if errors.Is(err, errLineTooLong) {
+		respondElasticError(w, http.StatusRequestEntityTooLarge, err.Error())
+		return
+	}
 	if err != nil {
 		respondElasticError(w, http.StatusBadRequest, "Failed to parse bulk request")
 		return
 	}
 
 	if len(logs) == 0 {
+		// Every document may have failed to parse: errors must say so, since bulk
+		// clients only inspect items when it is set.
 		respondJSON(w, http.StatusOK, ElasticBulkResponse{
 			Took:   int(time.Since(startTime).Milliseconds()),
-			Errors: false,
+			Errors: bulkItemsHaveErrors(items),
 			Items:  items,
 		})
 		return
@@ -106,25 +110,23 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 		logs[i].FractalID = tokenData.FractalID
 	}
 
+	// Per-fractal disk quota check, as on the other ingest endpoints.
+	if q := h.handler.quotaManager; q != nil {
+		var batchBytes int64
+		for i := range logs {
+			batchBytes += int64(len(logs[i].RawLog))
+		}
+		if !q.CheckQuota(tokenData.FractalID, batchBytes) {
+			w.Header().Set("Retry-After", "30")
+			respondBulkRejected(w, startTime, items, "Fractal disk quota exceeded")
+			return
+		}
+	}
+
 	// Push onto the shared ingestion queue
 	if !h.handler.queue.Enqueue(logs) {
-		for i := range items {
-			if items[i].Index.Status == 201 {
-				items[i].Index.Status = 429
-				items[i].Index.Result = "too_many_requests"
-				items[i].Index.Error = "Ingestion queue full"
-			}
-			if items[i].Create.Status == 201 {
-				items[i].Create.Status = 429
-				items[i].Create.Result = "too_many_requests"
-				items[i].Create.Error = "Ingestion queue full"
-			}
-		}
-		respondJSON(w, http.StatusTooManyRequests, ElasticBulkResponse{
-			Took:   int(time.Since(startTime).Milliseconds()),
-			Errors: true,
-			Items:  items,
-		})
+		w.Header().Set("Retry-After", "2")
+		respondBulkRejected(w, startTime, items, "Ingestion queue full")
 		return
 	}
 
@@ -137,16 +139,37 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 		}
 	}(tokenData.TokenID, len(logs))
 
-	hasErrors := false
-	for _, item := range items {
-		if item.Index.Status >= 400 || item.Create.Status >= 400 {
-			hasErrors = true
-			break
-		}
-	}
 	respondJSON(w, http.StatusOK, ElasticBulkResponse{
 		Took:   int(time.Since(startTime).Milliseconds()),
-		Errors: hasErrors,
+		Errors: bulkItemsHaveErrors(items),
+		Items:  items,
+	})
+}
+
+func bulkItemsHaveErrors(items []ElasticBulkItem) bool {
+	for _, item := range items {
+		if item.Index.Status >= 400 || item.Create.Status >= 400 {
+			return true
+		}
+	}
+	return false
+}
+
+// respondBulkRejected turns every accepted item into a retryable 429, so a bulk
+// client retries exactly the documents that were not ingested.
+func respondBulkRejected(w http.ResponseWriter, startTime time.Time, items []ElasticBulkItem, reason string) {
+	for i := range items {
+		for _, res := range []*ElasticIndexResult{&items[i].Index, &items[i].Create} {
+			if res.Status == 201 {
+				res.Status = 429
+				res.Result = "too_many_requests"
+				res.Error = reason
+			}
+		}
+	}
+	respondJSON(w, http.StatusTooManyRequests, ElasticBulkResponse{
+		Took:   int(time.Since(startTime).Milliseconds()),
+		Errors: true,
 		Items:  items,
 	})
 }
@@ -155,12 +178,9 @@ func (h *ElasticBulkHandler) parseBulkRequest(data []byte, norm *normalizers.Com
 	var logs []storage.LogEntry
 	var items []ElasticBulkItem
 
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), 10*1024*1024) // 10MB max line
-	lineNum := 0
+	scanner := newLineScanner(data)
 
 	for scanner.Scan() {
-		lineNum++
 		actionLine := scanner.Text()
 		if actionLine == "" {
 			continue
@@ -190,7 +210,6 @@ func (h *ElasticBulkHandler) parseBulkRequest(data []byte, norm *normalizers.Com
 		if !scanner.Scan() {
 			break
 		}
-		lineNum++
 		docLine := scanner.Text()
 		if docLine == "" {
 			continue
@@ -259,6 +278,9 @@ func (h *ElasticBulkHandler) parseBulkRequest(data []byte, norm *normalizers.Com
 			}
 		}
 		items = append(items, item)
+	}
+	if err := lineScanErr(scanner); err != nil {
+		return nil, nil, err
 	}
 
 	return logs, items, nil

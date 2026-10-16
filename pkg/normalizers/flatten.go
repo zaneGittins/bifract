@@ -39,29 +39,25 @@ func arrayOfObjects(arr []interface{}) bool {
 	return true
 }
 
-// FlattenFields expands any JSON-object string values in fields into individual
-// keys according to the given mode. Only keys present in expandable are expanded;
-// other string values (even if they look like JSON) are left as-is.
-// Dots in all output keys are replaced with underscores to prevent ClickHouse's
-// JSON column from re-nesting dot-separated keys.
-//
-//   - FlattenLeaf: uses only the leaf key name. Every leaf whose name collides
-//     with another uses its full underscore-joined path instead.
-//   - FlattenFull: uses the parent key + "_" + child key (underscore-joined).
-func FlattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool) map[string]string {
-	out, _ := flattenFields(fields, mode, nestedKeys, nil, nil)
-	return out
-}
-
 // leaf is one scalar produced by flattening, with its leaf-mode name and full path.
 type leaf struct {
 	name, path, value string
 }
 
-// flattenFields is FlattenFields with rename applied to every output key. Leaf
-// collisions are judged on renamed keys, so names that only differ before the
-// rename (ProcessID vs ProcessId under snake_case) both fall back to full paths
-// rather than one overwriting the other at random.
+// flattenFields expands JSON-object string values in fields into individual keys
+// according to mode. When nestedKeys is non-nil only the keys it lists are expanded;
+// other string values (even ones that look like JSON) are left as-is. A nil
+// nestedKeys expands any value that parses as a JSON object. Dots in output keys are
+// replaced with underscores so ClickHouse's JSON column does not re-nest them.
+//
+//   - FlattenLeaf: uses only the leaf key name. Every leaf whose name collides
+//     with another uses its full underscore-joined path instead.
+//   - FlattenFull: uses the parent key + "_" + child key (underscore-joined).
+//
+// rename is applied to every output key. Leaf collisions are judged on renamed
+// keys, so names that only differ before the rename (ProcessID vs ProcessId under
+// snake_case) both fall back to full paths rather than one overwriting the other
+// at random.
 //
 // Leaves matched by paths are returned separately under their targets, untouched by
 // rename. Their targets are reserved: any other leaf named the same falls back to its
@@ -294,18 +290,11 @@ type FieldsWithNested struct {
 	NestedKeys map[string]bool // keys whose values are serialized nested objects
 }
 
-// BuildFields converts a parsed JSON object into a flat map[string]string
-// without any recursion or flattening. Nested objects and arrays are serialized
-// as JSON strings. Tracks which keys came from nested objects so that
-// FlattenFields only expands those (not arbitrary strings that happen to be JSON).
-func BuildFields(obj map[string]interface{}) map[string]string {
-	result := BuildFieldsWithNested(obj)
-	return result.Fields
-}
-
-// BuildFieldsWithNested is like BuildFields but also returns which keys are
-// serialized nested objects, so FlattenFields can distinguish them from string
-// values that happen to contain JSON.
+// BuildFieldsWithNested converts a parsed JSON object into a flat map[string]string
+// without any recursion or flattening: nested objects and arrays are serialized as
+// JSON strings. It also reports which keys hold serialized nested objects, so the
+// flatten transforms expand only those and not string values that happen to
+// contain JSON.
 func BuildFieldsWithNested(obj map[string]interface{}) FieldsWithNested {
 	fields := make(map[string]string, len(obj))
 	nested := make(map[string]bool)

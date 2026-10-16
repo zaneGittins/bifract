@@ -670,11 +670,18 @@ func (m *Manager) hasRows(ctx context.Context, dict *Dictionary) bool {
 	return toUint64(rows[0]["n"]) > 0
 }
 
-// fetchSource downloads a source body, refusing anything past maxSourceBytes.
-// A failure is described without the detail of where the request went.
+// fetchSource downloads a source body under the deployment's current egress
+// policy, read per fetch so a change reaches every replica at once.
 func (m *Manager) fetchSource(ctx context.Context, url string) ([]byte, error) {
 	allowPrivate, _ := m.pg.GetSetting(ctx, allowPrivateSetting)
-	client := egress.NewClient(egress.Options{AllowPrivate: allowPrivate == "true", Timeout: sourceSyncTimeout})
+	return downloadSource(ctx, url, allowPrivate == "true")
+}
+
+// downloadSource fetches url through the egress guard, refusing anything past
+// maxSourceBytes. A failure is described without the detail of where the
+// request went.
+func downloadSource(ctx context.Context, url string, allowPrivate bool) ([]byte, error) {
+	client := egress.NewClient(egress.Options{AllowPrivate: allowPrivate, Timeout: sourceSyncTimeout})
 	resp, err := egress.Get(ctx, client, url)
 	if err != nil {
 		log.Printf("[Dictionaries] fetching %s: %v", url, err)
