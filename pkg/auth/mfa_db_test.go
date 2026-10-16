@@ -368,3 +368,67 @@ func TestHandleAdminResetMFASuccess(t *testing.T) {
 		t.Errorf("failed reset: %d, sessions %d", rec.Code, len(db.sessionsOf("half")))
 	}
 }
+
+// mfaStrikes reports how many wrong codes the MFA limiter holds for a user.
+func mfaStrikes(h *AuthHandler, username string) int {
+	h.mfaLimiter.mu.Lock()
+	defer h.mfaLimiter.mu.Unlock()
+	if a, ok := h.mfaLimiter.attempts[username]; ok {
+		return a.failures
+	}
+	return 0
+}
+
+// A second factor that could not be checked at all, because the database or the
+// stored secret failed, is not a wrong code: it answers 503 with Retry-After and
+// costs the user no strike toward the lockout, however often it happens.
+func TestMFASecondFactorUnavailableIsNotAStrike(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	secret, codes := enroll(t, h, db, "alice")
+	pending := sessionCookie(login(h, "alice", userPassword, "203.0.113.3"))
+	before := loadUser(t, db, "alice")
+	next := totpAt(t, secret, before.TOTPLastCounter+1)
+
+	unavailable := func(t *testing.T, rec *httptest.ResponseRecorder, what string) {
+		t.Helper()
+		if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+			t.Errorf("%s: status %d, Retry-After %q; want 503 with Retry-After", what, rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if n := mfaStrikes(h, "alice"); n != 0 {
+			t.Errorf("%s: %d strikes recorded for a check that never ran", what, n)
+		}
+	}
+
+	db.failOn("totp_last_counter < $2", errors.New("pq: connection reset"))
+	for i := 0; i < loginMaxFailures+1; i++ {
+		unavailable(t, mfaPost(h.HandleMFAVerify, before, true, pending.Value, `{"code":"`+next+`"}`), "verify, counter unrecordable")
+	}
+	unavailable(t, mfaPost(h.HandleMFADisable, before, false, "", `{"password":"`+userPassword+`","code":"`+next+`"}`), "disable, counter unrecordable")
+
+	db.failOn("UPDATE user_recovery_codes SET used_at", errors.New("pq: connection reset"))
+	unavailable(t, mfaPost(h.HandleMFAVerify, before, true, pending.Value, `{"recovery_code":"`+codes[0]+`"}`), "verify, recovery code unspendable")
+
+	// A secret that no longer opens (the pepper changed under it) is the
+	// deployment's fault, not the user's.
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", "a-different-pepper")
+	unavailable(t, mfaPost(h.HandleMFAVerify, before, true, pending.Value, `{"code":"`+next+`"}`), "verify, secret unreadable")
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+
+	if len(db.rows("sessions", row{"session_id": pending.Value, "mfa_pending": true})) != 1 {
+		t.Error("an unavailable check changed the pending session")
+	}
+
+	// A wrong code is still a strike, and once the store is back the right
+	// code completes the login.
+	db.mu.Lock()
+	db.fail = map[string]error{}
+	db.mu.Unlock()
+	if rec := mfaPost(h.HandleMFAVerify, before, true, pending.Value, `{"code":"`+wrongCode(t, secret)+`"}`); rec.Code != http.StatusUnauthorized || mfaStrikes(h, "alice") != 1 {
+		t.Errorf("wrong code: status %d, strikes %d; want 401 and one strike", rec.Code, mfaStrikes(h, "alice"))
+	}
+	if rec := mfaPost(h.HandleMFAVerify, before, true, pending.Value, `{"code":"`+next+`"}`); rec.Code != http.StatusOK {
+		t.Errorf("verify after recovery: %d %s", rec.Code, rec.Body.String())
+	}
+}

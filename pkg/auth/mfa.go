@@ -265,6 +265,10 @@ func (h *AuthHandler) HandleMFAConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	counter, err := mfa.Validate(secret, req.Code, time.Now().Unix(), user.TOTPLastCounter)
+	if err != nil && !isWrongCode(err) {
+		writeSecondFactorUnavailable(w, user.Username, err)
+		return
+	}
 	if err != nil {
 		h.mfaLimiter.recordFailure(user.Username)
 		h.logAuthEvent("mfa_enroll_failed", user.Username, ip, "invalid code")
@@ -328,6 +332,10 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	usedRecovery, err := h.consumeSecondFactor(r, user, req.Code, req.RecoveryCode)
+	if isSecondFactorUnavailable(err) {
+		writeSecondFactorUnavailable(w, user.Username, err)
+		return
+	}
 	if err != nil {
 		h.mfaLimiter.recordFailure(user.Username)
 		h.logAuthEvent("mfa_failed", user.Username, ip, err.Error())
@@ -379,14 +387,55 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// secondFactorRetryAfter is the Retry-After sent when a code could not be
+// checked at all. Short: the usual cause is a database blip.
+const secondFactorRetryAfter = "30"
+
+// secondFactorUnavailableError marks a second factor check that could not be
+// completed for a reason that is not the user's: the database failed, or the
+// stored secret could not be opened. It is not a wrong code and must not cost
+// the user a strike toward the lockout.
+type secondFactorUnavailableError struct{ err error }
+
+func (e *secondFactorUnavailableError) Error() string {
+	return "second factor check unavailable: " + e.err.Error()
+}
+
+func (e *secondFactorUnavailableError) Unwrap() error { return e.err }
+
+func secondFactorUnavailable(err error) error { return &secondFactorUnavailableError{err: err} }
+
+func isSecondFactorUnavailable(err error) bool {
+	var u *secondFactorUnavailableError
+	return errors.As(err, &u)
+}
+
+// isWrongCode reports whether a validation error is the user's code being
+// wrong or replayed, as opposed to the check itself failing.
+func isWrongCode(err error) bool {
+	return errors.Is(err, mfa.ErrInvalidCode) || errors.Is(err, mfa.ErrCodeReused)
+}
+
+// writeSecondFactorUnavailable answers a check that could not be completed:
+// 503 with Retry-After, logged, and no strike on the user's MFA limiter.
+func writeSecondFactorUnavailable(w http.ResponseWriter, username string, err error) {
+	log.Printf("[Auth] Could not check second factor for %s: %v", username, err)
+	w.Header().Set("Retry-After", secondFactorRetryAfter)
+	api.WriteError(w, http.StatusServiceUnavailable, "Verification is temporarily unavailable. Please try again shortly.")
+}
+
 // consumeSecondFactor validates and spends either an authenticator code or a
 // recovery code. Both are spent in the database, so a replay of either loses the
 // race rather than authenticating twice.
+//
+// A wrong or replayed code returns a plain error. A failure that is not the
+// user's (database, unreadable secret) returns a secondFactorUnavailableError,
+// which callers must not count as a wrong code.
 func (h *AuthHandler) consumeSecondFactor(r *http.Request, user *storage.User, code, recovery string) (bool, error) {
 	if strings.TrimSpace(recovery) != "" {
 		ok, err := h.pg.ConsumeRecoveryCode(r.Context(), user.Username, hashRecoveryCode(recovery))
 		if err != nil {
-			return false, err
+			return false, secondFactorUnavailable(err)
 		}
 		if !ok {
 			return false, errors.New("invalid recovery code")
@@ -399,15 +448,18 @@ func (h *AuthHandler) consumeSecondFactor(r *http.Request, user *storage.User, c
 	}
 	secret, err := mfa.Open(user.TOTPSecret)
 	if err != nil {
-		return false, err
+		return false, secondFactorUnavailable(err)
 	}
 	counter, err := mfa.Validate(secret, code, time.Now().Unix(), user.TOTPLastCounter)
 	if err != nil {
-		return false, err
+		if isWrongCode(err) {
+			return false, err
+		}
+		return false, secondFactorUnavailable(err)
 	}
 	spent, err := h.pg.SpendTOTPCounter(r.Context(), user.Username, counter)
 	if err != nil {
-		return false, err
+		return false, secondFactorUnavailable(err)
 	}
 	if !spent {
 		return false, mfa.ErrCodeReused
@@ -450,7 +502,10 @@ func (h *AuthHandler) HandleMFADisable(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusUnauthorized, "Password is incorrect")
 		return
 	}
-	if _, err := h.consumeSecondFactor(r, user, req.Code, req.RecoveryCode); err != nil {
+	if _, err := h.consumeSecondFactor(r, user, req.Code, req.RecoveryCode); isSecondFactorUnavailable(err) {
+		writeSecondFactorUnavailable(w, user.Username, err)
+		return
+	} else if err != nil {
 		h.mfaLimiter.recordFailure(user.Username)
 		h.logAuthEvent("mfa_disable_failed", user.Username, ip, "invalid code")
 		api.WriteError(w, http.StatusUnauthorized, "That code is not correct")
