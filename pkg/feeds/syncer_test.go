@@ -18,7 +18,7 @@ func TestShouldRunDeletePass(t *testing.T) {
 	}{
 		{"normal prune", false, 100, 95, 0, true},
 		{"nothing removed", false, 100, 100, 0, true},
-		{"repo genuinely empty", false, 0, 0, 0, true},
+		{"no rule files listed", false, 0, 0, 0, false},
 		{"all rules filtered out by min level", false, 100, 0, 0, true},
 		{"a few rules failed but most succeeded", false, 100, 95, 5, true},
 		{"every rule errored", false, 100, 0, 100, false},

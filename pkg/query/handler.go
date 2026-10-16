@@ -1023,41 +1023,22 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// downstream keys off opts.SourceSubquery -- no per-command special-casing.
 	var sourceFocus string
 	var sourceQuerySettings string
-	if src, ok := parser.FirstSourceCommand(pipeline); ok {
-		if purpose == purposeExport {
-			respondJSON(w, http.StatusBadRequest, QueryResponse{Success: false, Query: req.Query, Error: errExportNotFilter})
-			return
-		}
-		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
-			respondJSON(w, http.StatusBadRequest, QueryResponse{
-				Success: false, Query: req.Query, ErrorType: "translate", Error: perr.Error(),
-			})
-			return
-		}
-		rs, rerr := h.resolveSourceCommand(r.Context(), src, opts)
-		if rerr != nil {
-			respondJSON(w, http.StatusBadRequest, QueryResponse{
-				Success: false, Query: req.Query, ErrorType: "translate", Error: rerr.Error(),
-			})
-			return
-		}
-		opts.SourceSubquery = rs.SQL
-		opts.SourceColumns = rs.Columns
-		opts.SourceNumericColumns = rs.NumericColumns
-		// A source resolver (e.g. pgr()) may prefer its own result-row cap and ordering over the
-		// deployment's generic MaxQueryRows/timestamp-DESC default -- its subquery rows are already
-		// meaningfully ordered (spawn structure before low-signal leaves), so re-sorting by
-		// timestamp and truncating at a generic cap can drop structure instead of noise. An
-		// explicit `| limit(N)` / `| sort(...)` downstream in the query still takes precedence.
-		if rs.Limit > 0 {
-			opts.MaxRows = rs.Limit
-		}
-		if len(rs.OrderBy) > 0 {
-			opts.SourceOrderBy = rs.OrderBy
-		}
+	if _, ok := parser.FirstSourceCommand(pipeline); ok && purpose == purposeExport {
+		respondJSON(w, http.StatusBadRequest, QueryResponse{Success: false, Query: req.Query, Error: errExportNotFilter})
+		return
+	}
+	pipeline, rs, serr := applySourceCommand(pipeline, &opts, func(src parser.CommandNode) (*resolvedSource, error) {
+		return h.resolveSourceCommand(r.Context(), src, opts)
+	})
+	if serr != nil {
+		respondJSON(w, http.StatusBadRequest, QueryResponse{
+			Success: false, Query: req.Query, ErrorType: "translate", Error: serr.Error(),
+		})
+		return
+	}
+	if rs != nil {
 		sourceFocus = rs.Focus
 		sourceQuerySettings = rs.QuerySettings
-		pipeline = parser.StripCommand(pipeline, src.Name)
 	}
 
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
@@ -1413,32 +1394,16 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	// the rest of the pipeline over a stand-in with the same columns, as execution
 	// would over the resolved source. Without this every pgr() query reads as an
 	// unsupported command.
-	if src, ok := parser.FirstSourceCommand(pipeline); ok {
-		invalid := func(err error) {
-			respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: err.Error(), ErrorType: "translate"})
-		}
-		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
-			invalid(perr)
-			return
-		}
+	pipeline, _, serr := applySourceCommand(pipeline, &opts, func(src parser.CommandNode) (*resolvedSource, error) {
 		stub, ok := sourceStubs[src.Name]
 		if !ok {
-			invalid(fmt.Errorf("unknown source command: %s()", src.Name))
-			return
+			return nil, fmt.Errorf("unknown source command: %s()", src.Name)
 		}
-		rs, serr := stub(src)
-		if serr != nil {
-			invalid(serr)
-			return
-		}
-		opts.SourceSubquery = rs.SQL
-		opts.SourceColumns = rs.Columns
-		opts.SourceNumericColumns = rs.NumericColumns
-		if rs.Limit > 0 {
-			opts.MaxRows = rs.Limit
-		}
-		opts.SourceOrderBy = rs.OrderBy
-		pipeline = parser.StripCommand(pipeline, src.Name)
+		return stub(src)
+	})
+	if serr != nil {
+		respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: serr.Error(), ErrorType: "translate"})
+		return
 	}
 
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {

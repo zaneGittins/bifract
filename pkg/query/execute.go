@@ -241,20 +241,15 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	// over it like any other query. Guards below key off opts.SourceSubquery.
 	var sourceFocus string
 	var sourceQuerySettings string
-	if src, ok := parser.FirstSourceCommand(pipeline); ok {
-		if perr := parser.ValidateSourceCommandPlacement(pipeline); perr != nil {
-			return nil, perr
-		}
-		rs, rerr := h.resolveSourceCommand(ctx, src, opts)
-		if rerr != nil {
-			return nil, rerr
-		}
-		opts.SourceSubquery = rs.SQL
-		opts.SourceColumns = rs.Columns
-		opts.SourceNumericColumns = rs.NumericColumns
+	pipeline, rs, err := applySourceCommand(pipeline, &opts, func(src parser.CommandNode) (*resolvedSource, error) {
+		return h.resolveSourceCommand(ctx, src, opts)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if rs != nil {
 		sourceFocus = rs.Focus
 		sourceQuerySettings = rs.QuerySettings
-		pipeline = parser.StripCommand(pipeline, src.Name)
 	}
 	hasSubquerySource := opts.SourceSubquery != ""
 
