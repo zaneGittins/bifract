@@ -18,7 +18,7 @@ func TestHandleLoginSuccess(t *testing.T) {
 	h, db := newDBHandler(t)
 	db.addUser("alice", asAdmin)
 
-	// Earlier failures from this address are forgiven by a correct password.
+	// Earlier failures at this account are forgiven by a correct password.
 	for i := 0; i < loginMaxFailures-1; i++ {
 		if rec := login(h, "alice", "wrong", "203.0.113.9"); rec.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong password: status %d", rec.Code)
@@ -57,12 +57,20 @@ func TestHandleLoginSuccess(t *testing.T) {
 		t.Errorf("user = %v", user)
 	}
 
-	// The failure count was reset: a full budget of failures is needed to block again.
+	// The account's count was reset: a full budget of failures is needed to
+	// block it again.
 	for i := 0; i < loginMaxFailures-1; i++ {
 		login(h, "alice", "wrong", "203.0.113.9")
 	}
-	if h.loginLimiter.check("203.0.113.9") {
-		t.Error("address blocked before a fresh run of failures")
+	if h.accountLimiter.check("alice") {
+		t.Error("account blocked before a fresh run of failures")
+	}
+	// The address's count was not: a success never forgives an address.
+	h.loginLimiter.mu.Lock()
+	ipFailures := h.loginLimiter.attempts["203.0.113.9"].failures
+	h.loginLimiter.mu.Unlock()
+	if ipFailures != 2*(loginMaxFailures-1) {
+		t.Errorf("address failures = %d, want %d carried across the success", ipFailures, 2*(loginMaxFailures-1))
 	}
 
 	// The cookie authenticates.
@@ -179,13 +187,14 @@ func mustHash(t *testing.T, password string) string {
 	return string(h)
 }
 
+// One address spraying usernames is blocked by the address limit.
 func TestHandleLoginBlocksAfterRepeatedFailures(t *testing.T) {
 	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
 	h, db := newDBHandler(t)
 	db.addUser("alice")
 
-	for i := 0; i < loginMaxFailures; i++ {
-		login(h, "alice", "guess", "198.51.100.8")
+	for i := 0; i < loginIPMaxFailures; i++ {
+		login(h, fmt.Sprintf("user%d", i), "guess", "198.51.100.8")
 	}
 	// The right password no longer helps from that address, and costs no lookup.
 	before := len(db.pg.Matching("FROM users"))
@@ -310,5 +319,84 @@ func TestHandleLoginForwardedForSpoofing(t *testing.T) {
 	}
 	if code := guess("172.18.0.5", "198.51.100.201"); code == http.StatusTooManyRequests {
 		t.Error("a client behind the proxy was blocked by another client's failures")
+	}
+}
+
+// Guesses at one account are limited however many addresses they come from, and
+// the block lands on the account, not on the people sharing an address.
+func TestHandleLoginBlocksAccountAcrossAddresses(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	db.addUser("bob")
+
+	for i := 0; i < loginMaxFailures; i++ {
+		if rec := login(h, "alice", "guess", fmt.Sprintf("198.51.100.%d", i+1)); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("guess %d: status %d", i+1, rec.Code)
+		}
+	}
+	rec := login(h, "alice", userPassword, "192.0.2.77")
+	if rec.Code != http.StatusTooManyRequests || sessionCookie(rec) != nil {
+		t.Fatalf("right password on a blocked account from a fresh address: status %d", rec.Code)
+	}
+	// Another account behind one of the same addresses is unaffected.
+	if rec := login(h, "bob", userPassword, "198.51.100.1"); rec.Code != http.StatusOK {
+		t.Errorf("bob: status %d, want 200", rec.Code)
+	}
+
+	h.accountLimiter.mu.Lock()
+	a := h.accountLimiter.attempts["alice"]
+	h.accountLimiter.mu.Unlock()
+	if d := time.Until(a.blockedUntil); d <= loginAccountBlockDuration-time.Minute || d > loginAccountBlockDuration {
+		t.Errorf("account block lasts %v, want about %v", d, loginAccountBlockDuration)
+	}
+	// Once the block lapses the right password works.
+	h.accountLimiter.mu.Lock()
+	a.blockedUntil = time.Now().Add(-time.Second)
+	h.accountLimiter.mu.Unlock()
+	if rec := login(h, "alice", userPassword, "192.0.2.77"); rec.Code != http.StatusOK {
+		t.Errorf("after the block: status %d, want 200", rec.Code)
+	}
+}
+
+// Someone with an account of their own cannot keep guessing at another account
+// by logging in successfully between guesses: a success forgives only the
+// account that succeeded, never the address.
+func TestHandleLoginSuccessDoesNotResetAddress(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("mallory")
+	for i := 0; i < loginIPMaxFailures; i++ {
+		db.addUser(fmt.Sprintf("victim%d", i))
+	}
+
+	const ip = "198.51.100.66"
+	blocked := false
+	for i := 0; i < 3*loginIPMaxFailures && !blocked; i++ {
+		// Spread over many victims so no single account limit is reached.
+		victim := fmt.Sprintf("victim%d", i%loginIPMaxFailures)
+		blocked = login(h, victim, "guess", ip).Code == http.StatusTooManyRequests
+		if !blocked && i%2 == 1 {
+			login(h, "mallory", userPassword, ip)
+		}
+	}
+	if !blocked {
+		t.Fatal("interleaved successful logins kept the address under its limit")
+	}
+}
+
+// Unknown usernames count against the address only, so garbage names cannot
+// grow the per-account table.
+func TestHandleLoginUnknownUsersNotTrackedPerAccount(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, _ := newDBHandler(t)
+	for i := 0; i < 10; i++ {
+		login(h, fmt.Sprintf("nobody%d", i), "guess", "198.51.100.70")
+	}
+	h.accountLimiter.mu.Lock()
+	n := len(h.accountLimiter.attempts)
+	h.accountLimiter.mu.Unlock()
+	if n != 0 {
+		t.Errorf("%d per-account entries for unknown usernames", n)
 	}
 }

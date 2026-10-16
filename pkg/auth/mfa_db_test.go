@@ -432,3 +432,33 @@ func TestMFASecondFactorUnavailableIsNotAStrike(t *testing.T) {
 		t.Errorf("verify after recovery: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Finishing the second factor forgives nothing at the address: like a password
+// success, it must not let one account's login clear failures aimed at others.
+func TestMFAVerifyDoesNotResetAddress(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	secret, _ := enroll(t, h, db, "alice")
+
+	const ip = "203.0.113.3"
+	pending := sessionCookie(login(h, "alice", userPassword, ip))
+	for i := 0; i < 3; i++ {
+		h.loginLimiter.recordFailure(ip)
+	}
+	before := loadUser(t, db, "alice")
+	r := mfaRequest(before, true, `{"code":"`+totpAt(t, secret, before.TOTPLastCounter+1)+`"}`)
+	r.RemoteAddr = ip + ":40000"
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: pending.Value})
+	rec := httptest.NewRecorder()
+	h.HandleMFAVerify(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify: %d %s", rec.Code, rec.Body.String())
+	}
+	h.loginLimiter.mu.Lock()
+	a := h.loginLimiter.attempts[ip]
+	h.loginLimiter.mu.Unlock()
+	if a == nil || a.failures != 3 {
+		t.Errorf("address failures after verify = %+v, want 3 kept", a)
+	}
+}
