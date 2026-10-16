@@ -972,15 +972,6 @@ func negatedCommandPredicate(cmd CommandNode, opts QueryOptions) (string, error)
 	return sql, nil
 }
 
-// andJoin combines WHERE parts with AND, bracketing any part that carries a
-// top-level OR.
-//
-// The time-range and fractal_id guards are just entries in this list, and AND
-// binds tighter than OR, so an unbracketed `a OR b` would leave the right
-// disjunct outside them and read every fractal at any time. Each condition
-// producer already brackets its own output, but that was an unwritten invariant
-// with nothing enforcing it: a new producer that forgot re-opened the hole.
-// Enforcing it here makes the guarantee structural.
 // isClauseSpace reports whether a byte separates SQL tokens.
 func isClauseSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
@@ -992,6 +983,8 @@ func isORBoundary(c byte) bool {
 	return isClauseSpace(c) || c == '('
 }
 
+// andJoin combines WHERE parts with AND, bracketing any part with a top-level
+// OR so no disjunct escapes the time-range and fractal_id guards beside it.
 func andJoin(parts []string) string {
 	safe := make([]string, 0, len(parts))
 	for _, p := range parts {
