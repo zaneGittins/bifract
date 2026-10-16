@@ -109,6 +109,19 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
 		}
 	}
+	// Conditions before the segment's first command resolve against the parent
+	// pipeline too, ahead of what the segment's commands add; later ones see those
+	// commands' outputs.
+	first, later := splitFirstStage(pl.HavingConditions)
+	condReg := reg
+	if parentReg != nil {
+		condReg = parentReg
+	}
+	if w, err := conditionsPredicate(first, condReg.rowLevelClone(), opts); err != nil {
+		return eff, err
+	} else if w != "" {
+		plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
+	}
 
 	for i, cmd := range pl.Commands {
 		ctx.CmdIndex = i
@@ -128,6 +141,12 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
 			return eff, err
 		}
+	}
+
+	if w, err := conditionsPredicate(later, reg.rowLevelClone(), opts); err != nil {
+		return eff, err
+	} else if w != "" {
+		plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, w)
 	}
 
 	src := &plan.SourceStage().Layer

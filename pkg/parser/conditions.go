@@ -787,6 +787,35 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 	return ""
 }
 
+// conditionsPredicate compiles a sub-pipeline's conditions (a case branch, a chain
+// step) into one predicate against registry. Such a sub-pipeline is evaluated row
+// by row, so every column it references is in scope and nothing is routed to a
+// later stage.
+func conditionsPredicate(conds []HavingCondition, registry *FieldRegistry, opts QueryOptions) (string, error) {
+	if err := resolveCommandConditions(conds, opts); err != nil {
+		return "", err
+	}
+	for i := range conds {
+		if err := compileNestedExprLeaves(&conds[i], 0, registry, nil); err != nil {
+			return "", err
+		}
+	}
+	return materializeCondGroup(conds, registry, nil), nil
+}
+
+// splitFirstStage separates the conditions written before a pipeline's first
+// command from those after one.
+func splitFirstStage(conds []HavingCondition) (first, later []HavingCondition) {
+	for _, c := range conds {
+		if c.CmdIndex == 0 {
+			first = append(first, c)
+		} else {
+			later = append(later, c)
+		}
+	}
+	return first, later
+}
+
 // negateHavingCondition flips the operator on a HavingCondition to apply NOT.
 // For compound nodes, toggles the Negate flag.
 // For regex/string conditions (IsRegex=true), "=" and "~" become "!=" (which

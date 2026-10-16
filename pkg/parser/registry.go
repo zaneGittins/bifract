@@ -74,10 +74,10 @@ type FieldRegistry struct {
 	// later groupby groups by its own keys, so the earlier stage's are superseded
 	// rather than accumulated.
 	groupKeyCmd int
-	// firstStage marks the view a condition before the first command resolves
-	// against (see firstStageView): no aggregation precedes it, so count, sum and
-	// avg name log fields there, not aggregates.
-	firstStage bool
+	// rowLevel marks a registry conditions resolve against row by row, with no
+	// aggregation before them (firstStageView, a case branch, a chain step): count,
+	// sum and avg name log fields there, not aggregates.
+	rowLevel bool
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
@@ -118,6 +118,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		icePromoted: r.icePromoted,
 		groupKeys:   make(map[string]string, len(r.groupKeys)),
 		groupKeyCmd: r.groupKeyCmd,
+		rowLevel:    r.rowLevel,
 	}
 	for k, v := range r.groupKeys {
 		c.groupKeys[k] = v
@@ -136,7 +137,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 // filter written before it.
 func (r *FieldRegistry) firstStageView() *FieldRegistry {
 	v := NewFieldRegistry(r.sourceMode, r.icePromoted)
-	v.firstStage = true
+	v.rowLevel = true
 	for _, name := range r.order {
 		if e := r.fields[name]; e.ProducedBy < 0 {
 			entry := *e
@@ -147,10 +148,17 @@ func (r *FieldRegistry) firstStageView() *FieldRegistry {
 	return v
 }
 
+// rowLevelClone is a copy for conditions evaluated row by row.
+func (r *FieldRegistry) rowLevelClone() *FieldRegistry {
+	c := r.Clone()
+	c.rowLevel = true
+	return c
+}
+
 // bareAggregate reports whether a name with no registry entry stands for an
 // aggregate here: count, sum and avg do once an aggregation can precede them.
 func (r *FieldRegistry) bareAggregate(field string) bool {
-	return (r == nil || !r.firstStage) && isBareAggregate(field)
+	return (r == nil || !r.rowLevel) && isBareAggregate(field)
 }
 
 // fieldRef returns the source-mode-appropriate reference for a JSON/MAP field.

@@ -1648,6 +1648,17 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 		}
 		fields = collectConditionFieldsOrdered(pl.Filter.Conditions, seen, fields)
 	}
+	// Conditions before the step's first command resolve before its projections
+	// are registered, ahead of them; later ones (`a=1 | _len > 500`) after.
+	first, later := splitFirstStage(pl.HavingConditions)
+	if w, err := conditionsPredicate(first, reg.rowLevelClone(), opts); err != nil {
+		return "", nil, fmt.Errorf("chain step: %w", err)
+	} else if w != "" {
+		conjuncts = append(conjuncts, w)
+	}
+	for _, c := range first {
+		fields = collectHavingFieldsOrdered(c, seen, &fields)
+	}
 
 	// Before the conditions below: len()/match()/lookupIP() register the expressions
 	// that a later `_len > 500` in the same step resolves against.
@@ -1665,18 +1676,13 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 		}
 	}
 
-	// Later filter stages in the step (`a=1 | b=2`) arrive as HavingConditions, as
-	// do condition functions used as boolean operands.
-	if len(pl.HavingConditions) > 0 {
-		if err := resolveCommandConditions(pl.HavingConditions, opts); err != nil {
-			return "", nil, fmt.Errorf("chain step: %w", err)
-		}
-		if h := materializeCondGroup(pl.HavingConditions, reg, nil); h != "" {
-			conjuncts = append(conjuncts, h)
-		}
-		for _, c := range pl.HavingConditions {
-			fields = collectHavingFieldsOrdered(c, seen, &fields)
-		}
+	if w, err := conditionsPredicate(later, reg.rowLevelClone(), opts); err != nil {
+		return "", nil, fmt.Errorf("chain step: %w", err)
+	} else if w != "" {
+		conjuncts = append(conjuncts, w)
+	}
+	for _, c := range later {
+		fields = collectHavingFieldsOrdered(c, seen, &fields)
 	}
 
 	if len(pl.Assignments) > 0 {
