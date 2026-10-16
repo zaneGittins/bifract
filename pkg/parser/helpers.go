@@ -1392,12 +1392,13 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 	}
 }
 
-// CommandPredicate compiles a condition function into a boolean expression. The
-// handler runs against a throwaway plan, so its effect is captured as a predicate
-// instead of being appended to the query's WHERE.
-func CommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
+// CommandPredicate compiles a condition function into a boolean expression whose
+// fields resolve through registry. The handler runs against a throwaway plan and
+// registry copy, so its effect is captured as a predicate instead of being
+// appended to the query's WHERE.
+func CommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOptions) (string, error) {
 	pl := &PipelineNode{Commands: []CommandNode{cmd}}
-	where, _, err := harvestChainCommands(pl, opts, nil)
+	where, _, err := harvestChainCommands(pl, opts, registry.Clone())
 	if err != nil {
 		return "", err
 	}

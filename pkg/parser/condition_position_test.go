@@ -59,6 +59,10 @@ func TestConditionSeesFieldsAtItsPosition(t *testing.T) {
 			"lower(fields.`x`::String) = 'a'", ""},
 		{"assignment after an OR chain", `a="1" OR b="2" y := lower(x) y="q"`,
 			"(fields.`a`::String = '1' OR fields.`b`::String = '2') AND lower(fields.`x`::String) = 'q'", ""},
+		{"earlier assignment applies to a function operand", `* | ip2 := lower(ip) | cidr(ip2, "10.0.0.0/8") OR a="1"`,
+			"isIPv4String(lower(fields.`ip`::String))", "fields.`ip2`"},
+		{"later assignment does not apply to a function operand", `cidr(ip2, "10.0.0.0/8") OR a="1" | ip2 := lower(ip)`,
+			"isIPv4String(fields.`ip2`::String)", "isIPv4String(lower("},
 		{"reassignment keeps the earlier value", `y := upper(x) | y=5 | y := lower(x)`,
 			"upper(fields.`x`::String) = '5'", "lower(fields.`x`::String) = '5'"},
 	}

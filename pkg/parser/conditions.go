@@ -853,7 +853,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 // by row, so every column it references is in scope and nothing is routed to a
 // later stage.
 func conditionsPredicate(conds []HavingCondition, registry *FieldRegistry, opts QueryOptions) (string, error) {
-	if err := resolveCommandConditions(conds, opts); err != nil {
+	if err := resolveCommandConditions(conds, registry, nil, opts); err != nil {
 		return "", err
 	}
 	for i := range conds {
@@ -929,12 +929,14 @@ func cloneConditions(conds []HavingCondition) []HavingCondition {
 	return out
 }
 
-// resolveCommandConditions compiles condition-function operands into SQL. It runs
-// before classification so the rest of the pipeline treats them as ordinary leaves.
-func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) error {
+// resolveCommandConditions compiles condition-function operands into SQL, each
+// against the registry at its position (plan.conditionRegistry when a plan is
+// given). It runs before classification so the rest of the pipeline treats them
+// as ordinary leaves.
+func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegistry, plan *QueryPlan, opts QueryOptions) error {
 	for i := range conditions {
 		if conditions[i].IsCompound {
-			if err := resolveCommandConditions(conditions[i].Children, opts); err != nil {
+			if err := resolveCommandConditions(conditions[i].Children, registry, plan, opts); err != nil {
 				return err
 			}
 			continue
@@ -942,7 +944,11 @@ func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) e
 		if conditions[i].Command == nil {
 			continue
 		}
-		sql, err := negatedCommandPredicate(*conditions[i].Command, opts)
+		reg := registry
+		if plan != nil {
+			reg = plan.conditionRegistry(conditions[i], registry)
+		}
+		sql, err := negatedCommandPredicate(*conditions[i].Command, reg, opts)
 		if err != nil {
 			return err
 		}
@@ -959,10 +965,10 @@ func resolveCommandConditions(conditions []HavingCondition, opts QueryOptions) e
 // the first pair, so `!in(status,"200") AND x` returned exactly what was
 // excluded, and dropped it entirely on the second. Building with Negate cleared
 // makes this the only place negation is applied.
-func negatedCommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
+func negatedCommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOptions) (string, error) {
 	negate := cmd.Negate
 	cmd.Negate = false
-	sql, err := CommandPredicate(cmd, opts)
+	sql, err := CommandPredicate(cmd, registry, opts)
 	if err != nil {
 		return "", err
 	}

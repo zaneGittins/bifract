@@ -445,7 +445,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	// ---------------------------------------------------------------
 	// Compiled into a copy: the parsed pipeline is planned more than once.
 	conditions := cloneConditions(pipeline.HavingConditions)
-	if err := resolveCommandConditions(conditions, opts); err != nil {
+	if err := resolveCommandConditions(conditions, registry, plan, opts); err != nil {
 		return nil, err
 	}
 	if err := validatePostAggregationFields(pipeline, registry, declared); err != nil {
