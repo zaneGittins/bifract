@@ -201,6 +201,12 @@ type QueryPlan struct {
 	pendingHavingConditions   []HavingCondition
 	pendingDeferredConditions []HavingCondition
 
+	// firstStage is the registry conditions before the first command resolve
+	// against (FieldRegistry.firstStageView), and firstStageWhereAt the place in
+	// the source WHERE their clause goes: ahead of anything a command adds.
+	firstStage        *FieldRegistry
+	firstStageWhereAt int
+
 	// Source expressions exported to the deferred layer as hidden columns.
 	deferred *deferredScope
 
@@ -228,6 +234,15 @@ func (p *QueryPlan) CurrentStage() *QueryStage {
 }
 
 // SourceStage returns the innermost (FROM logs) stage.
+// conditionRegistry is the registry a condition resolves its fields against: the
+// first-stage view before any command, the final registry after one.
+func (p *QueryPlan) conditionRegistry(c HavingCondition, registry *FieldRegistry) *FieldRegistry {
+	if c.CmdIndex == 0 && p.firstStage != nil {
+		return p.firstStage
+	}
+	return registry
+}
+
 func (p *QueryPlan) SourceStage() *QueryStage {
 	return &p.Stages[0]
 }

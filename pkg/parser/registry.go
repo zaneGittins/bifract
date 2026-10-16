@@ -74,6 +74,10 @@ type FieldRegistry struct {
 	// later groupby groups by its own keys, so the earlier stage's are superseded
 	// rather than accumulated.
 	groupKeyCmd int
+	// firstStage marks the view a condition before the first command resolves
+	// against (see firstStageView): no aggregation precedes it, so count, sum and
+	// avg name log fields there, not aggregates.
+	firstStage bool
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
@@ -123,6 +127,30 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		c.fields[k] = &entry
 	}
 	return c
+}
+
+// firstStageView is the registry as a condition before the first command sees it:
+// the base columns, a source command's columns and the assignments, but nothing a
+// command produces. Conditions are classified after every command has run, so
+// without it a later transform, grouping alias or aggregate reached back into a
+// filter written before it.
+func (r *FieldRegistry) firstStageView() *FieldRegistry {
+	v := NewFieldRegistry(r.sourceMode, r.icePromoted)
+	v.firstStage = true
+	for _, name := range r.order {
+		if e := r.fields[name]; e.ProducedBy < 0 {
+			entry := *e
+			v.fields[name] = &entry
+			v.order = append(v.order, name)
+		}
+	}
+	return v
+}
+
+// bareAggregate reports whether a name with no registry entry stands for an
+// aggregate here: count, sum and avg do once an aggregation can precede them.
+func (r *FieldRegistry) bareAggregate(field string) bool {
+	return (r == nil || !r.firstStage) && isBareAggregate(field)
 }
 
 // fieldRef returns the source-mode-appropriate reference for a JSON/MAP field.

@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -35,6 +36,7 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
 
 	for i, cond := range conditions {
+		registry := plan.conditionRegistry(cond, registry)
 		// Compound nodes: inspect all leaf fields to determine the highest-priority
 		// target. A compound normally stays a unit, since its children are connected
 		// by AND/OR and the operators bind them together.
@@ -329,7 +331,7 @@ func leafPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, w
 func fieldPriority(field string, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
 	entry := registry.Get(field)
 	if entry == nil {
-		if isBareAggregate(field) && willHaveAggregation {
+		if registry.bareAggregate(field) && willHaveAggregation {
 			return 2
 		}
 		return 0
@@ -478,12 +480,23 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	// ClickHouse "unknown identifier" (or, for a carried aggregate, error 184).
 	byStage := make(map[int][]HavingCondition)
 	var stageOrder []int
+	// Conditions before the first command filter the raw scan, ahead of anything a
+	// command adds to it.
+	var firstStage []HavingCondition
 	for _, cond := range plan.pendingWhereConditions {
+		if cond.CmdIndex == 0 && plan.firstStage != nil {
+			firstStage = append(firstStage, cond)
+			continue
+		}
 		idx := whereBindingStageIndex(cond, plan)
 		if _, seen := byStage[idx]; !seen {
 			stageOrder = append(stageOrder, idx)
 		}
 		byStage[idx] = append(byStage[idx], cond)
+	}
+	if clause := materializeCondGroup(firstStage, plan.firstStage, nil); clause != "" {
+		source := plan.SourceStage()
+		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.firstStageWhereAt, len(source.Layer.Where)), clause)
 	}
 	for _, idx := range stageOrder {
 		if clause := materializeCondGroup(byStage[idx], registry, nil); clause != "" {
@@ -664,20 +677,16 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		}
 	} else {
 		// Check aggregate function aliases
-		switch cond.Field {
-		case "count":
-			fieldRef = "_count"
-		case "sum":
-			fieldRef = "_sum"
-		case "avg":
-			fieldRef = "_avg"
-		case normLogColumn:
+		switch {
+		case registry.bareAggregate(cond.Field):
+			fieldRef = "_" + cond.Field
+		case cond.Field == normLogColumn:
 			fieldRef = contentColMode(registry.sourceMode)
-		case "timestamp":
+		case cond.Field == "timestamp":
 			fieldRef = "timestamp"
-		case "log_id":
+		case cond.Field == "log_id":
 			fieldRef = "log_id"
-		case "normalizer", "_normalizer":
+		case cond.Field == "normalizer" || cond.Field == "_normalizer":
 			fieldRef = "normalizer"
 		default:
 			fieldRef = registry.fieldRef(cond.Field)
@@ -696,7 +705,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		// A bare count/sum/avg has no registry entry but resolves to the numeric
 		// _count/_sum/_avg alias, which toFloat64OrZero rejects (code 43). Same
 		// carve-out the literal comparison path makes below.
-		computed := isBareAggregate(cond.Field) ||
+		computed := registry.bareAggregate(cond.Field) ||
 			(entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
 		lhs := lhsOperand(cond.Field, fieldRef, isJSONField, computed)
 		return buildFieldComparisonSQL(lhs, rhs, cond.Operator)
@@ -765,7 +774,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		isPerRow := entry != nil && entry.Kind == FieldKindPerRow && !entry.Numeric
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
 		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
-		isAggFallback := entry == nil && isBareAggregate(cond.Field)
+		isAggFallback := entry == nil && registry.bareAggregate(cond.Field)
 		isComputed := isAggFallback || (entry != nil && (entry.Numeric || entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
 		if isPerRow {
 			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)

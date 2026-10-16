@@ -242,6 +242,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
 		}
 	}
+	plan.firstStageWhereAt = len(plan.SourceStage().Layer.Where)
 
 	// ---------------------------------------------------------------
 	// 3. DECLARE PHASE: every command registers what fields it produces
@@ -365,6 +366,9 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		assignmentFields = append(assignmentFields, af)
 		ctx.Registry.SetResolveExpr(safeField, af)
 	}
+
+	// Captured before Execute, which scopes the registry to each stage's outputs.
+	plan.firstStage = registry.firstStageView()
 
 	// ---------------------------------------------------------------
 	// 6. EXECUTE PHASE: every command reads registry, writes to plan.
