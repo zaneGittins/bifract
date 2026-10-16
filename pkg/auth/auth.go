@@ -1309,7 +1309,12 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					// Block users who must change their password from accessing
 					// any endpoint except auth essentials (change password, get
 					// current user so the UI can detect the flag, and logout).
+					// A session still waiting on its second factor was narrowed
+					// to mfaVerifyPaths above; those stay open here, or a user
+					// who must both verify and change their password could do
+					// neither: the change needs a verified session.
 					if user.ForcePasswordChange &&
+						!(session.MFAPending && mfaVerifyPaths[r.URL.Path]) &&
 						r.URL.Path != "/api/v1/auth/change-password" &&
 						r.URL.Path != "/api/v1/auth/user" &&
 						r.URL.Path != "/api/v1/auth/logout" {
