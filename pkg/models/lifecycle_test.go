@@ -617,6 +617,76 @@ func TestReconcileCHObjects(t *testing.T) {
 	}
 }
 
+// On a cluster, startup reissues every model's Distributed companions ON CLUSTER,
+// including those of a model whose table the probe found: an older release created
+// them on one node only, and the probe goes through the load-balanced connection,
+// so it describes one node. Each companion goes out once, with the statement the
+// create path sends, and one that fails or times out does not stop the rest.
+func TestReconcileCHObjectsRepairsCompanionsOnCluster(t *testing.T) {
+	env := newClusterEnv(t)
+	rarity := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	beacon := seedModel(env, ModelTypeBeacon, ModelDefinition{Window: "7d"}, nil)
+	timesOut := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	lost := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	for _, tbl := range []string{rarity.chTable, beacon.chTable, chModelStateName(beacon.id), timesOut.chTable} {
+		env.ch.existing[tbl] = true
+	}
+
+	on := " ON CLUSTER 'bf_cluster'"
+	companion := func(dist, local string) string {
+		return "CREATE TABLE IF NOT EXISTS `" + dist + "`" + on + " AS `" + local +
+			"` ENGINE = Distributed('bf_cluster', currentDatabase(), '" + local + "', rand())"
+	}
+	env.ch.FailExecFunc(func(stmt string) error {
+		switch stmt {
+		case companion(chModelDistName(timesOut.id), timesOut.chTable):
+			return fakedb.Exception(159, "distributed DDL timed out")
+		case companion(chModelDistName(beacon.id), beacon.chTable):
+			return errors.New("keeper unavailable")
+		}
+		return nil
+	})
+
+	env.mgr.ReconcileCHObjects(context.Background())
+
+	want := []string{
+		companion(chModelDistName(rarity.id), rarity.chTable),
+		companion(chModelDistName(beacon.id), beacon.chTable),
+		companion(chModelStateDistName(beacon.id), chModelStateName(beacon.id)),
+		companion(chModelDistName(timesOut.id), timesOut.chTable),
+		companion(chModelDistName(lost.id), lost.chTable),
+	}
+	for _, w := range want {
+		if n := len(env.ch.ExecutedMatching(w)); n != 1 {
+			t.Errorf("companion sent %d times, want once: %s\nexecuted:\n%s", n, w, strings.Join(env.ch.Executed(), "\n"))
+		}
+	}
+	for _, tbl := range []string{rarity.chTable, beacon.chTable, timesOut.chTable} {
+		if len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `"+tbl+"`")) != 0 {
+			t.Errorf("a table that exists was recreated: %s", tbl)
+		}
+	}
+	if len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `"+lost.chTable+"`"+on)) != 1 {
+		t.Error("missing table not recreated")
+	}
+	for _, r := range []*modelRow{rarity, beacon, timesOut} {
+		if got, _ := env.db.get(r.id); got.bfStatus != "none" || got.watermark != nil {
+			t.Errorf("repairing companions touched the model's state: %+v", got)
+		}
+	}
+}
+
+// Single node has no companions: a model whose table exists sends nothing.
+func TestReconcileCHObjectsSingleNodeSendsNoCompanions(t *testing.T) {
+	env := newEnv(t)
+	r := seedModel(env, ModelTypeBeacon, ModelDefinition{Window: "7d"}, nil)
+	env.ch.existing[r.chTable] = true
+	env.mgr.ReconcileCHObjects(context.Background())
+	if execs := env.ch.Executed(); len(execs) != 0 {
+		t.Errorf("single node sent DDL for a model in place: %v", execs)
+	}
+}
+
 func TestReconcileCHObjectsListFailure(t *testing.T) {
 	env := newEnv(t)
 	env.db.failOn("ch_mv_name FROM analytics_models", errors.New("pg down"))
