@@ -47,3 +47,33 @@ func TestHistogramFiltersLikeTheQuery(t *testing.T) {
 		})
 	}
 }
+
+// A binding read more than once is materialised in a WITH clause the filter
+// refers to; the histogram and field statistics carry it, or their SQL names a
+// table that does not exist.
+func TestScanFilterCarriesBindingCTEs(t *testing.T) {
+	q := `let &a := * | groupby(image) | table(image); * | in(image, &a) | in(parent_image, &a)`
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		FractalID: "f1",
+	}
+	pl, err := ParseQuery(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist, err := BuildHistogramSQL(pl, opts, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, _ = ParseQuery(q)
+	stats, err := BuildFieldStatsSQL(pl, opts, FieldStatsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, sql := range map[string]string{"histogram": hist, "field stats": stats} {
+		if !strings.Contains(sql, "FROM _b_a") || !strings.HasPrefix(sql, "WITH _b_a AS (") {
+			t.Errorf("%s reads _b_a without defining it:\n%s", name, sql)
+		}
+	}
+}

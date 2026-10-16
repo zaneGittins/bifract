@@ -456,7 +456,7 @@ func HistogramIsScopeOnly(pipeline *PipelineNode, opts QueryOptions) bool {
 // column commands (e.g. len()), also inlines their downstream filters (e.g. _len > 500)
 // into the WHERE clause so the histogram count matches the results table.
 func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds int) (string, error) {
-	where, err := scanFilter(pipeline, opts)
+	with, where, err := scanFilter(pipeline, opts)
 	if err != nil {
 		return "", err
 	}
@@ -468,8 +468,8 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT toStartOfInterval(%s, INTERVAL %d SECOND) AS bucket, count() AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
-		tsCol, bucketSeconds, tbl, where,
+		"%sSELECT toStartOfInterval(%s, INTERVAL %d SECOND) AS bucket, count() AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
+		with, tsCol, bucketSeconds, tbl, where,
 	)
 	return sql, nil
 }
@@ -610,7 +610,7 @@ func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsP
 		p.ValueLen = 256
 	}
 
-	where, err := scanFilter(pipeline, opts)
+	with, where, err := scanFilter(pipeline, opts)
 	if err != nil {
 		return "", err
 	}
@@ -634,7 +634,7 @@ func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsP
 	// across the whole sample fall out entirely (no surviving rows). The __rows__
 	// sentinel carries a non-empty value ('1') so it survives that same filter and
 	// still reports the exact sample size.
-	sql := fmt.Sprintf(`SELECT
+	sql := with + fmt.Sprintf(`SELECT
     key,
     sum(cnt) AS present,
     count() AS cardinality,
@@ -664,12 +664,14 @@ LIMIT %d`,
 // scanFilter is the full source-scan predicate (time range, fractal scope and
 // every filter the pipeline puts on the scan) that the histogram and field
 // statistics read, so both count the events the results show.
-func scanFilter(pipeline *PipelineNode, opts QueryOptions) (string, error) {
+//
+// with is the WITH clause defining the bindings the predicate reads, or "".
+func scanFilter(pipeline *PipelineNode, opts QueryOptions) (with, where string, err error) {
 	q, err := planQuery(pipeline, opts)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return andJoin(q.ctx.Plan.SourceStage().Layer.Where), nil
+	return q.ctx.Plan.withClause(), andJoin(q.ctx.Plan.SourceStage().Layer.Where), nil
 }
 
 // chTimeLiteral renders a time as a ClickHouse datetime literal for comparison
