@@ -68,7 +68,7 @@ func TestFieldOperandSQL(t *testing.T) {
 		{
 			name:        "NOT negates the whole comparison",
 			query:       `NOT src_port = field(dst_port)`,
-			wantContain: []string{"NOT (fields.`src_port`::String = fields.`dst_port`::String)"},
+			wantContain: []string{"fields.`src_port`::String IS NULL OR fields.`dst_port`::String IS NULL OR fields.`src_port`::String != fields.`dst_port`::String"},
 		},
 		{
 			name:        "a pipeline-produced column is coerced, not read as a log field",

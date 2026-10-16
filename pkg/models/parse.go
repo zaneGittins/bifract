@@ -96,6 +96,33 @@ func ParseSourceQuery(query string) ParsedSource {
 		}
 	}
 
+	// Conditions before the first command are the source's filter; each one the
+	// structured form can hold becomes a chip. A plain AND of them distributes.
+	firstStage, later := splitFirstStage(ast.HavingConditions)
+	var lower func(c parser.HavingCondition)
+	lower = func(c parser.HavingCondition) {
+		if andGroup(c) {
+			for _, child := range c.Children {
+				lower(child)
+			}
+			return
+		}
+		fc, ok := havingToFilter(c)
+		if !ok {
+			res.FilterComplete = false
+			return
+		}
+		res.Filter = append(res.Filter, fc)
+	}
+	for i, c := range firstStage {
+		collectHavingFields(c, &referenced)
+		if strings.EqualFold(c.Logic, "OR") || (i > 0 && strings.EqualFold(firstStage[i-1].Logic, "OR")) {
+			res.FilterComplete = false
+			continue
+		}
+		lower(c)
+	}
+
 	// extIndex maps an extraction output field to its index in res.Extractions so
 	// lowercase()/len() refinements can attach to the right step.
 	extIndex := map[string]int{}
@@ -147,33 +174,6 @@ func ParseSourceQuery(query string) ParsedSource {
 		default:
 			res.FilterComplete = false
 		}
-	}
-
-	// Conditions before the first command are the source's filter; each one the
-	// structured form can hold becomes a chip. A plain AND of them distributes.
-	firstStage, later := splitFirstStage(ast.HavingConditions)
-	var lower func(c parser.HavingCondition)
-	lower = func(c parser.HavingCondition) {
-		if andGroup(c) {
-			for _, child := range c.Children {
-				lower(child)
-			}
-			return
-		}
-		fc, ok := havingToFilter(c)
-		if !ok {
-			res.FilterComplete = false
-			return
-		}
-		res.Filter = append(res.Filter, fc)
-	}
-	for i, c := range firstStage {
-		collectHavingFields(c, &referenced)
-		if strings.EqualFold(c.Logic, "OR") || (i > 0 && strings.EqualFold(firstStage[i-1].Logic, "OR")) {
-			res.FilterComplete = false
-			continue
-		}
-		lower(c)
 	}
 
 	// Each comparison must reference a len() output field; map it back to the

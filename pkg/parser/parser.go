@@ -212,13 +212,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	}
 	pipeline.Bindings = p.bindingOrder
 
-	// Parse filter expression (before first pipe or EOF)
-	filter, err := p.parseFilter()
-	if err != nil {
-		return nil, err
-	}
-	if filter != nil {
-		pipeline.Filter = filter
+	// A lone "*" (every log) filters nothing.
+	if t := p.current(); t.Type == TokenMultiply || t.Type == TokenValue && t.Value == "*" {
+		p.advance()
 	}
 
 	// Each segment's conditions are stamped with how many commands precede them
@@ -231,12 +227,13 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	}
 	// A stage's conditions filter as one unit: grouped at the pipe, an OR among
 	// them cannot reach the next stage's condition.
-	segmentStart := 0
+	segmentStart, segmentCommands, sawPipe := 0, 0, false
 	closeSegment := func() {
 		stampConditionPositions()
 		pipeline.HavingConditions = append(pipeline.HavingConditions[:segmentStart],
 			groupByPosition(pipeline.HavingConditions[segmentStart:])...)
 		segmentStart = len(pipeline.HavingConditions)
+		segmentCommands = len(pipeline.Commands)
 		stamped = segmentStart
 	}
 
@@ -254,10 +251,14 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		if p.current().Type == TokenPipe {
 			closeSegment()
 			p.advance()
+			sawPipe = true
 		}
 
 		// Handle AND/OR/NOT between HAVING conditions after bare regex/string
 		if p.current().Type == TokenAnd || p.current().Type == TokenOr {
+			if len(pipeline.HavingConditions) == segmentStart && len(pipeline.Commands) == segmentCommands {
+				return nil, newPosError(p.current(), "%s needs a condition on its left", p.current().Value)
+			}
 			// A command immediately before the operator is an operand, not an
 			// independent conjunct: move it into the boolean chain so the operator
 			// is honoured instead of dropped.
@@ -306,6 +307,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				continue
 			}
 			pipelineNegate = true
+			if t := p.current().Type; t == TokenPipe || t == TokenEOF {
+				return nil, newPosError(p.current(), "NOT needs a condition after it")
+			}
 		}
 
 		// Handle bare string/regex searches in pipeline
@@ -373,15 +377,15 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
 			} else {
-				// Parse simple HAVING condition
-				having, err := p.parseHavingCondition()
+				cond, err := p.parseCondition()
 				if err != nil {
 					return nil, err
 				}
+				having := havingFromCondition(*cond)
 				if pipelineNegate {
-					negateHavingCondition(having)
+					negateHavingCondition(&having)
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, having)
 			}
 		} else if p.current().Type == TokenLParen {
 			// Parenthesized condition group in pipeline, e.g.:
@@ -441,6 +445,13 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 			}
 			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+		} else if p.current().Type == TokenField && !sawPipe {
+			// Before the first pipe a bare word is a condition missing its operator
+			// (after one it starts a command): let the condition parser say so.
+			if _, err := p.parseCondition(); err != nil {
+				return nil, err
+			}
+			return nil, newPosError(p.current(), "unexpected %q", p.current().Value)
 		} else {
 			// It's a command
 			cmd, err := p.parseCommand()
@@ -781,11 +792,21 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 	// e.g. a="x" OR cidr(ip, "10.0.0.0/8"), or lower(image)="cmd.exe".
 	if p.current().Type == TokenFunction {
 		if p.atExprFilter() {
-			expr, err := p.parseExprFilter()
+			// The expression ends at AND/OR, which join leaves, and a filter
+			// operator the expression grammar lacks may follow it:
+			// lower(image) =~ "cmd","ps".
+			expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
 			if err != nil {
 				return nil, err
 			}
 			cond.Expr = expr
+			cond.Operator, cond.Values, err = p.readExprMatchOperator()
+			if err != nil {
+				return nil, err
+			}
+			if len(cond.Values) > 0 {
+				cond.Value = cond.Values[0]
+			}
 			return cond, nil
 		}
 		cmd, err := p.parseCommand()
@@ -798,7 +819,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 
 	// Field name
 	tok := p.current()
-	if tok.Type != TokenField {
+	if tok.Type != TokenField && tok.Type != TokenValue {
 		return nil, newPosError(tok, "expected field name, got %s", describeToken(tok))
 	}
 	cond.Field = tok.Value
@@ -1204,33 +1225,15 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			}
 			currentConditions = []HavingCondition{*cond}
 		} else {
-			// Parse a single condition (field op value)
-			saved := p.pos
 			cond, err := p.parseCondition()
-			// Succeeding but stopping on a match operator means the leaf was read as
-			// something smaller than it is: lower(x) =~ "a" parses lower(x) alone.
-			if err == nil && p.atExprMatchOperator() {
-				err = newPosError(p.current(), "unexpected %q", p.current().Value)
-			}
 			if err != nil {
-				// A leaf the filter grammar cannot take may still be an expression
-				// one: `lower(a)="x" AND b=/foo/` mixes the two, and
-				// `lower(x) =~ "a","b"` ends on an operator only the filter grammar
-				// has. Tried in this order so every leaf the filter grammar already
-				// handles is built exactly as it was.
-				p.pos = saved
-				exprCond, exprErr := p.parseExprLeaf(negate)
-				if exprErr != nil {
-					return nil, err
-				}
-				currentConditions = []HavingCondition{*exprCond}
-			} else {
-				having := havingFromCondition(*cond)
-				if negate {
-					negateHavingCondition(&having)
-				}
-				currentConditions = []HavingCondition{having}
+				return nil, err
 			}
+			having := havingFromCondition(*cond)
+			if negate {
+				negateHavingCondition(&having)
+			}
+			currentConditions = []HavingCondition{having}
 		}
 
 		conditions = append(conditions, currentConditions...)
@@ -1280,23 +1283,6 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 	return conditions, nil
 }
 
-// parseExprLeaf parses one expression used as a filter leaf, plus the trailing
-// match operator the expression grammar has no place for.
-func (p *Parser) parseExprLeaf(negate bool) (*HavingCondition, error) {
-	if !p.atExprFilter() {
-		return nil, newPosError(p.current(), "not an expression")
-	}
-	expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
-	if err != nil {
-		return nil, err
-	}
-	cond := HavingCondition{Expr: expr, Negate: negate}
-	if err := p.readExprMatchOperator(&cond); err != nil {
-		return nil, err
-	}
-	return &cond, nil
-}
-
 // atExprMatchOperator reports whether the current token is one of the filter
 // operators the expression grammar does not have.
 func (p *Parser) atExprMatchOperator() bool {
@@ -1307,29 +1293,23 @@ func (p *Parser) atExprMatchOperator() bool {
 	return false
 }
 
-// readExprMatchOperator attaches a multi-value match operator to an expression
-// leaf, when one follows it.
-func (p *Parser) readExprMatchOperator(cond *HavingCondition) error {
+// readExprMatchOperator reads the multi-value match operator and values that may
+// follow an expression leaf, or nothing.
+func (p *Parser) readExprMatchOperator() (string, []string, error) {
+	var op string
 	switch p.current().Type {
 	case TokenContainsAny:
-		cond.Operator = "=~"
+		op = "=~"
 	case TokenStartsWithAny:
-		cond.Operator = "=^"
+		op = "=^"
 	case TokenEndsWithAny:
-		cond.Operator = "=$"
+		op = "=$"
 	default:
-		return nil
+		return "", nil, nil
 	}
 	p.advance()
 	values, err := p.parseValueList()
-	if err != nil {
-		return err
-	}
-	cond.Values = values
-	if len(values) > 0 {
-		cond.Value = values[0]
-	}
-	return nil
+	return op, values, err
 }
 
 // havingFromCondition converts a parsed filter leaf into its pipeline-stage
@@ -1348,114 +1328,6 @@ func havingFromCondition(cond ConditionNode) HavingCondition {
 		LiteralTerm: cond.LiteralTerm,
 		Negate:      cond.Negate,
 	}
-}
-
-func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
-	having := &HavingCondition{}
-
-	// Field name (could be an aggregate like 'count' or a regular field)
-	fieldTok := p.current()
-	if fieldTok.Type != TokenField && fieldTok.Type != TokenValue {
-		return nil, newPosError(fieldTok, "expected field name in HAVING condition, got %s", describeToken(fieldTok))
-	}
-	having.Field = fieldTok.Value
-	p.advance()
-
-	// Operator
-	opTok := p.current()
-	switch opTok.Type {
-	case TokenGreater:
-		having.Operator = ">"
-	case TokenLess:
-		having.Operator = "<"
-	case TokenGreaterEqual:
-		having.Operator = ">="
-	case TokenLessEqual:
-		having.Operator = "<="
-	case TokenEqual:
-		having.Operator = "="
-	case TokenNotEqual:
-		having.Operator = "!="
-	case TokenContainsAny:
-		having.Operator = "=~"
-	case TokenStartsWithAny:
-		having.Operator = "=^"
-	case TokenEndsWithAny:
-		having.Operator = "=$"
-	default:
-		return nil, newPosError(opTok, "expected comparison operator in HAVING condition, got %s", describeToken(opTok))
-	}
-	p.advance()
-
-	// Multi-value operators: parse comma-separated list and return early
-	if having.Operator == "=~" || having.Operator == "=^" || having.Operator == "=$" {
-		if p.atFieldOperand() {
-			return nil, p.fieldOperandUnsupported(having.Operator)
-		}
-		values, err := p.parseValueList()
-		if err != nil {
-			return nil, err
-		}
-		having.Values = values
-		if len(values) > 0 {
-			having.Value = values[0]
-		}
-		return having, nil
-	}
-
-	// Value. field(name) makes the right-hand side another field rather than a literal.
-	if p.atFieldOperand() {
-		name, err := p.parseFieldOperand()
-		if err != nil {
-			return nil, err
-		}
-		having.ValueField = name
-		having.Value = name
-		return having, nil
-	}
-
-	valTok := p.current()
-	if valTok.Type == TokenBinding {
-		v, isRegex, err := p.bindingValueLiteral()
-		if err != nil {
-			return nil, err
-		}
-		having.Value, having.IsRegex = v, isRegex
-	} else if valTok.Type == TokenField || valTok.Type == TokenValue || valTok.Type == TokenString {
-		having.Value = valTok.Value
-		p.advance()
-	} else if valTok.Type == TokenRegex {
-		having.Value = valTok.Value
-		having.IsRegex = true
-		p.advance()
-	} else if valTok.Type == TokenMinus {
-		// Negative numeric literal, e.g. change_percent < -5.0
-		p.advance()
-		numTok := p.current()
-		if numTok.Type == TokenValue || numTok.Type == TokenField {
-			having.Value = "-" + numTok.Value
-			p.advance()
-		} else {
-			return nil, newPosError(numTok, "expected number after '-' in HAVING condition, got %s", describeToken(numTok))
-		}
-	} else if valTok.Type == TokenMultiply {
-		// * wildcard means "any non-empty value"
-		having.Value = "*"
-		p.advance()
-	} else {
-		return nil, newPosError(valTok, "expected value in HAVING condition, got %s", describeToken(valTok))
-	}
-
-	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
-	if (having.Operator == "=" || having.Operator == "!=") && !having.IsRegex && having.Value != "*" {
-		values, err := p.collectEqualityList(having.Value)
-		if err != nil {
-			return nil, err
-		}
-		having.Values = values
-	}
-
-	return having, nil
 }
 
 // isAssignment checks if current position represents a field assignment (field := expression)

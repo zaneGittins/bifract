@@ -613,10 +613,12 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry,
 			if inner == "" {
 				continue
 			}
+			if !isParenthesized(inner) {
+				inner = "(" + inner + ")"
+			}
+			condSQL = inner
 			if cond.Negate {
-				condSQL = "NOT (" + inner + ")"
-			} else {
-				condSQL = "(" + inner + ")"
+				condSQL = "NOT " + inner
 			}
 		} else if cond.PredicateSQL != "" {
 			condSQL = cond.PredicateSQL
@@ -629,6 +631,36 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry,
 		groups = append(groups, condGroup{sql: condSQL, logic: cond.Logic})
 	}
 	return joinCondGroups(groups)
+}
+
+// isParenthesized reports whether a clause is one bracketed unit: its opening
+// bracket closes at its last character. Quoted text is skipped, and a clause it
+// cannot read as balanced counts as unbracketed, which costs only a redundant pair.
+func isParenthesized(clause string) bool {
+	if len(clause) < 2 || clause[0] != '(' || clause[len(clause)-1] != ')' {
+		return false
+	}
+	depth := 0
+	for i := 0; i < len(clause); i++ {
+		switch c := clause[i]; c {
+		case '\'', '`':
+			for i++; i < len(clause) && clause[i] != c; i++ {
+				if clause[i] == '\\' {
+					i++
+				}
+			}
+			if i >= len(clause) {
+				return false
+			}
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth == 0 {
+				return i == len(clause)-1
+			}
+		}
+	}
+	return false
 }
 
 // joinCondGroups joins condition groups with their logic operators.

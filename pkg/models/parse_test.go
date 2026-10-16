@@ -333,3 +333,16 @@ func TestParseSourceQueryRegexWarnings(t *testing.T) {
 		t.Errorf("unparseable query: %+v", res)
 	}
 }
+
+// Chips list the source's conditions in the order written, ahead of the
+// commands after them, so the editor shows the query as it reads.
+func TestParseSourceQueryChipOrder(t *testing.T) {
+	res := ParseSourceQuery(`a = "x" | b = "y" | cidr(dst_ip, "10.0.0.0/8")`)
+	var got []string
+	for _, f := range res.Filter {
+		got = append(got, f.Field+f.Op)
+	}
+	if strings.Join(got, " ") != "a= b= dst_ipcidr" {
+		t.Errorf("chips %v, want a, b, then the cidr", got)
+	}
+}

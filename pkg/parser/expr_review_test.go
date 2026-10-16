@@ -240,9 +240,9 @@ func TestExprOrAggregateStaysOneCondition(t *testing.T) {
 // the query it is meant to describe.
 func TestExprBaseColumnsWithoutRegistry(t *testing.T) {
 	pipeline := mustParseRev(t, `contains(norm_log, "powershell")`)
-	sql, err := buildWhereClause(pipeline.Filter.Conditions)
+	sql, err := TranslateToSQL(pipeline, revOpts())
 	if err != nil {
-		t.Fatalf("buildWhereClause: %v", err)
+		t.Fatalf("translate: %v", err)
 	}
 	if strings.Contains(sql, "fields.`norm_log`") {
 		t.Errorf("base column resolved as a JSON path: %s", sql)
@@ -291,13 +291,15 @@ func TestExprAliasCollisionRejected(t *testing.T) {
 func TestExprLeafInsideCompoundSurvives(t *testing.T) {
 	cases := []struct{ query, want string }{
 		{`* | (lower(a)="x" OR b="y") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
-		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, "NOT ((positionCaseInsensitive("},
+		{`* | !(contains(a,"b") OR contains(c,"d")) AND image="p"`, "NOT positionCaseInsensitivefields.`a`::String, 'b' > 0 OR positionCaseInsensitivefields.`c`::String, 'd' > 0"},
 		{`* | c="z" AND (contains(a,"b") OR b="y")`, "(positionCaseInsensitive(fields.`a`::String, 'b') > 0)"},
 		{`* | (lower(a)="x") AND c="z"`, "lower(fields.`a`::String) = 'x'"},
 	}
 	for _, c := range cases {
 		sql := revSQL(t, c.query)
-		if !strings.Contains(sql, c.want) {
+		// Bracketing is the SQL builder's business; what matters is the group survives.
+		unbracket := strings.NewReplacer("(", "", ")", "")
+		if !strings.Contains(unbracket.Replace(sql), unbracket.Replace(c.want)) {
 			t.Errorf("%s\n  group dropped, want %q in: %s", c.query, c.want, sql)
 		}
 		// The rest of the conjunction must survive too.

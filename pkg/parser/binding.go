@@ -178,10 +178,11 @@ func (p *Parser) parseBindingValue(name string, nameTok Token, end int) (*Bindin
 	}
 	binding := &BindingNode{Name: name, Kind: BindingValue, Expr: expr, Pos: nameTok.Pos}
 	if p.atExprMatchOperator() {
-		cond := HavingCondition{Expr: expr}
-		if err := p.readExprMatchOperator(&cond); err != nil {
+		op, values, err := p.readExprMatchOperator()
+		if err != nil {
 			return nil, fmt.Errorf("let %s: %w", name, err)
 		}
+		cond := HavingCondition{Expr: expr, Operator: op, Values: values, Value: values[0]}
 		binding.Kind, binding.Cond = BindingCondition, &cond
 	}
 	if p.pos != end {
@@ -326,9 +327,11 @@ func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
 		// `&susp =~ "a","b"`: the match operators are filter syntax, so they
 		// follow the substituted expression exactly as they follow a written one.
 		if p.atExprMatchOperator() {
-			if err := p.readExprMatchOperator(&cond); err != nil {
+			op, values, err := p.readExprMatchOperator()
+			if err != nil {
 				return nil, err
 			}
+			cond.Operator, cond.Values, cond.Value = op, values, values[0]
 		}
 	}
 	if negate {

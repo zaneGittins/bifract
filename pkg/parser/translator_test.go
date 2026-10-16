@@ -4701,7 +4701,7 @@ func TestRegexTokenPrefilterIntegration(t *testing.T) {
 			name:  "negated equality on non-type-hinted field gets no hasToken pre-filters",
 			query: `NOT process_name=curl.exe`,
 			wantContain: []string{
-				"fields.`process_name`::String = 'curl.exe'",
+				"fields.`process_name`::String != 'curl.exe'",
 			},
 			wantNotContain: []string{
 				"hasToken",
@@ -5273,7 +5273,7 @@ func TestCaseGeneralCommands(t *testing.T) {
 	})
 	t.Run("branch condition resolves a computed column, not raw JSON", func(t *testing.T) {
 		sql := mustTranslate(t, `* | groupby(host,function=selectLast(cpu,as=last)) | ratio := last * 2 | case { ratio > 5.0 | t:="HI"; * | t:="LO"; }`, opts)
-		if !strings.Contains(sql, "toFloat64OrZero(toString(ratio)) > 5.0") {
+		if !strings.Contains(sql, "WHEN ratio > 5.0 THEN") {
 			t.Errorf("computed-column condition not resolved to the column: %s", sql)
 		}
 		if strings.Contains(sql, "fields.`ratio`::String") {
