@@ -1259,8 +1259,12 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		// This minimal projection keys on UseIngestTimestamp, which Recall also
 		// sets for ingest-time pruning; exclude iceberg so Recall gets the normal
 		// full projection.
-		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && ctx.Pipeline.Filter != nil {
-			fields := collectConditionFields(ctx.Pipeline.Filter.Conditions)
+		hasConditions := ctx.Pipeline.Filter != nil || len(ctx.Pipeline.HavingConditions) > 0
+		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && hasConditions {
+			fields := map[string]bool{}
+			if ctx.Pipeline.Filter != nil {
+				fields = collectConditionFields(ctx.Pipeline.Filter.Conditions)
+			}
 			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
 			// Include alert-configured extra fields (throttle field, template fields)
 			for _, f := range ctx.Opts.AlertExtraFields {
