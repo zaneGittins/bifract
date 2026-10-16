@@ -115,12 +115,16 @@ func (s *Syncer) release(feedID string) {
 // alert in this feed", so a sync that did not see the whole repo must not run it: the
 // failure mode is silent loss of every alert the feed owns, not a stale alert.
 //
-// Retaining nothing is only suspicious alongside errors. A clean run that retains nothing
-// means every rule fell below the feed's min level or status, and pruning them is exactly
-// what was asked for.
+// Listing no files at all is far likelier a wrong path or branch than a repo emptied on
+// purpose, so it never deletes. Retaining nothing from a non-empty listing is only
+// suspicious alongside errors: a clean run means every rule fell below the feed's min
+// level or status, and pruning them is exactly what was asked for.
 func shouldRunDeletePass(incomplete bool, listed, retained, errCount int) (bool, string) {
 	if incomplete {
 		return false, "sync did not complete"
+	}
+	if listed == 0 {
+		return false, "no rule files found under the feed path"
 	}
 	if listed > 0 && retained == 0 && errCount > 0 {
 		return false, fmt.Sprintf("%d rules listed, none retained, %d errors", listed, errCount)
