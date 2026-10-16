@@ -2,6 +2,8 @@ package parser
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -1385,7 +1387,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 					{Expr: "log_id"},
 					{Expr: "fractal_id"},
 				}
-				for field := range fields {
+				for _, field := range slices.Sorted(maps.Keys(fields)) {
 					// These names include alert-configured ones (throttle field, name
 					// template), which are not query text and are not constrained by
 					// the lexer. An unescaped backtick closed the alias and appended a

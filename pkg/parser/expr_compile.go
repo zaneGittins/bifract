@@ -354,9 +354,13 @@ func unknownFunctionError(name string) error {
 }
 
 func closestExprFunc(name string) (string, bool) {
-	best, bestDist := "", 3 // only suggest for near misses
+	const limit = 3 // only suggest for near misses
+	best, bestDist := "", limit
 	for candidate := range exprFuncs {
-		if d := editDistanceWithin(name, candidate, bestDist); d < bestDist {
+		// Against the fixed limit every near miss gets its exact distance, so a tie
+		// is real and goes to the first name alphabetically, not to map order.
+		d := editDistanceWithin(name, candidate, limit)
+		if d < bestDist || d == bestDist && d < limit && candidate < best {
 			best, bestDist = candidate, d
 		}
 	}
