@@ -145,27 +145,10 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		field = fieldMapper(field)
 	}
 
-	// Check for unsupported modifiers
-	for _, mod := range fc.Modifiers {
-		switch mod {
-		case "contains", "startswith", "endswith", "re", "all",
-			"base64", "base64offset", "cidr", "windash", "expand",
-			"utf16le", "utf16be", "utf16", "wide":
-		default:
-			// Unknown modifier - pass through but warn
-		}
+	if err := checkModifiers(fc); err != nil {
+		return "", err
 	}
-
 	hasAll := containsModifier(fc.Modifiers, "all")
-	hasBase64 := containsModifier(fc.Modifiers, "base64") || containsModifier(fc.Modifiers, "base64offset")
-	hasCIDR := containsModifier(fc.Modifiers, "cidr")
-
-	if hasBase64 {
-		return "", fmt.Errorf("field '%s': base64/base64offset modifiers are not supported", fc.Field)
-	}
-	if hasCIDR {
-		return "", fmt.Errorf("field '%s': cidr modifier is not supported", fc.Field)
-	}
 
 	// Handle null values (field should be empty/absent)
 	if fc.Values == nil {
@@ -232,6 +215,34 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		return buildNativeOpExpr(field, fc.Values, matchType)
 	}
 	return buildCombinedRegexExpr(field, fc.Values, matchType)
+}
+
+// matchModifiers are the modifiers that choose how a value is compared. At most one
+// may appear: Sigma gives no meaning to combining them.
+var matchModifiers = map[string]bool{"contains": true, "startswith": true, "endswith": true, "re": true}
+
+// checkModifiers refuses any modifier the translator does not implement. A modifier
+// silently dropped would deploy a different rule than the one written (windash, a
+// value transform, or gt/lt, a different comparison, would match something else
+// entirely), so the rule fails instead, naming what it could not express.
+func checkModifiers(fc FieldCondition) error {
+	var unsupported, match []string
+	for _, mod := range fc.Modifiers {
+		switch {
+		case matchModifiers[mod]:
+			match = append(match, mod)
+		case mod == "all":
+		default:
+			unsupported = append(unsupported, "'"+mod+"'")
+		}
+	}
+	if len(unsupported) > 0 {
+		return fmt.Errorf("field '%s': unsupported modifier %s", fc.Field, strings.Join(unsupported, ", "))
+	}
+	if len(match) > 1 {
+		return fmt.Errorf("field '%s': modifiers '%s' cannot be combined", fc.Field, strings.Join(match, "', '"))
+	}
+	return nil
 }
 
 // buildNativeOpExpr emits a =~/=^/=$ expression for OR-semantics

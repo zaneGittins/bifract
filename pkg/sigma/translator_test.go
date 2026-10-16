@@ -158,6 +158,27 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 		{[]string{"base64offset", "contains"}, "base64"},
 		{[]string{"wide", "base64offset", "contains"}, "base64"},
 		{[]string{"cidr"}, "cidr"},
+		// Every modifier the translator does not implement is refused by name, never
+		// dropped: each of these used to translate as if the modifier were absent.
+		{[]string{"windash", "contains"}, "'windash'"},
+		{[]string{"exists"}, "'exists'"},
+		{[]string{"gt"}, "'gt'"},
+		{[]string{"gte"}, "'gte'"},
+		{[]string{"lt"}, "'lt'"},
+		{[]string{"lte"}, "'lte'"},
+		{[]string{"fieldref"}, "'fieldref'"},
+		{[]string{"expand"}, "'expand'"},
+		{[]string{"utf16le", "base64"}, "'utf16le', 'base64'"},
+		{[]string{"utf16be", "base64"}, "'utf16be'"},
+		{[]string{"utf16", "base64"}, "'utf16'"},
+		{[]string{"wide", "base64"}, "'wide'"},
+		{[]string{"cased"}, "'cased'"},
+		{[]string{"re", "m"}, "'m'"},
+		{[]string{"re", "s"}, "'s'"},
+		{[]string{"contains", "nosuchmodifier"}, "'nosuchmodifier'"},
+		// Two comparison modifiers have no Sigma meaning; the last one used to win.
+		{[]string{"contains", "endswith"}, "'contains', 'endswith' cannot be combined"},
+		{[]string{"re", "contains"}, "cannot be combined"},
 	}
 	for _, c := range cases {
 		rule := singleSelection(fc("DestinationIp", c.mods, "10.0.0.0/8"))
@@ -170,6 +191,31 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 			if !strings.Contains(err.Error(), frag) {
 				t.Errorf("%v: error %q should mention %q", c.mods, err, frag)
 			}
+		}
+	}
+}
+
+// The refusal reaches a parsed rule too, so a feed rule using windash is reported as
+// untranslatable rather than deployed without its dash variants.
+func TestParsedRuleWithUnsupportedModifierFails(t *testing.T) {
+	rule, err := ParseSigmaRule(`
+title: Encoded command
+detection:
+  selection:
+    Image|endswith: \powershell.exe
+    CommandLine|windash|contains: ' -enc '
+  condition: selection
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Translate(rule, nil)
+	if err == nil {
+		t.Fatalf("translated to %q, want an error", got)
+	}
+	for _, frag := range []string{"selection 'selection'", "field 'CommandLine'", "'windash'"} {
+		if !strings.Contains(err.Error(), frag) {
+			t.Errorf("error %q should mention %s", err, frag)
 		}
 	}
 }
