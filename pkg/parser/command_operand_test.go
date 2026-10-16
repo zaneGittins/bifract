@@ -116,13 +116,17 @@ func TestNonPredicateFunctionAsOperandRejected(t *testing.T) {
 // after a pipe or at the head of an expression.
 func TestConditionFunctionOperandPositions(t *testing.T) {
 	for _, q := range []string{
-		`a="x" OR cidr(dst_ip,"10.0.0.0/8")`,           // right of OR, pre-pipe
-		`a="x" AND cidr(dst_ip,"10.0.0.0/8")`,          // right of AND, pre-pipe
-		`cidr(dst_ip,"10.0.0.0/8") OR a="x"`,           // left of OR, pre-pipe
-		`(a="x" OR cidr(dst_ip,"10.0.0.0/8")) | b="y"`, // inside parentheses
-		`a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,          // negated operand
-		`a="x" OR in(user,["u"])`,                      // a different function
-		`a="x" | cidr(dst_ip,"10.0.0.0/8") OR b="y"`,   // post-pipe
+		`a="x" OR cidr(dst_ip,"10.0.0.0/8")`,                   // right of OR, pre-pipe
+		`a="x" AND cidr(dst_ip,"10.0.0.0/8")`,                  // right of AND, pre-pipe
+		`cidr(dst_ip,"10.0.0.0/8") OR a="x"`,                   // left of OR, pre-pipe
+		`(a="x" OR cidr(dst_ip,"10.0.0.0/8")) | b="y"`,         // inside parentheses
+		`a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,                  // negated operand
+		`a="x" OR in(user,["u"])`,                              // a different function
+		`a="x" | cidr(dst_ip,"10.0.0.0/8") OR b="y"`,           // post-pipe
+		`* | (a="x" OR cidr(dst_ip,"10.0.0.0/8"))`,             // inside parentheses, post-pipe
+		`* | (a="x" OR !cidr(dst_ip,"10.0.0.0/8")) | b="y"`,    // negated, inside parentheses
+		`* | b="y" AND (a="x" OR in(user,["u"]))`,              // nested group, post-pipe
+		`* | (a="x" OR (b="y" AND cidr(dst_ip,"10.0.0.0/8")))`, // two levels deep
 	} {
 		pl, err := ParseQuery(q)
 		if err != nil {

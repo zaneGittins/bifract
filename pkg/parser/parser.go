@@ -148,6 +148,8 @@ type Parser struct {
 	// bindingBudget bounds how much expression the bindings may expand to, shared
 	// with any sub-pipeline parsed from a binding body.
 	bindingBudget *int
+	// havingDepth is how many brackets deep the stage condition parser is.
+	havingDepth int
 }
 
 func NewParser(tokens []Token) *Parser {
@@ -1127,7 +1129,9 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 		// Handle parentheses
 		if p.current().Type == TokenLParen {
 			p.advance() // consume (
+			p.havingDepth++
 			innerConditions, err := p.parseHavingConditionsWithPrecedence(0)
+			p.havingDepth--
 			if err != nil {
 				return nil, err
 			}
@@ -1252,11 +1256,12 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			conditions[len(conditions)-1].Logic = operator
 		}
 
-		// Check for end of expression. A command after AND/OR ends the chain and is
-		// handled by the command path; an expression function continues it, so
-		// `a="x" OR lower(image)="y"` means what the mirrored order means.
+		// Check for end of expression. At the top of a stage a command after AND/OR
+		// ends the chain and is handled by the command path; an expression function
+		// continues it, so `a="x" OR lower(image)="y"` means what the mirrored order
+		// means. Inside brackets nothing else can take it, so it is an operand.
 		if p.current().Type == TokenPipe || p.current().Type == TokenEOF ||
-			(p.current().Type == TokenFunction && !p.atExprFilter()) {
+			(p.current().Type == TokenFunction && !p.atExprFilter() && p.havingDepth == 0) {
 			break
 		}
 	}
