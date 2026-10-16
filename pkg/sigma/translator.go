@@ -184,7 +184,7 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		if hasAll || len(fc.Values) == 1 {
 			parts := make([]string, len(fc.Values))
 			for i, v := range fc.Values {
-				parts[i] = fmt.Sprintf("%s=/%s%s/%s", field, inline, v, suffix)
+				parts[i] = fmt.Sprintf("%s=/%s%s/%s", field, inline, escapeRegexDelimiter(v), suffix)
 			}
 			return joinExprs(parts, " AND "), nil
 		}
@@ -539,9 +539,33 @@ func isBQLKeyword(v string) bool {
 func buildCombinedRegexExpr(field string, values []string, inline, suffix string) string {
 	pieces := make([]string, len(values))
 	for i, v := range values {
-		pieces[i] = "(?:" + v + ")"
+		pieces[i] = "(?:" + escapeRegexDelimiter(v) + ")"
 	}
 	return fmt.Sprintf("%s=/%s%s/%s", field, inline, strings.Join(pieces, "|"), suffix)
+}
+
+// escapeRegexDelimiter escapes each unescaped '/' in an author's regex, which would
+// otherwise end the BQL /pattern/ early and fail the rule. RE2 reads \/ as '/', in a
+// character class too, so the pattern means what it did. Existing escapes, \/
+// included, are copied untouched.
+func escapeRegexDelimiter(v string) string {
+	if !strings.Contains(v, "/") {
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c == '\\' && i+1 < len(v):
+			b.WriteByte(c)
+			i++
+			b.WriteByte(v[i])
+		case c == '/':
+			b.WriteString(`\/`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // escapeRegex escapes special regex characters in a value for safe embedding in /pattern/.

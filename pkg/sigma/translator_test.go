@@ -994,3 +994,46 @@ func TestTranslateRegexFlags(t *testing.T) {
 		})
 	}
 }
+
+// A '/' in an author's regex would end the BQL regex literal early, failing the rule.
+// It is escaped, and the pattern still matches what it did.
+func TestTranslateRegexWithSlash(t *testing.T) {
+	cases := []struct {
+		name  string
+		cond  FieldCondition
+		bql   string
+		match []string
+		miss  []string
+	}{
+		{"url", fc("CommandLine", []string{"re"}, `https?://[^/]+/raw`), `CommandLine=/https?:\/\/[^\/]+\/raw/`,
+			[]string{"curl https://x.example/raw"}, []string{"https://x/y/raw", "https:/x/raw"}},
+		{"already escaped slash", fc("CommandLine", []string{"re"}, `a\/b`), `CommandLine=/a\/b/`,
+			[]string{"a/b"}, []string{"ab"}},
+		{"escaped backslash then slash", fc("Path", []string{"re"}, `a\\/b`), `Path=/a\\\/b/`,
+			[]string{`a\/b`}, []string{"a/b"}},
+		{"list", fc("CommandLine", []string{"re"}, `/tmp/`, `/dev/shm`), `CommandLine=/(?:\/tmp\/)|(?:\/dev\/shm)/`,
+			[]string{"cd /dev/shm", "/tmp/x"}, []string{"tmp"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(tc.cond), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.bql {
+				t.Fatalf("BQL\n got  %s\n want %s", got, tc.bql)
+			}
+			toSQL(t, got)
+			for _, v := range tc.match {
+				if !matchBQL(t, got, v) {
+					t.Errorf("%s should match %q", got, v)
+				}
+			}
+			for _, v := range tc.miss {
+				if matchBQL(t, got, v) {
+					t.Errorf("%s should not match %q", got, v)
+				}
+			}
+		})
+	}
+}
