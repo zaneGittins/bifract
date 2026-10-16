@@ -303,17 +303,6 @@ func CompileFromRaw(name string, version int, transformsRaw, mappingsRaw, valueM
 	return n.Compile()
 }
 
-// GetTokenCount returns the number of ingest tokens using this normalizer.
-func (m *Manager) GetTokenCount(ctx context.Context, normalizerID string) (int, error) {
-	var count int
-	err := m.pg.QueryRow(ctx,
-		`SELECT COUNT(*) FROM ingest_tokens WHERE normalizer_id = $1`, normalizerID).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count tokens for normalizer: %w", err)
-	}
-	return count, nil
-}
-
 // GetTokenUsage returns tokens using a normalizer along with their fractal names.
 func (m *Manager) GetTokenUsage(ctx context.Context, normalizerID string) ([]TokenUsageInfo, error) {
 	rows, err := m.pg.Query(ctx,

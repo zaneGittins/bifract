@@ -6,16 +6,22 @@ import (
 	"testing"
 )
 
-// --- BuildFields ---
+// flatten runs the flatten stage alone, with no rename and no path sources.
+func flatten(fields map[string]string, mode FlattenMode, nestedKeys map[string]bool) map[string]string {
+	out, _ := flattenFields(fields, mode, nestedKeys, nil, nil)
+	return out
+}
 
-func TestBuildFields_PrimitiveValues(t *testing.T) {
+// --- BuildFieldsWithNested ---
+
+func TestBuildFieldsWithNested_PrimitiveValues(t *testing.T) {
 	obj := map[string]interface{}{
 		"message": "hello",
 		"count":   float64(42),
 		"active":  true,
 		"empty":   nil,
 	}
-	fields := BuildFields(obj)
+	fields := BuildFieldsWithNested(obj).Fields
 
 	expect := map[string]string{
 		"message": "hello",
@@ -30,7 +36,7 @@ func TestBuildFields_PrimitiveValues(t *testing.T) {
 	}
 }
 
-func TestBuildFields_NestedObjectBecomesJSON(t *testing.T) {
+func TestBuildFieldsWithNested_NestedObjectBecomesJSON(t *testing.T) {
 	obj := map[string]interface{}{
 		"user": map[string]interface{}{
 			"name": "Alice",
@@ -38,7 +44,7 @@ func TestBuildFields_NestedObjectBecomesJSON(t *testing.T) {
 		},
 		"tags": []interface{}{"a", "b"},
 	}
-	fields := BuildFields(obj)
+	fields := BuildFieldsWithNested(obj).Fields
 
 	if fields["user"] == "" || fields["user"][0] != '{' {
 		t.Errorf("user should be a JSON string, got %q", fields["user"])
@@ -78,7 +84,7 @@ func TestFlattenLeaf_BasicExpansion(t *testing.T) {
 		"user": `{"name":"Alice","id":"1"}`,
 	}
 	nested := map[string]bool{"user": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["name"] != "Alice" {
 		t.Errorf("expected leaf key 'name'='Alice', got %v", result)
@@ -96,7 +102,7 @@ func TestFlattenLeaf_DeepNesting(t *testing.T) {
 		"level1": `{"level2":{"level3":{"value":"deep"},"sibling":"shallow"}}`,
 	}
 	nested := map[string]bool{"level1": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["value"] != "deep" {
 		t.Errorf("expected 'value'='deep', got %v", result)
@@ -112,7 +118,7 @@ func TestFlattenLeaf_CollisionFallsBackToFullPath(t *testing.T) {
 		"event": `{"name":"login","category":"auth"}`,
 	}
 	nested := map[string]bool{"user": true, "event": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	// "name" collides, both should use full path.
 	if result["user_name"] != "Alice" {
@@ -136,7 +142,7 @@ func TestFlattenLeaf_CollisionWithTopLevelKey(t *testing.T) {
 		"user": `{"name":"Nested"}`,
 	}
 	nested := map[string]bool{"user": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	// "name" collides between top-level and nested leaf.
 	if result["name"] != "TopLevel" {
@@ -153,7 +159,7 @@ func TestFlattenLeaf_DedotsKeys(t *testing.T) {
 		"host.arch":    "amd64",
 		"normal":       "val",
 	}
-	result := FlattenFields(fields, FlattenLeaf, nil)
+	result := flatten(fields, FlattenLeaf, nil)
 
 	if result["service_name"] != "myapp" {
 		t.Errorf("expected 'service_name'='myapp', got %v", result)
@@ -171,7 +177,7 @@ func TestFlattenLeaf_DedotsNestedKeys(t *testing.T) {
 		"attrs": `{"inner.dotted.key":"val","clean":"ok"}`,
 	}
 	nested := map[string]bool{"attrs": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["inner_dotted_key"] != "val" {
 		t.Errorf("expected 'inner_dotted_key'='val', got %v", result)
@@ -187,7 +193,7 @@ func TestFlattenLeaf_StringValuesNotExpanded(t *testing.T) {
 		"message": "hello",
 	}
 	nested := map[string]bool{}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["query"] != `{"match":"*"}` {
 		t.Errorf("expected 'query' to be preserved as string, got %q", result["query"])
@@ -201,7 +207,7 @@ func TestFlattenLeaf_NilNestedKeysFallsBackToHeuristic(t *testing.T) {
 	fields := map[string]string{
 		"data": `{"key":"val"}`,
 	}
-	result := FlattenFields(fields, FlattenLeaf, nil)
+	result := flatten(fields, FlattenLeaf, nil)
 
 	if result["key"] != "val" {
 		t.Errorf("expected heuristic expansion, got %v", result)
@@ -216,7 +222,7 @@ func TestFlattenLeaf_PreservesNonNestedFields(t *testing.T) {
 		"timestamp": "2026-01-01T00:00:00Z",
 	}
 	nested := map[string]bool{"user": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["message"] != "hello" {
 		t.Errorf("message should be preserved, got %q", result["message"])
@@ -236,7 +242,7 @@ func TestFlattenLeaf_ArraysNotExpanded(t *testing.T) {
 	fields := map[string]string{
 		"tags": `["admin","editor"]`,
 	}
-	result := FlattenFields(fields, FlattenLeaf, nil)
+	result := flatten(fields, FlattenLeaf, nil)
 
 	if result["tags"] != `["admin","editor"]` {
 		t.Errorf("expected array to be preserved, got %q", result["tags"])
@@ -250,7 +256,7 @@ func TestFlattenLeaf_ArrayOfObjectsExpanded(t *testing.T) {
 		"kprobe": `{"args":[{"sock_arg":{"daddr":"1.1.1.1","dport":80}}],"fn":"tcp_connect"}`,
 	}
 	nested := map[string]bool{"kprobe": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["daddr"] != "1.1.1.1" {
 		t.Errorf("expected 'daddr'='1.1.1.1', got %v", result)
@@ -275,7 +281,7 @@ func TestFlattenLeaf_MultiElementArrayIndexed(t *testing.T) {
 		"c": `{"list":[{"ip":"1.1.1.1"},{"ip":"2.2.2.2"}]}`,
 	}
 	nested := map[string]bool{"c": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["c_list_0_ip"] != "1.1.1.1" || result["c_list_1_ip"] != "2.2.2.2" {
 		t.Errorf("expected indexed paths for repeated leaf, got %v", result)
@@ -293,7 +299,7 @@ func TestFlattenLeaf_IntraObjectCollisionDeterministic(t *testing.T) {
 	}
 	nested := map[string]bool{"System": true}
 	for i := 0; i < 50; i++ {
-		result := FlattenFields(fields, FlattenLeaf, nested)
+		result := flatten(fields, FlattenLeaf, nested)
 		if result["System_EventID_Value"] != "1" || result["System_Other_Value"] != "99" {
 			t.Fatalf("expected both colliding leaves on full paths, got %v", result)
 		}
@@ -339,7 +345,7 @@ func TestFlattenLeaf_MultiElementArrayLosslessUnderCollision(t *testing.T) {
 		"c": `{"list":[{"ip":"A"},{"ip":"B"}]}`,
 	}
 	nested := map[string]bool{"p": true, "q": true, "c": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	values := make(map[string]bool)
 	for _, v := range result {
@@ -358,7 +364,7 @@ func TestFlattenFull_ArrayOfObjectsIndexed(t *testing.T) {
 		"c": `{"list":[{"ip":"1.1.1.1"},{"ip":"2.2.2.2"}]}`,
 	}
 	nested := map[string]bool{"c": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["c_list_0_ip"] != "1.1.1.1" {
 		t.Errorf("expected 'c_list_0_ip'='1.1.1.1', got %v", result)
@@ -378,7 +384,7 @@ func TestFlatten_ArrayOverCapKeptWhole(t *testing.T) {
 		"c": `{"big":[` + strings.Join(elems, ",") + `]}`,
 	}
 	nested := map[string]bool{"c": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if _, expanded := result["n"]; expanded {
 		t.Errorf("array over cap should not be expanded, got %v", result)
@@ -395,7 +401,7 @@ func TestFlatten_NonObjectArraysKeptWhole(t *testing.T) {
 		"c": `{"tags":["a","b"],"empty":[],"matrix":[[1,2],[3,4]]}`,
 	}
 	nested := map[string]bool{"c": true}
-	result := FlattenFields(fields, FlattenLeaf, nested)
+	result := flatten(fields, FlattenLeaf, nested)
 
 	if result["tags"] != `["a","b"]` {
 		t.Errorf("scalar array should be preserved, got %q", result["tags"])
@@ -412,7 +418,7 @@ func TestFlattenLeaf_InvalidJSONNotExpanded(t *testing.T) {
 	fields := map[string]string{
 		"broken": `{not valid json`,
 	}
-	result := FlattenFields(fields, FlattenLeaf, nil)
+	result := flatten(fields, FlattenLeaf, nil)
 
 	if result["broken"] != `{not valid json` {
 		t.Errorf("expected invalid JSON to be preserved, got %q", result["broken"])
@@ -426,7 +432,7 @@ func TestFlattenFull_BasicExpansion(t *testing.T) {
 		"user": `{"name":"Alice","id":"1"}`,
 	}
 	nested := map[string]bool{"user": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["user_name"] != "Alice" {
 		t.Errorf("expected 'user_name'='Alice', got %v", result)
@@ -441,7 +447,7 @@ func TestFlattenFull_DeepNesting(t *testing.T) {
 		"user": `{"profile":{"name":"Alice","settings":{"theme":"dark"}}}`,
 	}
 	nested := map[string]bool{"user": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["user_profile_name"] != "Alice" {
 		t.Errorf("expected 'user_profile_name'='Alice', got %v", result)
@@ -458,7 +464,7 @@ func TestFlattenFull_NoCollisions(t *testing.T) {
 		"event": `{"name":"login"}`,
 	}
 	nested := map[string]bool{"user": true, "event": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["user_name"] != "Alice" {
 		t.Errorf("expected 'user_name'='Alice', got %v", result)
@@ -473,7 +479,7 @@ func TestFlattenFull_DedotsKeys(t *testing.T) {
 		"resource.service": `{"name":"myapp"}`,
 	}
 	nested := map[string]bool{"resource.service": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["resource_service_name"] != "myapp" {
 		t.Errorf("expected 'resource_service_name'='myapp', got %v", result)
@@ -485,7 +491,7 @@ func TestFlattenFull_DedotsNestedKeys(t *testing.T) {
 		"data": `{"dotted.key":"val"}`,
 	}
 	nested := map[string]bool{"data": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["data_dotted_key"] != "val" {
 		t.Errorf("expected 'data_dotted_key'='val', got %v", result)
@@ -497,7 +503,7 @@ func TestFlattenFull_StringValuesNotExpanded(t *testing.T) {
 		"query": `{"match":"*"}`,
 	}
 	nested := map[string]bool{}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["query"] != `{"match":"*"}` {
 		t.Errorf("expected 'query' preserved, got %q", result["query"])
@@ -511,7 +517,7 @@ func TestFlattenFull_MixedNestedAndPrimitive(t *testing.T) {
 		"count":   "42",
 	}
 	nested := map[string]bool{"user": true}
-	result := FlattenFields(fields, FlattenFull, nested)
+	result := flatten(fields, FlattenFull, nested)
 
 	if result["message"] != "hello" {
 		t.Errorf("expected 'message'='hello', got %v", result)
@@ -766,7 +772,7 @@ func TestFlattenNone_PassesThrough(t *testing.T) {
 		"c":    `{"d":"2"}`,
 		"name": "val",
 	}
-	result := FlattenFields(fields, FlattenNone, nil)
+	result := flatten(fields, FlattenNone, nil)
 
 	if result["a.b"] != "1" {
 		t.Errorf("FlattenNone should preserve dotted keys, got %v", result)
@@ -856,13 +862,13 @@ func TestTransformOrder_NoTransforms(t *testing.T) {
 
 // --- Safety limits ---
 
-func TestFlattenFields_MaxFieldsLimit(t *testing.T) {
+func TestFlatten_MaxFieldsLimit(t *testing.T) {
 	fields := make(map[string]string)
 	for i := 0; i < MaxFlattenFields+10; i++ {
 		key := "field_" + stringifyValue(float64(i))
 		fields[key] = "val"
 	}
-	result := FlattenFields(fields, FlattenLeaf, nil)
+	result := flatten(fields, FlattenLeaf, nil)
 
 	if result["_bifract_truncated"] != "true" {
 		t.Error("expected truncation marker")
@@ -907,7 +913,7 @@ func TestFlattenLeaf_FallbackClashDeterministic(t *testing.T) {
 	fields := map[string]string{"a_b": "top", "a": `{"b":"1"}`, "c": `{"b":"2"}`}
 	nested := map[string]bool{"a": true, "c": true}
 	for i := 0; i < 50; i++ {
-		got := FlattenFields(fields, FlattenLeaf, nested)
+		got := flatten(fields, FlattenLeaf, nested)
 		if got["a_b"] != "top" || got["a_b_2"] != "1" || got["c_b"] != "2" {
 			t.Fatalf("top-level field must keep its name and the clash be numbered, got %v", got)
 		}
