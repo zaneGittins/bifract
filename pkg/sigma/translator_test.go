@@ -2,6 +2,7 @@ package sigma
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -54,15 +55,22 @@ func TestTranslateModifiers(t *testing.T) {
 		bql  string
 		sql  []string // fragments the final SQL must contain
 	}{
-		// Exact match: equality on the JSON sub-column, value intact through both escapes.
-		{"exact", fc("Image", nil, "cmd.exe"), `Image="cmd.exe"`,
-			[]string{imgRef + " = 'cmd.exe'"}},
-		{"exact with backslash and double quote", fc("Image", nil, `C:\a "b"`), `Image="C:\\a \"b\""`,
-			[]string{imgRef + ` = 'C:\\a "b"'`}},
-		{"exact with single quote", fc("User", nil, `O'Brien`), `User="O'Brien"`,
-			[]string{"fields.`User`::String = 'O\\'Brien'"}},
+		// Exact match is case-insensitive in Sigma: a value with letters is an anchored
+		// /i regex, its value intact through both escapes.
+		{"exact", fc("Image", nil, "cmd.exe"), `Image=/^cmd\.exe$/i`,
+			[]string{"match(" + imgRef + ", '(?i)^cmd\\\\.exe$')"}},
+		{"exact with backslash and double quote", fc("Image", nil, `C:\a "b"`), `Image=/^C:\\a "b"$/i`,
+			[]string{"match(" + imgRef + `, '(?i)^C:\\\\a "b"$')`}},
+		{"exact with single quote", fc("User", nil, `O'Brien`), `User=/^O'Brien$/i`,
+			[]string{"match(fields.`User`::String, '(?i)^O\\'Brien$')"}},
+		// A value with no letters has no other case, so it stays an equality: the one
+		// form the field's skip index can prune with.
+		{"exact without letters stays equality", fc("EventID", nil, "4688"), `EventID="4688"`,
+			[]string{"fields.`EventID`::String = '4688'"}},
 		{"exact list stays OR'd equality", fc("EventID", nil, "1", "4688"), `(EventID="1" OR EventID="4688")`,
 			[]string{"fields.`EventID`::String = '1'", "fields.`EventID`::String = '4688'"}},
+		{"exact empty value stays equality", fc("Description", nil, ""), `Description=""`,
+			[]string{"fields.`Description`::String = ''"}},
 
 		// contains/startswith/endswith: native case-insensitive operators.
 		{"contains bare value", fc("CommandLine", contains, "powershell"), `CommandLine=~powershell`,
@@ -79,7 +87,8 @@ func TestTranslateModifiers(t *testing.T) {
 			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['wget', '-O'])"}},
 		{"endswith leading dot", fc("Image", ends, ".hta"), `Image=$".hta"`,
 			[]string{"endsWith(lower(" + imgRef + "), '.hta')"}},
-		{"contains leading asterisk", fc("CommandLine", contains, "*x"), `CommandLine=~"*x"`, nil},
+		{"contains escaped asterisk", fc("CommandLine", contains, `\*x`), `CommandLine=~"*x"`,
+			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['*x'])"}},
 		{"contains a keyword", fc("CommandLine", contains, "NOT"), `CommandLine=~"NOT"`,
 			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['NOT'])"}},
 		{"digit-led value stays bare", fc("Version", starts, "10.0"), `Version=^10.0`,
@@ -89,16 +98,16 @@ func TestTranslateModifiers(t *testing.T) {
 		{"endswith", fc("Image", ends, `\CMD.exe`), `Image=$"\\CMD.exe"`,
 			[]string{"endsWith(lower(" + imgRef + `), '\\cmd.exe')`}},
 
-		// A literal comma would split the native list, so those fall back to a regex
-		// with the value escaped.
-		{"contains with comma", fc("CommandLine", contains, "a,b.c"), `CommandLine=/.*a,b\.c.*/i`,
-			[]string{"match("}},
-		{"startswith with comma", fc("CommandLine", starts, "a,b"), `CommandLine=/^a,b.*/i`, nil},
-		{"endswith with comma", fc("CommandLine", ends, "a,b"), `CommandLine=/.*a,b$/i`, nil},
-		{"contains list with a comma value", fc("CommandLine", contains, "a,b", "c(d)"), `CommandLine=/.*(?:a,b|c\(d\)).*/i`, nil},
-		{"startswith list with a comma value", fc("CommandLine", starts, "a,b", "c"), `CommandLine=/^(?:a,b|c).*/i`, nil},
-		{"endswith list with a comma value", fc("CommandLine", ends, "a,b", "c"), `CommandLine=/.*(?:a,b|c)$/i`, nil},
-		{"slash in a fallback value is escaped", fc("CommandLine", contains, "/tmp/x,y"), `CommandLine=/.*\/tmp\/x,y.*/i`, nil},
+		// A literal comma would split the native list, so that value alone falls back
+		// to a regex with the value escaped; the rest keep the native operator.
+		{"contains with comma", fc("CommandLine", contains, "a,b.c"), `CommandLine=/a,b\.c/i`,
+			[]string{"match(" + cmdRef + ", '(?i)a,b\\\\.c')"}},
+		{"startswith with comma", fc("CommandLine", starts, "a,b"), `CommandLine=/^a,b/i`, nil},
+		{"endswith with comma", fc("CommandLine", ends, "a,b"), `CommandLine=/a,b$/i`, nil},
+		{"contains list with a comma value", fc("CommandLine", contains, "a,b", "c(d)"), `(CommandLine=~"c(d)" OR CommandLine=/a,b/i)`, nil},
+		{"startswith list with a comma value", fc("CommandLine", starts, "a,b", "c"), `(CommandLine=^c OR CommandLine=/^a,b/i)`, nil},
+		{"endswith list with a comma value", fc("CommandLine", ends, "a,b", "c"), `(CommandLine=$c OR CommandLine=/a,b$/i)`, nil},
+		{"slash in a fallback value is escaped", fc("CommandLine", contains, "/tmp/x,y"), `CommandLine=/\/tmp\/x,y/i`, nil},
 
 		// re: the user's pattern, case-sensitive as Sigma specifies (no /i).
 		{"regex", fc("CommandLine", re, `foo.*bar`), `CommandLine=/foo.*bar/`,
@@ -107,7 +116,7 @@ func TestTranslateModifiers(t *testing.T) {
 		// |all: every value must match, one predicate each.
 		{"contains all", fc("CommandLine", []string{"contains", "all"}, "-nop", "-w hidden"), `(CommandLine=~"-nop" AND CommandLine=~"-w hidden")`,
 			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['-nop'])", "multiSearchAnyCaseInsensitive(" + cmdRef + ", ['-w hidden'])"}},
-		{"contains all with a comma value", fc("CommandLine", []string{"contains", "all"}, "a,b", "c"), `(CommandLine=/.*a,b.*/i AND CommandLine=~c)`, nil},
+		{"contains all with a comma value", fc("CommandLine", []string{"contains", "all"}, "a,b", "c"), `(CommandLine=/a,b/i AND CommandLine=~c)`, nil},
 		{"startswith all", fc("Image", []string{"startswith", "all"}, "a", "b"), `(Image=^a AND Image=^b)`, nil},
 		{"regex all", fc("CommandLine", []string{"re", "all"}, "a.", "b+"), `(CommandLine=/a./ AND CommandLine=/b+/)`, nil},
 		{"all with one value is just the value", fc("CommandLine", []string{"contains", "all"}, "x"), `CommandLine=~x`, nil},
@@ -296,7 +305,7 @@ detection:
 	}
 	cases := map[string]string{
 		"alts":     `(Image=$"\\a.exe" OR Image=$"\\b.exe")`,
-		"one_alt":  `User="root"`,
+		"one_alt":  `User=/^root$/i`,
 		"keywords": `/.*(?:mimikatz|sekurlsa).*/i`,
 		"keyword":  `/.*lsass.*/i`,
 	}
@@ -596,7 +605,7 @@ detection:
 	}
 	for _, frag := range []string{
 		`Image=$"\\powershell.exe"`,
-		`OriginalFileName="PowerShell.EXE"`,
+		`OriginalFileName=/^PowerShell\.EXE$/i`,
 		`CommandLine=~" -e"`,
 		`CommandLine=~JAB`,
 		`ParentImage=^"C:\\Windows\\CCM\\"`,
@@ -614,5 +623,318 @@ detection:
 	sort.Strings(labels)
 	if strings.Join(labels, ",") != "attack.execution,attack.t1059.001,category:process_creation,product:windows,sigma:high,status:experimental" {
 		t.Errorf("labels = %v", labels)
+	}
+}
+
+// --- Value semantics ---
+//
+// Sigma values are case-insensitive globs: '*' and '?' are wildcards, '\' escapes
+// them (or itself). The tests below run the BQL a field condition translates to
+// against sample field values, with each operator given the meaning its SQL has:
+// = is byte equality, =~ =^ =$ are ASCII case-insensitive (multiSearchAny...
+// CaseInsensitive and startsWith/endsWith over lower()), and /re/ is RE2.
+
+// matchBQL evaluates a single-field BQL expression, as Translate emits for one
+// field condition, against that field's value.
+func matchBQL(t *testing.T, expr, value string) bool {
+	t.Helper()
+	if strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
+		inner := expr[1 : len(expr)-1]
+		for _, op := range []string{" OR ", " AND "} {
+			if parts := splitTopLevel(inner, op); len(parts) > 1 {
+				any, all := false, true
+				for _, p := range parts {
+					m := matchBQL(t, p, value)
+					any, all = any || m, all && m
+				}
+				if op == " OR " {
+					return any
+				}
+				return all
+			}
+		}
+	}
+	i := strings.IndexByte(expr, '=')
+	if i < 0 {
+		t.Fatalf("not a field condition: %s", expr)
+	}
+	rest := expr[i+1:]
+	switch {
+	case rest == "*":
+		return value != ""
+	case strings.HasPrefix(rest, `"`):
+		vals := bqlValueList(t, rest)
+		return len(vals) == 1 && value == vals[0]
+	case strings.HasPrefix(rest, "/"):
+		end := strings.LastIndexByte(rest, '/')
+		pattern := rest[1:end]
+		if strings.Contains(rest[end+1:], "i") {
+			pattern = "(?i)" + pattern
+		}
+		return regexp.MustCompile(pattern).MatchString(value)
+	}
+	lv := asciiLower(value)
+	for _, v := range bqlValueList(t, rest[1:]) {
+		v = asciiLower(v)
+		if rest[0] == '~' && strings.Contains(lv, v) || rest[0] == '^' && strings.HasPrefix(lv, v) || rest[0] == '$' && strings.HasSuffix(lv, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitTopLevel splits s on sep outside parentheses, quotes and regex literals.
+func splitTopLevel(s, sep string) []string {
+	var parts []string
+	depth, start := 0, 0
+	inQuote, inRegex := false, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case (inQuote || inRegex) && c == '\\':
+			i++
+		case inQuote:
+			inQuote = c != '"'
+		case inRegex:
+			inRegex = c != '/'
+		case c == '"':
+			inQuote = true
+		case c == '/':
+			inRegex = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case depth == 0 && strings.HasPrefix(s[i:], sep):
+			parts = append(parts, s[start:i])
+			start = i + len(sep)
+			i += len(sep) - 1
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// bqlValueList decodes a comma-separated list of bare or double-quoted BQL values.
+func bqlValueList(t *testing.T, s string) []string {
+	t.Helper()
+	var out []string
+	for len(s) > 0 {
+		var b strings.Builder
+		if s[0] == '"' {
+			i := 1
+			for ; i < len(s) && s[i] != '"'; i++ {
+				if s[i] == '\\' {
+					i++
+				}
+				b.WriteByte(s[i])
+			}
+			s = s[i+1:]
+		} else {
+			i := strings.IndexByte(s, ',')
+			if i < 0 {
+				i = len(s)
+			}
+			b.WriteString(s[:i])
+			s = s[i:]
+		}
+		out = append(out, b.String())
+		if len(s) > 0 {
+			if s[0] != ',' {
+				t.Fatalf("malformed value list near %q", s)
+			}
+			s = s[1:]
+		}
+	}
+	return out
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+func TestTranslateValueSemantics(t *testing.T) {
+	const sys32 = `C:\Windows\System32\`
+	contains, starts, ends := []string{"contains"}, []string{"startswith"}, []string{"endswith"}
+	cases := []struct {
+		name  string
+		cond  FieldCondition
+		match []string
+		miss  []string
+	}{
+		// Case-insensitive, as Sigma specifies for every non-regex value.
+		{"exact ignores case", fc("OriginalFileName", nil, "PowerShell.EXE"),
+			[]string{"PowerShell.EXE", "powershell.exe", "POWERSHELL.EXE"},
+			[]string{"powershell.exe ", "xpowershell.exe", "powershellXexe"}},
+		{"exact digits", fc("EventID", nil, "4688"), []string{"4688"}, []string{"46888", "468"}},
+		{"exact list mixes cased and caseless", fc("EventID", nil, "1", "Create"),
+			[]string{"1", "create", "CREATE"}, []string{"11", "created"}},
+		{"endswith ignores case", fc("Image", ends, `\cmd.exe`),
+			[]string{sys32 + "CMD.EXE", `\cmd.exe`}, []string{"cmd.exe", sys32 + "cmd.exe.bak"}},
+
+		// Wildcards in exact values. A leading or trailing '*' is a suffix/prefix match.
+		{"exact leading star", fc("Image", nil, `*\cmd.exe`),
+			[]string{sys32 + "cmd.exe", sys32 + "CMD.exe", `\cmd.exe`}, []string{"cmd.exe", sys32 + "cmd.exe2"}},
+		{"exact trailing star", fc("Image", nil, `C:\Windows\\*`),
+			[]string{sys32 + "cmd.exe", `c:\windows\`}, []string{`D:\Windows\x`, `C:\Windows`}},
+		{"exact inner star", fc("Image", nil, `C:\Users\\*\AppData\\*.exe`),
+			[]string{`C:\Users\bob\AppData\Local\Temp\x.EXE`}, []string{`C:\Users\AppData\x.exe`, `C:\Users\bob\AppData\x.dll`}},
+		{"exact question mark", fc("Image", nil, `*\cmd?.exe`),
+			[]string{`C:\cmd1.exe`, `C:\CMDX.EXE`}, []string{`C:\cmd.exe`, `C:\cmd12.exe`}},
+		{"exact lone star matches any value", fc("Image", nil, "*"), []string{"x"}, []string{""}},
+
+		// Wildcards inside contains/startswith/endswith.
+		{"contains inner star", fc("CommandLine", contains, "foo*bar"),
+			[]string{"xFOOyyBARz", "foobar", "foo\nbar"}, []string{"barfoo", "foo*", "fobar"}},
+		{"contains question mark", fc("CommandLine", contains, "-e?c"),
+			[]string{"powershell -enc AAA", "-E C"}, []string{"-ec", "-e"}},
+		{"startswith inner star", fc("Image", starts, `C:\Users\\*\AppData\`),
+			[]string{`C:\Users\bob\AppData\Roaming\x.exe`}, []string{`D:\Users\bob\AppData\`, `C:\Users\bob\Temp\`}},
+		{"endswith inner star", fc("TargetFilename", ends, `\Start Menu\\*.lnk`),
+			[]string{`C:\x\Start Menu\Programs\a.LNK`}, []string{`C:\x\Start Menu\a.lnk.txt`}},
+		{"contains all with wildcards", fc("CommandLine", []string{"contains", "all"}, "-w*hidden", "-e"),
+			[]string{"powershell -W Hidden -enc x"}, []string{"powershell -w hidden", "powershell -enc x"}},
+		{"wildcard list mixes forms", fc("CommandLine", contains, "a*b", "plain", "c,d"),
+			[]string{"xAyyBx", "PLAIN", "c,d"}, []string{"ba", "c d"}},
+
+		// Escapes make wildcards and backslashes literal.
+		{"escaped star is literal", fc("CommandLine", contains, `a\*b`),
+			[]string{"xa*bx", "A*B"}, []string{"axb", "ab"}},
+		{"escaped question mark is literal", fc("Url", ends, `index.php\?`),
+			[]string{"/x/index.php?"}, []string{"/x/index.phpx"}},
+		// A backslash before a wildcard escapes it, so a path separator followed by a
+		// wildcard is written \\* (Sigma specification, "Escaping").
+		{"escaped backslash before a wildcard", fc("Image", nil, `C:\\*`),
+			[]string{`C:\anything`}, []string{`C:x`, `D:\x`}},
+		{"single backslash before a star escapes it", fc("Image", nil, `C:\Windows\*`),
+			[]string{`C:\Windows*`, `c:\windows*`}, []string{`C:\Windows\x`, `C:\Windows\`}},
+		{"three backslashes are a backslash and a literal star", fc("Image", nil, `C:\\\*`),
+			[]string{`C:\*`}, []string{`C:\x`}},
+		{"four backslashes are two", fc("Share", nil, `\\\\srv`),
+			[]string{`\\SRV`}, []string{`\srv`}},
+		{"plain backslash before a letter is literal", fc("Image", ends, `\Temp\x.exe`),
+			[]string{`C:\TEMP\X.EXE`}, []string{`C:Temp\x.exe`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(tc.cond), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			toSQL(t, got)
+			for _, v := range tc.match {
+				if !matchBQL(t, got, v) {
+					t.Errorf("%s should match %q", got, v)
+				}
+			}
+			for _, v := range tc.miss {
+				if matchBQL(t, got, v) {
+					t.Errorf("%s should not match %q", got, v)
+				}
+			}
+		})
+	}
+}
+
+// The BQL and SQL each value form produces. Literal ends use the native operators,
+// a value with no letters keeps the indexable equality, and only what neither can
+// express becomes a regex, with (?s) so a wildcard spans newlines in a command line.
+func TestTranslateWildcardForms(t *testing.T) {
+	contains, ends := []string{"contains"}, []string{"endswith"}
+	cases := []struct {
+		name string
+		cond FieldCondition
+		bql  string
+		sql  string
+	}{
+		{"leading star is a suffix match", fc("Image", nil, `*\cmd.exe`), `Image=$"\\cmd.exe"`,
+			"endsWith(lower(" + imgRef + `), '\\cmd.exe')`},
+		{"trailing star is a prefix match", fc("Image", nil, `C:\Windows\\*`), `Image=^"C:\\Windows\\"`,
+			"startsWith(lower(" + imgRef + `), 'c:\\windows\\')`},
+		{"stars on both ends is a substring match", fc("CommandLine", nil, "*mimikatz*"), `CommandLine=~mimikatz`,
+			"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['mimikatz'])"},
+		{"stars already implied by contains", fc("CommandLine", contains, "*mimikatz*"), `CommandLine=~mimikatz`, ""},
+		{"inner star is a regex", fc("CommandLine", contains, "foo*bar"), `CommandLine=/(?s)foo.*bar/i`,
+			"match(" + cmdRef + ", '(?i)(?s)foo.*bar')"},
+		{"inner star in an exact value is anchored", fc("Image", nil, `C:\\*\cmd.exe`), `Image=/(?s)^C:\\.*\\cmd\.exe$/i`,
+			"match(" + imgRef + `, '(?i)(?s)^C:\\\\.*\\\\cmd\\.exe$')`},
+		{"question mark is one character", fc("Image", ends, `\cmd?.exe`), `Image=/(?s)\\cmd.\.exe$/i`, ""},
+		{"cased exact value is an anchored regex", fc("OriginalFileName", nil, "Cmd.Exe"), `OriginalFileName=/^Cmd\.Exe$/i`,
+			"match(fields.`OriginalFileName`::String, '(?i)^Cmd\\\\.Exe$')"},
+		{"caseless exact value stays equality", fc("EventID", nil, "4688"), `EventID="4688"`,
+			"fields.`EventID`::String = '4688'"},
+		{"escaped star stays native", fc("CommandLine", contains, `a\*b`), `CommandLine=~a*b`,
+			"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['a*b'])"},
+		{"escaped star in an exact value", fc("CommandLine", nil, `a\*b`), `CommandLine=/^a\*b$/i`, ""},
+		{"escaped backslash", fc("Image", ends, `\\x.exe`), `Image=$"\\x.exe"`, ""},
+		{"lone star is existence", fc("Image", nil, "*"), `Image=*`, ""},
+		{"list consolidates per form", fc("Image", ends, `\a.exe`, `\b?.exe`, `\c.exe`, `\d*.exe`),
+			`(Image=$"\\a.exe","\\c.exe" OR Image=/(?s)\\b.\.exe$|\\d.*\.exe$/i)`, ""},
+		{"exact list mixes equality, native and regex", fc("Image", nil, "1", `*\a.exe`, "B.exe"),
+			`(Image="1" OR Image=$"\\a.exe" OR Image=/^B\.exe$/i)`, ""},
+		{"keyword wildcard", fc("", nil, "mimi*katz"), `/.*mimi.*katz.*/i`, "match(lower(norm_log), '.*mimi.*katz.*')"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(tc.cond), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.bql {
+				t.Fatalf("BQL\n got  %s\n want %s", got, tc.bql)
+			}
+			if sql := toSQL(t, got); tc.sql != "" && !strings.Contains(sql, tc.sql) {
+				t.Errorf("SQL is missing %s\n%s", tc.sql, sql)
+			}
+		})
+	}
+}
+
+// A realistic process-creation rule: every value form together, end to end.
+func TestTranslateWildcardRuleEndToEnd(t *testing.T) {
+	rule, err := ParseSigmaRule(`
+title: Suspicious cmd child
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image: '*\cmd.exe'
+    ParentImage|endswith: '\WINWORD.EXE'
+    CommandLine|contains: 'http*://'
+  filter:
+    CurrentDirectory: 'C:\Program Files\\*'
+  condition: selection and not filter
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frag := range []string{
+		`Image=$"\\cmd.exe"`,
+		`ParentImage=$"\\WINWORD.EXE"`,
+		`CommandLine=/(?s)http.*:\/\//i`,
+		`CurrentDirectory=^"C:\\Program Files\\"`,
+	} {
+		if !strings.Contains(got, frag) {
+			t.Errorf("translation is missing %s:\n%s", frag, got)
+		}
+	}
+	sql := toSQL(t, got)
+	for _, frag := range []string{
+		"endsWith(lower(" + imgRef + `), '\\cmd.exe')`,
+		"endsWith(lower(fields.`ParentImage`::String), '\\\\winword.exe')",
+		"match(" + cmdRef + `, '(?i)(?s)http.*:\\/\\/')`,
+	} {
+		if !strings.Contains(sql, frag) {
+			t.Errorf("SQL is missing %s\n%s", frag, sql)
+		}
 	}
 }

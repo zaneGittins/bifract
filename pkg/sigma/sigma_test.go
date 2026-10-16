@@ -223,8 +223,9 @@ func TestTranslate_ExactMatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if result != `User="admin"` {
-		t.Errorf("expected User=\"admin\", got %s", result)
+	// Sigma matches case-insensitively, so a value with letters is an anchored /i regex.
+	if result != `User=/^admin$/i` {
+		t.Errorf("expected User=/^admin$/i, got %s", result)
 	}
 	assertValidBQL(t, result)
 }
@@ -433,7 +434,7 @@ detection:
 	assertValidBQL(t, result)
 }
 
-func TestTranslate_ExactMultiValue_StaysOR(t *testing.T) {
+func TestTranslate_ExactMultiValue_Consolidated(t *testing.T) {
 	rule := makeRule("selection", map[string]interface{}{
 		"User": []interface{}{"admin", "root"},
 	}, "selection")
@@ -443,8 +444,8 @@ func TestTranslate_ExactMultiValue_StaysOR(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Exact matches stay as OR'd equalities (cheaper than regex in ClickHouse).
-	expected := `(User="admin" OR User="root")`
+	// Case-insensitive exact values share one anchored alternation.
+	expected := `User=/^admin$|^root$/i`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}

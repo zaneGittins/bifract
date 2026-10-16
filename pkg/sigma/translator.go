@@ -173,48 +173,42 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		}
 	}
 
-	// Generate expressions for each value
-	var valueExprs []string
-	for _, val := range fc.Values {
-		expr, err := buildMatchExpr(field, val, matchType)
-		if err != nil {
-			return "", err
-		}
-		valueExprs = append(valueExprs, expr)
-	}
-
-	if len(valueExprs) == 0 {
+	if len(fc.Values) == 0 {
 		return "*", nil
 	}
 
-	if len(valueExprs) == 1 {
-		return valueExprs[0], nil
-	}
-
-	// |all modifier: every value must match, so AND the individual expressions.
-	if hasAll {
-		return "(" + strings.Join(valueExprs, " AND ") + ")", nil
-	}
-
-	// OR semantics.
-	// Keyword searches (no field) always use regex contains on raw_log.
-	if field == "" {
-		return buildCombinedRegexExpr("", fc.Values, "contains")
-	}
-	// Exact matches stay as OR'd equalities, cheaper than regex in ClickHouse.
-	if matchType == "exact" {
-		return "(" + strings.Join(valueExprs, " OR ") + ")", nil
-	}
-	// regex type always consolidates into an alternation regex.
+	// re: the author's own pattern, matched case-sensitively as Sigma specifies. No
+	// wildcard or case handling applies.
 	if matchType == "regex" {
-		return buildCombinedRegexExpr(field, fc.Values, matchType)
+		if hasAll || len(fc.Values) == 1 {
+			parts := make([]string, len(fc.Values))
+			for i, v := range fc.Values {
+				parts[i] = fmt.Sprintf("%s=/%s/", field, v)
+			}
+			return joinExprs(parts, " AND "), nil
+		}
+		return buildCombinedRegexExpr(field, fc.Values), nil
 	}
-	// contains/startswith/endswith: use native =~/=^/=$ operators when no value
-	// contains a comma (which would corrupt the comma-delimited list syntax).
-	if !valuesHaveComma(fc.Values) {
-		return buildNativeOpExpr(field, fc.Values, matchType)
+
+	// Keywords (no field): a case-insensitive substring search over the whole event.
+	if field == "" {
+		return buildKeywordExpr(fc.Values), nil
 	}
-	return buildCombinedRegexExpr(field, fc.Values, matchType)
+
+	matches := make([]valueMatch, len(fc.Values))
+	for i, v := range fc.Values {
+		matches[i] = classifyValue(v, matchType)
+	}
+
+	// |all: every value must match, so AND one predicate per value.
+	if hasAll {
+		parts := make([]string, len(matches))
+		for i, m := range matches {
+			parts[i] = renderMatches(field, []valueMatch{m})
+		}
+		return joinExprs(parts, " AND "), nil
+	}
+	return renderMatches(field, matches), nil
 }
 
 // matchModifiers are the modifiers that choose how a value is compared. At most one
@@ -245,25 +239,237 @@ func checkModifiers(fc FieldCondition) error {
 	return nil
 }
 
-// buildNativeOpExpr emits a =~/=^/=$ expression for OR-semantics
-// contains/startswith/endswith. Values must not contain commas.
-func buildNativeOpExpr(field string, values []string, matchType string) (string, error) {
-	var op string
-	switch matchType {
-	case "contains":
-		op = "=~"
-	case "startswith":
-		op = "=^"
-	case "endswith":
-		op = "=$"
-	default:
-		return "", fmt.Errorf("unknown match type for native op: %s", matchType)
+// Sigma string values are glob patterns matched case-insensitively against the whole
+// field value: '*' is any run of characters, '?' is exactly one, and '\' escapes
+// either (or itself) to make it literal. A backslash before anything else is a
+// plain backslash, so Windows paths need no escaping. contains, startswith and
+// endswith are the same glob with a '*' added on the open side(s).
+
+// globToken is one piece of a parsed Sigma value: a literal run, or a wildcard.
+type globToken struct {
+	lit  string
+	wild byte // 0 for a literal run, '*' or '?'
+}
+
+// parseSigmaValue splits a Sigma value into literal runs and wildcards, resolving
+// escapes. Consecutive '*' collapse to one.
+func parseSigmaValue(v string) []globToken {
+	var toks []globToken
+	var lit strings.Builder
+	flush := func() {
+		if lit.Len() > 0 {
+			toks = append(toks, globToken{lit: lit.String()})
+			lit.Reset()
+		}
 	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '\\' && i+1 < len(v) && (v[i+1] == '*' || v[i+1] == '?' || v[i+1] == '\\'):
+			i++
+			lit.WriteByte(v[i])
+		case c == '*' || c == '?':
+			flush()
+			if c == '*' && len(toks) > 0 && toks[len(toks)-1].wild == '*' {
+				continue
+			}
+			toks = append(toks, globToken{wild: c})
+		default:
+			lit.WriteByte(c)
+		}
+	}
+	flush()
+	return toks
+}
+
+// trimStars drops leading and trailing '*' wildcards, reporting which ends had one.
+// A '*' at an end means that end is unanchored, which a substring, prefix or suffix
+// match already expresses without the wildcard.
+func trimStars(toks []globToken) (rest []globToken, lead, trail bool) {
+	for len(toks) > 0 && toks[0].wild == '*' {
+		toks, lead = toks[1:], true
+	}
+	for len(toks) > 0 && toks[len(toks)-1].wild == '*' {
+		toks, trail = toks[:len(toks)-1], true
+	}
+	return toks, lead, trail
+}
+
+// globRegex renders glob tokens as an RE2 fragment, reporting whether it holds a
+// wildcard (whose '.' must be allowed to cross newlines).
+func globRegex(toks []globToken) (pattern string, wild bool) {
+	var b strings.Builder
+	for _, t := range toks {
+		switch t.wild {
+		case '*':
+			b.WriteString(".*")
+			wild = true
+		case '?':
+			b.WriteString(".")
+			wild = true
+		default:
+			b.WriteString(escapeRegex(t.lit))
+		}
+	}
+	return b.String(), wild
+}
+
+// hasCaseVariants reports whether some other string equals s case-insensitively.
+// When it does not (digits, punctuation), a case-sensitive equality is exact.
+func hasCaseVariants(s string) bool {
+	for _, r := range s {
+		if unicode.SimpleFold(r) != r {
+			return true
+		}
+	}
+	return false
+}
+
+type matchKind int
+
+const (
+	matchAny    matchKind = iota // the value matches every present value
+	matchEqual                   // equality; only for values with no case variants
+	matchNative                  // =~ / =^ / =$, case-insensitive literal operators
+	matchRegex                   // case-insensitive RE2
+)
+
+// valueMatch is how one Sigma value is expressed in BQL.
+type valueMatch struct {
+	kind    matchKind
+	op      string // matchNative: "=~", "=^" or "=$"
+	value   string // matchEqual, matchNative: the literal
+	pattern string // matchRegex: anchored RE2
+	wild    bool   // matchRegex: pattern holds a wildcard
+}
+
+// classifyValue picks the cheapest BQL form that matches a Sigma value exactly as
+// Sigma does: wildcards honored, case ignored.
+//
+//   - A value without case variants under an exact match is an equality. It is the
+//     only form the field's skip index can prune with, and is exact for digits and
+//     punctuation (EventID: 4688).
+//   - A literal under a substring, prefix or suffix match uses =~, =^ or =$, which
+//     are case-insensitive. A '*' at one end of an exact value makes it one of
+//     these, so the common '*\cmd.exe' is a suffix match, not a regex.
+//   - Everything else is a case-insensitive regex: a cased exact value, a wildcard
+//     in the middle, '?', or a literal comma (which would split the native list).
+//     BQL has no case-insensitive equality that survives every place the
+//     translator puts one (lower(f)="v" fails to parse beside a =~ leaf), and none
+//     would use the skip index anyway: the index is over the value as stored.
+func classifyValue(v string, matchType string) valueMatch {
+	anchorStart := matchType == "exact" || matchType == "startswith"
+	anchorEnd := matchType == "exact" || matchType == "endswith"
+	toks, lead, trail := trimStars(parseSigmaValue(v))
+	if lead {
+		anchorStart = false
+	}
+	if trail {
+		anchorEnd = false
+	}
+	if len(toks) == 0 && (lead || trail) {
+		return valueMatch{kind: matchAny}
+	}
+
+	if len(toks) <= 1 && (len(toks) == 0 || toks[0].wild == 0) {
+		lit := ""
+		if len(toks) == 1 {
+			lit = toks[0].lit
+		}
+		switch {
+		case anchorStart && anchorEnd:
+			if !hasCaseVariants(lit) {
+				return valueMatch{kind: matchEqual, value: lit}
+			}
+		case !strings.Contains(lit, ","):
+			op := "=~"
+			if anchorStart {
+				op = "=^"
+			} else if anchorEnd {
+				op = "=$"
+			}
+			return valueMatch{kind: matchNative, op: op, value: lit}
+		}
+	}
+
+	pattern, wild := globRegex(toks)
+	if anchorStart {
+		pattern = "^" + pattern
+	}
+	if anchorEnd {
+		pattern += "$"
+	}
+	return valueMatch{kind: matchRegex, pattern: pattern, wild: wild}
+}
+
+// renderMatches ORs the values of one field. Each form is consolidated: equalities
+// stay separate (each can use the skip index), native values share one operator
+// list per operator, and regexes share one alternation, so the SQL runs one
+// multiSearch or match() per field instead of one per value.
+func renderMatches(field string, matches []valueMatch) string {
+	var parts, patterns []string
+	native := map[string][]string{}
+	wild := false
+	for _, m := range matches {
+		switch m.kind {
+		case matchAny:
+			return field + "=*"
+		case matchEqual:
+			parts = append(parts, fmt.Sprintf(`%s="%s"`, field, escapeBQLString(m.value)))
+		case matchNative:
+			native[m.op] = append(native[m.op], m.value)
+		case matchRegex:
+			patterns = append(patterns, m.pattern)
+			wild = wild || m.wild
+		}
+	}
+	for _, op := range []string{"=~", "=^", "=$"} {
+		if vals := native[op]; len(vals) > 0 {
+			parts = append(parts, buildNativeOpExpr(field, op, vals))
+		}
+	}
+	if len(patterns) > 0 {
+		flags := ""
+		if wild {
+			flags = "(?s)"
+		}
+		parts = append(parts, fmt.Sprintf("%s=/%s%s/i", field, flags, strings.Join(patterns, "|")))
+	}
+	return joinExprs(parts, " OR ")
+}
+
+// buildNativeOpExpr emits a =~/=^/=$ expression. Values must not contain commas.
+func buildNativeOpExpr(field, op string, values []string) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
 		parts[i] = encodeBQLNativeValue(v)
 	}
-	return fmt.Sprintf("%s%s%s", field, op, strings.Join(parts, ",")), nil
+	return field + op + strings.Join(parts, ",")
+}
+
+// buildKeywordExpr ORs keyword values (no field) as one case-insensitive regex over
+// the whole event. Keywords are substring matches, so their wildcards apply inside.
+func buildKeywordExpr(values []string) string {
+	pieces := make([]string, 0, len(values))
+	for _, v := range values {
+		toks, lead, trail := trimStars(parseSigmaValue(v))
+		if len(toks) == 0 && (lead || trail) {
+			return "*"
+		}
+		p, _ := globRegex(toks)
+		pieces = append(pieces, p)
+	}
+	if len(pieces) == 1 {
+		return "/.*" + pieces[0] + ".*/i"
+	}
+	return "/.*(?:" + strings.Join(pieces, "|") + ").*/i"
+}
+
+func joinExprs(parts []string, op string) string {
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "(" + strings.Join(parts, op) + ")"
 }
 
 // encodeBQLNativeValue encodes a value for use in =~/=^/=$ value lists.
@@ -303,85 +509,15 @@ func isBQLKeyword(v string) bool {
 	return strings.EqualFold(v, "and") || strings.EqualFold(v, "or") || strings.EqualFold(v, "not")
 }
 
-// valuesHaveComma reports whether any value contains a literal comma, which
-// would corrupt the comma-delimited =~/=^/=$ list syntax.
-func valuesHaveComma(values []string) bool {
-	for _, v := range values {
-		if strings.Contains(v, ",") {
-			return true
-		}
+// buildCombinedRegexExpr consolidates OR'd |re values into one alternation, each
+// wrapped in a non-capturing group so its own anchors and alternation keep their
+// precedence. One match() call instead of one per value, with identical results.
+func buildCombinedRegexExpr(field string, values []string) string {
+	pieces := make([]string, len(values))
+	for i, v := range values {
+		pieces[i] = "(?:" + v + ")"
 	}
-	return false
-}
-
-// buildCombinedRegexExpr consolidates multiple OR'd values of the same regex
-// match type into a single BQL regex using alternation. The result is one
-// match() call in the generated SQL rather than one per value. The combination
-// is exactly equivalent to OR'ing the individual single-value patterns.
-func buildCombinedRegexExpr(field string, values []string, matchType string) (string, error) {
-	pieces := make([]string, 0, len(values))
-	for _, v := range values {
-		if matchType == "regex" {
-			// Raw user regex: wrap each in a non-capturing group so internal
-			// anchors and top-level alternation keep their precedence.
-			pieces = append(pieces, "(?:"+v+")")
-		} else {
-			pieces = append(pieces, escapeRegex(v))
-		}
-	}
-	alt := strings.Join(pieces, "|")
-
-	switch matchType {
-	case "regex":
-		return fmt.Sprintf("%s=/%s/", field, alt), nil
-	case "contains":
-		if field == "" {
-			return fmt.Sprintf("/.*(?:%s).*/i", alt), nil
-		}
-		return fmt.Sprintf("%s=/.*(?:%s).*/i", field, alt), nil
-	case "startswith":
-		return fmt.Sprintf("%s=/^(?:%s).*/i", field, alt), nil
-	case "endswith":
-		return fmt.Sprintf("%s=/.*(?:%s)$/i", field, alt), nil
-	default:
-		return "", fmt.Errorf("unknown match type for combination: %s", matchType)
-	}
-}
-
-// buildMatchExpr creates a single field=value BQL expression.
-func buildMatchExpr(field, value, matchType string) (string, error) {
-	// If no field, it's a keyword search on raw_log
-	if field == "" {
-		escaped := escapeRegex(value)
-		return fmt.Sprintf("/.*%s.*/i", escaped), nil
-	}
-
-	switch matchType {
-	case "exact":
-		return fmt.Sprintf("%s=\"%s\"", field, escapeBQLString(value)), nil
-	case "contains":
-		if !strings.Contains(value, ",") {
-			return fmt.Sprintf("%s=~%s", field, encodeBQLNativeValue(value)), nil
-		}
-		escaped := escapeRegex(value)
-		return fmt.Sprintf("%s=/.*%s.*/i", field, escaped), nil
-	case "startswith":
-		if !strings.Contains(value, ",") {
-			return fmt.Sprintf("%s=^%s", field, encodeBQLNativeValue(value)), nil
-		}
-		escaped := escapeRegex(value)
-		return fmt.Sprintf("%s=/^%s.*/i", field, escaped), nil
-	case "endswith":
-		if !strings.Contains(value, ",") {
-			return fmt.Sprintf("%s=$%s", field, encodeBQLNativeValue(value)), nil
-		}
-		escaped := escapeRegex(value)
-		return fmt.Sprintf("%s=/.*%s$/i", field, escaped), nil
-	case "regex":
-		return fmt.Sprintf("%s=/%s/", field, value), nil
-	default:
-		return "", fmt.Errorf("unknown match type: %s", matchType)
-	}
+	return fmt.Sprintf("%s=/%s/", field, strings.Join(pieces, "|"))
 }
 
 // escapeRegex escapes special regex characters in a value for safe embedding in /pattern/.
