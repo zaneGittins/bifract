@@ -162,6 +162,15 @@ func tval(p *time.Time) driver.Value {
 
 func tptr(t time.Time) *time.Time { return &t }
 
+// sameTime is IS NOT DISTINCT FROM between a stored timestamp and an argument.
+func sameTime(stored *time.Time, arg driver.Value) bool {
+	t, ok := arg.(time.Time)
+	if stored == nil || !ok {
+		return stored == nil && arg == nil
+	}
+	return stored.Equal(t)
+}
+
 // columns renders a row in modelColumns order.
 func (db *modelDB) columns(r *modelRow) []driver.Value {
 	var enabled, last driver.Value
@@ -343,10 +352,11 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 			res.Rows = append(res.Rows, []driver.Value{r.id, r.fractalID, r.modelType, r.definition, r.chTable, r.chMV})
 		}
 		return res, true
-	case "UPDATE analytics_models SET ch_mv_name = '', state_watermark = COALESCE(state_watermark, NOW()) WHERE COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL":
+	case "UPDATE analytics_models SET ch_mv_name = '', state_watermark = COALESCE(state_watermark, NOW()) WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL) AND NOT (COALESCE(ch_mv_name, '') = ANY($1))":
+		survived := setOf(pqArray(args[0]))
 		k := 0
 		for _, r := range db.rows {
-			if r.chMV != "" || r.watermark == nil {
+			if (r.chMV != "" || r.watermark == nil) && !survived[r.chMV] {
 				r.chMV = ""
 				if r.watermark == nil {
 					r.watermark = tptr(now)
@@ -367,22 +377,28 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		}
 		r.bfStartedAt = tptr(args[2].(time.Time))
 		return affected(1), true
-	case "UPDATE analytics_models SET backfill_status='running', backfill_error='' WHERE id=$1 AND status='active' AND backfill_status IN ('failed','cancelled')":
+	case "UPDATE analytics_models SET backfill_status='running', backfill_error='' WHERE id=$1 AND status='active' AND backfill_status IN ('failed','cancelled') RETURNING backfill_started_at":
 		r := row(0)
 		if r == nil || r.status != "active" || (r.bfStatus != "failed" && r.bfStatus != "cancelled") {
-			return affected(0), true
+			return fakedb.PGResult{}, true
 		}
 		r.bfStatus, r.bfError = "running", ""
-		return affected(1), true
+		return fakedb.Row(tval(r.bfStartedAt)), true
 	case "SELECT backfill_window, backfill_anchor, backfill_started_at, backfill_done FROM analytics_models WHERE id=$1":
 		if r := row(0); r != nil {
 			return fakedb.Row(r.bfWindow, tval(r.bfAnchor), tval(r.bfStartedAt), r.bfDone), true
 		}
 		return fakedb.PGResult{}, true
-	case "UPDATE analytics_models SET backfill_done=$1 WHERE id=$2":
-		return db.update(row(1), func(r *modelRow) { r.bfDone = args[0].(int64) }), true
-	case "UPDATE analytics_models SET backfill_status=$1, backfill_error=$2 WHERE id=$3":
-		return db.update(row(2), func(r *modelRow) { r.bfStatus, r.bfError = arg(0), arg(1) }), true
+	case "UPDATE analytics_models SET backfill_done=$1 WHERE id=$2 AND backfill_status='running' AND backfill_started_at IS NOT DISTINCT FROM $3":
+		if r := row(1); r != nil && r.bfStatus == "running" && sameTime(r.bfStartedAt, args[2]) {
+			return db.update(r, func(r *modelRow) { r.bfDone = args[0].(int64) }), true
+		}
+		return affected(0), true
+	case "UPDATE analytics_models SET backfill_status=$1, backfill_error=$2 WHERE id=$3 AND backfill_status='running' AND backfill_started_at IS NOT DISTINCT FROM $4":
+		if r := row(2); r != nil && r.bfStatus == "running" && sameTime(r.bfStartedAt, args[3]) {
+			return db.update(r, func(r *modelRow) { r.bfStatus, r.bfError = arg(0), arg(1) }), true
+		}
+		return affected(0), true
 	case "SELECT id FROM analytics_models WHERE backfill_status='running'":
 		var res fakedb.PGResult
 		for _, r := range db.sorted(nil) {

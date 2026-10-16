@@ -353,3 +353,135 @@ func TestRunDropsItsCancelBeforeItsStatusLeavesRunning(t *testing.T) {
 		}
 	}
 }
+
+// finishGate holds the first terminal status write of a backfill run until it is
+// released, so a test can land it after a rebuild has re-armed the backfill: the
+// order a cancelled run racing Update's drop and recreate can produce.
+type finishGate struct {
+	armed   atomic.Bool
+	release chan struct{}
+}
+
+func gateFinish(env *fakeEnv) *finishGate {
+	g := &finishGate{release: make(chan struct{})}
+	env.db.hook = func(stmt string) {
+		if strings.HasPrefix(stmt, "UPDATE analytics_models SET backfill_status=$1") && g.armed.CompareAndSwap(true, false) {
+			<-g.release
+		}
+	}
+	return g
+}
+
+func rebuild(t *testing.T, env *fakeEnv, id string) {
+	t.Helper()
+	def := rarityDef
+	def.ValueKey = "parent"
+	if _, err := env.mgr.Update(context.Background(), id, UpdateRequest{Name: "m", Definition: def}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A rebuild cancels the running backfill and re-arms it without waiting for the
+// run to stop. The cancelled run's status landing after that must not overwrite
+// the re-armed row: a 'cancelled' backfill with no window can neither resume nor
+// start fresh.
+func TestRebuildMidBackfillStaysStartable(t *testing.T) {
+	env, _, r := backfillEnv(t, false)
+	env.mgr.bfCfg.chunkSleepMs = 60_000
+	gate := gateFinish(env)
+	startBackfill(t, env, r.id, "7d")
+	waitFor(t, "the first chunk", func() bool { g, _ := env.db.get(r.id); return g.bfDone == 1 })
+
+	gate.armed.Store(true)
+	rebuild(t, env, r.id)
+	close(gate.release)
+	waitFor(t, "the cancelled run to exit", func() bool { return len(env.mgr.bfSem) == 0 && registeredRuns(env.mgr) == 0 })
+
+	got, _ := env.db.get(r.id)
+	if got.bfStatus != "none" || got.bfWindow != "" || got.bfDone != 0 {
+		t.Fatalf("the cancelled run overwrote the re-armed backfill: %q window %q done %d", got.bfStatus, got.bfWindow, got.bfDone)
+	}
+	env.mgr.bfCfg.chunkSleepMs = 0
+	startBackfill(t, env, r.id, "24h")
+	if got := waitBackfill(t, env, r.id); got.bfStatus != "completed" {
+		t.Errorf("fresh start after the rebuild: %q %q", got.bfStatus, got.bfError)
+	}
+}
+
+// A run started after the rebuild is the current one. The cancelled run finishing
+// later neither marks it cancelled nor drops its registration, which would leave
+// it beyond the reach of the next rebuild or delete.
+func TestSupersededRunLeavesItsSuccessorAlone(t *testing.T) {
+	env, _, r := backfillEnv(t, false)
+	env.mgr.bfCfg.chunkSleepMs = 60_000
+	gate := gateFinish(env)
+	startBackfill(t, env, r.id, "7d")
+	waitFor(t, "the first chunk", func() bool { g, _ := env.db.get(r.id); return g.bfDone == 1 })
+
+	gate.armed.Store(true)
+	rebuild(t, env, r.id)
+	startBackfill(t, env, r.id, "7d") // queues behind the cancelled run's slot
+	succ, _ := env.db.get(r.id)
+	close(gate.release)
+
+	waitFor(t, "the successor's first chunk", func() bool { g, _ := env.db.get(r.id); return g.bfDone == 1 })
+	got, _ := env.db.get(r.id)
+	if got.bfStatus != "running" || !got.bfStartedAt.Equal(*succ.bfStartedAt) {
+		t.Errorf("the superseded run rewrote its successor: %q started %v", got.bfStatus, got.bfStartedAt)
+	}
+	if registeredRuns(env.mgr) != 1 {
+		t.Fatal("the superseded run dropped its successor's registration")
+	}
+	env.mgr.CancelBackfill(r.id)
+	if got := waitBackfill(t, env, r.id); got.bfStatus != "cancelled" || got.bfDone != 1 {
+		t.Errorf("successor after cancel: %q done %d", got.bfStatus, got.bfDone)
+	}
+}
+
+// A run still queued for a slot when its backfill is re-armed elsewhere (another
+// replica's rebuild, which cannot cancel it) inserts nothing and writes nothing
+// once it gets the slot.
+func TestQueuedRunSupersededBeforeItStarts(t *testing.T) {
+	env, log, r := backfillEnv(t, false)
+	env.mgr.bfSem <- struct{}{}
+	startBackfill(t, env, r.id, "7d")
+	env.db.mu.Lock()
+	row := env.db.rows[r.id]
+	row.bfStatus, row.bfWindow, row.bfTotal, row.bfDone, row.bfStartedAt = "none", "", 0, 0, nil
+	env.db.mu.Unlock()
+	<-env.mgr.bfSem
+	waitFor(t, "the queued run to exit", func() bool { return len(env.mgr.bfSem) == 0 && registeredRuns(env.mgr) == 0 })
+
+	got, _ := env.db.get(r.id)
+	if got.bfStatus != "none" || got.bfError != "" || len(log.accepted()) != 0 {
+		t.Errorf("superseded run acted: %q %q, %d inserts", got.bfStatus, got.bfError, len(log.accepted()))
+	}
+}
+
+// A run recovered or resumed with no anchor recorded (it predates the column)
+// bounds its chunks at the model's creation, the fallback a fresh start applies,
+// instead of at the zero time, which would select nothing and still complete.
+func TestRecoveredRunWithoutAnchorUsesCreation(t *testing.T) {
+	env, log, r := backfillEnv(t, false)
+	started := time.Date(2026, 10, 12, 15, 0, 0, 0, time.UTC)
+	created := time.Date(2026, 9, 20, 8, 15, 0, 0, time.UTC)
+	env.db.mu.Lock()
+	row := env.db.rows[r.id]
+	row.bfStatus, row.bfWindow, row.bfDone, row.bfTotal, row.bfStartedAt = "running", "7d", 0, 8, &started
+	row.bfAnchor, row.createdAt = nil, created
+	env.db.mu.Unlock()
+
+	env.mgr.RecoverBackfills(context.Background())
+	if got := waitBackfill(t, env, r.id); got.bfStatus != "completed" {
+		t.Fatalf("row: %q %q", got.bfStatus, got.bfError)
+	}
+	inserts := log.accepted()
+	if len(inserts) != len(backfillChunks(started, 7)) {
+		t.Fatalf("%d chunks run", len(inserts))
+	}
+	for _, stmt := range inserts {
+		if w := chunkOf(t, stmt); w.anchor != created.Format(chTimeLayout) {
+			t.Fatalf("chunk bounded at ingest_timestamp < %s, want the model's creation %s", w.anchor, created.Format(chTimeLayout))
+		}
+	}
+}

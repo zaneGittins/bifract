@@ -141,7 +141,7 @@ func (h *Handler) HandlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var obj map[string]interface{}
-	if err := json.Unmarshal([]byte(req.SampleJSON), &obj); err != nil {
+	if err := DecodeJSON([]byte(req.SampleJSON), &obj); err != nil {
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Invalid sample JSON: %v", err))
 		return
 	}

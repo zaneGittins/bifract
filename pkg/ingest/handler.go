@@ -3,7 +3,6 @@ package ingest
 import (
 	"bifract/pkg/api"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -232,12 +231,14 @@ func (h *IngestHandler) parseLogsWithToken(data []byte, token *ingesttokens.Vali
 	}
 }
 
+// parseJSONLogsWithConfig decodes numbers as json.Number (normalizers.DecodeJSON),
+// so 64-bit IDs keep their exact digits in the fields and the raw log.
 func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) ([]storage.LogEntry, error) {
 	var logs []storage.LogEntry
 
 	// Try to parse as JSON array first
 	var jsonArray []map[string]interface{}
-	if err := json.Unmarshal(data, &jsonArray); err == nil {
+	if err := normalizers.DecodeJSON(data, &jsonArray); err == nil {
 		for _, obj := range jsonArray {
 			log, err := BuildLogEntry(obj, norm, tsFields)
 			if err != nil {
@@ -250,7 +251,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 
 	// Try to parse as single JSON object
 	var jsonObj map[string]interface{}
-	if err := json.Unmarshal(data, &jsonObj); err == nil {
+	if err := normalizers.DecodeJSON(data, &jsonObj); err == nil {
 		log, err := BuildLogEntry(jsonObj, norm, tsFields)
 		if err != nil {
 			return nil, err
@@ -269,7 +270,7 @@ func (h *IngestHandler) parseJSONLogsWithConfig(data []byte, norm *normalizers.C
 		}
 
 		var obj map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+		if err := normalizers.DecodeJSON([]byte(line), &obj); err != nil {
 			continue
 		}
 

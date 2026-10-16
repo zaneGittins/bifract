@@ -99,7 +99,7 @@ func flattenFields(fields map[string]string, mode FlattenMode, nestedKeys map[st
 		node := paths.child(key)
 		if isNested && len(val) > 1 && val[0] == '{' {
 			var obj map[string]interface{}
-			if err := json.Unmarshal([]byte(val), &obj); err == nil {
+			if err := DecodeJSON([]byte(val), &obj); err == nil {
 				flattenObject(obj, safeKey, &leaves, 0, &truncated, &truncReason, node, pc)
 				continue
 			}
@@ -267,11 +267,17 @@ func stringifyValue(v interface{}) string {
 	switch val := v.(type) {
 	case string:
 		return val
+	case json.Number:
+		// Ingest decodes numbers as json.Number (DecodeJSON) so 64-bit IDs keep
+		// their digits. Rendered as an exact plain decimal, the same form as the
+		// float64 case below for every number a float64 holds exactly.
+		return plainNumber(string(val))
 	case float64:
-		// JSON unmarshals all numbers to float64. Format without exponents
-		// ('f', -1) so whole/large numbers render as plain decimals ("1000000",
-		// not "1e+06"); this keeps stored values exact-match friendly (value maps,
-		// BQL equality) while ClickHouse still parses them for aggregation.
+		// Callers that decode with json.Unmarshal still hand over float64. Format
+		// without exponents ('f', -1) so whole/large numbers render as plain
+		// decimals ("1000000", not "1e+06"); this keeps stored values exact-match
+		// friendly (value maps, BQL equality) while ClickHouse still parses them
+		// for aggregation.
 		return strconv.FormatFloat(val, 'f', -1, 64)
 	case bool:
 		return fmt.Sprintf("%v", val)

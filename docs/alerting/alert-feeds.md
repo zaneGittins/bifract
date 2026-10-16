@@ -65,6 +65,47 @@ Everything else passes through unchanged (`process_creation`, `dns_query`, `proc
 Rules with no `logsource.category` (Windows Security log rules, for example) are not
 prefiltered. They scope themselves through `EventID` inside their own detection block.
 
+## How Sigma Values Match
+
+Bifract matches Sigma values the way the Sigma specification defines them:
+
+- **Case is ignored.** `OriginalFileName: Cmd.Exe` matches `cmd.exe` and `CMD.EXE`.
+- **`*` matches any run of characters and `?` matches exactly one**, in plain values and
+  inside `contains`, `startswith` and `endswith`. `Image: '*\cmd.exe'` matches any path
+  ending in `\cmd.exe`, and `CommandLine|contains: 'http*://'` matches `http://` and
+  `https://` anywhere in the command line.
+- **A backslash escapes a wildcard or another backslash**: `\*` is a literal asterisk,
+  `\?` a literal question mark, `\\` a single backslash. A backslash before anything else
+  is an ordinary character, so Windows paths need no escaping. A path separator followed
+  by a wildcard must be written `\\*`: `C:\Windows\\*` matches everything under
+  `C:\Windows\`, while `C:\Windows\*` matches only the literal text `C:\Windows*`.
+- **`Field: null`** matches events where the field is absent or empty, and a value of
+  `'*'` matches events where it has any non-empty value.
+
+Each value becomes the cheapest query that matches it exactly. A value with no letters
+(`EventID: 4688`) stays an equality, which can use the field's skip index. A value with a
+wildcard only at one end becomes a prefix, suffix or substring match. Anything else (a
+value with letters under an exact match, or a wildcard in the middle) becomes a
+case-insensitive regular expression.
+
+### Supported modifiers
+
+| Modifier | Meaning |
+|---|---|
+| `contains`, `startswith`, `endswith` | The value appears anywhere in, at the start of, or at the end of the field |
+| `all` | Every listed value must match, rather than any one of them |
+| `re` | The value is a regular expression, matched case-sensitively |
+| `re\|i`, `re\|m`, `re\|s` | Regular expression flags: case-insensitive, `^`/`$` match at line breaks, `.` matches a line break |
+
+A rule that uses any other modifier is not imported, because dropping the modifier would
+deploy a different detection than the one written. This includes `base64`,
+`base64offset`, `cidr`, `windash`, `exists`, `gt`, `gte`, `lt`, `lte`, `fieldref`,
+`expand`, `utf16le`, `utf16be`, `utf16`, `wide` and `cased`. Conditions that use
+aggregation (`| count() by ...`) and combinations such as `contains|endswith` are
+refused the same way. Each refused rule is catalogued with the field, selection and
+modifier that stopped it, and appears in [ATT&CK Coverage](attack-coverage.md#closing-a-gap)
+as `cannot be translated to BQL`.
+
 ## Feed Configuration
 
 | Field | Description |

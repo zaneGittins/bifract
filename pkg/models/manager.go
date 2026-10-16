@@ -40,10 +40,16 @@ type Manager struct {
 	bfHealth  BackfillHealth // pause source: yields to ingest backpressure
 	bfSem     chan struct{}  // global single-flight gate
 	bfMu      sync.Mutex     // guards bfCancels
-	bfCancels map[string]context.CancelFunc
+	bfCancels map[string]*backfillRun
 
 	// health caches each model's state summary for the listing.
 	health *healthCache
+
+	// liveViews are the insert-time views the last ReconcileStateViews failed to
+	// drop, by name. The state maintainer skips their models: the view is still
+	// writing their state, and writing it too would double every aggregate.
+	viewMu    sync.Mutex
+	liveViews map[string]bool
 }
 
 // NewManager creates a new analytics model manager.
@@ -55,7 +61,7 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manag
 		chDB:      "logs",
 		bfCfg:     cfg,
 		bfSem:     make(chan struct{}, cfg.concurrency),
-		bfCancels: make(map[string]context.CancelFunc),
+		bfCancels: make(map[string]*backfillRun),
 		health:    newHealthCache(),
 	}
 }
@@ -631,18 +637,7 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	}
 
 	// In cluster mode, create a Distributed table for fan-out reads.
-	if m.ch.Topology().DistributedTables {
-		distName := chModelDistName(id)
-		distSQL := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
-			distName, tableName, storage.EscCHStr(m.ch.Topology().DDLCluster), tableName,
-		)
-		// ON CLUSTER like the table under it: created on one node only, a read or
-		// state insert landing on any other fails on an unknown table.
-		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(distSQL)); err != nil && !isCHDDLTimeout(err) {
-			log.Printf("model %s: create distributed table: %v", id, err)
-		}
-	}
+	m.ensureDistributedCompanions(ctx, id, mt, tableName)
 
 	// CREATE IF NOT EXISTS leaves a table that survived a drop at its old shape.
 	// Not fatal: a new table already has every column, and startup retries.
@@ -703,24 +698,52 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 
 	// Distributed tables (cluster mode): one over the results table for fan-out
 	// reads, one over the state table so the scorer aggregates state across shards.
-	if m.ch.Topology().DistributedTables {
-		cl := storage.EscCHStr(m.ch.Topology().DDLCluster)
-		distResults := fmt.Sprintf(
+	m.ensureDistributedCompanions(ctx, id, mt, tableName)
+	return nil
+}
+
+// distCompanion is one Distributed table a model owns over one of its local tables.
+type distCompanion struct {
+	what, dist, local string
+}
+
+// distCompanions lists the Distributed tables a model owns in cluster mode: one
+// over its data (or results) table, and for a scheduled model one over its
+// rolling-state table too.
+func distCompanions(id string, mt ModelType, tableName string) []distCompanion {
+	if !mt.IsScheduled() {
+		return []distCompanion{{"distributed table", chModelDistName(id), tableName}}
+	}
+	return []distCompanion{
+		{"distributed results table", chModelDistName(id), tableName},
+		{"distributed state table", chModelStateDistName(id), chModelStateName(id)},
+	}
+}
+
+// ensureDistributedCompanions creates a model's Distributed tables on every node.
+// No-op outside cluster mode.
+//
+// ON CLUSTER like the tables under them: created on one node only, a read or state
+// insert landing on any other fails on an unknown table. The statement is
+// idempotent, so startup reissues it for every model; that is what repairs a
+// companion an older release created on one node only, which a probe through the
+// load-balanced connection cannot see. Best-effort: a failure is logged, and a DDL
+// timeout (the queue is still applying it) is not one.
+func (m *Manager) ensureDistributedCompanions(ctx context.Context, id string, mt ModelType, tableName string) {
+	topo := m.ch.Topology()
+	if !topo.DistributedTables {
+		return
+	}
+	cl := storage.EscCHStr(topo.DDLCluster)
+	for _, c := range distCompanions(id, mt, tableName) {
+		sql := fmt.Sprintf(
 			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
-			chModelDistName(id), tableName, cl, tableName,
+			c.dist, c.local, cl, c.local,
 		)
-		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(distResults)); err != nil && !isCHDDLTimeout(err) {
-			log.Printf("model %s: create distributed results table: %v", id, err)
-		}
-		distState := fmt.Sprintf(
-			"CREATE TABLE IF NOT EXISTS `%s` AS `%s` ENGINE = Distributed('%s', currentDatabase(), '%s', rand())",
-			chModelStateDistName(id), stateName, cl, stateName,
-		)
-		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(distState)); err != nil && !isCHDDLTimeout(err) {
-			log.Printf("model %s: create distributed state table: %v", id, err)
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(sql)); err != nil && !isCHDDLTimeout(err) {
+			log.Printf("model %s: create %s: %v", id, c.what, err)
 		}
 	}
-	return nil
 }
 
 // dropModelTableSQL drops one of a model's replicated tables. SYNC clears the
@@ -1633,6 +1656,11 @@ func validateCreateRequest(req CreateRequest) error {
 // without the operator re-saving every model. Recreated tables are empty until a
 // backfill runs.
 //
+// On a cluster it also reissues every model's Distributed companions ON CLUSTER.
+// Models created before those were ON CLUSTER have them on one node only, and the
+// table probe here goes through the load-balanced connection, so it describes one
+// node and cannot tell.
+//
 // Best-effort and non-fatal: a model that cannot be recreated is logged and skipped
 // so one bad definition never blocks startup.
 func (m *Manager) ReconcileCHObjects(ctx context.Context) {
@@ -1673,6 +1701,9 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 			continue
 		}
 		if exists {
+			// The probe saw this table on one node. Its Distributed companions are
+			// reissued ON CLUSTER regardless, before the column patch reaches them.
+			m.ensureDistributedCompanions(ctx, t.id, t.mt, t.table)
 			if err := m.ensureStateColumns(ctx, t.id, t.mt, t.table); err != nil {
 				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
 			}
@@ -1714,25 +1745,57 @@ func (m *Manager) ReconcileStateViews(ctx context.Context) {
 		}
 	}
 
+	survived := []string{}
 	for _, mv := range views {
 		if err := m.dropStateMV(ctx, mv); err != nil {
 			// Left for the next startup: the maintainer must not run alongside a
 			// view that survived, so this is reported rather than swallowed.
 			log.Printf("models: reconcile state views: %s: %v (will retry next startup)", mv, err)
+			survived = append(survived, mv)
 			continue
 		}
 		log.Printf("models: dropped insert-time state view %s", mv)
 	}
+	m.setLiveStateViews(survived)
 
 	// Hand over every model the sweep freed: the views stopped writing at this
 	// instant, so this is where the maintainer must start. Done here rather than
 	// in a migration because the app's own upgrade path does not run them.
+	//
+	// A model whose view survived is not freed. It keeps its ch_mv_name and its
+	// watermark, NULL for a model that never had one, which keeps it out of the
+	// maintainer until a later startup drops the view and hands it over.
 	if _, err := m.pg.Exec(ctx,
 		`UPDATE analytics_models SET ch_mv_name = '',
 		        state_watermark = COALESCE(state_watermark, NOW())
-		 WHERE COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL`); err != nil {
+		 WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL)
+		   AND NOT (COALESCE(ch_mv_name, '') = ANY($1))`, pq.Array(survived)); err != nil {
 		log.Printf("models: reconcile state views: hand over: %v", err)
 	}
+}
+
+// setLiveStateViews records the insert-time views that are still in place.
+func (m *Manager) setLiveStateViews(names []string) {
+	live := make(map[string]bool, len(names))
+	for _, n := range names {
+		live[n] = true
+	}
+	m.viewMu.Lock()
+	m.liveViews = live
+	m.viewMu.Unlock()
+}
+
+// stateViewLive reports whether a model's insert-time view survived the startup
+// sweep, so its state is still written at insert. A model can carry a watermark
+// and still have one: an older release handed every model over whether or not
+// its view had dropped.
+func (m *Manager) stateViewLive(modelID string) bool {
+	if m == nil {
+		return false
+	}
+	m.viewMu.Lock()
+	defer m.viewMu.Unlock()
+	return m.liveViews[chModelMVName(modelID)]
 }
 
 // TLSHIndex describes one fractal's TLSH digest index: the table tlsh() probes for

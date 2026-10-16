@@ -35,15 +35,24 @@ type tokenRow struct {
 	normName              string
 	normVersion           int64
 	normTsFields          string // JSON
+	normMappings          string // JSON field mappings; empty = []
+	normValueMaps         string // JSON value mappings; empty = []
 }
 
 func (r tokenRow) values() []driver.Value {
 	v := []driver.Value{r.id, r.fractalID, r.parser, []byte(r.tsFields), nil, nil, nil, nil, nil, nil, nil}
 	if r.normalizer != "" {
 		v[4], v[5], v[6] = "norm-1", r.normName, r.normVersion
-		v[7], v[8], v[9], v[10] = []byte(r.normalizer), []byte(`[]`), []byte(`[]`), []byte(r.normTsFields)
+		v[7], v[8], v[9], v[10] = []byte(r.normalizer), []byte(orEmptyList(r.normMappings)), []byte(orEmptyList(r.normValueMaps)), []byte(r.normTsFields)
 	}
 	return v
+}
+
+func orEmptyList(s string) string {
+	if s == "" {
+		return "[]"
+	}
+	return s
 }
 
 type fixture struct {

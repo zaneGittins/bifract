@@ -47,7 +47,7 @@ func TestTranslatePrependsCategory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `bifract_category=process_creation AND (Image="cmd.exe")`
+	want := `bifract_category=process_creation AND (Image=/^cmd\.exe$/i)`
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}

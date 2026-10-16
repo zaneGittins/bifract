@@ -38,6 +38,25 @@ func decodeBulkError(t *testing.T, w *httptest.ResponseRecorder) (typ, reason st
 	return env.Error.Type, env.Error.Reason, env.Status
 }
 
+// itemResult returns the item's one action and its result, failing the test when
+// the item answers no action or several.
+func itemResult(t *testing.T, it ElasticBulkItem) (string, ElasticIndexResult) {
+	t.Helper()
+	var action string
+	var res ElasticIndexResult
+	n := 0
+	for name, r := range map[string]ElasticIndexResult{"index": it.Index, "create": it.Create, "delete": it.Delete, "update": it.Update} {
+		if r != (ElasticIndexResult{}) {
+			action, res = name, r
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("item answers %d actions: %+v", n, it)
+	}
+	return action, res
+}
+
 func TestParseBulkRequest(t *testing.T) {
 	h := &ElasticBulkHandler{handler: &IngestHandler{}}
 	body := bulkBody(
@@ -45,13 +64,14 @@ func TestParseBulkRequest(t *testing.T) {
 		`{"Name":"one","timestamp":"2026-07-01T00:00:00Z"}`,
 		`{"create":{"_index":"velo-create"}}`,
 		`{"Name":"two"}`,
-		// delete has no source line; the next line is an action again.
+		// delete has no source line; the next line is an action again. It is not
+		// supported, but still answered so later items stay aligned.
 		`{"delete":{"_index":"x","_id":"gone"}}`,
 		`{"index":{}}`,
 		`not json`,
 		`{"create":{"_id":"c-2"}}`,
 		`[1,2,3]`,
-		// update's partial document is never ingested as a log.
+		// update's partial document is consumed but never ingested as a log.
 		`{"update":{"_id":"u"}}`,
 		`{"doc":{"Name":"partial"}}`,
 		`garbage action line`,
@@ -80,20 +100,19 @@ func TestParseBulkRequest(t *testing.T) {
 	}
 	var got []res
 	for _, it := range items {
-		switch {
-		case it.Index.Status != 0:
-			got = append(got, res{"index", it.Index.Index, it.Index.ID, it.Index.Result, it.Index.Status})
-		case it.Create.Status != 0:
-			got = append(got, res{"create", it.Create.Index, it.Create.ID, it.Create.Result, it.Create.Status})
-		default:
-			t.Fatalf("item with no action result: %+v", it)
+		action, r := itemResult(t, it)
+		got = append(got, res{action, r.Index, r.ID, r.Result, r.Status})
+		if (r.Status >= 400) != (r.Error != nil) {
+			t.Errorf("%s item status %d with error %+v", action, r.Status, r.Error)
 		}
 	}
 	want := []res{
 		{"index", "velo-artifacts", "doc-1", "created", 201},
 		{"create", "velo-create", "", "created", 201},
-		{"index", "bifract", "", "error", 400},
-		{"create", "bifract", "", "error", 400},
+		{"delete", "x", "gone", "", 400},
+		{"index", "bifract", "", "", 400},
+		{"create", "bifract", "c-2", "", 400},
+		{"update", "bifract", "u", "", 400},
 		{"index", "after-garbage", "", "created", 201},
 	}
 	if len(got) != len(want) {
@@ -114,8 +133,10 @@ func TestParseBulkRequestEdges(t *testing.T) {
 		logs, items int
 	}{
 		{"empty", "", 0, 0},
-		{"action without source at EOF", `{"index":{}}`, 0, 0},
-		{"blank source line", "{\"index\":{}}\n\n{\"a\":1}\n", 0, 0},
+		{"action without source at EOF", `{"index":{}}`, 0, 1},
+		{"blank source line", "{\"index\":{}}\n\n{\"a\":1}\n", 0, 1},
+		{"update at EOF", `{"update":{}}`, 0, 1},
+		{"delete then index", "{\"delete\":{}}\n{\"index\":{}}\n{\"a\":1}\n", 1, 2},
 		{"no trailing newline", "{\"index\":{}}\n{\"a\":1}", 1, 1},
 		{"CRLF", "{\"index\":{}}\r\n{\"a\":1}\r\n", 1, 1},
 	} {
@@ -268,10 +289,10 @@ func TestHandleBulkBackpressureMarksItemsRetryable(t *testing.T) {
 			if !resp.Errors || len(resp.Items) != 3 {
 				t.Fatalf("response = %+v", resp)
 			}
-			if it := resp.Items[0].Index; it.Status != 429 || it.Result != "too_many_requests" || !strings.Contains(it.Error, tc.reason) {
+			if it := resp.Items[0].Index; it.Status != 429 || it.Result != "" || it.Error == nil || !strings.Contains(it.Error.Reason, tc.reason) {
 				t.Errorf("index item = %+v", it)
 			}
-			if it := resp.Items[1].Create; it.Status != 429 || !strings.Contains(it.Error, tc.reason) {
+			if it := resp.Items[1].Create; it.Status != 429 || it.Error == nil || !strings.Contains(it.Error.Reason, tc.reason) {
 				t.Errorf("create item = %+v", it)
 			}
 			if it := resp.Items[2].Index; it.Status != 400 {
@@ -298,8 +319,9 @@ func TestHandleBulkRejectsOverlongLine(t *testing.T) {
 	}
 }
 
-// FuzzParseBulkRequest: no input may panic, and every queued log must have exactly
-// one 201 item, since clients match items to documents to decide what to resend.
+// FuzzParseBulkRequest: no input may panic, every item answers exactly one action,
+// and every queued log must have exactly one 201 item, since clients match items to
+// documents to decide what to resend.
 func FuzzParseBulkRequest(f *testing.F) {
 	f.Add([]byte(bulkBody(`{"index":{"_index":"a","_id":"1"}}`, `{"x":1}`, `{"delete":{}}`, `{"create":{}}`, `bad`)))
 	f.Add([]byte("{\"index\":null}\n{\"x\":1}\n"))
@@ -312,7 +334,7 @@ func FuzzParseBulkRequest(f *testing.F) {
 		}
 		created := 0
 		for _, it := range items {
-			if it.Index.Status == 201 || it.Create.Status == 201 {
+			if _, r := itemResult(t, it); r.Status == 201 {
 				created++
 			}
 		}
@@ -320,4 +342,86 @@ func FuzzParseBulkRequest(f *testing.F) {
 			t.Fatalf("%d logs but %d created items", len(logs), created)
 		}
 	})
+}
+
+// TestHandleBulkItemsAlignWithActions: bulk clients pair items with actions by
+// position, so every action line gets exactly one item, in order, under its own
+// action key and nothing else, with failures in the Elasticsearch error shape.
+// Unsupported actions and missing documents are permanent (400) failures.
+func TestHandleBulkItemsAlignWithActions(t *testing.T) {
+	f := newFixture(t, tokenRow{})
+	body := bulkBody(
+		`{"index":{"_index":"i","_id":"1"}}`, `{"a":1}`,
+		`{"delete":{"_index":"i","_id":"gone"}}`,
+		`{"update":{"_index":"i","_id":"u"}}`, `{"doc":{"index":{"a":3}}}`,
+		`{"create":{"_id":"2"}}`, `{"a":2}`,
+		`{"create":{"_id":"blank"}}`, ``,
+		`{"index":{"_id":"3"}}`, `{"a":3}`,
+		`{"index":{"_id":"eof"}}`,
+	)
+	w, _ := do(NewElasticBulkHandler(f.h).HandleBulk, http.MethodPost, strings.TrimSuffix(body, "\n"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Errors bool                                    `json:"errors"`
+		Items  []map[string]map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response: %v: %s", err, w.Body)
+	}
+	want := []struct {
+		action, id string
+		status     int
+	}{
+		{"index", "1", 201},
+		{"delete", "gone", 400},
+		{"update", "u", 400},
+		{"create", "2", 201},
+		{"create", "blank", 400},
+		{"index", "3", 201},
+		{"index", "eof", 400},
+	}
+	if !resp.Errors {
+		t.Error("errors=false with failed items")
+	}
+	if len(resp.Items) != len(want) {
+		t.Fatalf("%d items, want %d: %s", len(resp.Items), len(want), w.Body)
+	}
+	for i, wi := range want {
+		item := resp.Items[i]
+		res, ok := item[wi.action]
+		if len(item) != 1 || !ok {
+			t.Errorf("item %d has keys %v, want only %q", i, keys(item), wi.action)
+			continue
+		}
+		var id string
+		var status int
+		_ = json.Unmarshal(res["_id"], &id)
+		_ = json.Unmarshal(res["status"], &status)
+		if id != wi.id || status != wi.status {
+			t.Errorf("item %d = %s %q %d, want %s %q %d", i, wi.action, id, status, wi.action, wi.id, wi.status)
+		}
+		if status < 300 {
+			if _, has := res["error"]; has {
+				t.Errorf("item %d succeeded but carries an error", i)
+			}
+			continue
+		}
+		var e struct{ Type, Reason string }
+		if err := json.Unmarshal(res["error"], &e); err != nil || e.Type == "" || e.Reason == "" {
+			t.Errorf("item %d error is not {type, reason}: %s", i, res["error"])
+		}
+	}
+	if n := len(f.q.queued()); n != 3 {
+		t.Errorf("queued %d logs, want 3 (update bodies are never logs)", n)
+	}
+}
+
+func keys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

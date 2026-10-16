@@ -2,6 +2,7 @@ package sigma
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -152,10 +153,12 @@ func parseSelectionGroup(val interface{}) (*SelectionGroup, error) {
 }
 
 // parseFieldConditions parses a map of field -> value(s) with optional modifiers.
+// Fields come back sorted by key so a rule always translates to the same query.
 func parseFieldConditions(m map[string]interface{}) ([]FieldCondition, error) {
 	var conditions []FieldCondition
 
-	for key, val := range m {
+	for _, key := range sortedKeys(m) {
+		val := m[key]
 		fc := FieldCondition{}
 
 		// Split key on '|' to separate field name from modifiers
@@ -199,4 +202,15 @@ func parseFieldConditions(m map[string]interface{}) ([]FieldCondition, error) {
 	}
 
 	return conditions, nil
+}
+
+// sortedKeys returns a map's keys in order, so iteration does not depend on Go's
+// randomized map order.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

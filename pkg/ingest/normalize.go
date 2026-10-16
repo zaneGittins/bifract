@@ -22,6 +22,11 @@ import (
 // BuildLogEntry converts a decoded JSON log object into a LogEntry, applying the
 // normalizer's transforms and resolving the event timestamp. IngestTimestamp and the
 // derived log_id are stamped here, so callers get an entry ready to insert.
+//
+// Decode obj with normalizers.DecodeJSON: its json.Number values re-marshal into the
+// raw log with the exact digits sent, and render as exact plain decimals in the
+// fields. A float64 from json.Unmarshal is accepted but has already lost precision
+// past 2^53.
 func BuildLogEntry(obj map[string]interface{}, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) (storage.LogEntry, error) {
 	entry := storage.LogEntry{}
 

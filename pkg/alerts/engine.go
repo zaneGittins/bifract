@@ -30,7 +30,9 @@ import (
 // It runs a background ticker that evaluates all enabled alerts using a
 // cursor-based approach: each alert tracks the ingest_timestamp it was
 // last evaluated up to, so every log is guaranteed to be seen at least
-// once. The cursor is only advanced after a successful query, making
+// once. Windows are half-open, [cursor, end), and end on a whole
+// millisecond, so consecutive windows abut with no row read twice and none
+// skipped. The cursor is only advanced after a successful query, making
 // evaluation crash-safe.
 //
 // Concurrency model:
@@ -236,8 +238,10 @@ func (e *Engine) refreshRecentIngest(ctx context.Context, since time.Time) {
 	// arrived after its own cursor, so anything older is dead weight. Without
 	// this the aggregate scans the whole hot table every cycle, which at high
 	// ingest is gigabytes a minute.
+	// Inclusive: a row stamped exactly at a cursor belongs to the window that
+	// starts there, so it is work the alert has not done yet.
 	sql := fmt.Sprintf(
-		"SELECT fractal_id, max(ingest_timestamp) AS last_ingest FROM %s WHERE ingest_timestamp > toDateTime64('%s', 3, 'UTC') GROUP BY fractal_id",
+		"SELECT fractal_id, max(ingest_timestamp) AS last_ingest FROM %s WHERE ingest_timestamp >= toDateTime64('%s', 3, 'UTC') GROUP BY fractal_id",
 		e.ch.HotReadTable(), since.UTC().Format("2006-01-02 15:04:05.000"))
 	// Scanned with typed destinations rather than the map-based Query helper,
 	// which formats DateTime64 into a display string.
@@ -322,8 +326,9 @@ func (e *Engine) shouldSkipAlert(alert *Alert) bool {
 		return false
 	}
 	// Cursor is inside the hot window and the map is fresh, so a fractal with
-	// no row genuinely has no recent data.
-	return !e.recentIngest[alert.FractalID].After(alert.LastEvaluatedAt)
+	// no row genuinely has no recent data. Windows exclude their end, so a row
+	// stamped exactly at the cursor has not been read yet and must not skip.
+	return e.recentIngest[alert.FractalID].Before(alert.LastEvaluatedAt)
 }
 
 // Start launches the background alert evaluation loop. The tick interval is
@@ -566,9 +571,12 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	default:
 		tableName = "logs"
 	}
+	// The window excludes its end: the next window starts exactly there, so an
+	// inclusive end would read a row stamped on the boundary twice.
 	opts := parser.QueryOptions{
 		StartTime:          from,
 		EndTime:            to,
+		EndExclusive:       true,
 		MaxRows:            10000,
 		UseIngestTimestamp: true,
 		ModelNewSince:      newSince,
@@ -838,6 +846,16 @@ func (e *Engine) advanceCursor(ctx context.Context, alert *Alert, t time.Time, e
 	}
 }
 
+// windowBound truncates a window bound to the whole millisecond.
+//
+// ingest_timestamp is DateTime64(3) and the query literal is rendered in
+// milliseconds, while the cursor round-trips through Postgres at microsecond
+// precision. An untruncated end would be read as its millisecond floor but
+// stored rounded, which can carry the next window's start past a millisecond
+// that no window read. Truncated, the bound is the same value in the query, in
+// Postgres and in memory.
+func windowBound(t time.Time) time.Time { return t.Truncate(time.Millisecond) }
+
 // ---------------------------------------------------------------------------
 // Alert type evaluators
 // ---------------------------------------------------------------------------
@@ -852,6 +870,7 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 	if fromTime.IsZero() {
 		fromTime = time.Now().Add(-5 * time.Minute)
 	}
+	fromTime = windowBound(fromTime)
 	toTime := time.Now()
 
 	if toTime.Sub(fromTime) < minEvalWindow {
@@ -861,7 +880,7 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 		toTime = fromTime.Add(maxEvalWindow)
 	}
 	// Never evaluate past the state of a model this alert consults.
-	if toTime = e.modelWatermark(ctx, alert, toTime); toTime.Sub(fromTime) < minEvalWindow {
+	if toTime = windowBound(e.modelWatermark(ctx, alert, toTime)); toTime.Sub(fromTime) < minEvalWindow {
 		return nil
 	}
 
@@ -892,6 +911,7 @@ func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache 
 	if fromTime.IsZero() {
 		fromTime = time.Now().Add(-windowDuration)
 	}
+	fromTime = windowBound(fromTime)
 
 	windowEnd := fromTime.Add(windowDuration)
 	if time.Now().Before(windowEnd) {
@@ -935,7 +955,7 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 
 	start := time.Now()
 	queryWindow := time.Duration(*alert.QueryWindowSeconds) * time.Second
-	toTime := time.Now()
+	toTime := windowBound(time.Now())
 	fromTime := toTime.Add(-queryWindow)
 
 	opts, err := e.buildQueryOpts(ctx, alert, fromTime, toTime, cache)

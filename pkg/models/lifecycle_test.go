@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -617,6 +618,76 @@ func TestReconcileCHObjects(t *testing.T) {
 	}
 }
 
+// On a cluster, startup reissues every model's Distributed companions ON CLUSTER,
+// including those of a model whose table the probe found: an older release created
+// them on one node only, and the probe goes through the load-balanced connection,
+// so it describes one node. Each companion goes out once, with the statement the
+// create path sends, and one that fails or times out does not stop the rest.
+func TestReconcileCHObjectsRepairsCompanionsOnCluster(t *testing.T) {
+	env := newClusterEnv(t)
+	rarity := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	beacon := seedModel(env, ModelTypeBeacon, ModelDefinition{Window: "7d"}, nil)
+	timesOut := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	lost := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	for _, tbl := range []string{rarity.chTable, beacon.chTable, chModelStateName(beacon.id), timesOut.chTable} {
+		env.ch.existing[tbl] = true
+	}
+
+	on := " ON CLUSTER 'bf_cluster'"
+	companion := func(dist, local string) string {
+		return "CREATE TABLE IF NOT EXISTS `" + dist + "`" + on + " AS `" + local +
+			"` ENGINE = Distributed('bf_cluster', currentDatabase(), '" + local + "', rand())"
+	}
+	env.ch.FailExecFunc(func(stmt string) error {
+		switch stmt {
+		case companion(chModelDistName(timesOut.id), timesOut.chTable):
+			return fakedb.Exception(159, "distributed DDL timed out")
+		case companion(chModelDistName(beacon.id), beacon.chTable):
+			return errors.New("keeper unavailable")
+		}
+		return nil
+	})
+
+	env.mgr.ReconcileCHObjects(context.Background())
+
+	want := []string{
+		companion(chModelDistName(rarity.id), rarity.chTable),
+		companion(chModelDistName(beacon.id), beacon.chTable),
+		companion(chModelStateDistName(beacon.id), chModelStateName(beacon.id)),
+		companion(chModelDistName(timesOut.id), timesOut.chTable),
+		companion(chModelDistName(lost.id), lost.chTable),
+	}
+	for _, w := range want {
+		if n := len(env.ch.ExecutedMatching(w)); n != 1 {
+			t.Errorf("companion sent %d times, want once: %s\nexecuted:\n%s", n, w, strings.Join(env.ch.Executed(), "\n"))
+		}
+	}
+	for _, tbl := range []string{rarity.chTable, beacon.chTable, timesOut.chTable} {
+		if len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `"+tbl+"`")) != 0 {
+			t.Errorf("a table that exists was recreated: %s", tbl)
+		}
+	}
+	if len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `"+lost.chTable+"`"+on)) != 1 {
+		t.Error("missing table not recreated")
+	}
+	for _, r := range []*modelRow{rarity, beacon, timesOut} {
+		if got, _ := env.db.get(r.id); got.bfStatus != "none" || got.watermark != nil {
+			t.Errorf("repairing companions touched the model's state: %+v", got)
+		}
+	}
+}
+
+// Single node has no companions: a model whose table exists sends nothing.
+func TestReconcileCHObjectsSingleNodeSendsNoCompanions(t *testing.T) {
+	env := newEnv(t)
+	r := seedModel(env, ModelTypeBeacon, ModelDefinition{Window: "7d"}, nil)
+	env.ch.existing[r.chTable] = true
+	env.mgr.ReconcileCHObjects(context.Background())
+	if execs := env.ch.Executed(); len(execs) != 0 {
+		t.Errorf("single node sent DDL for a model in place: %v", execs)
+	}
+}
+
 func TestReconcileCHObjectsListFailure(t *testing.T) {
 	env := newEnv(t)
 	env.db.failOn("ch_mv_name FROM analytics_models", errors.New("pg down"))
@@ -650,6 +721,64 @@ func TestReconcileStateViews(t *testing.T) {
 	}
 	if !b.watermark.Equal(wm) {
 		t.Errorf("an existing watermark moved: %v", b.watermark)
+	}
+}
+
+// A view that fails to drop keeps its model off the maintainer: the model is not
+// handed over (it keeps its view name and its NULL watermark), and a model an
+// older release already handed over despite a live view is skipped too, with the
+// reason on the model. A later startup that drops the view hands it over.
+func TestReconcileStateViewsKeepsModelsWhoseViewSurvived(t *testing.T) {
+	env := newClusterEnv(t)
+	s := NewStateMaintainer(env.db.client, env.ch.client, env.mgr)
+	wm := ms(time.Now().Add(-time.Hour))
+	stuck := seedModel(env, ModelTypeRarity, rarityDef, nil)   // view will not drop, no watermark
+	dropped := seedModel(env, ModelTypeRarity, rarityDef, nil) // view drops, no watermark
+	// Handed over by an older release although its view was still writing.
+	early := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) { r.chMV, r.watermark = "", &wm })
+	early.chMV = ""
+	env.ch.views = []string{stuck.chMV, dropped.chMV, chModelMVName(early.id)}
+
+	var failing atomic.Bool
+	failing.Store(true)
+	env.ch.FailExecFunc(func(stmt string) error {
+		if failing.Load() && strings.HasPrefix(stmt, "DROP VIEW") && !strings.Contains(stmt, dropped.chMV) {
+			return errors.New("keeper unavailable")
+		}
+		return nil
+	})
+
+	env.mgr.ReconcileStateViews(context.Background())
+
+	if got, _ := env.db.get(stuck.id); got.chMV != stuck.chMV || got.watermark != nil {
+		t.Errorf("a model whose view survived was handed over: %+v", got)
+	}
+	if got, _ := env.db.get(dropped.id); got.chMV != "" || got.watermark == nil {
+		t.Errorf("a model whose view dropped was not handed over: %+v", got)
+	}
+
+	// The freed models start at the handover instant, so the only one with a
+	// window to read is the one whose view is still live.
+	s.cycle(context.Background())
+	if inserts := env.ch.ExecutedMatching("INSERT INTO"); len(inserts) != 0 {
+		t.Fatalf("a model whose view is live was maintained:\n%s", strings.Join(inserts, "\n"))
+	}
+	if got, _ := env.db.get(early.id); !got.watermark.Equal(wm) || !strings.Contains(got.errorMessage, "could not be dropped") {
+		t.Errorf("a model with a live view was maintained or not told why: %q %v", got.errorMessage, got.watermark)
+	}
+
+	// The next startup drops both and hands them over.
+	failing.Store(false)
+	env.mgr.ReconcileStateViews(context.Background())
+	if got, _ := env.db.get(stuck.id); got.chMV != "" || got.watermark == nil {
+		t.Errorf("not handed over once its view dropped: %+v", got)
+	}
+	s.cycle(context.Background())
+	if len(env.ch.ExecutedMatching("INSERT INTO `"+chModelDistName(early.id)+"`")) != 1 {
+		t.Error("model not maintained after its view dropped")
+	}
+	if got, _ := env.db.get(early.id); got.errorMessage != "" {
+		t.Errorf("stale reason kept: %q", got.errorMessage)
 	}
 }
 
