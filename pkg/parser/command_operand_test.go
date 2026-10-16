@@ -79,6 +79,28 @@ func TestNegatedConditionFunctionAsOperand(t *testing.T) {
 	}
 }
 
+// A negated operand to the right of another condition keeps its negation in both
+// positions a filter can sit; dropped, the rule matches the addresses it excludes.
+func TestNegatedConditionFunctionAfterACondition(t *testing.T) {
+	for _, q := range []string{
+		`a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,
+		`* | a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,
+		`* | (a="x" AND !in(user,["u"]))`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatalf("parse %s: %v", q, err)
+		}
+		res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+		if err != nil {
+			t.Fatalf("translate %s: %v", q, err)
+		}
+		if !strings.Contains(res.SQL, "NOT (") {
+			t.Errorf("%s: negation lost: %s", q, res.SQL)
+		}
+	}
+}
+
 // The error a non-predicate function produces must be reported, not swallowed.
 func TestNonPredicateFunctionAsOperandRejected(t *testing.T) {
 	pl, err := ParseQuery(`* | groupby(user) OR cidr(dst_ip,"10.0.0.0/8")`)

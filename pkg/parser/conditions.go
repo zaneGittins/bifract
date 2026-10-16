@@ -794,6 +794,14 @@ func negateHavingCondition(h *HavingCondition) {
 		h.Negate = !h.Negate
 		return
 	}
+	if h.Command != nil {
+		// A condition function operand carries its own negation, which
+		// negatedCommandPredicate applies. Without this, a="x" OR !cidr(...) lost it.
+		cmd := *h.Command
+		cmd.Negate = !cmd.Negate
+		h.Command = &cmd
+		return
+	}
 	switch h.Operator {
 	case "=", "~":
 		h.Operator = "!="
