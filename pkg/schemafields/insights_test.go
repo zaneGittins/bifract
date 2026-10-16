@@ -31,6 +31,11 @@ func TestReferencedFieldsWalksConditions(t *testing.T) {
 			want: []string{"src_ip", "dst_ip", "event_id"}},
 		{name: "multi-value equality", bql: `event_id="4624","4625"`,
 			want: []string{"event_id"}},
+		{name: "grouped disjunction in a stage",
+			bql:  `* | (src_ip="1.2.3.4" OR dst_ip="5.6.7.8") AND event_id="4624"`,
+			want: []string{"src_ip", "dst_ip", "event_id"}},
+		{name: "field operand", bql: `* | src_port = field(dst_port)`,
+			want: []string{"src_port", "dst_port"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
