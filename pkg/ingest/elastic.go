@@ -216,7 +216,7 @@ func (h *ElasticBulkHandler) parseBulkRequest(data []byte, norm *normalizers.Com
 		}
 
 		var doc map[string]interface{}
-		if err := json.Unmarshal([]byte(docLine), &doc); err != nil {
+		if err := normalizers.DecodeJSON([]byte(docLine), &doc); err != nil {
 			item := ElasticBulkItem{}
 			if actionType == "index" {
 				item.Index = ElasticIndexResult{

@@ -3,7 +3,6 @@ package ruletest
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"bifract/pkg/normalizers"
 	"bifract/pkg/ruleeval"
 )
 
@@ -233,7 +233,7 @@ func resolveCaseLogs(dir string, c *Case) ([]map[string]interface{}, error) {
 }
 
 // ParseLogFile accepts the same shapes the ingest endpoint does: a JSON array, a
-// single JSON object, or NDJSON.
+// single JSON object, or NDJSON. Numbers decode as ingest decodes them, exactly.
 func ParseLogFile(data []byte) ([]map[string]interface{}, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -241,12 +241,12 @@ func ParseLogFile(data []byte) ([]map[string]interface{}, error) {
 	}
 
 	var arr []map[string]interface{}
-	if err := json.Unmarshal(trimmed, &arr); err == nil {
+	if err := normalizers.DecodeJSON(trimmed, &arr); err == nil {
 		return arr, nil
 	}
 
 	var obj map[string]interface{}
-	if err := json.Unmarshal(trimmed, &obj); err == nil {
+	if err := normalizers.DecodeJSON(trimmed, &obj); err == nil {
 		return []map[string]interface{}{obj}, nil
 	}
 
@@ -261,7 +261,7 @@ func ParseLogFile(data []byte) ([]map[string]interface{}, error) {
 			continue
 		}
 		var o map[string]interface{}
-		if err := json.Unmarshal([]byte(text), &o); err != nil {
+		if err := normalizers.DecodeJSON([]byte(text), &o); err != nil {
 			return nil, fmt.Errorf("line %d is not valid JSON: %w", line, err)
 		}
 		logs = append(logs, o)

@@ -1,6 +1,7 @@
 package ruletest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,7 +175,7 @@ func TestParseLogFileShapes(t *testing.T) {
 // the Go types an HTTP-ingested event would have.
 func TestEventsAreJSONTyped(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "e.json", `{"EventID":1,"Ratio":1.5,"Flag":true,"Name":"certutil.exe"}`)
+	writeFile(t, dir, "e.json", `{"EventID":1,"Ratio":1.5,"Flag":true,"Name":"certutil.exe","ID":9007199254740993}`)
 	p := writeFile(t, dir, "x.test.yaml", `
 rule: r.yml
 cases:
@@ -188,11 +189,15 @@ cases:
 	}
 	got := s.Cases[0].ResolvedLogs()[0]
 
-	if _, ok := got["EventID"].(float64); !ok {
-		t.Errorf("EventID is %T, want float64 (JSON number)", got["EventID"])
+	// Ingest decodes numbers as json.Number so 64-bit IDs keep their digits.
+	if n, ok := got["EventID"].(json.Number); !ok || n != "1" {
+		t.Errorf("EventID is %T %v, want json.Number 1", got["EventID"], got["EventID"])
 	}
-	if _, ok := got["Ratio"].(float64); !ok {
-		t.Errorf("Ratio is %T, want float64", got["Ratio"])
+	if n, ok := got["Ratio"].(json.Number); !ok || n != "1.5" {
+		t.Errorf("Ratio is %T %v, want json.Number 1.5", got["Ratio"], got["Ratio"])
+	}
+	if n, ok := got["ID"].(json.Number); !ok || n != "9007199254740993" {
+		t.Errorf("ID is %T %v, want json.Number 9007199254740993", got["ID"], got["ID"])
 	}
 	if _, ok := got["Flag"].(bool); !ok {
 		t.Errorf("Flag is %T, want bool", got["Flag"])

@@ -78,24 +78,30 @@ func TestCaseConversions(t *testing.T) {
 }
 
 // Value maps compare the stored string form of a value. Numbers are stored as
-// plain decimals, so a map keyed on "5000000" matches a JSON 5000000 (which the
-// decoder hands over as float64 5e+06); a key in exponential form does not.
+// plain decimals, so a map keyed on "5000000" matches a JSON 5000000 or 5e6 (which
+// json.Unmarshal hands over as float64 5e+06, and DecodeJSON as json.Number); a key
+// in exponential form does not.
 func TestValueMapping_NumericSourceUsesPlainDecimalForm(t *testing.T) {
 	n := &Normalizer{ValueMappings: []ValueMapping{
 		{FromField: "bytes", ToField: "size_class", Map: map[string]string{"5000000": "large", "5e+06": "exponential"}},
 		{FromField: "ratio", ToField: "ratio_class", Map: map[string]string{"0.5": "half"}},
 		{FromField: "ok", ToField: "status", Map: map[string]string{"true": "success"}},
 	}}
-	var obj map[string]interface{}
-	if err := json.Unmarshal([]byte(`{"bytes":5000000,"ratio":0.5,"ok":true}`), &obj); err != nil {
-		t.Fatal(err)
-	}
-	got := apply(n, obj)
-	if got["bytes"] != "5000000" || got["size_class"] != "large" {
-		t.Errorf("bytes=%q size_class=%q", got["bytes"], got["size_class"])
-	}
-	if got["ratio_class"] != "half" || got["status"] != "success" {
-		t.Errorf("ratio_class=%q status=%q", got["ratio_class"], got["status"])
+	decoders := map[string]func([]byte, any) error{"json.Unmarshal": json.Unmarshal, "DecodeJSON": DecodeJSON}
+	for name, decode := range decoders {
+		for _, sample := range []string{`{"bytes":5000000,"ratio":0.5,"ok":true}`, `{"bytes":5e6,"ratio":0.50,"ok":true}`} {
+			var obj map[string]interface{}
+			if err := decode([]byte(sample), &obj); err != nil {
+				t.Fatal(err)
+			}
+			got := apply(n, obj)
+			if got["bytes"] != "5000000" || got["size_class"] != "large" {
+				t.Errorf("%s %s: bytes=%q size_class=%q", name, sample, got["bytes"], got["size_class"])
+			}
+			if got["ratio_class"] != "half" || got["status"] != "success" {
+				t.Errorf("%s %s: ratio_class=%q status=%q", name, sample, got["ratio_class"], got["status"])
+			}
+		}
 	}
 }
 
