@@ -294,6 +294,14 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		plan.ModelLookupAtScan = aggAfter && !aggBefore
 	}
 
+	// Assignments before the first command form a prefix; a condition among them
+	// sees only those written ahead of it.
+	firstAssignments := 0
+	for firstAssignments < len(pipeline.Assignments) && pipeline.Assignments[firstAssignments].CmdIndex == 0 {
+		firstAssignments++
+	}
+	unassigned := registry.firstStageView()
+
 	// Register assignment fields
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
@@ -313,7 +321,10 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	postAggByPos := make(map[int][]AssignmentNode)
 	firstAgg := firstAggregatingCommandIndex(pipeline.Commands)
 	hasAggregation := firstAgg < len(pipeline.Commands)
-	for _, assignment := range pipeline.Assignments {
+	for i, assignment := range pipeline.Assignments {
+		if i <= firstAssignments {
+			plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
+		}
 		safeField, err := sanitizeIdentifier(assignment.Field)
 		if err != nil {
 			return nil, fmt.Errorf("invalid assignment field: %w", err)
@@ -371,7 +382,18 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	}
 
 	// Captured before Execute, which scopes the registry to each stage's outputs.
-	plan.firstStage = registry.firstStageView()
+	if len(plan.firstStageAt) == firstAssignments {
+		plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
+	}
+	for i, view := range plan.firstStageAt {
+		var later []string
+		for _, a := range pipeline.Assignments[i:] {
+			if !slices.ContainsFunc(pipeline.Assignments[:i], func(b AssignmentNode) bool { return b.Field == a.Field }) {
+				later = append(later, a.Field)
+			}
+		}
+		view.unassign(later, unassigned)
+	}
 
 	// ---------------------------------------------------------------
 	// 6. EXECUTE PHASE: every command reads registry, writes to plan.

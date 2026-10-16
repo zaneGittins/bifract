@@ -36,6 +36,14 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 	willHaveAggregation := plan.IsAggregated || plan.HasGroupBy
 
 	for i, cond := range conditions {
+		// Only an assignment separates a first-stage group's parts, so they are
+		// AND-ed and each resolves at its own position.
+		if cond.IsCompound && !cond.Negate && cond.CmdIndex == 0 && spansAssignment(cond) {
+			if err := classifyConditions(cond.Children, registry, plan); err != nil {
+				return err
+			}
+			continue
+		}
 		registry := plan.conditionRegistry(cond, registry)
 		// Compound nodes: inspect all leaf fields to determine the highest-priority
 		// target. A compound normally stays a unit, since its children are connected
@@ -110,6 +118,17 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		*target = append(*target, cond)
 	}
 	return nil
+}
+
+// spansAssignment reports whether a compound's parts sit on both sides of an
+// assignment.
+func spansAssignment(c HavingCondition) bool {
+	for _, child := range c.Children {
+		if child.AssignIndex != c.AssignIndex || spansAssignment(child) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkDisjunctionStages rejects an expression OR-ed with a neighbour that binds
@@ -484,7 +503,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	// command adds to it.
 	var firstStage []HavingCondition
 	for _, cond := range plan.pendingWhereConditions {
-		if cond.CmdIndex == 0 && plan.firstStage != nil {
+		if cond.CmdIndex == 0 && len(plan.firstStageAt) > 0 {
 			firstStage = append(firstStage, cond)
 			continue
 		}
@@ -494,7 +513,18 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		}
 		byStage[idx] = append(byStage[idx], cond)
 	}
-	if clause := materializeCondGroup(firstStage, plan.firstStage, nil); clause != "" {
+	var firstClauses []string
+	for i := 0; i < len(firstStage); {
+		j := i + 1
+		for j < len(firstStage) && firstStage[j].AssignIndex == firstStage[i].AssignIndex {
+			j++
+		}
+		if clause := materializeCondGroup(firstStage[i:j], plan.conditionRegistry(firstStage[i], registry), nil); clause != "" {
+			firstClauses = append(firstClauses, clause)
+		}
+		i = j
+	}
+	if clause := andJoin(firstClauses); clause != "" {
 		source := plan.SourceStage()
 		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), clause)
 	}

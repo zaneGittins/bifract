@@ -1,6 +1,9 @@
 package parser
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // FieldKind categorizes the type of a field in the query pipeline.
 type FieldKind int
@@ -146,6 +149,20 @@ func (r *FieldRegistry) firstStageView() *FieldRegistry {
 		}
 	}
 	return v
+}
+
+// unassign sets each name back to its entry in before, dropping it when before
+// has none: the view of a condition written ahead of those assignments.
+func (r *FieldRegistry) unassign(names []string, before *FieldRegistry) {
+	for _, name := range names {
+		if e, ok := before.fields[name]; ok {
+			entry := *e
+			r.fields[name] = &entry
+		} else if _, ok := r.fields[name]; ok {
+			delete(r.fields, name)
+			r.order = slices.DeleteFunc(r.order, func(n string) bool { return n == name })
+		}
+	}
 }
 
 // rowLevelClone is a copy for conditions evaluated row by row.

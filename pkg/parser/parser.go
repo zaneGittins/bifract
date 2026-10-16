@@ -37,6 +37,7 @@ type HavingCondition struct {
 	Logic       string // "AND", "OR", ""
 	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
 	CmdIndex    int    // number of pipeline commands that precede this condition
+	AssignIndex int    // number of assignments that precede this condition
 
 	// Compound node support for arbitrary nesting depth.
 	// When IsCompound is true, Children holds the sub-expression tree and
@@ -177,7 +178,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	stamped := 0
 	stampConditionPositions := func() {
 		for ; stamped < len(pipeline.HavingConditions); stamped++ {
-			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands))
+			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands), len(pipeline.Assignments))
 		}
 	}
 	// A stage's conditions filter as one unit: grouped at the pipe, an OR among
@@ -188,7 +189,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	runStart := 0
 	closeRun := func() {
 		if run := pipeline.HavingConditions[runStart:]; len(run) > 1 {
-			grouped := HavingCondition{IsCompound: true, Children: append([]HavingCondition(nil), run...), CmdIndex: run[0].CmdIndex}
+			grouped := HavingCondition{IsCompound: true, Children: append([]HavingCondition(nil), run...), CmdIndex: run[0].CmdIndex, AssignIndex: run[0].AssignIndex}
 			pipeline.HavingConditions = append(pipeline.HavingConditions[:runStart], grouped)
 		}
 		runStart = len(pipeline.HavingConditions)
@@ -327,7 +328,12 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
 			}
 		} else if p.isAssignment() {
-			// Check if this is an assignment (field := expression)
+			if n := len(pipeline.HavingConditions); n > segmentStart && pipeline.HavingConditions[n-1].Logic != "" {
+				return nil, newPosError(p.current(), "%s needs a condition on its right", pipeline.HavingConditions[n-1].Logic)
+			}
+			// Conditions after an assignment see it and those before do not, so
+			// they never share a group.
+			closeRun()
 			assignment, err := p.parseAssignment()
 			if err != nil {
 				return nil, err
@@ -983,7 +989,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 		} else if tok.Type == TokenOr {
 			precedence = 1
 			operator = "OR"
-		} else if tok.Type == TokenField {
+		} else if tok.Type == TokenField && !p.isAssignment() {
 			// Implicit AND if we see another field
 			precedence = 2
 			operator = "AND"
@@ -1262,7 +1268,7 @@ func groupByPosition(conds []HavingCondition) []HavingCondition {
 			// command before the next run; the group carries it now.
 			logic := run[len(run)-1].Logic
 			run[len(run)-1].Logic = ""
-			out = append(out, HavingCondition{IsCompound: true, Children: run, CmdIndex: conds[i].CmdIndex, Logic: logic})
+			out = append(out, HavingCondition{IsCompound: true, Children: run, CmdIndex: conds[i].CmdIndex, AssignIndex: conds[i].AssignIndex, Logic: logic})
 		}
 		i = j
 	}
@@ -1271,10 +1277,10 @@ func groupByPosition(conds []HavingCondition) []HavingCondition {
 
 // setConditionPosition stamps a condition and every nested leaf, since a compound
 // may later be split into its conjuncts.
-func setConditionPosition(c *HavingCondition, cmdIndex int) {
-	c.CmdIndex = cmdIndex
+func setConditionPosition(c *HavingCondition, cmdIndex, assignIndex int) {
+	c.CmdIndex, c.AssignIndex = cmdIndex, assignIndex
 	for i := range c.Children {
-		setConditionPosition(&c.Children[i], cmdIndex)
+		setConditionPosition(&c.Children[i], cmdIndex, assignIndex)
 	}
 }
 

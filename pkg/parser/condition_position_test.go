@@ -45,6 +45,22 @@ func TestConditionSeesFieldsAtItsPosition(t *testing.T) {
 			"HAVING _count > 5", ""},
 		{"earlier assignment applies", `* | x := lower(a) | x = "b"`,
 			"lower(fields.`a`::String) = 'b'", ""},
+		{"later assignment does not apply", `y=5 | y := lower(x)`,
+			"fields.`y`::String = '5'", "lower(fields.`x`::String) = '5'"},
+		{"later assignment in the same stage", `y=5 y := lower(x)`,
+			"fields.`y`::String = '5'", "lower(fields.`x`::String) = '5'"},
+		{"later assignment after a pipe", `* | y=5 | y := lower(x)`,
+			"fields.`y`::String = '5'", "lower(fields.`x`::String) = '5'"},
+		{"later assignment past a command", `y=5 | head(10) | y := lower(x)`,
+			"fields.`y`::String = '5'", "lower(fields.`x`::String) = '5'"},
+		{"each side of an assignment", `y=5 y := lower(x) y="a"`,
+			"fields.`y`::String = '5'", ""},
+		{"each side of an assignment, later side", `y=5 y := lower(x) y="a"`,
+			"lower(fields.`x`::String) = 'a'", ""},
+		{"assignment after an OR chain", `a="1" OR b="2" y := lower(x) y="q"`,
+			"(fields.`a`::String = '1' OR fields.`b`::String = '2') AND lower(fields.`x`::String) = 'q'", ""},
+		{"reassignment keeps the earlier value", `y := upper(x) | y=5 | y := lower(x)`,
+			"upper(fields.`x`::String) = '5'", "lower(fields.`x`::String) = '5'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
