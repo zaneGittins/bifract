@@ -87,7 +87,10 @@ func TestValueMapping_NumericSourceUsesPlainDecimalForm(t *testing.T) {
 		{FromField: "ratio", ToField: "ratio_class", Map: map[string]string{"0.5": "half"}},
 		{FromField: "ok", ToField: "status", Map: map[string]string{"true": "success"}},
 	}}
-	decoders := map[string]func([]byte, any) error{"json.Unmarshal": json.Unmarshal, "DecodeJSON": DecodeJSON}
+	decoders := map[string]func([]byte, *map[string]any) error{
+		"json.Unmarshal": func(b []byte, v *map[string]any) error { return json.Unmarshal(b, v) },
+		"DecodeJSON":     DecodeJSON[map[string]any],
+	}
 	for name, decode := range decoders {
 		for _, sample := range []string{`{"bytes":5000000,"ratio":0.5,"ok":true}`, `{"bytes":5e6,"ratio":0.50,"ok":true}`} {
 			var obj map[string]interface{}
