@@ -257,3 +257,74 @@ func TestParseSourceQueryFilterComplete(t *testing.T) {
 		}
 	}
 }
+
+// Each filter operator and its negation lowers to the structured form the editor
+// shows, and back to a query that means the same thing.
+func TestParseSourceQueryLowersOperators(t *testing.T) {
+	cases := []struct {
+		query string
+		want  FilterCondition
+	}{
+		{`user != "bob"`, FilterCondition{Field: "user", Op: "!=", Value: "bob"}},
+		{`NOT user = "bob"`, FilterCondition{Field: "user", Op: "!=", Value: "bob"}},
+		{`image = /evil\/x/`, FilterCondition{Field: "image", Op: "~", Value: "evil/x"}},
+		{`NOT image = /evil/`, FilterCondition{Field: "image", Op: "!~", Value: "evil"}},
+	}
+	for _, c := range cases {
+		res := ParseSourceQuery(c.query)
+		if len(res.Errors) != 0 {
+			t.Fatalf("%s: %v", c.query, res.Errors)
+		}
+		if len(res.Filter) != 1 || res.Filter[0] != c.want {
+			t.Errorf("%s: filter %+v, want %+v", c.query, res.Filter, c.want)
+			continue
+		}
+		round := ParseSourceQuery(GenerateSourceQuery(ModelDefinition{Filter: res.Filter}))
+		if len(round.Filter) != 1 || round.Filter[0] != c.want {
+			t.Errorf("%s: round trip %+v", c.query, round.Filter)
+		}
+	}
+}
+
+// A grouped condition still offers its fields to shape the model on, though the
+// structured filter cannot hold it.
+func TestParseSourceQueryGroupedFieldsAreCandidates(t *testing.T) {
+	res := ParseSourceQuery(`(user = "a" OR host = "b") AND level = "x"`)
+	if len(res.Errors) != 0 {
+		t.Fatal(res.Errors)
+	}
+	for _, f := range []string{"user", "host", "level"} {
+		found := false
+		for _, c := range res.CandidateFields {
+			found = found || c == f
+		}
+		if !found {
+			t.Errorf("candidate fields %v missing %q", res.CandidateFields, f)
+		}
+	}
+}
+
+// A regex() the model cannot key on still runs in the source; it warns and adds
+// no extraction rather than offering a column that will not exist.
+func TestParseSourceQueryRegexWarnings(t *testing.T) {
+	cases := map[string]string{
+		`level = "a" | regex(field=raw_log, regex="([a-z]+)", as=t)`: "raw_log cannot be a model extraction source",
+		`level = "a" | regex(field=norm_log, regex="([a-z]+)")`:      "needs an output name",
+	}
+	for q, want := range cases {
+		res := ParseSourceQuery(q)
+		if len(res.Extractions) != 0 || res.FilterComplete {
+			t.Errorf("%s: extractions %+v complete %v", q, res.Extractions, res.FilterComplete)
+		}
+		found := false
+		for _, w := range res.Warnings {
+			found = found || strings.Contains(w, want)
+		}
+		if !found {
+			t.Errorf("%s: warnings %v, want %q", q, res.Warnings, want)
+		}
+	}
+	if res := ParseSourceQuery(`level = = "a"`); len(res.Errors) == 0 || res.SourceBQL != "" {
+		t.Errorf("unparseable query: %+v", res)
+	}
+}

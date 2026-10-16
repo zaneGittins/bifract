@@ -238,23 +238,6 @@ func ApplyModifiers(regularity, prevalence float64, mp ModifierParams) (float64,
 	return round3(final), m
 }
 
-// SeverityTier buckets a final score into a severity label for UI ranking and the
-// linked alert severity.
-func SeverityTier(final float64) string {
-	switch {
-	case final > 0.8:
-		return "critical"
-	case final > 0.6:
-		return "high"
-	case final > 0.4:
-		return "medium"
-	case final > 0.2:
-		return "low"
-	default:
-		return "none"
-	}
-}
-
 // quantile returns the linear-interpolated quantile q in [0,1] of a sorted slice.
 func quantile(sorted []float64, q float64) float64 {
 	n := len(sorted)

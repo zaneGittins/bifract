@@ -18,9 +18,8 @@ func extractPattern(pattern string) string {
 	return namedGroupRe.ReplaceAllString(pattern, "(")
 }
 
-// GenerateDDL returns (createTableSQL, createMVSQL) for the given model definition.
-// fractalID is the owning fractal: it scopes the MV's source scan so a model only
-// ever aggregates its own fractal's logs. See fractalScopeClause.
+// GenerateDDL returns the CREATE TABLE statement for a model's state table. There
+// is no materialized view: state is written by StateMaintainer and the backfill.
 func GenerateDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
 	return generateTableDDL(def, mt, tableName)
 }
@@ -226,10 +225,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 				b.WriteString(fmt.Sprintf("\n    AND length(extract(%s, %s)) >= %d",
 					fromRef, sqlPat, ext.MinLength))
 			}
-			if ext.Lowercase {
-				// Rewrite the output field as lowercased in a sub-expression
-				// by wrapping: we'll apply lower() in the final select projection
-			}
+			// Lowercase is applied in the final projection (applyLowerIfNeeded).
 			b.WriteString("\n),\n")
 			prevCTE = cteName
 		}
@@ -387,6 +383,12 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		}
 		if whereExtra != "" {
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
+		}
+		// A log without the key is not an entity. The extraction path and every
+		// other type already skip it; without the guard the model recorded one
+		// entity_key of '' (or of bare separators) that every keyless log joined.
+		for _, kf := range def.KeyFields {
+			b.WriteString(fmt.Sprintf("\nAND %s != ''", chFieldRef(kf)))
 		}
 		b.WriteString("\nGROUP BY fractal_id, entity_key")
 	case ModelTypeTLSH:
@@ -619,9 +621,6 @@ SETTINGS index_granularity = 8192`, resultsTable)
 func netFieldMap(def ModelDefinition) NetworkFieldMap {
 	return def.Network.WithDefaults()
 }
-
-// BuildNetStateMV returns the materialized view that maintains per-pair-per-day
-// aggregation state at ingest. The model's filter is applied here so the state
 
 // BuildNetStateInsert is the network equivalent of BuildBackfillInsert: the same
 // rolling-state aggregation the view used to compute at insert, over an explicit

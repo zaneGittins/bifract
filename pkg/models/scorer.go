@@ -382,13 +382,19 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 // and trimming them to the exact window (cutoff = now - windowSecs).
 func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
 	ts := getInt64Slice(row, "ts_list")
-	sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
+	sizes := getFloat64Slice(row, "size_list")
+	// size_list is parallel to ts_list, and groupArray keeps neither in time
+	// order, so they are sorted together: sorting ts alone and trimming sizes by
+	// the same index kept whichever sizes happened to sit at the tail, not the
+	// ones belonging to the connections inside the window.
+	if len(sizes) == len(ts) {
+		sort.Sort(tsSizes{ts, sizes})
+	} else {
+		sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
+	}
 	// Trim to the window; ts is sorted so find the first index >= cutoff.
 	idx := sort.Search(len(ts), func(i int) bool { return ts[i] >= cutoff })
 	ts = ts[idx:]
-
-	sizes := getFloat64Slice(row, "size_list")
-	// size_list is parallel to the untrimmed ts_list; keep the tail matching ts.
 	if len(sizes) >= idx {
 		sizes = sizes[idx:]
 	} else {
@@ -409,6 +415,19 @@ func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
 		p.LastTs = ts[len(ts)-1]
 	}
 	return p
+}
+
+// tsSizes sorts a pair's timestamps ascending, carrying each one's size along.
+type tsSizes struct {
+	ts    []int64
+	sizes []float64
+}
+
+func (s tsSizes) Len() int           { return len(s.ts) }
+func (s tsSizes) Less(i, j int) bool { return s.ts[i] < s.ts[j] }
+func (s tsSizes) Swap(i, j int) {
+	s.ts[i], s.ts[j] = s.ts[j], s.ts[i]
+	s.sizes[i], s.sizes[j] = s.sizes[j], s.sizes[i]
 }
 
 // inWindow reports whether any of the pair's connections fall inside the exact
