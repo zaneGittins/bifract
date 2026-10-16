@@ -677,6 +677,32 @@ func TestReconcileCHObjectsRepairsCompanionsOnCluster(t *testing.T) {
 	}
 }
 
+// Before keyless logs were skipped, a first_seen model recorded them as one blank
+// entity that every keyless log joined. Startup deletes that entity once: only
+// when it is there, and only the blank key the model's key fields encode.
+func TestReconcileCHObjectsDeletesBlankFirstSeenEntity(t *testing.T) {
+	env := newEnv(t)
+	one := seedModel(env, ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"user"}}, nil)
+	two := seedModel(env, ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"user", "host"}}, nil)
+	clean := seedModel(env, ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"user"}}, nil)
+	for _, r := range []*modelRow{one, two, clean} {
+		env.ch.existing[r.chTable] = true
+	}
+	env.ch.blankRows = map[string]bool{one.chTable: true, two.chTable: true}
+
+	env.mgr.ReconcileCHObjects(context.Background())
+
+	for tbl, blank := range map[string]string{one.chTable: "''", two.chTable: "repeat(char(30), 1)"} {
+		want := "DELETE FROM `" + tbl + "` WHERE entity_key = " + blank
+		if n := len(env.ch.ExecutedMatching(want)); n != 1 {
+			t.Errorf("sent %d times, want once: %s\nexecuted:\n%s", n, want, strings.Join(env.ch.Executed(), "\n"))
+		}
+	}
+	if n := len(env.ch.ExecutedMatching("DELETE FROM `" + clean.chTable + "`")); n != 0 {
+		t.Errorf("deleted from a table with no blank entity")
+	}
+}
+
 // Single node has no companions: a model whose table exists sends nothing.
 func TestReconcileCHObjectsSingleNodeSendsNoCompanions(t *testing.T) {
 	env := newEnv(t)

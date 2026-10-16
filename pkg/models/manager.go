@@ -647,6 +647,20 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	return nil
 }
 
+// deleteBlankEntity removes the entity a first_seen model recorded for keyless logs
+// before those were skipped: one blank key, the separators alone, that every
+// keyless log joined.
+func (m *Manager) deleteBlankEntity(ctx context.Context, mt ModelType, def ModelDefinition, tableName string) error {
+	if mt != ModelTypeFirstSeen || len(def.KeyFields) == 0 {
+		return nil
+	}
+	blank := "''"
+	if n := len(def.KeyFields); n > 1 {
+		blank = fmt.Sprintf("repeat(char(30), %d)", n-1)
+	}
+	return m.ch.DeleteRowsWhere(ctx, tableName, "entity_key = "+blank)
+}
+
 // ensureStateColumns adds the columns a model's state table gained after it was
 // created, on the table and its Distributed companion. Without first_recorded a
 // first_seen model's state inserts fail, and its alert holds at the watermark.
@@ -1702,6 +1716,9 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 		}
 		if exists {
 			if err := m.ensureStateColumns(ctx, t.id, t.mt, t.table); err != nil {
+				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
+			}
+			if err := m.deleteBlankEntity(ctx, t.mt, t.def, t.table); err != nil {
 				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
 			}
 			// The probe saw this table on one node, so its Distributed companions are
