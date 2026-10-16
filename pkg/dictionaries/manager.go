@@ -805,22 +805,7 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 		return nil, 0, nil
 	}
 
-	var colRefs []string
-	for _, c := range dict.Columns {
-		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
-	}
-
-	where := ""
-	if search != "" {
-		var searchClauses []string
-		for _, c := range dict.Columns {
-			searchClauses = append(searchClauses, fmt.Sprintf("positionCaseInsensitive(`%s`, '%s') > 0",
-				escCH(c.Name), escCHStr(search)))
-		}
-		where = "WHERE (" + strings.Join(searchClauses, " OR ") + ")"
-	}
-
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", escCH(m.rowTable(dict)), where)
+	countSQL, querySQL := m.rowsQueries(dict, search, limit, offset)
 	countRows, err := m.ch.QuerySchema(ctx, countSQL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to count rows: %w", err)
@@ -838,12 +823,6 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 		}
 	}
 
-	// FINAL collapses the superseded copies an edit leaves behind: without it the
-	// editor shows both versions of a row until the parts happen to merge.
-	querySQL := fmt.Sprintf("SELECT %s, `%s` FROM `%s` FINAL %s ORDER BY `%s` ASC, `%s` ASC LIMIT %d OFFSET %d",
-		strings.Join(colRefs, ", "), seqColumn, escCH(m.rowTable(dict)), where,
-		seqColumn, escCH(dict.KeyColumn), limit, offset)
-
 	dataRows, err := m.ch.QuerySchema(ctx, querySQL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query rows: %w", err)
@@ -851,20 +830,54 @@ func (m *Manager) GetRows(ctx context.Context, id, search string, limit, offset 
 
 	var result []DictionaryRow
 	for _, row := range dataRows {
-		dr := DictionaryRow{Fields: make(map[string]string)}
-		for k, v := range row {
-			if k == seqColumn {
-				continue
-			}
-			s := fmt.Sprintf("%v", v)
-			dr.Fields[k] = s
-			if k == dict.KeyColumn {
-				dr.Key = s
-			}
-		}
-		result = append(result, dr)
+		result = append(result, editorRow(row, dict.KeyColumn))
 	}
 	return result, total, nil
+}
+
+// rowsQueries renders the editor's count and page queries. A search matches any
+// column, ignoring case. FINAL collapses the superseded copies an edit leaves
+// behind: without it the editor shows both versions of a row until the parts
+// happen to merge.
+func (m *Manager) rowsQueries(dict *Dictionary, search string, limit, offset int) (countSQL, querySQL string) {
+	var colRefs []string
+	for _, c := range dict.Columns {
+		colRefs = append(colRefs, fmt.Sprintf("`%s`", escCH(c.Name)))
+	}
+
+	where := ""
+	if search != "" {
+		var searchClauses []string
+		for _, c := range dict.Columns {
+			searchClauses = append(searchClauses, fmt.Sprintf("positionCaseInsensitive(`%s`, '%s') > 0",
+				escCH(c.Name), escCHStr(search)))
+		}
+		where = "WHERE (" + strings.Join(searchClauses, " OR ") + ")"
+	}
+
+	table := escCH(m.rowTable(dict))
+	countSQL = fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", table, where)
+	querySQL = fmt.Sprintf("SELECT %s, `%s` FROM `%s` FINAL %s ORDER BY `%s` ASC, `%s` ASC LIMIT %d OFFSET %d",
+		strings.Join(colRefs, ", "), seqColumn, table, where,
+		seqColumn, escCH(dict.KeyColumn), limit, offset)
+	return countSQL, querySQL
+}
+
+// editorRow turns a row read back from ClickHouse into what the editor shows:
+// every column as text, without Bifract's ordinal.
+func editorRow(row map[string]interface{}, keyColumn string) DictionaryRow {
+	dr := DictionaryRow{Fields: make(map[string]string, len(row))}
+	for k, v := range row {
+		if k == seqColumn {
+			continue
+		}
+		s := fmt.Sprintf("%v", v)
+		dr.Fields[k] = s
+		if k == keyColumn {
+			dr.Key = s
+		}
+	}
+	return dr
 }
 
 // UpsertRows upserts rows into the ClickHouse backing table.
@@ -925,8 +938,6 @@ func (m *Manager) maxSeq(ctx context.Context, dict *Dictionary) (uint64, error) 
 	return 0, nil
 }
 
-// assignSeq returns each row's ordinal: a key already in the table keeps the position
-// it has, so editing a row never moves it; anything new is appended in the order given.
 // validateRowKeys applies the key rules a list's kind carries to every row about
 // to be written. Called from every path that writes rows, not just the editor: an
 // IP_TRIE silently drops a range it cannot read, and a REGEXP_TREE fails to load
@@ -945,6 +956,8 @@ func validateRowKeys(dict *Dictionary, rows []DictionaryRow) error {
 	return nil
 }
 
+// assignSeq returns each row's ordinal: a key already in the table keeps the position
+// it has, so editing a row never moves it; anything new is appended in the order given.
 func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []DictionaryRow) ([]uint64, error) {
 	next, err := m.maxSeq(ctx, dict)
 	if err != nil {
@@ -952,44 +965,59 @@ func (m *Manager) assignSeq(ctx context.Context, dict *Dictionary, rows []Dictio
 	}
 
 	existing := map[string]uint64{}
-	if len(rows) <= maxSeqLookup {
-		keys := make([]string, 0, len(rows))
-		for _, row := range rows {
-			for _, k := range []string{row.Key, row.Fields[dict.KeyColumn]} {
-				if k != "" {
-					keys = append(keys, "'"+escCHStr(k)+"'")
-				}
-			}
+	if q := m.seqLookupQuery(dict, rows); q != "" {
+		found, err := m.ch.QuerySchema(ctx, q)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read dictionary row order: %w", err)
 		}
-		if len(keys) > 0 {
-			q := fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
-				escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict)),
-				escCH(dict.KeyColumn), strings.Join(keys, ", "))
-			found, err := m.ch.QuerySchema(ctx, q)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read dictionary row order: %w", err)
-			}
-			for _, r := range found {
-				k, _ := r[dict.KeyColumn].(string)
-				existing[k] = toUint64(r[seqColumn])
+		for _, r := range found {
+			k, _ := r[dict.KeyColumn].(string)
+			existing[k] = toUint64(r[seqColumn])
+		}
+	}
+	return planSeqs(dict.KeyColumn, rows, existing, next), nil
+}
+
+// seqLookupQuery reads the ordinals of every key the rows touch: the key each
+// row carries and, for a rename, the key it had. Empty when there is nothing to
+// look up, or more than maxSeqLookup rows to look up.
+func (m *Manager) seqLookupQuery(dict *Dictionary, rows []DictionaryRow) string {
+	if len(rows) > maxSeqLookup {
+		return ""
+	}
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		for _, k := range []string{row.Key, row.Fields[dict.KeyColumn]} {
+			if k != "" {
+				keys = append(keys, "'"+escCHStr(k)+"'")
 			}
 		}
 	}
+	if len(keys) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
+		escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict)),
+		escCH(dict.KeyColumn), strings.Join(keys, ", "))
+}
 
+// planSeqs gives each row the ordinal its key already holds in existing, else
+// the one of the key it is renamed from, else the next one after last.
+func planSeqs(keyColumn string, rows []DictionaryRow, existing map[string]uint64, last uint64) []uint64 {
 	seqs := make([]uint64, len(rows))
 	for i, row := range rows {
 		// A rename keeps the position of the row it replaces.
-		seq := existing[row.Fields[dict.KeyColumn]]
+		seq := existing[row.Fields[keyColumn]]
 		if seq == 0 && row.Key != "" {
 			seq = existing[row.Key]
 		}
 		if seq == 0 {
-			next++
-			seq = next
+			last++
+			seq = last
 		}
 		seqs[i] = seq
 	}
-	return seqs, nil
+	return seqs
 }
 
 func toUint64(v interface{}) uint64 {
@@ -1274,47 +1302,40 @@ func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []
 	if len(dict.Columns) == 0 {
 		return nil
 	}
-
-	var colNames []string
-	for _, c := range dict.Columns {
-		colNames = append(colNames, fmt.Sprintf("`%s`", escCH(c.Name)))
-	}
-	colNames = append(colNames, fmt.Sprintf("`%s`", seqColumn))
-
-	placeholders := make([]string, len(dict.Columns)+1)
-	for i := range placeholders {
-		placeholders[i] = "?"
-	}
-	rowPlaceholder := "(" + strings.Join(placeholders, ", ") + ")"
-
 	for i := 0; i < len(rows); i += csvImportBatchSize {
-		end := i + csvImportBatchSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		batch := rows[i:end]
-
-		batchPlaceholders := make([]string, len(batch))
-		for j := range batch {
-			batchPlaceholders[j] = rowPlaceholder
-		}
-
-		insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s)%s VALUES %s",
-			escCH(m.rowTable(dict)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(batchPlaceholders, ", "))
-
-		args := make([]interface{}, 0, len(batch)*(len(dict.Columns)+1))
-		for j, row := range batch {
-			for _, c := range dict.Columns {
-				args = append(args, row.Fields[c.Name])
-			}
-			args = append(args, seqs[i+j])
-		}
-
+		end := min(i+csvImportBatchSize, len(rows))
+		insertSQL, args := m.insertStatement(dict, rows[i:end], seqs[i:end])
 		if err := m.ch.ExecSchemaArgs(ctx, insertSQL, args...); err != nil {
 			return fmt.Errorf("failed to batch insert rows: %w", err)
 		}
 	}
 	return nil
+}
+
+// insertStatement renders one multi-row INSERT and its arguments: every
+// declared column of each row in declaration order, then its ordinal. A column
+// a row does not carry is inserted empty.
+func (m *Manager) insertStatement(dict *Dictionary, rows []DictionaryRow, seqs []uint64) (string, []interface{}) {
+	colNames := make([]string, 0, len(dict.Columns)+1)
+	for _, c := range dict.Columns {
+		colNames = append(colNames, fmt.Sprintf("`%s`", escCH(c.Name)))
+	}
+	colNames = append(colNames, fmt.Sprintf("`%s`", seqColumn))
+
+	rowPlaceholder := "(" + strings.TrimSuffix(strings.Repeat("?, ", len(colNames)), ", ") + ")"
+	placeholders := make([]string, len(rows))
+	args := make([]interface{}, 0, len(rows)*len(colNames))
+	for j, row := range rows {
+		placeholders[j] = rowPlaceholder
+		for _, c := range dict.Columns {
+			args = append(args, row.Fields[c.Name])
+		}
+		args = append(args, seqs[j])
+	}
+
+	insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s)%s VALUES %s",
+		escCH(m.rowTable(dict)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(placeholders, ", "))
+	return insertSQL, args
 }
 
 // ExportCSV writes all rows of a dictionary as CSV to w. First row is column headers.
@@ -1707,34 +1728,58 @@ func (m *Manager) createCHTable(ctx context.Context, dict *Dictionary) error {
 }
 
 func (m *Manager) createCHDictionary(ctx context.Context, dict *Dictionary, cols []DictionaryColumn) error {
-	var attrDefs []string
+	return m.ch.ExecSchema(ctx, m.primaryDictionaryDDL(dict, cols))
+}
+
+// primaryDictionaryDDL declares a list's own dictionary: keyed by the list's key
+// column, laid out by its kind. A pattern list carries the match marker first,
+// which is where patternSourceQuery puts it.
+func (m *Manager) primaryDictionaryDDL(dict *Dictionary, cols []DictionaryColumn) string {
+	var attrs []string
 	if NormalizeKind(dict.Kind) == KindPattern {
-		attrDefs = append(attrDefs, fmt.Sprintf("    `%s` String DEFAULT ''", PatternMatchAttr))
+		attrs = append(attrs, PatternMatchAttr)
 	}
 	for _, c := range cols {
-		if c.Name == dict.KeyColumn {
-			continue
+		if c.Name != dict.KeyColumn {
+			attrs = append(attrs, c.Name)
 		}
-		attrDefs = append(attrDefs, fmt.Sprintf("    `%s` String DEFAULT ''", escCH(c.Name)))
 	}
+	return m.dictionaryDDL(dict.CHDictName, dict.KeyColumn, attrs, m.primarySourceQuery(dict, cols), dictLayout(dict.Kind))
+}
 
-	attrsStr := ""
-	if len(attrDefs) > 0 {
-		attrsStr = ",\n" + strings.Join(attrDefs, ",\n")
+// keyDictionaryDDL declares the HASHED dictionary behind a secondary key column,
+// whatever the list's own layout.
+func (m *Manager) keyDictionaryDDL(dict *Dictionary, colName string, cols []DictionaryColumn) string {
+	var attrs []string
+	for _, c := range cols {
+		if c.Name != colName {
+			attrs = append(attrs, c.Name)
+		}
 	}
+	return m.dictionaryDDL(chColDictName(dict.ID, colName), colName, attrs, m.dictSourceQuery(dict, colName, cols), "HASHED()")
+}
 
+// dictionaryDDL renders CREATE OR REPLACE DICTIONARY. The attributes must be in
+// the order the source query selects them after the key: ClickHouse maps the
+// source's columns by position. sourceQuery is already escaped for the quoted
+// QUERY literal it is embedded in.
+func (m *Manager) dictionaryDDL(name, keyCol string, attrs []string, sourceQuery, layout string) string {
+	var attrsStr string
+	for _, a := range attrs {
+		attrsStr += fmt.Sprintf(",\n    `%s` String DEFAULT ''", escCH(a))
+	}
 	createSQL := fmt.Sprintf(
 		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(%s)",
-		escCH(dict.CHDictName),
-		escCH(dict.KeyColumn),
+		escCH(name),
+		escCH(keyCol),
 		attrsStr,
-		escCH(dict.KeyColumn),
+		escCH(keyCol),
 		escCHStr(m.ch.User),
 		escCHStr(m.ch.Password),
-		m.primarySourceQuery(dict, cols),
-		dictLayout(dict.Kind),
+		sourceQuery,
+		layout,
 	)
-	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
+	return m.ch.InjectOnCluster(createSQL)
 }
 
 // recreateAllCHDictionaries drops and recreates the primary dictionary and any secondary
@@ -1758,31 +1803,7 @@ func (m *Manager) recreateAllCHDictionaries(ctx context.Context, dict *Dictionar
 // createCHDictionaryForKey creates a ClickHouse DICTIONARY using colName as the PRIMARY KEY,
 // enabling match(column=colName, ...) lookups against this dictionary.
 func (m *Manager) createCHDictionaryForKey(ctx context.Context, dict *Dictionary, colName string, cols []DictionaryColumn) error {
-	var attrDefs []string
-	for _, c := range cols {
-		if c.Name == colName {
-			continue
-		}
-		attrDefs = append(attrDefs, fmt.Sprintf("    `%s` String DEFAULT ''", escCH(c.Name)))
-	}
-
-	attrsStr := ""
-	if len(attrDefs) > 0 {
-		attrsStr = ",\n" + strings.Join(attrDefs, ",\n")
-	}
-
-	dictName := chColDictName(dict.ID, colName)
-	createSQL := fmt.Sprintf(
-		"CREATE OR REPLACE DICTIONARY `%s` (\n    `%s` String%s\n)\nPRIMARY KEY `%s`\nSOURCE(CLICKHOUSE(USER '%s' PASSWORD '%s' QUERY '%s'))\nLIFETIME(MIN 0 MAX 300)\nLAYOUT(HASHED())",
-		escCH(dictName),
-		escCH(colName),
-		attrsStr,
-		escCH(colName),
-		escCHStr(m.ch.User),
-		escCHStr(m.ch.Password),
-		m.dictSourceQuery(dict, colName, cols),
-	)
-	return m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(createSQL))
+	return m.ch.ExecSchema(ctx, m.keyDictionaryDDL(dict, colName, cols))
 }
 
 // primarySourceQuery is the source for a list's own dictionary. A pattern list
@@ -1883,12 +1904,7 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 	}
 	defer rows.Close()
 
-	scope := Scope{
-		Mappings:        make(map[string]map[string]string),
-		CaseInsensitive: make(map[string]bool),
-		Network:         make(map[string]bool),
-		Pattern:         make(map[string]bool),
-	}
+	scope := newScope()
 	for rows.Next() {
 		var id, name, keyCol, kind string
 		var colsJSON []byte
@@ -1896,34 +1912,47 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 		if err := rows.Scan(&id, &name, &keyCol, &colsJSON, &ci, &kind); err != nil {
 			return Scope{}, err
 		}
-
-		inner := make(map[string]string)
-		inner[keyCol] = chDictName(id)
-
 		var cols []DictionaryColumn
-		if err := json.Unmarshal(colsJSON, &cols); err == nil {
-			for _, c := range cols {
-				if c.IsKey && c.Name != keyCol {
-					inner[c.Name] = chColDictName(id, c.Name)
-				}
-			}
+		if err := json.Unmarshal(colsJSON, &cols); err != nil {
+			cols = nil
 		}
-		// Last write wins, and every field must come from the SAME row: a
-		// scope-owned dictionary and a global can share a name, and a lookup that
-		// probed the wrong shape would silently miss rather than fail.
-		scope.Mappings[name] = inner
-		scope.CaseInsensitive[name] = ci
-		// Both are keyed by the ClickHouse object, not the list: only a list's own
-		// dictionary carries its layout. A secondary key column gets an ordinary
-		// HASHED one, which is probed with a string like any other.
-		switch NormalizeKind(kind) {
-		case KindNetwork:
-			scope.Network[chDictName(id)] = true
-		case KindPattern:
-			scope.Pattern[chDictName(id)] = true
-		}
+		scope.add(id, name, keyCol, cols, ci, kind)
 	}
 	return scope, rows.Err()
+}
+
+func newScope() Scope {
+	return Scope{
+		Mappings:        make(map[string]map[string]string),
+		CaseInsensitive: make(map[string]bool),
+		Network:         make(map[string]bool),
+		Pattern:         make(map[string]bool),
+	}
+}
+
+// add records one dictionary row. The primary key column maps to the list's own
+// object and each promoted column to its secondary one.
+func (s Scope) add(id, name, keyCol string, cols []DictionaryColumn, caseInsensitive bool, kind string) {
+	inner := map[string]string{keyCol: chDictName(id)}
+	for _, c := range cols {
+		if c.IsKey && c.Name != keyCol {
+			inner[c.Name] = chColDictName(id, c.Name)
+		}
+	}
+	// Last write wins, and every field must come from the SAME row: a
+	// scope-owned dictionary and a global can share a name, and a lookup that
+	// probed the wrong shape would silently miss rather than fail.
+	s.Mappings[name] = inner
+	s.CaseInsensitive[name] = caseInsensitive
+	// Both are keyed by the ClickHouse object, not the list: only a list's own
+	// dictionary carries its layout. A secondary key column gets an ordinary
+	// HASHED one, which is probed with a string like any other.
+	switch NormalizeKind(kind) {
+	case KindNetwork:
+		s.Network[chDictName(id)] = true
+	case KindPattern:
+		s.Pattern[chDictName(id)] = true
+	}
 }
 
 // ---- Dictionary Actions ----
@@ -2066,6 +2095,20 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 	}
 	keyCol := colOrder[0]
 
+	// Build rows from logs.
+	var upsertRows []DictionaryRow
+	for _, logEntry := range logs {
+		keyVal := getLogField(logEntry, keyCol)
+		if keyVal == "" {
+			continue
+		}
+		fields := make(map[string]string)
+		for _, col := range colOrder {
+			fields[col] = getLogField(logEntry, col)
+		}
+		upsertRows = append(upsertRows, DictionaryRow{Key: keyVal, Fields: fields})
+	}
+
 	// Owned-only: this path rebuilds the schema and TRUNCATEs before refilling, so
 	// resolving the name to a global owned by another scope would destroy that
 	// scope's data and republish this scope's rows to every reader of it.
@@ -2091,6 +2134,12 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 		if err := requireEditable(dict); err != nil {
 			return 0, err
 		}
+		// The rows must meet the list's key rule before anything is dropped: a
+		// network or pattern list refusing them after the rebuild and TRUNCATE
+		// below would be left empty with nothing written in its place.
+		if err := validateRowKeys(&Dictionary{KeyColumn: keyCol, Kind: dict.Kind}, upsertRows); err != nil {
+			return 0, err
+		}
 		// Dictionary exists - rebuild schema to match current log fields.
 		if err := m.rebuildDictionarySchema(ctx, dict, keyCol, colOrder); err != nil {
 			return 0, fmt.Errorf("failed to rebuild dictionary schema: %w", err)
@@ -2106,20 +2155,6 @@ func (m *Manager) ExecuteDictionaryAction(ctx context.Context, action *Dictionar
 	truncSQL := m.ch.InjectOnCluster(fmt.Sprintf("TRUNCATE TABLE `%s`", escCH(dict.CHTableName)))
 	if err := m.ch.ExecSchema(ctx, truncSQL); err != nil {
 		return 0, fmt.Errorf("failed to truncate dictionary table: %w", err)
-	}
-
-	// Build rows from logs.
-	var upsertRows []DictionaryRow
-	for _, logEntry := range logs {
-		keyVal := getLogField(logEntry, keyCol)
-		if keyVal == "" {
-			continue
-		}
-		fields := make(map[string]string)
-		for _, col := range colOrder {
-			fields[col] = getLogField(logEntry, col)
-		}
-		upsertRows = append(upsertRows, DictionaryRow{Key: keyVal, Fields: fields})
 	}
 
 	if len(upsertRows) == 0 {
@@ -2237,13 +2272,13 @@ func escCH(s string) string {
 	return strings.ReplaceAll(s, "`", "``")
 }
 
-// escCHStr escapes a value for use inside single-quoted ClickHouse strings.
 var validIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_\-]*$`)
 
 func isValidIdentifier(s string) bool {
 	return len(s) > 0 && len(s) <= 255 && validIdentifierRe.MatchString(s)
 }
 
+// escCHStr escapes a value for use inside single-quoted ClickHouse strings.
 func escCHStr(s string) string {
 	s = strings.ReplaceAll(s, "\x00", "")
 	s = strings.ReplaceAll(s, "\\", "\\\\")
