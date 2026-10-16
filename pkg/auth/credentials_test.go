@@ -183,8 +183,10 @@ func TestGenerateSessionID(t *testing.T) {
 }
 
 // The login rate limiter keys on this value, and auth events record it. The
-// proxy headers are trusted as-is: the bundled Caddy config overwrites both
-// with the connecting address, so the leftmost entry is the real client there.
+// proxy headers count only when the connecting peer is a trusted proxy (by
+// default the private ranges the bundled Caddy and a k8s ingress sit in), and
+// then the right-most untrusted hop is the client. pkg/clientip covers the
+// parsing in depth.
 func TestClientIP(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -198,9 +200,10 @@ func TestClientIP(t *testing.T) {
 		{name: "ipv6 loopback", remoteAddr: "[::1]:8080", want: "::1"},
 		{name: "remote addr without port", remoteAddr: "203.0.113.7", want: "203.0.113.7"},
 		{name: "forwarded for wins", remoteAddr: "10.0.0.2:1", xff: "198.51.100.4", xri: "198.51.100.9", want: "198.51.100.4"},
-		{name: "leftmost forwarded hop", remoteAddr: "10.0.0.2:1", xff: " 198.51.100.4 , 10.0.0.1", want: "198.51.100.4"},
-		{name: "empty leftmost hop falls through", remoteAddr: "10.0.0.2:1", xff: " ,10.0.0.1", xri: "198.51.100.9", want: "198.51.100.9"},
+		{name: "rightmost untrusted hop", remoteAddr: "10.0.0.2:1", xff: " 1.2.3.4 , 198.51.100.4 , 10.0.0.1", want: "198.51.100.4"},
 		{name: "real ip", remoteAddr: "10.0.0.2:1", xri: " 198.51.100.9 ", want: "198.51.100.9"},
+		{name: "untrusted peer, forwarded for ignored", remoteAddr: "203.0.113.7:1", xff: "198.51.100.4", want: "203.0.113.7"},
+		{name: "untrusted peer, real ip ignored", remoteAddr: "203.0.113.7:1", xri: "198.51.100.9", want: "203.0.113.7"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

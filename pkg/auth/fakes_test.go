@@ -84,9 +84,11 @@ func (f *fakeSessionStore) UpdatePrism(id, prismID string) error {
 func newTestHandler() (*AuthHandler, *fakeSessionStore) {
 	store := newFakeSessionStore()
 	return &AuthHandler{
-		store:        store,
-		loginLimiter: newLoginRateLimiter(),
-		mfaLimiter:   newLoginRateLimiter(),
+		store:          store,
+		loginLimiter:   newLoginRateLimiterWith(loginIPMaxFailures, loginBlockDuration),
+		accountLimiter: newLoginRateLimiterWith(loginMaxFailures, loginAccountBlockDuration),
+		knownAddrs:     newKnownAddresses(),
+		mfaLimiter:     newLoginRateLimiter(),
 	}, store
 }
 

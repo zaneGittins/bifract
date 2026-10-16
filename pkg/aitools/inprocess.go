@@ -11,6 +11,7 @@ import (
 	"net/url"
 
 	"bifract/pkg/api"
+	"bifract/pkg/clientip"
 )
 
 // credentialHeaders are forwarded so the sub-request presents exactly what the
@@ -111,9 +112,9 @@ func (p *InProcess) Do(ctx context.Context, method, path string, query url.Value
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Kept so rate limiting, audit and anything else that reasons about the
-	// caller sees the real client rather than the server talking to itself.
-	req.RemoteAddr = p.origin.RemoteAddr
+	// The resolved client, not the peer: forwarding headers are not copied, so
+	// the peer alone would make rate limiting and audit see the proxy.
+	req.RemoteAddr = clientip.FromRequest(p.origin)
 	req.Host = p.origin.Host
 	req.TLS = p.origin.TLS
 

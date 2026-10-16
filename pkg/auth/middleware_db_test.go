@@ -413,3 +413,32 @@ func TestSessionUserWithDatabase(t *testing.T) {
 		t.Errorf("lookup failure: got (%v, %v), want an error", u, err)
 	}
 }
+
+// A user who must change their password and also has an authenticator signs in
+// to a pending session. They must be able to finish the second factor first,
+// or the password change, which needs a verified session, is out of reach.
+func TestAuthMiddlewareMFAPendingWithForcedPasswordChange(t *testing.T) {
+	h, db := newDBHandler(t)
+	db.addUser("admin", asAdmin, mustChange)
+	sid := db.newSession("sid", "admin", mfaPending)
+
+	if _, next := throughMiddleware(h, http.MethodPost, "/api/v1/auth/mfa/verify", sid, nil); !next.called {
+		t.Error("mfa/verify unreachable for a pending session that must also change its password")
+	}
+	// The change itself still waits for the second factor.
+	for _, path := range []string{"/api/v1/auth/change-password", "/api/v1/query"} {
+		if rec, next := throughMiddleware(h, http.MethodPost, path, sid, nil); next.called || rec.Code != http.StatusForbidden {
+			t.Errorf("%s: status %d, reached %v; want 403 before the second factor", path, rec.Code, next.called)
+		}
+	}
+
+	// Once verified, the forced change gate applies as usual: verify is no
+	// longer an exemption, and the change endpoint opens.
+	full := db.newSession("full", "admin")
+	if rec, next := throughMiddleware(h, http.MethodPost, "/api/v1/auth/mfa/verify", full, nil); next.called || rec.Code != http.StatusForbidden {
+		t.Errorf("mfa/verify on a full session: status %d, reached %v; want 403 while a change is required", rec.Code, next.called)
+	}
+	if _, next := throughMiddleware(h, http.MethodPost, "/api/v1/auth/change-password", full, nil); !next.called {
+		t.Error("change-password unreachable after verification")
+	}
+}

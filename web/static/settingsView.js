@@ -66,6 +66,8 @@ const SettingsView = {
         if (dictSourcesToggle) {
             dictSourcesToggle.addEventListener('change', () => this.saveSettings(dictSourcesToggle.closest('.toggle-switch')));
         }
+        document.getElementById('trustedProxiesSaveBtn')
+            ?.addEventListener('click', () => this.saveTrustedProxies());
 
         const distQueueResetBtn = document.getElementById('distQueueResetBtn');
         if (distQueueResetBtn) {
@@ -624,6 +626,10 @@ const SettingsView = {
                 if (dictSourcesToggle) {
                     dictSourcesToggle.checked = data.settings.dictionary_sources_allow_private === true;
                 }
+                const trustedProxiesInput = document.getElementById('trustedProxiesInput');
+                if (trustedProxiesInput) {
+                    trustedProxiesInput.value = (data.settings.trusted_proxy_cidrs || []).join('\n');
+                }
             }
         } catch (error) {
             console.error('Failed to load settings:', error);
@@ -678,6 +684,34 @@ const SettingsView = {
             if (window.Toast) Toast.error('Save Failed', error.message);
             // Re-read the server state so the control never shows an unsaved value.
             this.loadSettings();
+        }
+    },
+
+    // Saved on demand rather than autosaved: a half-typed range is invalid, and
+    // the server refuses the whole list until every line parses. A refusal
+    // keeps the text so the bad line can be fixed in place.
+    async saveTrustedProxies() {
+        const input = document.getElementById('trustedProxiesInput');
+        const btn = document.getElementById('trustedProxiesSaveBtn');
+        if (!input || !btn) return;
+        const list = input.value.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+        btn.disabled = true;
+        try {
+            const response = await fetch('/api/v1/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ trusted_proxy_cidrs: list })
+            });
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'Failed to save trusted proxies');
+            input.value = (data.settings.trusted_proxy_cidrs || []).join('\n');
+            this.flashSaved(btn);
+        } catch (error) {
+            console.error('Failed to save trusted proxies:', error);
+            if (window.Toast) Toast.error('Save Failed', error.message);
+        } finally {
+            btn.disabled = false;
         }
     },
 

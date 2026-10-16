@@ -179,30 +179,32 @@ func TestHandleInternalIngestErrors(t *testing.T) {
 	}
 }
 
-func TestClientIP(t *testing.T) {
-	tests := []struct {
-		remote, xff, xri, want string
-	}{
-		{"1.1.1.1:80", "", "", "1.1.1.1"},
-		{"1.1.1.1", "", "", "1.1.1.1"},
-		{"[2001:db8::1]:80", "", "", "2001:db8::1"},
-		{"10.0.0.1:80", " 9.9.9.9 , 10.0.0.5", "", "9.9.9.9"},
-		{"10.0.0.1:80", "", " 8.8.8.8 ", "8.8.8.8"},
-		{"10.0.0.1:80", "7.7.7.7", "8.8.8.8", "7.7.7.7"},
-		{"10.0.0.1:80", ", 6.6.6.6", "8.8.8.8", "8.8.8.8"},
+// TestRateLimitMiddlewareForwardedFor: the limiter keys on the client behind a
+// trusted proxy, but a client connecting directly cannot pick a fresh key per
+// request by sending its own X-Forwarded-For.
+func TestRateLimitMiddlewareForwardedFor(t *testing.T) {
+	h := RateLimitMiddleware(NewRateLimiter(0.001, 1))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	send := func(peer, xff string) int {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.RemoteAddr = peer + ":1234"
+		r.Header.Set("X-Forwarded-For", xff)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
 	}
-	for _, tc := range tests {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.RemoteAddr = tc.remote
-		if tc.xff != "" {
-			r.Header.Set("X-Forwarded-For", tc.xff)
-		}
-		if tc.xri != "" {
-			r.Header.Set("X-Real-IP", tc.xri)
-		}
-		if got := clientIP(r); got != tc.want {
-			t.Errorf("remote %q xff %q xri %q: got %q, want %q", tc.remote, tc.xff, tc.xri, got, tc.want)
-		}
+	if code := send("203.0.113.50", "198.51.100.1"); code != http.StatusOK {
+		t.Fatalf("first request: %d", code)
+	}
+	if code := send("203.0.113.50", "198.51.100.2"); code != http.StatusTooManyRequests {
+		t.Errorf("spoofed X-Forwarded-For from an untrusted peer got a fresh bucket: %d", code)
+	}
+
+	// Behind the bundled proxy each client has its own bucket.
+	if code := send("172.18.0.5", "198.51.100.3"); code != http.StatusOK {
+		t.Fatalf("first client behind proxy: %d", code)
+	}
+	if code := send("172.18.0.5", "198.51.100.4"); code != http.StatusOK {
+		t.Errorf("second client behind proxy limited by the first: %d", code)
 	}
 }
 

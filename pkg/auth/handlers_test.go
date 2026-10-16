@@ -135,7 +135,7 @@ func TestHandlersRejectBeforeStorage(t *testing.T) {
 // so a blocked address costs the server nothing and learns nothing.
 func TestHandleLoginRateLimitedBeforeLookup(t *testing.T) {
 	h, _ := newTestHandler()
-	for i := 0; i < loginMaxFailures; i++ {
+	for i := 0; i < loginIPMaxFailures; i++ {
 		h.loginLimiter.recordFailure("203.0.113.7")
 	}
 

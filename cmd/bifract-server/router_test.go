@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"runtime"
@@ -198,12 +199,12 @@ func TestEveryRouteIsRegistered(t *testing.T) {
 // requires a private-network source. The list is short and is the only surface
 // log shippers reach, so it is written out here rather than generated.
 var ingestRouteTable = []string{
-	"POST /_bulk 4 public ingest_token",
-	"PUT /_bulk 4 public ingest_token",
-	"GET /api/v1/health 3 public public",
-	"POST /api/v1/ingest 4 public ingest_token",
-	"POST /api/v1/internal/ingest/{fractal} 5 public internal",
-	"POST /v1/logs 4 public ingest_token",
+	"POST /_bulk 3 public ingest_token",
+	"PUT /_bulk 3 public ingest_token",
+	"GET /api/v1/health 2 public public",
+	"POST /api/v1/ingest 3 public ingest_token",
+	"POST /api/v1/internal/ingest/{fractal} 4 public internal",
+	"POST /v1/logs 3 public ingest_token",
 }
 
 // TestIngestRouteTable pins the ingest tier's surface and proves its routes are
@@ -272,4 +273,29 @@ func diffLines(want, got []string) string {
 		}
 	}
 	return b.String()
+}
+
+// TestNoMiddlewareRewritesRemoteAddr keeps RemoteAddr the real peer. Client
+// addresses come from pkg/clientip, which honors forwarding headers only from a
+// trusted proxy; a middleware that copied them into RemoteAddr first would let
+// any client choose its address for every per-address limit.
+func TestNoMiddlewareRewritesRemoteAddr(t *testing.T) {
+	for name, mux := range map[string]*chi.Mux{
+		"api":    func() *chi.Mux { m, _ := buildRouter(testDeps()); return m }(),
+		"ingest": func() *chi.Mux { m, _ := buildIngestRouter(ingestRouterDeps{}); return m }(),
+	} {
+		var seen string
+		h := chi.Chain(mux.Middlewares()...).HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = r.RemoteAddr
+		})
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		req.RemoteAddr = "203.0.113.5:4242"
+		req.Header.Set("True-Client-IP", "198.51.100.1")
+		req.Header.Set("X-Real-IP", "198.51.100.2")
+		req.Header.Set("X-Forwarded-For", "198.51.100.3")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if seen != req.RemoteAddr {
+			t.Errorf("%s router: RemoteAddr rewritten to %q", name, seen)
+		}
+	}
 }

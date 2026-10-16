@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"bifract/pkg/clientip"
 	"bifract/pkg/storage"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -284,11 +285,11 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Extract claims
 	var claims struct {
-		Sub               string `json:"sub"`
-		Email             string `json:"email"`
-		EmailVerified     bool   `json:"email_verified"`
-		Name              string `json:"name"`
-		PreferredUsername string `json:"preferred_username"`
+		Sub               string          `json:"sub"`
+		Email             string          `json:"email"`
+		EmailVerified     json.RawMessage `json:"email_verified"`
+		Name              string          `json:"name"`
+		PreferredUsername string          `json:"preferred_username"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		log.Printf("[OIDC] Failed to extract claims: %v", err)
@@ -306,8 +307,19 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Domain restriction
-	ip := r.RemoteAddr
+	ip := clientip.FromRequest(r)
 	if len(h.config.AllowedDomains) > 0 {
+		// The allow-list trusts the email's domain, which means nothing if
+		// the provider says it never verified the address: anyone able to
+		// set their own email there could claim an allowed domain. A
+		// provider that does not send the claim at all (Azure AD) is left
+		// to its own guarantees, as before.
+		if verified, present := emailVerified(claims.EmailVerified); present && !verified {
+			log.Printf("[OIDC] Email %s not verified by the provider", claims.Email)
+			h.logAuthEvent("oidc_login_failed", claims.Email, ip, "email not verified")
+			http.Redirect(w, r, "/login.html?error=oidc_domain", http.StatusFound)
+			return
+		}
 		parts := strings.SplitN(claims.Email, "@", 2)
 		if len(parts) != 2 {
 			log.Printf("[OIDC] Email missing or invalid: %s", claims.Email)
@@ -413,6 +425,25 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// emailVerified reads the email_verified claim. present is false when the
+// provider did not send it. Some providers send the value as the string "true"
+// or "false" instead of a boolean; both forms are accepted. Anything else that
+// is present counts as not verified.
+func emailVerified(raw json.RawMessage) (verified, present bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false, false
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.EqualFold(strings.TrimSpace(s), "true"), true
+	}
+	return false, true
 }
 
 // deriveUsername picks a username from available OIDC claims.

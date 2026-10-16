@@ -333,7 +333,6 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 	mux := chi.NewRouter()
 	mux.Use(middleware.Recoverer)
 	mux.Use(middleware.RequestID)
-	mux.Use(middleware.RealIP)
 
 	r := api.NewRouter(mux, reg)
 	r.Route("/api/v1", func(r api.Router) {

@@ -36,6 +36,21 @@ Admins manage users from **Settings > Users**.
 
 OIDC-provisioned users have no password and no invite; see [OIDC / SSO](oidc-sso.md).
 
+## Failed Sign-In Limits
+
+Bifract counts failed password sign-ins two ways, each within a 15 minute window:
+
+| Counted per | Limit | Then |
+|-------------|-------|------|
+| Account | 5 wrong passwords | Sign in to that account is refused for 5 minutes, except from addresses it signed in from in the last 30 days. |
+| Client address | 20 failures, for any usernames | Sign in from that address is refused for 15 minutes. |
+
+The account limit stops guessing at one password from many addresses. Because anyone who knows a username can trigger it, the owner can still sign in from an address they used before, and the block is short for a new one. The address limit is higher because an office or VPN puts many people behind one address. Usernames that do not exist count only against the address.
+
+A successful sign in clears the account's count but never the address's, so logging in to one account does not buy more guesses at another. Blocked sign-ins return `429` and are recorded in the **system** fractal as `login_failed` events, and the failure that blocks an account is recorded as `login_account_blocked`. Wrong two-factor codes have their own limit of 5 per user, after which codes are refused for 15 minutes.
+
+Behind a reverse proxy, the client address comes from the proxy's forwarding headers; see [Trusted Proxies](reverse-proxy.md#trusted-proxies).
+
 ## Two-Factor Authentication
 
 Bifract uses standard TOTP, which works with Google Authenticator, 1Password, Authy, Bitwarden, and similar.

@@ -652,3 +652,69 @@ func TestCallbackDomainRestriction(t *testing.T) {
 		})
 	}
 }
+
+// The domain allow-list trusts the email's domain, so an address the provider
+// says it never verified is refused. A provider that leaves the claim out is
+// trusted as before, and without an allow-list the claim is not consulted.
+func TestCallbackEmailVerified(t *testing.T) {
+	tests := []struct {
+		name     string
+		verified any // nil removes the claim
+		domains  []string
+		want     string
+	}{
+		{name: "verified", verified: true, domains: []string{"example.com"}, want: "/"},
+		{name: "claim absent", verified: nil, domains: []string{"example.com"}, want: "/"},
+		{name: "verified as a string", verified: "true", domains: []string{"example.com"}, want: "/"},
+		{name: "unverified", verified: false, domains: []string{"example.com"}, want: "/login.html?error=oidc_domain"},
+		{name: "unverified as a string", verified: "false", domains: []string{"example.com"}, want: "/login.html?error=oidc_domain"},
+		{name: "unverified, no allow-list", verified: false, want: "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hs := newHarness(t, func(c *Config) { c.AllowedDomains = tt.domains })
+			hs.subjects["sub-123"] = userRec{username: "alice", enabled: true}
+			rec := hs.signIn(func(c map[string]any) {
+				if tt.verified != nil {
+					c["email_verified"] = tt.verified
+				}
+			})
+			if loc := redirectedTo(t, rec); loc != tt.want {
+				t.Fatalf("redirected to %q, want %q", loc, tt.want)
+			}
+			if tt.want == "/" {
+				if len(hs.sessions) != 1 {
+					t.Fatalf("%d sessions, want 1", len(hs.sessions))
+				}
+				return
+			}
+			if sessionCookie(rec) != nil || len(hs.sessions) != 0 {
+				t.Fatal("signed in with an unverified email")
+			}
+			if len(hs.pg.Calls()) != 0 {
+				t.Fatalf("touched the database: %+v", hs.pg.Calls())
+			}
+			if len(hs.events) != 1 || !strings.Contains(hs.events[0], "email not verified") {
+				t.Errorf("events = %v", hs.events)
+			}
+		})
+	}
+}
+
+func TestEmailVerifiedClaim(t *testing.T) {
+	for raw, want := range map[string][2]bool{
+		``:        {false, false},
+		`null`:    {false, false},
+		`true`:    {true, true},
+		`false`:   {false, true},
+		`"TRUE"`:  {true, true},
+		`"false"`: {false, true},
+		`"yes"`:   {false, true},
+		`1`:       {false, true},
+	} {
+		v, p := emailVerified([]byte(raw))
+		if v != want[0] || p != want[1] {
+			t.Errorf("emailVerified(%s) = %v, %v; want %v, %v", raw, v, p, want[0], want[1])
+		}
+	}
+}

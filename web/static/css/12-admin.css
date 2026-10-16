@@ -212,6 +212,29 @@
     font-size: 0.8125rem;
 }
 
+/* A list setting edited as text, one entry per line, under the row's description. */
+.sp-textarea {
+    display: block;
+    width: 100%;
+    max-width: 36rem;
+    box-sizing: border-box;
+    margin-top: 0.625rem;
+    padding: 0.5rem 0.65rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.sp-textarea:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
 /* Reason a destructive action is currently unavailable, shown in place of a
    silent disabled button. */
 .sp-row-blocked {

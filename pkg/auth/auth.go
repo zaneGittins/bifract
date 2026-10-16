@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"path/filepath"
 
 	"bifract/internal/setup"
+	"bifract/pkg/clientip"
 	"bifract/pkg/fractals"
 	"bifract/pkg/ingest"
 	"bifract/pkg/rbac"
@@ -39,10 +39,27 @@ const (
 	inviteExpiry      = 7 * 24 * time.Hour
 	minPasswordLength = setup.MinPasswordLength
 
-	// Login rate limiting
-	loginMaxFailures    = 5 // failures before blocking
-	loginBlockDuration  = 15 * time.Minute
-	loginWindowDuration = 15 * time.Minute
+	// Login rate limiting. Failures are counted per account and per client
+	// address, each in a window from its first failure.
+	//
+	// The account limit is what stops guessing one password: it holds however
+	// many addresses the guesses come from. Anyone who knows a username can
+	// trigger it, so it does not apply at addresses the account recently signed
+	// in from (knownAddresses); its owner is not locked out.
+	//
+	// The address limit catches one client spraying many accounts. It is set
+	// higher because an office or VPN puts many people behind one address.
+	//
+	// loginMaxFailures and loginBlockDuration also govern wrong MFA codes per
+	// user (mfaLimiter).
+	loginMaxFailures          = 5 // per account, and per user for MFA codes
+	loginBlockDuration        = 15 * time.Minute
+	loginAccountBlockDuration = 5 * time.Minute
+	loginIPMaxFailures        = 20
+	loginWindowDuration       = 15 * time.Minute
+
+	knownAddressTTL     = 30 * 24 * time.Hour
+	knownAddressPerUser = 8
 
 	// Default admin password used in init-postgres.sql (hashed without pepper)
 	defaultAdminPassword = "bifract"
@@ -50,22 +67,33 @@ const (
 
 var errSessionNotFound = fmt.Errorf("session not found")
 
-// loginAttempt tracks failed login attempts for an IP
+// loginAttempt tracks failed attempts for one key: an address, or a username.
 type loginAttempt struct {
 	failures     int
 	firstFailure time.Time
 	blockedUntil time.Time
 }
 
-// loginRateLimiter provides per-IP brute force protection
+// loginRateLimiter blocks a key (an address or a username) after too many
+// failures in a window.
 type loginRateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]*loginAttempt
+	mu            sync.Mutex
+	attempts      map[string]*loginAttempt
+	maxFailures   int
+	blockDuration time.Duration
 }
 
+// newLoginRateLimiter returns a limiter with the account defaults: blocked for
+// loginBlockDuration after loginMaxFailures.
 func newLoginRateLimiter() *loginRateLimiter {
+	return newLoginRateLimiterWith(loginMaxFailures, loginBlockDuration)
+}
+
+func newLoginRateLimiterWith(maxFailures int, block time.Duration) *loginRateLimiter {
 	rl := &loginRateLimiter{
-		attempts: make(map[string]*loginAttempt),
+		attempts:      make(map[string]*loginAttempt),
+		maxFailures:   maxFailures,
+		blockDuration: block,
 	}
 	go rl.cleanup()
 	return rl
@@ -136,8 +164,8 @@ func (rl *loginRateLimiter) recordFailure(ip string) bool {
 	}
 
 	a.failures++
-	if a.failures >= loginMaxFailures {
-		a.blockedUntil = now.Add(loginBlockDuration)
+	if a.failures >= rl.maxFailures {
+		a.blockedUntil = now.Add(rl.blockDuration)
 		return true
 	}
 
@@ -149,6 +177,67 @@ func (rl *loginRateLimiter) reset(ip string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	delete(rl.attempts, ip)
+}
+
+// knownAddresses remembers the addresses each account recently completed a
+// sign in from, keeping the most recent knownAddressPerUser for knownAddressTTL.
+type knownAddresses struct {
+	mu   sync.Mutex
+	seen map[string]map[string]time.Time
+}
+
+func newKnownAddresses() *knownAddresses {
+	k := &knownAddresses{seen: make(map[string]map[string]time.Time)}
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			k.prune(time.Now())
+		}
+	}()
+	return k
+}
+
+func (k *knownAddresses) remember(username, ip string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	addrs := k.seen[username]
+	if addrs == nil {
+		addrs = make(map[string]time.Time)
+		k.seen[username] = addrs
+	}
+	addrs[ip] = time.Now()
+	for len(addrs) > knownAddressPerUser {
+		oldest := ""
+		for a, t := range addrs {
+			if oldest == "" || t.Before(addrs[oldest]) {
+				oldest = a
+			}
+		}
+		delete(addrs, oldest)
+	}
+}
+
+func (k *knownAddresses) known(username, ip string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	t, ok := k.seen[username][ip]
+	return ok && time.Since(t) < knownAddressTTL
+}
+
+func (k *knownAddresses) prune(now time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for user, addrs := range k.seen {
+		for a, t := range addrs {
+			if now.Sub(t) >= knownAddressTTL {
+				delete(addrs, a)
+			}
+		}
+		if len(addrs) == 0 {
+			delete(k.seen, user)
+		}
+	}
 }
 
 // hashInviteToken returns the SHA-256 hex digest of a raw invite token.
@@ -236,7 +325,14 @@ type AuthHandler struct {
 	fractalManager  *fractals.Manager
 	apiKeyValidator APIKeyValidator
 	secureCookies   bool
-	loginLimiter    *loginRateLimiter
+	// loginLimiter counts failed logins per client address; accountLimiter
+	// counts them per username, so guesses at one account spread over many
+	// addresses still stop. A success clears only the account's count: an
+	// address's count survives it, or anyone with an account of their own
+	// could interleave correct logins to keep guessing at someone else's.
+	loginLimiter   *loginRateLimiter
+	accountLimiter *loginRateLimiter
+	knownAddrs     *knownAddresses
 	// mfaLimiter is keyed by username, not IP: an attacker who already has the
 	// password is otherwise free to walk the six digit space from new addresses.
 	mfaLimiter      *loginRateLimiter
@@ -284,7 +380,9 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 		fractalManager:  fractalManager,
 		apiKeyValidator: apiKeyValidator,
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
-		loginLimiter:    newLoginRateLimiter(),
+		loginLimiter:    newLoginRateLimiterWith(loginIPMaxFailures, loginBlockDuration),
+		accountLimiter:  newLoginRateLimiterWith(loginMaxFailures, loginAccountBlockDuration),
+		knownAddrs:      newKnownAddresses(),
 		mfaLimiter:      newLoginRateLimiter(),
 		rbacResolver:    rbac.NewResolver(pg),
 		clientCADir:     os.Getenv("BIFRACT_CLIENT_CA_DIR"),
@@ -562,27 +660,10 @@ func (h *AuthHandler) deleteSession(sessionID string) {
 	h.store.Delete(sessionID)
 }
 
-// clientIP extracts the real client IP, accounting for reverse proxy headers.
+// clientIP is the address the login limiter keys on and auth events record.
+// Forwarding headers count only from a trusted proxy (see pkg/clientip).
 func clientIP(r *http.Request) string {
-	// X-Forwarded-For may contain multiple IPs; the leftmost is the original client
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if parts := strings.SplitN(xff, ",", 2); len(parts) > 0 {
-			ip := strings.TrimSpace(parts[0])
-			if ip != "" {
-				return ip
-			}
-		}
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-	// Strip the port. SplitHostPort, not a cut at the first colon: an IPv6
-	// RemoteAddr is "[2001:db8::1]:443", which a cut would reduce to "[2001",
-	// putting every client in that range in one login rate limit bucket.
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return clientip.FromRequest(r)
 }
 
 // HandleLogin handles user login
@@ -606,12 +687,22 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user from database
+	// Get user from database. An unknown username counts against the address
+	// only: keying the account limiter on whatever was typed would let anyone
+	// grow it without bound.
 	user, err := h.pg.GetUser(r.Context(), req.Username)
 	if err != nil {
 		h.loginLimiter.recordFailure(ip)
 		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
 		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
+		return
+	}
+
+	// Checked before the password, so a blocked account answers the same
+	// whether or not this guess was right.
+	if h.accountLimiter.check(user.Username) && !h.knownAddrs.known(user.Username, ip) {
+		h.logAuthEvent("login_failed", user.Username, ip, "account rate limited")
+		api.WriteError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
 	}
 
@@ -639,19 +730,25 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
 		h.loginLimiter.recordFailure(ip)
 		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
+		if h.accountLimiter.recordFailure(user.Username) {
+			h.logAuthEvent("login_account_blocked", user.Username, ip,
+				fmt.Sprintf("%d failed passwords; sign in blocked for %s", loginMaxFailures, loginAccountBlockDuration))
+		}
 		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 
 	// Password accepted. A user with an authenticator is not logged in yet: the
-	// session stays half-authenticated until a code is verified.
-	h.loginLimiter.reset(ip)
+	// session stays half-authenticated until a code is verified. Only the
+	// account's failures are forgiven; the address keeps its count.
+	h.accountLimiter.reset(user.Username)
 	mfaPending := user.TOTPEnrolled
 
 	if mfaPending {
 		h.logAuthEvent("mfa_challenge", user.Username, ip, "")
 	} else {
 		h.logAuthEvent("login_success", user.Username, ip, "")
+		h.knownAddrs.remember(user.Username, ip)
 		if err := h.pg.UpdateLastLogin(r.Context(), user.Username); err != nil {
 			log.Printf("Failed to update last login for %s: %v", user.Username, err)
 		}
@@ -1309,7 +1406,12 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					// Block users who must change their password from accessing
 					// any endpoint except auth essentials (change password, get
 					// current user so the UI can detect the flag, and logout).
+					// A session still waiting on its second factor was narrowed
+					// to mfaVerifyPaths above; those stay open here, or a user
+					// who must both verify and change their password could do
+					// neither: the change needs a verified session.
 					if user.ForcePasswordChange &&
+						!(session.MFAPending && mfaVerifyPaths[r.URL.Path]) &&
 						r.URL.Path != "/api/v1/auth/change-password" &&
 						r.URL.Path != "/api/v1/auth/user" &&
 						r.URL.Path != "/api/v1/auth/logout" {

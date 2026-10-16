@@ -39116,6 +39116,12 @@
             "items": {
               "$ref": "#/components/schemas/settings.TimestampField"
             }
+          },
+          "trusted_proxy_cidrs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -39135,7 +39141,8 @@
           "api_key_rate_limit",
           "pgr_sensitivity_percent",
           "require_mfa",
-          "dictionary_sources_allow_private"
+          "dictionary_sources_allow_private",
+          "trusted_proxy_cidrs"
         ]
       },
       "settings.SettingsResponse": {
