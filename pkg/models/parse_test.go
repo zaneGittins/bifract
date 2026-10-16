@@ -253,6 +253,7 @@ func TestParseSourceQueryFilterComplete(t *testing.T) {
 		`level = "a" | in(host, values=[x,y])`,
 		`level = "a" | lowercase(level)`,
 		`level = "a" | regex(field=norm_log, regex="(?<a>x)(?<b>y)")`,
+		`x := lower(a) | x = "foo"`,
 	}
 	for _, q := range partial {
 		if res := ParseSourceQuery(q); res.FilterComplete {
@@ -344,5 +345,23 @@ func TestParseSourceQueryChipOrder(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "a= b= dst_ipcidr" {
 		t.Errorf("chips %v, want a, b, then the cidr", got)
+	}
+}
+
+// A chip names a raw log field: a condition on a name assigned before it filters
+// the computed value, which no chip can say. One written ahead of it is the field.
+func TestParseSourceQueryAssignedNameIsNoChip(t *testing.T) {
+	for q, want := range map[string]string{
+		`x := lower(a) | x = "foo"`:       "",
+		`x := lower(a) x = "foo" b = "1"`: "b=",
+		`x = "foo" | x := lower(a)`:       "x=",
+	} {
+		var got []string
+		for _, f := range ParseSourceQuery(q).Filter {
+			got = append(got, f.Field+f.Op)
+		}
+		if strings.Join(got, " ") != want {
+			t.Errorf("%q: chips %v, want %q", q, got, want)
+		}
 	}
 }

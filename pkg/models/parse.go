@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -89,7 +90,7 @@ func ParseSourceQuery(query string) ParsedSource {
 			return
 		}
 		fc, ok := havingToFilter(c)
-		if !ok {
+		if !ok || assignedBefore(ast.Assignments, c) {
 			res.FilterComplete = false
 			return
 		}
@@ -209,6 +210,14 @@ func splitFirstStage(conds []parser.HavingCondition) (first, later []parser.Havi
 		}
 	}
 	return first, later
+}
+
+// assignedBefore reports whether a condition reads a name assigned ahead of it,
+// which holds the computed value rather than the log field.
+func assignedBefore(assignments []parser.AssignmentNode, c parser.HavingCondition) bool {
+	return slices.ContainsFunc(assignments[:min(c.AssignIndex, len(assignments))], func(a parser.AssignmentNode) bool {
+		return a.Field == c.Field
+	})
 }
 
 // andGroup reports whether a condition is a bracketed plain AND of conditions,
