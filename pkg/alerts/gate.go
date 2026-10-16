@@ -129,9 +129,6 @@ func (c *ChangeRequest) Open() bool {
 // Draft reports unsubmitted work.
 func (c *ChangeRequest) Draft() bool { return c.Status == ChangeDraft }
 
-// Editable reports whether the author may still revise the content.
-func (c *ChangeRequest) Editable() bool { return c.Open() || c.Draft() }
-
 // CanWithdraw reports whether a principal may withdraw the proposal. Authors withdraw
 // their own; admins may withdraw any.
 func (c *ChangeRequest) CanWithdraw(username string, isAdmin bool) error {
@@ -220,6 +217,14 @@ func (c *ChangeRequest) MergeBlocker(cfg GateConfig, headHash string) string {
 	if !c.Open() {
 		return "this proposal is " + c.Status
 	}
+	// Checked here rather than trusted from submission: a proposal opened before a
+	// rule was enforced would otherwise be claimed as merged and then fail to apply,
+	// leaving it marked merged with nothing written.
+	if c.Kind != ChangeDelete && c.Content != nil {
+		if _, err := validateDefinition(*c.Content); err != nil {
+			return "the definition cannot be applied: " + err.Error()
+		}
+	}
 	if c.Rejected() {
 		return "a reviewer asked for changes"
 	}
@@ -294,6 +299,10 @@ func (in *ChangeRequestInput) Validate() error {
 	}
 	if strings.TrimSpace(in.Content.QueryString) == "" {
 		return fmt.Errorf("query string is required")
+	}
+	// Judged now, so a reviewer is never asked to approve something merge must refuse.
+	if _, err := validateDefinition(*in.Content); err != nil {
+		return err
 	}
 	return ValidateTests(in.Tests)
 }

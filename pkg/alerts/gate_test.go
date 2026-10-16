@@ -188,7 +188,7 @@ func TestResubmitCannotRetargetAProposal(t *testing.T) {
 	// it would recompute the staleness baseline against something else entirely.
 	existing := &ChangeRequest{Kind: ChangeUpdate, AlertID: "alert-1", Status: ChangeOpen, Author: "author"}
 
-	in := ChangeRequestInput{Kind: ChangeCreate, AlertID: "", Content: &RevisionContent{Name: "n", QueryString: "q"}}
+	in := ChangeRequestInput{Kind: ChangeCreate, AlertID: "", Content: &RevisionContent{Name: "n", QueryString: `q="x"`}}
 	in.Kind = existing.Kind
 	in.AlertID = existing.AlertID
 

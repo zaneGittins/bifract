@@ -234,11 +234,16 @@ func (ec *EmailClient) deliverMessage(client *smtp.Client, config *SMTPConfig, r
 	return client.Quit()
 }
 
+// headerValue keeps a value on its header line. The subject carries the resolved alert
+// name, which can hold {{field}} values from matched logs; a line break in one of
+// those would otherwise end the header and let log content write its own (a Bcc, say).
+var headerValue = strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
+
 func (ec *EmailClient) buildMIMEMessage(from string, to []string, subject, body string) []byte {
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("From: %s\r\n", from))
-	buf.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(to, ", ")))
-	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	buf.WriteString(fmt.Sprintf("From: %s\r\n", headerValue.Replace(from)))
+	buf.WriteString(fmt.Sprintf("To: %s\r\n", headerValue.Replace(strings.Join(to, ", "))))
+	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", headerValue.Replace(subject)))
 	buf.WriteString("MIME-Version: 1.0\r\n")
 	buf.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n")
 	buf.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
@@ -255,22 +260,19 @@ func (ec *EmailClient) resolveTemplate(tmpl string, alert *Alert, resolvedName s
 
 	alertLink := buildShareLink(ec.baseURL, alert, triggeredAt)
 
-	replacements := map[string]string{
-		"{{alert_name}}":  html.EscapeString(resolvedName),
-		"{{alert_id}}":    alert.ID,
-		"{{description}}": html.EscapeString(alert.Description),
-		"{{severity}}":    html.EscapeString(alert.Severity),
-		"{{query}}":       html.EscapeString(alert.QueryString),
-		"{{match_count}}": fmt.Sprintf("%d", len(results)),
-		"{{alert_link}}":  alertLink,
-		"{{labels}}":      html.EscapeString(strings.Join(alert.Labels, ", ")),
-	}
-
-	result := tmpl
-	for placeholder, value := range replacements {
-		result = strings.ReplaceAll(result, placeholder, value)
-	}
-	return result
+	// One pass: replacing placeholder by placeholder in map order would substitute
+	// into text an earlier value inserted, so a description mentioning {{severity}}
+	// rendered differently from one send to the next.
+	return strings.NewReplacer(
+		"{{alert_name}}", html.EscapeString(resolvedName),
+		"{{alert_id}}", alert.ID,
+		"{{description}}", html.EscapeString(alert.Description),
+		"{{severity}}", html.EscapeString(alert.Severity),
+		"{{query}}", html.EscapeString(alert.QueryString),
+		"{{match_count}}", fmt.Sprintf("%d", len(results)),
+		"{{alert_link}}", alertLink,
+		"{{labels}}", html.EscapeString(strings.Join(alert.Labels, ", ")),
+	).Replace(tmpl)
 }
 
 // defaultBody generates an HTML email body when no template is configured
@@ -282,7 +284,9 @@ func (ec *EmailClient) defaultBody(alert *Alert, resolvedName string, results []
 		"high":     "#f97316",
 		"medium":   "#eab308",
 		"low":      "#3b82f6",
-		"info":     "#6b7280",
+		// informational is the Severity value; info is what older rows hold.
+		"informational": "#6b7280",
+		"info":          "#6b7280",
 	}
 	color := severityColor[alert.Severity]
 	if color == "" {
@@ -300,7 +304,7 @@ func (ec *EmailClient) defaultBody(alert *Alert, resolvedName string, results []
 		b.WriteString(fmt.Sprintf(`<p style="color:#555;margin:0 0 16px 0;">%s</p>`, html.EscapeString(alert.Description)))
 	}
 
-	b.WriteString(`<table style="width:100%%;border-collapse:collapse;font-size:14px;margin-bottom:16px;">`)
+	b.WriteString(`<table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:16px;">`)
 	b.WriteString(fmt.Sprintf(`<tr><td style="padding:6px 12px;color:#777;">Query</td><td style="padding:6px 12px;"><code>%s</code></td></tr>`, html.EscapeString(alert.QueryString)))
 	b.WriteString(fmt.Sprintf(`<tr><td style="padding:6px 12px;color:#777;">Matches</td><td style="padding:6px 12px;">%d</td></tr>`, len(results)))
 	if len(alert.Labels) > 0 {

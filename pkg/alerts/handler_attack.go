@@ -258,10 +258,11 @@ func (h *Handler) attackRows(w http.ResponseWriter, r *http.Request) (attackScop
 		return attackScope{}, false
 	}
 
-	fractalID, prismID, err := h.getScope(r)
-	if err != nil {
-		log.Printf("[Attack] Failed to get scope: %v", err)
-		h.respondError(w, http.StatusInternalServerError, "Failed to determine fractal context")
+	// An empty scope must be refused, not passed on: ListCoverageRows and the
+	// candidate catalog add no scope predicate without one, so the map would count
+	// every fractal's and prism's rules.
+	fractalID, prismID, ok := h.requireScope(w, r, "attack coverage")
+	if !ok {
 		return attackScope{}, false
 	}
 
