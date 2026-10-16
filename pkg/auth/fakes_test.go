@@ -87,6 +87,7 @@ func newTestHandler() (*AuthHandler, *fakeSessionStore) {
 		store:          store,
 		loginLimiter:   newLoginRateLimiterWith(loginIPMaxFailures, loginBlockDuration),
 		accountLimiter: newLoginRateLimiterWith(loginMaxFailures, loginAccountBlockDuration),
+		knownAddrs:     newKnownAddresses(),
 		mfaLimiter:     newLoginRateLimiter(),
 	}, store
 }

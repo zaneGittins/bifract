@@ -43,9 +43,9 @@ const (
 	// address, each in a window from its first failure.
 	//
 	// The account limit is what stops guessing one password: it holds however
-	// many addresses the guesses come from. Its block is short because anyone
-	// who knows a username can trigger it, and a long one would let them keep
-	// the real user out.
+	// many addresses the guesses come from. Anyone who knows a username can
+	// trigger it, so it does not apply at addresses the account recently signed
+	// in from (knownAddresses); its owner is not locked out.
 	//
 	// The address limit catches one client spraying many accounts. It is set
 	// higher because an office or VPN puts many people behind one address.
@@ -57,6 +57,9 @@ const (
 	loginAccountBlockDuration = 5 * time.Minute
 	loginIPMaxFailures        = 20
 	loginWindowDuration       = 15 * time.Minute
+
+	knownAddressTTL     = 30 * 24 * time.Hour
+	knownAddressPerUser = 8
 
 	// Default admin password used in init-postgres.sql (hashed without pepper)
 	defaultAdminPassword = "bifract"
@@ -176,6 +179,67 @@ func (rl *loginRateLimiter) reset(ip string) {
 	delete(rl.attempts, ip)
 }
 
+// knownAddresses remembers the addresses each account recently completed a
+// sign in from, keeping the most recent knownAddressPerUser for knownAddressTTL.
+type knownAddresses struct {
+	mu   sync.Mutex
+	seen map[string]map[string]time.Time
+}
+
+func newKnownAddresses() *knownAddresses {
+	k := &knownAddresses{seen: make(map[string]map[string]time.Time)}
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			k.prune(time.Now())
+		}
+	}()
+	return k
+}
+
+func (k *knownAddresses) remember(username, ip string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	addrs := k.seen[username]
+	if addrs == nil {
+		addrs = make(map[string]time.Time)
+		k.seen[username] = addrs
+	}
+	addrs[ip] = time.Now()
+	for len(addrs) > knownAddressPerUser {
+		oldest := ""
+		for a, t := range addrs {
+			if oldest == "" || t.Before(addrs[oldest]) {
+				oldest = a
+			}
+		}
+		delete(addrs, oldest)
+	}
+}
+
+func (k *knownAddresses) known(username, ip string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	t, ok := k.seen[username][ip]
+	return ok && time.Since(t) < knownAddressTTL
+}
+
+func (k *knownAddresses) prune(now time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for user, addrs := range k.seen {
+		for a, t := range addrs {
+			if now.Sub(t) >= knownAddressTTL {
+				delete(addrs, a)
+			}
+		}
+		if len(addrs) == 0 {
+			delete(k.seen, user)
+		}
+	}
+}
+
 // hashInviteToken returns the SHA-256 hex digest of a raw invite token.
 func hashInviteToken(token string) string {
 	h := sha256.Sum256([]byte(token))
@@ -268,6 +332,7 @@ type AuthHandler struct {
 	// could interleave correct logins to keep guessing at someone else's.
 	loginLimiter   *loginRateLimiter
 	accountLimiter *loginRateLimiter
+	knownAddrs     *knownAddresses
 	// mfaLimiter is keyed by username, not IP: an attacker who already has the
 	// password is otherwise free to walk the six digit space from new addresses.
 	mfaLimiter      *loginRateLimiter
@@ -317,6 +382,7 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
 		loginLimiter:    newLoginRateLimiterWith(loginIPMaxFailures, loginBlockDuration),
 		accountLimiter:  newLoginRateLimiterWith(loginMaxFailures, loginAccountBlockDuration),
+		knownAddrs:      newKnownAddresses(),
 		mfaLimiter:      newLoginRateLimiter(),
 		rbacResolver:    rbac.NewResolver(pg),
 		clientCADir:     os.Getenv("BIFRACT_CLIENT_CA_DIR"),
@@ -634,7 +700,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Checked before the password, so a blocked account answers the same
 	// whether or not this guess was right.
-	if h.accountLimiter.check(user.Username) {
+	if h.accountLimiter.check(user.Username) && !h.knownAddrs.known(user.Username, ip) {
 		h.logAuthEvent("login_failed", user.Username, ip, "account rate limited")
 		api.WriteError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
@@ -682,6 +748,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		h.logAuthEvent("mfa_challenge", user.Username, ip, "")
 	} else {
 		h.logAuthEvent("login_success", user.Username, ip, "")
+		h.knownAddrs.remember(user.Username, ip)
 		if err := h.pg.UpdateLastLogin(r.Context(), user.Username); err != nil {
 			log.Printf("Failed to update last login for %s: %v", user.Username, err)
 		}

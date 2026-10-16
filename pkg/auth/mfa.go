@@ -363,6 +363,7 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	})
 
 	h.mfaLimiter.reset(user.Username)
+	h.knownAddrs.remember(user.Username, ip)
 	if err := h.pg.UpdateLastLogin(r.Context(), user.Username); err != nil {
 		log.Printf("Failed to update last login for %s: %v", user.Username, err)
 	}

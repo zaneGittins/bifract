@@ -359,6 +359,30 @@ func TestHandleLoginBlocksAccountAcrossAddresses(t *testing.T) {
 	}
 }
 
+// Guessing at an account blocks the guessers, not its owner signing in from
+// where they signed in before.
+func TestHandleLoginAccountBlockSparesKnownAddress(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("admin", asAdmin)
+
+	if rec := login(h, "admin", userPassword, "192.0.2.10"); rec.Code != http.StatusOK {
+		t.Fatalf("first login: status %d", rec.Code)
+	}
+	for i := 0; i < loginMaxFailures; i++ {
+		login(h, "admin", "guess", fmt.Sprintf("198.51.100.%d", i+1))
+	}
+	if rec := login(h, "admin", userPassword, "198.51.100.1"); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("right password from a guessing address: status %d, want 429", rec.Code)
+	}
+	if rec := login(h, "admin", "guess", "192.0.2.10"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("wrong password from the known address: status %d, want 401", rec.Code)
+	}
+	if rec := login(h, "admin", userPassword, "192.0.2.10"); rec.Code != http.StatusOK {
+		t.Errorf("owner at the known address: status %d, want 200", rec.Code)
+	}
+}
+
 // Someone with an account of their own cannot keep guessing at another account
 // by logging in successfully between guesses: a success forgives only the
 // account that succeeded, never the address.
