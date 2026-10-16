@@ -8,16 +8,6 @@ import (
 	"bifract/pkg/storage"
 )
 
-// AttributionUsername returns the username to record in a `created_by` /
-// `updated_by` column for the current principal. Those columns are foreign
-// keys against users(username), so they may only ever hold a username that
-// exists in the users table, or NULL.
-//
-// API key requests authenticate as a synthetic "apikey_<id>" principal that
-// has no users row, so writes are attributed to the user who created the key
-// (the same rule comments already use). An empty result means "no attributable
-// user" and must be stored as NULL, not as an empty string; pass it through
-// storage.NullableUser at the bind site.
 // DenyAPIKey blocks API key requests from a route group that manages per-user
 // state. Those rows key off users(username), which a synthetic principal cannot
 // satisfy, and widening them to the key's creator would hand a machine
@@ -46,6 +36,16 @@ func IsAPIKey(ctx context.Context) bool {
 	return authType == "api_key"
 }
 
+// AttributionUsername returns the username to record in a `created_by` /
+// `updated_by` column for the current principal. Those columns are foreign
+// keys against users(username), so they may only ever hold a username that
+// exists in the users table, or NULL.
+//
+// API key requests authenticate as a synthetic "apikey_<id>" principal that
+// has no users row, so writes are attributed to the user who created the key
+// (the same rule comments already use). An empty result means "no attributable
+// user" and must be stored as NULL, not as an empty string; pass it through
+// storage.NullableUser at the bind site.
 func AttributionUsername(ctx context.Context) string {
 	if authType, _ := ctx.Value("auth_type").(string); authType == "api_key" {
 		if keyData, ok := ctx.Value("api_key").(*ValidatedAPIKey); ok {

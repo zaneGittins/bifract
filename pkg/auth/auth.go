@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -75,14 +76,20 @@ func (rl *loginRateLimiter) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now()
-		for ip, a := range rl.attempts {
-			if now.After(a.blockedUntil) && now.Sub(a.firstFailure) > loginWindowDuration {
-				delete(rl.attempts, ip)
-			}
+		rl.prune(time.Now())
+	}
+}
+
+// prune drops entries that can no longer affect a decision: the block, if any,
+// has lapsed and the failure window has closed. A blocked entry is kept for the
+// whole block even when its window is long past, or pruning would lift it early.
+func (rl *loginRateLimiter) prune(now time.Time) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for ip, a := range rl.attempts {
+		if now.After(a.blockedUntil) && now.Sub(a.firstFailure) > loginWindowDuration {
+			delete(rl.attempts, ip)
 		}
-		rl.mu.Unlock()
 	}
 }
 
@@ -306,7 +313,7 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 //   - BIFRACT_ADMIN_PASSWORD_HASH is set (K8s/production): use the provided hash
 //     directly (already peppered by the setup wizard)
 //   - Only BIFRACT_PASSWORD_PEPPER is set: re-hash the default password with the
-//     pepper so login works
+//     pepper so login works, keeping the forced change on first login
 //
 // This is a no-op if the admin password has already been changed from the default.
 func (h *AuthHandler) migrateDefaultAdminHash() {
@@ -332,22 +339,25 @@ func (h *AuthHandler) migrateDefaultAdminHash() {
 	}
 
 	var newHash string
+	// Re-peppering leaves the password the well-known default, so the forced
+	// change on first login must survive it. Only a deployment-generated hash is
+	// a new password that may clear the flag.
+	update := "UPDATE users SET password_hash = $1 WHERE username = 'admin' AND password_hash = $2"
 	if adminHash != "" {
 		// Use the pre-computed hash from the setup wizard
 		newHash = adminHash
+		update = "UPDATE users SET password_hash = $1, force_password_change = FALSE WHERE username = 'admin' AND password_hash = $2"
 	} else {
 		// Re-hash the default password with the pepper
-		h, err := hashPassword(defaultAdminPassword)
+		hashed, err := hashPassword(defaultAdminPassword)
 		if err != nil {
 			log.Printf("[Auth] Warning: failed to re-hash default admin password: %v", err)
 			return
 		}
-		newHash = string(h)
+		newHash = hashed
 	}
 
-	_, err = h.pg.DB().ExecContext(ctx,
-		"UPDATE users SET password_hash = $1, force_password_change = FALSE WHERE username = 'admin' AND password_hash = $2",
-		newHash, storedHash)
+	_, err = h.pg.DB().ExecContext(ctx, update, newHash, storedHash)
 	if err != nil {
 		log.Printf("[Auth] Warning: failed to update default admin hash: %v", err)
 		return
@@ -380,7 +390,7 @@ func (h *AuthHandler) logAuthEvent(event, user, ip, detail string) {
 	}
 
 	now := time.Now()
-	rawLog := fmt.Sprintf(`{"event":"%s","user":"%s","src_ip":"%s","detail":"%s"}`, event, user, ip, detail)
+	rawLog := authEventRawLog(event, user, ip, detail)
 	entry := storage.LogEntry{
 		Timestamp: now,
 		RawLog:    rawLog,
@@ -396,6 +406,20 @@ func (h *AuthHandler) logAuthEvent(event, user, ip, detail string) {
 			log.Printf("[Auth] failed to log auth event: %v", err)
 		}
 	}()
+}
+
+// authEventRawLog renders the raw JSON line for an auth event. The username and
+// detail come from the request (a failed login records whatever username was
+// typed), so they are encoded rather than formatted in: a quote in them would
+// otherwise break the line or forge fields such as "event" in the audit record.
+func authEventRawLog(event, user, ip, detail string) string {
+	b, _ := json.Marshal(struct {
+		Event  string `json:"event"`
+		User   string `json:"user"`
+		SrcIP  string `json:"src_ip"`
+		Detail string `json:"detail"`
+	}{event, user, ip, detail})
+	return string(b)
 }
 
 // invalidateUserSessions removes all sessions for a given username
@@ -552,9 +576,10 @@ func clientIP(r *http.Request) string {
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return strings.TrimSpace(xri)
 	}
-	// Strip port from RemoteAddr
-	host, _, err := strings.Cut(r.RemoteAddr, ":")
-	if err {
+	// Strip the port. SplitHostPort, not a cut at the first colon: an IPv6
+	// RemoteAddr is "[2001:db8::1]:443", which a cut would reduce to "[2001",
+	// putting every client in that range in one login rate limit bucket.
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
 	return r.RemoteAddr
@@ -1315,7 +1340,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 		// 3. API key validator is available
 		if h.apiKeyValidator != nil {
 			if apiKey := h.extractAPIKey(r); apiKey != "" {
-				keyData, err := h.validateAPIKey(r.Context(), apiKey)
+				keyData, err := h.apiKeyValidator.ValidateAPIKey(r.Context(), apiKey)
 				if err != nil && !errors.Is(err, ErrAPIKeyRejected) {
 					writeAuthUnavailable(w, err)
 					return
@@ -1662,15 +1687,6 @@ func (h *AuthHandler) extractAPIKey(r *http.Request) string {
 	}
 
 	return ""
-}
-
-// validateAPIKey validates an API key using the injected validator
-func (h *AuthHandler) validateAPIKey(ctx context.Context, apiKey string) (*ValidatedAPIKey, error) {
-	if h.apiKeyValidator == nil {
-		return nil, fmt.Errorf("API key validation not available")
-	}
-
-	return h.apiKeyValidator.ValidateAPIKey(ctx, apiKey)
 }
 
 // HandleMTLSStatus returns whether mTLS client cert generation is available.
