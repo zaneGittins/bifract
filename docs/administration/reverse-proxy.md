@@ -98,12 +98,12 @@ Both methods create a PKCS#12 `.p12` file that can be imported into any browser.
 
 Bifract works out which address each request came from so it can apply the per-address login and ingest rate limits and record the address in the auth log. When the request arrives from a trusted proxy, Bifract reads the `X-Forwarded-For` header from the right and takes the first address that is not itself a trusted proxy; without that header it uses `X-Real-IP`. When the request arrives from anywhere else, the headers are ignored and the connecting address is used, so a client cannot pick a new address for each attempt by sending its own header.
 
-The list is under **Settings > General > Security > Trusted proxies**, one CIDR range or IP address per line. Changes apply to the next request; a dedicated ingest tier reads the list when it starts. The default trusts loopback and the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`), which covers the bundled Caddy, Docker networks and a Kubernetes ingress, so most deployments need no change.
+The list is under **Settings > General > Security > Trusted proxies**, one CIDR range or IP address per line. Changes apply to the next request; a dedicated ingest tier reads the list when it starts. The default trusts loopback and the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`), which covers the bundled Caddy, Docker networks and a Kubernetes ingress.
 
 Change it when:
 
 - Another proxy or load balancer with a public address sits in front of Bifract and appends to `X-Forwarded-For`: add its address.
-- Clients on your internal network reach Bifract directly, without a proxy: replace the defaults with only your proxy's address, so an internal client cannot set its own header.
+- Clients on your internal network reach Bifract directly, or through a proxy that appends to `X-Forwarded-For` (such as an AWS ALB): replace the defaults with only your proxy's address. Otherwise an internal client's own address is trusted, and a header it sends is read in its place.
 - Nothing proxies Bifract at all: clear the list to trust no proxy.
 
 ## Access Logs
