@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -5659,6 +5661,60 @@ func TestStarIsATermUnderMatchOperators(t *testing.T) {
 					t.Errorf("missing %s\n%s", want, sql)
 				}
 			})
+		}
+	}
+}
+
+// multiSearch* functions take at most 255 needles, so a longer =~ list is split
+// into calls that each stay within it.
+func TestContainsAnyStaysWithinTheNeedleLimit(t *testing.T) {
+	terms := make([]string, 600)
+	for i := range terms {
+		terms[i] = fmt.Sprintf("t%d", i)
+	}
+	for _, q := range []string{"cmd=~" + strings.Join(terms, ","), "NOT cmd=~" + strings.Join(terms, ",")} {
+		p, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql, err := TranslateToSQL(p, QueryOptions{
+			StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := regexp.MustCompile(`multiSearchAnyCaseInsensitive\([^\[]*\[([^\]]*)\]\)`).FindAllStringSubmatch(sql, -1)
+		if len(calls) != 3 {
+			t.Fatalf("%d multiSearch calls, want 3:\n%s", len(calls), sql)
+		}
+		seen := 0
+		for _, c := range calls {
+			n := strings.Count(c[1], ",") + 1
+			if n > 255 {
+				t.Errorf("a call has %d needles", n)
+			}
+			seen += n
+		}
+		if seen != len(terms) {
+			t.Errorf("calls hold %d needles, want %d", seen, len(terms))
+		}
+		if strings.HasPrefix(q, "NOT") {
+			start := strings.Index(sql, "NOT (")
+			depth, end := 0, -1
+			for i := start + 4; start >= 0 && i < len(sql) && end < 0; i++ {
+				switch sql[i] {
+				case '(':
+					depth++
+				case ')':
+					if depth--; depth == 0 {
+						end = i
+					}
+				}
+			}
+			if end < 0 || strings.Count(sql[start:end], "multiSearchAnyCaseInsensitive") != 3 {
+				t.Errorf("negation does not cover every call:\n%s", sql)
+			}
 		}
 	}
 }
