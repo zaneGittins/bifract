@@ -793,15 +793,21 @@ func TestReconcileStateViewsKeepsModelsWhoseViewSurvived(t *testing.T) {
 		t.Errorf("a model with a live view was maintained or not told why: %q %v", got.errorMessage, got.watermark)
 	}
 
-	// The next startup drops both and hands them over.
+	// The next startup drops both and hands them over at that instant: each view
+	// counted everything ingested until it dropped, so an older watermark would
+	// count that stretch twice.
 	failing.Store(false)
+	handover := time.Now().UTC()
 	env.mgr.ReconcileStateViews(context.Background())
 	if got, _ := env.db.get(stuck.id); got.chMV != "" || got.watermark == nil {
 		t.Errorf("not handed over once its view dropped: %+v", got)
 	}
+	if got, _ := env.db.get(early.id); got.watermark == nil || got.watermark.Before(handover) {
+		t.Errorf("watermark %v kept from before the view dropped at %v", got.watermark, handover)
+	}
 	s.cycle(context.Background())
-	if len(env.ch.ExecutedMatching("INSERT INTO `"+chModelDistName(early.id)+"`")) != 1 {
-		t.Error("model not maintained after its view dropped")
+	if inserts := env.ch.ExecutedMatching("INSERT INTO"); len(inserts) != 0 {
+		t.Errorf("state the views already wrote was read again:\n%s", strings.Join(inserts, "\n"))
 	}
 	if got, _ := env.db.get(early.id); got.errorMessage != "" {
 		t.Errorf("stale reason kept: %q", got.errorMessage)

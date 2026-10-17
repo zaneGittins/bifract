@@ -1764,7 +1764,7 @@ func (m *Manager) ReconcileStateViews(ctx context.Context) {
 		}
 	}
 
-	survived := []string{}
+	survived, dropped := []string{}, []string{}
 	for _, mv := range views {
 		if err := m.dropStateMV(ctx, mv); err != nil {
 			// Left for the next startup: the maintainer must not run alongside a
@@ -1774,21 +1774,26 @@ func (m *Manager) ReconcileStateViews(ctx context.Context) {
 			continue
 		}
 		log.Printf("models: dropped insert-time state view %s", mv)
+		if id, ok := storage.ModelIDOfMVName(mv); ok {
+			dropped = append(dropped, id)
+		}
 	}
 	m.setLiveStateViews(survived)
 
 	// Hand over every model the sweep freed: the views stopped writing at this
 	// instant, so this is where the maintainer must start. Done here rather than
-	// in a migration because the app's own upgrade path does not run them.
+	// in a migration because the app's own upgrade path does not run them. A
+	// model whose view just dropped starts here even if it has a watermark: an
+	// older release set one while the view kept writing past it.
 	//
 	// A model whose view survived is not freed. It keeps its ch_mv_name and its
 	// watermark, NULL for a model that never had one, which keeps it out of the
 	// maintainer until a later startup drops the view and hands it over.
 	if _, err := m.pg.Exec(ctx,
 		`UPDATE analytics_models SET ch_mv_name = '',
-		        state_watermark = COALESCE(state_watermark, NOW())
-		 WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL)
-		   AND NOT (COALESCE(ch_mv_name, '') = ANY($1))`, pq.Array(survived)); err != nil {
+		        state_watermark = CASE WHEN id::text = ANY($2) THEN NOW() ELSE COALESCE(state_watermark, NOW()) END
+		 WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL OR id::text = ANY($2))
+		   AND NOT (COALESCE(ch_mv_name, '') = ANY($1))`, pq.Array(survived), pq.Array(dropped)); err != nil {
 		log.Printf("models: reconcile state views: hand over: %v", err)
 	}
 }

@@ -85,3 +85,15 @@ func TestQuoteCHIdent(t *testing.T) {
 		t.Errorf("quoteCHIdent did not escape a backtick: %q", got)
 	}
 }
+
+func TestModelIDOfMVNameInvertsModelCHMVName(t *testing.T) {
+	const id = "0a1b2c3d-0000-4000-8000-00000000abcd"
+	if got, ok := ModelIDOfMVName(ModelCHMVName(id)); !ok || got != id {
+		t.Errorf("ModelIDOfMVName(%q) = %q, %v; want %q", ModelCHMVName(id), got, ok, id)
+	}
+	for _, name := range []string{"model_mv_", "model_x", "logs"} {
+		if _, ok := ModelIDOfMVName(name); ok {
+			t.Errorf("%q read as a model view", name)
+		}
+	}
+}

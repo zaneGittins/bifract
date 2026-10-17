@@ -352,13 +352,13 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 			res.Rows = append(res.Rows, []driver.Value{r.id, r.fractalID, r.modelType, r.definition, r.chTable, r.chMV})
 		}
 		return res, true
-	case "UPDATE analytics_models SET ch_mv_name = '', state_watermark = COALESCE(state_watermark, NOW()) WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL) AND NOT (COALESCE(ch_mv_name, '') = ANY($1))":
-		survived := setOf(pqArray(args[0]))
+	case "UPDATE analytics_models SET ch_mv_name = '', state_watermark = CASE WHEN id::text = ANY($2) THEN NOW() ELSE COALESCE(state_watermark, NOW()) END WHERE (COALESCE(ch_mv_name, '') <> '' OR state_watermark IS NULL OR id::text = ANY($2)) AND NOT (COALESCE(ch_mv_name, '') = ANY($1))":
+		survived, dropped := setOf(pqArray(args[0])), setOf(pqArray(args[1]))
 		k := 0
 		for _, r := range db.rows {
-			if (r.chMV != "" || r.watermark == nil) && !survived[r.chMV] {
+			if (r.chMV != "" || r.watermark == nil || dropped[r.id]) && !survived[r.chMV] {
 				r.chMV = ""
-				if r.watermark == nil {
+				if r.watermark == nil || dropped[r.id] {
 					r.watermark = tptr(now)
 				}
 				k++
