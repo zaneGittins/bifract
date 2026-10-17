@@ -251,7 +251,9 @@ func (h *AuthHandler) HandleMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.mfaLimiter.check(user.Username) {
+	try, ok := h.mfaLimiter.begin(user.Username)
+	defer try.end()
+	if !ok {
 		h.logAuthEvent("mfa_enroll_failed", user.Username, ip, "rate limited")
 		api.WriteError(w, http.StatusTooManyRequests, "Too many incorrect codes. Please wait and try again.")
 		return
@@ -270,7 +272,7 @@ func (h *AuthHandler) HandleMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.mfaLimiter.recordFailure(user.Username)
+		try.fail()
 		h.logAuthEvent("mfa_enroll_failed", user.Username, ip, "invalid code")
 		api.WriteError(w, http.StatusUnauthorized, "That code is not correct. Check your authenticator and try again.")
 		return
@@ -325,7 +327,9 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.mfaLimiter.check(user.Username) {
+	try, ok := h.mfaLimiter.begin(user.Username)
+	defer try.end()
+	if !ok {
 		h.logAuthEvent("mfa_failed", user.Username, ip, "rate limited")
 		api.WriteError(w, http.StatusTooManyRequests, "Too many incorrect codes. Please wait and try again.")
 		return
@@ -337,7 +341,7 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.mfaLimiter.recordFailure(user.Username)
+		try.fail()
 		h.logAuthEvent("mfa_failed", user.Username, ip, err.Error())
 		api.WriteError(w, http.StatusUnauthorized, "That code is not correct. Check your authenticator and try again.")
 		return
@@ -492,12 +496,14 @@ func (h *AuthHandler) HandleMFADisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.mfaLimiter.check(user.Username) {
+	try, ok := h.mfaLimiter.begin(user.Username)
+	defer try.end()
+	if !ok {
 		api.WriteError(w, http.StatusTooManyRequests, "Too many incorrect attempts. Please wait and try again.")
 		return
 	}
 	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
-		h.mfaLimiter.recordFailure(user.Username)
+		try.fail()
 		h.logAuthEvent("mfa_disable_failed", user.Username, ip, "invalid password")
 		api.WriteError(w, http.StatusUnauthorized, "Password is incorrect")
 		return
@@ -506,7 +512,7 @@ func (h *AuthHandler) HandleMFADisable(w http.ResponseWriter, r *http.Request) {
 		writeSecondFactorUnavailable(w, user.Username, err)
 		return
 	} else if err != nil {
-		h.mfaLimiter.recordFailure(user.Username)
+		try.fail()
 		h.logAuthEvent("mfa_disable_failed", user.Username, ip, "invalid code")
 		api.WriteError(w, http.StatusUnauthorized, "That code is not correct")
 		return
@@ -547,12 +553,14 @@ func (h *AuthHandler) HandleMFARecoveryCodes(w http.ResponseWriter, r *http.Requ
 		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if h.mfaLimiter.check(user.Username) {
+	try, ok := h.mfaLimiter.begin(user.Username)
+	defer try.end()
+	if !ok {
 		api.WriteError(w, http.StatusTooManyRequests, "Too many incorrect attempts. Please wait and try again.")
 		return
 	}
 	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
-		h.mfaLimiter.recordFailure(user.Username)
+		try.fail()
 		api.WriteError(w, http.StatusUnauthorized, "Password is incorrect")
 		return
 	}

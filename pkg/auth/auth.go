@@ -72,6 +72,7 @@ type loginAttempt struct {
 	failures     int
 	firstFailure time.Time
 	blockedUntil time.Time
+	inFlight     int // tries begun and not yet ended
 }
 
 // loginRateLimiter blocks a key (an address or a username) after too many
@@ -108,74 +109,120 @@ func (rl *loginRateLimiter) cleanup() {
 	}
 }
 
-// prune drops entries that can no longer affect a decision: the block, if any,
-// has lapsed and the failure window has closed. A blocked entry is kept for the
-// whole block even when its window is long past, or pruning would lift it early.
+// prune drops entries that can no longer affect a decision: no try is running,
+// the block, if any, has lapsed and the failure window has closed. A blocked
+// entry is kept for the whole block even when its window is long past, or
+// pruning would lift it early.
 func (rl *loginRateLimiter) prune(now time.Time) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	for ip, a := range rl.attempts {
-		if now.After(a.blockedUntil) && now.Sub(a.firstFailure) > loginWindowDuration {
+		if a.inFlight == 0 && now.After(a.blockedUntil) && now.Sub(a.firstFailure) > loginWindowDuration {
 			delete(rl.attempts, ip)
 		}
 	}
 }
 
-// check returns true if the IP is currently blocked
-func (rl *loginRateLimiter) check(ip string) bool {
+// loginTry is one attempt begun on a limiter. fail records it as a failure; end
+// releases it either way and is safe to defer.
+type loginTry struct {
+	rl       *loginRateLimiter
+	key      string
+	reserved bool
+}
+
+// begin starts a try for key. It is refused while key is blocked, and while the
+// tries still running would take its failures past the limit, so concurrent
+// requests cannot all pass a check made before any of them has failed. A
+// refused try can still fail, for a caller that proceeds anyway.
+func (rl *loginRateLimiter) begin(key string) (*loginTry, bool) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-
-	a, exists := rl.attempts[ip]
-	if !exists {
-		return false
-	}
-
+	t := &loginTry{rl: rl, key: key}
 	now := time.Now()
-
-	// Currently blocked
-	if now.Before(a.blockedUntil) {
-		return true
+	a := rl.attempts[key]
+	if a == nil {
+		a = &loginAttempt{}
+		rl.attempts[key] = a
+	} else if a.failures > 0 && now.After(a.blockedUntil) && now.Sub(a.firstFailure) > loginWindowDuration {
+		a.failures, a.blockedUntil = 0, time.Time{}
 	}
-
-	// Window expired, reset
-	if now.Sub(a.firstFailure) > loginWindowDuration {
-		delete(rl.attempts, ip)
-		return false
+	// Once a block lapses inside the window, one try at a time: its failure
+	// blocks again.
+	if now.Before(a.blockedUntil) || a.inFlight >= max(rl.maxFailures-a.failures, 1) {
+		return t, false
 	}
+	a.inFlight++
+	t.reserved = true
+	return t, true
+}
 
-	return false
+// fail records the try as a failure and reports whether key is now blocked.
+func (t *loginTry) fail() bool {
+	t.rl.mu.Lock()
+	defer t.rl.mu.Unlock()
+	t.releaseLocked()
+	return t.rl.recordFailureLocked(t.key)
+}
+
+// end releases the try. Later calls do nothing.
+func (t *loginTry) end() {
+	t.rl.mu.Lock()
+	defer t.rl.mu.Unlock()
+	t.releaseLocked()
+}
+
+func (t *loginTry) releaseLocked() {
+	if !t.reserved {
+		return
+	}
+	t.reserved = false
+	a := t.rl.attempts[t.key]
+	if a == nil || a.inFlight == 0 {
+		return
+	}
+	a.inFlight--
+	if a.inFlight == 0 && a.failures == 0 && a.blockedUntil.IsZero() {
+		delete(t.rl.attempts, t.key)
+	}
 }
 
 // recordFailure records a failed login attempt and returns true if now blocked
-func (rl *loginRateLimiter) recordFailure(ip string) bool {
+func (rl *loginRateLimiter) recordFailure(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+	return rl.recordFailureLocked(key)
+}
 
+func (rl *loginRateLimiter) recordFailureLocked(key string) bool {
 	now := time.Now()
-	a, exists := rl.attempts[ip]
-
-	if !exists || now.Sub(a.firstFailure) > loginWindowDuration {
-		rl.attempts[ip] = &loginAttempt{
-			failures:     1,
-			firstFailure: now,
-		}
-		return false
+	a, exists := rl.attempts[key]
+	if !exists {
+		a = &loginAttempt{}
+		rl.attempts[key] = a
 	}
 
-	a.failures++
+	if a.failures == 0 || now.Sub(a.firstFailure) > loginWindowDuration {
+		a.failures, a.firstFailure = 1, now
+	} else {
+		a.failures++
+	}
 	if a.failures >= rl.maxFailures {
 		a.blockedUntil = now.Add(rl.blockDuration)
 		return true
 	}
-
 	return false
 }
 
-// reset clears rate limit state for an IP after successful login
+// reset clears a key's failures after a successful login. Tries still running
+// keep their reservation.
 func (rl *loginRateLimiter) reset(ip string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+	if a := rl.attempts[ip]; a != nil && a.inFlight > 0 {
+		*a = loginAttempt{inFlight: a.inFlight}
+		return
+	}
 	delete(rl.attempts, ip)
 }
 
@@ -682,9 +729,10 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limiting: check if IP is blocked
 	ip := clientIP(r)
-	if h.loginLimiter.check(ip) {
+	addrTry, ok := h.loginLimiter.begin(ip)
+	defer addrTry.end()
+	if !ok {
 		h.logAuthEvent("login_failed", "", ip, "rate limited")
 		api.WriteError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
@@ -701,7 +749,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// grow it without bound.
 	user, err := h.pg.GetUser(r.Context(), req.Username)
 	if err != nil {
-		h.loginLimiter.recordFailure(ip)
+		addrTry.fail()
 		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
 		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
@@ -709,7 +757,9 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Checked before the password, so a blocked account answers the same
 	// whether or not this guess was right.
-	if h.accountLimiter.check(user.Username) && !h.knownAddrs.known(user.Username, ip) {
+	acctTry, ok := h.accountLimiter.begin(user.Username)
+	defer acctTry.end()
+	if !ok && !h.knownAddrs.known(user.Username, ip) {
 		h.logAuthEvent("login_failed", user.Username, ip, "account rate limited")
 		api.WriteError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
@@ -737,9 +787,9 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Verify password (applies pepper if configured)
 	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
-		h.loginLimiter.recordFailure(ip)
+		addrTry.fail()
 		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
-		if h.accountLimiter.recordFailure(user.Username) {
+		if acctTry.fail() {
 			h.logAuthEvent("login_account_blocked", user.Username, ip,
 				fmt.Sprintf("%d failed passwords; sign in blocked for %s", loginMaxFailures, loginAccountBlockDuration))
 		}
