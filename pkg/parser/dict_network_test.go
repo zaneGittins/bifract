@@ -217,3 +217,11 @@ func TestSecondaryKeyOnANetworkListProbesWithAString(t *testing.T) {
 		t.Errorf("want a string probe against the secondary dictionary, got: %s", sql)
 	}
 }
+
+// A join's subquery probes a network list the same way the outer query does.
+func TestNetworkDictionaryInsideAJoin(t *testing.T) {
+	sql := networkSQL(t, `* | join(key=user, include=[owner]) { * | match(dict="corp", field=src_ip, column=network, include=[owner]) | groupby(user, owner) }`)
+	if !strings.Contains(sql, "toIPv6OrDefault(toString(fields.`src_ip`::String))") {
+		t.Errorf("want an address probe inside the join, got: %s", sql)
+	}
+}
