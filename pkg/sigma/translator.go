@@ -29,7 +29,8 @@ import (
 //	    leave underscore selections out of "them"; emit fields and quantified
 //	    selections in sorted order.
 //	v7: compare cased exact values as lower(field) IN (...) instead of a regex.
-const TranslatorVersion = "v7"
+//	v8: match an escaped lone '*' as a literal, not as field presence.
+const TranslatorVersion = "v8"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -421,7 +422,8 @@ func classifyValue(v string, matchType string) valueMatch {
 		}
 		switch {
 		case anchorStart && anchorEnd:
-			if !hasCaseVariants(lit) {
+			// BQL reads ="*" as presence, so a literal * takes the in() form.
+			if !hasCaseVariants(lit) && lit != "*" {
 				return valueMatch{kind: matchEqual, value: lit}
 			}
 			if isASCII(lit) {
