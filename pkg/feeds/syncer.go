@@ -116,18 +116,19 @@ func (s *Syncer) release(feedID string) {
 // failure mode is silent loss of every alert the feed owns, not a stale alert.
 //
 // Listing no files at all is far likelier a wrong path or branch than a repo emptied on
-// purpose, so it never deletes. Retaining nothing from a non-empty listing is only
-// suspicious alongside errors: a clean run means every rule fell below the feed's min
-// level or status, and pruning them is exactly what was asked for.
-func shouldRunDeletePass(incomplete bool, listed, retained, errCount int) (bool, string) {
+// purpose, so it never deletes. Neither does a listing in which no file was a usable rule
+// and some failed: that is a wrong path or a translator fault, not every rule removed. A
+// clean run with nothing usable means every rule fell below the feed's min level or
+// status, and pruning them is exactly what was asked for.
+func shouldRunDeletePass(incomplete bool, listed, usable, errCount int) (bool, string) {
 	if incomplete {
 		return false, "sync did not complete"
 	}
 	if listed == 0 {
 		return false, "no rule files found under the feed path"
 	}
-	if listed > 0 && retained == 0 && errCount > 0 {
-		return false, fmt.Sprintf("%d rules listed, none retained, %d errors", listed, errCount)
+	if usable == 0 && errCount > 0 {
+		return false, fmt.Sprintf("%d files listed, none a usable rule, %d errors", listed, errCount)
 	}
 	return true, ""
 }
@@ -306,6 +307,8 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 	// establish that the rule is gone, so an error never turns into a deletion; only the
 	// min-level/min-status filters below deliberately omit a path.
 	foundPaths := make([]string, 0, len(yamlFiles))
+	// Rules this sync read and could act on: filtered, unchanged, or translated.
+	usable := 0
 	errCount := 0
 	recordErr := func(format string, args ...interface{}) {
 		errCount++
@@ -366,6 +369,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			continue
 		}
 		entry.Title, entry.Level, entry.Status, entry.Tags = meta.Title, meta.Level, meta.Status, meta.Tags
+		usable++
 
 		// Rules below the feed's thresholds are catalogued but not imported, and
 		// their path is deliberately left out of foundPaths so the delete pass
@@ -409,6 +413,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			record(entry)
 			recordErr("%s: parse error: %v", filePath, parseErr)
 			foundPaths = append(foundPaths, filePath)
+			usable--
 			continue
 		}
 
@@ -445,7 +450,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		log.Printf("[Feeds] Catalog upsert failed for %q: %v", feed.Name, err)
 	}
 
-	if ok, reason := shouldRunDeletePass(incomplete, len(yamlFiles), len(foundPaths), errCount); !ok {
+	if ok, reason := shouldRunDeletePass(incomplete, len(yamlFiles), usable, errCount); !ok {
 		log.Printf("[Feeds] Skipping delete pass for %q: %s", feed.Name, reason)
 		if errCount == 0 {
 			// Nothing else explains why removed rules were kept, so the sync says it.
