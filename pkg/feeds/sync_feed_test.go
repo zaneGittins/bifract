@@ -580,6 +580,32 @@ func TestSyncFeedWithNoUsableRulesKeepsAlerts(t *testing.T) {
 	}
 }
 
+// An imported rule whose new version no longer translates must stop running
+// its old query; the catalog still lists it, so the gap list shows why.
+func TestSyncFeedRemovesAlertWhoseRuleNoLongerTranslates(t *testing.T) {
+	isolateTempDir(t)
+	repo := newGitRepo(t, map[string]string{
+		"good.yml":   sigmaRuleWith("Good", "high", "stable"),
+		"broken.yml": untranslatableRule,
+	})
+	env := newSyncEnv(t)
+	env.seedStale("broken.yml")
+
+	if _, err := env.syncer.SyncFeed(context.Background(), testFeed(repo.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.updated()) != 0 {
+		t.Errorf("updated %v; an untranslatable rule must not be rewritten", keys(env.updated()))
+	}
+	keep, ran := env.keepPaths()
+	if !ran || !reflect.DeepEqual(keep, []string{"good.yml"}) {
+		t.Errorf("keep-list = %v (ran %v), want the untranslatable rule's alert removed", keep, ran)
+	}
+	if e := env.catalog()["broken.yml"]; e.SkipReason != SkipTranslateError {
+		t.Errorf("catalog entry = %+v, want a translate skip", e)
+	}
+}
+
 // When no rule translates, the translator is the likelier fault than every
 // rule at once, so nothing is deleted.
 func TestSyncFeedWhereNothingTranslatesKeepsAlerts(t *testing.T) {

@@ -399,8 +399,9 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 		}
 
 		// Content changed, or the alert does not exist yet. A path that fails to
-		// translate is still kept: when the lookup above failed transiently rather
-		// than genuinely finding nothing, dropping it would delete a working alert.
+		// translate is kept unless the lookup found its alert: that alert would go on
+		// running the old query, while after a transient lookup failure dropping the
+		// path could delete a working alert.
 		name, description, queryString, alertType, level, _, labels, references, parseErr := s.parseRule(string(content), fieldMapper)
 		if parseErr != nil {
 			var translateErr *TranslateError
@@ -412,7 +413,9 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 			entry.SkipDetail = parseErr.Error()
 			record(entry)
 			recordErr("%s: parse error: %v", filePath, parseErr)
-			foundPaths = append(foundPaths, filePath)
+			if translateErr == nil || existErr != nil || existing == nil {
+				foundPaths = append(foundPaths, filePath)
+			}
 			usable--
 			continue
 		}
