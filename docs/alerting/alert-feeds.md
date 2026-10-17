@@ -97,12 +97,13 @@ Each value becomes the cheapest query that matches it exactly:
 |---|---|
 | `contains`, `startswith`, `endswith` | The value appears anywhere in, at the start of, or at the end of the field |
 | `all` | Every listed value must match, rather than any one of them |
+| `windash` | A `-` or `/` that starts a word matches any of `-`, `/`, en dash, em dash or horizontal bar (at most three per value) |
 | `re` | The value is a regular expression, matched case-sensitively |
 | `re\|i`, `re\|m`, `re\|s` | Regular expression flags: case-insensitive, `^`/`$` match at line breaks, `.` matches a line break |
 
 A rule that uses any other modifier is not imported, because dropping the modifier would
 deploy a different detection than the one written. This includes `base64`,
-`base64offset`, `cidr`, `windash`, `exists`, `gt`, `gte`, `lt`, `lte`, `fieldref`,
+`base64offset`, `cidr`, `exists`, `gt`, `gte`, `lt`, `lte`, `fieldref`,
 `expand`, `utf16le`, `utf16be`, `utf16`, `wide` and `cased`. Conditions that use
 aggregation (`| count() by ...`) and combinations such as `contains|endswith` are
 refused the same way. Each refused rule is catalogued with the field, selection and
