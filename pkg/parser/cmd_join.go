@@ -173,26 +173,19 @@ func init() {
 	}})
 }
 
-// subqueryOptions is the context a nested pipeline is translated in. Every field
-// is listed rather than copying ctx.Opts wholesale: the scope guards live here,
-// and a field added later must be considered rather than inherited by accident.
+// subqueryOptions is the context a nested pipeline is translated in: the outer
+// query's, less what belongs to the outer query's own rows. A new option is
+// inherited unless cleared here; subquery_options_test.go makes that a decision.
 func subqueryOptions(ctx *CommandContext, maxRows int) QueryOptions {
-	return QueryOptions{
-		bindingWork:           ctx.Opts.bindingWork,
-		StartTime:             ctx.Opts.StartTime,
-		EndTime:               ctx.Opts.EndTime,
-		EndExclusive:          ctx.Opts.EndExclusive,
-		MaxRows:               maxRows,
-		FractalID:             ctx.Opts.FractalID,
-		FractalIDs:            ctx.Opts.FractalIDs,
-		IncludeEmptyFractalID: ctx.Opts.IncludeEmptyFractalID,
-		Dictionaries:          ctx.Opts.Dictionaries,
-		CaseInsensitiveDicts:  ctx.Opts.CaseInsensitiveDicts,
-		GeoIPEnabled:          ctx.Opts.GeoIPEnabled,
-		DictionaryDatabase:    ctx.Opts.DictionaryDatabase,
-		TableName:             ctx.Opts.TableName,
-		UseIngestTimestamp:    ctx.Opts.UseIngestTimestamp,
-		MaxEventLagSeconds:    ctx.Opts.MaxEventLagSeconds,
-		DisplayTimezone:       ctx.Opts.DisplayTimezone,
-	}
+	opts := ctx.Opts
+	opts.MaxRows = maxRows
+	// comment() and tlsh() are resolved for the outer pipeline; comment() IDs
+	// would also restrict the subquery's base scan to commented rows.
+	opts.HasCommentFilter, opts.CommentLogIDs = false, nil
+	opts.HasTLSHFilter, opts.TLSHMatches = false, nil
+	// Projection the outer result needs, not the subquery's.
+	opts.AlertExtraFields, opts.IncludeShardNum, opts.IncludeIngestTime = nil, false, false
+	// A source command feeds the outer pipeline; the subquery reads the logs.
+	opts.SourceSubquery, opts.SourceColumns, opts.SourceNumericColumns, opts.SourceOrderBy = "", nil, nil, nil
+	return opts
 }
