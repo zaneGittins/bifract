@@ -859,9 +859,19 @@ func buildContainsAnySQL(fieldRef string, values []string, negate bool, mode Sou
 	for i, v := range values {
 		quoted[i] = "'" + escapeString(v) + "'"
 	}
-	expr := fmt.Sprintf("multiSearchAnyCaseInsensitive(%s, [%s])", fieldRef, strings.Join(quoted, ", "))
+	// multiSearch* functions take at most 255 needles, so a longer list is split.
+	const maxNeedles = 255
+	var calls []string
+	for start := 0; start == 0 || start < len(quoted); start += maxNeedles {
+		chunk := quoted[start:min(start+maxNeedles, len(quoted))]
+		calls = append(calls, fmt.Sprintf("multiSearchAnyCaseInsensitive(%s, [%s])", fieldRef, strings.Join(chunk, ", ")))
+	}
+	expr := strings.Join(calls, " OR ")
 	if negate {
 		return "NOT (" + expr + ")"
+	}
+	if len(calls) > 1 {
+		expr = "(" + expr + ")"
 	}
 	return expr
 }

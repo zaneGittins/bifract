@@ -2,6 +2,7 @@ package sigma
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -30,7 +31,8 @@ import (
 //	    selections in sorted order.
 //	v7: compare cased exact values as lower(field) IN (...) instead of a regex.
 //	v8: match an escaped lone '*' as a literal, not as field presence.
-const TranslatorVersion = "v8"
+//	v9: support |windash.
+const TranslatorVersion = "v9"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -200,25 +202,87 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		return buildCombinedRegexExpr(field, fc.Values, inline, suffix), nil
 	}
 
-	// Keywords (no field): a case-insensitive substring search over the whole event.
-	if field == "" {
-		return buildKeywordExpr(fc.Values), nil
+	// Each value with its |windash variants, any of which matches for it.
+	groups := make([][]string, len(fc.Values))
+	var all []string
+	for i, v := range fc.Values {
+		groups[i] = []string{v}
+		if containsModifier(fc.Modifiers, "windash") {
+			variants, err := expandWindash(v)
+			if err != nil {
+				return "", fmt.Errorf("field '%s': %w", fc.Field, err)
+			}
+			groups[i] = variants
+		}
+		all = append(all, groups[i]...)
 	}
 
-	matches := make([]valueMatch, len(fc.Values))
-	for i, v := range fc.Values {
-		matches[i] = classifyValue(v, matchType)
+	// Keywords (no field): a case-insensitive substring search over the whole event.
+	if field == "" {
+		return buildKeywordExpr(all), nil
+	}
+
+	classify := func(values []string) []valueMatch {
+		matches := make([]valueMatch, len(values))
+		for i, v := range values {
+			matches[i] = classifyValue(v, matchType)
+		}
+		return matches
 	}
 
 	// |all: every value must match, so AND one predicate per value.
 	if hasAll {
-		parts := make([]string, len(matches))
-		for i, m := range matches {
-			parts[i] = renderMatches(field, []valueMatch{m})
+		parts := make([]string, len(groups))
+		for i, g := range groups {
+			parts[i] = renderMatches(field, classify(g))
 		}
 		return joinExprs(parts, " AND "), nil
 	}
-	return renderMatches(field, matches), nil
+	return renderMatches(field, classify(all)), nil
+}
+
+// windashChars are the dashes Windows tools accept before a flag: hyphen, slash, en
+// dash, em dash and horizontal bar.
+var windashChars = []rune{'-', '/', '\u2013', '\u2014', '\u2015'}
+
+// maxWindashDashes is pySigma's limit, which keeps a value to 125 variants.
+const maxWindashDashes = 3
+
+// expandWindash returns every variant of a Sigma value with each flag dash, a - or /
+// that starts a word, replaced by each of windashChars. Dashes inside a word, as in
+// "a-b", are left alone, matching pySigma's \B[-/]\b.
+func expandWindash(v string) ([]string, error) {
+	runes := []rune(v)
+	var at []int
+	for i, r := range runes {
+		if (r == '-' || r == '/') && (i == 0 || !isWordRune(runes[i-1])) && i+1 < len(runes) && isWordRune(runes[i+1]) {
+			at = append(at, i)
+		}
+	}
+	if len(at) > maxWindashDashes {
+		return nil, fmt.Errorf("windash expands at most %d dashes in one value, %q has %d", maxWindashDashes, v, len(at))
+	}
+	variants := [][]rune{runes}
+	for _, i := range at {
+		next := make([][]rune, 0, len(variants)*len(windashChars))
+		for _, base := range variants {
+			for _, d := range windashChars {
+				r := slices.Clone(base)
+				r[i] = d
+				next = append(next, r)
+			}
+		}
+		variants = next
+	}
+	out := make([]string, len(variants))
+	for i, r := range variants {
+		out[i] = string(r)
+	}
+	return out, nil
+}
+
+func isWordRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // matchModifiers are the modifiers that choose how a value is compared. At most one
@@ -248,7 +312,7 @@ func regexFlags(mods []string) (inline, suffix string) {
 }
 
 // checkModifiers refuses any modifier the translator does not implement. A modifier
-// silently dropped would deploy a different rule than the one written (windash, a
+// silently dropped would deploy a different rule than the one written (base64, a
 // value transform, or gt/lt, a different comparison, would match something else
 // entirely), so the rule fails instead, naming what it could not express.
 func checkModifiers(fc FieldCondition) error {
@@ -258,7 +322,7 @@ func checkModifiers(fc FieldCondition) error {
 		switch {
 		case matchModifiers[mod]:
 			match = append(match, mod)
-		case mod == "all", isRegex && regexFlagModifiers[mod]:
+		case mod == "all", mod == "windash" && !isRegex, isRegex && regexFlagModifiers[mod]:
 		default:
 			unsupported = append(unsupported, "'"+mod+"'")
 		}
@@ -347,9 +411,11 @@ func globRegex(toks []globToken) (pattern string, wild bool) {
 	return b.String(), wild
 }
 
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
+// lowerFolds reports whether ClickHouse lower(), which folds ASCII only, folds every
+// letter of s that has a case. Caseless characters such as dashes need no folding.
+func lowerFolds(s string) bool {
+	for _, r := range s {
+		if r >= utf8.RuneSelf && unicode.SimpleFold(r) != r {
 			return false
 		}
 	}
@@ -395,10 +461,10 @@ type valueMatch struct {
 //   - A literal under a substring, prefix or suffix match uses =~, =^ or =$, which
 //     are case-insensitive. A '*' at one end of an exact value makes it one of
 //     these, so the common '*\cmd.exe' is a suffix match, not a regex.
-//   - A cased ASCII value under an exact match compares lower(field), about four
-//     times cheaper than an anchored regex. It cannot use the skip index, which is
-//     over the value as stored. ClickHouse lower() folds ASCII only, so a value
-//     with other letters stays a regex.
+//   - An exact value whose cased letters are all ASCII compares lower(field), about
+//     four times cheaper than an anchored regex. It cannot use the skip index, which
+//     is over the value as stored. ClickHouse lower() folds ASCII only, so a value
+//     with other cased letters stays a regex.
 //   - Everything else is a case-insensitive regex: a wildcard in the middle, '?',
 //     or a literal comma (which would split the native list).
 func classifyValue(v string, matchType string) valueMatch {
@@ -426,7 +492,7 @@ func classifyValue(v string, matchType string) valueMatch {
 			if !hasCaseVariants(lit) && lit != "*" {
 				return valueMatch{kind: matchEqual, value: lit}
 			}
-			if isASCII(lit) {
+			if lowerFolds(lit) {
 				return valueMatch{kind: matchLower, value: strings.ToLower(lit)}
 			}
 		case !strings.Contains(lit, ","):

@@ -2,6 +2,7 @@ package sigma
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -169,7 +170,7 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 		{[]string{"cidr"}, "cidr"},
 		// Every modifier the translator does not implement is refused by name, never
 		// dropped: each of these used to translate as if the modifier were absent.
-		{[]string{"windash", "contains"}, "'windash'"},
+		{[]string{"windash", "re"}, "'windash'"},
 		{[]string{"exists"}, "'exists'"},
 		{[]string{"gt"}, "'gt'"},
 		{[]string{"gte"}, "'gte'"},
@@ -206,15 +207,15 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 	}
 }
 
-// The refusal reaches a parsed rule too, so a feed rule using windash is reported as
-// untranslatable rather than deployed without its dash variants.
+// The refusal reaches a parsed rule too, so a feed rule using cidr is reported as
+// untranslatable rather than deployed as a string match.
 func TestParsedRuleWithUnsupportedModifierFails(t *testing.T) {
 	rule, err := ParseSigmaRule(`
 title: Encoded command
 detection:
   selection:
     Image|endswith: \powershell.exe
-    CommandLine|windash|contains: ' -enc '
+    DestinationIp|cidr: 10.0.0.0/8
   condition: selection
 `)
 	if err != nil {
@@ -224,7 +225,7 @@ detection:
 	if err == nil {
 		t.Fatalf("translated to %q, want an error", got)
 	}
-	for _, frag := range []string{"selection 'selection'", "field 'CommandLine'", "'windash'"} {
+	for _, frag := range []string{"selection 'selection'", "field 'DestinationIp'", "'cidr'"} {
 		if !strings.Contains(err.Error(), frag) {
 			t.Errorf("error %q should mention %s", err, frag)
 		}
@@ -1112,5 +1113,94 @@ detection:
 		if !strings.Contains(first, frag) {
 			t.Errorf("translation is missing %s:\n%s", frag, first)
 		}
+	}
+}
+
+// |windash lets each flag dash (a - or / that starts a word) be any of the five
+// dashes Windows tools accept, as pySigma expands it.
+func TestExpandWindash(t *testing.T) {
+	dashes := []string{"-", "/", "\u2013", "\u2014", "\u2015"}
+	cases := []struct {
+		value string
+		want  []string
+	}{
+		{" -enc ", []string{" -enc ", " /enc ", " \u2013enc ", " \u2014enc ", " \u2015enc "}},
+		{"/c", []string{"-c", "/c", "\u2013c", "\u2014c", "\u2015c"}},
+		{"--x", []string{"--x", "-/x", "-\u2013x", "-\u2014x", "-\u2015x"}},
+		{"*-x", []string{"*-x", "*/x", "*\u2013x", "*\u2014x", "*\u2015x"}},
+		{"a-b", []string{"a-b"}},
+		{"x - y", []string{"x - y"}},
+		{"-", []string{"-"}},
+		{"C:/Windows", []string{"C:-Windows", "C:/Windows", "C:\u2013Windows", "C:\u2014Windows", "C:\u2015Windows"}},
+	}
+	for _, c := range cases {
+		got, err := expandWindash(c.value)
+		if err != nil {
+			t.Fatalf("%q: %v", c.value, err)
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%q expands to %q, want %q", c.value, got, c.want)
+		}
+	}
+
+	got, err := expandWindash("-a -b -c")
+	if err != nil || len(got) != 125 {
+		t.Fatalf("three dashes: %d variants, %v; want 125", len(got), err)
+	}
+	seen := map[string]bool{}
+	for _, v := range got {
+		seen[v] = true
+	}
+	for _, a := range dashes {
+		for _, c := range dashes {
+			if v := a + "a -b " + c + "c"; !seen[v] {
+				t.Errorf("missing variant %q", v)
+			}
+		}
+	}
+	if _, err := expandWindash("-a -b -c -d"); err == nil || !strings.Contains(err.Error(), "at most 3") {
+		t.Errorf("four dashes: %v, want the pySigma limit", err)
+	}
+}
+
+func TestTranslateWindash(t *testing.T) {
+	contains := []string{"windash", "contains"}
+	dashes := strings.NewReplacer("{en}", "\u2013", "{em}", "\u2014", "{bar}", "\u2015").Replace
+	cases := []struct {
+		name string
+		cond FieldCondition
+		bql  string
+		sql  string
+	}{
+		{"contains is one multi-search", fc("CommandLine", contains, " -enc "),
+			`CommandLine=~" -enc "," /enc "," {en}enc "," {em}enc "," {bar}enc "`,
+			"multiSearchAnyCaseInsensitive(" + cmdRef + ", [' -enc ', ' /enc ', ' {en}enc ', ' {em}enc ', ' {bar}enc '])"},
+		{"exact value is one lowercase set", fc("CommandLine", []string{"windash"}, "-NoP"),
+			`in(lower(CommandLine), values=["-nop","/nop","{en}nop","{em}nop","{bar}nop"])`,
+			"lower(" + cmdRef + ") IN ('-nop', '/nop', '{en}nop', '{em}nop', '{bar}nop')"},
+		{"startswith", fc("CommandLine", []string{"windash", "startswith"}, "/c"),
+			`CommandLine=^"-c","/c","{en}c","{em}c","{bar}c"`,
+			"startsWith(lower(" + cmdRef + "), '{en}c')"},
+		{"a value without a flag dash is unchanged", fc("CommandLine", contains, "a-b"), `CommandLine=~a-b`, ""},
+		{"all keeps each value's variants together", fc("CommandLine", []string{"windash", "contains", "all"}, " -a", " -b"),
+			`(CommandLine=~" -a"," /a"," {en}a"," {em}a"," {bar}a" AND CommandLine=~" -b"," /b"," {en}b"," {em}b"," {bar}b")`, ""},
+		{"keyword", fc("", []string{"windash"}, "-enc"), `/.*(?:-enc|\/enc|{en}enc|{em}enc|{bar}enc).*/i`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(tc.cond), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.bql = dashes(tc.bql); got != tc.bql {
+				t.Fatalf("BQL\n got  %s\n want %s", got, tc.bql)
+			}
+			if sql := toSQL(t, got); tc.sql != "" && !strings.Contains(sql, dashes(tc.sql)) {
+				t.Errorf("SQL is missing %s\n%s", tc.sql, sql)
+			}
+		})
+	}
+	if _, err := Translate(singleSelection(fc("CommandLine", contains, "-a -b -c -d")), nil); err == nil {
+		t.Error("four flag dashes translated; pySigma refuses them")
 	}
 }
