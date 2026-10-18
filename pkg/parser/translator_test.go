@@ -5629,3 +5629,36 @@ func TestHavingBindsToStageAtFilterPosition(t *testing.T) {
 		t.Errorf("a filter before count() must filter the groups: %s", before)
 	}
 }
+
+// `*` is the presence wildcard only as the value of = and !=. Under =~, =^ and =$
+// it is a term like any other, so a list holding it keeps its other terms.
+func TestStarIsATermUnderMatchOperators(t *testing.T) {
+	cases := map[string]string{
+		`cmd=~"*","x"`: "multiSearchAnyCaseInsensitive(fields.`cmd`::String, ['*', 'x'])",
+		`cmd=~"*"`:     "multiSearchAnyCaseInsensitive(fields.`cmd`::String, ['*'])",
+		`cmd=^"*"`:     "startsWith(lower(fields.`cmd`::String), '*')",
+		`cmd=$"*"`:     "endsWith(lower(fields.`cmd`::String), '*')",
+		`cmd=*`:        "fields.`cmd`::String != ''",
+		`cmd!=*`:       "fields.`cmd`::String IS NULL OR fields.`cmd`::String = ''",
+	}
+	for q, want := range cases {
+		for _, form := range []string{q, "* | " + q} {
+			t.Run(form, func(t *testing.T) {
+				p, err := ParseQuery(form)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sql, err := TranslateToSQL(p, QueryOptions{
+					StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+					EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(sql, want) {
+					t.Errorf("missing %s\n%s", want, sql)
+				}
+			})
+		}
+	}
+}

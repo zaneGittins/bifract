@@ -772,7 +772,8 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		return buildFieldComparisonSQL(lhs, rhs, cond.Operator)
 	}
 
-	if cond.Value == "*" {
+	// * means presence only as the value of = and !=; under =~, =^ and =$ it is a term.
+	if cond.Value == "*" && (cond.Operator == "=" || cond.Operator == "!=") {
 		if cond.Operator == "!=" {
 			if isJSONField {
 				return fmt.Sprintf("(%s IS NULL OR %s = '')", fieldRef, fieldRef)
