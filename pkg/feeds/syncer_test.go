@@ -12,7 +12,7 @@ func TestShouldRunDeletePass(t *testing.T) {
 		name       string
 		incomplete bool
 		listed     int
-		retained   int
+		usable     int
 		errCount   int
 		want       bool
 	}{
@@ -27,9 +27,9 @@ func TestShouldRunDeletePass(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, reason := shouldRunDeletePass(tt.incomplete, tt.listed, tt.retained, tt.errCount)
+			got, reason := shouldRunDeletePass(tt.incomplete, tt.listed, tt.usable, tt.errCount)
 			if got != tt.want {
-				t.Errorf("shouldRunDeletePass(%v, %d, %d, %d) = %v, want %v", tt.incomplete, tt.listed, tt.retained, tt.errCount, got, tt.want)
+				t.Errorf("shouldRunDeletePass(%v, %d, %d, %d) = %v, want %v", tt.incomplete, tt.listed, tt.usable, tt.errCount, got, tt.want)
 			}
 			if !got && reason == "" {
 				t.Error("skipped without a reason")

@@ -553,3 +553,71 @@ func TestSyncFeedWithNoRuleFilesKeepsAlerts(t *testing.T) {
 		t.Errorf("errors = %q, want the empty listing reported", res.Errors)
 	}
 }
+
+// A path whose YAML holds no rule (a wrong path into CI config, say) is no
+// evidence the feed's rules were removed, so it deletes nothing.
+func TestSyncFeedWithNoUsableRulesKeepsAlerts(t *testing.T) {
+	isolateTempDir(t)
+	repo := newGitRepo(t, map[string]string{
+		"rules/a.yml":       sigmaRuleWith("A", "high", "stable"),
+		"ci/workflow.yml":   "on: push\njobs: {}\n",
+		"ci/dependabot.yml": "version: 2\n",
+	})
+	env := newSyncEnv(t)
+	env.seed("rules/a.yml", sigmaRuleWith("A", "high", "stable"))
+	feed := testFeed(repo.URL)
+	feed.Path = "ci"
+
+	res, err := env.syncer.SyncFeed(context.Background(), feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keep, ran := env.keepPaths(); ran {
+		t.Fatalf("delete pass ran with keep-list %v although no listed file was a rule", keep)
+	}
+	if len(res.Errors) != 2 {
+		t.Errorf("errors = %q, want one per non-rule file", res.Errors)
+	}
+}
+
+// An imported rule whose new version no longer translates must stop running
+// its old query; the catalog still lists it, so the gap list shows why.
+func TestSyncFeedRemovesAlertWhoseRuleNoLongerTranslates(t *testing.T) {
+	isolateTempDir(t)
+	repo := newGitRepo(t, map[string]string{
+		"good.yml":   sigmaRuleWith("Good", "high", "stable"),
+		"broken.yml": untranslatableRule,
+	})
+	env := newSyncEnv(t)
+	env.seedStale("broken.yml")
+
+	if _, err := env.syncer.SyncFeed(context.Background(), testFeed(repo.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.updated()) != 0 {
+		t.Errorf("updated %v; an untranslatable rule must not be rewritten", keys(env.updated()))
+	}
+	keep, ran := env.keepPaths()
+	if !ran || !reflect.DeepEqual(keep, []string{"good.yml"}) {
+		t.Errorf("keep-list = %v (ran %v), want the untranslatable rule's alert removed", keep, ran)
+	}
+	if e := env.catalog()["broken.yml"]; e.SkipReason != SkipTranslateError {
+		t.Errorf("catalog entry = %+v, want a translate skip", e)
+	}
+}
+
+// When no rule translates, the translator is the likelier fault than every
+// rule at once, so nothing is deleted.
+func TestSyncFeedWhereNothingTranslatesKeepsAlerts(t *testing.T) {
+	isolateTempDir(t)
+	repo := newGitRepo(t, map[string]string{"broken.yml": untranslatableRule})
+	env := newSyncEnv(t)
+	env.seedStale("broken.yml")
+
+	if _, err := env.syncer.SyncFeed(context.Background(), testFeed(repo.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if keep, ran := env.keepPaths(); ran {
+		t.Fatalf("delete pass ran with keep-list %v although no rule translated", keep)
+	}
+}
