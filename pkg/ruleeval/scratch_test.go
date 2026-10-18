@@ -455,7 +455,7 @@ func TestEvaluateErrors(t *testing.T) {
 
 	// A rule that parses but cannot be translated says so, and nothing runs.
 	before := len(fake.Queried())
-	pipeline, err = parser.ParseQuery(`bytes > abc`)
+	pipeline, err = parser.ParseQuery(`* | x := frobnicate(user)`)
 	if err != nil {
 		t.Fatal(err)
 	}

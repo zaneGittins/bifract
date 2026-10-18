@@ -237,6 +237,9 @@ func TestParseSourceQueryFilterComplete(t *testing.T) {
 		`level = "dns"`,
 		`level = "dns" | cidr(src_ip, "10.0.0.0/8")`,
 		`level = "dns" | regex(field=norm_log, regex="([a-z]+)", as=tld) | len(tld) | _len >= 4 | lowercase(tld)`,
+		`level = "dns" AND user = "x"`,
+		`* | level = "dns"`,
+		`* | level = "dns" AND user = "x" | cidr(src_ip, "10.0.0.0/8")`,
 	}
 	for _, q := range complete {
 		if res := ParseSourceQuery(q); !res.FilterComplete {
@@ -250,6 +253,7 @@ func TestParseSourceQueryFilterComplete(t *testing.T) {
 		`level = "a" | in(host, values=[x,y])`,
 		`level = "a" | lowercase(level)`,
 		`level = "a" | regex(field=norm_log, regex="(?<a>x)(?<b>y)")`,
+		`x := lower(a) | x = "foo"`,
 	}
 	for _, q := range partial {
 		if res := ParseSourceQuery(q); res.FilterComplete {
@@ -269,6 +273,8 @@ func TestParseSourceQueryLowersOperators(t *testing.T) {
 		{`NOT user = "bob"`, FilterCondition{Field: "user", Op: "!=", Value: "bob"}},
 		{`image = /evil\/x/`, FilterCondition{Field: "image", Op: "~", Value: "evil/x"}},
 		{`NOT image = /evil/`, FilterCondition{Field: "image", Op: "!~", Value: "evil"}},
+		{`* | NOT user = "bob"`, FilterCondition{Field: "user", Op: "!=", Value: "bob"}},
+		{`* | image != /evil/`, FilterCondition{Field: "image", Op: "!~", Value: "evil"}},
 	}
 	for _, c := range cases {
 		res := ParseSourceQuery(c.query)
@@ -326,5 +332,36 @@ func TestParseSourceQueryRegexWarnings(t *testing.T) {
 	}
 	if res := ParseSourceQuery(`level = = "a"`); len(res.Errors) == 0 || res.SourceBQL != "" {
 		t.Errorf("unparseable query: %+v", res)
+	}
+}
+
+// Chips list the source's conditions in the order written, ahead of the
+// commands after them, so the editor shows the query as it reads.
+func TestParseSourceQueryChipOrder(t *testing.T) {
+	res := ParseSourceQuery(`a = "x" | b = "y" | cidr(dst_ip, "10.0.0.0/8")`)
+	var got []string
+	for _, f := range res.Filter {
+		got = append(got, f.Field+f.Op)
+	}
+	if strings.Join(got, " ") != "a= b= dst_ipcidr" {
+		t.Errorf("chips %v, want a, b, then the cidr", got)
+	}
+}
+
+// A chip names a raw log field: a condition on a name assigned before it filters
+// the computed value, which no chip can say. One written ahead of it is the field.
+func TestParseSourceQueryAssignedNameIsNoChip(t *testing.T) {
+	for q, want := range map[string]string{
+		`x := lower(a) | x = "foo"`:       "",
+		`x := lower(a) x = "foo" b = "1"`: "b=",
+		`x = "foo" | x := lower(a)`:       "x=",
+	} {
+		var got []string
+		for _, f := range ParseSourceQuery(q).Filter {
+			got = append(got, f.Field+f.Op)
+		}
+		if strings.Join(got, " ") != want {
+			t.Errorf("%q: chips %v, want %q", q, got, want)
+		}
 	}
 }

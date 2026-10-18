@@ -207,14 +207,15 @@ func TestBuildChunkSQL(t *testing.T) {
 
 func TestIsRawLogRegexQuery(t *testing.T) {
 	cases := map[string]bool{
-		"/denied/":                    true,
-		`"access denied"`:             true,
-		"level=error | /denied/":      true,
-		"level=error AND /denied/":    true,
-		"(level=error OR /denied/)":   true,
-		"msg=/denied/":                false, // a field regex is index-assisted, not a full-text scan
-		"level=error":                 false,
-		"level=error | groupby(host)": false,
+		"/denied/":                      true,
+		`"access denied"`:               true,
+		"level=error | /denied/":        true,
+		"level=error AND /denied/":      true,
+		"(level=error OR /denied/)":     true,
+		"* | (level=error OR /denied/)": true,
+		"msg=/denied/":                  false, // a field regex is index-assisted, not a full-text scan
+		"level=error":                   false,
+		"level=error | groupby(host)":   false,
 	}
 	for q, want := range cases {
 		p, err := parser.ParseQuery(q)

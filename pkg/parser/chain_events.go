@@ -177,26 +177,6 @@ func fractalScopePredicate(opts QueryOptions) string {
 	return ""
 }
 
-// collectConditionFieldsOrdered is collectConditionFields preserving first-seen
-// order, which the map-returning variant loses.
-func collectConditionFieldsOrdered(conds []ConditionNode, seen map[string]bool, out []string) []string {
-	for _, c := range conds {
-		if c.IsCompound {
-			out = collectConditionFieldsOrdered(c.Children, seen, out)
-			continue
-		}
-		// Bare-term searches match norm_log as a whole and name no field.
-		for _, f := range []string{c.Field, c.ValueField} {
-			if f == "" || f == normLogColumn || seen[f] {
-				continue
-			}
-			seen[f] = true
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // ForEachCommand visits every command in a pipeline, including condition
 // functions used as boolean operands. Anything looking for a command by name must
 // use this rather than scanning Commands, which holds only the standalone ones.
@@ -207,20 +187,7 @@ func ForEachCommand(pipeline *PipelineNode, fn func(CommandNode)) {
 	for _, cmd := range pipeline.Commands {
 		fn(cmd)
 	}
-	if pipeline.Filter != nil {
-		forEachConditionCommand(pipeline.Filter.Conditions, fn)
-	}
 	forEachHavingCommand(pipeline.HavingConditions, fn)
-}
-
-func forEachConditionCommand(conds []ConditionNode, fn func(CommandNode)) {
-	for _, c := range conds {
-		if c.IsCompound {
-			forEachConditionCommand(c.Children, fn)
-		} else if c.Command != nil {
-			fn(*c.Command)
-		}
-	}
 }
 
 func forEachHavingCommand(conds []HavingCondition, fn func(CommandNode)) {

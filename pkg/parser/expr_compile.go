@@ -68,15 +68,6 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		return "", TypeAny, fmt.Errorf("unknown binding %s", name)
 	}
 	registry, selfField := ctx.registry, ctx.selfField
-	if registry == nil {
-		// No registry, but the base columns are base columns regardless: resolving
-		// norm_log as a JSON path makes this clause disagree with the one the same
-		// query builds with a registry.
-		if isBaseColumn(name) {
-			return name, TypeAny, nil
-		}
-		return ctx.export(groupableCast(jsonFieldRef(name)), name), TypeAny, nil
-	}
 	if ctx.deferredFields[name] {
 		// Produced by the deferred layer: already a bare column there.
 		return name, TypeAny, nil
@@ -93,16 +84,6 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 		return name, TypeAny, nil
 	}
 	return ctx.export(groupableCast(registry.fieldRef(name)), name), TypeAny, nil
-}
-
-// isBaseColumn reports whether a name is a column of the logs table itself
-// rather than a JSON field inside it.
-func isBaseColumn(name string) bool {
-	switch name {
-	case "timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer":
-		return true
-	}
-	return false
 }
 
 // export routes a source-scope reference through the deferred scope when the
@@ -354,9 +335,13 @@ func unknownFunctionError(name string) error {
 }
 
 func closestExprFunc(name string) (string, bool) {
-	best, bestDist := "", 3 // only suggest for near misses
+	const limit = 3 // only suggest for near misses
+	best, bestDist := "", limit
 	for candidate := range exprFuncs {
-		if d := editDistanceWithin(name, candidate, bestDist); d < bestDist {
+		// Against the fixed limit every near miss gets its exact distance, so a tie
+		// is real and goes to the first name alphabetically, not to map order.
+		d := editDistanceWithin(name, candidate, limit)
+		if d < bestDist || d == bestDist && d < limit && candidate < best {
 			best, bestDist = candidate, d
 		}
 	}

@@ -87,14 +87,11 @@ func resolveValueField(name string, registry *FieldRegistry) condOperand {
 		return condOperand{ref: "log_id"}
 	case "normalizer", "_normalizer":
 		return condOperand{ref: "normalizer"}
+	}
 	// Bare aggregate names resolve to their numeric aliases, matching the
 	// left-hand side; without this they would read as a JSON field named "count".
-	case "count":
-		return condOperand{ref: "_count", computed: true}
-	case "sum":
-		return condOperand{ref: "_sum", computed: true}
-	case "avg":
-		return condOperand{ref: "_avg", computed: true}
+	if registry.bareAggregate(name) {
+		return condOperand{ref: "_" + name, computed: true}
 	}
 
 	if registry != nil {

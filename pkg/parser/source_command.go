@@ -1,8 +1,10 @@
 package parser
 
-import "sort"
-
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"sort"
+)
 
 // Source commands GENERATE the pipeline's source rather than filtering/transforming an
 // existing one. They cannot be expressed as pure SQL over the logs table (they need Go
@@ -61,7 +63,7 @@ func ValidateSourceCommandPlacement(pipeline *PipelineNode) error {
 	if srcIdx == -1 {
 		return nil
 	}
-	if pipeline.Filter != nil && len(pipeline.Filter.Conditions) > 0 {
+	if slices.ContainsFunc(pipeline.HavingConditions, func(c HavingCondition) bool { return c.CmdIndex <= srcIdx }) {
 		return fmt.Errorf("%s() must be the first command: a filter before it (e.g. `event_id=1 | %s(...)`) is ignored, because %s() is scoped only by its arguments, the time range, and the fractal. Filter after it instead: `%s(...) | field=value`", srcName, srcName, srcName, srcName)
 	}
 	if srcIdx != 0 {

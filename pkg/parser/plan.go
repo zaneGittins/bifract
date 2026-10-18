@@ -85,9 +85,9 @@ type QueryStage struct {
 
 // QueryPlan holds the structured representation of a query before rendering to SQL.
 type QueryPlan struct {
-	Stages           []QueryStage // pipeline of aggregation stages (first = innermost)
+	Stages []QueryStage // pipeline of aggregation stages (first = innermost)
 	// stageAfterCmd[i] is the current stage index once command i has executed.
-	stageAfterCmd []int
+	stageAfterCmd    []int
 	WindowLayers     []QueryLayer // z-score, histogram wrapping (applied after all stages)
 	DeferredWhere    []string     // conditions on window fields
 	DeferredOrder    []string     // ORDER BY on window fields
@@ -201,6 +201,14 @@ type QueryPlan struct {
 	pendingHavingConditions   []HavingCondition
 	pendingDeferredConditions []HavingCondition
 
+	// firstStageAt[i] is the registry a condition before the first command
+	// resolves against when i assignments precede it (FieldRegistry.firstStageView).
+	firstStageAt []*FieldRegistry
+	// baseWhereLen counts the source WHERE entries that scope the scan (time range,
+	// fractal) rather than filter it. First-stage conditions follow them, ahead of
+	// anything a command adds.
+	baseWhereLen int
+
 	// Source expressions exported to the deferred layer as hidden columns.
 	deferred *deferredScope
 
@@ -225,6 +233,15 @@ func NewQueryPlan() *QueryPlan {
 // CurrentStage returns the active stage commands should write to.
 func (p *QueryPlan) CurrentStage() *QueryStage {
 	return &p.Stages[len(p.Stages)-1]
+}
+
+// conditionRegistry is the registry a condition resolves its fields against: the
+// first-stage view at its position before any command, the final registry after one.
+func (p *QueryPlan) conditionRegistry(c HavingCondition, registry *FieldRegistry) *FieldRegistry {
+	if c.CmdIndex == 0 && len(p.firstStageAt) > 0 {
+		return p.firstStageAt[min(c.AssignIndex, len(p.firstStageAt)-1)]
+	}
+	return registry
 }
 
 // SourceStage returns the innermost (FROM logs) stage.

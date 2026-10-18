@@ -207,6 +207,17 @@ func TestExprUnknownFunctionErrors(t *testing.T) {
 		}
 	})
 
+	// min() is two edits from both if() and len(): the suggestion breaks the tie
+	// the same way every time instead of by map order.
+	t.Run("a tied suggestion is stable", func(t *testing.T) {
+		first := exprError(t, `* | x := min(user)`)
+		for i := 0; i < 30; i++ {
+			if msg := exprError(t, `* | x := min(user)`); msg != first {
+				t.Fatalf("suggestion changed between runs: %q then %q", first, msg)
+			}
+		}
+	})
+
 	t.Run("unrelated name errors plainly", func(t *testing.T) {
 		msg := exprError(t, `* | x := frobnicate(user)`)
 		if !strings.Contains(msg, "unknown function frobnicate()") {

@@ -233,7 +233,7 @@ func TestBooleanLogic(t *testing.T) {
 			query:   "NOT status=200",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "NOT (fields.`status`::String = '200')")
+				return containsSubstr([]string{sql}, "(fields.`status`::String IS NULL OR fields.`status`::String != '200')")
 			},
 		},
 		{
@@ -319,17 +319,17 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT single condition",
 			query:     `NOT user="admin"`,
-			wantWhere: "NOT (fields.`user`::String = 'admin')",
+			wantWhere: "(fields.`user`::String IS NULL OR fields.`user`::String != 'admin')",
 		},
 		{
 			name:      "NOT single regex",
 			query:     `NOT image=/powershell/i`,
-			wantWhere: "NOT (match(fields.`image`::String, '(?i)powershell'))",
+			wantWhere: "NOT match(fields.`image`::String, '(?i)powershell')",
 		},
 		{
 			name:      "NOT single condition in parens",
 			query:     `NOT (a=1)`,
-			wantWhere: "NOT (fields.`a`::String = '1')",
+			wantWhere: "(fields.`a`::String IS NULL OR fields.`a`::String != '1')",
 		},
 		{
 			name:      "single condition in parens is unwrapped",
@@ -423,12 +423,12 @@ func TestNOTGroupParentheses(t *testing.T) {
 		{
 			name:      "NOT (NOT A OR B)",
 			query:     `NOT (NOT image=/cmd/i OR user="admin")`,
-			wantWhere: "NOT (NOT (match(fields.`image`::String, '(?i)cmd')) OR fields.`user`::String = 'admin')",
+			wantWhere: "NOT (NOT match(fields.`image`::String, '(?i)cmd') OR fields.`user`::String = 'admin')",
 		},
 		{
 			name:      "NOT (A) AND NOT B (paren vs bare)",
 			query:     `NOT (a=1) AND NOT b=2`,
-			wantWhere: "(NOT (fields.`a`::String = '1') AND NOT (fields.`b`::String = '2'))",
+			wantWhere: "((fields.`a`::String IS NULL OR fields.`a`::String != '1') AND (fields.`b`::String IS NULL OR fields.`b`::String != '2'))",
 		},
 
 		// --- Double/triple-wrapped parens ---

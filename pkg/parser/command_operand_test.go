@@ -79,6 +79,28 @@ func TestNegatedConditionFunctionAsOperand(t *testing.T) {
 	}
 }
 
+// A negated operand to the right of another condition keeps its negation in both
+// positions a filter can sit; dropped, the rule matches the addresses it excludes.
+func TestNegatedConditionFunctionAfterACondition(t *testing.T) {
+	for _, q := range []string{
+		`a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,
+		`* | a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,
+		`* | (a="x" AND !in(user,["u"]))`,
+	} {
+		pl, err := ParseQuery(q)
+		if err != nil {
+			t.Fatalf("parse %s: %v", q, err)
+		}
+		res, err := TranslateToSQLWithOrder(pl, QueryOptions{FractalID: "f"})
+		if err != nil {
+			t.Fatalf("translate %s: %v", q, err)
+		}
+		if !strings.Contains(res.SQL, "NOT (") {
+			t.Errorf("%s: negation lost: %s", q, res.SQL)
+		}
+	}
+}
+
 // The error a non-predicate function produces must be reported, not swallowed.
 func TestNonPredicateFunctionAsOperandRejected(t *testing.T) {
 	pl, err := ParseQuery(`* | groupby(user) OR cidr(dst_ip,"10.0.0.0/8")`)
@@ -94,13 +116,17 @@ func TestNonPredicateFunctionAsOperandRejected(t *testing.T) {
 // after a pipe or at the head of an expression.
 func TestConditionFunctionOperandPositions(t *testing.T) {
 	for _, q := range []string{
-		`a="x" OR cidr(dst_ip,"10.0.0.0/8")`,           // right of OR, pre-pipe
-		`a="x" AND cidr(dst_ip,"10.0.0.0/8")`,          // right of AND, pre-pipe
-		`cidr(dst_ip,"10.0.0.0/8") OR a="x"`,           // left of OR, pre-pipe
-		`(a="x" OR cidr(dst_ip,"10.0.0.0/8")) | b="y"`, // inside parentheses
-		`a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,          // negated operand
-		`a="x" OR in(user,["u"])`,                      // a different function
-		`a="x" | cidr(dst_ip,"10.0.0.0/8") OR b="y"`,   // post-pipe
+		`a="x" OR cidr(dst_ip,"10.0.0.0/8")`,                   // right of OR, pre-pipe
+		`a="x" AND cidr(dst_ip,"10.0.0.0/8")`,                  // right of AND, pre-pipe
+		`cidr(dst_ip,"10.0.0.0/8") OR a="x"`,                   // left of OR, pre-pipe
+		`(a="x" OR cidr(dst_ip,"10.0.0.0/8")) | b="y"`,         // inside parentheses
+		`a="x" OR !cidr(dst_ip,"10.0.0.0/8")`,                  // negated operand
+		`a="x" OR in(user,["u"])`,                              // a different function
+		`a="x" | cidr(dst_ip,"10.0.0.0/8") OR b="y"`,           // post-pipe
+		`* | (a="x" OR cidr(dst_ip,"10.0.0.0/8"))`,             // inside parentheses, post-pipe
+		`* | (a="x" OR !cidr(dst_ip,"10.0.0.0/8")) | b="y"`,    // negated, inside parentheses
+		`* | b="y" AND (a="x" OR in(user,["u"]))`,              // nested group, post-pipe
+		`* | (a="x" OR (b="y" AND cidr(dst_ip,"10.0.0.0/8")))`, // two levels deep
 	} {
 		pl, err := ParseQuery(q)
 		if err != nil {
@@ -175,5 +201,40 @@ func TestArchiveGateSeesOperands(t *testing.T) {
 	}
 	if err := icebergSupportedFeatures(pl); err == nil {
 		t.Error("cidr() as an operand must be caught by the archive allowlist")
+	}
+}
+
+// Each pipe stage filters on its own: an OR inside one never reaches across the
+// pipe to swallow the next stage's condition, however its operands were written.
+func TestStageDisjunctionStaysInItsStage(t *testing.T) {
+	// depth is the bracket nesting at an offset of the SQL.
+	depth := func(sql string, at int) int {
+		d := 0
+		for _, c := range sql[:at] {
+			switch c {
+			case '(':
+				d++
+			case ')':
+				d--
+			}
+		}
+		return d
+	}
+	// The OR joining the stage's two operands is the one right before or after a.
+	for q, orAfterA := range map[string]bool{
+		`a="1" OR cidr(dst_ip,"10.0.0.0/8") | b="2"`:     true,
+		`* | a="1" OR cidr(dst_ip,"10.0.0.0/8") | b="2"`: true,
+		`* | cidr(dst_ip,"10.0.0.0/8") OR a="1" | b="2"`: false,
+	} {
+		sql := positionSQL(t, q)
+		a := strings.Index(sql, "fields.`a`::String = '1'")
+		or := strings.LastIndex(sql[:max(a, 0)], " OR ")
+		if orAfterA {
+			or = a + strings.Index(sql[a:], " OR ")
+		}
+		b := strings.Index(sql, "fields.`b`::String = '2'")
+		if a < 0 || b < 0 || or < 0 || depth(sql, b) >= depth(sql, or) {
+			t.Errorf("%s: the next stage's condition is inside the OR:\n%s", q, sql)
+		}
 	}
 }

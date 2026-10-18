@@ -88,12 +88,15 @@ func TestFullQueryWithRegex(t *testing.T) {
 		t.Fatalf("ParseQuery error: %v", err)
 	}
 
-	// Check that we have a HAVING condition with regex
-	if len(pipeline.HavingConditions) == 0 {
-		t.Fatal("Expected HAVING conditions, got none")
+	var havingCond HavingCondition
+	for _, c := range pipeline.HavingConditions {
+		if c.Field == "target_filename" {
+			havingCond = c
+		}
 	}
-
-	havingCond := pipeline.HavingConditions[0]
+	if havingCond.Field == "" {
+		t.Fatalf("no target_filename condition in %+v", pipeline.HavingConditions)
+	}
 	t.Logf("HAVING condition:")
 	t.Logf("  Field: %q", havingCond.Field)
 	t.Logf("  Operator: %q", havingCond.Operator)

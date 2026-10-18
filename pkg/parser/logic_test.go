@@ -12,6 +12,7 @@ type termDef struct {
 	name    string
 	bql     string // BQL syntax
 	sqlFrag string // expected SQL fragment (substring that must appear)
+	notFrag string // the fragment NOT <term> must produce
 }
 
 var logicTestOpts = QueryOptions{
@@ -25,11 +26,11 @@ var logicTestOpts = QueryOptions{
 // Case-insensitive norm_log searches route through lower(norm_log) so the n-gram
 // index can prune granules; field-qualified regex is left as a plain (?i) match.
 var termTypes = []termDef{
-	{"quoted_string", `"error"`, "match(lower(norm_log), 'error')"},
-	{"regex", `/error/i`, "match(lower(norm_log), 'error')"},
-	{"field_eq", `status="200"`, "fields.`status`::String = '200'"},
-	{"field_regex", `image=/powershell/i`, "'(?i)powershell')"},
-	{"field_neq", `user!="admin"`, "fields.`user`::String"},
+	{"quoted_string", `"error"`, "match(lower(norm_log), 'error')", "NOT match(lower(norm_log), 'error')"},
+	{"regex", `/error/i`, "match(lower(norm_log), 'error')", "NOT match(lower(norm_log), 'error')"},
+	{"field_eq", `status="200"`, "fields.`status`::String = '200'", "fields.`status`::String != '200'"},
+	{"field_regex", `image=/powershell/i`, "'(?i)powershell')", "NOT match(fields.`image`::String, '(?i)powershell')"},
+	{"field_neq", `user!="admin"`, "fields.`user`::String", "fields.`user`::String = 'admin'"},
 }
 
 // parseAndTranslate is a helper that parses a BQL query and translates it.
@@ -124,8 +125,8 @@ func TestBooleanLogicMatrix(t *testing.T) {
 				t.Run(fmt.Sprintf("filter/NOT/%s", a.name), func(t *testing.T) {
 					query := fmt.Sprintf("NOT %s", a.bql)
 					sql := parseAndTranslate(t, query)
-					if !strings.Contains(sql, a.sqlFrag) {
-						t.Errorf("SQL missing fragment for term A (%s)\nQuery: %s\nSQL: %s", a.name, query, sql)
+					if !strings.Contains(sql, a.notFrag) {
+						t.Errorf("SQL missing the negation of term A (%s)\nQuery: %s\nSQL: %s", a.name, query, sql)
 					}
 				})
 			}

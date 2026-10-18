@@ -346,26 +346,6 @@ func isWordByte(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
-// collectConditionFields walks a condition tree and returns all unique field names referenced.
-func collectConditionFields(conditions []ConditionNode) map[string]bool {
-	fields := make(map[string]bool)
-	for _, cond := range conditions {
-		if cond.IsCompound {
-			for k := range collectConditionFields(cond.Children) {
-				fields[k] = true
-			}
-			continue
-		}
-		if cond.Field != "" {
-			fields[cond.Field] = true
-		}
-		if cond.ValueField != "" {
-			fields[cond.ValueField] = true
-		}
-	}
-	return fields
-}
-
 // collectHavingConditionFields recursively collects all leaf field names from
 // HavingConditions (including compound nodes) into the provided map.
 func collectHavingConditionFields(conditions []HavingCondition, fields map[string]bool) {
@@ -381,282 +361,6 @@ func collectHavingConditionFields(conditions []HavingCondition, fields map[strin
 			fields[cond.ValueField] = true
 		}
 	}
-}
-
-// buildWhereClause builds a WHERE clause from multiple conditions respecting OR/AND logic and parenthetical grouping.
-// Conditions with the same GroupID > 0 are collected into a group. If GroupNegate is set, the whole group is wrapped in NOT(...).
-func buildWhereClause(conditions []ConditionNode) (string, error) {
-	return buildWhereClauseCtx(conditions, nil)
-}
-
-// buildWhereClauseCtx builds the WHERE clause SQL for a list of condition nodes,
-// respecting OR/AND logic, parenthetical grouping, and NOT negation. When
-// registry is non-nil, fields that name a computed column (e.g. a prior
-// assignment or aggregate) resolve to that column instead of a raw JSON
-// sub-column; pass nil for queries against the base log fields.
-func buildWhereClauseCtx(conditions []ConditionNode, registry *FieldRegistry) (string, error) {
-	if len(conditions) == 0 {
-		return "", nil
-	}
-
-	// Each "part" is either a single ungrouped condition or an entire parenthetical group.
-	type part struct {
-		sql   string
-		logic string // logic operator connecting this part to the NEXT part
-	}
-	var parts []part
-
-	i := 0
-	for i < len(conditions) {
-		cond := conditions[i]
-
-		if cond.GroupID > 0 {
-			// Collect all consecutive conditions with the same GroupID
-			groupID := cond.GroupID
-			groupNegate := cond.GroupNegate
-			var group []ConditionNode
-			for i < len(conditions) && conditions[i].GroupID == groupID {
-				group = append(group, conditions[i])
-				i++
-			}
-
-			// Build inner SQL for the group
-			var inner strings.Builder
-			for j, gc := range group {
-				condSQL, err := translateConditionCtx(gc, registry)
-				if err != nil {
-					return "", err
-				}
-				if j > 0 {
-					if group[j-1].Logic == "OR" {
-						inner.WriteString(" OR ")
-					} else {
-						inner.WriteString(" AND ")
-					}
-				}
-				inner.WriteString(condSQL)
-			}
-
-			groupSQL := inner.String()
-			if groupNegate {
-				groupSQL = "NOT (" + groupSQL + ")"
-			} else if len(group) > 1 {
-				groupSQL = "(" + groupSQL + ")"
-			}
-
-			// The logic connecting this group to the next part is on the last condition
-			parts = append(parts, part{sql: groupSQL, logic: group[len(group)-1].Logic})
-		} else {
-			condSQL, err := translateConditionCtx(cond, registry)
-			if err != nil {
-				return "", err
-			}
-			parts = append(parts, part{sql: condSQL, logic: cond.Logic})
-			i++
-		}
-	}
-
-	// Join all parts
-	var result strings.Builder
-	for j, p := range parts {
-		if j > 0 {
-			if parts[j-1].logic == "OR" {
-				result.WriteString(" OR ")
-			} else {
-				result.WriteString(" AND ")
-			}
-		}
-		result.WriteString(p.sql)
-	}
-
-	sql := result.String()
-	if len(parts) > 1 {
-		sql = "(" + sql + ")"
-	}
-	return sql, nil
-}
-
-func translateConditionCtx(cond ConditionNode, registry *FieldRegistry) (string, error) {
-	// An expression filter compiles here, where the registry is final.
-	if cond.Expr != nil {
-		return exprConditionSQL(cond.Expr, registry, cond.Negate)
-	}
-
-	// A condition function was compiled to SQL before materialization.
-	if cond.PredicateSQL != "" {
-		if cond.Negate {
-			return "NOT (" + cond.PredicateSQL + ")", nil
-		}
-		return cond.PredicateSQL, nil
-	}
-
-	// Handle compound nodes by recursively building the inner SQL.
-	if cond.IsCompound {
-		innerSQL, err := buildWhereClauseCtx(cond.Children, registry)
-		if err != nil {
-			return "", err
-		}
-		if cond.Negate {
-			return "NOT (" + innerSQL + ")", nil
-		}
-		return "(" + innerSQL + ")", nil
-	}
-
-	var sql string
-
-	// Handle special fields that exist as direct columns
-	var fieldRef string
-	isJSONField := false
-	// resolvedComputed is set when the field names a computed column produced
-	// earlier in the pipeline (assignment, aggregate, ...). Such a column is
-	// referenced directly rather than as a raw JSON sub-column.
-	resolvedComputed := false
-	switch cond.Field {
-	case normLogColumn:
-		fieldRef = normLogColumn
-		if registry != nil {
-			fieldRef = contentColMode(registry.sourceMode)
-		}
-	case "timestamp":
-		fieldRef = "timestamp"
-	case "log_id":
-		fieldRef = "log_id"
-	case "normalizer", "_normalizer":
-		// The per-row normalizer stamp ("name@version"). Addressable under either name;
-		// _normalizer is how it surfaces in the detail grid.
-		fieldRef = "normalizer"
-	default:
-		if registry != nil {
-			if e := registry.Get(cond.Field); e != nil && e.Kind != FieldKindBase && e.Kind != FieldKindJSON {
-				fieldRef = registry.Resolve(cond.Field)
-				resolvedComputed = true
-			}
-		}
-		if !resolvedComputed {
-			if registry != nil {
-				fieldRef = registry.fieldRef(cond.Field)
-			} else {
-				fieldRef = jsonFieldRef(cond.Field)
-			}
-			isJSONField = true
-		}
-	}
-
-	// numericRef coerces the field to Float64 for comparison. Raw JSON
-	// sub-columns are already String (::String), so toFloat64OrZero suffices; a
-	// resolved computed column may already be numeric, so normalize via
-	// toString() first to keep toFloat64OrZero well-typed across column types.
-	numericRef := func() string {
-		if resolvedComputed {
-			return fmt.Sprintf("toFloat64OrZero(toString(%s))", fieldRef)
-		}
-		return fmt.Sprintf("toFloat64OrZero(%s)", fieldRef)
-	}
-
-	// field(name) on the right-hand side: compare against another field.
-	if cond.ValueField != "" {
-		rhs := resolveValueField(cond.ValueField, registry)
-		lhs := lhsOperand(cond.Field, fieldRef, isJSONField, resolvedComputed)
-		sql = buildFieldComparisonSQL(lhs, rhs, cond.Operator)
-		if sql == "" {
-			return "", fmt.Errorf("field() is not supported with the %s operator", cond.Operator)
-		}
-		if cond.Negate {
-			sql = "NOT (" + sql + ")"
-		}
-		return sql, nil
-	}
-
-	if cond.Value == "*" {
-		// Wildcard: field has any non-empty value
-		if cond.Operator == "!=" {
-			// field!=* means field doesn't exist or is empty.
-			// JSON subcolumns return NULL for non-existent paths,
-			// so we must check IS NULL alongside = ''.
-			if isJSONField {
-				sql = fmt.Sprintf("(%s IS NULL OR %s = '')", fieldRef, fieldRef)
-			} else {
-				sql = fmt.Sprintf("%s = ''", fieldRef)
-			}
-		} else {
-			sql = fmt.Sprintf("%s != ''", fieldRef)
-		}
-	} else if cond.IsRegex {
-		negate := cond.Operator == "!="
-		// Never use hasToken pre-filters for regex: regex is a substring match but
-		// hasToken requires an exact complete token. /http/ matches "https://..." but
-		// hasToken(raw_log, 'http') = FALSE because the Bloom filter token is "https".
-		// False negatives are unacceptable; ClickHouse's built-in granule pruning for
-		// match() is sufficient. match() is called with the negate flag only.
-		sql = buildRegexMatchSQL(fieldRef, cond.Value, cond.LiteralTerm, negate, sourceModeOf(registry))
-	} else if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
-		values := cond.Values
-		if len(values) == 0 && cond.Value != "" {
-			values = []string{cond.Value}
-		}
-		switch cond.Operator {
-		case "=~":
-			sql = buildContainsAnySQL(fieldRef, values, false, sourceModeOf(registry))
-		case "=^":
-			sql = buildStartsWithAnySQL(fieldRef, values, false, sourceModeOf(registry))
-		case "=$":
-			sql = buildEndsWithAnySQL(fieldRef, values, false, sourceModeOf(registry))
-		}
-	} else if (cond.Operator == "=" || cond.Operator == "!=") && len(cond.Values) > 1 {
-		// Comma-separated equality list -> IN / NOT IN.
-		negate := cond.Operator == "!="
-		if registry != nil && registry.sourceMode == SourceIceberg && isJSONField {
-			sql = buildIcebergEqualityListSQL(cond.Field, cond.Values, negate, registry.icePromoted)
-		} else {
-			sql = buildEqualityListSQL(fieldRef, cond.Values, negate, isJSONField)
-		}
-	} else {
-		// For comparison operators, try to convert to numeric if the value looks numeric
-		// This allows queries like: bytes > 1000
-		switch cond.Operator {
-		case "=":
-			// Field-qualified equality is answered solely by the JSON sub-column (or the
-			// direct column for raw_log/timestamp/log_id). Type-hinted fields prune granules
-			// via their dedicated bloom_filter/set skip index; dynamic fields scan within the
-			// time+fractal partition. No raw_log token pre-filter is added: the value is not
-			// guaranteed to appear verbatim in raw_log (e.g. normalized/derived fields), so
-			// such a pre-filter can drop real matches. raw_log is for unqualified search only.
-			if registry != nil && registry.sourceMode == SourceIceberg && isJSONField {
-				// MAP correctness + promoted `_ice_` column pruning (icebergEqualityPredicate).
-				sql = icebergEqualityPredicate(cond.Field, cond.Value, registry.icePromoted)
-			} else if resolvedComputed && validateNumeric(cond.Value) == nil {
-				sql = fmt.Sprintf("%s = %s", numericRef(), cond.Value)
-			} else {
-				sql = fmt.Sprintf("%s = '%s'", fieldRef, escapeString(cond.Value))
-			}
-		case "!=":
-			switch {
-			case resolvedComputed && validateNumeric(cond.Value) == nil:
-				sql = fmt.Sprintf("%s != %s", numericRef(), cond.Value)
-			case isJSONField:
-				// For JSON fields, include rows where the field doesn't exist (NULL).
-				// Without this, NULL != 'value' evaluates to NULL (falsy) and
-				// silently excludes rows missing the field.
-				sql = fmt.Sprintf("(%s IS NULL OR %s != '%s')", fieldRef, fieldRef, escapeString(cond.Value))
-			default:
-				sql = fmt.Sprintf("%s != '%s'", fieldRef, escapeString(cond.Value))
-			}
-		case ">", "<", ">=", "<=":
-			// Validate numeric value to prevent injection
-			if err := validateNumeric(cond.Value); err != nil {
-				return "", fmt.Errorf("numeric comparison: %w", err)
-			}
-			sql = fmt.Sprintf("%s %s %s", numericRef(), cond.Operator, cond.Value)
-		default:
-			return "", fmt.Errorf("unsupported operator: %s", cond.Operator)
-		}
-	}
-
-	if cond.Negate {
-		sql = "NOT (" + sql + ")"
-	}
-
-	return sql, nil
 }
 
 func escapeString(s string) string {
@@ -1635,18 +1339,16 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 	var fields []string
 	seen := make(map[string]bool)
 
-	if pl.Filter != nil && len(pl.Filter.Conditions) > 0 {
-		if err := resolveCommandConditionNodes(pl.Filter.Conditions, opts); err != nil {
-			return "", nil, fmt.Errorf("chain step: %w", err)
-		}
-		w, err := buildWhereClauseCtx(pl.Filter.Conditions, reg)
-		if err != nil {
-			return "", nil, fmt.Errorf("chain step: %w", err)
-		}
-		if w != "" {
-			conjuncts = append(conjuncts, w)
-		}
-		fields = collectConditionFieldsOrdered(pl.Filter.Conditions, seen, fields)
+	// Conditions before the step's first command resolve before its projections
+	// are registered, ahead of them; later ones (`a=1 | _len > 500`) after.
+	first, later := SplitFirstStage(pl.HavingConditions)
+	if w, err := conditionsPredicate(first, reg.rowLevelClone(), opts); err != nil {
+		return "", nil, fmt.Errorf("chain step: %w", err)
+	} else if w != "" {
+		conjuncts = append(conjuncts, w)
+	}
+	for _, c := range first {
+		fields = collectHavingFieldsOrdered(c, seen, &fields)
 	}
 
 	// Before the conditions below: len()/match()/lookupIP() register the expressions
@@ -1665,18 +1367,13 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 		}
 	}
 
-	// Later filter stages in the step (`a=1 | b=2`) arrive as HavingConditions, as
-	// do condition functions used as boolean operands.
-	if len(pl.HavingConditions) > 0 {
-		if err := resolveCommandConditions(pl.HavingConditions, opts); err != nil {
-			return "", nil, fmt.Errorf("chain step: %w", err)
-		}
-		if h := materializeCondGroup(pl.HavingConditions, reg, nil); h != "" {
-			conjuncts = append(conjuncts, h)
-		}
-		for _, c := range pl.HavingConditions {
-			fields = collectHavingFieldsOrdered(c, seen, &fields)
-		}
+	if w, err := conditionsPredicate(later, reg.rowLevelClone(), opts); err != nil {
+		return "", nil, fmt.Errorf("chain step: %w", err)
+	} else if w != "" {
+		conjuncts = append(conjuncts, w)
+	}
+	for _, c := range later {
+		fields = collectHavingFieldsOrdered(c, seen, &fields)
 	}
 
 	if len(pl.Assignments) > 0 {
@@ -1695,12 +1392,13 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 	}
 }
 
-// CommandPredicate compiles a condition function into a boolean expression. The
-// handler runs against a throwaway plan, so its effect is captured as a predicate
-// instead of being appended to the query's WHERE.
-func CommandPredicate(cmd CommandNode, opts QueryOptions) (string, error) {
+// CommandPredicate compiles a condition function into a boolean expression whose
+// fields resolve through registry. The handler runs against a throwaway plan and
+// registry copy, so its effect is captured as a predicate instead of being
+// appended to the query's WHERE.
+func CommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOptions) (string, error) {
 	pl := &PipelineNode{Commands: []CommandNode{cmd}}
-	where, _, err := harvestChainCommands(pl, opts, nil)
+	where, _, err := harvestChainCommands(pl, opts, registry.Clone())
 	if err != nil {
 		return "", err
 	}

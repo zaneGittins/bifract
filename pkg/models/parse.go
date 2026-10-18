@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -74,26 +75,32 @@ func ParseSourceQuery(query string) ParsedSource {
 
 	var referenced []string
 
-	// Filter expression. Lowering is best effort from here on: SourceBQL is what
-	// runs, so a condition the structured form cannot hold is skipped rather than
-	// refused. Its fields still reach CandidateFields so the editor can offer them.
-	if ast.Filter != nil {
-		flatAnd := func(c parser.ConditionNode) bool {
-			return !c.IsCompound && c.GroupID == 0 && !c.GroupNegate && !strings.EqualFold(c.Logic, "OR")
-		}
-		for _, c := range ast.Filter.Conditions {
-			collectConditionFields(c, &referenced)
-			if !flatAnd(c) || c.Field == "" {
-				res.FilterComplete = false
-				continue
+	// Conditions before the first command are the source's filter. Lowering them
+	// to chips is best effort, since SourceBQL is what runs: one the structured
+	// form cannot hold is skipped, its fields still offered as candidates.
+	firstStage, later := parser.SplitFirstStage(ast.HavingConditions)
+	var lower func(c parser.HavingCondition)
+	lower = func(c parser.HavingCondition) {
+		if andGroup(c) {
+			for _, child := range c.Children {
+				lower(child)
 			}
-			fc, ok := conditionToFilter(c)
-			if !ok {
-				res.FilterComplete = false
-				continue
-			}
-			res.Filter = append(res.Filter, fc)
+			return
 		}
+		fc, ok := havingToFilter(c)
+		if !ok || assignedBefore(ast.Assignments, c) {
+			res.FilterComplete = false
+			return
+		}
+		res.Filter = append(res.Filter, fc)
+	}
+	for i, c := range firstStage {
+		collectHavingFields(c, &referenced)
+		if strings.EqualFold(c.Logic, "OR") || (i > 0 && strings.EqualFold(firstStage[i-1].Logic, "OR")) {
+			res.FilterComplete = false
+			continue
+		}
+		lower(c)
 	}
 
 	// extIndex maps an extraction output field to its index in res.Extractions so
@@ -152,7 +159,7 @@ func ParseSourceQuery(query string) ParsedSource {
 	// Each comparison must reference a len() output field; map it back to the
 	// extraction it measures and set MinLength. Named len outputs (len(x, as=x_len))
 	// keep multiple length filters independent, so there is no collision.
-	for _, hv := range ast.HavingConditions {
+	for _, hv := range later {
 		field, ok := lenOutputs[hv.Field]
 		if !ok {
 			res.FilterComplete = false
@@ -177,14 +184,10 @@ func ParseSourceQuery(query string) ParsedSource {
 	return res
 }
 
-// collectConditionFields appends every field a condition references, walking
-// compound children so a grouped or OR filter still offers its fields.
-func collectConditionFields(c parser.ConditionNode, out *[]string) {
-	if c.IsCompound {
-		for _, child := range c.Children {
-			collectConditionFields(child, out)
-		}
-		return
+// collectHavingFields appends every field a condition reads.
+func collectHavingFields(c parser.HavingCondition, out *[]string) {
+	for _, child := range c.Children {
+		collectHavingFields(child, out)
 	}
 	if c.Field != "" {
 		*out = append(*out, c.Field)
@@ -192,6 +195,51 @@ func collectConditionFields(c parser.ConditionNode, out *[]string) {
 	if c.ValueField != "" {
 		*out = append(*out, c.ValueField)
 	}
+}
+
+// assignedBefore reports whether a condition reads a name assigned ahead of it,
+// which holds the computed value rather than the log field.
+func assignedBefore(assignments []parser.AssignmentNode, c parser.HavingCondition) bool {
+	return slices.ContainsFunc(assignments[:min(c.AssignIndex, len(assignments))], func(a parser.AssignmentNode) bool {
+		return a.Field == c.Field
+	})
+}
+
+// andGroup reports whether a condition is a bracketed plain AND of conditions,
+// which distributes into separate chips.
+func andGroup(c parser.HavingCondition) bool {
+	if !c.IsCompound || c.Negate {
+		return false
+	}
+	for _, child := range c.Children[:max(len(c.Children)-1, 0)] {
+		if child.Logic != "" && !strings.EqualFold(child.Logic, "AND") {
+			return false
+		}
+	}
+	return true
+}
+
+// havingToFilter maps a filter condition to a model FilterCondition. Negation is
+// already folded into the operator. The second result is false for a condition the
+// structured form cannot hold; the query still runs it.
+func havingToFilter(c parser.HavingCondition) (FilterCondition, bool) {
+	if c.IsCompound || c.Expr != nil || c.Command != nil || c.ValueField != "" || c.Field == "" || len(c.Values) > 1 {
+		return FilterCondition{}, false
+	}
+	value := c.Value
+	if c.IsRegex {
+		// Undo the forward-slash escaping applied by bqlRegexLiteral.
+		value = strings.ReplaceAll(value, `\/`, "/")
+	}
+	switch {
+	case c.IsRegex && (c.Operator == "=" || c.Operator == "~"):
+		return FilterCondition{Field: c.Field, Op: "~", Value: value}, true
+	case c.IsRegex && c.Operator == "!=":
+		return FilterCondition{Field: c.Field, Op: "!~", Value: value}, true
+	case c.Operator == "=" || c.Operator == "!=":
+		return FilterCondition{Field: c.Field, Op: c.Operator, Value: value}, true
+	}
+	return FilterCondition{}, false
 }
 
 // minLengthFromHaving converts a `_len <op> n` comparison to a MinLength value.
@@ -232,40 +280,6 @@ func singleFieldArg(cmd parser.CommandNode) (string, bool) {
 	}
 	field := b.Str("field", "")
 	return field, field != ""
-}
-
-// conditionToFilter maps a parsed filter condition to a model FilterCondition.
-// The second result is false for a condition the structured form cannot hold; the
-// query still runs it, so there is nothing to report, only a chip not to draw.
-func conditionToFilter(c parser.ConditionNode) (FilterCondition, bool) {
-	switch c.Operator {
-	case "=", "":
-		if c.IsRegex {
-			op := "~"
-			if c.Negate {
-				op = "!~"
-			}
-			// Undo the forward-slash escaping applied by bqlRegexLiteral.
-			return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, true
-		}
-		if c.Negate {
-			return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, true
-		}
-		return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, true
-	case "!=":
-		if c.Negate {
-			return FilterCondition{Field: c.Field, Op: "=", Value: c.Value}, true
-		}
-		return FilterCondition{Field: c.Field, Op: "!=", Value: c.Value}, true
-	case "~", "!~":
-		op := "~"
-		if c.Operator == "!~" || c.Negate {
-			op = "!~"
-		}
-		return FilterCondition{Field: c.Field, Op: op, Value: strings.ReplaceAll(c.Value, `\/`, "/")}, true
-	default:
-		return FilterCondition{}, false
-	}
 }
 
 // cidrArgs extracts the field and range from a cidr() command's arguments,

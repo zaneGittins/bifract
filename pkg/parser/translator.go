@@ -2,6 +2,8 @@ package parser
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
@@ -180,6 +182,31 @@ func TranslateToSQL(pipeline *PipelineNode, opts QueryOptions) (string, error) {
 }
 
 func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*TranslationResult, error) {
+	q, err := planQuery(pipeline, opts)
+	if err != nil {
+		return nil, err
+	}
+	return finalizePlan(q.ctx, q.assignmentFields, q.deferredAssignments)
+}
+
+// plannedQuery is a pipeline planned up to final assembly.
+type plannedQuery struct {
+	ctx                 *CommandContext
+	assignmentFields    []string
+	deferredAssignments []AssignmentNode
+}
+
+// scanWhere is the predicate the pipeline puts on its source scan beyond the time
+// range and fractal scope: what the histogram and field statistics filter by, so
+// they count exactly the events the results show.
+func (q *plannedQuery) scanWhere() string {
+	return andJoin(q.ctx.Plan.SourceStage().Layer.Where[q.ctx.Plan.baseWhereLen:])
+}
+
+// planQuery runs every step of translation but the final assembly. The histogram
+// and field statistics plan the same way rather than mirroring these steps, which
+// drifted: they dropped condition-function operands and assignments.
+func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error) {
 	if opts.SourceMode == SourceIceberg {
 		if err := icebergSupportedFeatures(pipeline); err != nil {
 			return nil, err
@@ -218,28 +245,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	// 1. Base WHERE conditions (time range, fractal isolation)
 	// ---------------------------------------------------------------
 	addBaseConditions(plan, opts)
-
-	// ---------------------------------------------------------------
-	// 2. Process filter conditions from the parser
-	// ---------------------------------------------------------------
-	if pipeline.Filter != nil {
-		// Condition functions used as boolean operands compile to SQL here, before
-		// the tree is materialized.
-		if err := resolveCommandConditionNodes(pipeline.Filter.Conditions, opts); err != nil {
-			return nil, err
-		}
-		// Pass the (base-fields-only) registry so filter conditions pick up the
-		// source mode. In hot mode this is behavior-identical to the old nil arg
-		// (no computed fields are declared yet); in iceberg mode it routes field
-		// refs to MAP access + the promoted-column predicate.
-		whereSQL, err := buildWhereClauseCtx(pipeline.Filter.Conditions, registry)
-		if err != nil {
-			return nil, err
-		}
-		if whereSQL != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
-		}
-	}
+	plan.baseWhereLen = len(plan.SourceStage().Layer.Where)
 
 	// ---------------------------------------------------------------
 	// 3. DECLARE PHASE: every command registers what fields it produces
@@ -288,6 +294,14 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		plan.ModelLookupAtScan = aggAfter && !aggBefore
 	}
 
+	// Assignments before the first command form a prefix; a condition among them
+	// sees only those written ahead of it.
+	firstAssignments := 0
+	for firstAssignments < len(pipeline.Assignments) && pipeline.Assignments[firstAssignments].CmdIndex == 0 {
+		firstAssignments++
+	}
+	unassigned := registry.firstStageView()
+
 	// Register assignment fields
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
@@ -307,7 +321,10 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	postAggByPos := make(map[int][]AssignmentNode)
 	firstAgg := firstAggregatingCommandIndex(pipeline.Commands)
 	hasAggregation := firstAgg < len(pipeline.Commands)
-	for _, assignment := range pipeline.Assignments {
+	for i, assignment := range pipeline.Assignments {
+		if i <= firstAssignments {
+			plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
+		}
 		safeField, err := sanitizeIdentifier(assignment.Field)
 		if err != nil {
 			return nil, fmt.Errorf("invalid assignment field: %w", err)
@@ -364,6 +381,20 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 		ctx.Registry.SetResolveExpr(safeField, af)
 	}
 
+	// Captured before Execute, which scopes the registry to each stage's outputs.
+	if len(plan.firstStageAt) == firstAssignments {
+		plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
+	}
+	for i, view := range plan.firstStageAt {
+		var later []string
+		for _, a := range pipeline.Assignments[i:] {
+			if !slices.ContainsFunc(pipeline.Assignments[:i], func(b AssignmentNode) bool { return b.Field == a.Field }) {
+				later = append(later, a.Field)
+			}
+		}
+		view.unassign(later, unassigned)
+	}
+
 	// ---------------------------------------------------------------
 	// 6. EXECUTE PHASE: every command reads registry, writes to plan.
 	//     Post-aggregation math assignments are materialized as stages at their
@@ -412,21 +443,19 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	//     (e.g. _avg from multi() would land in WHERE). Materialization then emits
 	//     SQL from the now-complete registry and binds HAVING to its proper stage.
 	// ---------------------------------------------------------------
-	if err := resolveCommandConditions(pipeline.HavingConditions, opts); err != nil {
+	// Compiled into a copy: the parsed pipeline is planned more than once.
+	conditions := cloneConditions(pipeline.HavingConditions)
+	if err := resolveCommandConditions(conditions, registry, plan, opts); err != nil {
 		return nil, err
 	}
 	if err := validatePostAggregationFields(pipeline, registry, declared); err != nil {
 		return nil, err
 	}
-	if err := classifyConditions(pipeline.HavingConditions, registry, plan); err != nil {
+	if err := classifyConditions(conditions, registry, plan); err != nil {
 		return nil, err
 	}
 	materializeConditions(registry, plan)
-
-	// ---------------------------------------------------------------
-	// 7. FINALIZE: assemble final SQL from structured plan data
-	// ---------------------------------------------------------------
-	return finalizePlan(ctx, assignmentFields, deferredAssignments)
+	return &plannedQuery{ctx: ctx, assignmentFields: assignmentFields, deferredAssignments: deferredAssignments}, nil
 }
 
 // HistogramIsScopeOnly reports whether a histogram over this pipeline would be
@@ -439,20 +468,11 @@ func HistogramIsScopeOnly(pipeline *PipelineNode, opts QueryOptions) bool {
 	if opts.HasCommentFilter || opts.UseIngestTimestamp || opts.SourceSubquery != "" {
 		return false
 	}
-	if pipeline.Filter != nil && len(pipeline.Filter.Conditions) > 0 {
-		return false
-	}
-	// Mirrors BuildHistogramSQL: the computed-column pass only matters when there
-	// are having conditions to inline, and it is too costly to run otherwise.
-	if len(pipeline.HavingConditions) == 0 {
-		return true
-	}
-	// An empty clause means "nothing to inline" only when the pass succeeded. A pass
-	// that gave up cannot show the histogram is unfiltered, and answering from the
-	// rollup on that basis would count every log in the window beside a filtered
-	// result set, so an indeterminate answer falls back to scanning.
-	where, ok := histogramComputedWhere(pipeline, opts)
-	return ok && where == ""
+	// A pipeline that could not be planned cannot show the histogram is
+	// unfiltered, and answering from the rollup on that basis would count every log
+	// in the window beside a filtered result set, so it falls back to scanning.
+	q, err := planQuery(pipeline, opts)
+	return err == nil && q.scanWhere() == ""
 }
 
 // BuildHistogramSQL generates a lightweight COUNT(*) GROUP BY time-bucket query.
@@ -460,45 +480,10 @@ func HistogramIsScopeOnly(pipeline *PipelineNode, opts QueryOptions) bool {
 // column commands (e.g. len()), also inlines their downstream filters (e.g. _len > 500)
 // into the WHERE clause so the histogram count matches the results table.
 func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds int) (string, error) {
-	plan := NewQueryPlan()
-	addBaseConditions(plan, opts)
-
-	// Apply user's filter conditions (the WHERE portion of their BQL query)
-	if pipeline.Filter != nil {
-		whereSQL, err := buildWhereClause(pipeline.Filter.Conditions)
-		if err != nil {
-			return "", err
-		}
-		if whereSQL != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
-		}
+	with, where, err := scanFilter(pipeline, opts)
+	if err != nil {
+		return "", err
 	}
-
-	// Apply comment() filter if present in the pipeline
-	if opts.HasCommentFilter {
-		if len(opts.CommentLogIDs) == 0 {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, "1 = 0")
-		} else {
-			quoted := make([]string, len(opts.CommentLogIDs))
-			for i, id := range opts.CommentLogIDs {
-				quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
-			}
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where,
-				fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")))
-		}
-	}
-
-	// Inline computed-column filters from HavingConditions into the histogram WHERE.
-	// Only FieldKindAssignment and FieldKindPerRow conditions are included; aggregate
-	// and window conditions reference outputs that don't exist in the flat histogram
-	// query and are intentionally skipped.
-	if len(pipeline.HavingConditions) > 0 {
-		if computedWhere, _ := histogramComputedWhere(pipeline, opts); computedWhere != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, computedWhere)
-		}
-	}
-
-	where := andJoin(plan.SourceStage().Layer.Where)
 	tbl := opts.EffectiveTableName()
 
 	tsCol := "timestamp"
@@ -507,8 +492,8 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 	}
 
 	sql := fmt.Sprintf(
-		"SELECT toStartOfInterval(%s, INTERVAL %d SECOND) AS bucket, count() AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
-		tsCol, bucketSeconds, tbl, where,
+		"%sSELECT toStartOfInterval(%s, INTERVAL %d SECOND) AS bucket, count() AS cnt FROM %s WHERE %s GROUP BY bucket ORDER BY bucket",
+		with, tsCol, bucketSeconds, tbl, where,
 	)
 	return sql, nil
 }
@@ -649,44 +634,9 @@ func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsP
 		p.ValueLen = 256
 	}
 
-	plan := NewQueryPlan()
-	addBaseConditions(plan, opts)
-
-	// User's filter conditions (the WHERE portion of their BQL query).
-	if pipeline.Filter != nil {
-		whereSQL, err := buildWhereClause(pipeline.Filter.Conditions)
-		if err != nil {
-			return "", err
-		}
-		if whereSQL != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, whereSQL)
-		}
-	}
-
-	// comment() filter, resolved to log_ids upstream (mirrors BuildHistogramSQL).
-	if opts.HasCommentFilter {
-		if len(opts.CommentLogIDs) == 0 {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, "1 = 0")
-		} else {
-			quoted := make([]string, len(opts.CommentLogIDs))
-			for i, id := range opts.CommentLogIDs {
-				quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
-			}
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where,
-				fmt.Sprintf("log_id IN (%s)", strings.Join(quoted, ", ")))
-		}
-	}
-
-	// Computed-column filters (e.g. len(field) | _len > 500), same as the histogram.
-	if len(pipeline.HavingConditions) > 0 {
-		if computedWhere, _ := histogramComputedWhere(pipeline, opts); computedWhere != "" {
-			plan.SourceStage().Layer.Where = append(plan.SourceStage().Layer.Where, computedWhere)
-		}
-	}
-
-	where := andJoin(plan.SourceStage().Layer.Where)
-	if where == "" {
-		where = "1 = 1"
+	with, where, err := scanFilter(pipeline, opts)
+	if err != nil {
+		return "", err
 	}
 	tbl := opts.EffectiveTableName()
 	tsCol := "timestamp"
@@ -708,7 +658,7 @@ func BuildFieldStatsSQL(pipeline *PipelineNode, opts QueryOptions, p FieldStatsP
 	// across the whole sample fall out entirely (no surviving rows). The __rows__
 	// sentinel carries a non-empty value ('1') so it survives that same filter and
 	// still reports the exact sample size.
-	sql := fmt.Sprintf(`SELECT
+	sql := with + fmt.Sprintf(`SELECT
     key,
     sum(cnt) AS present,
     count() AS cardinality,
@@ -735,72 +685,17 @@ LIMIT %d`,
 	return sql, nil
 }
 
-// histogramComputedWhere returns a WHERE clause fragment that makes the histogram
-// respect pipe commands that filter on computed columns (e.g. len(field) | _len > 500).
-// It mirrors the main translator flow — Declare, classifyConditions, Execute,
-// materializeConditions — on a throwaway plan, then reads SourceStage.Layer.Where,
-// which contains two categories of condition:
+// scanFilter is the full source-scan predicate (time range, fractal scope and
+// every filter the pipeline puts on the scan) that the histogram and field
+// statistics read, so both count the events the results show.
 //
-//  1. Materialized HavingConditions of kind FieldKindAssignment or FieldKindPerRow
-//     (e.g. _len > 500 resolved to length(fields.`commandline`::String) > 500).
-//     Aggregate and window conditions are classified into other pending buckets
-//     and do not appear here.
-//
-//  2. Raw WHERE conditions appended by Execute handlers directly (e.g. match()
-//     with strict=true appends dictHas(...)). These are also valid histogram filters.
-//
-// Returns "" on any error so the histogram degrades gracefully.
-// The bool reports whether the pass ran to completion. An empty clause with false
-// means "could not determine", which is not the same as "no filter".
-func histogramComputedWhere(pipeline *PipelineNode, opts QueryOptions) (string, bool) {
-	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
-	helperPlan := NewQueryPlan()
-	ctx := &CommandContext{
-		Registry: registry,
-		Plan:     helperPlan,
-		Opts:     opts,
-		Pipeline: pipeline,
+// with is the WITH clause defining the bindings the predicate reads, or "".
+func scanFilter(pipeline *PipelineNode, opts QueryOptions) (with, where string, err error) {
+	q, err := planQuery(pipeline, opts)
+	if err != nil {
+		return "", "", err
 	}
-
-	// Declare phase: populate field kinds in the registry.
-	for i, cmd := range pipeline.Commands {
-		ctx.CmdIndex = i
-		handler := getCommandHandler(cmd.Name)
-		if handler == nil {
-			continue
-		}
-		if err := handler.Declare(cmd, ctx); err != nil {
-			return "", false
-		}
-	}
-	for _, a := range pipeline.Assignments {
-		registry.Register(a.Field, FieldKindAssignment, a.Field, -1)
-	}
-
-	// Execute phase: populate resolve expressions via SetResolveExpr.
-	for i, cmd := range pipeline.Commands {
-		ctx.CmdIndex = i
-		handler := getCommandHandler(cmd.Name)
-		if handler == nil {
-			continue
-		}
-		if err := handler.Execute(cmd, ctx); err != nil {
-			return "", false
-		}
-	}
-
-	// Classify after Execute (matching the main translator ordering) so the
-	// registry fully reflects every produced field kind before routing.
-	if err := classifyConditions(pipeline.HavingConditions, registry, helperPlan); err != nil {
-		return "", false
-	}
-
-	// Materialize: generate SQL from classified conditions using the now-populated registry.
-	// Only pendingWhereConditions (FieldKindAssignment, FieldKindPerRow) land in
-	// helperPlan.SourceStage().Layer.Where; aggregate and window conditions are ignored.
-	materializeConditions(registry, helperPlan)
-
-	return andJoin(helperPlan.SourceStage().Layer.Where), true
+	return q.ctx.Plan.withClause(), andJoin(q.ctx.Plan.SourceStage().Layer.Where), nil
 }
 
 // chTimeLiteral renders a time as a ClickHouse datetime literal for comparison
@@ -1367,8 +1262,8 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		// This minimal projection keys on UseIngestTimestamp, which Recall also
 		// sets for ingest-time pruning; exclude iceberg so Recall gets the normal
 		// full projection.
-		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && ctx.Pipeline.Filter != nil {
-			fields := collectConditionFields(ctx.Pipeline.Filter.Conditions)
+		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && len(ctx.Pipeline.HavingConditions) > 0 {
+			fields := map[string]bool{}
 			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
 			// Include alert-configured extra fields (throttle field, template fields)
 			for _, f := range ctx.Opts.AlertExtraFields {
@@ -1385,7 +1280,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 					{Expr: "log_id"},
 					{Expr: "fractal_id"},
 				}
-				for field := range fields {
+				for _, field := range slices.Sorted(maps.Keys(fields)) {
 					// These names include alert-configured ones (throttle field, name
 					// template), which are not query text and are not constrained by
 					// the lexer. An unescaped backtick closed the alias and appended a

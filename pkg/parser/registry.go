@@ -1,6 +1,9 @@
 package parser
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // FieldKind categorizes the type of a field in the query pipeline.
 type FieldKind int
@@ -74,6 +77,10 @@ type FieldRegistry struct {
 	// later groupby groups by its own keys, so the earlier stage's are superseded
 	// rather than accumulated.
 	groupKeyCmd int
+	// rowLevel marks a registry conditions resolve against row by row, with no
+	// aggregation before them (firstStageView, a case branch, a chain step): count,
+	// sum and avg name log fields there, not aggregates.
+	rowLevel bool
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
@@ -114,6 +121,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		icePromoted: r.icePromoted,
 		groupKeys:   make(map[string]string, len(r.groupKeys)),
 		groupKeyCmd: r.groupKeyCmd,
+		rowLevel:    r.rowLevel,
 	}
 	for k, v := range r.groupKeys {
 		c.groupKeys[k] = v
@@ -123,6 +131,51 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		c.fields[k] = &entry
 	}
 	return c
+}
+
+// firstStageView is the registry as a condition before the first command sees it:
+// the base columns, a source command's columns and the assignments, but nothing a
+// command produces. Conditions are classified after every command has run, so
+// without it a later transform, grouping alias or aggregate reached back into a
+// filter written before it.
+func (r *FieldRegistry) firstStageView() *FieldRegistry {
+	v := NewFieldRegistry(r.sourceMode, r.icePromoted)
+	v.rowLevel = true
+	for _, name := range r.order {
+		if e := r.fields[name]; e.ProducedBy < 0 {
+			entry := *e
+			v.fields[name] = &entry
+			v.order = append(v.order, name)
+		}
+	}
+	return v
+}
+
+// unassign sets each name back to its entry in before, dropping it when before
+// has none: the view of a condition written ahead of those assignments.
+func (r *FieldRegistry) unassign(names []string, before *FieldRegistry) {
+	for _, name := range names {
+		if e, ok := before.fields[name]; ok {
+			entry := *e
+			r.fields[name] = &entry
+		} else if _, ok := r.fields[name]; ok {
+			delete(r.fields, name)
+			r.order = slices.DeleteFunc(r.order, func(n string) bool { return n == name })
+		}
+	}
+}
+
+// rowLevelClone is a copy for conditions evaluated row by row.
+func (r *FieldRegistry) rowLevelClone() *FieldRegistry {
+	c := r.Clone()
+	c.rowLevel = true
+	return c
+}
+
+// bareAggregate reports whether a name with no registry entry stands for an
+// aggregate here: count, sum and avg do once an aggregation can precede them.
+func (r *FieldRegistry) bareAggregate(field string) bool {
+	return (r == nil || !r.rowLevel) && isBareAggregate(field)
 }
 
 // fieldRef returns the source-mode-appropriate reference for a JSON/MAP field.

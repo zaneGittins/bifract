@@ -34,3 +34,59 @@ func TestAlertExtraFieldInjection(t *testing.T) {
 	}
 	t.Logf("SQL: %s", sql)
 }
+
+// The alert projection lists its fields in one order every time: the same query
+// must translate to the same text, or anything keyed on it (query caches,
+// comparisons of a rule's SQL) sees a change that is not one.
+func TestAlertProjectionIsDeterministic(t *testing.T) {
+	opts := QueryOptions{
+		StartTime:          time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:            time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:            10,
+		FractalID:          "f1",
+		UseIngestTimestamp: true,
+		AlertExtraFields:   []string{"user", "host"},
+	}
+	var first string
+	for i := 0; i < 30; i++ {
+		p, err := ParseQuery(`image=^a AND command_line=~b AND parent=x`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql, err := TranslateToSQL(p, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = sql
+		} else if sql != first {
+			t.Fatalf("translation changed between runs:\n%s\n%s", first, sql)
+		}
+	}
+}
+
+// An alert projects only the fields its conditions reference, however the
+// conditions are written; the full projection reads norm_log for every match.
+func TestAlertProjectionCoversStageConditions(t *testing.T) {
+	opts := QueryOptions{
+		StartTime:          time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:            time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC),
+		MaxRows:            10,
+		FractalID:          "f1",
+		UseIngestTimestamp: true,
+	}
+	for _, q := range []string{`image=^a AND user="b"`, `* | image=^a AND user="b"`, `* | image=^a | user="b"`} {
+		p, err := ParseQuery(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql, err := TranslateToSQL(p, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head := sql[:strings.Index(sql, " FROM ")]
+		if strings.Contains(head, "norm_log") || !strings.Contains(head, "`image`") || !strings.Contains(head, "`user`") {
+			t.Errorf("%s: want the minimal projection, got %s", q, head)
+		}
+	}
+}

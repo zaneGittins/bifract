@@ -10,54 +10,7 @@ type ASTNode interface {
 	Type() string
 }
 
-type FilterNode struct {
-	Conditions []ConditionNode
-}
-
-func (f FilterNode) Type() string { return "filter" }
-
-type ConditionNode struct {
-	Field    string
-	Operator string // "=", "!=", "~" (regex), "=~", "=^", "=$"
-	Value    string
-	Values   []string // multi-value list for =~, =^, =$ operators
-	IsRegex  bool
-	// ValueField names the right-hand operand when it was written as field(name),
-	// making the comparison field-to-field rather than field-to-literal. Value
-	// carries the same name for display; SQL generation must use this.
-	ValueField string
-	// LiteralTerm holds the unmodified analyst-typed text of a bare-term search,
-	// which Value stores only in already-regex-escaped form. norm_log serializes
-	// differently per source mode, so the final pattern is built at translation
-	// time (where the mode is known) from this literal.
-	LiteralTerm string
-	Negate      bool
-	Logic       string // "AND", "OR", ""
-	GroupID     int    // Tracks parenthetical grouping for SQL generation
-	GroupNegate bool   // True when NOT is applied to the entire group (NOT (A OR B))
-	ParenDepth  int    // Tracks nesting depth of parentheses
-
-	// Compound node support for deeply nested boolean expressions.
-	// When a parenthesized group contains sub-groups (inner parens), the flat
-	// GroupID approach cannot preserve nesting. Instead we create a compound
-	// node that holds the children as a proper tree.
-	IsCompound bool
-	Children   []ConditionNode
-
-	// Command holds a condition function used as a boolean operand, e.g.
-	// a="x" OR cidr(ip, "10.0.0.0/8").
-	Command *CommandNode
-	// Expr holds a scalar expression used as a filter, e.g. lower(image)="cmd.exe".
-	Expr *ExprNode
-	// PredicateSQL is the compiled form of Command or Expr, filled in during
-	// translation once the handler options and the field registry exist.
-	PredicateSQL string
-}
-
-func (c ConditionNode) Type() string { return "condition" }
-
 type PipelineNode struct {
-	Filter           *FilterNode
 	Commands         []CommandNode
 	Assignments      []AssignmentNode
 	HavingConditions []HavingCondition
@@ -76,11 +29,14 @@ type HavingCondition struct {
 	IsRegex  bool
 	// ValueField names the right-hand operand when it was written as field(name).
 	ValueField string
-	// LiteralTerm mirrors ConditionNode.LiteralTerm for bare-term searches.
+	// LiteralTerm holds the unmodified analyst-typed text of a bare-term search,
+	// which Value stores only in already-regex-escaped form. norm_log serializes
+	// differently per source mode, so the final pattern is built at translation
+	// time (where the mode is known) from this literal.
 	LiteralTerm string
 	Logic       string // "AND", "OR", ""
-	GroupID     int    // Conditions with the same non-zero GroupID are parenthesized together
 	CmdIndex    int    // number of pipeline commands that precede this condition
+	AssignIndex int    // number of assignments that precede this condition
 
 	// Compound node support for arbitrary nesting depth.
 	// When IsCompound is true, Children holds the sub-expression tree and
@@ -136,11 +92,10 @@ func (a AssignmentNode) Type() string { return "assignment" }
 const maxParserIterations = 100000
 
 type Parser struct {
-	tokens         []Token
-	pos            int
-	groupIDCounter int    // Tracks parenthetical group IDs
-	iterations     int    // Safety counter to prevent infinite loops
-	input          []rune // original source, for faithful raw-text capture (case blocks)
+	tokens     []Token
+	pos        int
+	iterations int    // Safety counter to prevent infinite loops
+	input      []rune // original source, for faithful raw-text capture (case blocks)
 	// bindings holds the let statements declared ahead of the pipeline, keyed by
 	// name with the sigil. Substitution happens as each reference is parsed.
 	bindings     map[string]*BindingNode
@@ -148,6 +103,8 @@ type Parser struct {
 	// bindingBudget bounds how much expression the bindings may expand to, shared
 	// with any sub-pipeline parsed from a binding body.
 	bindingBudget *int
+	// havingDepth is how many brackets deep the stage condition parser is.
+	havingDepth int
 }
 
 func NewParser(tokens []Token) *Parser {
@@ -210,13 +167,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	}
 	pipeline.Bindings = p.bindingOrder
 
-	// Parse filter expression (before first pipe or EOF)
-	filter, err := p.parseFilter()
-	if err != nil {
-		return nil, err
-	}
-	if filter != nil {
-		pipeline.Filter = filter
+	// A lone "*" (every log) filters nothing.
+	if t := p.current(); t.Type == TokenMultiply || t.Type == TokenValue && t.Value == "*" {
+		p.advance()
 	}
 
 	// Each segment's conditions are stamped with how many commands precede them
@@ -224,8 +177,38 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 	stamped := 0
 	stampConditionPositions := func() {
 		for ; stamped < len(pipeline.HavingConditions); stamped++ {
-			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands))
+			setConditionPosition(&pipeline.HavingConditions[stamped], len(pipeline.Commands), len(pipeline.Assignments))
 		}
+	}
+	// A stage's conditions filter as one unit: grouped at the pipe, an OR among
+	// them cannot reach the next stage's condition.
+	segmentStart, segmentCommands, sawPipe := 0, 0, false
+	// Without AND/OR, a condition starting with a field binds like AND; any other
+	// operand ANDs with everything before it in the stage, which is grouped first.
+	runStart := 0
+	closeRun := func() {
+		if run := pipeline.HavingConditions[runStart:]; len(run) > 1 {
+			grouped := HavingCondition{IsCompound: true, Children: append([]HavingCondition(nil), run...), CmdIndex: run[0].CmdIndex, AssignIndex: run[0].AssignIndex}
+			pipeline.HavingConditions = append(pipeline.HavingConditions[:runStart], grouped)
+		}
+		runStart = len(pipeline.HavingConditions)
+		stamped = runStart
+	}
+	closeSegment := func() {
+		stampConditionPositions()
+		// A trailing AND/OR has nothing on its right and joins nothing.
+		if n := len(pipeline.HavingConditions); n > segmentStart {
+			pipeline.HavingConditions[n-1].Logic = ""
+		}
+		if runStart > segmentStart {
+			closeRun()
+		}
+		pipeline.HavingConditions = append(pipeline.HavingConditions[:segmentStart],
+			groupByPosition(pipeline.HavingConditions[segmentStart:])...)
+		segmentStart = len(pipeline.HavingConditions)
+		segmentCommands = len(pipeline.Commands)
+		stamped = segmentStart
+		runStart = segmentStart
 	}
 
 	// Parse pipeline commands, assignments, and HAVING conditions
@@ -240,18 +223,15 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		startPos := p.pos
 		// Skip pipe if present
 		if p.current().Type == TokenPipe {
+			closeSegment()
 			p.advance()
+			sawPipe = true
 		}
 
 		// Handle AND/OR/NOT between HAVING conditions after bare regex/string
 		if p.current().Type == TokenAnd || p.current().Type == TokenOr {
-			// A command immediately before the operator is an operand, not an
-			// independent conjunct: move it into the boolean chain so the operator
-			// is honoured instead of dropped.
-			if len(pipeline.HavingConditions) == 0 && len(pipeline.Commands) > 0 {
-				last := pipeline.Commands[len(pipeline.Commands)-1]
-				pipeline.Commands = pipeline.Commands[:len(pipeline.Commands)-1]
-				pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(last))
+			if len(pipeline.HavingConditions) == segmentStart && len(pipeline.Commands) == segmentCommands {
+				return nil, newPosError(p.current(), "%s needs a condition on its left", p.current().Value)
 			}
 			if len(pipeline.HavingConditions) > 0 {
 				pipeline.HavingConditions[len(pipeline.HavingConditions)-1].Logic = p.current().Value
@@ -259,23 +239,31 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			p.advance()
 			continue
 		}
+		if n := len(pipeline.HavingConditions); n > runStart && pipeline.HavingConditions[n-1].Logic == "" && p.current().Type != TokenField {
+			closeRun()
+		}
 		// Track whether a NOT was consumed for this iteration.
 		// NOT + function is handled as a negated command (special case).
 		// All other NOT cases set pipelineNegate so the condition branches
 		// below can apply the negation to whatever they parse.
-		pipelineNegate := false
-		if p.current().Type == TokenNot {
+		pipelineNegate, sawNot := false, false
+		for p.current().Type == TokenNot {
 			p.advance()
-			// A negated expression filter, e.g. !contains(commandline, "-enc").
-			// Parsed above AND/OR so the NOT binds to this leaf alone, matching how
-			// a negated plain condition behaves.
+			pipelineNegate, sawNot = !pipelineNegate, true
+		}
+		if sawNot {
+			// A negated expression filter, e.g. !contains(commandline, "-enc"). The
+			// leaf ends before AND/OR, so the NOT binds to it alone, as it does to
+			// a negated plain condition.
 			if p.atExprFilter() {
-				expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
+				cond, err := p.parseCondition()
 				if err != nil {
 					return nil, err
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions,
-					HavingCondition{Expr: expr, Negate: true})
+				if pipelineNegate {
+					negateHavingCondition(cond)
+				}
+				pipeline.HavingConditions = append(pipeline.HavingConditions, *cond)
 				continue
 			}
 			// Negated function call (e.g., !in()) produces a Command, not a condition
@@ -284,7 +272,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if err != nil {
 					return nil, err
 				}
-				cmd.Negate = true
+				cmd.Negate = pipelineNegate
 				if p.commandIsBooleanOperand(pipeline) {
 					pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(*cmd))
 				} else {
@@ -292,7 +280,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 				continue
 			}
-			pipelineNegate = true
+			if t := p.current().Type; t == TokenPipe || t == TokenEOF {
+				return nil, newPosError(p.current(), "NOT needs a condition after it")
+			}
 		}
 
 		// Handle bare string/regex searches in pipeline
@@ -307,7 +297,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if pipelineNegate && len(conditions) > 0 {
 					negateHavingCondition(&conditions[0])
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 			} else if p.current().Type == TokenString {
 				operator := "~"
 				if pipelineNegate {
@@ -337,7 +327,12 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
 			}
 		} else if p.isAssignment() {
-			// Check if this is an assignment (field := expression)
+			if n := len(pipeline.HavingConditions); n > segmentStart && pipeline.HavingConditions[n-1].Logic != "" {
+				return nil, newPosError(p.current(), "%s needs a condition on its right", pipeline.HavingConditions[n-1].Logic)
+			}
+			// Conditions after an assignment see it and those before do not, so
+			// they never share a group.
+			closeRun()
 			assignment, err := p.parseAssignment()
 			if err != nil {
 				return nil, err
@@ -358,17 +353,17 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				if pipelineNegate && len(conditions) > 0 {
 					negateHavingCondition(&conditions[0])
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 			} else {
-				// Parse simple HAVING condition
-				having, err := p.parseHavingCondition()
+				cond, err := p.parseCondition()
 				if err != nil {
 					return nil, err
 				}
+				having := *cond
 				if pipelineNegate {
-					negateHavingCondition(having)
+					negateHavingCondition(&having)
 				}
-				pipeline.HavingConditions = append(pipeline.HavingConditions, *having)
+				pipeline.HavingConditions = append(pipeline.HavingConditions, having)
 			}
 		} else if p.current().Type == TokenLParen {
 			// Parenthesized condition group in pipeline, e.g.:
@@ -386,7 +381,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					negateHavingCondition(&conditions[0])
 				}
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else if p.current().Type == TokenBinding && !p.atBindingChain() && !p.atBindingExpr() {
 			cond, err := p.parseBindingCondition(pipelineNegate)
 			if err != nil {
@@ -401,7 +396,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 			if pipelineNegate && len(conditions) > 0 {
 				negateHavingCondition(&conditions[0])
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else if p.atExprFilter() || p.atBindingExpr() {
 			// A whole stage that is one expression stays one expression, brackets and
 			// all. Only when the expression grammar cannot take the stage on its own
@@ -427,7 +422,14 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					negateHavingCondition(&conditions[0])
 				}
 			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, wrapHavingConditions(conditions)...)
+			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
+		} else if p.current().Type == TokenField && !sawPipe {
+			// Before the first pipe a bare word is a condition missing its operator
+			// (after one it starts a command): let the condition parser say so.
+			if _, err := p.parseCondition(); err != nil {
+				return nil, err
+			}
+			return nil, newPosError(p.current(), "unexpected %q", p.current().Value)
 		} else {
 			// It's a command
 			cmd, err := p.parseCommand()
@@ -449,7 +451,7 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		}
 	}
 
-	stampConditionPositions()
+	closeSegment()
 
 	// Anything left over is a token no stage could consume. Stopping here
 	// silently would drop the rest of the query, commands included.
@@ -461,227 +463,6 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 		return nil, err
 	}
 	return pipeline, nil
-}
-
-func (p *Parser) parseFilter() (*FilterNode, error) {
-	// If we immediately see a pipe, EOF, or function, there's no filter. An
-	// expression filter is the exception: it is a condition, not a command.
-	if p.current().Type == TokenPipe || p.current().Type == TokenEOF ||
-		(p.current().Type == TokenFunction && !p.atExprFilter()) {
-		return nil, nil
-	}
-
-	// If we see ! followed by a function (e.g., !in()), treat as negated command, not filter
-	if p.current().Type == TokenNot && p.peek().Type == TokenFunction {
-		return nil, nil
-	}
-
-	// Handle wildcard "*" - means no filter
-	if (p.current().Type == TokenValue && p.current().Value == "*") || p.current().Type == TokenMultiply {
-		p.advance() // skip the *
-		return nil, nil
-	}
-
-	// Handle bare regex/string queries like /powershell/ or "powershell" (search raw_log)
-	// These are routed through parseConditionsWithPrecedence so that
-	// OR/AND chains like: "foo" OR "bar" are handled correctly.
-	if p.current().Type == TokenRegex || p.current().Type == TokenString {
-		filter := &FilterNode{}
-		conditions, err := p.parseConditions()
-		if err != nil {
-			return nil, err
-		}
-		filter.Conditions = conditions
-		return filter, nil
-	}
-
-	// Check if this is an assignment (field := ...) rather than a filter
-	if p.current().Type == TokenField && p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == TokenAssign {
-		return nil, nil
-	}
-
-	filter := &FilterNode{}
-	conditions, err := p.parseConditions()
-	if err != nil {
-		return nil, err
-	}
-	filter.Conditions = conditions
-
-	return filter, nil
-}
-
-func (p *Parser) parseConditions() ([]ConditionNode, error) {
-	return p.parseConditionsWithPrecedence(0)
-}
-
-// parseConditionsWithPrecedence handles operator precedence and parentheses
-func (p *Parser) parseConditionsWithPrecedence(minPrecedence int) ([]ConditionNode, error) {
-	var conditions []ConditionNode
-
-	for {
-		// Check for negation
-		negate := false
-		if p.current().Type == TokenNot {
-			negate = true
-			p.advance()
-		}
-
-		var currentConditions []ConditionNode
-
-		// Handle parentheses
-		if p.current().Type == TokenLParen {
-			p.advance() // consume (
-			groupedConditions, err := p.parseConditionsWithPrecedence(0)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := p.expect(TokenRParen); err != nil {
-				return nil, err
-			}
-
-			// Check if inner conditions contain multiple distinct sub-groups.
-			// If so, we must use a compound node to preserve the nested boolean
-			// structure, because the flat GroupID scheme cannot represent multiple
-			// levels of nesting correctly.
-
-			// Special case: a single compound child means redundant wrapper
-			// parens like ((compound)). Just pass through, applying negate.
-			if len(groupedConditions) == 1 && groupedConditions[0].IsCompound {
-				if negate {
-					groupedConditions[0].Negate = !groupedConditions[0].Negate
-				}
-				currentConditions = groupedConditions
-			} else {
-				// Count distinct non-zero GroupIDs and check for ungrouped conditions
-				hasSubGroups := false
-				groupIDs := map[int]bool{}
-				hasUngrouped := false
-				for _, gc := range groupedConditions {
-					if gc.IsCompound {
-						hasSubGroups = true
-						break
-					}
-					if gc.GroupID > 0 {
-						groupIDs[gc.GroupID] = true
-					} else {
-						hasUngrouped = true
-					}
-				}
-				if !hasSubGroups {
-					// Multiple distinct GroupIDs, or a mix of grouped and ungrouped
-					if len(groupIDs) > 1 || (len(groupIDs) >= 1 && hasUngrouped) {
-						hasSubGroups = true
-					}
-				}
-
-				if hasSubGroups {
-					// Create a compound node that wraps the children as a tree.
-					// This correctly preserves NOT semantics across nested groups
-					// (the old flat approach would distribute NOT to individual
-					// sub-groups without flipping AND/OR per De Morgan's law).
-					compound := ConditionNode{
-						IsCompound: true,
-						Children:   groupedConditions,
-						Negate:     negate,
-						GroupID:    0, // will be assigned by parent if needed
-					}
-					currentConditions = []ConditionNode{compound}
-				} else {
-					// Simple flat group (no sub-groups) - use existing GroupID approach.
-					p.groupIDCounter++
-					for i := range groupedConditions {
-						if groupedConditions[i].GroupID == 0 {
-							groupedConditions[i].GroupID = p.groupIDCounter
-						}
-						if negate {
-							// Toggle (not set) so double negation cancels correctly:
-							// NOT (NOT (A OR B)) -> (A OR B)
-							groupedConditions[i].GroupNegate = !groupedConditions[i].GroupNegate
-						}
-					}
-					currentConditions = groupedConditions
-				}
-			}
-		} else if p.current().Type == TokenRegex {
-			// Bare regex always searches raw_log
-			cond := &ConditionNode{
-				Field:    normLogColumn,
-				Operator: "=",
-				Value:    p.current().Value,
-				IsRegex:  true,
-				Negate:   negate,
-				GroupID:  0,
-			}
-			p.advance()
-			currentConditions = []ConditionNode{*cond}
-		} else if p.current().Type == TokenString {
-			// Bare string always searches raw_log
-			cond := &ConditionNode{
-				Field:       normLogColumn,
-				Operator:    "~",
-				Value:       caseInsensitiveSearch(p.current().Value),
-				LiteralTerm: p.current().Value,
-				IsRegex:     true,
-				Negate:      negate,
-				GroupID:     0,
-			}
-			p.advance()
-			currentConditions = []ConditionNode{*cond}
-		} else {
-			// Parse a single condition
-			cond, err := p.parseCondition()
-			if err != nil {
-				return nil, err
-			}
-			cond.Negate = negate
-			// Single conditions without parentheses get GroupID 0 (ungrouped)
-			cond.GroupID = 0
-			currentConditions = []ConditionNode{*cond}
-		}
-
-		conditions = append(conditions, currentConditions...)
-
-		// Check for AND/OR with precedence (OR has lower precedence than AND)
-		tok := p.current()
-		var precedence int
-		var operator string
-
-		if tok.Type == TokenAnd {
-			precedence = 2
-			operator = "AND"
-		} else if tok.Type == TokenOr {
-			precedence = 1
-			operator = "OR"
-		} else if tok.Type == TokenField {
-			// Implicit AND if we see another field
-			precedence = 2
-			operator = "AND"
-		} else {
-			// No more operators, break
-			break
-		}
-
-		// Handle operator precedence
-		if precedence < minPrecedence {
-			break
-		}
-
-		if tok.Type == TokenAnd || tok.Type == TokenOr {
-			p.advance()
-		}
-
-		// Set the logic operator on the last condition
-		if len(conditions) > 0 {
-			conditions[len(conditions)-1].Logic = operator
-		}
-
-		// Check for end of expression
-		if p.current().Type == TokenPipe || p.current().Type == TokenEOF || p.current().Type == TokenRParen {
-			break
-		}
-	}
-
-	return conditions, nil
 }
 
 // parseValueList reads a comma-separated list of values for =~, =^, =$ operators.
@@ -761,18 +542,24 @@ func (p *Parser) fieldOperandUnsupported(operator string) error {
 	return newPosError(p.current(), "field() cannot be used with %s; it is supported with =, !=, >, <, >= and <=", operator)
 }
 
-func (p *Parser) parseCondition() (*ConditionNode, error) {
-	cond := &ConditionNode{}
+func (p *Parser) parseCondition() (*HavingCondition, error) {
+	cond := &HavingCondition{}
 
 	// A condition function or an expression is an operand like any other leaf,
 	// e.g. a="x" OR cidr(ip, "10.0.0.0/8"), or lower(image)="cmd.exe".
 	if p.current().Type == TokenFunction {
 		if p.atExprFilter() {
-			expr, err := p.parseExprFilter()
+			// The expression ends at AND/OR, which join leaves, and a filter
+			// operator the expression grammar lacks may follow it:
+			// lower(image) =~ "cmd","ps".
+			expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
 			if err != nil {
 				return nil, err
 			}
 			cond.Expr = expr
+			if err := p.readExprMatchOperator(cond); err != nil {
+				return nil, err
+			}
 			return cond, nil
 		}
 		cmd, err := p.parseCommand()
@@ -785,7 +572,7 @@ func (p *Parser) parseCondition() (*ConditionNode, error) {
 
 	// Field name
 	tok := p.current()
-	if tok.Type != TokenField {
+	if tok.Type != TokenField && tok.Type != TokenValue {
 		return nil, newPosError(tok, "expected field name, got %s", describeToken(tok))
 	}
 	cond.Field = tok.Value
@@ -1094,23 +881,9 @@ func (p *Parser) parseCompoundHavingConditions() ([]HavingCondition, error) {
 	return p.parseHavingConditionsWithPrecedence(0)
 }
 
-// wrapHavingConditions wraps multiple conditions in a compound node so they
-// stay grouped when combined with conditions from other pipeline stages.
-// Without this, OR in one stage bleeds into adjacent stages.
-func wrapHavingConditions(conditions []HavingCondition) []HavingCondition {
-	if len(conditions) > 1 {
-		return []HavingCondition{{
-			IsCompound: true,
-			Children:   conditions,
-		}}
-	}
-	return conditions
-}
-
-// parseHavingConditionsWithPrecedence parses boolean expressions in pipeline
-// stages, producing HavingCondition nodes (including compound nodes for
-// parenthesized sub-expressions). This mirrors parseConditionsWithPrecedence
-// but produces HavingCondition directly, supporting arbitrary nesting depth.
+// parseHavingConditionsWithPrecedence parses a stage's boolean expression into
+// HavingCondition nodes, with compound nodes for bracketed sub-expressions at any
+// depth.
 func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]HavingCondition, error) {
 	var conditions []HavingCondition
 
@@ -1127,7 +900,9 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 		// Handle parentheses
 		if p.current().Type == TokenLParen {
 			p.advance() // consume (
+			p.havingDepth++
 			innerConditions, err := p.parseHavingConditionsWithPrecedence(0)
+			p.havingDepth--
 			if err != nil {
 				return nil, err
 			}
@@ -1189,33 +964,15 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			}
 			currentConditions = []HavingCondition{*cond}
 		} else {
-			// Parse a single condition (field op value)
-			saved := p.pos
 			cond, err := p.parseCondition()
-			// Succeeding but stopping on a match operator means the leaf was read as
-			// something smaller than it is: lower(x) =~ "a" parses lower(x) alone.
-			if err == nil && p.atExprMatchOperator() {
-				err = newPosError(p.current(), "unexpected %q", p.current().Value)
-			}
 			if err != nil {
-				// A leaf the filter grammar cannot take may still be an expression
-				// one: `lower(a)="x" AND b=/foo/` mixes the two, and
-				// `lower(x) =~ "a","b"` ends on an operator only the filter grammar
-				// has. Tried in this order so every leaf the filter grammar already
-				// handles is built exactly as it was.
-				p.pos = saved
-				exprCond, exprErr := p.parseExprLeaf(negate)
-				if exprErr != nil {
-					return nil, err
-				}
-				currentConditions = []HavingCondition{*exprCond}
-			} else {
-				having := havingFromCondition(*cond)
-				if negate {
-					negateHavingCondition(&having)
-				}
-				currentConditions = []HavingCondition{having}
+				return nil, err
 			}
+			having := *cond
+			if negate {
+				negateHavingCondition(&having)
+			}
+			currentConditions = []HavingCondition{having}
 		}
 
 		conditions = append(conditions, currentConditions...)
@@ -1231,7 +988,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 		} else if tok.Type == TokenOr {
 			precedence = 1
 			operator = "OR"
-		} else if tok.Type == TokenField {
+		} else if tok.Type == TokenField && !p.isAssignment() {
 			// Implicit AND if we see another field
 			precedence = 2
 			operator = "AND"
@@ -1252,33 +1009,17 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 			conditions[len(conditions)-1].Logic = operator
 		}
 
-		// Check for end of expression. A command after AND/OR ends the chain and is
-		// handled by the command path; an expression function continues it, so
-		// `a="x" OR lower(image)="y"` means what the mirrored order means.
+		// Check for end of expression. At the top of a stage a command after AND/OR
+		// ends the chain and is handled by the command path; an expression function
+		// continues it, so `a="x" OR lower(image)="y"` means what the mirrored order
+		// means. Inside brackets nothing else can take it, so it is an operand.
 		if p.current().Type == TokenPipe || p.current().Type == TokenEOF ||
-			(p.current().Type == TokenFunction && !p.atExprFilter()) {
+			(p.current().Type == TokenFunction && !p.atExprFilter() && p.havingDepth == 0) {
 			break
 		}
 	}
 
 	return conditions, nil
-}
-
-// parseExprLeaf parses one expression used as a filter leaf, plus the trailing
-// match operator the expression grammar has no place for.
-func (p *Parser) parseExprLeaf(negate bool) (*HavingCondition, error) {
-	if !p.atExprFilter() {
-		return nil, newPosError(p.current(), "not an expression")
-	}
-	expr, err := p.parseExprFilterPrec(booleanChainPrecedence)
-	if err != nil {
-		return nil, err
-	}
-	cond := HavingCondition{Expr: expr, Negate: negate}
-	if err := p.readExprMatchOperator(&cond); err != nil {
-		return nil, err
-	}
-	return &cond, nil
 }
 
 // atExprMatchOperator reports whether the current token is one of the filter
@@ -1291,8 +1032,8 @@ func (p *Parser) atExprMatchOperator() bool {
 	return false
 }
 
-// readExprMatchOperator attaches a multi-value match operator to an expression
-// leaf, when one follows it.
+// readExprMatchOperator attaches the multi-value match operator and values that
+// may follow an expression leaf, when one does.
 func (p *Parser) readExprMatchOperator(cond *HavingCondition) error {
 	switch p.current().Type {
 	case TokenContainsAny:
@@ -1309,137 +1050,8 @@ func (p *Parser) readExprMatchOperator(cond *HavingCondition) error {
 	if err != nil {
 		return err
 	}
-	cond.Values = values
-	if len(values) > 0 {
-		cond.Value = values[0]
-	}
+	cond.Values, cond.Value = values, values[0]
 	return nil
-}
-
-// havingFromCondition converts a parsed filter leaf into its pipeline-stage
-// equivalent. Every value-carrying field must be copied: dropping Values
-// silently truncates a comma list to its first term.
-func havingFromCondition(cond ConditionNode) HavingCondition {
-	return HavingCondition{
-		Command:     cond.Command,
-		Expr:        cond.Expr,
-		Field:       cond.Field,
-		Operator:    cond.Operator,
-		Value:       cond.Value,
-		Values:      cond.Values,
-		ValueField:  cond.ValueField,
-		IsRegex:     cond.IsRegex,
-		LiteralTerm: cond.LiteralTerm,
-		Negate:      cond.Negate,
-	}
-}
-
-func (p *Parser) parseHavingCondition() (*HavingCondition, error) {
-	having := &HavingCondition{}
-
-	// Field name (could be an aggregate like 'count' or a regular field)
-	fieldTok := p.current()
-	if fieldTok.Type != TokenField && fieldTok.Type != TokenValue {
-		return nil, newPosError(fieldTok, "expected field name in HAVING condition, got %s", describeToken(fieldTok))
-	}
-	having.Field = fieldTok.Value
-	p.advance()
-
-	// Operator
-	opTok := p.current()
-	switch opTok.Type {
-	case TokenGreater:
-		having.Operator = ">"
-	case TokenLess:
-		having.Operator = "<"
-	case TokenGreaterEqual:
-		having.Operator = ">="
-	case TokenLessEqual:
-		having.Operator = "<="
-	case TokenEqual:
-		having.Operator = "="
-	case TokenNotEqual:
-		having.Operator = "!="
-	case TokenContainsAny:
-		having.Operator = "=~"
-	case TokenStartsWithAny:
-		having.Operator = "=^"
-	case TokenEndsWithAny:
-		having.Operator = "=$"
-	default:
-		return nil, newPosError(opTok, "expected comparison operator in HAVING condition, got %s", describeToken(opTok))
-	}
-	p.advance()
-
-	// Multi-value operators: parse comma-separated list and return early
-	if having.Operator == "=~" || having.Operator == "=^" || having.Operator == "=$" {
-		if p.atFieldOperand() {
-			return nil, p.fieldOperandUnsupported(having.Operator)
-		}
-		values, err := p.parseValueList()
-		if err != nil {
-			return nil, err
-		}
-		having.Values = values
-		if len(values) > 0 {
-			having.Value = values[0]
-		}
-		return having, nil
-	}
-
-	// Value. field(name) makes the right-hand side another field rather than a literal.
-	if p.atFieldOperand() {
-		name, err := p.parseFieldOperand()
-		if err != nil {
-			return nil, err
-		}
-		having.ValueField = name
-		having.Value = name
-		return having, nil
-	}
-
-	valTok := p.current()
-	if valTok.Type == TokenBinding {
-		v, isRegex, err := p.bindingValueLiteral()
-		if err != nil {
-			return nil, err
-		}
-		having.Value, having.IsRegex = v, isRegex
-	} else if valTok.Type == TokenField || valTok.Type == TokenValue || valTok.Type == TokenString {
-		having.Value = valTok.Value
-		p.advance()
-	} else if valTok.Type == TokenRegex {
-		having.Value = valTok.Value
-		having.IsRegex = true
-		p.advance()
-	} else if valTok.Type == TokenMinus {
-		// Negative numeric literal, e.g. change_percent < -5.0
-		p.advance()
-		numTok := p.current()
-		if numTok.Type == TokenValue || numTok.Type == TokenField {
-			having.Value = "-" + numTok.Value
-			p.advance()
-		} else {
-			return nil, newPosError(numTok, "expected number after '-' in HAVING condition, got %s", describeToken(numTok))
-		}
-	} else if valTok.Type == TokenMultiply {
-		// * wildcard means "any non-empty value"
-		having.Value = "*"
-		p.advance()
-	} else {
-		return nil, newPosError(valTok, "expected value in HAVING condition, got %s", describeToken(valTok))
-	}
-
-	// Comma-separated equality list: field="a","b","c" -> IN / NOT IN.
-	if (having.Operator == "=" || having.Operator == "!=") && !having.IsRegex && having.Value != "*" {
-		values, err := p.collectEqualityList(having.Value)
-		if err != nil {
-			return nil, err
-		}
-		having.Values = values
-	}
-
-	return having, nil
 }
 
 // isAssignment checks if current position represents a field assignment (field := expression)
@@ -1638,12 +1250,36 @@ func (p *Parser) parseJoinCommand() (*CommandNode, error) {
 	return cmd, nil
 }
 
+// groupByPosition wraps each run of conditions that share a pipeline position into
+// one compound, so the run binds as a unit.
+func groupByPosition(conds []HavingCondition) []HavingCondition {
+	var out []HavingCondition
+	for i := 0; i < len(conds); {
+		j := i + 1
+		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex {
+			j++
+		}
+		run := append([]HavingCondition(nil), conds[i:j]...)
+		if len(run) == 1 {
+			out = append(out, run[0])
+		} else {
+			// The run's last condition may carry the AND/OR that joined it to a
+			// command before the next run; the group carries it now.
+			logic := run[len(run)-1].Logic
+			run[len(run)-1].Logic = ""
+			out = append(out, HavingCondition{IsCompound: true, Children: run, CmdIndex: conds[i].CmdIndex, AssignIndex: conds[i].AssignIndex, Logic: logic})
+		}
+		i = j
+	}
+	return out
+}
+
 // setConditionPosition stamps a condition and every nested leaf, since a compound
 // may later be split into its conjuncts.
-func setConditionPosition(c *HavingCondition, cmdIndex int) {
-	c.CmdIndex = cmdIndex
+func setConditionPosition(c *HavingCondition, cmdIndex, assignIndex int) {
+	c.CmdIndex, c.AssignIndex = cmdIndex, assignIndex
 	for i := range c.Children {
-		setConditionPosition(&c.Children[i], cmdIndex)
+		setConditionPosition(&c.Children[i], cmdIndex, assignIndex)
 	}
 }
 
