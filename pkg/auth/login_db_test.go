@@ -62,7 +62,7 @@ func TestHandleLoginSuccess(t *testing.T) {
 	for i := 0; i < loginMaxFailures-1; i++ {
 		login(h, "alice", "wrong", "203.0.113.9")
 	}
-	if h.accountLimiter.check("alice") {
+	if blocked(h.accountLimiter, "alice") {
 		t.Error("account blocked before a fresh run of failures")
 	}
 	// The address's count was not: a success never forgives an address.
@@ -422,5 +422,32 @@ func TestHandleLoginUnknownUsersNotTrackedPerAccount(t *testing.T) {
 	h.accountLimiter.mu.Unlock()
 	if n != 0 {
 		t.Errorf("%d per-account entries for unknown usernames", n)
+	}
+}
+
+// Every way out of a login gives its limiter place back: requests that end
+// without a failure, however many, never block the address or the account.
+func TestHandleLoginReleasesItsTry(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	const ip = "203.0.113.20"
+
+	for i := 0; i < 2*loginIPMaxFailures; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader("{"))
+		r.RemoteAddr = ip + ":40000"
+		h.HandleLogin(httptest.NewRecorder(), r)
+		if rec := login(h, "alice", userPassword, ip); rec.Code != http.StatusOK {
+			t.Fatalf("login %d: status %d, want 200", i+1, rec.Code)
+		}
+	}
+	for _, rl := range []*loginRateLimiter{h.loginLimiter, h.accountLimiter} {
+		rl.mu.Lock()
+		for key, a := range rl.attempts {
+			if a.inFlight != 0 {
+				t.Errorf("%s holds %d tries after every request ended", key, a.inFlight)
+			}
+		}
+		rl.mu.Unlock()
 	}
 }
