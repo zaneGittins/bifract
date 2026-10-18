@@ -192,6 +192,12 @@ func ModelCHTableName(id string) string { return modelObjectName("model_", id) }
 // ModelCHMVName is the materialized view that feeds it.
 func ModelCHMVName(id string) string { return modelObjectName("model_mv_", id) }
 
+// ModelIDOfMVName is the model ID a ModelCHMVName was made from.
+func ModelIDOfMVName(name string) (string, bool) {
+	id, ok := strings.CutPrefix(name, "model_mv_")
+	return strings.ReplaceAll(id, "_", "-"), ok && id != ""
+}
+
 // ModelCHDistName is the cluster-mode distributed table over the aggregate.
 func ModelCHDistName(id string) string { return modelObjectName("model_dist_", id) }
 
