@@ -69,6 +69,7 @@ func (h *limitHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 	if n > 0 {
 		ctx.Plan.CurrentStage().Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+		capRows(ctx)
 	}
 	return nil
 }
@@ -89,10 +90,11 @@ func (h *headHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// On aggregated stages timestamp is neither grouped nor aggregated, so
 	// ordering by it is invalid (ClickHouse error 215). Keep the existing
 	// ordering (e.g. a prior sort) and just take its first N rows.
-	if !isAggregatedStage(ctx.Plan, source) {
+	if onScan(ctx) || !isAggregatedStage(ctx.Plan, source) {
 		source.Layer.OrderBy = []string{"timestamp ASC"}
 	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+	capRows(ctx)
 	return nil
 }
 
@@ -112,13 +114,32 @@ func (h *tailHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// On aggregated stages timestamp is neither grouped nor aggregated, so
 	// ordering by it is invalid (ClickHouse error 215). The "last N" rows are
 	// the first N of the reversed existing ordering.
-	if isAggregatedStage(ctx.Plan, source) {
+	if !onScan(ctx) && isAggregatedStage(ctx.Plan, source) {
 		source.Layer.OrderBy = reverseOrderBy(source.Layer.OrderBy)
 	} else {
 		source.Layer.OrderBy = []string{"timestamp DESC"}
 	}
 	source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
+	capRows(ctx)
 	return nil
+}
+
+// capRows makes the row selection a command just set on the scan a cap that the
+// rest of the pipeline reads through. After an aggregation or on a later stage
+// the selection stays where it is: those rows are already a stage's output.
+func capRows(ctx *CommandContext) {
+	if !onScan(ctx) {
+		return
+	}
+	l := &ctx.Plan.SourceStage().Layer
+	l.Caps = append(l.Caps, RowCap{At: ctx.CmdIndex, OrderBy: l.OrderBy, LimitBy: l.LimitBy, ScanLimitBy: l.LimitBy, Limit: l.Limit})
+	l.OrderBy, l.LimitBy, l.Limit = nil, "", ""
+}
+
+// onScan reports whether the running command reads the raw scan: no stage or
+// aggregation precedes it.
+func onScan(ctx *CommandContext) bool {
+	return len(ctx.Plan.Stages) == 1 && ctx.CmdIndex < firstAggregatingCommandIndex(ctx.Pipeline.Commands)
 }
 
 // rowCount reads a row-count argument, rejecting a negative or non-numeric one
@@ -201,17 +222,9 @@ func scanExprFor(field string, ctx *CommandContext, stage *QueryStage) string {
 	return ""
 }
 
-// dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY.
-//
-// Where the LIMIT BY lands depends on whether rows have been aggregated yet,
-// because ClickHouse evaluates LIMIT BY after GROUP BY:
-//
-//   - Before an aggregation, it must collapse the rows the aggregation will
-//     read, so it goes to ScanLimitBy and rendering wraps the scan in it.
-//     Written into the aggregating SELECT it would instead try to dedup the
-//     groups, using a key that SELECT does not produce (ClickHouse code 215).
-//   - After an aggregation, it dedups the result rows and belongs on that
-//     SELECT, keyed by an output column rather than the source field.
+// dedupHandler handles dedup(field1, field2, ...) using LIMIT 1 BY. On the scan
+// it is a row cap (see capRows); after an aggregation it dedups the result rows,
+// keyed by an output column.
 type dedupHandler struct{}
 
 func (h *dedupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
@@ -233,12 +246,14 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// dedup precedes.
 	firstAgg := firstAggregatingCommandIndex(ctx.Pipeline.Commands)
 	postAggregation := firstAgg < ctx.CmdIndex
-	// An aggregation still to come renders this dedup around the scan, where the
-	// stage's computed columns do not exist yet.
-	beforeAggregation := firstAgg < len(ctx.Pipeline.Commands) && !postAggregation
+	// A dedup on the scan caps the rows the rest of the pipeline reads. Read
+	// through, it renders around the scan, where the stage's computed columns do
+	// not exist yet, so each key also has its scan form.
+	aggregationAhead := firstAgg < len(ctx.Pipeline.Commands) && !postAggregation
 	outputs := stageOutputs(stage)
 
-	var dedupFields []string
+	var keys, scanKeys []string
+	scannable := true
 	for _, arg := range args {
 		field := arg.Value()
 		if !arg.IsFieldName() {
@@ -251,35 +266,49 @@ func (h *dedupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			if err != nil {
 				return fmt.Errorf("dedup(): %w", err)
 			}
-			dedupFields = append(dedupFields, sql)
+			keys, scanKeys = append(keys, sql), append(scanKeys, sql)
 			continue
 		}
 		switch {
 		case postAggregation && outputs[field]:
-			dedupFields = append(dedupFields, field)
+			keys = append(keys, field)
 		case postAggregation:
 			return fmt.Errorf("dedup(%s): %q is not produced by the preceding aggregation; dedup on a grouped field or move dedup() before the aggregation", argList(args), field)
 		case !ctx.Registry.IsComputed(field):
 			// LIMIT BY is a grouping context: cast raw JSON subcolumns to
 			// ::String so Dynamic-stored paths don't trigger error 44.
-			dedupFields = append(dedupFields, resolveFieldRef(field, ctx.Registry))
-		case !beforeAggregation:
-			// Rendered on the same SELECT that computes the column, so its alias
-			// resolves.
-			dedupFields = append(dedupFields, field)
+			ref := resolveFieldRef(field, ctx.Registry)
+			keys, scanKeys = append(keys, ref), append(scanKeys, ref)
 		default:
+			// On the SELECT that computes the column its alias resolves.
+			keys = append(keys, field)
 			expr := scanExprFor(field, ctx, stage)
 			if expr == "" {
-				return fmt.Errorf("dedup(%s): %q is computed after the scan and cannot be deduplicated before an aggregation; dedup on a log field instead", argList(args), field)
+				if aggregationAhead {
+					return fmt.Errorf("dedup(%s): %q is computed after the scan and cannot be deduplicated before an aggregation; dedup on a log field instead", argList(args), field)
+				}
+				scannable = false
 			}
-			dedupFields = append(dedupFields, expr)
+			scanKeys = append(scanKeys, expr)
 		}
 	}
 
-	limitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(dedupFields, ", "))
-	if postAggregation {
+	limitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(keys, ", "))
+	scanLimitBy := fmt.Sprintf("LIMIT 1 BY %s", strings.Join(scanKeys, ", "))
+	switch {
+	case postAggregation:
 		stage.Layer.LimitBy = limitBy
-	} else {
+	case onScan(ctx):
+		stage.Layer.LimitBy = limitBy
+		capRows(ctx)
+		c := &stage.Layer.Caps[len(stage.Layer.Caps)-1]
+		c.ScanLimitBy = ""
+		if scannable {
+			c.ScanLimitBy = scanLimitBy
+		}
+	case aggregationAhead:
+		stage.Layer.ScanLimitBy = scanLimitBy
+	default:
 		stage.Layer.ScanLimitBy = limitBy
 	}
 	return nil
