@@ -32,7 +32,8 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			return fmt.Errorf("in(): %w", err)
 		}
 	case ctx.Registry.IsComputed(field):
-		fieldRef = field
+		// The expression, not the alias: an alias names the field's final value.
+		fieldRef = resolveFieldRef(field, ctx.Registry)
 	case field == "timestamp" || field == normLogColumn || field == "log_id" || field == "normalizer":
 		fieldRef = field
 	default:

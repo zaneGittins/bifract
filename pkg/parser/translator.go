@@ -193,7 +193,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 type plannedQuery struct {
 	ctx                 *CommandContext
 	assignmentFields    []string
-	deferredAssignments []AssignmentNode
+	deferredAssignments []deferredAssignment
 }
 
 // scanWhere is the predicate the pipeline puts on its source scan beyond the time
@@ -250,14 +250,22 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	// ---------------------------------------------------------------
 	// 3. DECLARE PHASE: every command registers what fields it produces
 	// ---------------------------------------------------------------
+	// Declare registers every command's outputs up front for validation; each
+	// command's entries are kept so Execute can reinstate them at its position.
+	undeclared := registry.Clone()
+	declaredBy := make([][]FieldEntry, len(pipeline.Commands))
 	for i, cmd := range pipeline.Commands {
 		ctx.CmdIndex = i
 		handler := getCommandHandler(cmd.Name)
 		if handler == nil {
 			return nil, fmt.Errorf("unsupported command: %s", cmd.Name)
 		}
+		before := registry.Clone()
 		if err := handler.Declare(cmd, ctx); err != nil {
 			return nil, err
+		}
+		for _, name := range registry.changedSince(before) {
+			declaredBy[i] = append(declaredBy[i], *registry.Get(name))
 		}
 	}
 
@@ -294,124 +302,120 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		plan.ModelLookupAtScan = aggAfter && !aggBefore
 	}
 
-	// Assignments before the first command form a prefix; a condition among them
-	// sees only those written ahead of it.
-	firstAssignments := 0
-	for firstAssignments < len(pipeline.Assignments) && pipeline.Assignments[firstAssignments].CmdIndex == 0 {
-		firstAssignments++
-	}
-	unassigned := registry.firstStageView()
-
-	// Register assignment fields
+	// Registered only to capture declared: commands and assignments enter the
+	// registry at their position in the Execute loop, so nothing before them
+	// sees them.
 	for _, assignment := range pipeline.Assignments {
 		registry.Register(assignment.Field, FieldKindAssignment, assignment.Field, -1)
 	}
 	// Captured before Execute, whose stage pushes scope the registry and drop
 	// columns a later command will still add.
 	declared := registry.ProducedNames()
+	ctx.Declared = registry.Clone()
+	var pending []string
+	for _, name := range registry.order {
+		if !undeclared.Has(name) || *undeclared.Get(name) != *registry.Get(name) {
+			pending = append(pending, name)
+		}
+	}
+	registry.unassign(pending, undeclared)
 
 	// ---------------------------------------------------------------
-	// 5. Process field assignments
+	// 5. Field assignments, compiled at their position in the Execute loop
 	// ---------------------------------------------------------------
 	var assignmentFields []string
-	var deferredAssignments []AssignmentNode
-	// postAggByPos holds post-aggregation math assignments keyed by the number of
-	// commands that precede them, so the Execute loop can materialize each as a
-	// stage at its pipeline position (see applyAssignmentStage).
-	postAggByPos := make(map[int][]AssignmentNode)
+	var deferredAssignments []deferredAssignment
 	firstAgg := firstAggregatingCommandIndex(pipeline.Commands)
 	hasAggregation := firstAgg < len(pipeline.Commands)
-	for i, assignment := range pipeline.Assignments {
-		if i <= firstAssignments {
-			plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
-		}
+	applyAssignment := func(assignment AssignmentNode) error {
 		safeField, err := sanitizeIdentifier(assignment.Field)
 		if err != nil {
-			return nil, fmt.Errorf("invalid assignment field: %w", err)
+			return fmt.Errorf("invalid assignment field: %w", err)
 		}
 
 		// A computed assignment binds to a pipeline stage, because where it is
 		// evaluated decides what it can see. A bare field or literal has nothing
 		// to compute and is materialized straight away.
-		if isComputedExpr(assignment.Expr) {
-			switch {
-			case hasAggregation && assignment.CmdIndex <= firstAgg:
-				// Pre-aggregation: inline so aggregations/filters reference the
-				// computed value, and so later pre-aggregation assignments
-				// referencing this one fold in the full expression (it is never
-				// materialized as a column).
-				sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
-				if err != nil {
-					return nil, assignmentError(assignment.Field, err)
-				}
-				registry.RegisterInlineExpr(safeField, sqlExpr, -1)
-				if exprType == TypeNumber {
-					registry.SetNumeric(safeField)
-				}
-			case hasAggregation:
-				// Post-aggregation: materialized as a stage at its pipeline position
-				// (not the outermost formatter) so commands after it -- table, sort,
-				// case -- can reference it even when they drop other columns.
-				postAggByPos[assignment.CmdIndex] = append(postAggByPos[assignment.CmdIndex], assignment)
-			default:
-				// No aggregation: computed in the outer formatter, but registered so
-				// a downstream filter folds in the expression. Without this the
-				// filter referenced a column the inner scan does not have and
-				// silently matched nothing.
-				sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
-				if err != nil {
-					return nil, assignmentError(assignment.Field, err)
-				}
-				registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
-				registry.SetResolveExpr(safeField, sqlExpr)
-				if exprType == TypeNumber {
-					registry.SetNumeric(safeField)
-				}
-				deferredAssignments = append(deferredAssignments, assignment)
+		if !isComputedExpr(assignment.Expr) {
+			expression, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+			if err != nil {
+				return assignmentError(assignment.Field, err)
 			}
-			continue
+			af := fmt.Sprintf("%s AS %s", expression, safeField)
+			assignmentFields = append(assignmentFields, af)
+			registry.Register(safeField, FieldKindAssignment, safeField, -1)
+			registry.SetResolveExpr(safeField, af)
+			return nil
 		}
-
-		expression, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
-		if err != nil {
-			return nil, assignmentError(assignment.Field, err)
-		}
-		af := fmt.Sprintf("%s AS %s", expression, safeField)
-		assignmentFields = append(assignmentFields, af)
-		ctx.Registry.SetResolveExpr(safeField, af)
-	}
-
-	// Captured before Execute, which scopes the registry to each stage's outputs.
-	if len(plan.firstStageAt) == firstAssignments {
-		plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
-	}
-	for i, view := range plan.firstStageAt {
-		var later []string
-		for _, a := range pipeline.Assignments[i:] {
-			if !slices.ContainsFunc(pipeline.Assignments[:i], func(b AssignmentNode) bool { return b.Field == a.Field }) {
-				later = append(later, a.Field)
+		switch {
+		case hasAggregation && assignment.CmdIndex <= firstAgg:
+			// Pre-aggregation: inline so aggregations/filters reference the
+			// computed value, and so later pre-aggregation assignments
+			// referencing this one fold in the full expression (it is never
+			// materialized as a column).
+			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
+			if err != nil {
+				return assignmentError(assignment.Field, err)
 			}
+			registry.RegisterInlineExpr(safeField, sqlExpr, -1)
+			if exprType == TypeNumber {
+				registry.SetNumeric(safeField)
+			}
+		case hasAggregation:
+			// Post-aggregation: materialized as a stage so commands after it --
+			// table, sort, case -- can reference it even when they drop other
+			// columns.
+			return applyAssignmentStage(ctx, assignment)
+		default:
+			// No aggregation: computed in the outer formatter, but registered so
+			// a downstream filter folds in the expression. Without this the
+			// filter referenced a column the inner scan does not have and
+			// silently matched nothing.
+			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
+			if err != nil {
+				return assignmentError(assignment.Field, err)
+			}
+			registry.Register(safeField, FieldKindPerRow, sqlExpr, -1)
+			registry.SetResolveExpr(safeField, sqlExpr)
+			if exprType == TypeNumber {
+				registry.SetNumeric(safeField)
+			}
+			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, SQL: sqlExpr})
 		}
-		view.unassign(later, unassigned)
+		return nil
 	}
 
 	// ---------------------------------------------------------------
-	// 6. EXECUTE PHASE: every command reads registry, writes to plan.
-	//     Post-aggregation math assignments are materialized as stages at their
-	//     pipeline position (between the commands they sit between), so a later
-	//     projection (e.g. table) cannot strand the columns they depend on.
+	// 6. EXECUTE PHASE: commands and assignments run in pipeline order, each
+	//     reading the registry as the pipeline left it there. The registry at
+	//     every position is kept for the conditions written there.
 	// ---------------------------------------------------------------
+	plan.positionAt = map[[2]int]*FieldRegistry{}
+	capture := func(cmds, assigns int) {
+		if cmds == 0 {
+			plan.firstStageAt = append(plan.firstStageAt, registry.firstStageView())
+			return
+		}
+		view := registry.Clone()
+		view.rowLevel = cmds <= firstAgg
+		plan.positionAt[[2]int{cmds, assigns}] = view
+	}
+	next := 0
 	for i := 0; i <= len(pipeline.Commands); i++ {
-		for _, assignment := range postAggByPos[i] {
-			if err := applyAssignmentStage(ctx, assignment); err != nil {
+		ctx.CmdIndex = i
+		for next < len(pipeline.Assignments) && pipeline.Assignments[next].CmdIndex == i {
+			capture(i, next)
+			if err := applyAssignment(pipeline.Assignments[next]); err != nil {
 				return nil, err
 			}
+			next++
 		}
+		capture(i, next)
 		if i == len(pipeline.Commands) {
 			break
 		}
-		ctx.CmdIndex = i
 		cmd := pipeline.Commands[i]
+		registry.reinstate(declaredBy[i], undeclared)
 		// A per-row transform that runs on a GROUP BY stage would add a
 		// non-grouped column to an aggregate SELECT (invalid, silently dropped).
 		// Move it onto a post-aggregation projection stage first.
@@ -763,7 +767,7 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 //
 // This replaces the old monolithic string-surgery approach with registry-based
 // field identification and structured rendering.
-func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssignments []AssignmentNode) (*TranslationResult, error) {
+func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssignments []deferredAssignment) (*TranslationResult, error) {
 	plan := ctx.Plan
 	source := plan.SourceStage()
 	opts := ctx.Opts
@@ -875,11 +879,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		fieldOrder = plan.outerAggFieldOrder
 	} else {
 		// Standard: build outer SELECT with timestamp formatting + deferred math
-		formatters, err := buildFormatters(selectStrings, ctx.Registry, deferredAssignments)
-		if err != nil {
-			return nil, err
-		}
-		plan.Formatters = formatters
+		plan.Formatters = buildFormatters(selectStrings, deferredAssignments)
 		fieldOrder = computeFieldOrder(selectStrings, deferredAssignments)
 		// Columns exported purely to make deferred expressions resolvable are
 		// stripped from the SQL result, so they must not be listed for display.
@@ -1633,15 +1633,21 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 	})
 }
 
+// deferredAssignment is a computed assignment evaluated in the outer formatter,
+// over the limited rows, as compiled where it is written.
+type deferredAssignment struct {
+	Field, SQL string
+}
+
 // buildFormatters creates the outer SELECT expressions for timestamp formatting
 // and deferred math assignments.
-func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAssignments []AssignmentNode) ([]SelectExpr, error) {
+func buildFormatters(selectFields []string, deferredAssignments []deferredAssignment) []SelectExpr {
 	if len(selectFields) == 0 {
 		return []SelectExpr{
 			{Expr: "toString(timestamp) as timestamp"},
 			{Expr: "log_id"},
 			{Expr: "norm_log AS fields"},
-		}, nil
+		}
 	}
 
 	var formatters []SelectExpr
@@ -1663,13 +1669,6 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 
 	// Add deferred math assignments to the outer SELECT
 	if len(deferredAssignments) > 0 {
-		// Ensure select field aliases are known to the registry for math expression resolution
-		for _, field := range selectFields {
-			alias := extractFieldAlias(field)
-			if alias != "" && !registry.Has(alias) {
-				registry.SetResolveExpr(alias, alias)
-			}
-		}
 		projected := map[string]bool{}
 		for _, f := range selectFields {
 			projected[strings.Trim(extractFieldAlias(f), "`")] = true
@@ -1681,19 +1680,15 @@ func buildFormatters(selectFields []string, registry *FieldRegistry, deferredAss
 				continue
 			}
 			safeName, _ := sanitizeIdentifier(da.Field)
-			sqlExpr, _, err := compileExpr(da.Expr, registry, da.Field)
-			if err != nil {
-				return nil, assignmentError(da.Field, err)
-			}
-			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeName)})
+			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", da.SQL, safeName)})
 		}
 	}
 
-	return formatters, nil
+	return formatters
 }
 
 // computeFieldOrder extracts the field order from SELECT expressions.
-func computeFieldOrder(selectFields []string, deferredAssignments []AssignmentNode) []string {
+func computeFieldOrder(selectFields []string, deferredAssignments []deferredAssignment) []string {
 	fieldOrder := make([]string, 0, len(selectFields))
 	for _, field := range selectFields {
 		alias := extractFieldAlias(field)

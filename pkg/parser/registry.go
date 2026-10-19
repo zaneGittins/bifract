@@ -165,6 +165,33 @@ func (r *FieldRegistry) unassign(names []string, before *FieldRegistry) {
 	}
 }
 
+// changedSince lists the names whose entries differ from before.
+func (r *FieldRegistry) changedSince(before *FieldRegistry) []string {
+	var names []string
+	for _, name := range r.order {
+		if b, ok := before.fields[name]; !ok || *b != *r.fields[name] {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// reinstate puts back a command's Declare entries before it executes, except
+// where an earlier command or assignment has since redefined the name.
+func (r *FieldRegistry) reinstate(entries []FieldEntry, undeclared *FieldRegistry) {
+	for _, e := range entries {
+		if cur, ok := r.fields[e.Name]; ok {
+			if u, ok := undeclared.fields[e.Name]; !ok || *u != *cur {
+				continue
+			}
+		} else {
+			r.order = append(r.order, e.Name)
+		}
+		entry := e
+		r.fields[e.Name] = &entry
+	}
+}
+
 // rowLevelClone is a copy for conditions evaluated row by row.
 func (r *FieldRegistry) rowLevelClone() *FieldRegistry {
 	c := r.Clone()

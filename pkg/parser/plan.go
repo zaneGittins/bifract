@@ -204,6 +204,9 @@ type QueryPlan struct {
 	// firstStageAt[i] is the registry a condition before the first command
 	// resolves against when i assignments precede it (FieldRegistry.firstStageView).
 	firstStageAt []*FieldRegistry
+	// positionAt is the registry a condition after the first command resolves
+	// against, keyed by the commands and assignments that precede it.
+	positionAt map[[2]int]*FieldRegistry
 	// baseWhereLen counts the source WHERE entries that scope the scan (time range,
 	// fractal) rather than filter it. First-stage conditions follow them, ahead of
 	// anything a command adds.
@@ -236,10 +239,13 @@ func (p *QueryPlan) CurrentStage() *QueryStage {
 }
 
 // conditionRegistry is the registry a condition resolves its fields against: the
-// first-stage view at its position before any command, the final registry after one.
+// registry as the pipeline left it where the condition is written.
 func (p *QueryPlan) conditionRegistry(c HavingCondition, registry *FieldRegistry) *FieldRegistry {
 	if c.CmdIndex == 0 && len(p.firstStageAt) > 0 {
 		return p.firstStageAt[min(c.AssignIndex, len(p.firstStageAt)-1)]
+	}
+	if v, ok := p.positionAt[[2]int{c.CmdIndex, c.AssignIndex}]; ok {
+		return v
 	}
 	return registry
 }

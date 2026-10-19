@@ -484,6 +484,23 @@ func fieldFirstStage(field string, plan *QueryPlan) int {
 	return 0
 }
 
+// materializeAtPositions ANDs conds, each run written at one position resolved
+// against the registry there.
+func materializeAtPositions(conds []HavingCondition, registry *FieldRegistry, plan *QueryPlan) string {
+	var clauses []string
+	for i := 0; i < len(conds); {
+		j := i + 1
+		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex && conds[j].AssignIndex == conds[i].AssignIndex {
+			j++
+		}
+		if clause := materializeCondGroup(conds[i:j], plan.conditionRegistry(conds[i], registry), nil); clause != "" {
+			clauses = append(clauses, clause)
+		}
+		i = j
+	}
+	return andJoin(clauses)
+}
+
 // materializeConditions generates SQL from the classified pending conditions
 // using the fully-populated registry (after Execute). Each condition is bound to
 // the query stage that owns its referenced fields: pre-aggregation filters to the
@@ -513,23 +530,12 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		}
 		byStage[idx] = append(byStage[idx], cond)
 	}
-	var firstClauses []string
-	for i := 0; i < len(firstStage); {
-		j := i + 1
-		for j < len(firstStage) && firstStage[j].AssignIndex == firstStage[i].AssignIndex {
-			j++
-		}
-		if clause := materializeCondGroup(firstStage[i:j], plan.conditionRegistry(firstStage[i], registry), nil); clause != "" {
-			firstClauses = append(firstClauses, clause)
-		}
-		i = j
-	}
-	if clause := andJoin(firstClauses); clause != "" {
+	if clause := materializeAtPositions(firstStage, registry, plan); clause != "" {
 		source := plan.SourceStage()
 		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), clause)
 	}
 	for _, idx := range stageOrder {
-		if clause := materializeCondGroup(byStage[idx], registry, nil); clause != "" {
+		if clause := materializeAtPositions(byStage[idx], registry, plan); clause != "" {
 			plan.Stages[idx].Layer.Where = append(plan.Stages[idx].Layer.Where, clause)
 		}
 	}
