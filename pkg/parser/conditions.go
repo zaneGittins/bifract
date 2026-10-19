@@ -535,8 +535,25 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), clause)
 	}
 	for _, idx := range stageOrder {
-		if clause := materializeAtPositions(byStage[idx], registry, plan); clause != "" {
-			plan.Stages[idx].Layer.Where = append(plan.Stages[idx].Layer.Where, clause)
+		layer := &plan.Stages[idx].Layer
+		// Filters after a row cap apply to the rows it kept, so each lands with
+		// the cap before it.
+		dests := []*[]string{&layer.Where}
+		groups := map[*[]string][]HavingCondition{}
+		for _, cond := range byStage[idx] {
+			dst := &layer.Where
+			if after := layer.capAfter(cond.CmdIndex); after != nil {
+				dst = after
+			}
+			if _, seen := groups[dst]; !seen && dst != &layer.Where {
+				dests = append(dests, dst)
+			}
+			groups[dst] = append(groups[dst], cond)
+		}
+		for _, dst := range dests {
+			if clause := materializeAtPositions(groups[dst], registry, plan); clause != "" {
+				*dst = append(*dst, clause)
+			}
 		}
 	}
 	// HAVING binds to the aggregation stage in effect where the filter is written.

@@ -35,6 +35,50 @@ type QueryLayer struct {
 	// aggregates, and emits it exactly like LimitBy when it does not.
 	ScanLimitBy string
 	Limit       string
+	// Caps are the row caps (head, tail, limit, dedup) on the scan, in pipeline
+	// order. Where holds the filters before the first; the rest of the layer
+	// reads only the rows the last one keeps.
+	Caps []RowCap
+}
+
+// RowCap is a row selection the rest of the pipeline reads through, rendered as
+// a subquery around the scan.
+type RowCap struct {
+	At      int // index of the capping command
+	OrderBy []string
+	LimitBy string
+	// ScanLimitBy is LimitBy over the raw scan, "" when a key exists only as a
+	// computed column.
+	ScanLimitBy string
+	Limit       string
+	After       []string // filters written after this cap and before the next
+}
+
+// capAfter is the filter list for a position k commands in: the After of the last
+// cap before it, or nil ahead of every cap.
+func (l *QueryLayer) capAfter(k int) *[]string {
+	for i := len(l.Caps) - 1; i >= 0; i-- {
+		if l.Caps[i].At < k {
+			return &l.Caps[i].After
+		}
+	}
+	return nil
+}
+
+// foldLastCap renders a cap nothing reads through as this layer's own ordering
+// and limit, which is the same rows without a subquery.
+func (l *QueryLayer) foldLastCap(aggregated bool) {
+	n := len(l.Caps)
+	if n == 0 || aggregated {
+		return
+	}
+	last := l.Caps[n-1]
+	if len(last.After) > 0 || len(l.GroupBy) > 0 || len(l.Having) > 0 || len(l.OrderBy) > 0 ||
+		l.Limit != "" || l.LimitBy != "" || l.ScanLimitBy != "" {
+		return
+	}
+	l.OrderBy, l.LimitBy, l.Limit = last.OrderBy, last.LimitBy, last.Limit
+	l.Caps = l.Caps[:n-1]
 }
 
 // UpsertSelect adds expr to the select list, replacing any existing entry with
@@ -489,6 +533,35 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		outerWhere = ""
 	}
 
+	// Each row cap reads the rows filtered before it and keeps its own ordering;
+	// the filters after the last one are this SELECT's.
+	for i, c := range source.Layer.Caps {
+		where := outerWhere
+		if i > 0 {
+			where = whereClause(source.Layer.Caps[i-1].After)
+		}
+		order := c.OrderBy
+		if len(order) == 0 {
+			order = defaultRowOrder(opts)
+		}
+		capSQL := "(SELECT * FROM " + rowSource + where
+		if len(order) > 0 {
+			capSQL += " ORDER BY " + strings.Join(order, ", ")
+		}
+		if c.LimitBy != "" && c.ScanLimitBy == "" {
+			return "", fmt.Errorf("dedup() on a computed field can only be followed by a transform; dedup on a log field instead")
+		}
+		for _, part := range []string{c.ScanLimitBy, c.Limit} {
+			if part != "" {
+				capSQL += " " + part
+			}
+		}
+		rowSource = capSQL + ")"
+	}
+	if n := len(source.Layer.Caps); n > 0 {
+		outerWhere = whereClause(source.Layer.Caps[n-1].After)
+	}
+
 	// A pre-aggregation dedup has to collapse rows before this SELECT aggregates
 	// them (see QueryLayer.ScanLimitBy), so it wraps the scan. Without an
 	// aggregation it renders on this SELECT, exactly as it did before.
@@ -729,6 +802,26 @@ func dedupScanOrder(opts QueryOptions) string {
 		}
 	}
 	return strings.Join(terms, ", ")
+}
+
+// whereClause renders filters as a WHERE clause, or "" when there are none.
+func whereClause(where []string) string {
+	if len(where) == 0 {
+		return ""
+	}
+	return " WHERE " + andJoin(where)
+}
+
+// defaultRowOrder is the ordering a row cap keeps rows by when its command gave
+// none: the source's own, else newest first.
+func defaultRowOrder(opts QueryOptions) []string {
+	if len(opts.SourceOrderBy) > 0 {
+		return opts.SourceOrderBy
+	}
+	if o := dedupScanOrder(opts); o != "" {
+		return strings.Split(o, ", ")
+	}
+	return nil
 }
 
 // wrapWithLayer wraps an inner SQL string with a QueryLayer's SELECT/WHERE/GROUP BY/HAVING/ORDER BY/LIMIT.

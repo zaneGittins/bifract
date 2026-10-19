@@ -432,8 +432,16 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			}
 		}
 		handler := getCommandHandler(cmd.Name)
+		whereLen := len(plan.SourceStage().Layer.Where)
 		if err := handler.Execute(cmd, ctx); err != nil {
 			return nil, err
+		}
+		// A filter the command put on the scan applies to the rows a cap kept.
+		if src := &plan.SourceStage().Layer; len(src.Where) > whereLen {
+			if after := src.capAfter(i); after != nil {
+				*after = append(*after, src.Where[whereLen:]...)
+				src.Where = src.Where[:whereLen]
+			}
 		}
 		ctx.Plan.stageAfterCmd = append(ctx.Plan.stageAfterCmd, len(ctx.Plan.Stages)-1)
 	}
@@ -771,6 +779,18 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	plan := ctx.Plan
 	source := plan.SourceStage()
 	opts := ctx.Opts
+
+	source.Layer.foldLastCap(plan.IsAggregated || plan.IsChain)
+	if len(source.Layer.Caps) > 0 {
+		if plan.IsProcessTree || plan.IsAnalyze {
+			return nil, fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
+		}
+		plan.rowLimitByCommand = true
+		// Shown in the cap's order unless something after it sorts.
+		if last := source.Layer.Caps[len(source.Layer.Caps)-1]; len(source.Layer.OrderBy) == 0 && !plan.IsAggregated {
+			source.Layer.OrderBy = last.OrderBy
+		}
+	}
 
 	// --- Special query modes (generate entirely different SQL) ---
 	if plan.IsProcessTree {
