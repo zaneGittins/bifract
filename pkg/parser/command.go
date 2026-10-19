@@ -12,6 +12,17 @@ type CommandContext struct {
 	Opts     QueryOptions
 	Pipeline *PipelineNode
 	CmdIndex int
+	// Declared holds every command's declarations, for checks that look ahead.
+	// Registry holds only what precedes the running command.
+	Declared *FieldRegistry
+}
+
+// declared is Declared, or Registry where nothing was declared ahead of it.
+func (c *CommandContext) declared() *FieldRegistry {
+	if c.Declared != nil {
+		return c.Declared
+	}
+	return c.Registry
 }
 
 // CommandHandler defines the interface for a pipeline command.

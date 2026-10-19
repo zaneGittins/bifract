@@ -400,7 +400,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// aggregation).
 	stepsUseModel := ""
 	for _, f := range stepFields {
-		if e := ctx.Registry.Get(f); e != nil && e.Kind == FieldKindJoined {
+		if e := ctx.declared().Get(f); e != nil && e.Kind == FieldKindJoined {
 			stepsUseModel = f
 			break
 		}
