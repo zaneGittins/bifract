@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -39,6 +40,27 @@ type QueryLayer struct {
 	// order. Where holds the filters before the first; the rest of the layer
 	// reads only the rows the last one keeps.
 	Caps []RowCap
+}
+
+// project adds a column, replacing one of the same name in place.
+func (l *QueryLayer) project(sel string) {
+	for i, s := range l.Selects {
+		if selectName(s.String()) == selectName(sel) {
+			l.Selects[i] = SelectExpr{Expr: sel}
+			return
+		}
+	}
+	l.Selects = append(l.Selects, SelectExpr{Expr: sel})
+}
+
+// addAssignments projects assignment columns a command after them has not
+// already replaced.
+func (l *QueryLayer) addAssignments(assignmentFields []string) {
+	for _, af := range assignmentFields {
+		if !slices.ContainsFunc(l.Selects, func(s SelectExpr) bool { return selectName(s.String()) == selectName(af) }) {
+			l.Selects = append(l.Selects, SelectExpr{Expr: af})
+		}
+	}
 }
 
 // RowCap is a row selection the rest of the pipeline reads through, rendered as

@@ -70,7 +70,7 @@ func validateArgExprs(args []Argument, registry *FieldRegistry) error {
 				}
 				continue
 			}
-			if _, _, err := compileExpr(a.Expr, registry, ""); err != nil {
+			if _, _, err := compileExpr(a.Expr, registry); err != nil {
 				return err
 			}
 		case ArgList:

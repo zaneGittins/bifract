@@ -567,7 +567,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		havingByStage[idx] = append(havingByStage[idx], cond)
 	}
 	for _, idx := range havingOrder {
-		if clause := materializeCondGroup(havingByStage[idx], registry, nil); clause != "" {
+		if clause := materializeAtPositions(havingByStage[idx], registry, plan); clause != "" {
 			plan.Stages[idx].Layer.Having = append(plan.Stages[idx].Layer.Having, clause)
 		}
 	}

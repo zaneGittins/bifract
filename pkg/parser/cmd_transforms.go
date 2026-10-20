@@ -209,13 +209,11 @@ func evalTarget(a Argument) string {
 	return strings.TrimSpace(name)
 }
 
-// evalAssignmentSQL compiles the right-hand side of one eval() assignment. No
-// selfField: unlike `x := x * 100`, where x means the log field, eval() assigns
-// into the same SELECT.
+// evalAssignmentSQL compiles the right-hand side of one eval() assignment.
 func evalAssignmentSQL(a Argument, registry *FieldRegistry) (string, ExprType, error) {
 	if a.Name != "" {
 		if a.Kind == ArgExpr && a.Expr != nil && a.Expr.Kind != ExprField {
-			return compileExpr(a.Expr, registry, "")
+			return compileExpr(a.Expr, registry)
 		}
 		sql, err := ResolveArg(a, registry)
 		return sql, TypeAny, err
@@ -224,7 +222,7 @@ func evalAssignmentSQL(a Argument, registry *FieldRegistry) (string, ExprType, e
 	if !found {
 		return "", TypeAny, nil
 	}
-	return compileExpressionText(strings.TrimSpace(expression), registry, "")
+	return compileExpressionText(strings.TrimSpace(expression), registry)
 }
 
 // stageSelectExpr is the expression a stage already projects under alias, or ""

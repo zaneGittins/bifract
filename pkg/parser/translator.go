@@ -333,11 +333,23 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			return fmt.Errorf("invalid assignment field: %w", err)
 		}
 
+		// Past the aggregation every assignment is its own stage, so what ran
+		// before it keeps the value it replaces.
+		if hasAggregation && assignment.CmdIndex > firstAgg {
+			return applyAssignmentStage(ctx, assignment)
+		}
+		// A reassignment replaces the earlier column; filters before it already
+		// folded the earlier expression in.
+		assignmentFields = slices.DeleteFunc(assignmentFields, func(af string) bool { return selectName(af) == assignment.Field })
+		deferredAssignments = slices.DeleteFunc(deferredAssignments, func(da deferredAssignment) bool { return da.Field == assignment.Field })
+		layer := &ctx.Plan.CurrentStage().Layer
+		layer.Selects = slices.DeleteFunc(layer.Selects, func(sel SelectExpr) bool { return selectName(sel.String()) == assignment.Field })
+
 		// A computed assignment binds to a pipeline stage, because where it is
 		// evaluated decides what it can see. A bare field or literal has nothing
 		// to compute and is materialized straight away.
 		if !isComputedExpr(assignment.Expr) {
-			expression, _, err := compileExpr(assignment.Expr, registry, assignment.Field)
+			expression, _, err := compileExpr(assignment.Expr, registry)
 			if err != nil {
 				return assignmentError(assignment.Field, err)
 			}
@@ -348,12 +360,12 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			return nil
 		}
 		switch {
-		case hasAggregation && assignment.CmdIndex <= firstAgg:
+		case hasAggregation:
 			// Pre-aggregation: inline so aggregations/filters reference the
 			// computed value, and so later pre-aggregation assignments
 			// referencing this one fold in the full expression (it is never
 			// materialized as a column).
-			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
+			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry)
 			if err != nil {
 				return assignmentError(assignment.Field, err)
 			}
@@ -361,17 +373,12 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			if exprType == TypeNumber {
 				registry.SetNumeric(safeField)
 			}
-		case hasAggregation:
-			// Post-aggregation: materialized as a stage so commands after it --
-			// table, sort, case -- can reference it even when they drop other
-			// columns.
-			return applyAssignmentStage(ctx, assignment)
 		default:
 			// No aggregation: computed in the outer formatter, but registered so
 			// a downstream filter folds in the expression. Without this the
 			// filter referenced a column the inner scan does not have and
 			// silently matched nothing.
-			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry, assignment.Field)
+			sqlExpr, exprType, err := compileExpr(assignment.Expr, registry)
 			if err != nil {
 				return assignmentError(assignment.Field, err)
 			}
@@ -1076,7 +1083,7 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 	}
 	// Compute against the current registry (aggregate aliases are columns now),
 	// before scoping replaces them with bare-alias entries.
-	sqlExpr, _, err := compileExpr(a.Expr, ctx.Registry, a.Field)
+	sqlExpr, _, err := compileExpr(a.Expr, ctx.Registry)
 	if err != nil {
 		return assignmentError(a.Field, err)
 	}
@@ -1085,8 +1092,7 @@ func applyAssignmentStage(ctx *CommandContext, a AssignmentNode) error {
 		return fmt.Errorf("assignment %q stage finalize: %w", a.Field, err)
 	}
 
-	newStage := ctx.Plan.CurrentStage()
-	newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", sqlExpr, safeField)})
+	ctx.Plan.CurrentStage().Layer.project(fmt.Sprintf("%s AS %s", sqlExpr, safeField))
 
 	// The computed value is now a materialized column of this stage; references
 	// resolve to its alias.
@@ -1214,7 +1220,7 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 
 	// 5. Assignment fields
 	for _, af := range assignmentFields {
-		if !contains(selects, af) {
+		if !addedAliases[extractFieldAlias(af)] {
 			selects = append(selects, af)
 		}
 	}
@@ -1260,12 +1266,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 			if !(plan.HasTableCmd && plan.TableHasExplicitColumns && len(source.Layer.Selects) > 0) {
 				source.Layer.Selects = sourceColumnSelects(ctx.Opts.SourceColumns)
 			}
-			existing := selectExprStrings(source.Layer.Selects)
-			for _, af := range assignmentFields {
-				if !contains(existing, af) {
-					source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
-				}
-			}
+			source.Layer.addAssignments(assignmentFields)
 		}
 		return
 	}
@@ -1372,13 +1373,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		}
 	}
 
-	// Add assignment fields
-	existingSelects := selectExprStrings(source.Layer.Selects)
-	for _, af := range assignmentFields {
-		if !contains(existingSelects, af) {
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: af})
-		}
-	}
+	source.Layer.addAssignments(assignmentFields)
 
 	// Ensure base fields for non-aggregated queries
 	if !plan.IsAggregated {
@@ -1717,7 +1712,9 @@ func computeFieldOrder(selectFields []string, deferredAssignments []deferredAssi
 		}
 	}
 	for _, da := range deferredAssignments {
-		fieldOrder = append(fieldOrder, da.Field)
+		if !slices.Contains(fieldOrder, da.Field) {
+			fieldOrder = append(fieldOrder, da.Field)
+		}
 	}
 	return fieldOrder
 }
