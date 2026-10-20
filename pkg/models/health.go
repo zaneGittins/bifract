@@ -237,7 +237,7 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 		h.State, h.Detail = HealthBehind, "State is behind the logs: it is catching up or a cycle cannot keep pace."
 		return h
 	case m.BackfillStatus == "running":
-		h.State, h.Detail = HealthBackfilling, fmt.Sprintf("Seeding %s of history.", m.BackfillWindow)
+		h.State, h.Detail = HealthBackfilling, "Seeding "+m.backfillSpan()+"."
 		return h
 	}
 
@@ -516,4 +516,12 @@ func parseStateSummary(mt ModelType, rows []map[string]interface{}) *stateSummar
 		s.findings = &n
 	}
 	return s
+}
+
+// backfillSpan describes what the model's backfill covers, for display.
+func (m *Model) backfillSpan() string {
+	if m.BackfillWindow == backfillRangeWindow && m.BackfillFrom != nil && m.BackfillTo != nil {
+		return fmt.Sprintf("history from %s to %s", m.BackfillFrom.UTC().Format(time.RFC3339), m.BackfillTo.UTC().Format(time.RFC3339))
+	}
+	return m.BackfillWindow + " of history"
 }

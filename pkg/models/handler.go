@@ -199,7 +199,7 @@ func (h *Handler) HandleGetData(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleStartBackfill kicks off a one-time historical backfill for a model over
-// the requested window (24h/7d/30d/90d). Returns the model with running state.
+// the requested window (24h/7d/30d/90d) or from/to range. Returns the model with running state.
 func (h *Handler) HandleStartBackfill(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
@@ -213,7 +213,7 @@ func (h *Handler) HandleStartBackfill(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := h.manager.StartBackfill(r.Context(), model, req.Window); err != nil {
+	if err := h.manager.StartBackfill(r.Context(), model, req); err != nil {
 		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to start backfill: %v", err))
 		return
 	}

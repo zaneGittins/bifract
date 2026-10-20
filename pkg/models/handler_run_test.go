@@ -241,6 +241,26 @@ func TestHandleBackfillAndAlerts(t *testing.T) {
 		t.Errorf("after cancel: %q", g.bfStatus)
 	}
 
+	ranged := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	for name, body := range map[string]string{
+		"reversed":   `{"from":"2026-05-08T00:00:00Z","to":"2026-05-01T00:00:00Z"}`,
+		"too long":   `{"from":"2026-01-01T00:00:00Z","to":"2026-06-01T00:00:00Z"}`,
+		"both kinds": `{"window":"7d","from":"2026-05-01T00:00:00Z","to":"2026-05-02T00:00:00Z"}`,
+	} {
+		if w := callModel(t, h.HandleStartBackfill, "/", body, ranged.id, analystA); w.Code != http.StatusBadRequest {
+			t.Errorf("%s range: %d", name, w.Code)
+		}
+	}
+	env.mgr.bfSem <- struct{}{}
+	decode(t, callModel(t, h.HandleStartBackfill, "/", `{"from":"2026-05-01T00:00:00Z","to":"2026-05-08T00:00:00Z"}`, ranged.id, analystA), &mo)
+	if mo.BackfillStatus != "running" || mo.BackfillWindow != "range" || mo.BackfillFrom == nil || mo.BackfillTo == nil ||
+		!mo.BackfillFrom.Equal(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)) || mo.BackfillTotal != 7 {
+		t.Errorf("range started: %+v", mo)
+	}
+	env.mgr.CancelBackfill(ranged.id)
+	<-env.mgr.bfSem
+	waitBackfill(t, env, ranged.id)
+
 	decode(t, callModel(t, h.HandleEnableAlert, "/", "", r.id, analystA), nil)
 	decode(t, callModel(t, h.HandleDisableAlert, "/", "", r.id, analystA), nil)
 	if on, ok := alerts.enabled["alert-1"]; !ok || on {

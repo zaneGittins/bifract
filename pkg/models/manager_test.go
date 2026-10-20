@@ -330,7 +330,7 @@ func modelRowValues(linked string, enabled sql.NullBool, last sql.NullTime, def 
 		[]byte(def), "model_id1", "", "active", "paused", linked, "",
 		"u", now, now,
 		"none", "", 0, 0,
-		(*time.Time)(nil), "", (*time.Time)(nil),
+		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), "", (*time.Time)(nil),
 		enabled, last,
 	}
 }

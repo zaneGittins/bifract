@@ -4,6 +4,7 @@ import (
 	"bifract/pkg/parser"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -373,9 +374,11 @@ type Model struct {
 	// One-time historical backfill state. The live MV is forward-only, so a new
 	// model is empty until matching logs arrive; a backfill seeds it from history.
 	BackfillStatus    string     `json:"backfill_status"` // none|running|completed|failed|cancelled
-	BackfillWindow    string     `json:"backfill_window"` // 24h|7d|30d|90d
+	BackfillWindow    string     `json:"backfill_window"` // 24h|7d|30d|90d|range
 	BackfillTotal     int        `json:"backfill_total"`  // total day-chunks
 	BackfillDone      int        `json:"backfill_done"`   // completed day-chunks
+	BackfillFrom      *time.Time `json:"backfill_from,omitempty"`
+	BackfillTo        *time.Time `json:"backfill_to,omitempty"`
 	BackfillStartedAt *time.Time `json:"backfill_started_at,omitempty"`
 	BackfillError     string     `json:"backfill_error,omitempty"`
 
@@ -454,18 +457,26 @@ type UpdateRequest struct {
 	AlertMode   string          `json:"alert_mode"`
 }
 
-// BackfillRequest is the body for POST /models/{id}/backfill.
+// BackfillRequest is the body for POST /models/{id}/backfill: either a lookback
+// window or an explicit event-time range.
 type BackfillRequest struct {
-	Window string `json:"window"` // one of validBackfillWindows
+	Window string     `json:"window,omitempty"` // one of validBackfillWindows
+	From   *time.Time `json:"from,omitempty"`
+	To     *time.Time `json:"to,omitempty"`
 }
 
+// backfillRangeWindow is the stored backfill_window of an explicit-range backfill.
+const backfillRangeWindow = "range"
+
+// maxBackfillDays bounds any backfill, window or range, to cap its cost.
+const maxBackfillDays = 90
+
 // validBackfillWindows maps the allowed lookback windows to their day count.
-// 90d is the hard maximum.
 var validBackfillWindows = map[string]int{
 	"24h": 1,
 	"7d":  7,
 	"30d": 30,
-	"90d": 90,
+	"90d": maxBackfillDays,
 }
 
 // BackfillWindowDays returns the number of day-chunks for a window string and
@@ -473,6 +484,37 @@ var validBackfillWindows = map[string]int{
 func BackfillWindowDays(window string) (int, bool) {
 	d, ok := validBackfillWindows[window]
 	return d, ok
+}
+
+// Span resolves the request to the half-open event-time range [from, to) it
+// backfills, and the label stored as backfill_window. A range ending after now
+// is cut at now, since there is nothing later to read.
+func (r BackfillRequest) Span(now time.Time) (from, to time.Time, label string, err error) {
+	now = now.UTC()
+	hasRange := r.From != nil || r.To != nil
+	switch {
+	case r.Window != "" && hasRange:
+		return from, to, "", fmt.Errorf("give a window or a from/to range, not both")
+	case r.Window != "":
+		days, ok := BackfillWindowDays(r.Window)
+		if !ok {
+			return from, to, "", fmt.Errorf("invalid backfill window: %s", r.Window)
+		}
+		return now.Add(-time.Duration(days) * 24 * time.Hour), now, r.Window, nil
+	case r.From == nil || r.To == nil:
+		return from, to, "", fmt.Errorf("a backfill needs a window or both from and to")
+	}
+	from, to = r.From.UTC(), r.To.UTC()
+	if to.After(now) {
+		to = now
+	}
+	if !from.Before(to) {
+		return from, to, "", fmt.Errorf("backfill range must start before it ends and before now")
+	}
+	if to.Sub(from) > maxBackfillDays*24*time.Hour {
+		return from, to, "", fmt.Errorf("backfill range is longer than %d days", maxBackfillDays)
+	}
+	return from, to, backfillRangeWindow, nil
 }
 
 // parseLeadingInt parses the leading run of digits in s (allowing a trailing unit

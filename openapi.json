@@ -36206,13 +36206,18 @@
       "models.BackfillRequest": {
         "type": "object",
         "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
           "window": {
             "type": "string"
           }
-        },
-        "required": [
-          "window"
-        ]
+        }
       },
       "models.BeaconParams": {
         "type": "object",
@@ -36405,12 +36410,20 @@
           "backfill_error": {
             "type": "string"
           },
+          "backfill_from": {
+            "type": "string",
+            "format": "date-time"
+          },
           "backfill_started_at": {
             "type": "string",
             "format": "date-time"
           },
           "backfill_status": {
             "type": "string"
+          },
+          "backfill_to": {
+            "type": "string",
+            "format": "date-time"
           },
           "backfill_total": {
             "type": "integer"
@@ -36594,12 +36607,20 @@
           "backfill_error": {
             "type": "string"
           },
+          "backfill_from": {
+            "type": "string",
+            "format": "date-time"
+          },
           "backfill_started_at": {
             "type": "string",
             "format": "date-time"
           },
           "backfill_status": {
             "type": "string"
+          },
+          "backfill_to": {
+            "type": "string",
+            "format": "date-time"
           },
           "backfill_total": {
             "type": "integer"
