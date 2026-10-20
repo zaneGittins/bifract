@@ -227,15 +227,14 @@ func TestRewrittenFieldIsRenderableAsAKey(t *testing.T) {
 }
 
 // A streaming model projects the columns its source computes, so a filter reading
-// one resolves. A network model has no such layer and must refuse rather than
-// render a scan referencing a column nothing defines.
+// one resolves. A network model has no such layer and must refuse a bare reference
+// rather than render a scan referencing a column nothing defines.
 func TestPredicateOnAProjectedColumn(t *testing.T) {
 	opts := parser.QueryOptions{
 		DictionaryDatabase: "logs",
 		Dictionaries:       map[string]map[string]string{"rmm": {"path": "dict_rmm"}},
 		PatternDicts:       map[string]bool{"dict_rmm": true},
 	}
-	// Through a binding the filter compiles to a bare `tool` rather than inlining.
 	const bql = `let &a := tool =~ "putty"; event_id="1" | match(dict="rmm", field=image, column=path, include=[tool], require=true) | NOT &a`
 	src, err := compileSourcePredicates(bql, opts)
 	if err != nil {
@@ -261,9 +260,14 @@ func TestPredicateOnAProjectedColumn(t *testing.T) {
 		t.Errorf("the scan must project the column its filter reads:\n%s", sql)
 	}
 
-	// Network: one flat aggregate, nowhere to compute it.
+	// Network: one flat aggregate. The binding folds the column's expression in,
+	// so the predicate stands alone.
 	def.Network = &NetworkFieldMap{SrcField: "src_ip", DstField: "dst_ip", PortField: "dst_port"}
-	if _, err := BuildNetStateInsert(def, "state", "logs", "", "f1"); err == nil {
+	if _, err := BuildNetStateInsert(def, "state", "logs", "", "f1"); err != nil {
+		t.Errorf("a binding over a computed column must inline it: %v", err)
+	}
+	// A predicate naming the column bare has nowhere to compute it.
+	if err := checkNoProjectedRefs([]string{"tool > 2"}, src.projections); err == nil {
 		t.Error("a network model must refuse a filter on a computed column")
 	}
 }

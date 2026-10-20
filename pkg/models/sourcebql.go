@@ -321,11 +321,8 @@ func computedFields(bql string, extractions []ExtractionStep) []string {
 }
 
 // checkNoProjectedRefs refuses predicates that lean on a column the query's own
-// SELECT projects, for a builder with no layer to compute one. The translator
-// resolves a registry-known field to its bare alias, valid in the statement that
-// defines it and undefined anywhere else. A plain filter inlines the expression
-// and is unaffected; a binding routes through expression compilation, which does
-// not.
+// SELECT projects, for a builder with no layer to compute one: a bare alias is
+// undefined outside the statement that defines it.
 func checkNoProjectedRefs(preds []string, projections []parser.SourceProjection) error {
 	if len(projections) == 0 {
 		return nil
