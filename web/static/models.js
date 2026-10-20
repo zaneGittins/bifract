@@ -8,7 +8,7 @@ const AnalyticsModels = {
     _queryController: null, // AbortController for the in-flight preview fetch
     _viewerPoll: null,     // interval: poll the open model while its backfill runs
     _listPoll: null,       // interval: poll the listing while any backfill runs
-    BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days']],
+    BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days'], ['custom', 'Custom range']],
 
     // Editor state (split-panel: BQL source query on the left, shape/alert on the right)
     editor: {
@@ -124,6 +124,14 @@ const AnalyticsModels = {
         this._stopViewerPoll();
         this._stopListPoll();
         this._setWorkspaceChrome(false);
+    },
+
+    // What a model's backfill covers: its window, or its explicit range.
+    _backfillSpan(m) {
+        if (m.backfill_window === 'range' && m.backfill_from && m.backfill_to) {
+            return `${TZ.format(m.backfill_from, 'minute')} to ${TZ.format(m.backfill_to, 'minute')} ${TZ.abbrev()}`;
+        }
+        return `${m.backfill_window || 'history'} of history`;
     },
 
     _backfillPct(m) {
@@ -1254,7 +1262,7 @@ ${m.description ? `<div class="me-sec">
         if (st === 'completed') {
             btn.disabled = true;
             btn.textContent = 'Backfilled';
-            btn.title = `Backfilled ${m.backfill_window || 'history'} of history`;
+            btn.title = `Backfilled ${this._backfillSpan(m)}`;
             return;
         }
         btn.disabled = false;
@@ -1285,7 +1293,7 @@ ${m.description ? `<div class="me-sec">
 <div class="backfill-running">
     <div class="backfill-running-head">
         <span class="spinner spinner-inline"></span>
-        <span class="backfill-label">Backfilling history…</span>
+        <span class="backfill-label" title="${_esc(this._backfillSpan(m))}">Backfilling history…</span>
         <span class="backfill-count">${m.backfill_done || 0}/${m.backfill_total || 0} days</span>
         <span class="backfill-spacer"></span>
         <button class="btn-secondary btn-sm" id="backfillCancelBtn">Cancel</button>
@@ -1314,6 +1322,15 @@ ${m.description ? `<div class="me-sec">
             <label>Backfill from</label>
             <select id="backfillWindowSelect" class="form-input">${opts}</select>
         </div>
+        <div class="form-group" id="backfillRangeGroup" style="display:${win === 'custom' ? 'block' : 'none'};">
+            <div class="custom-range-inputs">
+                <input type="text" placeholder="YYYY-MM-DD HH:mm" id="backfillFrom" class="datetime-input" value="${_esc(this.viewer.backfillFrom || '')}" />
+                <span class="range-separator">to</span>
+                <input type="text" placeholder="YYYY-MM-DD HH:mm" id="backfillTo" class="datetime-input" value="${_esc(this.viewer.backfillTo || '')}" />
+                <span class="tp-zone-tag">${_esc(TZ.abbrev())}</span>
+            </div>
+            <div class="form-hint">Up to 90 days of event time.</div>
+        </div>
         <div class="backfill-modal-warning">
             <span class="backfill-warning-icon">⚠</span>
             <span>Backfilling is CPU intensive and may take some time depending on how many historical logs match this model. It runs in the background, so you can keep working while it completes.</span>
@@ -1326,21 +1343,44 @@ ${m.description ? `<div class="me-sec">
 </div>`;
         document.body.appendChild(modal);
         modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+        const sel = document.getElementById('backfillWindowSelect');
+        const fromEl = document.getElementById('backfillFrom');
+        const toEl = document.getElementById('backfillTo');
+        const syncRange = () => {
+            const custom = sel.value === 'custom';
+            document.getElementById('backfillRangeGroup').style.display = custom ? 'block' : 'none';
+            if (custom && !fromEl.value && !toEl.value) {
+                const now = Date.now();
+                fromEl.value = TZ.formatInput(now - 7 * 24 * 60 * 60 * 1000);
+                toEl.value = TZ.formatInput(now);
+            }
+        };
+        sel.addEventListener('change', syncRange);
+        syncRange();
         document.getElementById('backfillModalStart')?.addEventListener('click', () => {
-            const sel = document.getElementById('backfillWindowSelect');
-            this.viewer.backfillWindow = sel ? sel.value : win;
+            this.viewer.backfillWindow = sel.value;
+            let body = { window: sel.value };
+            if (sel.value === 'custom') {
+                this.viewer.backfillFrom = fromEl.value.trim();
+                this.viewer.backfillTo = toEl.value.trim();
+                const from = TZ.parseWallClock(this.viewer.backfillFrom);
+                const to = TZ.parseWallClock(this.viewer.backfillTo);
+                if (isNaN(from) || isNaN(to)) { Toast.error('Enter the range as YYYY-MM-DD HH:mm'); return; }
+                if (from >= to) { Toast.error('The range must start before it ends'); return; }
+                body = { from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+            }
             modal.remove();
-            this._startBackfill();
+            this._startBackfill(body);
         });
     },
 
-    async _startBackfill() {
+    // body is ignored by a resume, which continues the stored range.
+    async _startBackfill(body = { window: '7d' }) {
         const m = this.viewer.model;
-        const window = this.viewer.backfillWindow || '7d';
         const btn = document.getElementById('modelsBackfillBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
         try {
-            const data = await this._api('POST', `/models/${m.id}/backfill`, { window });
+            const data = await this._api('POST', `/models/${m.id}/backfill`, body);
             if (data?.data) this.viewer.model = data.data;
             else m.backfill_status = 'running';
             this._renderBackfillBar();
