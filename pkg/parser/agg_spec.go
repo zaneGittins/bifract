@@ -53,7 +53,7 @@ func aggOperandNumeric(a Argument, registry *FieldRegistry) (string, error) {
 	if a.Kind != ArgExpr || a.Expr == nil {
 		return "", fmt.Errorf("%s is not a value", a)
 	}
-	sql, typ, err := compileExpr(a.Expr, registry, "")
+	sql, typ, err := compileExpr(a.Expr, registry)
 	if err != nil {
 		return "", err
 	}

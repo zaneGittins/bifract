@@ -100,7 +100,7 @@ func TestFilterSeesFieldsPastTheFirstCommand(t *testing.T) {
 		{"condition before a later assignment", `* | lowercase(a) | a="X" | a := "z"`,
 			"lower(fields.`a`::String) = 'X'", "lower('z')"},
 		{"transform before a later assignment", `* | lowercase(a) | a := "z"`,
-			"lower(fields.`a`::String) AS a", "lower('z')"},
+			"'z' AS a", "lower('z')"},
 		{"condition after an assignment past a command", `* | head(5) | a := lower(b) | a="x"`,
 			"lower(fields.`b`::String) = 'x'", ""},
 		{"in() before a later assignment", `* | in(a, values=["X"]) | a := "z"`,

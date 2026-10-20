@@ -1061,6 +1061,11 @@ func extractFieldAlias(selectField string) string {
 	return selectField
 }
 
+// selectName is the unquoted output column name of a SELECT expression.
+func selectName(sel string) string {
+	return strings.Trim(extractFieldAlias(sel), "`")
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {

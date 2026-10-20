@@ -198,7 +198,7 @@ func exprPriority(e *ExprNode, registry *FieldRegistry, plan *QueryPlan, willHav
 // grammar rather than the expression grammar, so the expression is compiled to a
 // reference and handed to the same builders a field condition uses.
 func exprMatchSQL(cond HavingCondition, registry *FieldRegistry) (string, error) {
-	ref, _, err := compileExpr(cond.Expr, registry, "")
+	ref, _, err := compileExpr(cond.Expr, registry)
 	if err != nil {
 		return "", err
 	}

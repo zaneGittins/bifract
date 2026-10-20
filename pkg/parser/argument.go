@@ -414,7 +414,7 @@ func ResolveArg(a Argument, registry *FieldRegistry) (string, error) {
 		if a.Expr.Kind == ExprField {
 			return resolveFieldRef(a.Expr.Value, registry), nil
 		}
-		sql, _, err := compileExpr(a.Expr, registry, "")
+		sql, _, err := compileExpr(a.Expr, registry)
 		return sql, err
 	case ArgLiteral, ArgRegex:
 		return resolveFieldRef(a.Text, registry), nil

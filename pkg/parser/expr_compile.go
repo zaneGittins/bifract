@@ -12,18 +12,13 @@ import (
 // working on a field with no type hint. Only an expression that is *known* to be
 // a string (a literal, or a function declared to return one) is rejected in a
 // numeric position.
-//
-// selfField names the assignment being defined, if any. An identifier matching
-// it bypasses the registry so `x := x * 100` reads the log field rather than the
-// alias it is about to create.
-func compileExpr(e *ExprNode, registry *FieldRegistry, selfField string) (string, ExprType, error) {
-	return compileIn(e, exprCtx{registry: registry, selfField: selfField})
+func compileExpr(e *ExprNode, registry *FieldRegistry) (string, ExprType, error) {
+	return compileIn(e, exprCtx{registry: registry})
 }
 
 // exprCtx carries what compilation needs beyond the expression itself.
 type exprCtx struct {
-	registry  *FieldRegistry
-	selfField string
+	registry *FieldRegistry
 	// scope, when set, means the expression is being built above the source scan.
 	// A leaf that only the scan can compute is exported through it under a hidden
 	// alias, because a raw JSON sub-column does not resolve at that layer
@@ -67,16 +62,23 @@ func compileFieldRef(name string, ctx exprCtx) (string, ExprType, error) {
 	if strings.HasPrefix(name, "&") {
 		return "", TypeAny, fmt.Errorf("unknown binding %s", name)
 	}
-	registry, selfField := ctx.registry, ctx.selfField
+	registry := ctx.registry
 	if ctx.deferredFields[name] {
 		// Produced by the deferred layer: already a bare column there.
 		return name, TypeAny, nil
 	}
-	if name != selfField && registry.Has(name) {
-		if registry.IsInline(name) {
+	if entry := registry.Get(name); entry != nil {
+		if entry.Inline {
 			// An inline field is a pre-aggregation assignment folded in at each
 			// reference. Its expression is already numeric.
 			return "(" + registry.Resolve(name) + ")", TypeNumber, nil
+		}
+		// A row-level value is folded in as it is here, so a later reassignment
+		// of the name cannot change it.
+		if entry.ResolveAs != "" && registry.IsRowLevel(name) {
+			if expr := registry.Resolve(name); expr != name {
+				return "(" + expr + ")", TypeAny, nil
+			}
 		}
 		// The bare alias, not Resolve(): an aggregate output registers with
 		// Expr == its own name, which Resolve() reads as a placeholder and turns
@@ -404,7 +406,7 @@ func assignmentError(field string, err error) error {
 
 // compileExpressionText parses and compiles an expression given as raw text,
 // for callers that hold a string rather than a parsed pipeline (eval()).
-func compileExpressionText(text string, registry *FieldRegistry, selfField string) (string, ExprType, error) {
+func compileExpressionText(text string, registry *FieldRegistry) (string, ExprType, error) {
 	runes := []rune(text)
 	expr, end, err := ParseExpressionAt(runes, 0)
 	if err != nil {
@@ -415,5 +417,5 @@ func compileExpressionText(text string, registry *FieldRegistry, selfField strin
 	if trailing := strings.TrimSpace(string(runes[end:])); trailing != "" {
 		return "", TypeAny, fmt.Errorf("unexpected %q after the expression", trailing)
 	}
-	return compileExpr(expr, registry, selfField)
+	return compileExpr(expr, registry)
 }
