@@ -83,7 +83,7 @@ Models capture new logs from the moment they are created. They do **not** retroa
 
 ## Seeding History (Backfill)
 
-From a model's **Data** view, seed historical data over a chosen window (24h, 7d, 30d, or 90d). Progress is shown per-day and can be cancelled; a failed or cancelled backfill can be resumed from where it stopped without double-counting. Seeding is terminal once complete - to re-seed, edit the model (which resets its data).
+From a model's **Data** view, seed historical data over a lookback window (24h, 7d, 30d, or 90d) or a custom from/to range of up to 90 days, entered in your display timezone. The API takes either `window` or `from` and `to` (RFC 3339) on `POST /models/{id}/backfill`. Progress is shown per-day and can be cancelled; a failed or cancelled backfill can be resumed from where it stopped without double-counting. Seeding is terminal once complete - to re-seed, edit the model (which resets its data).
 
 ## Alerts
 
