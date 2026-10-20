@@ -2055,6 +2055,8 @@ CREATE TABLE IF NOT EXISTS analytics_models (
     backfill_done       INT         NOT NULL DEFAULT 0,       -- completed day-chunks
     backfill_anchor     TIMESTAMP,                            -- ingest_timestamp dedup boundary vs the MV
     backfill_started_at TIMESTAMP,
+    backfill_from       TIMESTAMP,                            -- event-time range [from, to) the backfill covers
+    backfill_to         TIMESTAMP,
     backfill_error      TEXT        NOT NULL DEFAULT '',
     CONSTRAINT chk_model_scope CHECK (
         (fractal_id IS NOT NULL AND prism_id IS NULL) OR
@@ -2073,6 +2075,15 @@ ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_done       INT   
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_anchor     TIMESTAMP;
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_started_at TIMESTAMP;
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_error      TEXT        NOT NULL DEFAULT '';
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_from       TIMESTAMP;
+ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS backfill_to         TIMESTAMP;
+UPDATE analytics_models
+   SET backfill_to = backfill_started_at,
+       backfill_from = backfill_started_at - CASE backfill_window
+           WHEN '24h' THEN INTERVAL '1 day' WHEN '7d' THEN INTERVAL '7 days'
+           WHEN '30d' THEN INTERVAL '30 days' WHEN '90d' THEN INTERVAL '90 days' END
+ WHERE backfill_from IS NULL AND backfill_started_at IS NOT NULL
+   AND backfill_window IN ('24h', '7d', '30d', '90d');
 -- Scheduled (network) models: the background scorer's per-model rescore cursor.
 ALTER TABLE analytics_models ADD COLUMN IF NOT EXISTS last_scored_at      TIMESTAMPTZ;
 -- How far into logs.ingest_timestamp a model's state has been maintained. The

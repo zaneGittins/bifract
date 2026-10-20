@@ -105,14 +105,14 @@ func TestStateInsertCarriesOnlyTheCallersWindow(t *testing.T) {
 func TestBackfillChunks(t *testing.T) {
 	// Exact day boundaries: 7 days -> 7 full-day chunks.
 	end := time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
-	chunks := backfillChunks(end, 7)
+	chunks := backfillChunks(end.Add(-7*24*time.Hour), end)
 	if len(chunks) != 7 {
 		t.Fatalf("expected 7 chunks, got %d", len(chunks))
 	}
 
 	// Partial first/last day: now mid-day, 1-day window -> spans 2 partitions.
 	end = time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
-	chunks = backfillChunks(end, 1)
+	chunks = backfillChunks(end.Add(-24*time.Hour), end)
 	if len(chunks) != 2 {
 		t.Fatalf("expected 2 chunks for partial 24h, got %d", len(chunks))
 	}
@@ -255,4 +255,55 @@ func TestFirstSeenRecordedStamp(t *testing.T) {
 func TestFirstSeenAggRecordedColumn(t *testing.T) {
 	mustContain(t, firstSeenAggSQL("`t` FINAL", "f1", "", "entity_key", true), "min(first_recorded) AS recorded_at", "first_seen view")
 	mustNotContain(t, firstSeenAggSQL("`t` FINAL", "f1", "", "digest", false), "first_recorded", "tlsh view")
+}
+
+func TestBackfillRequestSpan(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	at := func(s string) *time.Time { v, _ := time.Parse(time.RFC3339, s); return &v }
+	cases := []struct {
+		name            string
+		req             BackfillRequest
+		from, to, label string
+		err             string
+	}{
+		{"window", BackfillRequest{Window: "7d"}, "2026-10-13T12:00:00Z", "2026-10-20T12:00:00Z", "7d", ""},
+		{"range", BackfillRequest{From: at("2026-05-01T00:00:00Z"), To: at("2026-05-08T06:00:00Z")}, "2026-05-01T00:00:00Z", "2026-05-08T06:00:00Z", "range", ""},
+		{"range in another zone", BackfillRequest{From: at("2026-05-01T02:00:00+02:00"), To: at("2026-05-02T02:00:00+02:00")}, "2026-05-01T00:00:00Z", "2026-05-02T00:00:00Z", "range", ""},
+		{"range ending in the future is cut at now", BackfillRequest{From: at("2026-10-19T00:00:00Z"), To: at("2026-10-25T00:00:00Z")}, "2026-10-19T00:00:00Z", "2026-10-20T12:00:00Z", "range", ""},
+		{"exactly the max span", BackfillRequest{From: at("2026-01-01T00:00:00Z"), To: at("2026-04-01T00:00:00Z")}, "2026-01-01T00:00:00Z", "2026-04-01T00:00:00Z", "range", ""},
+		{"longer than the max", BackfillRequest{From: at("2026-01-01T00:00:00Z"), To: at("2026-04-01T00:00:01Z")}, "", "", "", "longer than 90 days"},
+		{"reversed", BackfillRequest{From: at("2026-05-08T00:00:00Z"), To: at("2026-05-01T00:00:00Z")}, "", "", "", "must start before"},
+		{"empty", BackfillRequest{From: at("2026-05-01T00:00:00Z"), To: at("2026-05-01T00:00:00Z")}, "", "", "", "must start before"},
+		{"entirely in the future", BackfillRequest{From: at("2026-11-01T00:00:00Z"), To: at("2026-11-02T00:00:00Z")}, "", "", "", "must start before"},
+		{"only from", BackfillRequest{From: at("2026-05-01T00:00:00Z")}, "", "", "", "both from and to"},
+		{"nothing", BackfillRequest{}, "", "", "", "both from and to"},
+		{"window and range", BackfillRequest{Window: "7d", From: at("2026-05-01T00:00:00Z"), To: at("2026-05-02T00:00:00Z")}, "", "", "", "not both"},
+		{"bad window", BackfillRequest{Window: "365d"}, "", "", "", "invalid backfill window"},
+	}
+	for _, c := range cases {
+		from, to, label, err := c.req.Span(now)
+		if c.err != "" {
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Errorf("%s: err %v, want %q", c.name, err, c.err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if got := [3]string{from.Format(time.RFC3339), to.Format(time.RFC3339), label}; got != [3]string{c.from, c.to, c.label} {
+			t.Errorf("%s: got %v, want %s %s %s", c.name, got, c.from, c.to, c.label)
+		}
+	}
+}
+
+func TestBackfillSpanDescription(t *testing.T) {
+	from, to := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	if got := (&Model{BackfillWindow: "30d"}).backfillSpan(); got != "30d of history" {
+		t.Errorf("window: %q", got)
+	}
+	if got := (&Model{BackfillWindow: "range", BackfillFrom: &from, BackfillTo: &to}).backfillSpan(); got != "history from 2026-05-01T00:00:00Z to 2026-05-08T00:00:00Z" {
+		t.Errorf("range: %q", got)
+	}
 }

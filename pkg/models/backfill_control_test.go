@@ -66,7 +66,7 @@ func TestStartBackfillGuards(t *testing.T) {
 		{"completed", active(func(m *Model) { m.BackfillStatus = "completed" }), "7d", "already completed"},
 	}
 	for _, c := range cases {
-		err := m.StartBackfill(context.Background(), c.model, c.window)
+		err := m.StartBackfill(context.Background(), c.model, BackfillRequest{Window: c.window})
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
 		}

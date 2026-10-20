@@ -37,6 +37,7 @@ type modelRow struct {
 	bfStatus, bfWindow    string
 	bfTotal, bfDone       int64
 	bfStartedAt, bfAnchor *time.Time
+	bfFrom, bfTo          *time.Time
 	bfError               string
 
 	watermark, lastScored *time.Time
@@ -181,7 +182,7 @@ func (db *modelDB) columns(r *modelRow) []driver.Value {
 		r.id, r.fractalID, r.prismID, r.name, r.description, r.modelType, []byte(r.definition),
 		r.chTable, r.chMV, r.status, r.alertMode, r.linkedAlertID, r.errorMessage, r.createdBy,
 		r.createdAt, r.updatedAt, r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone,
-		tval(r.bfStartedAt), r.bfError, tval(r.watermark), enabled, last,
+		tval(r.bfStartedAt), tval(r.bfFrom), tval(r.bfTo), r.bfError, tval(r.watermark), enabled, last,
 	}
 }
 
@@ -330,7 +331,7 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		return db.update(row(0), func(r *modelRow) { r.status = "rebuilding" }), true
 	case "UPDATE analytics_models SET alert_mode=$1, updated_at=NOW() WHERE id=$2":
 		return db.update(row(1), func(r *modelRow) { r.alertMode, r.updatedAt = arg(0), now }), true
-	case "UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()), backfill_anchor = COALESCE(state_watermark, NOW()), backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0, backfill_started_at = NULL, backfill_error = '' WHERE id = $1":
+	case "UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()), backfill_anchor = COALESCE(state_watermark, NOW()), backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0, backfill_started_at = NULL, backfill_from = NULL, backfill_to = NULL, backfill_error = '' WHERE id = $1":
 		return db.update(row(0), func(r *modelRow) {
 			// Every SET reads the row as it stood before the statement.
 			wm := now
@@ -339,6 +340,7 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 			}
 			r.watermark, r.bfAnchor = tptr(wm), tptr(wm)
 			r.bfStatus, r.bfWindow, r.bfTotal, r.bfDone, r.bfStartedAt, r.bfError = "none", "", 0, 0, nil, ""
+			r.bfFrom, r.bfTo = nil, nil
 		}), true
 	case "UPDATE analytics_models SET state_watermark = COALESCE(state_watermark, NOW()) WHERE id = $1":
 		return db.update(row(0), func(r *modelRow) {
@@ -366,8 +368,8 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		}
 		return affected(k), true
 
-	case "UPDATE analytics_models SET backfill_status='running', backfill_window=$1, backfill_total=$2, backfill_done=0, backfill_anchor=COALESCE(backfill_anchor, created_at), backfill_started_at=$3, backfill_error='' WHERE id=$4 AND status='active' AND backfill_status IN ('none','')":
-		r := row(3)
+	case "UPDATE analytics_models SET backfill_status='running', backfill_window=$1, backfill_total=$2, backfill_done=0, backfill_anchor=COALESCE(backfill_anchor, created_at), backfill_started_at=$3, backfill_from=$4, backfill_to=$5, backfill_error='' WHERE id=$6 AND status='active' AND backfill_status IN ('none','')":
+		r := row(5)
 		if r == nil || r.status != "active" || (r.bfStatus != "none" && r.bfStatus != "") {
 			return affected(0), true
 		}
@@ -376,6 +378,7 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 			r.bfAnchor = tptr(r.createdAt)
 		}
 		r.bfStartedAt = tptr(args[2].(time.Time))
+		r.bfFrom, r.bfTo = tptr(args[3].(time.Time)), tptr(args[4].(time.Time))
 		return affected(1), true
 	case "UPDATE analytics_models SET backfill_status='running', backfill_error='' WHERE id=$1 AND status='active' AND backfill_status IN ('failed','cancelled') RETURNING backfill_started_at":
 		r := row(0)
@@ -384,9 +387,9 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		}
 		r.bfStatus, r.bfError = "running", ""
 		return fakedb.Row(tval(r.bfStartedAt)), true
-	case "SELECT backfill_window, backfill_anchor, backfill_started_at, backfill_done FROM analytics_models WHERE id=$1":
+	case "SELECT backfill_from, backfill_to, backfill_anchor, backfill_started_at, backfill_done FROM analytics_models WHERE id=$1":
 		if r := row(0); r != nil {
-			return fakedb.Row(r.bfWindow, tval(r.bfAnchor), tval(r.bfStartedAt), r.bfDone), true
+			return fakedb.Row(tval(r.bfFrom), tval(r.bfTo), tval(r.bfAnchor), tval(r.bfStartedAt), r.bfDone), true
 		}
 		return fakedb.PGResult{}, true
 	case "UPDATE analytics_models SET backfill_done=$1 WHERE id=$2 AND backfill_status='running' AND backfill_started_at IS NOT DISTINCT FROM $3":

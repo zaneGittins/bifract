@@ -80,7 +80,7 @@ func startBackfill(t *testing.T, env *fakeEnv, id, window string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.mgr.StartBackfill(context.Background(), mo, window); err != nil {
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{Window: window}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 }
@@ -108,7 +108,7 @@ func TestBackfillRunsEveryChunkOnce(t *testing.T) {
 	if got.bfStatus != "completed" || got.bfError != "" || got.bfWindow != "7d" {
 		t.Fatalf("row: %+v", got)
 	}
-	chunks := backfillChunks(*got.bfStartedAt, 7)
+	chunks := backfillChunks(got.bfStartedAt.Add(-7*24*time.Hour), *got.bfStartedAt)
 	inserts := log.accepted()
 	if int(got.bfTotal) != len(chunks) || int(got.bfDone) != len(chunks) || len(inserts) != len(chunks) {
 		t.Fatalf("total %d done %d inserts %d chunks %d", got.bfTotal, got.bfDone, len(inserts), len(chunks))
@@ -143,6 +143,48 @@ func TestBackfillRunsEveryChunkOnce(t *testing.T) {
 	}
 }
 
+// An explicit range backfills exactly [from, to), in day chunks, however far back
+// it lies, and the run reads the stored range rather than the start time.
+func TestBackfillRangeCoversOnlyTheRange(t *testing.T) {
+	env, log, r := backfillEnv(t, false)
+	from := time.Date(2026, 3, 2, 18, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 5, 6, 0, 0, 0, time.UTC)
+	mo, _ := env.mgr.Get(context.Background(), r.id)
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{From: &from, To: &to}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitBackfill(t, env, r.id)
+	if got.bfStatus != "completed" || got.bfWindow != "range" || !got.bfFrom.Equal(from) || !got.bfTo.Equal(to) {
+		t.Fatalf("row: %+v", got)
+	}
+	want := []chunkWindow{
+		{"2026-03-02 18:00:00", "2026-03-03 00:00:00", ""},
+		{"2026-03-03 00:00:00", "2026-03-04 00:00:00", ""},
+		{"2026-03-04 00:00:00", "2026-03-05 00:00:00", ""},
+		{"2026-03-05 00:00:00", "2026-03-05 06:00:00", ""},
+	}
+	inserts := log.accepted()
+	if len(inserts) != len(want) || got.bfTotal != int64(len(want)) || got.bfDone != int64(len(want)) {
+		t.Fatalf("%d inserts, total %d done %d, want %d", len(inserts), got.bfTotal, got.bfDone, len(want))
+	}
+	anchor := r.bfAnchor.UTC().Format(chTimeLayout)
+	for i, stmt := range inserts {
+		w := chunkOf(t, stmt)
+		if w.start != want[i].start || w.end != want[i].end || w.anchor != anchor {
+			t.Errorf("chunk %d = %+v, want %s..%s before %s", i, w, want[i].start, want[i].end, anchor)
+		}
+	}
+
+	bad := seedModel(env, ModelTypeRarity, rarityDef, nil)
+	mo, _ = env.mgr.Get(context.Background(), bad.id)
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{From: &to, To: &from}); err == nil {
+		t.Error("a reversed range started")
+	}
+	if g, _ := env.db.get(bad.id); g.bfStatus != "none" {
+		t.Errorf("a refused range changed the row: %q", g.bfStatus)
+	}
+}
+
 // On a cluster the backfill reads every shard and writes the Distributed table, so
 // rows balance across shards.
 func TestBackfillOnClusterUsesDistributedTables(t *testing.T) {
@@ -162,10 +204,10 @@ func TestBackfillStartIsSingleShot(t *testing.T) {
 	env, _, r := backfillEnv(t, false)
 	env.mgr.bfSem <- struct{}{} // hold the slot so the first run stays queued
 	mo, _ := env.mgr.Get(context.Background(), r.id)
-	if err := env.mgr.StartBackfill(context.Background(), mo, "7d"); err != nil {
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{Window: "7d"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.mgr.StartBackfill(context.Background(), mo, "7d"); err == nil || err.Error() != "backfill already started" {
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{Window: "7d"}); err == nil || err.Error() != "backfill already started" {
 		t.Errorf("second start: %v", err)
 	}
 	env.mgr.CancelBackfill(r.id)
@@ -192,7 +234,7 @@ func TestBackfillFailureAndResume(t *testing.T) {
 	if got.bfStatus != "completed" || got.bfWindow != "7d" {
 		t.Fatalf("after resume: %+v", got)
 	}
-	want := backfillChunks(*got.bfStartedAt, 7)
+	want := backfillChunks(*got.bfFrom, *got.bfTo)
 	inserts := log.accepted()
 	if len(inserts) != len(want) {
 		t.Fatalf("%d chunks committed, want %d", len(inserts), len(want))
@@ -212,12 +254,13 @@ func TestRecoverBackfills(t *testing.T) {
 	env.db.mu.Lock()
 	row := env.db.rows[r.id]
 	row.bfStatus, row.bfWindow, row.bfDone, row.bfTotal, row.bfStartedAt = "running", "7d", 2, 8, &started
+	row.bfFrom, row.bfTo = tptr(started.Add(-7*24*time.Hour)), &started
 	env.db.mu.Unlock()
 	gone := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) { r.status, r.bfStatus = "rebuilding", "running" })
 
 	env.mgr.RecoverBackfills(context.Background())
 	got := waitBackfill(t, env, r.id)
-	chunks := backfillChunks(started, 7)
+	chunks := backfillChunks(started.Add(-7*24*time.Hour), started)
 	if got.bfStatus != "completed" || int(got.bfDone) != len(chunks) {
 		t.Errorf("recovered: %+v", got)
 	}
@@ -292,11 +335,12 @@ func TestBackfillFailsOnUnusableState(t *testing.T) {
 		edit func(*modelRow)
 		want string
 	}{
-		"window cleared": {func(r *modelRow) { r.bfStatus, r.bfWindow = "failed", "" }, "invalid backfill window"},
+		"range cleared": {func(r *modelRow) { r.bfStatus, r.bfFrom, r.bfTo = "failed", nil, nil }, "invalid backfill range"},
 		"source no longer compiles": {func(r *modelRow) {
 			r.definition = defJSON(ModelDefinition{KeyFields: []string{"u"}, SourceBQL: `level = "a" | sort(host)`})
 			r.modelType = string(ModelTypeFirstSeen)
 			r.bfStatus, r.bfWindow = "cancelled", "7d"
+			r.bfFrom, r.bfTo = tptr(time.Now().Add(-48*time.Hour)), tptr(time.Now())
 		}, "source query"},
 	}
 	for name, c := range cases {
@@ -318,11 +362,11 @@ func TestStartBackfillStoreErrors(t *testing.T) {
 	env, _, r := backfillEnv(t, false)
 	env.db.failOn("backfill_window=$1", errors.New("pg down"))
 	mo, _ := env.mgr.Get(context.Background(), r.id)
-	if err := env.mgr.StartBackfill(context.Background(), mo, "7d"); err == nil || !strings.Contains(err.Error(), "mark backfill running") {
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{Window: "7d"}); err == nil || !strings.Contains(err.Error(), "mark backfill running") {
 		t.Errorf("fresh: %v", err)
 	}
 	mo.BackfillStatus = "failed" // stale: the row is still 'none', so the resume matches nothing
-	if err := env.mgr.StartBackfill(context.Background(), mo, "7d"); err == nil || err.Error() != "backfill cannot be resumed" {
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{Window: "7d"}); err == nil || err.Error() != "backfill cannot be resumed" {
 		t.Errorf("resume: %v", err)
 	}
 	if registeredRuns(env.mgr) != 0 {
@@ -468,6 +512,7 @@ func TestRecoveredRunWithoutAnchorUsesCreation(t *testing.T) {
 	env.db.mu.Lock()
 	row := env.db.rows[r.id]
 	row.bfStatus, row.bfWindow, row.bfDone, row.bfTotal, row.bfStartedAt = "running", "7d", 0, 8, &started
+	row.bfFrom, row.bfTo = tptr(started.Add(-7*24*time.Hour)), &started
 	row.bfAnchor, row.createdAt = nil, created
 	env.db.mu.Unlock()
 
@@ -476,7 +521,7 @@ func TestRecoveredRunWithoutAnchorUsesCreation(t *testing.T) {
 		t.Fatalf("row: %q %q", got.bfStatus, got.bfError)
 	}
 	inserts := log.accepted()
-	if len(inserts) != len(backfillChunks(started, 7)) {
+	if len(inserts) != len(backfillChunks(started.Add(-7*24*time.Hour), started)) {
 		t.Fatalf("%d chunks run", len(inserts))
 	}
 	for _, stmt := range inserts {

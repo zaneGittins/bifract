@@ -627,7 +627,7 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 		    SET state_watermark = COALESCE(state_watermark, NOW()),
 		        backfill_anchor = COALESCE(state_watermark, NOW()),
 		        backfill_status = 'none', backfill_window = '', backfill_total = 0, backfill_done = 0,
-		        backfill_started_at = NULL, backfill_error = ''
+		        backfill_started_at = NULL, backfill_from = NULL, backfill_to = NULL, backfill_error = ''
 		  WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("seed state watermark: %w", err)
 	}
@@ -1480,7 +1480,7 @@ const modelColumns = `id, COALESCE(fractal_id::text,''), COALESCE(prism_id::text
 	       status, alert_mode, COALESCE(linked_alert_id::text,''), error_message,
 	       COALESCE(created_by,''), created_at, updated_at,
 	       backfill_status, backfill_window, backfill_total, backfill_done,
-	       backfill_started_at, backfill_error, state_watermark,
+	       backfill_started_at, backfill_from, backfill_to, backfill_error, state_watermark,
 	       (SELECT al.enabled FROM alerts al WHERE al.id = analytics_models.linked_alert_id),
 	       (SELECT al.last_triggered FROM alerts al WHERE al.id = analytics_models.linked_alert_id)`
 
@@ -1496,7 +1496,7 @@ func scanModelRow(row modelScannable) (*Model, error) {
 		&mo.Status, &mo.AlertMode, &mo.LinkedAlertID, &mo.ErrorMessage,
 		&mo.CreatedBy, &mo.CreatedAt, &mo.UpdatedAt,
 		&mo.BackfillStatus, &mo.BackfillWindow, &mo.BackfillTotal, &mo.BackfillDone,
-		&mo.BackfillStartedAt, &mo.BackfillError,
+		&mo.BackfillStartedAt, &mo.BackfillFrom, &mo.BackfillTo, &mo.BackfillError,
 		&mo.StateWatermark,
 		&alertEnabled,
 		&lastTriggered,

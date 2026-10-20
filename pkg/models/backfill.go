@@ -105,13 +105,12 @@ type timeChunk struct {
 	end   time.Time
 }
 
-// backfillChunks splits [end-days, end] into day-aligned half-open intervals,
+// backfillChunks splits [start, end) into day-aligned half-open intervals,
 // oldest first. The first/last chunks may be partial days.
-func backfillChunks(end time.Time, days int) []timeChunk {
+func backfillChunks(start, end time.Time) []timeChunk {
 	end = end.UTC()
-	start := end.Add(-time.Duration(days) * 24 * time.Hour)
 	var chunks []timeChunk
-	cur := start
+	cur := start.UTC()
 	for cur.Before(end) {
 		dayEnd := time.Date(cur.Year(), cur.Month(), cur.Day(), 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
 		chunkEnd := dayEnd
@@ -124,19 +123,20 @@ func backfillChunks(end time.Time, days int) []timeChunk {
 	return chunks
 }
 
-// StartBackfill launches a historical backfill for a model. It returns quickly;
-// the work runs in a background goroutine.
+// StartBackfill launches a historical backfill for a model over the request's
+// window or explicit range. It returns quickly; the work runs in a background
+// goroutine.
 //
 // Re-running a backfill against already-seeded data would double-count (the
 // AggregatingMergeTree sums event_count), so the action is status-gated:
-//   - none:               fresh start over the requested window.
-//   - failed / cancelled: RESUME from the saved cursor (window is ignored), so
+//   - none:               fresh start over the requested span.
+//   - failed / cancelled: RESUME from the saved cursor (request is ignored), so
 //     previously-seeded days are not re-inserted.
 //   - running / completed: rejected.
 //
 // The status transition is an atomic conditional UPDATE, so concurrent callers
 // cannot both launch a run.
-func (m *Manager) StartBackfill(ctx context.Context, model *Model, window string) error {
+func (m *Manager) StartBackfill(ctx context.Context, model *Model, req BackfillRequest) error {
 	var startedAt *time.Time
 	if model.ModelType.IsScheduled() {
 		// Scheduled (network) models self-seed: the MV + TTL maintain the rolling
@@ -152,28 +152,29 @@ func (m *Manager) StartBackfill(ctx context.Context, model *Model, window string
 
 	switch model.BackfillStatus {
 	case "", "none":
-		days, ok := BackfillWindowDays(window)
-		if !ok {
-			return fmt.Errorf("invalid backfill window: %s", window)
-		}
 		// The anchor is where live state took over the current table (set when the
 		// table was created), so the backfill takes only rows ingested before it.
 		// created_at is the fallback for models whose table predates the anchor.
-		// started_at is the stable event-time end so chunking is deterministic
-		// across restarts (resume-safe).
+		// The resolved [from, to) is stored so chunking is deterministic across
+		// restarts (resume-safe).
 		//
-		// Truncated to what Postgres stores, because it is also the run's identity:
-		// the run's writes match on it (see backfillRun).
+		// Truncated to what Postgres stores, because started_at is the run's
+		// identity: the run's writes match on it (see backfillRun).
 		started := time.Now().UTC().Truncate(time.Microsecond)
+		from, to, label, err := req.Span(started)
+		if err != nil {
+			return err
+		}
+		from, to = from.Truncate(time.Microsecond), to.Truncate(time.Microsecond)
 		startedAt = &started
-		total := len(backfillChunks(started, days))
+		total := len(backfillChunks(from, to))
 		res, err := m.pg.Exec(ctx,
 			`UPDATE analytics_models
 			    SET backfill_status='running', backfill_window=$1, backfill_total=$2,
 			        backfill_done=0, backfill_anchor=COALESCE(backfill_anchor, created_at),
-			        backfill_started_at=$3, backfill_error=''
-			  WHERE id=$4 AND status='active' AND backfill_status IN ('none','')`,
-			window, total, started, model.ID)
+			        backfill_started_at=$3, backfill_from=$4, backfill_to=$5, backfill_error=''
+			  WHERE id=$6 AND status='active' AND backfill_status IN ('none','')`,
+			label, total, started, from, to, model.ID)
 		if err != nil {
 			return fmt.Errorf("mark backfill running: %w", err)
 		}
@@ -301,7 +302,7 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 		return
 	}
 
-	window, anchor, startedAt, done, err := m.getBackfillState(context.Background(), id)
+	from, to, anchor, startedAt, done, err := m.getBackfillState(context.Background(), id)
 	if err != nil {
 		log.Printf("model %s: backfill state: %v", id, err)
 		m.finishBackfill(run, "failed", "backfill state load failed")
@@ -314,9 +315,8 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 		m.unregisterCancel(run)
 		return
 	}
-	days, ok := BackfillWindowDays(window)
-	if !ok {
-		m.finishBackfill(run, "failed", "invalid backfill window")
+	if from.IsZero() || !from.Before(to) {
+		m.finishBackfill(run, "failed", "invalid backfill range")
 		return
 	}
 	if anchor.IsZero() {
@@ -332,11 +332,7 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 		m.finishBackfill(run, "failed", fmt.Sprintf("source query: %v", err))
 		return
 	}
-	if startedAt.IsZero() {
-		startedAt = time.Now().UTC()
-	}
-
-	chunks := backfillChunks(startedAt, days)
+	chunks := backfillChunks(from, to)
 
 	// Cluster-aware tables: read all shards via the distributed logs table, write
 	// the distributed model table so rows balance across shards. Single-node uses
@@ -445,12 +441,15 @@ func (m *Manager) waitForHealth(ctx context.Context) error {
 	}
 }
 
-func (m *Manager) getBackfillState(ctx context.Context, id string) (window string, anchor, startedAt time.Time, done int, err error) {
-	var anchorNT, startedNT sql.NullTime
+func (m *Manager) getBackfillState(ctx context.Context, id string) (from, to, anchor, startedAt time.Time, done int, err error) {
+	var fromNT, toNT, anchorNT, startedNT sql.NullTime
 	err = m.pg.QueryRow(ctx,
-		`SELECT backfill_window, backfill_anchor, backfill_started_at, backfill_done
+		`SELECT backfill_from, backfill_to, backfill_anchor, backfill_started_at, backfill_done
 		   FROM analytics_models WHERE id=$1`, id).
-		Scan(&window, &anchorNT, &startedNT, &done)
+		Scan(&fromNT, &toNT, &anchorNT, &startedNT, &done)
+	if fromNT.Valid && toNT.Valid {
+		from, to = fromNT.Time.UTC(), toNT.Time.UTC()
+	}
 	if anchorNT.Valid {
 		anchor = anchorNT.Time
 	}
