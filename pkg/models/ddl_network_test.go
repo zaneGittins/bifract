@@ -35,6 +35,26 @@ func TestNetScoreReadMergesWithTheStateParameter(t *testing.T) {
 	mustContain(t, read, "groupArrayMerge"+cap+"(size_state)", "scorer read sizes")
 }
 
+// groupArrayMerge(N) caps its result at N across every state it merges, so the
+// read merges each day on its own and concatenates the days: one merge over the
+// window kept N points in total, an early slice of a busy pair's window. The
+// preview caps per day the same way, so it keeps what the warmed model would.
+func TestNetReadsCapPointsPerDay(t *testing.T) {
+	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f1", 7)
+	mustContain(t, read, "GROUP BY src, dst, port, day\n)\nGROUP BY src, dst, port", "merged per day, then per pair")
+	mustContain(t, read, "arrayFlatten(groupArray(day_ts)) AS ts_list", "days concatenated")
+	mustContain(t, read, "arrayFlatten(groupArray(day_sizes)) AS size_list", "sizes concatenated alongside")
+
+	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(7*86400, 0), Days: 7}
+	prev, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, prev, "toDate(timestamp) AS day", "preview buckets by day")
+	mustContain(t, prev, fmt.Sprintf("groupArray(%d)(toUnixTimestamp(timestamp)) AS day_ts", netStateArrayCap), "preview caps each day")
+	mustContain(t, prev, "GROUP BY src, dst, port, day\n)\nGROUP BY src, dst, port\nHAVING", "preview gates the whole pair")
+}
+
 func TestNetScoreReadQuery(t *testing.T) {
 	// Beacon: a pair qualifies on connection count, between min_connections and
 	// the strobe limit (one connection per second over the window by default).
@@ -117,7 +137,7 @@ func TestNetPreviewAggLongConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustContain(t, q, "HAVING total_duration >= 3600", "default long-connection gate")
-	mustContain(t, q, "sum(toFloat64OrZero(fields.`duration`::String)) AS total_duration", "duration coerced to a number")
+	mustContain(t, q, "sum(toFloat64OrZero(fields.`duration`::String)) AS day_dur", "duration coerced to a number")
 	mustContain(t, q, "AND fields.`proto`::String = 'udp'", "an op-less filter is equality")
 }
 

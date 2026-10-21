@@ -557,9 +557,9 @@ func chStringLiteral(s string) string {
 // The scorer reads only the compact state, never raw logs.
 // ---------------------------------------------------------------------------
 
-// netStateArrayCap bounds the per-day-per-pair timestamp/size arrays. Over a 14-day
-// window this merges to ~28k points max, far more than enough to measure regularity
-// while hard-bounding both ClickHouse and Go memory.
+// netStateArrayCap bounds the per-day-per-pair timestamp/size arrays. A read keeps
+// the cap per day, so a 14-day window holds at most 14x this many points, enough to
+// measure regularity while hard-bounding both ClickHouse and Go memory.
 const netStateArrayCap = 2000
 
 // BuildNetStateTableDDL returns the AggregatingMergeTree state table DDL. windowDays
@@ -718,17 +718,30 @@ func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fract
 		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
 	}
 	// The Merge combinator must carry the same parameter as the stored parametric
-	// groupArray(N) state, or ClickHouse rejects it (code 43). first_ts/last_ts are
-	// intentionally omitted: the scorer derives the observed range from the merged,
-	// window-trimmed timestamps, and scanning the SimpleAggregateFunction(min/max,
-	// DateTime64) result columns is not supported by the row scanner.
+	// groupArray(N) state, or ClickHouse rejects it (code 43). It also caps what it
+	// merges at N, across every row it merges, so each day is merged on its own and
+	// the days concatenated after: merging the window's days in one go kept N
+	// points in total, an arbitrary early slice of a busy pair's window. ts_list
+	// and size_list stay parallel because both aggregate the same rows in the same
+	// order. first_ts/last_ts are intentionally omitted: the scorer derives the
+	// observed range from the merged, window-trimmed timestamps, and scanning the
+	// SimpleAggregateFunction(min/max, DateTime64) result columns is not supported
+	// by the row scanner.
 	return fmt.Sprintf(`SELECT src, dst, port,
-    sum(conn_count) AS cnt,
-    groupArrayMerge(%d)(ts_state) AS ts_list,
-    groupArrayMerge(%d)(size_state) AS size_list,
-    sum(dur_sum) AS total_duration
-FROM %s
-WHERE %s AND day >= today() - %d
+    sum(day_cnt) AS cnt,
+    arrayFlatten(groupArray(day_ts)) AS ts_list,
+    arrayFlatten(groupArray(day_sizes)) AS size_list,
+    sum(day_dur) AS total_duration
+FROM (
+    SELECT src, dst, port, day,
+        sum(conn_count) AS day_cnt,
+        groupArrayMerge(%d)(ts_state) AS day_ts,
+        groupArrayMerge(%d)(size_state) AS day_sizes,
+        sum(dur_sum) AS day_dur
+    FROM %s
+    WHERE %s AND day >= today() - %d
+    GROUP BY src, dst, port, day
+)
 GROUP BY src, dst, port
 %s`, netStateArrayCap, netStateArrayCap, stateTable, fractalScopeClause(fractalID), windowDays, having)
 }
@@ -786,23 +799,31 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
 	}
 
+	// Capped per day, as the state is, so a preview keeps the points the warmed
+	// model would: one cap over the whole window kept an arbitrary slice of it.
 	var b strings.Builder
-	b.WriteString("SELECT\n")
-	b.WriteString(fmt.Sprintf("    %s AS src, %s AS dst, %s AS port,\n", src, dst, port))
-	b.WriteString("    toUInt64(count()) AS cnt,\n")
-	b.WriteString(fmt.Sprintf("    groupArray(%d)(toUnixTimestamp(timestamp)) AS ts_list,\n", netStateArrayCap))
-	b.WriteString(fmt.Sprintf("    groupArray(%d)(%s) AS size_list,\n", netStateArrayCap, bytes))
-	b.WriteString(fmt.Sprintf("    sum(%s) AS total_duration\n", dur))
-	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
+	b.WriteString("SELECT src, dst, port,\n")
+	b.WriteString("    sum(day_cnt) AS cnt,\n")
+	b.WriteString("    arrayFlatten(groupArray(day_ts)) AS ts_list,\n")
+	b.WriteString("    arrayFlatten(groupArray(day_sizes)) AS size_list,\n")
+	b.WriteString("    sum(day_dur) AS total_duration\n")
+	b.WriteString("FROM (\n")
+	b.WriteString(fmt.Sprintf("    SELECT %s AS src, %s AS dst, %s AS port, toDate(timestamp) AS day,\n", src, dst, port))
+	b.WriteString("        toUInt64(count()) AS day_cnt,\n")
+	b.WriteString(fmt.Sprintf("        groupArray(%d)(toUnixTimestamp(timestamp)) AS day_ts,\n", netStateArrayCap))
+	b.WriteString(fmt.Sprintf("        groupArray(%d)(%s) AS day_sizes,\n", netStateArrayCap, bytes))
+	b.WriteString(fmt.Sprintf("        sum(%s) AS day_dur\n", dur))
+	b.WriteString(fmt.Sprintf("    FROM %s\n", sourceTable))
+	b.WriteString(fmt.Sprintf("    WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
 	preds, err := sourceFilterSQL(def)
 	if err != nil {
 		return "", err
 	}
 	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\n    AND %s", p))
+		b.WriteString(fmt.Sprintf("\n        AND %s", p))
 	}
-	b.WriteString("\nGROUP BY src, dst, port\n")
+	b.WriteString("\n    GROUP BY src, dst, port, day\n)\n")
+	b.WriteString("GROUP BY src, dst, port\n")
 	b.WriteString(having)
 	return b.String(), nil
 }
