@@ -646,8 +646,8 @@ SETTINGS index_granularity = 8192`, stateTable, netStateArrayCap, netStateArrayC
 // BuildNetResultsTableDDL returns the ReplacingMergeTree results table DDL. The
 // scorer inserts fresh rows each pass; reads take the latest via FINAL/argMax. The
 // modifier columns (prevalence/first_seen/threat_intel) carry the full breakdown so
-// the reviewer can see why a pair scored high; first_seen/threat_intel are reserved
-// (0 until wired) and cost nothing to keep the schema stable.
+// the reviewer can see why a pair scored high; first_seen/threat_intel are 0 unless
+// the model links a first_seen model or a lookup.
 func BuildNetResultsTableDDL(resultsTable string) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
     fractal_id         LowCardinality(String),
@@ -832,6 +832,14 @@ WHERE %s AND day >= today() - %d
 GROUP BY dst`, stateTable, fractalScopeClause(fractalID), windowDays)
 }
 
+// BuildNetPairsQuery returns the window's distinct (src, dst) pairs, the keys the
+// first-seen and threat intel modifiers are read for.
+func BuildNetPairsQuery(stateTable, fractalID string, windowDays int) string {
+	return fmt.Sprintf(`SELECT DISTINCT src, dst
+FROM %s
+WHERE %s AND day >= today() - %d`, stateTable, fractalScopeClause(fractalID), windowDays)
+}
+
 // BuildNetNetworkSizeQuery returns the distinct-source count over the window, the
 // denominator for the prevalence ratio.
 func BuildNetNetworkSizeQuery(stateTable, fractalID string, windowDays int) string {
@@ -928,6 +936,26 @@ func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID stri
 	dst := chFieldRef(nf.DstField)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SELECT uniqExact(%s) AS network_size\n", src))
+	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
+	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
+	preds, err := sourceFilterSQL(def)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range preds {
+		b.WriteString(fmt.Sprintf("\n    AND %s", p))
+	}
+	return b.String(), nil
+}
+
+// BuildNetPreviewPairs returns the preview window's distinct (src, dst) pairs over
+// raw logs, the preview's counterpart of BuildNetPairsQuery.
+func BuildNetPreviewPairs(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
+	nf := netFieldMap(def)
+	src := chFieldRef(nf.SrcField)
+	dst := chFieldRef(nf.DstField)
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("SELECT DISTINCT %s AS src, %s AS dst\n", src, dst))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
 	preds, err := sourceFilterSQL(def)

@@ -65,6 +65,20 @@ TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash dig
 
 Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.
 
+### Network modifiers
+
+The final score is the regularity (or duration) score plus up to three adjustments, clamped to 0-1. Each is stored with the pair, as `prevalence_score`, `first_seen_score` and `threat_intel_score`, and the **Why** column names the ones that moved it.
+
+| Modifier | Applies when | Default |
+|---|---|---|
+| Prevalence | Always. A destination at most 2% of the window's sources talk to is boosted; one at least 50% talk to is lowered | +0.15 / -0.15 |
+| First seen | A **First seen from** model is linked. A destination that model first saw in the last 7 days is boosted; one it has known for over 90 days is lowered | +0.15 / -0.15 |
+| Threat intel | A **Threat intel lookup** and its key column are set. A destination the lookup lists is boosted, matched as `match(dict=, column=)` would | +0.25 |
+
+The network state only holds the window, so it cannot say how long a destination has been around: a pair talking every minute for six months is more likely a business service than one that started this week. Link a First / Last Seen model keyed on the destination field (`dst_ip`), or on the source and destination (`src_ip`, `dst_ip`) to judge the pair rather than the destination. Seed it with a backfill so long-known destinations are known. A destination the linked model has no record of gets no first-seen adjustment.
+
+In a definition these are `modifiers.first_seen_model`, `modifiers.threat_intel_lookup` and `modifiers.threat_intel_column`, with `first_seen_recent_days`, `first_seen_established_days`, `prevalence_low_threshold` and `prevalence_high_threshold` for the cutoffs. Every adjustment (`prevalence_increase`, `prevalence_decrease`, `first_seen_increase`, `first_seen_decrease`, `threat_intel_increase`) defaults when left out, and a negative value turns that side off. A link must resolve when the model is saved. If the linked model or lookup is deleted later, its modifier stops applying and the scorer logs why.
+
 ## Using a Model in Queries
 
 Any model can be read from BQL with `modelLookup()`, which joins the model's baseline onto matching rows so you can filter or aggregate on it:

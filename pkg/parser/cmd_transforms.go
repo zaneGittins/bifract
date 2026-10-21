@@ -1129,6 +1129,24 @@ func dictMembershipSQL(dictRef, probeRef string, pattern bool) string {
 	return fmt.Sprintf("dictHas('%s', %s)", dictRef, probeRef)
 }
 
+// LookupMembership is match()'s membership test for a caller outside a query:
+// whether fieldRef, a SQL expression, is a key of the lookup's column, probed in
+// the shape that column's dictionary needs. The network scorer's threat intel
+// modifier uses it so a destination hits exactly when match() would say it does.
+func LookupMembership(fieldRef, dictName, keyColumn string, opts QueryOptions) (string, error) {
+	colMap, known := opts.Dictionaries[dictName]
+	if !known {
+		return "", fmt.Errorf("lookup %q not found in this fractal", dictName)
+	}
+	chLookupName := colMap[keyColumn]
+	if chLookupName == "" {
+		return "", fmt.Errorf("lookup %q has no key column %q - enable that column as a key on the Lookups page", dictName, keyColumn)
+	}
+	isPattern := opts.PatternDicts[chLookupName]
+	probeRef := dictProbe(fieldRef, dictName, chLookupName, isPattern, opts)
+	return dictMembershipSQL(escapeString(dictRef(opts.DictionaryDatabase, chLookupName)), probeRef, isPattern), nil
+}
+
 // PatternMatchAttr mirrors dictionaries.PatternMatchAttr. Named here rather than
 // imported because the parser cannot depend on the dictionary package without a
 // cycle; pkg/query sees both and asserts they agree.

@@ -306,17 +306,46 @@ func (l *LongConnParams) WithDefaults() LongConnParams {
 // ModifierParams tunes the false-positive-reduction layer. Prevalence (how many
 // distinct internal hosts contact a destination) reranks the base regularity score:
 // rare destinations are boosted, ubiquitous ones (shared services) penalized.
+//
+// Two more modifiers are off until configured, because each needs something the
+// network state does not have. First seen reads a first_seen model for how long
+// the destination has been known: the state only holds the window, and a pair
+// talking for months is more likely business traffic than one that started this
+// week (RITA's first-seen modifier). Threat intel boosts a destination listed in
+// a lookup, probed the way match() probes it.
 type ModifierParams struct {
 	PrevalenceLowThreshold  float64 `json:"prevalence_low_threshold,omitempty" yaml:"prevalence_low_threshold,omitempty"`   // <= => rare, boost
 	PrevalenceHighThreshold float64 `json:"prevalence_high_threshold,omitempty" yaml:"prevalence_high_threshold,omitempty"` // >= => common, penalize
 	PrevalenceIncrease      float64 `json:"prevalence_increase,omitempty" yaml:"prevalence_increase,omitempty"`
 	PrevalenceDecrease      float64 `json:"prevalence_decrease,omitempty" yaml:"prevalence_decrease,omitempty"`
+
+	// FirstSeenModel names a first_seen model in the same fractal. Keyed on one
+	// field it is read as the destination's first sighting, on two as the
+	// (source, destination) pair's.
+	FirstSeenModel           string  `json:"first_seen_model,omitempty" yaml:"first_seen_model,omitempty"`
+	FirstSeenRecentDays      int     `json:"first_seen_recent_days,omitempty" yaml:"first_seen_recent_days,omitempty"`           // first seen within => boost
+	FirstSeenEstablishedDays int     `json:"first_seen_established_days,omitempty" yaml:"first_seen_established_days,omitempty"` // first seen before => penalize
+	FirstSeenIncrease        float64 `json:"first_seen_increase,omitempty" yaml:"first_seen_increase,omitempty"`
+	FirstSeenDecrease        float64 `json:"first_seen_decrease,omitempty" yaml:"first_seen_decrease,omitempty"`
+
+	// ThreatIntelLookup and ThreatIntelColumn name a lookup and its key column,
+	// as match(dict=, column=) does; a destination it holds is boosted.
+	ThreatIntelLookup   string  `json:"threat_intel_lookup,omitempty" yaml:"threat_intel_lookup,omitempty"`
+	ThreatIntelColumn   string  `json:"threat_intel_column,omitempty" yaml:"threat_intel_column,omitempty"`
+	ThreatIntelIncrease float64 `json:"threat_intel_increase,omitempty" yaml:"threat_intel_increase,omitempty"`
 }
 
 // WithDefaults fills unset modifier thresholds with sensible defaults (rare <= 2%,
-// common >= 50%, +/-0.15 nudge). A negative increase/decrease disables that side.
+// common >= 50%, +/-0.15 nudge; first seen within 7 days or over 90 days ago,
+// +/-0.15; +0.25 for a threat intel hit). An unset (zero) adjustment takes its
+// default and a negative one disables that side.
+//
+// The adjustments used to start at -1 and take the default only when still
+// negative, which read a modifiers object that set any one field as having
+// switched every adjustment it left out to 0, and made a negative one (meant to
+// disable) the default.
 func (m *ModifierParams) WithDefaults() ModifierParams {
-	out := ModifierParams{PrevalenceIncrease: -1, PrevalenceDecrease: -1}
+	out := ModifierParams{}
 	if m != nil {
 		out = *m
 	}
@@ -326,13 +355,30 @@ func (m *ModifierParams) WithDefaults() ModifierParams {
 	if out.PrevalenceHighThreshold <= 0 {
 		out.PrevalenceHighThreshold = 0.5
 	}
-	if out.PrevalenceIncrease < 0 {
-		out.PrevalenceIncrease = 0.15
+	if out.FirstSeenRecentDays <= 0 {
+		out.FirstSeenRecentDays = 7
 	}
-	if out.PrevalenceDecrease < 0 {
-		out.PrevalenceDecrease = 0.15
+	if out.FirstSeenEstablishedDays <= 0 {
+		out.FirstSeenEstablishedDays = 90
 	}
+	out.PrevalenceIncrease = adjustmentOrDefault(out.PrevalenceIncrease, 0.15)
+	out.PrevalenceDecrease = adjustmentOrDefault(out.PrevalenceDecrease, 0.15)
+	out.FirstSeenIncrease = adjustmentOrDefault(out.FirstSeenIncrease, 0.15)
+	out.FirstSeenDecrease = adjustmentOrDefault(out.FirstSeenDecrease, 0.15)
+	out.ThreatIntelIncrease = adjustmentOrDefault(out.ThreatIntelIncrease, 0.25)
 	return out
+}
+
+// adjustmentOrDefault resolves one modifier adjustment: unset takes def, and a
+// negative value turns that side off.
+func adjustmentOrDefault(v, def float64) float64 {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return 0
+	}
+	return v
 }
 
 // maxNetWindowDays is the longest network model window.

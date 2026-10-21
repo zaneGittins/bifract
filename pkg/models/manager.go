@@ -247,6 +247,9 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	if _, err := m.ResolveSource(ctx, req.Definition, fractalID, ""); err != nil {
 		return nil, err
 	}
+	if err := m.validateModifierLinks(ctx, fractalID, "", req.ModelType, req.Definition); err != nil {
+		return nil, err
+	}
 	// A type that raises no alerts is stored as such rather than rejected. The
 	// editor sends its default mode ("paused") for every type, so rejecting here
 	// made an index model impossible to create at all.
@@ -337,6 +340,9 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		return nil, err
 	}
 	if _, err := m.ResolveSource(ctx, req.Definition, existing.FractalID, existing.PrismID); err != nil {
+		return nil, err
+	}
+	if err := m.validateModifierLinks(ctx, existing.FractalID, existing.PrismID, existing.ModelType, req.Definition); err != nil {
 		return nil, err
 	}
 
@@ -1008,12 +1014,13 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 }
 
 // networkResultCols is the projection returned to the data viewer for a scored
-// pair: the final verdict plus the full breakdown (subscores + prevalence modifier)
+// pair: the final verdict plus the full breakdown (subscores and modifiers)
 // so the reviewer can see why a pair scored high.
 const networkResultCols = "src_ip, dst_ip, dst_port, " +
 	"round(final_score,3) AS final_score, round(regularity_score,3) AS regularity_score, " +
 	"round(ts_score,3) AS ts_score, round(ds_score,3) AS ds_score, round(dur_score,3) AS dur_score, round(hist_score,3) AS hist_score, " +
 	"round(prevalence,4) AS prevalence, prevalence_total, round(prevalence_score,3) AS prevalence_score, " +
+	"round(first_seen_score,3) AS first_seen_score, round(threat_intel_score,3) AS threat_intel_score, " +
 	"conn_count, round(total_duration,1) AS total_duration, first_seen, last_seen, scored_at"
 
 // networkScoreThreshold returns the model's final-score flag threshold.

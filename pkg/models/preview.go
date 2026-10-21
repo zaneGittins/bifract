@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -555,6 +556,15 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		networkSize = 1 // avoid div-by-zero; no data yields an empty preview below
 	}
 
+	pairsSQL, err := BuildNetPreviewPairs(def, source, fractalID, bounds)
+	if err != nil {
+		return nil, err
+	}
+	pc, warnings, err := m.loadPairContexts(ctx, fractalID, def, pairsSQL, cfg.settings())
+	if err != nil {
+		return nil, fmt.Errorf("preview modifiers: %w", err)
+	}
+
 	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, bounds)
 	if err != nil {
 		return nil, err
@@ -574,6 +584,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		final          float64
 		rs             RegularityScore
 		prev           float64
+		mods           Modifiers
 	}
 	var top []scoredPair
 
@@ -592,7 +603,9 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			rs = ScoreBeacon(p, bp, windowSecs)
 		}
 		prevRatio := float64(prevalence[p.Dst]) / float64(networkSize)
-		final, _ := ApplyModifiers(rs.Score, prevRatio, mp)
+		// Ages are measured from the window's end, which is "now" for the model
+		// scoring that window.
+		final, mods := ApplyPairModifiers(rs.Score, pc.context(p, prevRatio, rng.End), mp)
 
 		band := int(final * 10)
 		if band > 9 {
@@ -616,7 +629,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		if final > maxScore {
 			maxScore = final
 		}
-		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio)})
+		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio), mods: mods})
 		return nil
 	}, nil)
 	if streamErr != nil {
@@ -642,6 +655,9 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			"hist_score": sp.rs.HistScore,
 			"prevalence": sp.prev,
 			"conn_count": sp.cnt,
+
+			"first_seen_score":   sp.mods.FirstSeenScore,
+			"threat_intel_score": sp.mods.ThreatIntelScore,
 		})
 	}
 
@@ -674,10 +690,11 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		Top:          topRows,
 		TopColumns:   []string{"src_ip", "dst_ip", "dst_port", "score", "regularity", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "conn_count"},
 		Stats: sanitizeStats(map[string]interface{}{
-			"pairs_scanned": uint64(scanned),
-			"pairs_scored":  uint64(scored),
-			"max_score":     round3(maxScore),
-			"network_size":  networkSize,
+			"pairs_scanned":    uint64(scanned),
+			"pairs_scored":     uint64(scored),
+			"max_score":        round3(maxScore),
+			"network_size":     networkSize,
+			"modifier_warning": strings.Join(warnings, "; "),
 		}),
 	}, nil
 }

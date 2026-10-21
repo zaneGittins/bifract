@@ -461,6 +461,9 @@ const AnalyticsModels = {
             timeBucket: def.time_bucket || 'day',
             historyDays: def.history_days || 0,
             network: this._networkFromDef(def),
+            // Carried whole so a save keeps modifier settings the editor has no
+            // field for (prevalence thresholds set through the API).
+            modifiers: { ...(def.modifiers || {}) },
             window: def.window || '1d',
             alertMode: m.alert_mode || 'none',
             alertConfig: alertCfg,
@@ -1773,12 +1776,21 @@ ${m.description ? `<div class="me-sec">
                 title: 'Distinct sources that talked to this destination in the window, and their share of all sources',
             } : null;
             const conns = { label: 'Connections', value: int(row.conn_count), title: 'Click to search this pair', query: pivot() };
+            // The linked modifiers, stated only when they moved the score.
+            const fsAdj = Number(row.first_seen_score) || 0;
+            const firstSeen = fsAdj ? {
+                label: 'First seen', value: fsAdj > 0 ? 'Recently' : 'Long ago', tone: fsAdj > 0 ? 'warn' : 'muted',
+                title: `The linked first/last seen model ${fsAdj > 0 ? 'first saw this destination recently' : 'has known this destination for a long time'} (${fsAdj > 0 ? '+' : ''}${fix(fsAdj)})`,
+            } : null;
+            const threat = Number(row.threat_intel_score) > 0 ? {
+                value: 'Threat intel', tone: 'alert', title: `The threat intel lookup lists this destination (+${fix(row.threat_intel_score)})`,
+            } : null;
             const seen = !this._isEpochZero(row.last_seen) ? { label: 'Last seen', value: FactChips.ago(row.last_seen), title: Utils.timestampTitle(row.last_seen) } : null;
             if (mt === 'long_connection') {
                 return pick([
                     { label: 'Duration', value: this._fmtDuration(row.total_duration), tone: final > thr ? 'alert' : '' },
-                    prevalence, conns, seen,
-                ], [1, 3]);
+                    prevalence, conns, seen, threat, firstSeen,
+                ], [4, 1, 3]);
             }
             const subs = [
                 ['Timing', 'ts_score', 'Consistency of the gaps between connections'],
@@ -1790,11 +1802,12 @@ ${m.description ? `<div class="me-sec">
                 // The table already shows the score, regularity and connections;
                 // the chips add who else talks to it and what drove the regularity.
                 const top = subs.filter(s => s.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
-                return [prevalence, ...top].filter(Boolean);
+                return [threat, prevalence, firstSeen, ...top].filter(Boolean).slice(0, 4);
             }
             return [
+                threat,
                 { label: 'Regularity', value: fix(row.regularity_score), tone: final > thr ? 'alert' : '', title: 'Combined timing, size, persistence and histogram regularity' },
-                prevalence, conns, ...subs, seen,
+                prevalence, firstSeen, conns, ...subs, seen,
             ].filter(Boolean);
         }
         return [];
@@ -1951,6 +1964,7 @@ ${m.description ? `<div class="me-sec">
             timeBucket: 'day',
             historyDays: 0,
             network: this._networkFromDef({}),
+            modifiers: {},
             window: '1d',
             alertMode: 'paused',
             alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
@@ -2425,6 +2439,37 @@ ${m.description ? `<div class="me-sec">
         return this.MODEL_TYPES.find(t => t.id === mt)?.desc || '';
     },
 
+    // The links the first-seen and threat intel modifiers read. A first/last seen
+    // model keyed on one field is read as the destination, on two as the pair.
+    _modifierLinksHTML(e) {
+        const mods = e.modifiers || {};
+        const linkable = (this.models || []).filter(m => m.model_type === 'first_seen'
+            && [1, 2].includes((m.definition?.key_fields || []).length));
+        const current = mods.first_seen_model || '';
+        const names = linkable.map(m => m.name);
+        if (current && !names.includes(current)) names.push(current);
+        return `
+<div class="field-group" style="margin-top:14px">
+    <label>First seen from</label>
+    <select id="modFirstSeen" class="full-input">
+        <option value="">None</option>
+        ${names.map(n => `<option value="${_esc(n)}" ${n === current ? 'selected' : ''}>${_esc(n)}</option>`).join('')}
+    </select>
+    <p class="config-hint">A first/last seen model keyed on the destination (or on source and destination). Destinations it first saw in the last ${mods.first_seen_recent_days || 7} days score higher, ones known for over ${mods.first_seen_established_days || 90} days lower.</p>
+</div>
+<div class="form-row" style="margin-top:10px">
+    <div class="field-group">
+        <label>Threat intel lookup</label>
+        <input type="text" id="modTILookup" class="full-input" value="${_esc(mods.threat_intel_lookup || '')}" placeholder="e.g. c2_ips" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="field-group">
+        <label>Key column</label>
+        <input type="text" id="modTIColumn" class="full-input" value="${_esc(mods.threat_intel_column || '')}" placeholder="e.g. ip" spellcheck="false" autocomplete="off">
+    </div>
+</div>
+<p class="config-hint">A destination the lookup lists scores ${mods.threat_intel_increase > 0 ? mods.threat_intel_increase : 0.25} higher, matched as <em>match()</em> would.</p>`;
+    },
+
     // ---- Shape (right panel) ----
     _editorShapeHTML() {
         const e = this.editor;
@@ -2462,7 +2507,8 @@ ${isBeacon ? `
 </div>
 <p class="config-hint">${isBeacon
     ? 'Scores the regularity of connection timing and size per (source, destination, port). A longer window catches slower beacons (e.g. daily check-ins).'
-    : 'Scores the total connection duration per (source, destination, port). A longer window aggregates recurring long sessions.'}</p>`;
+    : 'Scores the total connection duration per (source, destination, port). A longer window aggregates recurring long sessions.'}</p>
+${this._modifierLinksHTML(e)}`;
         }
         if (e.modelType === 'rarity') {
             return `
@@ -2566,6 +2612,13 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
             bindField('netBytes', 'bytes_field');
             bindField('netDuration', 'duration_field');
             document.getElementById('netWindow')?.addEventListener('change', ev => { e.window = ev.target.value; this._schedulePreview(); });
+            const setMod = (key, v) => {
+                if (v) e.modifiers[key] = v; else delete e.modifiers[key];
+                this._schedulePreview();
+            };
+            document.getElementById('modFirstSeen')?.addEventListener('change', ev => setMod('first_seen_model', ev.target.value));
+            document.getElementById('modTILookup')?.addEventListener('change', ev => setMod('threat_intel_lookup', ev.target.value.trim()));
+            document.getElementById('modTIColumn')?.addEventListener('change', ev => setMod('threat_intel_column', ev.target.value.trim()));
             return;
         }
         if (e.modelType === 'rarity') {
@@ -3070,6 +3123,7 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
         } else if (this._isNetworkType(e.modelType)) {
             def.network = { ...e.network };
             def.window = e.window;
+            if (Object.keys(e.modifiers || {}).length) def.modifiers = { ...e.modifiers };
             if (e.modelType === 'beacon') {
                 def.beacon = { score_threshold: e.alertConfig.beacon_threshold };
             } else {
