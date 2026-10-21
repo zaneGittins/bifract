@@ -21,6 +21,7 @@ const AnalyticsModels = {
         keyFields: [''],
         minSample: 1,
         timeBucket: 'day',
+        historyDays: 0,      // rarity / first seen history window, 0 = all history
         alertMode: 'paused',
         alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5 },
         name: '',
@@ -2546,7 +2547,7 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
     <select id="shapeHistoryDays" class="full-input">
         ${opts.map(([v, l]) => `<option value="${v}" ${e.historyDays === v ? 'selected' : ''}>${l}</option>`).join('')}
     </select>
-    <p class="config-hint">${hint} Changing it rebuilds the model.</p>
+    <p class="config-hint">${hint}${e.editId ? ' Changing it rebuilds the model.' : ''}</p>
 </div>`;
     },
 

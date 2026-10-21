@@ -179,7 +179,7 @@ func TestGetStatsFirstSeen(t *testing.T) {
 	if st["total_entities"] != uint64(12) || st["findings"] != uint64(7) || st["new_hour"] != uint64(1) || st["new_week"] != uint64(7) {
 		t.Errorf("stats: %v", st)
 	}
-	if q := env.ch.QueriedMatching("AS week"); len(q) != 1 || !strings.Contains(q[0], "HAVING recorded_at >= toDateTime64('"+discoveryWindow(time.Now()).Format("2006-01-02")) {
+	if q := env.ch.QueriedMatching("AS week"); len(q) != 1 || !strings.Contains(q[0], "WHERE recorded_at >= toDateTime64('"+discoveryWindow(time.Now()).Format("2006-01-02")) {
 		t.Errorf("discovery window: %v", q)
 	}
 }

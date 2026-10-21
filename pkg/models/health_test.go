@@ -136,10 +136,10 @@ func TestHealthSummarySQL(t *testing.T) {
 
 	fs := healthSummarySQL(ModelTypeFirstSeen, ModelDefinition{}, "model_a", "", fid, today)
 	for _, want := range []string{
-		"toDate(min(first_recorded)) AS d", // findings follow what the alert fires on
-		"GROUP BY entity_key",              // unmerged parts would count an entity once per cycle
-		"countIf(d = toDate('2026-10-07') - 6)",
-		"countIf(d = toDate('2026-10-07') - 0)",
+		"min(first_recorded) AS recorded_at", // findings follow what the alert fires on
+		"GROUP BY entity_key",                // unmerged parts would count an entity once per cycle
+		"countIf(toDate(recorded_at) = toDate('2026-10-07') - 6)",
+		"countIf(toDate(recorded_at) = toDate('2026-10-07') - 0)",
 		`fractal_id = 'f\'1'`,
 	} {
 		if !strings.Contains(fs, want) {

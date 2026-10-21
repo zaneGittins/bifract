@@ -99,29 +99,49 @@ func volumeBucketColType(timeBucket string) string {
 
 // historyLayout is what a windowed model's state adds to its table and its
 // inserts: a day column in the sort key, so each key keeps a row per day of event
-// time and a TTL can drop the days that fell out of the window. Aggregate state
-// cannot be trimmed from the inside, and the day set alone stops taking new days
-// once it holds 365, so keeping everything in one row per key could never age.
-// The column comes last, after first_recorded, because inserts are positional.
+// time and a TTL can drop the days past the lookback (see parser/model_history.go).
+// Aggregate state cannot be trimmed from the inside, and the day set alone stops
+// taking new days once it holds 365, so one row per key could never age.
 type historyLayout struct {
 	column, orderBy, ttl string // table DDL fragments
 	selectCol, groupBy   string // insert SELECT fragments
 }
 
 func historyLayoutFor(def ModelDefinition, mt ModelType) historyLayout {
-	if !def.WindowedHistory(mt) {
+	days := def.HistoryDaysFor(mt)
+	if days == 0 {
 		return historyLayout{}
 	}
+	col := parser.HistoryDayColumn
 	return historyLayout{
-		column:  ",\n    day         Date",
-		orderBy: ", day",
-		// A day past the window, so rows the read predicate still admits are never
-		// gone early; reads filter on the window themselves, since a TTL only runs
-		// when parts merge.
-		ttl:       fmt.Sprintf("\nTTL day + INTERVAL %d DAY", def.HistoryDays+1),
-		selectCol: ",\n    toDate(timestamp) AS day",
-		groupBy:   ", day",
+		column:    fmt.Sprintf(",\n    %-11s Date", col),
+		orderBy:   ", " + col,
+		ttl:       fmt.Sprintf("\nTTL %s + INTERVAL %d DAY", col, parser.HistoryRetentionDays(days)),
+		selectCol: fmt.Sprintf(",\n    toDate(timestamp) AS %s", col),
+		groupBy:   ", " + col,
 	}
+}
+
+// stateColumns names the columns a state insert writes, in the order its SELECT
+// produces them. Naming them makes a table whose layout differs from the
+// definition's (one a failed drop left behind) refuse the insert, rather than
+// take values into whichever columns happen to sit in those positions.
+func stateColumns(def ModelDefinition, mt ModelType) []string {
+	var cols []string
+	switch mt {
+	case ModelTypeRarity:
+		cols = []string{"fractal_id", "partition_val", "value_val", "event_count", "days"}
+	case ModelTypeFirstSeen:
+		cols = []string{"fractal_id", "entity_key", "first_seen", "last_seen", "event_count", "days", FirstRecordedColumn}
+	case ModelTypeTLSH:
+		cols = []string{"fractal_id", "digest", "first_seen", "last_seen", "event_count", "days"}
+	case ModelTypeVolumeBaseline:
+		cols = []string{"fractal_id", "entity_val", "bucket", "event_count"}
+	}
+	if def.HistoryDaysFor(mt) > 0 {
+		cols = append(cols, parser.HistoryDayColumn)
+	}
+	return cols
 }
 
 // BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
@@ -148,7 +168,7 @@ func buildInsert(def ModelDefinition, mt ModelType, targetTable, sourceTable, wh
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("INSERT INTO %s\n%s", targetTable, selectSQL), nil
+	return fmt.Sprintf("INSERT INTO %s (%s)\n%s", targetTable, strings.Join(stateColumns(def, mt), ", "), selectSQL), nil
 }
 
 // first_recorded is when a first_seen model's state first held an entity, which

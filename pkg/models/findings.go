@@ -176,7 +176,7 @@ func rarityDiscoverySQL(scored, flagSQL string) string {
 	if flagSQL == "" {
 		flagSQL = "0"
 	}
-	return fmt.Sprintf(`SELECT toString(days[1]) AS first_day, toUInt64(count()) AS n, toUInt64(countIf(%s)) AS flagged
+	return fmt.Sprintf(`SELECT toString(since) AS first_day, toUInt64(count()) AS n, toUInt64(countIf(%s)) AS flagged
 FROM (%s)
 GROUP BY first_day`, flagSQL, scored)
 }
@@ -186,18 +186,18 @@ GROUP BY first_day`, flagSQL, scored)
 // and the last hour (what the alert fires on). Seeded history carries the epoch
 // and never counts.
 //
-// A windowed model reads its window only, so an entity back after the window
-// counts on the day it returned.
+// A windowed model's entity counts on the day it returned after being away for
+// the window, and one that never left does not count at all.
 func firstSeenDiscoverySQL(qt, fidEsc string, since time.Time, historyDays int) string {
+	agg := parser.FirstSeenAggSQL(parser.FirstSeenAgg{
+		Source: qt + " FINAL", Scope: fidScope(fidEsc), KeyCol: "entity_key",
+		HistoryDays: historyDays, Recorded: true,
+	})
 	return fmt.Sprintf(`SELECT toString(toDate(recorded_at)) AS day, toUInt64(count()) AS n,
     toUInt64(countIf(recorded_at >= now() - INTERVAL %d DAY)) AS week,
     toUInt64(countIf(recorded_at >= now() - INTERVAL 1 HOUR)) AS hour
-FROM (
-    SELECT entity_key, min(%s) AS recorded_at
-    FROM %s FINAL
-    WHERE %s
-    GROUP BY entity_key
-    HAVING recorded_at >= toDateTime64('%s', 3, 'UTC')
+FROM (%s
 )
-GROUP BY day`, findingsNewDays, FirstRecordedColumn, qt, parser.WithHistory("fractal_id = '"+fidEsc+"'", historyDays, ""), since.UTC().Format("2006-01-02 15:04:05"))
+WHERE recorded_at >= toDateTime64('%s', 3, 'UTC')
+GROUP BY day`, findingsNewDays, agg, since.UTC().Format("2006-01-02 15:04:05"))
 }

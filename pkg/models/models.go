@@ -162,11 +162,10 @@ type ModelDefinition struct {
 	KeyFields    []string          `json:"key_fields" yaml:"key_fields,omitempty"`
 	// TimeBucket is the volume_baseline aggregation window: "day" (default) or "hour".
 	TimeBucket string `json:"time_bucket" yaml:"time_bucket,omitempty"`
-	// HistoryDays bounds what a rarity or first_seen model remembers: only the
-	// last HistoryDays days of event time count, and older state is dropped. 0
-	// keeps everything, which is how a model behaved before this existed. A
-	// windowed model stores a row per key per day so a TTL can age it out; see
-	// WindowedHistory.
+	// HistoryDays bounds what a rarity or first_seen model counts: only the last
+	// HistoryDays days of event time, and a key away for that long is new again
+	// when it returns. 0 keeps everything, which is how a model behaved before
+	// this existed. See HistoryDaysFor and parser/model_history.go.
 	HistoryDays int          `json:"history_days,omitempty" yaml:"history_days,omitempty"`
 	Alert       *AlertConfig `json:"alert,omitempty" yaml:"alert,omitempty"`
 
@@ -543,28 +542,23 @@ func parseLeadingInt(s string) (int, error) {
 	return strconv.Atoi(s[:end])
 }
 
-// History window bounds. The day set a row carries holds at most 365 days, so a
-// window cannot be longer; under a week, rarity cannot reach its default min
-// history at all.
+// History window bounds. A windowed key keeps a row for every day it was seen
+// over twice the window, so a year bounds that at 730; under a week, rarity
+// cannot reach its default min history at all.
 const (
 	MinHistoryDays = 7
 	MaxHistoryDays = 365
 )
 
-// WindowedHistory reports whether the model keeps only HistoryDays of history.
-// Only rarity and first_seen take a window: volume and network models already
-// score a fixed window, and a tlsh index must hold every digest tlsh() can match.
-func (d ModelDefinition) WindowedHistory(mt ModelType) bool {
-	return d.HistoryDays > 0 && (mt == ModelTypeRarity || mt == ModelTypeFirstSeen)
-}
-
 // HistoryDaysFor is the model's history window in days, or 0 when it keeps
-// everything.
+// everything. Only rarity and first_seen take a window: volume and network models
+// already score a fixed window, and a tlsh index must hold every digest tlsh()
+// can match.
 func (d ModelDefinition) HistoryDaysFor(mt ModelType) int {
-	if !d.WindowedHistory(mt) {
+	if mt != ModelTypeRarity && mt != ModelTypeFirstSeen {
 		return 0
 	}
-	return d.HistoryDays
+	return max(d.HistoryDays, 0)
 }
 
 // SelectsSubset reports whether the definition's source selects fewer than all of

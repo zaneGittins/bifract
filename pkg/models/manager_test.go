@@ -122,6 +122,10 @@ func TestValidateDefinitionShape(t *testing.T) {
 		{"window on volume", ModelTypeVolumeBaseline, ModelDefinition{KeyFields: []string{"h"}, HistoryDays: 30}, "rarity and first_seen models only"},
 		// The default 10% share needs more than 10 days and min history 14 needs 14.
 		{"window under min history", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b", HistoryDays: 10, MinSample: 14}, "use at least 14"},
+		// Without a share threshold the alert has no share floor to wait for.
+		{"coverage-only window", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b", HistoryDays: 7, MinSample: 7,
+			Alert: &AlertConfig{CoverageThreshold: 0.9}}, ""},
+		{"key named like the day column", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"_day"}, HistoryDays: 30}, "the column a model with a history window keeps its days in"},
 		{"window under share floor", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b", HistoryDays: 14,
 			Alert: &AlertConfig{PercentThreshold: 5}}, "use at least 21"},
 	}

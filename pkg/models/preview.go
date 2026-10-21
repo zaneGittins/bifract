@@ -196,6 +196,13 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	}
 
 	start, end := rng.Start, rng.End
+	// A windowed model counts only its window, so a longer preview would score
+	// history the model has already forgotten; the result's Start says so.
+	if n := def.HistoryDaysFor(mt); n > 0 {
+		if ws := end.Add(-time.Duration(n) * 24 * time.Hour); start.Before(ws) {
+			start = ws
+		}
+	}
 	fidEsc := storage.EscCHStr(fractalID)
 	// buildModelSelect scopes the scan to fractalID itself; whereExtra adds only the window.
 	whereExtra := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
@@ -410,7 +417,7 @@ LIMIT 25`, scored, minSample)
 }
 
 func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time, keyCol string) error {
-	agg := firstSeenAggSQL(source, fidEsc, "", keyCol, false)
+	agg := firstSeenAggSQL(source, fidEsc, "", keyCol, 0, false)
 
 	// The is_new alert fires on entities the live model records for the first time,
 	// which nothing in history can replay. Instead we report the new-entity RATE:

@@ -302,8 +302,9 @@ func TestRarityFlagPredicates(t *testing.T) {
 }
 
 // A windowed rarity or first_seen model keeps a row per key per day, so a TTL
-// can age out the days past its window; the day column comes last because the
-// state inserts are positional. Without a window the table is as before.
+// can age out the days past its lookback (twice the window, plus a day). The
+// insert names its columns, in the order its SELECT writes them. Without a window
+// the table is as before.
 func TestHistoryWindowLayout(t *testing.T) {
 	rarity := ModelDefinition{PartitionKey: "host", ValueKey: "port", HistoryDays: 30}
 	first := ModelDefinition{KeyFields: []string{"host", "image"}, HistoryDays: 30}
@@ -316,28 +317,33 @@ func TestHistoryWindowLayout(t *testing.T) {
 		order string
 		group string
 	}{
-		{"rarity", ModelTypeRarity, rarity, "ORDER BY (fractal_id, partition_val, value_val, day)", "GROUP BY fractal_id, partition_val, value_val, day"},
-		{"rarity over an extraction", ModelTypeRarity, extracted, "ORDER BY (fractal_id, partition_val, value_val, day)", "GROUP BY fractal_id, partition_val, value_val, day"},
-		{"first_seen", ModelTypeFirstSeen, first, "ORDER BY (fractal_id, entity_key, day)", "GROUP BY fractal_id, entity_key, day"},
+		{"rarity", ModelTypeRarity, rarity, "ORDER BY (fractal_id, partition_val, value_val, _day)", "GROUP BY fractal_id, partition_val, value_val, _day"},
+		{"rarity over an extraction", ModelTypeRarity, extracted, "ORDER BY (fractal_id, partition_val, value_val, _day)", "GROUP BY fractal_id, partition_val, value_val, _day"},
+		{"first_seen", ModelTypeFirstSeen, first, "ORDER BY (fractal_id, entity_key, _day)", "GROUP BY fractal_id, entity_key, _day"},
 	} {
 		ddl, err := GenerateDDL(c.def, c.mt, "`t`")
 		if err != nil {
 			t.Fatal(err)
 		}
 		mustContain(t, ddl, c.order, c.name+" sort key")
-		mustContain(t, ddl, "TTL day + INTERVAL 31 DAY", c.name+" TTL")
-		mustContain(t, ddl, "day         Date\n)", c.name+" day column last")
+		mustContain(t, ddl, "TTL _day + INTERVAL 61 DAY", c.name+" TTL")
+		mustContain(t, ddl, "_day        Date\n)", c.name+" day column last")
 		ins, err := BuildStateInsert(c.def, c.mt, "`t`", "logs", "", "f1")
 		if err != nil {
 			t.Fatal(err)
 		}
-		mustContain(t, ins, "toDate(timestamp) AS day\n", c.name+" insert writes the day last")
+		mustContain(t, ins, "toDate(timestamp) AS _day\n", c.name+" insert writes the day last")
 		mustContain(t, ins, c.group, c.name+" insert groups by day")
+		cols := strings.Join(stateColumns(c.def, c.mt), ", ")
+		mustContain(t, ins, "INSERT INTO `t` ("+cols+")\n", c.name+" insert names its columns")
+		if !strings.HasSuffix(cols, ", _day") {
+			t.Errorf("%s: the day column is not last: %s", c.name, cols)
+		}
 
 		c.def.HistoryDays = 0
 		plain, _ := GenerateDDL(c.def, c.mt, "`t`")
 		mustNotContain(t, plain, "TTL", c.name+" without a window")
-		mustNotContain(t, plain, "day         Date", c.name+" without a window")
+		mustNotContain(t, plain, "_day", c.name+" without a window")
 	}
 
 	// Volume and tlsh never take a window, even if one is stored.

@@ -128,7 +128,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
 		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL",
-			WithHistory(fractalIDInClause(fractalIDs), info.HistoryDays, ""), info.MinSample, false)
+			fractalIDInClause(fractalIDs), info.MinSample, info.HistoryDays, false)
 		rightCols = []string{"partition_val", "value_val"}
 		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		// Partitions still learning are scored away, so the raw key set is a superset.
@@ -345,17 +345,46 @@ GROUP BY src_ip, dst_ip, dst_port`,
 // value-days): how rarely the partition still produces something new.
 //
 // source must yield the rarity state shape (partition_val, value_val, days);
-// scope is a WHERE predicate on it. withDays adds the sorted day list, which only
-// the data view needs. minHistory is how many days a partition must have been
-// seen before its values are scored (the model's learning period); the trailing
-// WHERE lets callers append AND clauses.
-func RarityScoredSQL(source, scope string, minHistory int, withDays bool) string {
+// scope is a WHERE predicate on it. minHistory is how many days a partition must
+// have been seen before its values are scored (the model's learning period).
+// historyDays scores a windowed model's table over its window (see
+// model_history.go). withDays adds the sorted day list and since, the day the
+// pair was first seen after being absent for the window (its first day, for a
+// model that keeps everything); only the data view and discovery need them. The
+// trailing WHERE lets callers append AND clauses.
+func RarityScoredSQL(source, scope string, minHistory, historyDays int, withDays bool) string {
 	if minHistory < 1 {
 		minHistory = 1
 	}
-	daysCol := ""
+	daysCol, sinceMid, sinceInner := "", "", ""
 	if withDays {
-		daysCol = ",\n    seen_days AS days"
+		daysCol = ",\n    seen_days AS days,\n    since"
+		sinceMid = ", since"
+	}
+	var inner string
+	if historyDays > 0 {
+		if withDays {
+			sinceInner = ",\n            " + historyReturn("lookback_days", "", historyDays) + " AS since"
+		}
+		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
+            arraySort(groupUniqArray(%[1]s)) AS lookback_days,
+            arrayFilter(d -> d > %[2]s, lookback_days) AS seen_days,
+            length(seen_days) AS days_seen%[3]s
+        FROM %[4]s
+        WHERE %[5]s AND %[6]s
+        GROUP BY partition_val, value_val
+        HAVING days_seen > 0`, HistoryDayColumn, historyWindowStart(historyDays), sinceInner,
+			source, scope, historyLookbackPredicate(historyDays))
+	} else {
+		if withDays {
+			sinceInner = ",\n            seen_days[1] AS since"
+		}
+		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
+            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
+            length(seen_days) AS days_seen%s
+        FROM %s
+        WHERE %s
+        GROUP BY partition_val, value_val`, sinceInner, source, scope)
 	}
 	return fmt.Sprintf(`SELECT partition_val, value_val,
     days_seen AS model_count,
@@ -363,80 +392,47 @@ func RarityScoredSQL(source, scope string, minHistory int, withDays bool) string
     round(days_seen / days_observed * 100.0, 4) AS percent,
     round(1 - singletons / value_days, 4) AS coverage%s
 FROM (
-    SELECT partition_val, value_val, seen_days, days_seen,
+    SELECT partition_val, value_val, seen_days, days_seen%s,
         length(groupUniqArrayArray(seen_days) OVER w) AS days_observed,
         sum(days_seen) OVER w AS value_days,
         countIf(days_seen = 1) OVER w AS singletons
     FROM (
-        SELECT partition_val, value_val,
-            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
-            length(seen_days) AS days_seen
-        FROM %s
-        WHERE %s
-        GROUP BY partition_val, value_val
+%s
     )
     WINDOW w AS (PARTITION BY partition_val)
 )
-WHERE days_observed >= %d`, daysCol, source, scope, minHistory)
-}
-
-// HistoryPredicate bounds a windowed model's state to its last days days of event
-// time, today (UTC) included; qual prefixes the day column ("" or "alias."). It
-// is "" for a model that keeps all its history, whose table has no day column.
-// Reads apply it rather than relying on the table's TTL, which only drops rows
-// when parts merge.
-func HistoryPredicate(days int, qual string) string {
-	if days <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("%sday > toDate(now(), 'UTC') - %d", qual, days)
-}
-
-// WithHistory ANDs HistoryPredicate onto scope.
-func WithHistory(scope string, days int, qual string) string {
-	if p := HistoryPredicate(days, qual); p != "" {
-		return scope + " AND " + p
-	}
-	return scope
+WHERE days_observed >= %d`, daysCol, sinceMid, inner, minHistory)
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
-// The aggregation and the derived is_new flag are split across two SELECT levels
-// with non-shadowing inner aliases (fs/ls/ec/fr): min(first_seen) AS first_seen in
-// the same level as is_new would nest aggregates (code 184). Dates are stringified
-// because DateTime64 -> *string is unsupported in the display scan path.
+// Dates are stringified because DateTime64 -> *string is unsupported in the
+// display scan path.
 //
-// is_new reads first_recorded, when the model's state first held the entity, not
+// is_new reads recorded_at, when the model's state first held the entity, not
 // first_seen: a late or replayed log carries an old event time but is still new
 // to the model, and seeded history (epoch) never is. newSince, an alert's window
 // start, widens the usual hour so a backlogged alert keeps what was new in it.
-//
-// historyDays bounds a windowed model to its window: an entity none of whose
-// days fall in it is unknown again, and its next sighting is new.
+// For a windowed model recorded_at is when the entity returned after being absent
+// for the window (see FirstSeenAggSQL).
 func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, historyDays int, newSince time.Time) string {
 	horizon := "now() - INTERVAL 1 HOUR"
 	if !newSince.IsZero() {
 		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(newSince.UTC()))
 	}
+	agg := FirstSeenAggSQL(FirstSeenAgg{
+		Source:      "`" + tableName + "` FINAL",
+		Scope:       fractalIDInClause(fractalIDs),
+		KeyCol:      "entity_key",
+		HistoryDays: historyDays,
+		Recorded:    true,
+	})
 	return fmt.Sprintf(`SELECT entity_key,
-    toString(fs) AS first_seen,
-    toString(ls) AS last_seen,
-    ec AS event_count,
-    if(fr >= %s, '1', '0') AS is_new
-FROM (
-    SELECT entity_key,
-        min(first_seen) AS fs,
-        max(last_seen) AS ls,
-        sum(event_count) AS ec,
-        min(first_recorded) AS fr
-    FROM %s FINAL
-    WHERE %s
-    GROUP BY entity_key
-)`,
-		horizon,
-		"`"+tableName+"`",
-		WithHistory(fractalIDInClause(fractalIDs), historyDays, ""),
-	)
+    toString(first_seen) AS first_seen,
+    toString(last_seen) AS last_seen,
+    event_count,
+    if(recorded_at >= %s, '1', '0') AS is_new
+FROM (%s
+)`, horizon, agg)
 }
 
 // parseModelLookupArgs parses the model=, key=[] and strict= arguments.
