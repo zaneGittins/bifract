@@ -557,10 +557,20 @@ func chStringLiteral(s string) string {
 // The scorer reads only the compact state, never raw logs.
 // ---------------------------------------------------------------------------
 
-// netStateArrayCap bounds the per-day-per-pair timestamp/size arrays. A read keeps
-// the cap per day, so a 14-day window holds at most 14x this many points, enough to
-// measure regularity while hard-bounding both ClickHouse and Go memory.
+// netStateArrayCap bounds the per-day-per-pair timestamp/size arrays, enough to
+// measure regularity while bounding what one pair's day costs to keep.
 const netStateArrayCap = 2000
+
+// netPairPointBudget bounds the points one pair carries into scoring: the day
+// buckets the longest window reads (14 days back from today, so 15) at the full
+// daily cap. A state read never exceeds it; a preview over a longer range caps
+// each day lower to stay inside it (netPreviewDayCap).
+const netPairPointBudget = 15 * netStateArrayCap
+
+// netReadBlockRows is the block size a pair read streams at. A row carries up to
+// netPairPointBudget points and the driver decodes a whole block at once, so the
+// default of ~65k rows a block could hold gigabytes.
+const netReadBlockRows = 256
 
 // BuildNetStateTableDDL returns the AggregatingMergeTree state table DDL. windowDays
 // drives the TTL (retain enough for the largest window plus a small buffer) so a
@@ -704,46 +714,82 @@ func fractalScopeClause(fractalID string) string {
 	return fmt.Sprintf("fractal_id = %s", chStringLiteral(fractalID))
 }
 
-// BuildNetScoreReadQuery returns the query the scorer runs each pass over the state
-// table (never raw logs). It reads only the recent day-buckets and pre-filters to
-// qualifying pairs so the heavy scoring in Go runs over a bounded set.
-func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
-	var having string
+// netPairGate is the condition a pair has to meet to be scored, over expressions
+// for its connection count and total duration: a long connection on duration
+// alone, a beacon on a count between min_connections and the strobe limit.
+func netPairGate(def ModelDefinition, mt ModelType, windowDays int, cnt, dur string) string {
 	if mt == ModelTypeLongConnection {
 		lc := def.LongConn.WithDefaults()
-		having = fmt.Sprintf("HAVING total_duration >= %s", chFloatLiteral(lc.BaseSeconds))
-	} else {
-		windowSecs := int64(windowDays) * 86400
-		bp := def.Beacon.WithDefaults(windowSecs)
-		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
+		return fmt.Sprintf("%s >= %s", dur, chFloatLiteral(lc.BaseSeconds))
 	}
-	// The Merge combinator must carry the same parameter as the stored parametric
-	// groupArray(N) state, or ClickHouse rejects it (code 43). It also caps what it
-	// merges at N, across every row it merges, so each day is merged on its own and
-	// the days concatenated after: merging the window's days in one go kept N
-	// points in total, an arbitrary early slice of a busy pair's window. ts_list
-	// and size_list stay parallel because both aggregate the same rows in the same
-	// order. first_ts/last_ts are intentionally omitted: the scorer derives the
-	// observed range from the merged, window-trimmed timestamps, and scanning the
-	// SimpleAggregateFunction(min/max, DateTime64) result columns is not supported
-	// by the row scanner.
-	return fmt.Sprintf(`SELECT src, dst, port,
+	bp := def.Beacon.WithDefaults(int64(windowDays) * 86400)
+	return fmt.Sprintf("%s >= %d AND %s < %d", cnt, bp.MinConnections, cnt, bp.StrobeLimit)
+}
+
+// netPairArraysSelect concatenates per-day rows (day_cnt, day_ts, day_sizes,
+// day_dur, one per pair and day) into one row per pair, the shape pairFromRow
+// reads. Both the scorer and the preview read through it, so the two cannot
+// drift. ts_list and size_list stay parallel because both aggregate the same rows
+// in the same order.
+func netPairArraysSelect(perDay, having string) string {
+	q := fmt.Sprintf(`SELECT src, dst, port,
     sum(day_cnt) AS cnt,
     arrayFlatten(groupArray(day_ts)) AS ts_list,
     arrayFlatten(groupArray(day_sizes)) AS size_list,
     sum(day_dur) AS total_duration
 FROM (
-    SELECT src, dst, port, day,
+%s
+)
+GROUP BY src, dst, port`, perDay)
+	if having != "" {
+		q += "\nHAVING " + having
+	}
+	return q
+}
+
+// BuildNetGatedPairsQuery returns the window's pairs that qualify for scoring,
+// read from the state's counters alone, without merging any timestamp state.
+func BuildNetGatedPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
+	return fmt.Sprintf(`SELECT src, dst, port
+FROM %s
+WHERE %s AND day >= today() - %d
+GROUP BY src, dst, port
+HAVING %s`, stateTable, fractalScopeClause(fractalID), windowDays,
+		netPairGate(def, mt, windowDays, "sum(conn_count)", "sum(dur_sum)"))
+}
+
+// BuildNetScoreReadQuery returns the query the scorer runs each pass over the state
+// table (never raw logs). It reads only the recent day-buckets, and only the pairs
+// that qualify, so the heavy scoring in Go runs over a bounded set.
+//
+// The Merge combinator must carry the same parameter as the stored parametric
+// groupArray(N) state, or ClickHouse rejects it (code 43). It also caps what it
+// merges at N, across every row it merges, so each day is merged on its own and
+// the days concatenated after: merging the window's days in one go kept N points
+// in total, an arbitrary early slice of a busy pair's window.
+//
+// Qualification is decided first, from the counters alone (GLOBAL IN, since on a
+// cluster both sides read the Distributed table). Gating after the merge built
+// every pair's arrays first, the busiest of all among them: a strobe pair always
+// holds the full daily cap and is then thrown away.
+//
+// first_ts/last_ts are intentionally omitted: the scorer derives the observed
+// range from the merged, window-trimmed timestamps, and scanning the
+// SimpleAggregateFunction(min/max, DateTime64) result columns is not supported by
+// the row scanner.
+func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
+	scope := fmt.Sprintf("%s AND day >= today() - %d", fractalScopeClause(fractalID), windowDays)
+	perDay := fmt.Sprintf(`    SELECT src, dst, port, day,
         sum(conn_count) AS day_cnt,
         groupArrayMerge(%d)(ts_state) AS day_ts,
         groupArrayMerge(%d)(size_state) AS day_sizes,
         sum(dur_sum) AS day_dur
     FROM %s
-    WHERE %s AND day >= today() - %d
-    GROUP BY src, dst, port, day
-)
-GROUP BY src, dst, port
-%s`, netStateArrayCap, netStateArrayCap, stateTable, fractalScopeClause(fractalID), windowDays, having)
+    WHERE %s
+      AND (src, dst, port) GLOBAL IN (%s)
+    GROUP BY src, dst, port, day`, netStateArrayCap, netStateArrayCap, stateTable, scope,
+		BuildNetGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
+	return netPairArraysSelect(perDay, "") + fmt.Sprintf("\nSETTINGS max_block_size = %d", netReadBlockRows)
 }
 
 // BuildNetPrevalenceQuery returns the per-destination distinct-source counts over the
@@ -777,10 +823,11 @@ func (b NetPreviewBounds) sql() string {
 }
 
 // BuildNetPreviewAgg returns a one-off aggregation over raw logs for the model
-// builder preview, before any state table exists. It uses the same projection as the
-// state read (per-pair cnt/ts_list/size_list/duration) but groups directly over the
-// source table within the preview window, so the previewed scores match the warmed
-// model. sourceTable is the (distributed or local) logs table.
+// builder preview, before any state table exists. It yields the same per-pair row
+// as the state read (netPairArraysSelect) but groups directly over the source table
+// within the preview window, so the preview scores what the warmed model would.
+// The points kept on a busy day are the first the read returns, not necessarily
+// the ones the state kept. sourceTable is the (distributed or local) logs table.
 func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
@@ -789,29 +836,15 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	bytes := chNumericFieldRef(nf.BytesField)
 	dur := chNumericFieldRef(nf.DurationField)
 
-	var having string
-	if mt == ModelTypeLongConnection {
-		lc := def.LongConn.WithDefaults()
-		having = fmt.Sprintf("HAVING total_duration >= %s", chFloatLiteral(lc.BaseSeconds))
-	} else {
-		windowSecs := int64(bounds.Days) * 86400
-		bp := def.Beacon.WithDefaults(windowSecs)
-		having = fmt.Sprintf("HAVING cnt >= %d AND cnt < %d", bp.MinConnections, bp.StrobeLimit)
-	}
-
-	// Capped per day, as the state is, so a preview keeps the points the warmed
-	// model would: one cap over the whole window kept an arbitrary slice of it.
+	// Capped per day, as the state is. Over a range up to the longest window that
+	// is the state's own cap; past it, each day keeps less so the pair stays inside
+	// the budget a state read holds to.
+	dayCap := netPreviewDayCap(bounds.Days)
 	var b strings.Builder
-	b.WriteString("SELECT src, dst, port,\n")
-	b.WriteString("    sum(day_cnt) AS cnt,\n")
-	b.WriteString("    arrayFlatten(groupArray(day_ts)) AS ts_list,\n")
-	b.WriteString("    arrayFlatten(groupArray(day_sizes)) AS size_list,\n")
-	b.WriteString("    sum(day_dur) AS total_duration\n")
-	b.WriteString("FROM (\n")
 	b.WriteString(fmt.Sprintf("    SELECT %s AS src, %s AS dst, %s AS port, toDate(timestamp) AS day,\n", src, dst, port))
 	b.WriteString("        toUInt64(count()) AS day_cnt,\n")
-	b.WriteString(fmt.Sprintf("        groupArray(%d)(toUnixTimestamp(timestamp)) AS day_ts,\n", netStateArrayCap))
-	b.WriteString(fmt.Sprintf("        groupArray(%d)(%s) AS day_sizes,\n", netStateArrayCap, bytes))
+	b.WriteString(fmt.Sprintf("        groupArray(%d)(toUnixTimestamp(timestamp)) AS day_ts,\n", dayCap))
+	b.WriteString(fmt.Sprintf("        groupArray(%d)(%s) AS day_sizes,\n", dayCap, bytes))
 	b.WriteString(fmt.Sprintf("        sum(%s) AS day_dur\n", dur))
 	b.WriteString(fmt.Sprintf("    FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("    WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
@@ -822,10 +855,21 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	for _, p := range preds {
 		b.WriteString(fmt.Sprintf("\n        AND %s", p))
 	}
-	b.WriteString("\n    GROUP BY src, dst, port, day\n)\n")
-	b.WriteString("GROUP BY src, dst, port\n")
-	b.WriteString(having)
-	return b.String(), nil
+	b.WriteString("\n    GROUP BY src, dst, port, day")
+	return netPairArraysSelect(b.String(), netPairGate(def, mt, bounds.Days, "cnt", "total_duration")), nil
+}
+
+// netPreviewDayCap is the points a preview keeps per pair and day over a range of
+// days: the state's daily cap, or less past the longest window so a pair never
+// carries more than netPairPointBudget.
+func netPreviewDayCap(days int) int {
+	if days < 1 {
+		days = 1
+	}
+	if c := netPairPointBudget / days; c < netStateArrayCap {
+		return c
+	}
+	return netStateArrayCap
 }
 
 // BuildNetPreviewPrevalence returns the per-destination distinct-source counts over

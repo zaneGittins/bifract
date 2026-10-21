@@ -167,9 +167,13 @@ func loadPreviewConfig() previewConfig {
 	return cfg
 }
 
-func (c previewConfig) settings() string {
-	return fmt.Sprintf(" SETTINGS max_execution_time=%d, max_threads=%d, max_bytes_before_external_group_by=%d",
+func (c previewConfig) settings(extra ...string) string {
+	s := fmt.Sprintf(" SETTINGS max_execution_time=%d, max_threads=%d, max_bytes_before_external_group_by=%d",
 		c.maxExecutionSec, c.maxThreads, c.maxGroupByBytes)
+	for _, e := range extra {
+		s += ", " + e
+	}
+	return s
 }
 
 // Preview computes a model's estimated output over a recent window WITHOUT
@@ -556,15 +560,19 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	var counts [10]uint64
 	// fine is the final score binned at 0.01 (floor) for client-side recounts.
 	var fine [101]int64
+	// A scored pair keeps what the top table shows and nothing else: holding the
+	// row kept every scored pair's timestamp and size arrays alive until the sort.
 	type scoredPair struct {
-		row   map[string]interface{}
-		final float64
-		rs    RegularityScore
-		prev  float64
+		src, dst, port string
+		cnt            uint64
+		final          float64
+		rs             RegularityScore
+		prev           float64
 	}
 	var top []scoredPair
 
-	streamErr := m.ch.StreamQuery(ctx, "", aggSQL+cfg.settings(), func(row map[string]interface{}) error {
+	blockRows := fmt.Sprintf("max_block_size=%d", netReadBlockRows)
+	streamErr := m.ch.StreamQuery(ctx, "", aggSQL+cfg.settings(blockRows), func(row map[string]interface{}) error {
 		scanned++
 		if scored >= previewNetworkPairCap {
 			return nil // keep counting scanned; stop scoring past the cap
@@ -602,7 +610,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		if final > maxScore {
 			maxScore = final
 		}
-		top = append(top, scoredPair{row: row, final: final, rs: rs, prev: round3(prevRatio)})
+		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio)})
 		return nil
 	}, nil)
 	if streamErr != nil {
@@ -617,9 +625,9 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	topRows := make([]map[string]interface{}, 0, len(top))
 	for _, sp := range top {
 		topRows = append(topRows, map[string]interface{}{
-			"src_ip":     getString(sp.row, "src"),
-			"dst_ip":     getString(sp.row, "dst"),
-			"dst_port":   getString(sp.row, "port"),
+			"src_ip":     sp.src,
+			"dst_ip":     sp.dst,
+			"dst_port":   sp.port,
 			"score":      sp.final,
 			"regularity": sp.rs.Score,
 			"ts_score":   sp.rs.TsScore,
@@ -627,7 +635,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			"dur_score":  sp.rs.DurScore,
 			"hist_score": sp.rs.HistScore,
 			"prevalence": sp.prev,
-			"conn_count": getUint64(sp.row, "cnt"),
+			"conn_count": sp.cnt,
 		})
 	}
 
