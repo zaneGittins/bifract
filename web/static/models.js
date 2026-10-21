@@ -1197,7 +1197,7 @@ ${m.description ? `<div class="me-sec">
         if (k === 'total_duration') return 'dur';
         if (k === 'prevalence') return 'pct1';
         if (k === 'percent') return 'pct100';
-        if (/_seen$|_at$|_bucket$/.test(k)) return 'ts';
+        if (/_seen$|_at$|_bucket$|^since$/.test(k)) return 'ts';
         if (/_score$|^coverage$|^mad$/.test(k)) return 'score';
         if (/_count$|_total$|^n_buckets$/.test(k)) return 'int';
         return '';
@@ -2599,7 +2599,10 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
     },
 
     _bindHistoryWindow() {
-        document.getElementById('shapeHistoryDays')?.addEventListener('change', ev => { this.editor.historyDays = parseInt(ev.target.value) || 0; });
+        document.getElementById('shapeHistoryDays')?.addEventListener('change', ev => {
+            this.editor.historyDays = parseInt(ev.target.value) || 0;
+            this._schedulePreview();
+        });
     },
 
     _bindKeyFieldEvents() {

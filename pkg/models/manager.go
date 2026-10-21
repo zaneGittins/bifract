@@ -655,38 +655,56 @@ func (m *Manager) createCHObjects(ctx context.Context, id, fractalID string, def
 	return nil
 }
 
-// ensureStateLayout checks that the model's table has the layout its definition
-// writes. A rebuild drops the table before creating it, but a failed drop is only
-// logged, and CREATE IF NOT EXISTS then keeps the old table: toggling a history
-// window would leave every insert and read naming a day column the table lacks,
-// or a table that keeps one row per day for a model that reads one per key. A
-// mismatch is dropped and created once more, and reported if it persists.
+// ensureStateLayout recreates a model table that a failed drop left in another
+// layout, which CREATE IF NOT EXISTS would keep.
 func (m *Manager) ensureStateLayout(ctx context.Context, id, tableName, mvName string, def ModelDefinition, mt ModelType, tableSQL string) error {
-	want := def.HistoryDaysFor(mt) > 0
-	has, err := m.tableHasColumn(ctx, tableName, parser.HistoryDayColumn)
-	if err != nil || has == want {
-		// An unreadable system.columns is not evidence of a bad layout; inserts
-		// naming their columns still refuse a wrong one.
+	if ok, err := m.stateLayoutOK(ctx, id, tableName, def, mt); err != nil || ok {
 		return nil
 	}
-	log.Printf("model %s: table %s has the wrong layout for its history window; recreating it", id, tableName)
+	log.Printf("model %s: table %s has another layout than its definition; recreating it", id, tableName)
 	_ = m.dropCHObjects(ctx, id, tableName, mvName, mt)
 	if err := m.ch.ExecSchema(ctx, tableSQL); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("recreate model table: %w", err)
 	}
-	if has, err := m.tableHasColumn(ctx, tableName, parser.HistoryDayColumn); err == nil && has != want {
-		return fmt.Errorf("model table %s kept a layout from before its history window changed and could not be dropped; drop it in ClickHouse and save the model again", tableName)
+	if ok, err := m.stateLayoutOK(ctx, id, tableName, def, mt); err == nil && !ok {
+		return fmt.Errorf("model table %s keeps a layout its definition no longer writes and could not be dropped; drop it in ClickHouse and save the model again", tableName)
 	}
 	return nil
 }
 
-// tableHasColumn reports whether this node's copy of a model table has a column.
-func (m *Manager) tableHasColumn(ctx context.Context, table, column string) (bool, error) {
-	var n uint64
-	err := m.ch.QueryRow(ctx, fmt.Sprintf(
-		"SELECT count() FROM system.columns WHERE database = currentDatabase() AND table = '%s' AND name = '%s'",
-		storage.EscCHStr(table), storage.EscCHStr(column))).Scan(&n)
-	return n > 0, err
+// stateLayoutOK reports whether every existing copy of the model's table and its
+// Distributed companion has def's history layout; a copy not yet created is fine.
+func (m *Manager) stateLayoutOK(ctx context.Context, id, tableName string, def ModelDefinition, mt ModelType) (bool, error) {
+	col := parser.HistoryDayColumn
+	days := def.HistoryDaysFor(mt)
+	want := fmt.Sprintf("position(engine_full, '%s') = 0", col)
+	if days > 0 {
+		want = fmt.Sprintf("position(engine_full, 'TTL %s + toIntervalDay(%d)') > 0", col, parser.HistoryRetentionDays(days))
+	}
+	from := func(table string) string {
+		if c := m.ch.Topology().FanoutCluster; c != "" {
+			return fmt.Sprintf("clusterAllReplicas('%s', system.%s)", storage.EscCHStr(c), table)
+		}
+		return "system." + table
+	}
+	q := fmt.Sprintf("SELECT count() FROM %s WHERE database = currentDatabase() AND name = '%s' AND NOT (%s)",
+		from("tables"), storage.EscCHStr(tableName), want)
+	if m.ch.Topology().DistributedTables {
+		// A Distributed table has no TTL, so its columns are what can be wrong.
+		bad := fmt.Sprintf("countIf(name = '%s') > 0", col)
+		if days > 0 {
+			bad = fmt.Sprintf("countIf(name = '%s') = 0", col)
+		}
+		q = fmt.Sprintf(`SELECT (%s) + (SELECT count() FROM (
+    SELECT hostName() AS h, %s AS bad FROM %s
+    WHERE database = currentDatabase() AND table = '%s' GROUP BY h) WHERE bad)`,
+			q, bad, from("columns"), storage.EscCHStr(chModelDistName(id)))
+	}
+	var wrong uint64
+	if err := m.ch.QueryRow(ctx, q).Scan(&wrong); err != nil {
+		return false, err
+	}
+	return wrong == 0, nil
 }
 
 // deleteBlankEntity removes the entity a first_seen model recorded for keyless logs
@@ -909,12 +927,8 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 	}
 }
 
-// buildRarityScoredSQL scores a rarity model's pairs with the shared definition
-// (see parser.RarityScoredSQL), with the day list and first day. `source` yields
-// rows shaped like the model table: live scoring passes "`tbl` FINAL", the
-// preview a windowed aggregation subquery. fidEsc must already be CH-escaped.
-// historyDays reads a windowed model's table over its window, and is 0 for any
-// other source.
+// buildRarityScoredSQL scores a rarity model's pairs (see parser.RarityScoredSQL)
+// with the day list and since; historyDays is 0 for anything but a windowed table.
 func buildRarityScoredSQL(source, fidEsc string, historyDays int) string {
 	return parser.RarityScoredSQL(source, fidScope(fidEsc), 1, historyDays, true)
 }
@@ -939,22 +953,12 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string
 	return m.runPage(ctx, "rarity", baseQuery, where, order, q.Limit, q.Offset)
 }
 
-// firstSeenAggSQL returns the per-entity aggregation (first_seen, last_seen,
-// event_count, since, days) for a first_seen or tlsh model; keyCol is entity_key
-// or digest. `source` is the FROM expression (live: "`tbl` FINAL"; preview: a
-// windowed aggregation subquery); extraWhere is an optional predicate ANDed into
-// the scan. The aggregates are day-chunk invariant, so the preview matches the
-// post-backfill table. recorded adds recorded_at, which only a first_seen table
-// has; the epoch it holds for seeded history renders as empty. historyDays reads
-// a windowed first_seen table over its window (see parser.FirstSeenAggSQL).
-func firstSeenAggSQL(source, fidEsc, extraWhere, keyCol string, historyDays int, recorded bool) string {
-	scope := fidScope(fidEsc)
-	if extraWhere != "" {
-		scope += " AND " + extraWhere
-	}
+// firstSeenAgg is every models-side read of a first_seen or tlsh table; see
+// parser.FirstSeenAggSQL.
+func firstSeenAgg(source, scope, keyCol string, historyDays int, recorded, days bool) string {
 	return parser.FirstSeenAggSQL(parser.FirstSeenAgg{
 		Source: source, Scope: scope, KeyCol: keyCol,
-		HistoryDays: historyDays, Recorded: recorded, Days: true,
+		HistoryDays: historyDays, Recorded: recorded, Days: days,
 	})
 }
 
@@ -969,14 +973,18 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID str
 	if q.Search != "" {
 		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(q.Search))
 	}
-	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol, historyDays, recorded)
+	scope := fidScope(storage.EscCHStr(fractalID))
+	if extra != "" {
+		scope += " AND " + extra
+	}
+	baseQuery := firstSeenAgg("`"+tableName+"` FINAL", scope, keyCol, historyDays, recorded, true)
 	return m.runPage(ctx, "first_seen", baseQuery, where, order, q.Limit, q.Offset)
 }
 
 // buildVolumeScoredSQL scores a volume_baseline model's entities with the shared
 // definition (see parser.VolumeScoredSQL). fidEsc must already be CH-escaped.
 func buildVolumeScoredSQL(source, fidEsc string, def ModelDefinition, lower string) string {
-	return parser.VolumeScoredSQL(source, "fractal_id = '"+fidEsc+"'", def.TimeBucket, def.MinSample, lower, true)
+	return parser.VolumeScoredSQL(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, lower, true)
 }
 
 func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalID string, def ModelDefinition, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
@@ -1026,7 +1034,7 @@ func (m *Manager) getNetworkData(ctx context.Context, tableName, fractalID strin
 		return nil, 0, nil
 	}
 	fid := storage.EscCHStr(fractalID)
-	scope := fmt.Sprintf("fractal_id = '%s'", fid)
+	scope := fidScope(fid)
 	if q.Search != "" {
 		s := storage.EscCHStr(q.Search)
 		scope += fmt.Sprintf(" AND (src_ip ILIKE '%%%s%%' OR dst_ip ILIKE '%%%s%%')", s, s)
@@ -1041,7 +1049,7 @@ func (m *Manager) getNetworkStats(ctx context.Context, qt, fid string, rule find
        countIf(final_score > 0.8) AS critical,
        round(max(final_score), 3) AS max_score,
        max(scored_at) AS scored_at
-FROM %s FINAL WHERE fractal_id = '%s'`, rule.Where, qt, fid)
+FROM %s FINAL WHERE %s`, rule.Where, qt, fidScope(fid))
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("network stats: %w", err)
@@ -1059,7 +1067,7 @@ FROM %s FINAL WHERE fractal_id = '%s'`, rule.Where, qt, fid)
 }
 
 func (m *Manager) getNetworkHistogram(ctx context.Context, qt, fid string) (map[string]interface{}, error) {
-	inner := fmt.Sprintf("SELECT final_score FROM %s FINAL WHERE fractal_id = '%s'", qt, fid)
+	inner := fmt.Sprintf("SELECT final_score FROM %s FINAL WHERE %s", qt, fidScope(fid))
 	buckets, err := m.runHistogram(ctx, inner, "least(toUInt64(floor(final_score * 10)), 9)", rarityHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("network histogram: %w", err)
@@ -1170,12 +1178,12 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 }
 
 func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid, keyCol string, historyDays int) (map[string]interface{}, error) {
-	agg := parser.FirstSeenAggSQL(parser.FirstSeenAgg{Source: qt + " FINAL", Scope: fidScope(fid), KeyCol: keyCol, HistoryDays: historyDays})
+	agg := firstSeenAgg(qt+" FINAL", fidScope(fid), keyCol, historyDays, false, false)
 	q := fmt.Sprintf(`
 SELECT count() AS total_entities,
        min(first_seen) AS oldest_seen,
        max(last_seen) AS newest_seen,
-       countIf(first_seen >= now() - INTERVAL 1 DAY) AS new_today
+       countIf(first_seen >= now() - INTERVAL 1 DAY AND since > toDate(0)) AS new_today
 FROM (%s
 )`, agg)
 	rows, err := m.ch.QuerySchema(ctx, q)
@@ -1317,7 +1325,7 @@ var (
 // firstSeenCountInner returns the SQL projecting one `event_count` column per
 // first_seen entity, ready for histogram bucketing.
 func firstSeenCountInner(source, fidEsc, keyCol string) string {
-	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAggSQL(source, fidEsc, "", keyCol, 0, false) + ") WHERE event_count >= 1"
+	return "SELECT toUInt64(event_count) AS event_count FROM (" + firstSeenAgg(source, fidScope(fidEsc), keyCol, 0, false, true) + ") WHERE event_count >= 1"
 }
 
 // getRarityHistogram reports how many values the model's own alert thresholds
@@ -1402,7 +1410,7 @@ func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol str
 	q := fmt.Sprintf(`SELECT toString(since) AS day, toUInt64(count()) AS cnt
 FROM (%s)
 WHERE since >= today() - %d
-GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol, historyDays, false), firstSeenDiscoveryDays)
+GROUP BY day ORDER BY day`, firstSeenAgg(qt+" FINAL", fidScope(fid), keyCol, historyDays, false, false), firstSeenDiscoveryDays)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen discovery series: %w", err)
@@ -1454,7 +1462,7 @@ func buildExtractionTestSQL(tableName, fractalID string, filter []FilterConditio
 			b.WriteString(fmt.Sprintf(", %s AS %s", chFieldRef(ext.FromField), ident(ext.FromField)))
 		}
 	}
-	b.WriteString(fmt.Sprintf("\n    FROM %s\n    WHERE fractal_id = '%s'", tableName, storage.EscCHStr(fractalID)))
+	b.WriteString(fmt.Sprintf("\n    FROM %s\n    WHERE %s", tableName, fidScope(storage.EscCHStr(fractalID))))
 	for _, fc := range filter {
 		b.WriteString(fmt.Sprintf("\n    AND %s", filterConditionToSQL(fc)))
 	}
@@ -1642,9 +1650,8 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 	return nil
 }
 
-// validateHistoryDays checks a history window against what the model type can
-// keep, and against the history a rarity model needs before it alerts: a window
-// shorter than that would hold every group in learning forever.
+// validateHistoryDays checks a window's range, and that a rarity window covers
+// the history its alert needs before it can fire.
 func validateHistoryDays(mt ModelType, def ModelDefinition) error {
 	d := def.HistoryDays
 	if d == 0 {
@@ -1672,10 +1679,8 @@ func validateHistoryDays(mt ModelType, def ModelDefinition) error {
 	return nil
 }
 
-// rarityAlertHistory is the history a rarity group needs before its alert can
-// fire: the min history, or, when the alert sets a share threshold, more than
-// 100 / threshold days, since a value seen on one day only falls under it then.
-// Unlike learningNeed it assumes no threshold the alert does not set.
+// rarityAlertHistory is the days a rarity group needs before its alert can fire:
+// the min history, or more than 100 / share threshold days when the alert sets one.
 func rarityAlertHistory(def ModelDefinition) int {
 	need := def.MinSample
 	if def.Alert != nil && def.Alert.PercentThreshold > 0 {

@@ -146,8 +146,8 @@ func TestHealthSummarySQL(t *testing.T) {
 			t.Errorf("first_seen summary missing %q:\n%s", want, fs)
 		}
 	}
-	if strings.Count(fs, "countIf(") != findingsDays {
-		t.Errorf("first_seen series has %d days, want %d", strings.Count(fs, "countIf("), findingsDays)
+	if strings.Count(fs, "countIf(toDate(recorded_at) = ") != findingsDays {
+		t.Errorf("first_seen series has %d days, want %d", strings.Count(fs, "countIf(toDate(recorded_at) = "), findingsDays)
 	}
 
 	rar := healthSummarySQL(ModelTypeRarity, ModelDefinition{}, "model_r", "", "f", today)

@@ -234,7 +234,7 @@ func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
 // only logs whose key is in the model can survive the INNER JOIN, and the scan is the
 // one place the key sub-columns' skip indexes can prune on that set. The subquery
 // reads the model table's raw key columns with no FINAL and no aggregation, since
-// neither engine ever drops a key.
+// merging never drops a key; extraWhere bounds a windowed table to its window.
 //
 // exact reports that this key set is identical to the one the JOIN matches. A model
 // type that discards keys after aggregation (rarity's min_sample) leaves a superset:
@@ -338,20 +338,14 @@ GROUP BY src_ip, dst_ip, dst_port`,
 
 // RarityScoredSQL scores every (partition, value) pair of a rarity model, the one
 // definition the data view, preview, alert counts and modelLookup() all read.
-// Counts are days, taken from the stored day set, so live and backfilled state
-// agree and replays cannot double count. model_count is the days the value was
-// seen, model_total the days its partition was seen, percent their ratio, and
-// coverage is Good-Turing coverage, 1 - (values seen on one day / total
-// value-days): how rarely the partition still produces something new.
+// Counts are days: model_count the value's, model_total its partition's, percent
+// their ratio, and coverage is Good-Turing coverage, 1 - (values seen on one day /
+// total value-days).
 //
-// source must yield the rarity state shape (partition_val, value_val, days);
-// scope is a WHERE predicate on it. minHistory is how many days a partition must
-// have been seen before its values are scored (the model's learning period).
-// historyDays scores a windowed model's table over its window (see
-// model_history.go). withDays adds the sorted day list and since, the day the
-// pair was first seen after being absent for the window (its first day, for a
-// model that keeps everything); only the data view and discovery need them. The
-// trailing WHERE lets callers append AND clauses.
+// scope is a WHERE predicate on source; minHistory is the partition's learning
+// period in days; historyDays reads a windowed table over its window. withDays
+// adds the sorted day list and since, the pair's first day (its return, for a
+// windowed model). The trailing WHERE lets callers append AND clauses.
 func RarityScoredSQL(source, scope string, minHistory, historyDays int, withDays bool) string {
 	if minHistory < 1 {
 		minHistory = 1
@@ -364,7 +358,7 @@ func RarityScoredSQL(source, scope string, minHistory, historyDays int, withDays
 	var inner string
 	if historyDays > 0 {
 		if withDays {
-			sinceInner = ",\n            " + historyReturn("lookback_days", "", historyDays) + " AS since"
+			sinceInner = ",\n            lookback_days[" + historyReturnIndex("lookback_days", "", historyDays) + "] AS since"
 		}
 		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
             arraySort(groupUniqArray(%[1]s)) AS lookback_days,
@@ -405,15 +399,9 @@ WHERE days_observed >= %d`, daysCol, sinceMid, inner, minHistory)
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
-// Dates are stringified because DateTime64 -> *string is unsupported in the
-// display scan path.
-//
-// is_new reads recorded_at, when the model's state first held the entity, not
-// first_seen: a late or replayed log carries an old event time but is still new
-// to the model, and seeded history (epoch) never is. newSince, an alert's window
-// start, widens the usual hour so a backlogged alert keeps what was new in it.
-// For a windowed model recorded_at is when the entity returned after being absent
-// for the window (see FirstSeenAggSQL).
+// is_new reads when the model recorded the entity, not its event time, so a late
+// or replayed log is still new to it and seeded history never is; newSince, an
+// alert's window start, widens the hour for a backlogged alert.
 func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, historyDays int, newSince time.Time) string {
 	horizon := "now() - INTERVAL 1 HOUR"
 	if !newSince.IsZero() {

@@ -162,10 +162,8 @@ type ModelDefinition struct {
 	KeyFields    []string          `json:"key_fields" yaml:"key_fields,omitempty"`
 	// TimeBucket is the volume_baseline aggregation window: "day" (default) or "hour".
 	TimeBucket string `json:"time_bucket" yaml:"time_bucket,omitempty"`
-	// HistoryDays bounds what a rarity or first_seen model counts: only the last
-	// HistoryDays days of event time, and a key away for that long is new again
-	// when it returns. 0 keeps everything, which is how a model behaved before
-	// this existed. See HistoryDaysFor and parser/model_history.go.
+	// HistoryDays is a rarity or first_seen model's window in days, 0 for all
+	// history; see parser/model_history.go.
 	HistoryDays int          `json:"history_days,omitempty" yaml:"history_days,omitempty"`
 	Alert       *AlertConfig `json:"alert,omitempty" yaml:"alert,omitempty"`
 
@@ -542,18 +540,14 @@ func parseLeadingInt(s string) (int, error) {
 	return strconv.Atoi(s[:end])
 }
 
-// History window bounds. A windowed key keeps a row for every day it was seen
-// over twice the window, so a year bounds that at 730; under a week, rarity
-// cannot reach its default min history at all.
+// History window bounds; a windowed key keeps up to twice the window in rows.
 const (
 	MinHistoryDays = 7
 	MaxHistoryDays = 365
 )
 
-// HistoryDaysFor is the model's history window in days, or 0 when it keeps
-// everything. Only rarity and first_seen take a window: volume and network models
-// already score a fixed window, and a tlsh index must hold every digest tlsh()
-// can match.
+// HistoryDaysFor is the model's history window, 0 for all history or a type that
+// takes none (only rarity and first_seen do).
 func (d ModelDefinition) HistoryDaysFor(mt ModelType) int {
 	if mt != ModelTypeRarity && mt != ModelTypeFirstSeen {
 		return 0

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"bifract/pkg/parser"
 )
 
 // Data views: every scored row, or only the rows the model's alert would raise.
@@ -184,15 +182,9 @@ GROUP BY first_day`, flagSQL, scored)
 // firstSeenDiscoverySQL counts the entities a first_seen model first recorded on
 // each of the series' days, with how many of those fall in the findings window
 // and the last hour (what the alert fires on). Seeded history carries the epoch
-// and never counts.
-//
-// A windowed model's entity counts on the day it returned after being away for
-// the window, and one that never left does not count at all.
+// and never counts, nor does a windowed model's entity that never left.
 func firstSeenDiscoverySQL(qt, fidEsc string, since time.Time, historyDays int) string {
-	agg := parser.FirstSeenAggSQL(parser.FirstSeenAgg{
-		Source: qt + " FINAL", Scope: fidScope(fidEsc), KeyCol: "entity_key",
-		HistoryDays: historyDays, Recorded: true,
-	})
+	agg := firstSeenAgg(qt+" FINAL", fidScope(fidEsc), "entity_key", historyDays, true, false)
 	return fmt.Sprintf(`SELECT toString(toDate(recorded_at)) AS day, toUInt64(count()) AS n,
     toUInt64(countIf(recorded_at >= now() - INTERVAL %d DAY)) AS week,
     toUInt64(countIf(recorded_at >= now() - INTERVAL 1 HOUR)) AS hour

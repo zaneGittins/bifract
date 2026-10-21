@@ -967,11 +967,8 @@ func TestRarityConfidenceFilterNamesTheRename(t *testing.T) {
 	}
 }
 
-// A windowed model is scored over its window and judged new over its lookback:
-// the scoring subquery reads twice the window and counts only the window, and the
-// strict prefilter admits only keys seen inside the window, so a key whose days
-// have all aged out is unknown again rather than matched from rows its TTL has
-// not yet dropped.
+// A windowed model reads its lookback, scores its window, and its strict
+// prefilter admits only keys seen inside the window.
 func TestModelLookup_HistoryWindow(t *testing.T) {
 	opts := mlookupOpts()
 	opts.Models["rare"] = AnalyticsModelInfo{ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", HistoryDays: 30}

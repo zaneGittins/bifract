@@ -417,7 +417,7 @@ LIMIT 25`, scored, minSample)
 }
 
 func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time, keyCol string) error {
-	agg := firstSeenAggSQL(source, fidEsc, "", keyCol, 0, false)
+	agg := firstSeenAgg(source, fidScope(fidEsc), keyCol, 0, false, true)
 
 	// The is_new alert fires on entities the live model records for the first time,
 	// which nothing in history can replay. Instead we report the new-entity RATE:
@@ -468,7 +468,7 @@ func (m *Manager) previewVolume(ctx context.Context, res *PreviewResult, source,
 	if def.TimeBucket == "hour" {
 		lower = fmt.Sprintf("toStartOfHour(toDateTime('%s', 'UTC'))", start.Format("2006-01-02 15:04:05"))
 	}
-	scored := parser.VolumeScoredSQLAt(source, "fractal_id = '"+fidEsc+"'", def.TimeBucket, def.MinSample, lower, asOf, true)
+	scored := parser.VolumeScoredSQLAt(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, lower, asOf, true)
 
 	z := 3.5
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {

@@ -33,10 +33,10 @@ func generateTableDDL(def ModelDefinition, mt ModelType, tableName string) (stri
     partition_val String,
     value_val     String,
     event_count   SimpleAggregateFunction(sum, UInt64),
-    days          AggregateFunction(groupUniqArray(365), Date)%s
+    %s
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, partition_val, value_val%s)%s
-SETTINGS index_granularity = 8192`, tableName, h.column, h.orderBy, h.ttl), nil
+SETTINGS index_granularity = 8192`, tableName, h.column(13), h.orderBy, h.ttl), nil
 
 	case ModelTypeFirstSeen:
 		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
@@ -45,11 +45,11 @@ SETTINGS index_granularity = 8192`, tableName, h.column, h.orderBy, h.ttl), nil
     first_seen  SimpleAggregateFunction(min, DateTime64(3, 'UTC')),
     last_seen   SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     event_count SimpleAggregateFunction(sum, UInt64),
-    days        AggregateFunction(groupUniqArray(365), Date),
-    %s %s%s
+    %s,
+    %s %s
 ) ENGINE = AggregatingMergeTree()
 ORDER BY (fractal_id, entity_key%s)%s
-SETTINGS index_granularity = 8192`, tableName, FirstRecordedColumn, FirstRecordedDefinition, h.column, h.orderBy, h.ttl), nil
+SETTINGS index_granularity = 8192`, tableName, h.column(11), FirstRecordedColumn, FirstRecordedDefinition, h.orderBy, h.ttl), nil
 
 	case ModelTypeTLSH:
 		// digest is the verbatim on-disk string, never a canonicalised form: it is
@@ -97,51 +97,51 @@ func volumeBucketColType(timeBucket string) string {
 	return "Date"
 }
 
-// historyLayout is what a windowed model's state adds to its table and its
-// inserts: a day column in the sort key, so each key keeps a row per day of event
-// time and a TTL can drop the days past the lookback (see parser/model_history.go).
-// Aggregate state cannot be trimmed from the inside, and the day set alone stops
-// taking new days once it holds 365, so one row per key could never age.
+// historyLayout is how a model's state records days: a day set per key, or for a
+// windowed model a day column in the sort key, one row per key and day, which a
+// TTL can age out.
 type historyLayout struct {
-	column, orderBy, ttl string // table DDL fragments
-	selectCol, groupBy   string // insert SELECT fragments
+	dayName, dayType, daySelect string
+	orderBy, ttl, groupBy       string
 }
 
 func historyLayoutFor(def ModelDefinition, mt ModelType) historyLayout {
 	days := def.HistoryDaysFor(mt)
 	if days == 0 {
-		return historyLayout{}
+		return historyLayout{dayName: "days", dayType: "AggregateFunction(groupUniqArray(365), Date)",
+			daySelect: "groupUniqArrayState(365)(toDate(timestamp))"}
 	}
 	col := parser.HistoryDayColumn
 	return historyLayout{
-		column:    fmt.Sprintf(",\n    %-11s Date", col),
-		orderBy:   ", " + col,
-		ttl:       fmt.Sprintf("\nTTL %s + INTERVAL %d DAY", col, parser.HistoryRetentionDays(days)),
-		selectCol: fmt.Sprintf(",\n    toDate(timestamp) AS %s", col),
-		groupBy:   ", " + col,
+		dayName: col, dayType: "Date", daySelect: "toDate(timestamp)",
+		orderBy: ", " + col,
+		ttl:     fmt.Sprintf("\nTTL %s + INTERVAL %d DAY", col, parser.HistoryRetentionDays(days)),
+		groupBy: ", " + col,
 	}
 }
 
-// stateColumns names the columns a state insert writes, in the order its SELECT
-// produces them. Naming them makes a table whose layout differs from the
-// definition's (one a failed drop left behind) refuse the insert, rather than
-// take values into whichever columns happen to sit in those positions.
+// column is the day column's DDL, its name padded to the table's other names.
+func (h historyLayout) column(width int) string {
+	return fmt.Sprintf("%-*s %s", width, h.dayName, h.dayType)
+}
+
+func (h historyLayout) selectCol() string { return h.daySelect + " AS " + h.dayName }
+
+// stateColumns names the columns a state insert writes, in its SELECT's order, so
+// a table in another layout refuses the insert.
 func stateColumns(def ModelDefinition, mt ModelType) []string {
-	var cols []string
+	day := historyLayoutFor(def, mt).dayName
 	switch mt {
 	case ModelTypeRarity:
-		cols = []string{"fractal_id", "partition_val", "value_val", "event_count", "days"}
+		return []string{"fractal_id", "partition_val", "value_val", "event_count", day}
 	case ModelTypeFirstSeen:
-		cols = []string{"fractal_id", "entity_key", "first_seen", "last_seen", "event_count", "days", FirstRecordedColumn}
+		return []string{"fractal_id", "entity_key", "first_seen", "last_seen", "event_count", day, FirstRecordedColumn}
 	case ModelTypeTLSH:
-		cols = []string{"fractal_id", "digest", "first_seen", "last_seen", "event_count", "days"}
+		return []string{"fractal_id", "digest", "first_seen", "last_seen", "event_count", day}
 	case ModelTypeVolumeBaseline:
-		cols = []string{"fractal_id", "entity_val", "bucket", "event_count"}
+		return []string{"fractal_id", "entity_val", "bucket", "event_count"}
 	}
-	if def.HistoryDaysFor(mt) > 0 {
-		cols = append(cols, parser.HistoryDayColumn)
-	}
-	return cols
+	return nil
 }
 
 // BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
@@ -314,7 +314,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 		b.WriteString(fmt.Sprintf("    %s AS partition_val,\n", applyLowerIfNeeded(partRef, def.Extractions)))
 		b.WriteString(fmt.Sprintf("    %s AS value_val,\n", applyLowerIfNeeded(valRef, def.Extractions)))
 		b.WriteString("    toUInt64(1) AS event_count,\n")
-		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days" + h.selectCol + "\n")
+		b.WriteString("    " + h.selectCol() + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		b.WriteString(fmt.Sprintf("WHERE %s != '' AND %s != ''\n", partRef, valRef))
 		b.WriteString("GROUP BY fractal_id, partition_val, value_val" + h.groupBy)
@@ -329,8 +329,8 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 			}
 			b.WriteString(fmt.Sprintf("    concat(%s) AS entity_key,\n", strings.Join(parts, ", char(30), ")))
 		}
-		b.WriteString(entityAggCols)
-		b.WriteString(fmt.Sprintf(",\n    %s AS %s%s\n", recorded, FirstRecordedColumn, h.selectCol))
+		b.WriteString(entityAggCols(h))
+		b.WriteString(fmt.Sprintf(",\n    %s AS %s\n", recorded, FirstRecordedColumn))
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		if len(def.KeyFields) > 0 {
 			guards := make([]string, len(def.KeyFields))
@@ -365,7 +365,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 	case ModelTypeTLSH:
 		b.WriteString("SELECT fractal_id,\n")
 		b.WriteString(fmt.Sprintf("    %s AS digest,\n", def.KeyFields[0]))
-		b.WriteString(entityAggCols + "\n")
+		b.WriteString(entityAggCols(h) + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		b.WriteString(fmt.Sprintf("WHERE %s\n", tlshDigestGuard(def.KeyFields[0])))
 		b.WriteString("GROUP BY fractal_id, digest")
@@ -377,13 +377,14 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 	return b.String(), nil
 }
 
-// entityAggCols aggregates a first_seen or tlsh key's rows into one state row.
-// Grouping by the key alone matters: grouping by the timestamp as well wrote a
-// state row per distinct event time, roughly one per log.
-const entityAggCols = `    min(timestamp) AS first_seen,
+// entityAggCols aggregates a first_seen or tlsh key's rows into one state row;
+// grouping by the timestamp as well would write a row per event time.
+func entityAggCols(h historyLayout) string {
+	return `    min(timestamp) AS first_seen,
     max(timestamp) AS last_seen,
     count() AS event_count,
-    groupUniqArrayState(365)(toDate(timestamp)) AS days`
+    ` + h.selectCol()
+}
 
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
@@ -394,8 +395,8 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 
 	switch mt {
 	case ModelTypeRarity:
-		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days%s\n",
-			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey), h.selectCol))
+		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    %s\n",
+			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey), h.selectCol()))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -420,8 +421,8 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			}
 			b.WriteString(fmt.Sprintf(",\n    concat(%s) AS entity_key", strings.Join(parts, ", char(30), ")))
 		}
-		b.WriteString(",\n" + entityAggCols)
-		b.WriteString(fmt.Sprintf(",\n    %s AS %s%s\n", recorded, FirstRecordedColumn, h.selectCol))
+		b.WriteString(",\n" + entityAggCols(h))
+		b.WriteString(fmt.Sprintf(",\n    %s AS %s\n", recorded, FirstRecordedColumn))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -443,7 +444,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		b.WriteString("\nGROUP BY fractal_id, entity_key" + h.groupBy)
 	case ModelTypeTLSH:
 		b.WriteString(fmt.Sprintf(",\n    %s AS digest", chFieldRef(def.KeyFields[0])))
-		b.WriteString(",\n" + entityAggCols + "\n")
+		b.WriteString(",\n" + entityAggCols(h) + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
