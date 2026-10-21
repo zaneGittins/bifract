@@ -1663,13 +1663,25 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 			return fmt.Errorf("invalid window for network model: %s (use 1d, 7d, or 14d)", def.Window)
 		}
 		if mp := def.Modifiers.WithDefaults(); mp.FirstSeenRecentDays >= mp.FirstSeenEstablishedDays {
-			return fmt.Errorf("first_seen_recent_days (%d) must be less than first_seen_established_days (%d)",
-				mp.FirstSeenRecentDays, mp.FirstSeenEstablishedDays)
+			set := ModifierParams{}
+			if def.Modifiers != nil {
+				set = *def.Modifiers
+			}
+			return fmt.Errorf("first_seen_recent_days (%d%s) must be less than first_seen_established_days (%d%s)",
+				mp.FirstSeenRecentDays, defaultNote(set.FirstSeenRecentDays), mp.FirstSeenEstablishedDays, defaultNote(set.FirstSeenEstablishedDays))
 		}
 	default:
 		return fmt.Errorf("invalid model type: %s", mt)
 	}
 	return nil
+}
+
+// defaultNote marks a value the user left unset.
+func defaultNote(set int) string {
+	if set > 0 {
+		return ""
+	}
+	return ", the default"
 }
 
 // validateHistoryDays checks a window's range, and that a rarity window covers

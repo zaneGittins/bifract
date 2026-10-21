@@ -774,17 +774,22 @@ func netPairGate(def ModelDefinition, mt ModelType, windowDays int, cnt, dur str
 }
 
 // netPairArraysSelect concatenates per-day rows (day_cnt, day_ts, day_sizes,
-// day_dur) into one row per pair, the shape pairFromRow reads.
-func netPairArraysSelect(perDay, having string) string {
+// day_dur) into one row per pair, the shape pairFromRow reads. threatIntel, an
+// expression over dst, adds the ti_hit column.
+func netPairArraysSelect(perDay, having, threatIntel string) string {
+	ti := ""
+	if threatIntel != "" {
+		ti = fmt.Sprintf(",\n    toUInt64(%s) AS ti_hit", threatIntel)
+	}
 	q := fmt.Sprintf(`SELECT src, dst, port,
     sum(day_cnt) AS cnt,
     arrayFlatten(groupArray(day_ts)) AS ts_list,
     arrayFlatten(groupArray(day_sizes)) AS size_list,
-    sum(day_dur) AS total_duration
+    sum(day_dur) AS total_duration%s
 FROM (
 %s
 )
-GROUP BY src, dst, port`, perDay)
+GROUP BY src, dst, port`, ti, perDay)
 	if having != "" {
 		q += "\nHAVING " + having
 	}
@@ -806,8 +811,8 @@ HAVING %s`, stateTable, fractalScopeClause(fractalID), windowDays,
 // the window's day buckets. Each day is merged on its own because
 // groupArrayMerge(N) caps everything it merges at N, and pairs qualify first so
 // unqualified ones never build arrays. The Merge parameter must match the stored
-// state's (code 43).
-func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
+// state's (code 43). threatIntel is the threat intel column's expression, or "".
+func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int, threatIntel string) string {
 	scope := fmt.Sprintf("%s AND day >= today() - %d", fractalScopeClause(fractalID), windowDays)
 	perDay := fmt.Sprintf(`    SELECT src, dst, port, day,
         sum(conn_count) AS day_cnt,
@@ -819,7 +824,7 @@ func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fract
       AND (src, dst, port) GLOBAL IN (%s)
     GROUP BY src, dst, port, day`, netStateArrayCap, netStateArrayCap, stateTable, scope,
 		netGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
-	return netPairArraysSelect(perDay, "")
+	return netPairArraysSelect(perDay, "", threatIntel)
 }
 
 // BuildNetPrevalenceQuery returns the per-destination distinct-source counts over the
@@ -832,11 +837,10 @@ WHERE %s AND day >= today() - %d
 GROUP BY dst`, stateTable, fractalScopeClause(fractalID), windowDays)
 }
 
-// BuildNetPairsQuery returns the (src, dst) pairs that qualify for scoring this
-// window, the keys the first-seen and threat intel modifiers are read for. Only
-// qualifying pairs: every pair in the window could be many times the set scored.
+// BuildNetPairsQuery returns the window's qualifying (src, dst) pairs, the keys
+// the first-seen modifier is read for.
 func BuildNetPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
-	return fmt.Sprintf("SELECT DISTINCT src, dst FROM (%s)", BuildNetGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
+	return fmt.Sprintf("SELECT DISTINCT src, dst FROM (%s)", netGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
 }
 
 // BuildNetNetworkSizeQuery returns the distinct-source count over the window, the
@@ -859,37 +863,40 @@ func (b NetPreviewBounds) sql() string {
 		b.Start.UTC().Format(chTimeLayout), b.End.UTC().Format(chTimeLayout))
 }
 
-// BuildNetPreviewAgg returns a one-off aggregation over raw logs for the model
-// builder preview, before any state table exists, in the state read's per-pair
-// shape. On a busy day it keeps the first points the read returns, not
-// necessarily the ones the state kept. sourceTable is the (distributed or local)
-// logs table.
-func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
+// previewScope is the FROM and WHERE every preview read over raw logs shares:
+// the fractal, the window, a source and destination, and the source filter.
+func previewScope(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
-	src := chFieldRef(nf.SrcField)
-	dst := chFieldRef(nf.DstField)
-	port := chFieldRef(nf.PortField)
-	bytes := chNumericFieldRef(nf.BytesField)
-	dur := chNumericFieldRef(nf.DurationField)
-
-	dayCap := netPreviewDayCap(bounds.Days)
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("    SELECT %s AS src, %s AS dst, %s AS port, toDate(timestamp) AS day,\n", src, dst, port))
-	b.WriteString("        toUInt64(count()) AS day_cnt,\n")
-	b.WriteString(fmt.Sprintf("        groupArray(%d)(toUnixTimestamp(timestamp)) AS day_ts,\n", dayCap))
-	b.WriteString(fmt.Sprintf("        groupArray(%d)(%s) AS day_sizes,\n", dayCap, bytes))
-	b.WriteString(fmt.Sprintf("        sum(%s) AS day_dur\n", dur))
-	b.WriteString(fmt.Sprintf("    FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("    WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
+	src, dst := chFieldRef(nf.SrcField), chFieldRef(nf.DstField)
 	preds, err := sourceFilterSQL(def)
 	if err != nil {
 		return "", err
 	}
+	where := fmt.Sprintf("FROM %s\nWHERE %s AND %s != '' AND %s != '' AND %s", sourceTable, fractalScopeClause(fractalID), src, dst, bounds.sql())
 	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\n        AND %s", p))
+		where += "\n    AND " + p
 	}
-	b.WriteString("\n    GROUP BY src, dst, port, day")
-	return netPairArraysSelect(b.String(), netPairGate(def, mt, bounds.Days, "cnt", "total_duration")), nil
+	return where, nil
+}
+
+// BuildNetPreviewAgg returns the preview's aggregation over raw logs in the state
+// read's per-pair shape; threatIntel is the threat intel column's expression, or "".
+func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds, threatIntel string) (string, error) {
+	scope, err := previewScope(def, sourceTable, fractalID, bounds)
+	if err != nil {
+		return "", err
+	}
+	nf := netFieldMap(def)
+	dayCap := netPreviewDayCap(bounds.Days)
+	perDay := fmt.Sprintf(`    SELECT %s AS src, %s AS dst, %s AS port, toDate(timestamp) AS day,
+        toUInt64(count()) AS day_cnt,
+        groupArray(%d)(toUnixTimestamp(timestamp)) AS day_ts,
+        groupArray(%d)(%s) AS day_sizes,
+        sum(%s) AS day_dur
+    %s
+    GROUP BY src, dst, port, day`, chFieldRef(nf.SrcField), chFieldRef(nf.DstField), chFieldRef(nf.PortField),
+		dayCap, dayCap, chNumericFieldRef(nf.BytesField), chNumericFieldRef(nf.DurationField), scope)
+	return netPairArraysSelect(perDay, netPairGate(def, mt, bounds.Days, "cnt", "total_duration"), threatIntel), nil
 }
 
 // netPreviewDayCap is the points a preview keeps per pair and day, lowered past
@@ -906,68 +913,38 @@ func netPreviewDayCap(days int) int {
 }
 
 // BuildNetPreviewPrevalence returns the per-destination distinct-source counts over
-// raw logs for the preview window (no state table exists yet). It omits the pair
-// HAVING so prevalence counts ALL sources, not only qualifying pairs.
+// raw logs for the preview window, over all sources rather than qualifying pairs.
 func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
-	nf := netFieldMap(def)
-	src := chFieldRef(nf.SrcField)
-	dst := chFieldRef(nf.DstField)
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("SELECT %s AS dst, uniqExact(%s) AS prev_total\n", dst, src))
-	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
-	preds, err := sourceFilterSQL(def)
+	scope, err := previewScope(def, sourceTable, fractalID, bounds)
 	if err != nil {
 		return "", err
 	}
-	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\n    AND %s", p))
-	}
-	b.WriteString("\nGROUP BY dst")
-	return b.String(), nil
+	nf := netFieldMap(def)
+	return fmt.Sprintf("SELECT %s AS dst, uniqExact(%s) AS prev_total\n%s\nGROUP BY dst",
+		chFieldRef(nf.DstField), chFieldRef(nf.SrcField), scope), nil
 }
 
 // BuildNetPreviewNetworkSize returns the total distinct-source count over the preview
 // window, the denominator for the prevalence ratio.
 func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
-	nf := netFieldMap(def)
-	src := chFieldRef(nf.SrcField)
-	dst := chFieldRef(nf.DstField)
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("SELECT uniqExact(%s) AS network_size\n", src))
-	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
-	preds, err := sourceFilterSQL(def)
+	scope, err := previewScope(def, sourceTable, fractalID, bounds)
 	if err != nil {
 		return "", err
 	}
-	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\n    AND %s", p))
-	}
-	return b.String(), nil
+	return fmt.Sprintf("SELECT uniqExact(%s) AS network_size\n%s", chFieldRef(netFieldMap(def).SrcField), scope), nil
 }
 
 // BuildNetPreviewPairs returns the preview window's qualifying (src, dst) pairs
 // over raw logs, the preview's counterpart of BuildNetPairsQuery.
 func BuildNetPreviewPairs(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
-	nf := netFieldMap(def)
-	src := chFieldRef(nf.SrcField)
-	dst := chFieldRef(nf.DstField)
-	port := chFieldRef(nf.PortField)
-	dur := chNumericFieldRef(nf.DurationField)
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("SELECT DISTINCT src, dst FROM (\nSELECT %s AS src, %s AS dst, %s AS port\n", src, dst, port))
-	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
-	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
-	preds, err := sourceFilterSQL(def)
+	scope, err := previewScope(def, sourceTable, fractalID, bounds)
 	if err != nil {
 		return "", err
 	}
-	for _, p := range preds {
-		b.WriteString(fmt.Sprintf("\n    AND %s", p))
-	}
-	b.WriteString("\nGROUP BY src, dst, port\nHAVING " + netPairGate(def, mt, bounds.Days, "count()", "sum("+dur+")") + "\n)")
-	return b.String(), nil
+	nf := netFieldMap(def)
+	gate := netPairGate(def, mt, bounds.Days, "count()", "sum("+chNumericFieldRef(nf.DurationField)+")")
+	return fmt.Sprintf("SELECT DISTINCT src, dst FROM (\nSELECT %s AS src, %s AS dst, %s AS port\n%s\nGROUP BY src, dst, port\nHAVING %s\n)",
+		chFieldRef(nf.SrcField), chFieldRef(nf.DstField), chFieldRef(nf.PortField), scope, gate), nil
 }
 
 // chFloatLiteral renders a float as a ClickHouse numeric literal without exponent noise.

@@ -112,6 +112,7 @@ func TestValidateDefinitionShape(t *testing.T) {
 		{"long conn 14d ok", ModelTypeLongConnection, ModelDefinition{Window: "14d"}, ""},
 		{"beacon bad window", ModelTypeBeacon, ModelDefinition{Window: "30d"}, "invalid window"},
 		{"recent overlaps established", ModelTypeBeacon, ModelDefinition{Modifiers: &ModifierParams{FirstSeenRecentDays: 30, FirstSeenEstablishedDays: 30}}, "must be less than first_seen_established_days"},
+		{"established under the default recent", ModelTypeBeacon, ModelDefinition{Modifiers: &ModifierParams{FirstSeenEstablishedDays: 5}}, "first_seen_recent_days (7, the default) must be less than first_seen_established_days (5)"},
 		{"unknown type", ModelType("nope"), ModelDefinition{}, "invalid model type"},
 		{"bad field name", ModelTypeRarity, ModelDefinition{PartitionKey: "a b", ValueKey: "c"}, "is not a field name"},
 		{"bad network field", ModelTypeBeacon, ModelDefinition{Network: &NetworkFieldMap{SrcField: "a;b"}}, "src_field"},

@@ -21,6 +21,7 @@ type PairAgg struct {
 	FirstTs        int64
 	LastTs         int64
 	TotalDuration  float64
+	ThreatIntelHit bool // the threat intel lookup lists Dst
 }
 
 // RegularityScore is the base beacon signal: timing/size/duration/histogram
@@ -46,12 +47,9 @@ type Modifiers struct {
 // PairContext is what the modifier layer knows about a pair beyond its own
 // traffic.
 type PairContext struct {
-	// Prevalence is the fraction of the network's sources that contact the
-	// destination.
-	Prevalence float64
-	// FirstSeenAge is how long ago the linked first_seen model first saw the
-	// destination (or the pair). FirstSeenKnown is false when no model is linked
-	// or it has no record of it, which earns no adjustment either way.
+	Prevalence float64 // share of the network's sources that contact the destination
+	// FirstSeenAge is how long ago the linked model first saw the destination,
+	// meaningful only when FirstSeenKnown.
 	FirstSeenAge   time.Duration
 	FirstSeenKnown bool
 	// ThreatIntelHit says the linked lookup lists the destination.
@@ -237,13 +235,8 @@ func ScoreLongConn(totalDuration float64, lc LongConnParams) float64 {
 	}
 }
 
-// ApplyPairModifiers reranks a base regularity score using contextual signals
-// and returns the final score plus the individual modifier contributions.
-// Prevalence is the fraction of the network's hosts that contact the
-// destination: rare destinations are boosted, ubiquitous ones penalized. A
-// destination first seen recently is boosted and a long-established one
-// penalized, and one the threat intel lookup lists is boosted. Additive, never
-// suppressive; the final score is clamped to [0, 1].
+// ApplyPairModifiers adds the modifier adjustments to a base score, clamped to
+// [0, 1], and returns each contribution.
 func ApplyPairModifiers(regularity float64, c PairContext, mp ModifierParams) (float64, Modifiers) {
 	var m Modifiers
 	switch {

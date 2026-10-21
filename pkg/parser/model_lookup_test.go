@@ -1031,9 +1031,7 @@ func TestFirstSeenAggSQLShapes(t *testing.T) {
 	}
 }
 
-// LookupMembership probes a lookup the way match() does: an address for a
-// network list, the value as written for a pattern list, lowered for a
-// case-insensitive one.
+// LookupMembership probes as match() does, per list kind.
 func TestLookupMembership(t *testing.T) {
 	opts := QueryOptions{
 		DictionaryDatabase:   "logs",

@@ -1711,7 +1711,8 @@ ${m.description ? `<div class="me-sec">
             (this._pivotRanges ||= new Map()).set(s.bql, s);
             return s.bql;
         };
-        const pick = (all, idx) => compact ? idx.map(i => all[i]).filter(Boolean) : all.filter(Boolean);
+        // The compact column fits three chips.
+        const pick = (all, idx) => compact ? idx.map(i => all[i]).filter(Boolean).slice(0, 3) : all.filter(Boolean);
 
         if (mt === 'rarity') {
             const pctThr = Number(def.alert?.percent_threshold) || 0;
@@ -1802,7 +1803,7 @@ ${m.description ? `<div class="me-sec">
                 // The table already shows the score, regularity and connections;
                 // the chips add who else talks to it and what drove the regularity.
                 const top = subs.filter(s => s.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
-                return [threat, prevalence, firstSeen, ...top].filter(Boolean).slice(0, 4);
+                return [threat, prevalence, firstSeen, ...top].filter(Boolean).slice(0, 3);
             }
             return [
                 threat,
@@ -2450,9 +2451,12 @@ ${m.description ? `<div class="me-sec">
         // source and destination, that keeps all its history and is running.
         const n = e.network;
         const linkable = (this.models || []).filter(m => {
-            const keys = (m.definition?.key_fields || []).join('\u0000');
+            const def = m.definition || {};
+            const keyList = def.key_fields || [];
+            const keys = keyList.join('\u0000');
+            const extracted = new Set((def.extractions || []).map(x => x.output_field));
             return m.model_type === 'first_seen' && ['active', 'rebuilding'].includes(m.status)
-                && !(m.definition?.history_days > 0)
+                && !(def.history_days > 0) && !keyList.some(k => extracted.has(k))
                 && (keys === n.dst_field || keys === [n.src_field, n.dst_field].join('\u0000'));
         });
         const current = mods.first_seen_model || '';
@@ -2591,7 +2595,7 @@ ${this._historyWindowHTML(e, 'A value counts as rare when it is rare within this
     <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
 </div>
 <p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>
-${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten, so it alerts as new when it returns.')}`;
+${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as new when it returns.')}`;
     },
 
     // The history window select shared by rarity and first/last seen. A window
@@ -2617,7 +2621,12 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
     _bindEditorShape() {
         const e = this.editor;
         if (this._isNetworkType(e.modelType)) {
-            const bindField = (id, key) => document.getElementById(id)?.addEventListener('input', ev => { e.network[key] = ev.target.value.trim(); this._schedulePreview(); });
+            const bindField = (id, key) => {
+                const el = document.getElementById(id);
+                el?.addEventListener('input', ev => { e.network[key] = ev.target.value.trim(); this._schedulePreview(); });
+                // The first-seen picker depends on the source and destination fields.
+                if (key === 'src_field' || key === 'dst_field') el?.addEventListener('change', () => this._renderEditorShape());
+            };
             bindField('netSrc', 'src_field');
             bindField('netDst', 'dst_field');
             bindField('netPort', 'port_field');
@@ -3337,7 +3346,7 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
         // A linked first-seen model or lookup that could not be read scores 0, which
         // would otherwise look the same as a link with nothing to say.
         if (s.modifier_warning) {
-            hint += `<div class="score-preview-hint">Modifier not applied: ${_esc(s.modifier_warning)}</div>`;
+            hint += `<div class="score-preview-hint">Modifiers: ${_esc(s.modifier_warning)}</div>`;
         }
 
         const countEl = document.getElementById('modelResultsCount');
@@ -3569,7 +3578,7 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
             latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'History', z_score: 'z-score',
             src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',
             regularity: 'Regularity', ts_score: 'Timing', ds_score: 'Size', dur_score: 'Duration', hist_score: 'Histogram',
-            prevalence: 'Prevalence', first_seen_score: 'First-seen adj.', threat_intel_score: 'Threat intel adj.',
+            prevalence: 'Prevalence', first_seen_score: 'First seen ±', threat_intel_score: 'Intel +',
             conn_count: 'Conns', total_duration: 'Total dur (s)',
         };
         return map[c] || c.replace(/_/g, ' ');

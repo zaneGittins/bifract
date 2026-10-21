@@ -303,25 +303,15 @@ func (l *LongConnParams) WithDefaults() LongConnParams {
 	return out
 }
 
-// ModifierParams tunes the false-positive-reduction layer. Prevalence (how many
-// distinct internal hosts contact a destination) reranks the base regularity score:
-// rare destinations are boosted, ubiquitous ones (shared services) penalized.
-//
-// Two more modifiers are off until configured, because each needs something the
-// network state does not have. First seen reads a first_seen model for how long
-// the destination has been known: the state only holds the window, and a pair
-// talking for months is more likely business traffic than one that started this
-// week (RITA's first-seen modifier). Threat intel boosts a destination listed in
-// a lookup, probed the way match() probes it.
+// ModifierParams tunes the adjustments to a pair's score: prevalence always, and
+// first seen and threat intel once they link a first_seen model or a lookup.
 type ModifierParams struct {
 	PrevalenceLowThreshold  float64 `json:"prevalence_low_threshold,omitempty" yaml:"prevalence_low_threshold,omitempty"`   // <= => rare, boost
 	PrevalenceHighThreshold float64 `json:"prevalence_high_threshold,omitempty" yaml:"prevalence_high_threshold,omitempty"` // >= => common, penalize
 	PrevalenceIncrease      float64 `json:"prevalence_increase,omitempty" yaml:"prevalence_increase,omitempty"`
 	PrevalenceDecrease      float64 `json:"prevalence_decrease,omitempty" yaml:"prevalence_decrease,omitempty"`
 
-	// FirstSeenModel names a first_seen model in the same fractal. Keyed on one
-	// field it is read as the destination's first sighting, on two as the
-	// (source, destination) pair's.
+	// FirstSeenModel names a first_seen model keyed on [dst] or [src, dst].
 	FirstSeenModel           string  `json:"first_seen_model,omitempty" yaml:"first_seen_model,omitempty"`
 	FirstSeenRecentDays      int     `json:"first_seen_recent_days,omitempty" yaml:"first_seen_recent_days,omitempty"`           // first seen within => boost
 	FirstSeenEstablishedDays int     `json:"first_seen_established_days,omitempty" yaml:"first_seen_established_days,omitempty"` // first seen before => penalize
@@ -335,15 +325,8 @@ type ModifierParams struct {
 	ThreatIntelIncrease float64 `json:"threat_intel_increase,omitempty" yaml:"threat_intel_increase,omitempty"`
 }
 
-// WithDefaults fills unset modifier thresholds with sensible defaults (rare <= 2%,
-// common >= 50%, +/-0.15 nudge; first seen within 7 days or over 90 days ago,
-// +/-0.15; +0.25 for a threat intel hit). An unset (zero) adjustment takes its
-// default and a negative one disables that side.
-//
-// The adjustments used to start at -1 and take the default only when still
-// negative, which read a modifiers object that set any one field as having
-// switched every adjustment it left out to 0, and made a negative one (meant to
-// disable) the default.
+// WithDefaults fills unset modifier settings (see docs/features/models.md); an
+// unset adjustment takes its default and a negative one turns that side off.
 func (m *ModifierParams) WithDefaults() ModifierParams {
 	out := ModifierParams{}
 	if m != nil {
