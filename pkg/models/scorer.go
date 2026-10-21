@@ -54,6 +54,16 @@ const (
 	scorerMaxRescore = 6 * time.Hour
 )
 
+// scorerReadSettings bounds the pair read: small blocks for the driver, and a
+// spill threshold for the server, which holds every qualifying pair's arrays.
+func scorerReadSettings() string {
+	spill := int64(2_000_000_000)
+	if v, ok := envInt64("BIFRACT_MODEL_SCORER_MAX_GROUPBY_BYTES"); ok && v >= 0 {
+		spill = v
+	}
+	return fmt.Sprintf(" SETTINGS max_block_size = %d, max_bytes_before_external_group_by = %d", netReadBlockRows, spill)
+}
+
 // errPairCapReached stops stream iteration once the per-cycle pair cap is hit.
 var errPairCapReached = errors.New("per-model pair cap reached")
 
@@ -246,7 +256,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	var count int
 	truncated := false
 
-	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays)
+	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays) + scorerReadSettings()
 	streamErr := e.ch.StreamQuery(ctx, "", readSQL, func(row map[string]interface{}) error {
 		if count >= scorerPerModelPairCap {
 			truncated = true

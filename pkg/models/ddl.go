@@ -561,15 +561,12 @@ func chStringLiteral(s string) string {
 // measure regularity while bounding what one pair's day costs to keep.
 const netStateArrayCap = 2000
 
-// netPairPointBudget bounds the points one pair carries into scoring: the day
-// buckets the longest window reads (14 days back from today, so 15) at the full
-// daily cap. A state read never exceeds it; a preview over a longer range caps
-// each day lower to stay inside it (netPreviewDayCap).
-const netPairPointBudget = 15 * netStateArrayCap
+// netPairPointBudget bounds one pair's points: the longest window's day buckets
+// (it reads back from today, so one more than its days) at the daily cap.
+const netPairPointBudget = (maxNetWindowDays + 1) * netStateArrayCap
 
-// netReadBlockRows is the block size a pair read streams at. A row carries up to
-// netPairPointBudget points and the driver decodes a whole block at once, so the
-// default of ~65k rows a block could hold gigabytes.
+// netReadBlockRows keeps a block of wide pair rows small, since the driver decodes
+// a whole block at once.
 const netReadBlockRows = 256
 
 // BuildNetStateTableDDL returns the AggregatingMergeTree state table DDL. windowDays
@@ -714,9 +711,8 @@ func fractalScopeClause(fractalID string) string {
 	return fmt.Sprintf("fractal_id = %s", chStringLiteral(fractalID))
 }
 
-// netPairGate is the condition a pair has to meet to be scored, over expressions
-// for its connection count and total duration: a long connection on duration
-// alone, a beacon on a count between min_connections and the strobe limit.
+// netPairGate is the condition a pair must meet to be scored, over expressions
+// for its connection count and total duration.
 func netPairGate(def ModelDefinition, mt ModelType, windowDays int, cnt, dur string) string {
 	if mt == ModelTypeLongConnection {
 		lc := def.LongConn.WithDefaults()
@@ -727,10 +723,7 @@ func netPairGate(def ModelDefinition, mt ModelType, windowDays int, cnt, dur str
 }
 
 // netPairArraysSelect concatenates per-day rows (day_cnt, day_ts, day_sizes,
-// day_dur, one per pair and day) into one row per pair, the shape pairFromRow
-// reads. Both the scorer and the preview read through it, so the two cannot
-// drift. ts_list and size_list stay parallel because both aggregate the same rows
-// in the same order.
+// day_dur) into one row per pair, the shape pairFromRow reads.
 func netPairArraysSelect(perDay, having string) string {
 	q := fmt.Sprintf(`SELECT src, dst, port,
     sum(day_cnt) AS cnt,
@@ -747,9 +740,9 @@ GROUP BY src, dst, port`, perDay)
 	return q
 }
 
-// BuildNetGatedPairsQuery returns the window's pairs that qualify for scoring,
-// read from the state's counters alone, without merging any timestamp state.
-func BuildNetGatedPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
+// netGatedPairsQuery returns the window's pairs that qualify for scoring, from
+// the state's counters alone.
+func netGatedPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
 	return fmt.Sprintf(`SELECT src, dst, port
 FROM %s
 WHERE %s AND day >= today() - %d
@@ -758,25 +751,11 @@ HAVING %s`, stateTable, fractalScopeClause(fractalID), windowDays,
 		netPairGate(def, mt, windowDays, "sum(conn_count)", "sum(dur_sum)"))
 }
 
-// BuildNetScoreReadQuery returns the query the scorer runs each pass over the state
-// table (never raw logs). It reads only the recent day-buckets, and only the pairs
-// that qualify, so the heavy scoring in Go runs over a bounded set.
-//
-// The Merge combinator must carry the same parameter as the stored parametric
-// groupArray(N) state, or ClickHouse rejects it (code 43). It also caps what it
-// merges at N, across every row it merges, so each day is merged on its own and
-// the days concatenated after: merging the window's days in one go kept N points
-// in total, an arbitrary early slice of a busy pair's window.
-//
-// Qualification is decided first, from the counters alone (GLOBAL IN, since on a
-// cluster both sides read the Distributed table). Gating after the merge built
-// every pair's arrays first, the busiest of all among them: a strobe pair always
-// holds the full daily cap and is then thrown away.
-//
-// first_ts/last_ts are intentionally omitted: the scorer derives the observed
-// range from the merged, window-trimmed timestamps, and scanning the
-// SimpleAggregateFunction(min/max, DateTime64) result columns is not supported by
-// the row scanner.
+// BuildNetScoreReadQuery returns the scorer's read of the qualifying pairs over
+// the window's day buckets. Each day is merged on its own because
+// groupArrayMerge(N) caps everything it merges at N, and pairs qualify first so
+// unqualified ones never build arrays. The Merge parameter must match the stored
+// state's (code 43).
 func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
 	scope := fmt.Sprintf("%s AND day >= today() - %d", fractalScopeClause(fractalID), windowDays)
 	perDay := fmt.Sprintf(`    SELECT src, dst, port, day,
@@ -788,8 +767,8 @@ func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fract
     WHERE %s
       AND (src, dst, port) GLOBAL IN (%s)
     GROUP BY src, dst, port, day`, netStateArrayCap, netStateArrayCap, stateTable, scope,
-		BuildNetGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
-	return netPairArraysSelect(perDay, "") + fmt.Sprintf("\nSETTINGS max_block_size = %d", netReadBlockRows)
+		netGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
+	return netPairArraysSelect(perDay, "")
 }
 
 // BuildNetPrevalenceQuery returns the per-destination distinct-source counts over the
@@ -823,11 +802,10 @@ func (b NetPreviewBounds) sql() string {
 }
 
 // BuildNetPreviewAgg returns a one-off aggregation over raw logs for the model
-// builder preview, before any state table exists. It yields the same per-pair row
-// as the state read (netPairArraysSelect) but groups directly over the source table
-// within the preview window, so the preview scores what the warmed model would.
-// The points kept on a busy day are the first the read returns, not necessarily
-// the ones the state kept. sourceTable is the (distributed or local) logs table.
+// builder preview, before any state table exists, in the state read's per-pair
+// shape. On a busy day it keeps the first points the read returns, not
+// necessarily the ones the state kept. sourceTable is the (distributed or local)
+// logs table.
 func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
@@ -836,9 +814,6 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	bytes := chNumericFieldRef(nf.BytesField)
 	dur := chNumericFieldRef(nf.DurationField)
 
-	// Capped per day, as the state is. Over a range up to the longest window that
-	// is the state's own cap; past it, each day keeps less so the pair stays inside
-	// the budget a state read holds to.
 	dayCap := netPreviewDayCap(bounds.Days)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("    SELECT %s AS src, %s AS dst, %s AS port, toDate(timestamp) AS day,\n", src, dst, port))
@@ -859,14 +834,14 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	return netPairArraysSelect(b.String(), netPairGate(def, mt, bounds.Days, "cnt", "total_duration")), nil
 }
 
-// netPreviewDayCap is the points a preview keeps per pair and day over a range of
-// days: the state's daily cap, or less past the longest window so a pair never
-// carries more than netPairPointBudget.
+// netPreviewDayCap is the points a preview keeps per pair and day, lowered past
+// the longest window to stay within netPairPointBudget. A range not starting at
+// midnight touches one calendar day more than it lasts.
 func netPreviewDayCap(days int) int {
 	if days < 1 {
 		days = 1
 	}
-	if c := netPairPointBudget / days; c < netStateArrayCap {
+	if c := netPairPointBudget / (days + 1); c < netStateArrayCap {
 		return c
 	}
 	return netStateArrayCap

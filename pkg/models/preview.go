@@ -560,8 +560,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	var counts [10]uint64
 	// fine is the final score binned at 0.01 (floor) for client-side recounts.
 	var fine [101]int64
-	// A scored pair keeps what the top table shows and nothing else: holding the
-	// row kept every scored pair's timestamp and size arrays alive until the sort.
+	// Only what the top table shows, so no pair's arrays outlive its row.
 	type scoredPair struct {
 		src, dst, port string
 		cnt            uint64

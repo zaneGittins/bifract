@@ -332,21 +332,24 @@ func (m *ModifierParams) WithDefaults() ModifierParams {
 	return out
 }
 
+// maxNetWindowDays is the longest network model window.
+const maxNetWindowDays = 14
+
 // WindowDays parses the definition's Window ("1d"/"7d"/"14d") into a whole-day
-// count, clamped to [1, 14]. Any unrecognized/empty value defaults to 1 day.
+// count, clamped to [1, maxNetWindowDays]. Any unrecognized/empty value defaults to 1 day.
 func (def ModelDefinition) WindowDays() int {
 	switch def.Window {
 	case "7d":
 		return 7
 	case "14d":
-		return 14
+		return maxNetWindowDays
 	case "", "1d", "24h":
 		return 1
 	}
 	// Tolerate a bare integer-of-days string as a forward-compatible escape hatch.
 	if n, err := parseLeadingInt(def.Window); err == nil && n >= 1 {
-		if n > 14 {
-			n = 14
+		if n > maxNetWindowDays {
+			n = maxNetWindowDays
 		}
 		return n
 	}

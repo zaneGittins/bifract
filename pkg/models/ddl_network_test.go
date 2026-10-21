@@ -35,10 +35,8 @@ func TestNetScoreReadMergesWithTheStateParameter(t *testing.T) {
 	mustContain(t, read, "groupArrayMerge"+cap+"(size_state)", "scorer read sizes")
 }
 
-// groupArrayMerge(N) caps its result at N across every state it merges, so the
-// read merges each day on its own and concatenates the days: one merge over the
-// window kept N points in total, an early slice of a busy pair's window. The
-// merge sits in a per-day subquery, and the pair row concatenates its days.
+// The read merges each day on its own and concatenates the days, since
+// groupArrayMerge(N) caps all it merges at N (see TestCHBeaconReadKeepsEveryDay).
 func TestNetReadsCapPointsPerDay(t *testing.T) {
 	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f1", 7)
 	perDay, outer := splitPerDay(t, read)
@@ -47,7 +45,6 @@ func TestNetReadsCapPointsPerDay(t *testing.T) {
 	mustContain(t, outer, "arrayFlatten(groupArray(day_ts)) AS ts_list", "days concatenated")
 	mustContain(t, outer, "arrayFlatten(groupArray(day_sizes)) AS size_list", "sizes concatenated alongside")
 	mustContain(t, outer, "GROUP BY src, dst, port", "one row per pair")
-	mustContain(t, outer, "SETTINGS max_block_size = 256", "streams in small blocks")
 
 	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(7*86400, 0), Days: 7}
 	prev, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b)
@@ -72,21 +69,26 @@ func splitPerDay(t *testing.T, q string) (perDay, outer string) {
 	return q[open:closing], q[:open] + q[closing:]
 }
 
-// A preview no longer than the longest window keeps the state's daily cap; a
-// longer one caps each day lower so a pair stays inside the budget a state read
-// holds to.
+// A preview up to the longest window keeps the state's daily cap; a longer one
+// caps each day lower, counting the extra calendar day a range off midnight touches.
 func TestNetPreviewDayCap(t *testing.T) {
-	for _, c := range []struct{ days, want int }{{1, 2000}, {15, 2000}, {30, 1000}, {91, 329}} {
+	for _, c := range []struct{ days, want int }{{1, 2000}, {14, 2000}, {15, 1875}, {30, 967}, {91, 326}} {
 		if got := netPreviewDayCap(c.days); got != c.want {
 			t.Errorf("%d days: cap %d, want %d", c.days, got, c.want)
 		}
-		if netPreviewDayCap(c.days)*c.days > netPairPointBudget {
+		if netPreviewDayCap(c.days)*(c.days+1) > netPairPointBudget {
 			t.Errorf("%d days exceeds the point budget", c.days)
 		}
 	}
 	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(30*86400, 0), Days: 30}
 	prev, _ := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b)
-	mustContain(t, prev, "groupArray(1000)(toUnixTimestamp(timestamp)) AS day_ts", "30-day preview")
+	mustContain(t, prev, "groupArray(967)(toUnixTimestamp(timestamp)) AS day_ts", "30-day preview")
+}
+
+func TestScorerReadSettings(t *testing.T) {
+	mustContain(t, scorerReadSettings(), "max_block_size = 256, max_bytes_before_external_group_by = 2000000000", "defaults")
+	t.Setenv("BIFRACT_MODEL_SCORER_MAX_GROUPBY_BYTES", "0")
+	mustContain(t, scorerReadSettings(), "max_bytes_before_external_group_by = 0", "spill turned off")
 }
 
 func TestNetScoreReadQuery(t *testing.T) {

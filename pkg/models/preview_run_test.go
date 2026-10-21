@@ -31,7 +31,7 @@ func assertPreviewQueries(t *testing.T, ch *chFake, rng PreviewRange, n int) {
 	}
 	window := rng.Start.Format("2006-01-02 15:04:05")
 	for _, q := range qs {
-		if !strings.Contains(q, previewSettings) {
+		if !strings.HasSuffix(q, previewSettings) && !strings.HasSuffix(q, previewSettings+", max_block_size=256") {
 			t.Errorf("unbounded preview query: ...%s", q[max(0, len(q)-120):])
 		}
 		if !strings.Contains(q, fracA) || !strings.Contains(q, window) {
