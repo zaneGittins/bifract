@@ -247,7 +247,7 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	if _, err := m.ResolveSource(ctx, req.Definition, fractalID, ""); err != nil {
 		return nil, err
 	}
-	if err := m.validateModifierLinks(ctx, fractalID, "", req.ModelType, req.Definition); err != nil {
+	if err := m.validateModifierLinks(ctx, fractalID, req.ModelType, req.Definition, nil); err != nil {
 		return nil, err
 	}
 	// A type that raises no alerts is stored as such rather than rejected. The
@@ -342,7 +342,7 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 	if _, err := m.ResolveSource(ctx, req.Definition, existing.FractalID, existing.PrismID); err != nil {
 		return nil, err
 	}
-	if err := m.validateModifierLinks(ctx, existing.FractalID, existing.PrismID, existing.ModelType, req.Definition); err != nil {
+	if err := m.validateModifierLinks(ctx, existing.FractalID, existing.ModelType, req.Definition, &existing.Definition); err != nil {
 		return nil, err
 	}
 
@@ -554,21 +554,32 @@ func (m *Manager) SetDictionaryResolver(d DictionaryResolver) { m.dicts = d }
 // sourceQueryOptions is the context a model's source query is compiled in: the
 // dictionaries of the model's own scope, and nothing else. The scan's fractal and
 // window are the model's, applied by the builder rather than by the translator.
+// A failure to list the dictionaries is logged and compiles without them, which
+// a source that uses none does not notice.
 func (m *Manager) sourceQueryOptions(ctx context.Context, fractalID, prismID string) parser.QueryOptions {
+	opts, err := m.sourceQueryOptionsErr(ctx, fractalID, prismID)
+	if err != nil {
+		log.Printf("models: resolve dictionaries for source query: %v", err)
+	}
+	return opts
+}
+
+// sourceQueryOptionsErr is sourceQueryOptions for a caller that must tell a
+// lookup that does not exist from one that could not be listed.
+func (m *Manager) sourceQueryOptionsErr(ctx context.Context, fractalID, prismID string) (parser.QueryOptions, error) {
 	opts := parser.QueryOptions{DictionaryDatabase: m.chDB}
 	if m.dicts == nil || (fractalID == "" && prismID == "") {
-		return opts
+		return opts, nil
 	}
 	scope, err := m.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
 	if err != nil {
-		log.Printf("models: resolve dictionaries for source query: %v", err)
-		return opts
+		return opts, err
 	}
 	opts.Dictionaries = scope.Mappings
 	opts.CaseInsensitiveDicts = scope.CaseInsensitive
 	opts.NetworkDicts = scope.Network
 	opts.PatternDicts = scope.Pattern
-	return opts
+	return opts, nil
 }
 
 // ResolveSource compiles a definition's source query against the dictionaries of
@@ -1650,6 +1661,10 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		case "", "1d", "24h", "7d", "14d":
 		default:
 			return fmt.Errorf("invalid window for network model: %s (use 1d, 7d, or 14d)", def.Window)
+		}
+		if mp := def.Modifiers.WithDefaults(); mp.FirstSeenRecentDays >= mp.FirstSeenEstablishedDays {
+			return fmt.Errorf("first_seen_recent_days (%d) must be less than first_seen_established_days (%d)",
+				mp.FirstSeenRecentDays, mp.FirstSeenEstablishedDays)
 		}
 	default:
 		return fmt.Errorf("invalid model type: %s", mt)

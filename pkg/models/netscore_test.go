@@ -169,12 +169,12 @@ func TestScoreLongConn_BucketBoundaries(t *testing.T) {
 	}
 }
 
-func TestApplyModifiers_Prevalence(t *testing.T) {
+func TestApplyPairModifiers_Prevalence(t *testing.T) {
 	var mp *ModifierParams
 	p := mp.WithDefaults() // low 0.02 (+0.15), high 0.5 (-0.15)
 
 	// Rare destination: boosted.
-	rareFinal, rareMods := ApplyModifiers(0.6, 0.01, p)
+	rareFinal, rareMods := ApplyPairModifiers(0.6, PairContext{Prevalence: 0.01}, p)
 	if rareMods.PrevalenceScore <= 0 {
 		t.Fatalf("rare destination should be boosted, got %+v", rareMods)
 	}
@@ -183,7 +183,7 @@ func TestApplyModifiers_Prevalence(t *testing.T) {
 	}
 
 	// Ubiquitous destination: penalized.
-	commonFinal, commonMods := ApplyModifiers(0.6, 0.9, p)
+	commonFinal, commonMods := ApplyPairModifiers(0.6, PairContext{Prevalence: 0.9}, p)
 	if commonMods.PrevalenceScore >= 0 {
 		t.Fatalf("ubiquitous destination should be penalized, got %+v", commonMods)
 	}
@@ -192,13 +192,13 @@ func TestApplyModifiers_Prevalence(t *testing.T) {
 	}
 
 	// Mid prevalence: unchanged.
-	midFinal, midMods := ApplyModifiers(0.6, 0.2, p)
+	midFinal, midMods := ApplyPairModifiers(0.6, PairContext{Prevalence: 0.2}, p)
 	if midMods.PrevalenceScore != 0 || math.Abs(midFinal-0.6) > 1e-9 {
 		t.Fatalf("mid prevalence should not change score, got final=%.3f mods=%+v", midFinal, midMods)
 	}
 
 	// Clamp: boost cannot exceed 1.0.
-	capFinal, _ := ApplyModifiers(0.95, 0.01, p)
+	capFinal, _ := ApplyPairModifiers(0.95, PairContext{Prevalence: 0.01}, p)
 	if capFinal > 1.0 {
 		t.Fatalf("final must be clamped to 1.0, got %.3f", capFinal)
 	}
@@ -392,23 +392,23 @@ func TestScoreLongConn_MisorderedTiersStayBounded(t *testing.T) {
 	}
 }
 
-func TestApplyModifiers_BoundariesAndBounds(t *testing.T) {
+func TestApplyPairModifiers_BoundariesAndBounds(t *testing.T) {
 	var mp *ModifierParams
 	p := mp.WithDefaults()
 
 	// Both thresholds are inclusive.
-	if _, m := ApplyModifiers(0.5, p.PrevalenceLowThreshold, p); m.PrevalenceScore != p.PrevalenceIncrease {
+	if _, m := ApplyPairModifiers(0.5, PairContext{Prevalence: p.PrevalenceLowThreshold}, p); m.PrevalenceScore != p.PrevalenceIncrease {
 		t.Errorf("prevalence at the low threshold must be boosted: %+v", m)
 	}
-	if _, m := ApplyModifiers(0.5, p.PrevalenceHighThreshold, p); m.PrevalenceScore != -p.PrevalenceDecrease {
+	if _, m := ApplyPairModifiers(0.5, PairContext{Prevalence: p.PrevalenceHighThreshold}, p); m.PrevalenceScore != -p.PrevalenceDecrease {
 		t.Errorf("prevalence at the high threshold must be penalized: %+v", m)
 	}
 	// A destination with no recorded sources is unknown, not rare: no boost.
-	if final, m := ApplyModifiers(0.5, 0, p); m.PrevalenceScore != 0 || final != 0.5 {
+	if final, m := ApplyPairModifiers(0.5, PairContext{Prevalence: 0}, p); m.PrevalenceScore != 0 || final != 0.5 {
 		t.Errorf("zero prevalence: final %.3f mods %+v", final, m)
 	}
 	// The penalty never drives a score negative.
-	if final, _ := ApplyModifiers(0.05, 1, p); final != 0 {
+	if final, _ := ApplyPairModifiers(0.05, PairContext{Prevalence: 1}, p); final != 0 {
 		t.Errorf("penalized low score = %.3f, want 0", final)
 	}
 	// For a fixed prevalence the final score never falls as regularity rises, and
@@ -416,7 +416,7 @@ func TestApplyModifiers_BoundariesAndBounds(t *testing.T) {
 	for _, prev := range []float64{0.01, 0.2, 0.9} {
 		last := -1.0
 		for r := 0.0; r <= 1.0; r += 0.05 {
-			final, _ := ApplyModifiers(r, prev, p)
+			final, _ := ApplyPairModifiers(r, PairContext{Prevalence: prev}, p)
 			if final < last || final < 0 || final > 1 {
 				t.Fatalf("prevalence %.2f: regularity %.2f -> %.3f after %.3f", prev, r, final, last)
 			}
@@ -425,7 +425,7 @@ func TestApplyModifiers_BoundariesAndBounds(t *testing.T) {
 	}
 	last := 2.0
 	for _, prev := range []float64{0.001, 0.02, 0.1, 0.49, 0.5, 1} {
-		final, _ := ApplyModifiers(0.6, prev, p)
+		final, _ := ApplyPairModifiers(0.6, PairContext{Prevalence: prev}, p)
 		if final > last {
 			t.Fatalf("prevalence %.3f scored %.3f, above a rarer destination's %.3f", prev, final, last)
 		}

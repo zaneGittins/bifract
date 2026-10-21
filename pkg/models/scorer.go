@@ -245,12 +245,12 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		return fmt.Errorf("prevalence: %w", err)
 	}
 
-	// First seen and threat intel context for the window's pairs, when the
-	// model links them. A link that stopped resolving is logged and scores 0.
-	pc, warnings, err := e.mgr.loadPairContexts(ctx, m.fractalID, m.def, BuildNetPairsQuery(stateRead, m.fractalID, windowDays), "")
-	if err != nil {
-		return err
-	}
+	now := time.Now()
+
+	// First seen and threat intel context for the window's qualifying pairs,
+	// when the model links them. Whatever cannot be read is logged and scores 0.
+	pc, warnings := e.mgr.loadPairContexts(ctx, m.fractalID, m.def,
+		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays), "", now)
 	for _, w := range warnings {
 		log.Printf("[Model Scorer] model %s: modifier skipped: %s", m.id, w)
 	}
@@ -258,8 +258,6 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	bp := m.def.Beacon.WithDefaults(windowSecs)
 	lc := m.def.LongConn.WithDefaults()
 	mp := m.def.Modifiers.WithDefaults()
-
-	now := time.Now()
 	cutoff := now.Unix() - windowSecs
 
 	buf := newResultBuffer(e.ch, m.tableName)
@@ -287,7 +285,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		} else {
 			rs = ScoreBeacon(p, bp, windowSecs)
 		}
-		final, mods := ApplyPairModifiers(rs.Score, pc.context(p, prevRatio, now), mp)
+		final, mods := ApplyPairModifiers(rs.Score, pc.context(p, prevRatio, now, mp), mp)
 
 		buf.add(resultRow{
 			fractalID: m.fractalID, src: p.Src, dst: p.Dst, port: p.Port,

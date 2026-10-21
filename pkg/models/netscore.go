@@ -237,12 +237,6 @@ func ScoreLongConn(totalDuration float64, lc LongConnParams) float64 {
 	}
 }
 
-// ApplyModifiers reranks a base regularity score by prevalence alone; see
-// ApplyPairModifiers.
-func ApplyModifiers(regularity, prevalence float64, mp ModifierParams) (float64, Modifiers) {
-	return ApplyPairModifiers(regularity, PairContext{Prevalence: prevalence}, mp)
-}
-
 // ApplyPairModifiers reranks a base regularity score using contextual signals
 // and returns the final score plus the individual modifier contributions.
 // Prevalence is the fraction of the network's hosts that contact the

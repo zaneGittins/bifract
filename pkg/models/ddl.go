@@ -832,12 +832,11 @@ WHERE %s AND day >= today() - %d
 GROUP BY dst`, stateTable, fractalScopeClause(fractalID), windowDays)
 }
 
-// BuildNetPairsQuery returns the window's distinct (src, dst) pairs, the keys the
-// first-seen and threat intel modifiers are read for.
-func BuildNetPairsQuery(stateTable, fractalID string, windowDays int) string {
-	return fmt.Sprintf(`SELECT DISTINCT src, dst
-FROM %s
-WHERE %s AND day >= today() - %d`, stateTable, fractalScopeClause(fractalID), windowDays)
+// BuildNetPairsQuery returns the (src, dst) pairs that qualify for scoring this
+// window, the keys the first-seen and threat intel modifiers are read for. Only
+// qualifying pairs: every pair in the window could be many times the set scored.
+func BuildNetPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID string, windowDays int) string {
+	return fmt.Sprintf("SELECT DISTINCT src, dst FROM (%s)", BuildNetGatedPairsQuery(def, mt, stateTable, fractalID, windowDays))
 }
 
 // BuildNetNetworkSizeQuery returns the distinct-source count over the window, the
@@ -948,14 +947,16 @@ func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID stri
 	return b.String(), nil
 }
 
-// BuildNetPreviewPairs returns the preview window's distinct (src, dst) pairs over
-// raw logs, the preview's counterpart of BuildNetPairsQuery.
-func BuildNetPreviewPairs(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
+// BuildNetPreviewPairs returns the preview window's qualifying (src, dst) pairs
+// over raw logs, the preview's counterpart of BuildNetPairsQuery.
+func BuildNetPreviewPairs(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
 	nf := netFieldMap(def)
 	src := chFieldRef(nf.SrcField)
 	dst := chFieldRef(nf.DstField)
+	port := chFieldRef(nf.PortField)
+	dur := chNumericFieldRef(nf.DurationField)
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("SELECT DISTINCT %s AS src, %s AS dst\n", src, dst))
+	b.WriteString(fmt.Sprintf("SELECT DISTINCT src, dst FROM (\nSELECT %s AS src, %s AS dst, %s AS port\n", src, dst, port))
 	b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 	b.WriteString(fmt.Sprintf("WHERE %s AND %s != '' AND %s != '' AND %s", fractalScopeClause(fractalID), src, dst, bounds.sql()))
 	preds, err := sourceFilterSQL(def)
@@ -965,6 +966,7 @@ func BuildNetPreviewPairs(def ModelDefinition, sourceTable, fractalID string, bo
 	for _, p := range preds {
 		b.WriteString(fmt.Sprintf("\n    AND %s", p))
 	}
+	b.WriteString("\nGROUP BY src, dst, port\nHAVING " + netPairGate(def, mt, bounds.Days, "count()", "sum("+dur+")") + "\n)")
 	return b.String(), nil
 }
 

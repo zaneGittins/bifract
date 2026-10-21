@@ -1790,7 +1790,7 @@ ${m.description ? `<div class="me-sec">
                 return pick([
                     { label: 'Duration', value: this._fmtDuration(row.total_duration), tone: final > thr ? 'alert' : '' },
                     prevalence, conns, seen, threat, firstSeen,
-                ], [4, 1, 3]);
+                ], [4, 1, 5, 3]);
             }
             const subs = [
                 ['Timing', 'ts_score', 'Consistency of the gaps between connections'],
@@ -2253,6 +2253,9 @@ ${m.description ? `<div class="me-sec">
         e.timeBucket = sh.timeBucket || 'day';
         e.window = sh.window || '1d';
         e.network = this._networkFromDef({ network: sh.network || {} });
+        // A template starts from its own definition, so links to the previous
+        // model's first-seen model or lookup do not carry over.
+        e.modifiers = { ...(sh.modifiers || {}) };
         Object.assign(e.alertConfig, t.alert || {});
         e.resultMode = 'scores';
         e.dirty = true;
@@ -2443,8 +2446,15 @@ ${m.description ? `<div class="me-sec">
     // model keyed on one field is read as the destination, on two as the pair.
     _modifierLinksHTML(e) {
         const mods = e.modifiers || {};
-        const linkable = (this.models || []).filter(m => m.model_type === 'first_seen'
-            && [1, 2].includes((m.definition?.key_fields || []).length));
+        // The save refuses anything else: a model keyed on the destination, or on
+        // source and destination, that keeps all its history and is running.
+        const n = e.network;
+        const linkable = (this.models || []).filter(m => {
+            const keys = (m.definition?.key_fields || []).join('\u0000');
+            return m.model_type === 'first_seen' && ['active', 'rebuilding'].includes(m.status)
+                && !(m.definition?.history_days > 0)
+                && (keys === n.dst_field || keys === [n.src_field, n.dst_field].join('\u0000'));
+        });
         const current = mods.first_seen_model || '';
         const names = linkable.map(m => m.name);
         if (current && !names.includes(current)) names.push(current);
@@ -2455,7 +2465,7 @@ ${m.description ? `<div class="me-sec">
         <option value="">None</option>
         ${names.map(n => `<option value="${_esc(n)}" ${n === current ? 'selected' : ''}>${_esc(n)}</option>`).join('')}
     </select>
-    <p class="config-hint">A first/last seen model keyed on the destination (or on source and destination). Destinations it first saw in the last ${mods.first_seen_recent_days || 7} days score higher, ones known for over ${mods.first_seen_established_days || 90} days lower.</p>
+    <p class="config-hint">A first/last seen model keyed on ${_esc(n.dst_field)} (or on ${_esc(n.src_field)}, ${_esc(n.dst_field)}) that keeps all its history. Destinations it first saw in the last ${_esc(String(mods.first_seen_recent_days || 7))} days score higher, ones known for ${_esc(String(mods.first_seen_established_days || 90))} days or more lower.</p>
 </div>
 <div class="form-row" style="margin-top:10px">
     <div class="field-group">
@@ -2467,7 +2477,9 @@ ${m.description ? `<div class="me-sec">
         <input type="text" id="modTIColumn" class="full-input" value="${_esc(mods.threat_intel_column || '')}" placeholder="e.g. ip" spellcheck="false" autocomplete="off">
     </div>
 </div>
-<p class="config-hint">A destination the lookup lists scores ${mods.threat_intel_increase > 0 ? mods.threat_intel_increase : 0.25} higher, matched as <em>match()</em> would.</p>`;
+<p class="config-hint">${mods.threat_intel_increase < 0
+    ? 'The threat intel boost is turned off (threat_intel_increase is negative).'
+    : `A destination the lookup lists scores ${_esc(String(mods.threat_intel_increase || 0.25))} higher, matched as <em>match()</em> would.`}</p>`;
     },
 
     // ---- Shape (right panel) ----
@@ -3322,6 +3334,11 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
         } else if (scoredTotal === 0) {
             hint = `<div class="score-preview-hint">No matching results ${_esc(range)}. If the data is older, pick a custom range.</div>`;
         }
+        // A linked first-seen model or lookup that could not be read scores 0, which
+        // would otherwise look the same as a link with nothing to say.
+        if (s.modifier_warning) {
+            hint += `<div class="score-preview-hint">Modifier not applied: ${_esc(s.modifier_warning)}</div>`;
+        }
 
         const countEl = document.getElementById('modelResultsCount');
         if (countEl) countEl.textContent = `${this._fmtNum(scoredTotal)} scored`;
@@ -3552,7 +3569,8 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
             latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'History', z_score: 'z-score',
             src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',
             regularity: 'Regularity', ts_score: 'Timing', ds_score: 'Size', dur_score: 'Duration', hist_score: 'Histogram',
-            prevalence: 'Prevalence', conn_count: 'Conns', total_duration: 'Total dur (s)',
+            prevalence: 'Prevalence', first_seen_score: 'First-seen adj.', threat_intel_score: 'Threat intel adj.',
+            conn_count: 'Conns', total_duration: 'Total dur (s)',
         };
         return map[c] || c.replace(/_/g, ' ');
     },
@@ -3563,7 +3581,7 @@ ${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten
         if (col === 'percent') return _esc(Number(v).toFixed(2) + '%');
         if (col === 'z_score' && this._isFlatZ(v)) return _esc(this.FLAT_Z_LABEL);
         if (col === 'z_score' || col === 'baseline_median' || col === 'mad') return _esc(Number(v).toFixed(2));
-        if (col === 'score' || col === 'final_score' || col === 'regularity' || col === 'ts_score' || col === 'ds_score' || col === 'dur_score' || col === 'hist_score' || col === 'prevalence') return _esc(Number(v).toFixed(3));
+        if (col === 'score' || col === 'final_score' || col === 'regularity' || col === 'ts_score' || col === 'ds_score' || col === 'dur_score' || col === 'hist_score' || col === 'prevalence' || col === 'first_seen_score' || col === 'threat_intel_score') return _esc(Number(v).toFixed(3));
         if (col === 'conn_count' || col === 'total_duration') return _esc(this._fmtNum(Number(v)));
         if (col === 'model_count' || col === 'event_count' || col === 'latest_count' || col === 'n_buckets') return _esc(this._fmtNum(Number(v)));
         if (col === 'first_seen' || col === 'last_seen') {
