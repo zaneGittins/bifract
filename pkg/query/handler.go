@@ -902,6 +902,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 					ModelType:   string(mi.ModelType),
 					MinSample:   mi.MinSample,
 					TimeBucket:  mi.TimeBucket,
+					HistoryDays: mi.HistoryDays,
 					FractalID:   mi.FractalID,
 					Distributed: mi.Distributed,
 				}
@@ -1333,6 +1334,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 					ModelType:   string(mi.ModelType),
 					MinSample:   mi.MinSample,
 					TimeBucket:  mi.TimeBucket,
+					HistoryDays: mi.HistoryDays,
 					FractalID:   mi.FractalID,
 					Distributed: mi.Distributed,
 				}

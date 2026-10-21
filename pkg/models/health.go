@@ -86,6 +86,9 @@ func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, frac
 		return fmt.Sprintf(",\n    toUInt64(ifNull((SELECT count() FROM (%s) WHERE %s), 0)) AS flagged", scored, rule.Where)
 	}
 	fidEsc := storage.EscCHStr(fractalID)
+	// A windowed model is summarized over its window, as everything else reads it.
+	hist := def.HistoryDaysFor(mt)
+	fid = parser.WithHistory(fid, hist, "")
 	switch mt {
 	case ModelTypeFirstSeen:
 		// An entity is a finding on the day the model first recorded it, which
@@ -96,7 +99,7 @@ FROM (
     FROM %s WHERE %s
     GROUP BY entity_key
 )`, epoch("min(fs)"), epoch("max(ls)"), findingsSeriesSQL("d", today),
-			flagged(firstSeenAggSQL(qt+" FINAL", fidEsc, "", "entity_key", true)), FirstRecordedColumn, qt, fid)
+			flagged(firstSeenAggSQL(qt+" FINAL", fidEsc, historyWhere("", hist), "entity_key", true)), FirstRecordedColumn, qt, fid)
 	case ModelTypeRarity:
 		// A finding is a (partition, value) pair whose earliest day is that day.
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
@@ -105,7 +108,7 @@ FROM (
     FROM %s WHERE %s
     GROUP BY partition_val, value_val
 )`, epoch("toDateTime(min(fd), 'UTC')"), epoch("toDateTime(max(ld), 'UTC')"), findingsSeriesSQL("fd", today),
-			flagged(buildRarityScoredSQL(qt+" FINAL", fidEsc)), qt, fid)
+			flagged(buildRarityScoredSQL(qt+" FINAL", fidEsc, hist)), qt, fid)
 	case ModelTypeVolumeBaseline:
 		// A finding is an entity whose latest complete bucket scores above the
 		// alert's z threshold right now; there is no per-day history of scores.

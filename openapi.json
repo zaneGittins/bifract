@@ -36551,6 +36551,9 @@
               "$ref": "#/components/schemas/models.FilterCondition"
             }
           },
+          "history_days": {
+            "type": "integer"
+          },
           "key_fields": {
             "type": "array",
             "items": {

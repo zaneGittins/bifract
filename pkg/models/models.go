@@ -161,8 +161,14 @@ type ModelDefinition struct {
 	MinSample    int               `json:"min_sample" yaml:"min_sample,omitempty"`
 	KeyFields    []string          `json:"key_fields" yaml:"key_fields,omitempty"`
 	// TimeBucket is the volume_baseline aggregation window: "day" (default) or "hour".
-	TimeBucket string       `json:"time_bucket" yaml:"time_bucket,omitempty"`
-	Alert      *AlertConfig `json:"alert,omitempty" yaml:"alert,omitempty"`
+	TimeBucket string `json:"time_bucket" yaml:"time_bucket,omitempty"`
+	// HistoryDays bounds what a rarity or first_seen model remembers: only the
+	// last HistoryDays days of event time count, and older state is dropped. 0
+	// keeps everything, which is how a model behaved before this existed. A
+	// windowed model stores a row per key per day so a TTL can age it out; see
+	// WindowedHistory.
+	HistoryDays int          `json:"history_days,omitempty" yaml:"history_days,omitempty"`
+	Alert       *AlertConfig `json:"alert,omitempty" yaml:"alert,omitempty"`
 
 	// SourceBQL is the model's source query as the author wrote it. When set it is
 	// compiled by the BQL translator and supersedes Filter: the structured form can
@@ -439,7 +445,10 @@ type ModelInfo struct {
 	ModelType  ModelType
 	MinSample  int
 	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
-	FractalID  string
+	// HistoryDays is the window a rarity or first_seen model scores over, 0 for
+	// all of its history.
+	HistoryDays int
+	FractalID   string
 	// Distributed is true when TableName is the cluster-mode Distributed table, which
 	// a query joining against it must reach with GLOBAL.
 	Distributed bool
@@ -532,6 +541,30 @@ func parseLeadingInt(s string) (int, error) {
 		return 0, strconv.ErrSyntax
 	}
 	return strconv.Atoi(s[:end])
+}
+
+// History window bounds. The day set a row carries holds at most 365 days, so a
+// window cannot be longer; under a week, rarity cannot reach its default min
+// history at all.
+const (
+	MinHistoryDays = 7
+	MaxHistoryDays = 365
+)
+
+// WindowedHistory reports whether the model keeps only HistoryDays of history.
+// Only rarity and first_seen take a window: volume and network models already
+// score a fixed window, and a tlsh index must hold every digest tlsh() can match.
+func (d ModelDefinition) WindowedHistory(mt ModelType) bool {
+	return d.HistoryDays > 0 && (mt == ModelTypeRarity || mt == ModelTypeFirstSeen)
+}
+
+// HistoryDaysFor is the model's history window in days, or 0 when it keeps
+// everything.
+func (d ModelDefinition) HistoryDaysFor(mt ModelType) int {
+	if !d.WindowedHistory(mt) {
+		return 0
+	}
+	return d.HistoryDays
 }
 
 // SelectsSubset reports whether the definition's source selects fewer than all of

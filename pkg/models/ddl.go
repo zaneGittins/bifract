@@ -25,6 +25,7 @@ func GenerateDDL(def ModelDefinition, mt ModelType, tableName string) (string, e
 }
 
 func generateTableDDL(def ModelDefinition, mt ModelType, tableName string) (string, error) {
+	h := historyLayoutFor(def, mt)
 	switch mt {
 	case ModelTypeRarity:
 		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
@@ -32,10 +33,10 @@ func generateTableDDL(def ModelDefinition, mt ModelType, tableName string) (stri
     partition_val String,
     value_val     String,
     event_count   SimpleAggregateFunction(sum, UInt64),
-    days          AggregateFunction(groupUniqArray(365), Date)
+    days          AggregateFunction(groupUniqArray(365), Date)%s
 ) ENGINE = AggregatingMergeTree()
-ORDER BY (fractal_id, partition_val, value_val)
-SETTINGS index_granularity = 8192`, tableName), nil
+ORDER BY (fractal_id, partition_val, value_val%s)%s
+SETTINGS index_granularity = 8192`, tableName, h.column, h.orderBy, h.ttl), nil
 
 	case ModelTypeFirstSeen:
 		return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
@@ -45,10 +46,10 @@ SETTINGS index_granularity = 8192`, tableName), nil
     last_seen   SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     event_count SimpleAggregateFunction(sum, UInt64),
     days        AggregateFunction(groupUniqArray(365), Date),
-    %s %s
+    %s %s%s
 ) ENGINE = AggregatingMergeTree()
-ORDER BY (fractal_id, entity_key)
-SETTINGS index_granularity = 8192`, tableName, FirstRecordedColumn, FirstRecordedDefinition), nil
+ORDER BY (fractal_id, entity_key%s)%s
+SETTINGS index_granularity = 8192`, tableName, FirstRecordedColumn, FirstRecordedDefinition, h.column, h.orderBy, h.ttl), nil
 
 	case ModelTypeTLSH:
 		// digest is the verbatim on-disk string, never a canonicalised form: it is
@@ -94,6 +95,33 @@ func volumeBucketColType(timeBucket string) string {
 		return "DateTime('UTC')"
 	}
 	return "Date"
+}
+
+// historyLayout is what a windowed model's state adds to its table and its
+// inserts: a day column in the sort key, so each key keeps a row per day of event
+// time and a TTL can drop the days that fell out of the window. Aggregate state
+// cannot be trimmed from the inside, and the day set alone stops taking new days
+// once it holds 365, so keeping everything in one row per key could never age.
+// The column comes last, after first_recorded, because inserts are positional.
+type historyLayout struct {
+	column, orderBy, ttl string // table DDL fragments
+	selectCol, groupBy   string // insert SELECT fragments
+}
+
+func historyLayoutFor(def ModelDefinition, mt ModelType) historyLayout {
+	if !def.WindowedHistory(mt) {
+		return historyLayout{}
+	}
+	return historyLayout{
+		column:  ",\n    day         Date",
+		orderBy: ", day",
+		// A day past the window, so rows the read predicate still admits are never
+		// gone early; reads filter on the window themselves, since a TTL only runs
+		// when parts merge.
+		ttl:       fmt.Sprintf("\nTTL day + INTERVAL %d DAY", def.HistoryDays+1),
+		selectCol: ",\n    toDate(timestamp) AS day",
+		groupBy:   ", day",
+	}
 }
 
 // BuildBackfillInsert returns a full `INSERT INTO <targetTable> <select>` that
@@ -256,6 +284,7 @@ func buildModelSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra
 
 // buildFinalSelect builds the final GROUP BY SELECT from the last CTE.
 func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded string) (string, error) {
+	h := historyLayoutFor(def, mt)
 	var b strings.Builder
 	switch mt {
 	case ModelTypeRarity:
@@ -265,10 +294,10 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 		b.WriteString(fmt.Sprintf("    %s AS partition_val,\n", applyLowerIfNeeded(partRef, def.Extractions)))
 		b.WriteString(fmt.Sprintf("    %s AS value_val,\n", applyLowerIfNeeded(valRef, def.Extractions)))
 		b.WriteString("    toUInt64(1) AS event_count,\n")
-		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days\n")
+		b.WriteString("    groupUniqArrayState(365)(toDate(timestamp)) AS days" + h.selectCol + "\n")
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		b.WriteString(fmt.Sprintf("WHERE %s != '' AND %s != ''\n", partRef, valRef))
-		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val"))
+		b.WriteString("GROUP BY fractal_id, partition_val, value_val" + h.groupBy)
 	case ModelTypeFirstSeen:
 		b.WriteString("SELECT fractal_id,\n")
 		if len(def.KeyFields) == 1 {
@@ -281,7 +310,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 			b.WriteString(fmt.Sprintf("    concat(%s) AS entity_key,\n", strings.Join(parts, ", char(30), ")))
 		}
 		b.WriteString(entityAggCols)
-		b.WriteString(fmt.Sprintf(",\n    %s AS %s\n", recorded, FirstRecordedColumn))
+		b.WriteString(fmt.Sprintf(",\n    %s AS %s%s\n", recorded, FirstRecordedColumn, h.selectCol))
 		b.WriteString(fmt.Sprintf("FROM %s\n", fromTable))
 		if len(def.KeyFields) > 0 {
 			guards := make([]string, len(def.KeyFields))
@@ -290,7 +319,7 @@ func buildFinalSelect(def ModelDefinition, mt ModelType, fromTable, recorded str
 			}
 			b.WriteString(fmt.Sprintf("WHERE %s\n", strings.Join(guards, " AND ")))
 		}
-		b.WriteString("GROUP BY fractal_id, entity_key")
+		b.WriteString("GROUP BY fractal_id, entity_key" + h.groupBy)
 	case ModelTypeVolumeBaseline:
 		b.WriteString("SELECT fractal_id,\n")
 		if len(def.KeyFields) == 1 {
@@ -339,13 +368,14 @@ const entityAggCols = `    min(timestamp) AS first_seen,
 // buildDirectSelect builds a SELECT directly from the source table (no extractions).
 // whereExtra, when non-empty, is ANDed into the WHERE clause.
 func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtra string, fractalID, recorded string) (string, error) {
+	h := historyLayoutFor(def, mt)
 	var b strings.Builder
 	b.WriteString("SELECT fractal_id")
 
 	switch mt {
 	case ModelTypeRarity:
-		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days\n",
-			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
+		b.WriteString(fmt.Sprintf(",\n    %s AS partition_val,\n    %s AS value_val,\n    toUInt64(1) AS event_count,\n    groupUniqArrayState(365)(toDate(timestamp)) AS days%s\n",
+			chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey), h.selectCol))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -359,7 +389,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			b.WriteString(fmt.Sprintf("\nAND %s", whereExtra))
 		}
 		b.WriteString(fmt.Sprintf("\nAND %s != '' AND %s != ''\n", chFieldRef(def.PartitionKey), chFieldRef(def.ValueKey)))
-		b.WriteString(fmt.Sprintf("GROUP BY fractal_id, partition_val, value_val"))
+		b.WriteString("GROUP BY fractal_id, partition_val, value_val" + h.groupBy)
 	case ModelTypeFirstSeen:
 		if len(def.KeyFields) == 1 {
 			b.WriteString(fmt.Sprintf(",\n    %s AS entity_key", chFieldRef(def.KeyFields[0])))
@@ -371,7 +401,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 			b.WriteString(fmt.Sprintf(",\n    concat(%s) AS entity_key", strings.Join(parts, ", char(30), ")))
 		}
 		b.WriteString(",\n" + entityAggCols)
-		b.WriteString(fmt.Sprintf(",\n    %s AS %s\n", recorded, FirstRecordedColumn))
+		b.WriteString(fmt.Sprintf(",\n    %s AS %s%s\n", recorded, FirstRecordedColumn, h.selectCol))
 		b.WriteString(fmt.Sprintf("FROM %s\n", sourceTable))
 		b.WriteString(fmt.Sprintf("WHERE %s", fractalScopeClause(fractalID)))
 		preds, err := sourceFilterSQL(def)
@@ -390,7 +420,7 @@ func buildDirectSelect(def ModelDefinition, mt ModelType, sourceTable, whereExtr
 		for _, kf := range def.KeyFields {
 			b.WriteString(fmt.Sprintf("\nAND %s != ''", chFieldRef(kf)))
 		}
-		b.WriteString("\nGROUP BY fractal_id, entity_key")
+		b.WriteString("\nGROUP BY fractal_id, entity_key" + h.groupBy)
 	case ModelTypeTLSH:
 		b.WriteString(fmt.Sprintf(",\n    %s AS digest", chFieldRef(def.KeyFields[0])))
 		b.WriteString(",\n" + entityAggCols + "\n")

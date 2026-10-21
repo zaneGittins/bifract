@@ -966,3 +966,34 @@ func TestRarityConfidenceFilterNamesTheRename(t *testing.T) {
 		t.Fatalf("want an error naming coverage, got %v", err)
 	}
 }
+
+// A windowed model is read over its window only: the scoring subquery and the
+// strict prefilter both bound the table's day column, so a key whose days have
+// all aged out is unknown again rather than matched from rows its TTL has not
+// yet dropped.
+func TestModelLookup_HistoryWindow(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["rare"] = AnalyticsModelInfo{ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", HistoryDays: 30}
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", HistoryDays: 90}
+
+	rare := translateMLWith(t, `* | model_lookup(model="rare", key=[host, port])`, opts)
+	mustHaveML(t, rare, "fractal_id IN ('f1') AND day > toDate(now(), 'UTC') - 30\n        GROUP BY partition_val, value_val")
+	mustHaveML(t, rare, modelPrefilterAlias+".day > toDate(now(), 'UTC') - 30")
+
+	fs := translateMLWith(t, `* | model_lookup(model="fs", key=[host])`, opts)
+	mustHaveML(t, fs, "WHERE fractal_id IN ('f1') AND day > toDate(now(), 'UTC') - 90\n    GROUP BY entity_key")
+	mustHaveML(t, fs, modelPrefilterAlias+".day > toDate(now(), 'UTC') - 90")
+
+	// Without a window nothing names a day column the table does not have.
+	plain := translateML(t, `* | model_lookup(model="fs", key=[host])`)
+	if strings.Contains(plain, "day >") {
+		t.Errorf("unwindowed model read bounds a day column:\n%s", plain)
+	}
+}
+
+func mustHaveML(t *testing.T, sql, want string) {
+	t.Helper()
+	if !strings.Contains(sql, want) {
+		t.Errorf("want %q in:\n%s", want, sql)
+	}
+}

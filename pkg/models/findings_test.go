@@ -171,7 +171,7 @@ func TestPageSQL(t *testing.T) {
 }
 
 func TestRarityDiscoverySQL(t *testing.T) {
-	scored := buildRarityScoredSQL("`tbl` FINAL", "f1")
+	scored := buildRarityScoredSQL("`tbl` FINAL", "f1", 0)
 	q := rarityDiscoverySQL(scored, "model_total >= 1 AND percent < 5")
 	mustContain(t, q, "toString(days[1]) AS first_day", "groups by each pair's first day")
 	mustContain(t, q, "toUInt64(countIf(model_total >= 1 AND percent < 5)) AS flagged", "counts with the rule")
@@ -185,7 +185,7 @@ func TestRarityDiscoverySQL(t *testing.T) {
 
 func TestFirstSeenDiscoverySQL(t *testing.T) {
 	since := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	q := firstSeenDiscoverySQL("`tbl`", "f1", since)
+	q := firstSeenDiscoverySQL("`tbl`", "f1", since, 0)
 	mustContain(t, q, "min(first_recorded) AS recorded_at", "new means new to the model")
 	mustContain(t, q, "HAVING recorded_at >= toDateTime64('2026-09-08 00:00:00', 3, 'UTC')", "bounded to the series window")
 	mustContain(t, q, "INTERVAL 7 DAY", "findings window")

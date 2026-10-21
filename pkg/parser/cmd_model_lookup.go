@@ -127,15 +127,19 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if len(keyFields) != 2 {
 			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.MinSample, false)
+		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL",
+			WithHistory(fractalIDInClause(fractalIDs), info.HistoryDays, ""), info.MinSample, false)
 		rightCols = []string{"partition_val", "value_val"}
+		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		// Partitions still learning are scored away, so the raw key set is a superset.
 		exact = info.MinSample <= 1
 		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "coverage"}
 
 	case "first_seen":
-		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, ctx.Opts.ModelNewSince)
+		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, info.HistoryDays, ctx.Opts.ModelNewSince)
 		rightCols = []string{"entity_key"}
+		// A key whose days have all left the window is no longer in the model.
+		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		exact = true // the scoring subquery drops no key
 		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
 
@@ -376,6 +380,26 @@ FROM (
 WHERE days_observed >= %d`, daysCol, source, scope, minHistory)
 }
 
+// HistoryPredicate bounds a windowed model's state to its last days days of event
+// time, today (UTC) included; qual prefixes the day column ("" or "alias."). It
+// is "" for a model that keeps all its history, whose table has no day column.
+// Reads apply it rather than relying on the table's TTL, which only drops rows
+// when parts merge.
+func HistoryPredicate(days int, qual string) string {
+	if days <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%sday > toDate(now(), 'UTC') - %d", qual, days)
+}
+
+// WithHistory ANDs HistoryPredicate onto scope.
+func WithHistory(scope string, days int, qual string) string {
+	if p := HistoryPredicate(days, qual); p != "" {
+		return scope + " AND " + p
+	}
+	return scope
+}
+
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
 // The aggregation and the derived is_new flag are split across two SELECT levels
 // with non-shadowing inner aliases (fs/ls/ec/fr): min(first_seen) AS first_seen in
@@ -386,7 +410,10 @@ WHERE days_observed >= %d`, daysCol, source, scope, minHistory)
 // first_seen: a late or replayed log carries an old event time but is still new
 // to the model, and seeded history (epoch) never is. newSince, an alert's window
 // start, widens the usual hour so a backlogged alert keeps what was new in it.
-func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, newSince time.Time) string {
+//
+// historyDays bounds a windowed model to its window: an entity none of whose
+// days fall in it is unknown again, and its next sighting is new.
+func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, historyDays int, newSince time.Time) string {
 	horizon := "now() - INTERVAL 1 HOUR"
 	if !newSince.IsZero() {
 		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(newSince.UTC()))
@@ -408,7 +435,7 @@ FROM (
 )`,
 		horizon,
 		"`"+tableName+"`",
-		fractalIDInClause(fractalIDs),
+		WithHistory(fractalIDInClause(fractalIDs), historyDays, ""),
 	)
 }
 

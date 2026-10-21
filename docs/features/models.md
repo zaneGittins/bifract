@@ -48,6 +48,15 @@ When `mad` is 0 (most buckets equal the median), `z_score` falls back to `(lates
 
 `first_seen` and `last_seen` are event times. `is_new`, which the alert fires on, is about the model instead: it is `1` when the model first recorded the entity within the last hour. A log that arrives late, or a dataset replayed with old timestamps, still counts as new if the model has not seen its entity before. History seeded by a backfill never counts as new, so seeding does not flood the alert; run the backfill before activating the alert, or entities that only appear in history may fire once before the backfill reaches them. An alert catching up on a backlog counts everything recorded since the start of the window it is evaluating. The **Data** view shows when the model recorded each entity as `recorded_at` in the row details (empty for seeded history).
 
+### History window
+
+By default a Rarity or First / Last Seen model remembers everything it has ever recorded: a value a host used every day six months ago and never since is still normal to it, and its state grows with every new key. A **history window** (30, 90, 180 or 365 days in the editor; `history_days`, 7 to 365, in the API) bounds both:
+
+- **Rarity** counts only days inside the window, so `model_count`, `model_total`, `percent` and `coverage` describe the last N days. A value a group stopped using ages out, and one that returns after the window is rare again. The window must be at least the effective learning period above, or no group could ever alert.
+- **First / Last Seen** forgets an entity none of whose days fall inside the window. When it comes back it is new again: `is_new` fires and `first_seen` is the return. `first_seen`, `last_seen` and `event_count` all describe the window.
+
+A windowed model stores one row per key per day of event time, and ClickHouse drops days once they are a day past the window; reads filter on the window themselves, so a day is gone from results as soon as it leaves it. Setting or changing the window rebuilds the model, like any other change to what it records, so seed it again afterwards. A backfill longer than the window only keeps the days inside it.
+
 TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
 
 Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.

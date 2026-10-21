@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"bifract/pkg/parser"
 )
 
 // Data views: every scored row, or only the rows the model's alert would raise.
@@ -183,16 +185,19 @@ GROUP BY first_day`, flagSQL, scored)
 // each of the series' days, with how many of those fall in the findings window
 // and the last hour (what the alert fires on). Seeded history carries the epoch
 // and never counts.
-func firstSeenDiscoverySQL(qt, fidEsc string, since time.Time) string {
+//
+// A windowed model reads its window only, so an entity back after the window
+// counts on the day it returned.
+func firstSeenDiscoverySQL(qt, fidEsc string, since time.Time, historyDays int) string {
 	return fmt.Sprintf(`SELECT toString(toDate(recorded_at)) AS day, toUInt64(count()) AS n,
     toUInt64(countIf(recorded_at >= now() - INTERVAL %d DAY)) AS week,
     toUInt64(countIf(recorded_at >= now() - INTERVAL 1 HOUR)) AS hour
 FROM (
     SELECT entity_key, min(%s) AS recorded_at
     FROM %s FINAL
-    WHERE fractal_id = '%s'
+    WHERE %s
     GROUP BY entity_key
     HAVING recorded_at >= toDateTime64('%s', 3, 'UTC')
 )
-GROUP BY day`, findingsNewDays, FirstRecordedColumn, qt, fidEsc, since.UTC().Format("2006-01-02 15:04:05"))
+GROUP BY day`, findingsNewDays, FirstRecordedColumn, qt, parser.WithHistory("fractal_id = '"+fidEsc+"'", historyDays, ""), since.UTC().Format("2006-01-02 15:04:05"))
 }

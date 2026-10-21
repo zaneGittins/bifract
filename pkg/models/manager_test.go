@@ -115,6 +115,15 @@ func TestValidateDefinitionShape(t *testing.T) {
 		{"bad field name", ModelTypeRarity, ModelDefinition{PartitionKey: "a b", ValueKey: "c"}, "is not a field name"},
 		{"bad network field", ModelTypeBeacon, ModelDefinition{Network: &NetworkFieldMap{SrcField: "a;b"}}, "src_field"},
 		{"bad filter field", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"k"}, Filter: []FilterCondition{{Field: "x)"}}}, "filter field"},
+		{"first_seen 90d window ok", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"k"}, HistoryDays: 90}, ""},
+		{"rarity 30d window ok", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b", HistoryDays: 30}, ""},
+		{"window too short", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"k"}, HistoryDays: 3}, "history_days must be between"},
+		{"window too long", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"k"}, HistoryDays: 400}, "history_days must be between"},
+		{"window on volume", ModelTypeVolumeBaseline, ModelDefinition{KeyFields: []string{"h"}, HistoryDays: 30}, "rarity and first_seen models only"},
+		// The default 10% share needs more than 10 days and min history 14 needs 14.
+		{"window under min history", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b", HistoryDays: 10, MinSample: 14}, "use at least 14"},
+		{"window under share floor", ModelTypeRarity, ModelDefinition{PartitionKey: "a", ValueKey: "b", HistoryDays: 14,
+			Alert: &AlertConfig{PercentThreshold: 5}}, "use at least 21"},
 	}
 	for _, c := range cases {
 		err := validateDefinitionShape(c.mt, c.def)
@@ -513,5 +522,19 @@ func TestModelResolutionWithNoScope(t *testing.T) {
 	idx, _, err = m.ListTLSHIndexes(context.Background(), []string{"f"}, "")
 	if err != nil || len(idx) != 0 {
 		t.Errorf("no key field: %v %v", idx, err)
+	}
+}
+
+// A history window sets the table's layout and TTL, so changing it rebuilds the
+// model, and leaving it alone does not.
+func TestHistoryDaysChangeRebuilds(t *testing.T) {
+	a := ModelDefinition{KeyFields: []string{"k"}}
+	b := a
+	b.HistoryDays = 30
+	if !detectionChanged(a, b) {
+		t.Error("adding a history window must rebuild")
+	}
+	if detectionChanged(b, b) {
+		t.Error("an unchanged window must not rebuild")
 	}
 }

@@ -458,6 +458,7 @@ const AnalyticsModels = {
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
             minSample: def.min_sample || this._defaultMinSample(m.model_type || 'rarity', def.time_bucket),
             timeBucket: def.time_bucket || 'day',
+            historyDays: def.history_days || 0,
             network: this._networkFromDef(def),
             window: def.window || '1d',
             alertMode: m.alert_mode || 'none',
@@ -1018,6 +1019,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'} per group`]);
             rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set', AnalyticsModels.COVERAGE_TIP]);
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
+            rows.push(['History', this._historyLabel(def)]);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
             const hourly = def.time_bucket === 'hour';
@@ -1033,6 +1035,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['Score threshold', (def.long_conn?.score_threshold || 0.5).toFixed(2)]);
         } else if (mt === 'first_seen') {
             rows.push(['Alert on new', def.alert?.alert_on_new === false ? 'No' : 'Yes']);
+            rows.push(['History', this._historyLabel(def)]);
         }
 
         let keyLabel = 'Keys', keys = [];
@@ -1945,6 +1948,7 @@ ${m.description ? `<div class="me-sec">
             keyFields: [''],
             minSample: this._defaultMinSample('rarity'),
             timeBucket: 'day',
+            historyDays: 0,
             network: this._networkFromDef({}),
             window: '1d',
             alertMode: 'paused',
@@ -2475,7 +2479,8 @@ ${isBeacon ? `
     <label>Min history (days)</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
     <p class="config-hint">Days a group must have been seen before its values can alert. 14 covers two weeks of normal.</p>
-</div>`;
+</div>
+${this._historyWindowHTML(e, 'A value counts as rare when it is rare within this window. Values the group stopped using age out, so one returning after the window looks rare again.')}`;
         }
         if (e.modelType === 'volume_baseline') {
             return `
@@ -2526,7 +2531,23 @@ ${isBeacon ? `
 </div>`).join('')}</div>
     <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
 </div>
-<p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>`;
+<p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>
+${this._historyWindowHTML(e, 'An entity not seen within this window is forgotten, so it alerts as new when it returns.')}`;
+    },
+
+    // The history window select shared by rarity and first/last seen. A window
+    // set through the API that is not one of the presets is kept as an option.
+    _historyWindowHTML(e, hint) {
+        const opts = [[0, 'All history'], [30, 'Last 30 days'], [90, 'Last 90 days'], [180, 'Last 180 days'], [365, 'Last 365 days']];
+        if (!opts.some(([v]) => v === e.historyDays)) opts.push([e.historyDays, `Last ${e.historyDays} days`]);
+        return `
+<div class="field-group" style="margin-top:10px">
+    <label>History window</label>
+    <select id="shapeHistoryDays" class="full-input">
+        ${opts.map(([v, l]) => `<option value="${v}" ${e.historyDays === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+    <p class="config-hint">${hint} Changing it rebuilds the model.</p>
+</div>`;
     },
 
     _renderEditorShape() {
@@ -2552,6 +2573,7 @@ ${isBeacon ? `
             if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); this._schedulePreview(); });
             if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); this._schedulePreview(); });
             document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 1; this._schedulePreview(); });
+            this._bindHistoryWindow();
         } else {
             this._bindKeyFieldEvents();
             document.getElementById('addKeyField')?.addEventListener('click', () => {
@@ -2571,7 +2593,12 @@ ${isBeacon ? `
                 });
                 document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; this._schedulePreview(); });
             }
+            if (e.modelType === 'first_seen') this._bindHistoryWindow();
         }
+    },
+
+    _bindHistoryWindow() {
+        document.getElementById('shapeHistoryDays')?.addEventListener('change', ev => { this.editor.historyDays = parseInt(ev.target.value) || 0; });
     },
 
     _bindKeyFieldEvents() {
@@ -3015,6 +3042,10 @@ ${isBeacon ? `
         return null;
     },
 
+    _historyLabel(def) {
+        return def.history_days > 0 ? `Last ${def.history_days} days` : 'All history';
+    },
+
     // Builds the ModelDefinition payload from the current shape + alert config.
     // parsed is the parse-query response: source_bql is what the model compiles,
     // filter/extractions are the structured half the editor displays and the
@@ -3027,6 +3058,7 @@ ${isBeacon ? `
             def.partition_key = e.partitionKey;
             def.value_key = e.valueKey;
             def.min_sample = e.minSample;
+            if (e.historyDays > 0) def.history_days = e.historyDays;
         } else if (e.modelType === 'volume_baseline') {
             def.key_fields = e.keyFields.filter(Boolean);
             def.time_bucket = e.timeBucket;
@@ -3041,6 +3073,7 @@ ${isBeacon ? `
             }
         } else {
             def.key_fields = e.keyFields.filter(Boolean);
+            if (e.modelType === 'first_seen' && e.historyDays > 0) def.history_days = e.historyDays;
         }
         def.alert = { ...e.alertConfig };
         return def;

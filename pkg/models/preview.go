@@ -359,7 +359,7 @@ func toInt64(v interface{}) int64 {
 }
 
 func (m *Manager) previewRarity(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition) error {
-	scored := buildRarityScoredSQL(source, fidEsc)
+	scored := buildRarityScoredSQL(source, fidEsc, 0)
 
 	// The same rule the data view counts with and the alert fires on, rendered once.
 	preds := rarityFlagPredicates(def)

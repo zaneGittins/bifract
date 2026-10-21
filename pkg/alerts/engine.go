@@ -633,6 +633,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 					ModelType:   string(mi.ModelType),
 					MinSample:   mi.MinSample,
 					TimeBucket:  mi.TimeBucket,
+					HistoryDays: mi.HistoryDays,
 					FractalID:   mi.FractalID,
 					Distributed: mi.Distributed,
 				}

@@ -170,6 +170,7 @@ func (m *Manager) ListModelInfos(ctx context.Context, fractalID string) (map[str
 			ModelType:   ModelType(modelType),
 			MinSample:   def.MinSample,
 			TimeBucket:  def.TimeBucket,
+			HistoryDays: def.HistoryDaysFor(ModelType(modelType)),
 			FractalID:   fractalID,
 			Distributed: distributed,
 		}
@@ -225,6 +226,7 @@ func (m *Manager) ListModelInfosForFractals(ctx context.Context, fractalIDs []st
 			ModelType:   ModelType(modelType),
 			MinSample:   def.MinSample,
 			TimeBucket:  def.TimeBucket,
+			HistoryDays: def.HistoryDaysFor(ModelType(modelType)),
 			FractalID:   ownerFractalID,
 			Distributed: distributed,
 		}
@@ -399,6 +401,8 @@ func detectionChanged(a, b ModelDefinition) bool {
 		a.ValueKey != b.ValueKey ||
 		!reflect.DeepEqual(a.KeyFields, b.KeyFields) ||
 		a.TimeBucket != b.TimeBucket ||
+		// The window sets the table's layout and TTL.
+		a.HistoryDays != b.HistoryDays ||
 		// Network models: the field map determines what the MV extracts and the
 		// window drives the state TTL, so either change requires a state rebuild.
 		// Beacon/LongConn/Modifiers params are applied fresh by the scorer at read
@@ -853,11 +857,11 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 	rule := findingsRuleFor(model.ModelType, model.Definition)
 	switch model.ModelType {
 	case ModelTypeRarity:
-		return m.getRarityData(ctx, tableName, fractalID, q, rule)
+		return m.getRarityData(ctx, tableName, fractalID, q, rule, model.Definition.HistoryDaysFor(model.ModelType))
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "entity_key", true)
+		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "entity_key", true, model.Definition.HistoryDaysFor(model.ModelType))
 	case ModelTypeTLSH:
-		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "digest", false)
+		return m.getFirstSeenData(ctx, tableName, fractalID, q, rule, "digest", false, 0)
 	case ModelTypeVolumeBaseline:
 		return m.getVolumeBaselineData(ctx, tableName, fractalID, model.Definition, q, rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -870,19 +874,33 @@ func (m *Manager) GetData(ctx context.Context, model *Model, fractalID string, q
 // buildRarityScoredSQL scores a rarity model's pairs with the shared definition
 // (see parser.RarityScoredSQL). `source` yields rows shaped like the model table:
 // live scoring passes "`tbl` FINAL", the preview a windowed aggregation subquery.
-// fidEsc must already be CH-escaped.
-func buildRarityScoredSQL(source, fidEsc string) string {
-	return parser.RarityScoredSQL(source, "fractal_id = '"+fidEsc+"'", 1, true)
+// fidEsc must already be CH-escaped. historyDays bounds a windowed model's table
+// to its window, and is 0 for any other source.
+func buildRarityScoredSQL(source, fidEsc string, historyDays int) string {
+	return parser.RarityScoredSQL(source, parser.WithHistory("fractal_id = '"+fidEsc+"'", historyDays, ""), 1, true)
 }
 
-func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule) ([]map[string]interface{}, uint64, error) {
+// historyWhere is the predicate bounding a model's table to its history window,
+// ANDed onto extra; "" and extra alone when the model keeps all its history.
+func historyWhere(extra string, historyDays int) string {
+	p := parser.HistoryPredicate(historyDays, "")
+	switch {
+	case p == "":
+		return extra
+	case extra == "":
+		return p
+	}
+	return extra + " AND " + p
+}
+
+func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, historyDays int) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{"partition_val": true, "value_val": true, "model_count": true, "percent": true, "coverage": true}
 	where, order, none := dataPlan(q, allowed, "coverage", rule, plainSort)
 	if none {
 		return nil, 0, nil
 	}
 
-	baseQuery := buildRarityScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID))
+	baseQuery := buildRarityScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), historyDays)
 
 	if q.Search != "" {
 		baseQuery += fmt.Sprintf(" AND (partition_val ILIKE '%%%s%%' OR value_val ILIKE '%%%s%%')",
@@ -918,7 +936,7 @@ WHERE fractal_id = '%s'`, keyCol, recordedCol, source, fidEsc)
 	return q
 }
 
-func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, keyCol string, recorded bool) ([]map[string]interface{}, uint64, error) {
+func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID string, q DataQuery, rule findingsRule, keyCol string, recorded bool, historyDays int) ([]map[string]interface{}, uint64, error) {
 	allowed := map[string]bool{keyCol: true, "first_seen": true, "last_seen": true, "event_count": true}
 	where, order, none := dataPlan(q, allowed, "first_seen", rule, plainSort)
 	if none {
@@ -929,7 +947,7 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID str
 	if q.Search != "" {
 		extra = fmt.Sprintf("%s ILIKE '%%%s%%'", keyCol, storage.EscCHStr(q.Search))
 	}
-	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), extra, keyCol, recorded)
+	baseQuery := firstSeenAggSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), historyWhere(extra, historyDays), keyCol, recorded)
 	return m.runPage(ctx, "first_seen", baseQuery, where, order, q.Limit, q.Offset)
 }
 
@@ -1036,19 +1054,20 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 	fid := storage.EscCHStr(fractalID)
 	rule := findingsRuleFor(model.ModelType, model.Definition)
 	now := time.Now().UTC()
+	hist := model.Definition.HistoryDaysFor(model.ModelType)
 
 	var result map[string]interface{}
 	var err error
 	switch model.ModelType {
 	case ModelTypeRarity:
-		result, err = m.getRarityStats(ctx, qt, fid, rule, now)
+		result, err = m.getRarityStats(ctx, qt, fid, rule, now, hist)
 	case ModelTypeFirstSeen:
-		result, err = m.getFirstSeenStats(ctx, qt, fid, "entity_key")
+		result, err = m.getFirstSeenStats(ctx, qt, fid, "entity_key", hist)
 		if err == nil {
-			err = m.addFirstSeenDiscovery(ctx, qt, fid, result, now)
+			err = m.addFirstSeenDiscovery(ctx, qt, fid, result, now, hist)
 		}
 	case ModelTypeTLSH:
-		return m.getFirstSeenStats(ctx, qt, fid, "digest")
+		return m.getFirstSeenStats(ctx, qt, fid, "digest", 0)
 	case ModelTypeVolumeBaseline:
 		result, err = m.getVolumeBaselineStats(ctx, tableName, model.Definition, fid, rule)
 	case ModelTypeBeacon, ModelTypeLongConnection:
@@ -1069,8 +1088,8 @@ func (m *Manager) GetStats(ctx context.Context, model *Model, fractalID string) 
 // addFirstSeenDiscovery adds what a first_seen model found new: findings (first
 // recorded within findingsNewDays), new_hour (what the alert fires on now) and
 // the per-day series.
-func (m *Manager) addFirstSeenDiscovery(ctx context.Context, qt, fid string, result map[string]interface{}, now time.Time) error {
-	rows, err := m.ch.QuerySchema(ctx, firstSeenDiscoverySQL(qt, fid, discoveryWindow(now)))
+func (m *Manager) addFirstSeenDiscovery(ctx context.Context, qt, fid string, result map[string]interface{}, now time.Time, historyDays int) error {
+	rows, err := m.ch.QuerySchema(ctx, firstSeenDiscoverySQL(qt, fid, discoveryWindow(now), historyDays))
 	if err != nil {
 		return fmt.Errorf("first_seen discovery: %w", err)
 	}
@@ -1086,8 +1105,14 @@ func (m *Manager) addFirstSeenDiscovery(ctx context.Context, qt, fid string, res
 	return nil
 }
 
-func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findingsRule, now time.Time) (map[string]interface{}, error) {
-	summaryQ := fmt.Sprintf(`SELECT count() AS total_rows, uniq(partition_val) AS distinct_partitions FROM %s FINAL WHERE fractal_id = '%s'`, qt, fid)
+func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findingsRule, now time.Time, historyDays int) (map[string]interface{}, error) {
+	// A windowed table holds a row per pair per day, so its pairs are counted.
+	scope := parser.WithHistory("fractal_id = '"+fid+"'", historyDays, "")
+	rowsExpr := "count()"
+	if historyDays > 0 {
+		rowsExpr = "uniqExact(partition_val, value_val)"
+	}
+	summaryQ := fmt.Sprintf(`SELECT %s AS total_rows, uniq(partition_val) AS distinct_partitions FROM %s FINAL WHERE %s`, rowsExpr, qt, scope)
 	rows, err := m.ch.QuerySchema(ctx, summaryQ)
 	if err != nil {
 		return nil, fmt.Errorf("rarity stats: %w", err)
@@ -1097,7 +1122,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 		result["total_rows"] = rows[0]["total_rows"]
 		result["distinct_partitions"] = rows[0]["distinct_partitions"]
 	}
-	topQ := fmt.Sprintf(`SELECT partition_val, sum(event_count) AS cnt FROM %s FINAL WHERE fractal_id = '%s' GROUP BY partition_val ORDER BY cnt DESC LIMIT 5`, qt, fid)
+	topQ := fmt.Sprintf(`SELECT partition_val, sum(event_count) AS cnt FROM %s FINAL WHERE %s GROUP BY partition_val ORDER BY cnt DESC LIMIT 5`, qt, scope)
 	topRows, err := m.ch.QuerySchema(ctx, topQ)
 	if err == nil {
 		result["top_partitions"] = topRows
@@ -1105,7 +1130,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 
 	// Findings and new pairs per day in one pass: each pair's first day comes from
 	// its stored day set, so this reads the state and never the logs.
-	dRows, err := m.ch.QuerySchema(ctx, rarityDiscoverySQL(buildRarityScoredSQL(qt+" FINAL", fid), rule.Where))
+	dRows, err := m.ch.QuerySchema(ctx, rarityDiscoverySQL(buildRarityScoredSQL(qt+" FINAL", fid, historyDays), rule.Where))
 	if err != nil {
 		return nil, fmt.Errorf("rarity discovery: %w", err)
 	}
@@ -1122,7 +1147,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 	return result, nil
 }
 
-func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid, keyCol string) (map[string]interface{}, error) {
+func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid, keyCol string, historyDays int) (map[string]interface{}, error) {
 	q := fmt.Sprintf(`
 SELECT count() AS total_entities,
        min(first_seen) AS oldest_seen,
@@ -1130,9 +1155,9 @@ SELECT count() AS total_entities,
        countIf(first_seen >= now() - INTERVAL 1 DAY) AS new_today
 FROM (
     SELECT %s, min(first_seen) AS first_seen, max(last_seen) AS last_seen
-    FROM %s FINAL WHERE fractal_id = '%s'
+    FROM %s FINAL WHERE %s
     GROUP BY %s
-)`, keyCol, qt, fid, keyCol)
+)`, keyCol, qt, parser.WithHistory("fractal_id = '"+fid+"'", historyDays, ""), keyCol)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen stats: %w", err)
@@ -1187,7 +1212,7 @@ func (m *Manager) GetHistogram(ctx context.Context, model *Model, fractalID stri
 	case ModelTypeRarity:
 		return m.getRarityHistogram(ctx, qt, fid, model.Definition)
 	case ModelTypeFirstSeen:
-		return m.getFirstSeenHistogram(ctx, qt, fid, "entity_key")
+		return m.getFirstSeenHistogram(ctx, qt, fid, "entity_key", model.Definition.HistoryDaysFor(model.ModelType))
 	case ModelTypeTLSH:
 		// A tlsh index raises no alerts, so there is no threshold a distribution
 		// could be read against. The row count in the stats strip is the fact worth
@@ -1284,7 +1309,7 @@ func firstSeenCountInner(source, fidEsc, keyCol string) string {
 func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string, def ModelDefinition) (map[string]interface{}, error) {
 	preds := rarityFlagPredicates(def)
 	q := fmt.Sprintf(`SELECT toUInt64(count()) AS total, toUInt64(countIf(%s)) AS flagged FROM (%s)`,
-		preds.SQL(), buildRarityScoredSQL(qt+" FINAL", fid))
+		preds.SQL(), buildRarityScoredSQL(qt+" FINAL", fid, def.HistoryDaysFor(ModelTypeRarity)))
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("rarity flag counts: %w", err)
@@ -1351,11 +1376,11 @@ const firstSeenDiscoveryDays = 30
 // last few days. The distribution of an entity's event count used to be charted
 // here, which says nothing about the question the model answers or its alert
 // fires on: whether something new turned up, and how that rate compares to usual.
-func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol string) (map[string]interface{}, error) {
+func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol string, historyDays int) (map[string]interface{}, error) {
 	q := fmt.Sprintf(`SELECT toString(toDate(first_seen)) AS day, toUInt64(count()) AS cnt
 FROM (%s)
 WHERE first_seen >= today() - %d
-GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, "", keyCol, false), firstSeenDiscoveryDays)
+GROUP BY day ORDER BY day`, firstSeenAggSQL(qt+" FINAL", fid, historyWhere("", historyDays), keyCol, false), firstSeenDiscoveryDays)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen discovery series: %w", err)
@@ -1538,6 +1563,9 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 	if err := validateSourceProducedKeys(mt, def); err != nil {
 		return err
 	}
+	if err := validateHistoryDays(mt, def); err != nil {
+		return err
+	}
 	switch mt {
 	case ModelTypeRarity:
 		if def.PartitionKey == "" {
@@ -1588,6 +1616,29 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		}
 	default:
 		return fmt.Errorf("invalid model type: %s", mt)
+	}
+	return nil
+}
+
+// validateHistoryDays checks a history window against what the model type can
+// keep, and against the history a rarity model needs before it alerts: a window
+// shorter than that would hold every group in learning forever.
+func validateHistoryDays(mt ModelType, def ModelDefinition) error {
+	d := def.HistoryDays
+	if d == 0 {
+		return nil
+	}
+	if mt != ModelTypeRarity && mt != ModelTypeFirstSeen {
+		return fmt.Errorf("history_days applies to rarity and first_seen models only")
+	}
+	if d < MinHistoryDays || d > MaxHistoryDays {
+		return fmt.Errorf("history_days must be between %d and %d, or 0 to keep all history", MinHistoryDays, MaxHistoryDays)
+	}
+	if mt == ModelTypeRarity {
+		if need, _ := learningNeed(mt, def); d < need {
+			return fmt.Errorf("a %d-day history window is shorter than the %d days a group needs before its values can alert (min history, or more than 100 / share threshold days); use at least %d",
+				d, need, need)
+		}
 	}
 	return nil
 }
