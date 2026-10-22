@@ -171,23 +171,23 @@ func TestPageSQL(t *testing.T) {
 }
 
 func TestRarityDiscoverySQL(t *testing.T) {
-	scored := buildRarityScoredSQL("`tbl` FINAL", "f1")
+	scored := buildRarityScoredSQL("`tbl` FINAL", "f1", 0)
 	q := rarityDiscoverySQL(scored, "model_total >= 1 AND percent < 5")
-	mustContain(t, q, "toString(days[1]) AS first_day", "groups by each pair's first day")
+	mustContain(t, q, "toString(since) AS first_day", "groups by each pair's first day")
 	mustContain(t, q, "toUInt64(countIf(model_total >= 1 AND percent < 5)) AS flagged", "counts with the rule")
 	mustContain(t, q, "FROM (", "reads the scored rows")
 	mustContain(t, q, "fractal_id = 'f1'", "scoped to the fractal")
-	if !strings.Contains(scored, "seen_days AS days") {
-		t.Fatal("discovery needs the scored rows' day list")
+	if !strings.Contains(scored, "seen_days[1] AS since") {
+		t.Fatal("discovery needs the scored rows' first day")
 	}
 	mustContain(t, rarityDiscoverySQL(scored, ""), "toUInt64(countIf(0)) AS flagged", "no rule flags nothing")
 }
 
 func TestFirstSeenDiscoverySQL(t *testing.T) {
 	since := time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC)
-	q := firstSeenDiscoverySQL("`tbl`", "f1", since)
+	q := firstSeenDiscoverySQL("`tbl`", "f1", since, 0)
 	mustContain(t, q, "min(first_recorded) AS recorded_at", "new means new to the model")
-	mustContain(t, q, "HAVING recorded_at >= toDateTime64('2026-09-08 00:00:00', 3, 'UTC')", "bounded to the series window")
+	mustContain(t, q, "WHERE recorded_at >= toDateTime64('2026-09-08 00:00:00', 3, 'UTC')", "bounded to the series window")
 	mustContain(t, q, "INTERVAL 7 DAY", "findings window")
 	mustContain(t, q, "INTERVAL 1 HOUR", "what the alert fires on")
 	mustContain(t, q, "fractal_id = 'f1'", "scoped to the fractal")

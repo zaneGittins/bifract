@@ -36551,6 +36551,9 @@
               "$ref": "#/components/schemas/models.FilterCondition"
             }
           },
+          "history_days": {
+            "type": "integer"
+          },
           "key_fields": {
             "type": "array",
             "items": {
@@ -36774,6 +36777,21 @@
       "models.ModifierParams": {
         "type": "object",
         "properties": {
+          "first_seen_decrease": {
+            "type": "number"
+          },
+          "first_seen_established_days": {
+            "type": "integer"
+          },
+          "first_seen_increase": {
+            "type": "number"
+          },
+          "first_seen_model": {
+            "type": "string"
+          },
+          "first_seen_recent_days": {
+            "type": "integer"
+          },
           "prevalence_decrease": {
             "type": "number"
           },
@@ -36785,6 +36803,15 @@
           },
           "prevalence_low_threshold": {
             "type": "number"
+          },
+          "threat_intel_column": {
+            "type": "string"
+          },
+          "threat_intel_increase": {
+            "type": "number"
+          },
+          "threat_intel_lookup": {
+            "type": "string"
           }
         }
       },

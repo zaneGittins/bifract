@@ -530,3 +530,29 @@ func TestRecoveredRunWithoutAnchorUsesCreation(t *testing.T) {
 		}
 	}
 }
+
+// A windowed model keeps twice its window, so a longer backfill starts there
+// rather than writing days the TTL would drop.
+func TestBackfillWindowedModelStopsAtWhatItKeeps(t *testing.T) {
+	env, _, _ := backfillEnv(t, false)
+	def := rarityDef
+	def.HistoryDays = 7
+	r := seedModel(env, ModelTypeRarity, def, nil)
+	mo, _ := env.mgr.Get(context.Background(), r.id)
+	before := time.Now().UTC()
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{Window: "90d"}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitBackfill(t, env, r.id)
+	keep := before.Add(-14 * 24 * time.Hour)
+	if got.bfFrom.Before(keep.Add(-time.Minute)) || got.bfFrom.After(keep.Add(time.Minute)) {
+		t.Errorf("backfill from %v, want about %v", got.bfFrom, keep)
+	}
+
+	old := seedModel(env, ModelTypeRarity, def, nil)
+	mo, _ = env.mgr.Get(context.Background(), old.id)
+	from, to := before.Add(-60*24*time.Hour), before.Add(-30*24*time.Hour)
+	if err := env.mgr.StartBackfill(context.Background(), mo, BackfillRequest{From: &from, To: &to}); err == nil || !strings.Contains(err.Error(), "older than the 14 days") {
+		t.Errorf("a range the model would drop started: %v", err)
+	}
+}

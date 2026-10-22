@@ -73,7 +73,8 @@ type stateSummary struct {
 // and stateTable a network model's rolling-state read table. Every column is
 // computed from the model's own aggregate tables, never from raw logs.
 func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, fractalID string, today time.Time) string {
-	fid := "fractal_id = '" + storage.EscCHStr(fractalID) + "'"
+	fidEsc := storage.EscCHStr(fractalID)
+	fid := fidScope(fidEsc)
 	qt := "`" + table + "`"
 	epoch := func(expr string) string { return "toUInt64(toUnixTimestamp(" + expr + "))" }
 	// flagged counts the Findings tab's rows: the same rule over the same scored
@@ -85,19 +86,28 @@ func healthSummarySQL(mt ModelType, def ModelDefinition, table, stateTable, frac
 		}
 		return fmt.Sprintf(",\n    toUInt64(ifNull((SELECT count() FROM (%s) WHERE %s), 0)) AS flagged", scored, rule.Where)
 	}
-	fidEsc := storage.EscCHStr(fractalID)
+	// flaggedHere counts the same rule over rows the summary already reads.
+	flaggedHere := func() string {
+		if rule.Where == "" {
+			return ""
+		}
+		return fmt.Sprintf(",\n    toUInt64(countIf(%s)) AS flagged", rule.Where)
+	}
+	hist := def.HistoryDaysFor(mt)
 	switch mt {
 	case ModelTypeFirstSeen:
-		// An entity is a finding on the day the model first recorded it, which
-		// is what its alert fires on; seeded history is recorded at the epoch.
+		// An entity counts on the day the model recorded it, as its alert fires.
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
-FROM (
-    SELECT min(first_seen) AS fs, max(last_seen) AS ls, toDate(min(%s)) AS d
-    FROM %s WHERE %s
-    GROUP BY entity_key
-)`, epoch("min(fs)"), epoch("max(ls)"), findingsSeriesSQL("d", today),
-			flagged(firstSeenAggSQL(qt+" FINAL", fidEsc, "", "entity_key", true)), FirstRecordedColumn, qt, fid)
+FROM (%s
+)`, epoch("min(first_seen)"), epoch("max(last_seen)"), findingsSeriesSQL("toDate(recorded_at)", today),
+			flaggedHere(), firstSeenAgg(qt, fid, "entity_key", hist, true, false))
 	case ModelTypeRarity:
+		if hist > 0 {
+			// A windowed pair counts on the day it came back.
+			return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
+FROM (%s)`, epoch("toDateTime(min(days[1]), 'UTC')"), epoch("toDateTime(max(days[-1]), 'UTC')"), findingsSeriesSQL("since", today),
+				flaggedHere(), buildRarityScoredSQL(qt+" FINAL", fidEsc, hist))
+		}
 		// A finding is a (partition, value) pair whose earliest day is that day.
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
 FROM (
@@ -105,7 +115,7 @@ FROM (
     FROM %s WHERE %s
     GROUP BY partition_val, value_val
 )`, epoch("toDateTime(min(fd), 'UTC')"), epoch("toDateTime(max(ld), 'UTC')"), findingsSeriesSQL("fd", today),
-			flagged(buildRarityScoredSQL(qt+" FINAL", fidEsc)), qt, fid)
+			flagged(buildRarityScoredSQL(qt+" FINAL", fidEsc, 0)), qt, fid)
 	case ModelTypeVolumeBaseline:
 		// A finding is an entity whose latest complete bucket scores above the
 		// alert's z threshold right now; there is no per-day history of scores.
@@ -256,6 +266,9 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 		// matching any logs.
 		if now.Sub(m.CreatedAt) > limit {
 			h.State, h.Detail = HealthStale, "No events recorded. Check that the source query matches current logs."
+			if n := m.Definition.HistoryDaysFor(m.ModelType); n > 0 {
+				h.Detail = fmt.Sprintf("No events recorded in the last %d days, the model's history window. Check that the source query matches current logs.", n)
+			}
 			return h
 		}
 		if need > 0 {

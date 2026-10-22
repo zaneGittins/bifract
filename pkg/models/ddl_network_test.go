@@ -26,7 +26,7 @@ func TestNetStateTableTTLFollowsWindow(t *testing.T) {
 // are pinned to the same constant.
 func TestNetScoreReadMergesWithTheStateParameter(t *testing.T) {
 	ddl := BuildNetStateTableDDL("`s`", 7)
-	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f1", 7)
+	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f1", 7, "")
 	state, _ := BuildNetStateInsert(ModelDefinition{}, "`s`", "logs", "", "f1")
 	cap := fmt.Sprintf("(%d)", netStateArrayCap)
 	mustContain(t, ddl, "groupArray"+cap, "state column")
@@ -35,22 +35,80 @@ func TestNetScoreReadMergesWithTheStateParameter(t *testing.T) {
 	mustContain(t, read, "groupArrayMerge"+cap+"(size_state)", "scorer read sizes")
 }
 
+// The read merges each day on its own and concatenates the days, since
+// groupArrayMerge(N) caps all it merges at N (see TestCHBeaconReadKeepsEveryDay).
+func TestNetReadsCapPointsPerDay(t *testing.T) {
+	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f1", 7, "")
+	perDay, outer := splitPerDay(t, read)
+	mustContain(t, perDay, "groupArrayMerge(2000)(ts_state) AS day_ts", "merged within the day")
+	mustContain(t, perDay, "GROUP BY src, dst, port, day", "one row per pair and day")
+	mustContain(t, outer, "arrayFlatten(groupArray(day_ts)) AS ts_list", "days concatenated")
+	mustContain(t, outer, "arrayFlatten(groupArray(day_sizes)) AS size_list", "sizes concatenated alongside")
+	mustContain(t, outer, "GROUP BY src, dst, port", "one row per pair")
+
+	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(7*86400, 0), Days: 7}
+	prev, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perDay, outer = splitPerDay(t, prev)
+	mustContain(t, perDay, "toDate(timestamp) AS day", "preview buckets by day")
+	mustContain(t, perDay, "groupArray(2000)(toUnixTimestamp(timestamp)) AS day_ts", "preview caps each day as the state does")
+	mustContain(t, outer, "HAVING cnt >= 4 AND cnt < 604800", "preview gates the whole pair")
+}
+
+// splitPerDay separates a pair read into its per-day subquery and the outer
+// query around it.
+func splitPerDay(t *testing.T, q string) (perDay, outer string) {
+	t.Helper()
+	open := strings.Index(q, "FROM (\n")
+	closing := strings.LastIndex(q, "\n)\n")
+	if open < 0 || closing < open {
+		t.Fatalf("no per-day subquery in:\n%s", q)
+	}
+	return q[open:closing], q[:open] + q[closing:]
+}
+
+// A preview up to the longest window keeps the state's daily cap; a longer one
+// caps each day lower, counting the extra calendar day a range off midnight touches.
+func TestNetPreviewDayCap(t *testing.T) {
+	for _, c := range []struct{ days, want int }{{1, 2000}, {14, 2000}, {15, 1875}, {30, 967}, {91, 326}} {
+		if got := netPreviewDayCap(c.days); got != c.want {
+			t.Errorf("%d days: cap %d, want %d", c.days, got, c.want)
+		}
+		if netPreviewDayCap(c.days)*(c.days+1) > netPairPointBudget {
+			t.Errorf("%d days exceeds the point budget", c.days)
+		}
+	}
+	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(30*86400, 0), Days: 30}
+	prev, _ := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b, "")
+	mustContain(t, prev, "groupArray(967)(toUnixTimestamp(timestamp)) AS day_ts", "30-day preview")
+}
+
+func TestScorerReadSettings(t *testing.T) {
+	mustContain(t, scorerReadSettings(), "max_block_size = 256, max_bytes_before_external_group_by = 2000000000", "defaults")
+	t.Setenv("BIFRACT_MODEL_SCORER_MAX_GROUPBY_BYTES", "0")
+	mustContain(t, scorerReadSettings(), "max_bytes_before_external_group_by = 0", "spill turned off")
+}
+
 func TestNetScoreReadQuery(t *testing.T) {
 	// Beacon: a pair qualifies on connection count, between min_connections and
-	// the strobe limit (one connection per second over the window by default).
-	beacon := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f'1", 7)
+	// the strobe limit (one connection per second over the window by default),
+	// and qualifies before any timestamp state is merged.
+	beacon := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f'1", 7, "")
 	mustContain(t, beacon, "WHERE fractal_id = 'f\\'1' AND day >= today() - 7", "scoped to fractal and window")
-	mustContain(t, beacon, "HAVING cnt >= 4 AND cnt < 604800", "default beacon gate")
+	mustContain(t, beacon, "AND (src, dst, port) GLOBAL IN (SELECT src, dst, port", "gated before the merge")
+	mustContain(t, beacon, "HAVING sum(conn_count) >= 4 AND sum(conn_count) < 604800", "default beacon gate")
 
 	custom := ModelDefinition{Beacon: &BeaconParams{MinConnections: 10, StrobeLimit: 5000}}
-	mustContain(t, BuildNetScoreReadQuery(custom, ModelTypeBeacon, "`s`", "f", 1), "HAVING cnt >= 10 AND cnt < 5000", "custom gate")
+	mustContain(t, BuildNetScoreReadQuery(custom, ModelTypeBeacon, "`s`", "f", 1, ""), "HAVING sum(conn_count) >= 10 AND sum(conn_count) < 5000", "custom gate")
 
 	// Long connection: a pair qualifies on total duration, never on count, and a
 	// large threshold renders without exponent notation.
 	lc := ModelDefinition{LongConn: &LongConnParams{BaseSeconds: 2_000_000}}
-	q := BuildNetScoreReadQuery(lc, ModelTypeLongConnection, "`s`", "f", 1)
-	mustContain(t, q, "HAVING total_duration >= 2000000", "long-connection gate")
-	mustNotContain(t, q, "cnt >=", "long connections are not gated on count")
+	q := BuildNetScoreReadQuery(lc, ModelTypeLongConnection, "`s`", "f", 1, "")
+	mustContain(t, q, "HAVING sum(dur_sum) >= 2000000", "long-connection gate")
+	mustNotContain(t, q, "sum(conn_count) >=", "long connections are not gated on count")
 	mustNotContain(t, q, "e+", "float literal")
 }
 
@@ -96,7 +154,7 @@ func TestNetPreviewPrevalenceAndSize(t *testing.T) {
 func TestNetPreviewRequiresResolvedSource(t *testing.T) {
 	def := ModelDefinition{SourceBQL: `proto = "tcp"`}
 	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(86400, 0), Days: 1}
-	if _, err := BuildNetPreviewAgg(def, ModelTypeBeacon, "logs", "f", b); err == nil {
+	if _, err := BuildNetPreviewAgg(def, ModelTypeBeacon, "logs", "f", b, ""); err == nil {
 		t.Error("agg rendered an unresolved source")
 	}
 	if _, err := BuildNetPreviewPrevalence(def, "logs", "f", b); err == nil {
@@ -112,12 +170,12 @@ func TestNetPreviewRequiresResolvedSource(t *testing.T) {
 
 func TestNetPreviewAggLongConnection(t *testing.T) {
 	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(86400, 0), Days: 1}
-	q, err := BuildNetPreviewAgg(ModelDefinition{Filter: []FilterCondition{{Field: "proto", Value: "udp"}}}, ModelTypeLongConnection, "logs", "f", b)
+	q, err := BuildNetPreviewAgg(ModelDefinition{Filter: []FilterCondition{{Field: "proto", Value: "udp"}}}, ModelTypeLongConnection, "logs", "f", b, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustContain(t, q, "HAVING total_duration >= 3600", "default long-connection gate")
-	mustContain(t, q, "sum(toFloat64OrZero(fields.`duration`::String)) AS total_duration", "duration coerced to a number")
+	mustContain(t, q, "sum(toFloat64OrZero(fields.`duration`::String)) AS day_dur", "duration coerced to a number")
 	mustContain(t, q, "AND fields.`proto`::String = 'udp'", "an op-less filter is equality")
 }
 

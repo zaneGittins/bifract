@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"bifract/pkg/storage"
@@ -31,6 +33,28 @@ type ScorerEngine struct {
 	stopCh    chan struct{}
 	startedAt time.Time
 	running   bool
+
+	// warned is each model's last modifier warnings, so a link that stays
+	// broken is logged once rather than every pass.
+	warnMu sync.Mutex
+	warned map[string]string
+}
+
+// warnModifiers logs a model's modifier warnings when they change.
+func (e *ScorerEngine) warnModifiers(id string, warnings []string) {
+	msg := strings.Join(warnings, "; ")
+	e.warnMu.Lock()
+	defer e.warnMu.Unlock()
+	if e.warned == nil {
+		e.warned = map[string]string{}
+	}
+	if e.warned[id] == msg {
+		return
+	}
+	e.warned[id] = msg
+	if msg != "" {
+		log.Printf("[Model Scorer] model %s: modifier skipped: %s", id, msg)
+	}
 }
 
 // scorerLockID is the Postgres advisory lock ID ensuring only one replica scores at
@@ -53,6 +77,16 @@ const (
 	scorerMinRescore = 10 * time.Minute
 	scorerMaxRescore = 6 * time.Hour
 )
+
+// scorerReadSettings bounds the pair read: small blocks for the driver, and a
+// spill threshold for the server, which holds every qualifying pair's arrays.
+func scorerReadSettings() string {
+	spill := int64(2_000_000_000)
+	if v, ok := envInt64("BIFRACT_MODEL_SCORER_MAX_GROUPBY_BYTES"); ok && v >= 0 {
+		spill = v
+	}
+	return fmt.Sprintf(" SETTINGS max_block_size = %d, max_bytes_before_external_group_by = %d", netReadBlockRows, spill)
+}
 
 // errPairCapReached stops stream iteration once the per-cycle pair cap is hit.
 var errPairCapReached = errors.New("per-model pair cap reached")
@@ -235,18 +269,24 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		return fmt.Errorf("prevalence: %w", err)
 	}
 
+	now := time.Now()
+
+	// Modifier context the model links; what cannot be read scores 0.
+	fs, warnings := e.mgr.loadFirstSeen(ctx, m.fractalID, m.def,
+		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays), "", now)
+	ti, tiWarnings := e.mgr.threatIntelColumn(ctx, m.fractalID, m.def)
+	e.warnModifiers(m.id, append(warnings, tiWarnings...))
+
 	bp := m.def.Beacon.WithDefaults(windowSecs)
 	lc := m.def.LongConn.WithDefaults()
 	mp := m.def.Modifiers.WithDefaults()
-
-	now := time.Now()
 	cutoff := now.Unix() - windowSecs
 
 	buf := newResultBuffer(e.ch, m.tableName)
 	var count int
 	truncated := false
 
-	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays)
+	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays, ti) + scorerReadSettings()
 	streamErr := e.ch.StreamQuery(ctx, "", readSQL, func(row map[string]interface{}) error {
 		if count >= scorerPerModelPairCap {
 			truncated = true
@@ -267,7 +307,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		} else {
 			rs = ScoreBeacon(p, bp, windowSecs)
 		}
-		final, mods := ApplyModifiers(rs.Score, prevRatio, mp)
+		final, mods := ApplyPairModifiers(rs.Score, fs.context(p, prevRatio, now, mp), mp)
 
 		buf.add(resultRow{
 			fractalID: m.fractalID, src: p.Src, dst: p.Dst, port: p.Port,
@@ -409,6 +449,8 @@ func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
 		TsList:        ts,
 		SizeList:      sizes,
 		TotalDuration: getFloat64(row, "total_duration"),
+
+		ThreatIntelHit: getUint64(row, "ti_hit") > 0,
 	}
 	if len(ts) > 0 {
 		p.FirstTs = ts[0]

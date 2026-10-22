@@ -460,14 +460,14 @@ func TestModelLookup_FirstSeenSingleKey(t *testing.T) {
 func TestModelLookup_FirstSeenIsNewReadsFirstRecorded(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="fs", key=[src_ip]) | is_new = "1"`)
 	for _, want := range []string{
-		"min(first_recorded) AS fr",
-		"if(fr >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new",
+		"min(first_recorded) AS recorded_at",
+		"if(recorded_at >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("want %q in:\n%s", want, sql)
 		}
 	}
-	if strings.Contains(sql, "if(fs >=") {
+	if strings.Contains(sql, "if(first_seen >=") {
 		t.Errorf("is_new must not read the event time:\n%s", sql)
 	}
 }
@@ -478,7 +478,7 @@ func TestModelLookup_FirstSeenIsNewCoversAlertWindow(t *testing.T) {
 	opts := mlookupOpts()
 	opts.ModelNewSince = time.Date(2026, 1, 1, 6, 30, 0, 0, time.UTC)
 	sql := translateMLWith(t, `* | model_lookup(model="fs", key=[src_ip]) | is_new = "1"`, opts)
-	want := "if(fr >= least(now() - INTERVAL 1 HOUR, toDateTime64('2026-01-01 06:30:00.000', 3, 'UTC')), '1', '0') AS is_new"
+	want := "if(recorded_at >= least(now() - INTERVAL 1 HOUR, toDateTime64('2026-01-01 06:30:00.000', 3, 'UTC')), '1', '0') AS is_new"
 	if !strings.Contains(sql, want) {
 		t.Errorf("want %q in:\n%s", want, sql)
 	}
@@ -964,5 +964,93 @@ func TestRarityConfidenceFilterNamesTheRename(t *testing.T) {
 	_, err = TranslateToSQLWithOrder(pipeline, mlookupOpts())
 	if err == nil || !strings.Contains(err.Error(), "coverage") {
 		t.Fatalf("want an error naming coverage, got %v", err)
+	}
+}
+
+// A windowed model reads its lookback, scores its window, and its strict
+// prefilter admits only keys seen inside the window.
+func TestModelLookup_HistoryWindow(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["rare"] = AnalyticsModelInfo{ID: "1", TableName: "model_rare", ModelType: "rarity", MinSample: 1, FractalID: "f1", HistoryDays: 30}
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", HistoryDays: 90}
+
+	rare := translateMLWith(t, `* | model_lookup(model="rare", key=[host, port])`, opts)
+	mustHaveML(t, rare, "WHERE fractal_id IN ('f1') AND _day > toDate(now(), 'UTC') - 60")
+	mustHaveML(t, rare, "arrayFilter(d -> d > toDate(now(), 'UTC') - 30, lookback_days) AS seen_days")
+	mustHaveML(t, rare, modelPrefilterAlias+"._day > toDate(now(), 'UTC') - 30")
+
+	fs := translateMLWith(t, `* | model_lookup(model="fs", key=[host])`, opts)
+	mustHaveML(t, fs, "WHERE fractal_id IN ('f1') AND _day > toDate(now(), 'UTC') - 180")
+	mustHaveML(t, fs, "minIf(first_seen, _day > toDate(now(), 'UTC') - 90) AS _fs")
+	mustHaveML(t, fs, "if(recorded_at >= now() - INTERVAL 1 HOUR, '1', '0') AS is_new")
+	mustHaveML(t, fs, modelPrefilterAlias+"._day > toDate(now(), 'UTC') - 90")
+
+	// Without a window nothing names a day column the table does not have.
+	plain := translateML(t, `* | model_lookup(model="fs", key=[host])`)
+	if strings.Contains(plain, "_day") {
+		t.Errorf("unwindowed model read bounds a day column:\n%s", plain)
+	}
+}
+
+func mustHaveML(t *testing.T, sql, want string) {
+	t.Helper()
+	if !strings.Contains(sql, want) {
+		t.Errorf("want %q in:\n%s", want, sql)
+	}
+}
+
+// A model that keeps all its history reads its table as it always has; a
+// windowed one counts its window and judges returns over twice it.
+func TestFirstSeenAggSQLShapes(t *testing.T) {
+	plain := FirstSeenAggSQL(FirstSeenAgg{Source: "`t` FINAL", Scope: "fractal_id = 'f'", KeyCol: "entity_key", Recorded: true, Days: true})
+	for _, want := range []string{"min(first_recorded) AS recorded_at", "arraySort(groupUniqArrayMerge(365)(days)) AS days", "toDate(first_seen) AS since", "GROUP BY entity_key"} {
+		mustHaveML(t, plain, want)
+	}
+	if strings.Contains(plain, HistoryDayColumn) {
+		t.Errorf("unwindowed read names the day column:\n%s", plain)
+	}
+	if digest := FirstSeenAggSQL(FirstSeenAgg{Source: "`t`", Scope: "1", KeyCol: "digest"}); strings.Contains(digest, "first_recorded") || strings.Contains(digest, "AS days") {
+		t.Errorf("a tlsh read asked for columns it did not want:\n%s", digest)
+	}
+
+	w := FirstSeenAggSQL(FirstSeenAgg{Source: "`t` FINAL", Scope: "fractal_id = 'f'", KeyCol: "entity_key", HistoryDays: 30, Recorded: true})
+	for _, want := range []string{
+		"WHERE fractal_id = 'f' AND _day > toDate(now(), 'UTC') - 60", // the lookback
+		"minIf(first_seen, _day > toDate(now(), 'UTC') - 30) AS _fs",  // the window
+		"HAVING length(_ds) > 0",                    // a key seen only before the window is gone
+		"x.1 - _dr[i - 1].1 > 30",                   // a return follows an absence of the window
+		"if(i = 1, x.1 > toDate(now(), 'UTC') - 30", // the oldest day only counts inside the window
+	} {
+		mustHaveML(t, w, want)
+	}
+	if HistoryRetentionDays(30) != 61 {
+		t.Errorf("retention %d, want the lookback and a day", HistoryRetentionDays(30))
+	}
+	if got := WithHistory("", 7); got != "_day > toDate(now(), 'UTC') - 7" {
+		t.Errorf("empty scope: %q", got)
+	}
+}
+
+// LookupMembership probes as match() does, per list kind.
+func TestLookupMembership(t *testing.T) {
+	opts := QueryOptions{
+		DictionaryDatabase:   "logs",
+		Dictionaries:         map[string]map[string]string{"iocs": {"ip": "d_ioc"}, "pats": {"re": "d_pat"}, "names": {"n": "d_names"}},
+		NetworkDicts:         map[string]bool{"d_ioc": true},
+		PatternDicts:         map[string]bool{"d_pat": true},
+		CaseInsensitiveDicts: map[string]bool{"names": true},
+	}
+	for _, c := range []struct{ dict, col, want string }{
+		{"iocs", "ip", "dictHas('logs.d_ioc', toIPv6OrDefault(dst))"},
+		{"pats", "re", "dictGetOrDefault('logs.d_pat', '_match', dst, '') = '1'"},
+		{"names", "n", "dictHas('logs.d_names', lower(dst))"},
+	} {
+		got, err := LookupMembership("dst", c.dict, c.col, opts)
+		if err != nil || got != c.want {
+			t.Errorf("%s: got %q, %v; want %q", c.dict, got, err, c.want)
+		}
+	}
+	if _, err := LookupMembership("dst", "iocs", "domain", opts); err == nil || !strings.Contains(err.Error(), "no key column") {
+		t.Errorf("unknown column: %v", err)
 	}
 }

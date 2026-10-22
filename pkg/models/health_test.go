@@ -136,18 +136,18 @@ func TestHealthSummarySQL(t *testing.T) {
 
 	fs := healthSummarySQL(ModelTypeFirstSeen, ModelDefinition{}, "model_a", "", fid, today)
 	for _, want := range []string{
-		"toDate(min(first_recorded)) AS d", // findings follow what the alert fires on
-		"GROUP BY entity_key",              // unmerged parts would count an entity once per cycle
-		"countIf(d = toDate('2026-10-07') - 6)",
-		"countIf(d = toDate('2026-10-07') - 0)",
+		"min(first_recorded) AS recorded_at", // findings follow what the alert fires on
+		"GROUP BY entity_key",                // unmerged parts would count an entity once per cycle
+		"countIf(toDate(recorded_at) = toDate('2026-10-07') - 6)",
+		"countIf(toDate(recorded_at) = toDate('2026-10-07') - 0)",
 		`fractal_id = 'f\'1'`,
 	} {
 		if !strings.Contains(fs, want) {
 			t.Errorf("first_seen summary missing %q:\n%s", want, fs)
 		}
 	}
-	if strings.Count(fs, "countIf(") != findingsDays {
-		t.Errorf("first_seen series has %d days, want %d", strings.Count(fs, "countIf("), findingsDays)
+	if strings.Count(fs, "countIf(toDate(recorded_at) = ") != findingsDays {
+		t.Errorf("first_seen series has %d days, want %d", strings.Count(fs, "countIf(toDate(recorded_at) = "), findingsDays)
 	}
 
 	rar := healthSummarySQL(ModelTypeRarity, ModelDefinition{}, "model_r", "", "f", today)

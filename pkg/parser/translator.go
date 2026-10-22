@@ -16,7 +16,10 @@ type AnalyticsModelInfo struct {
 	ModelType  string // "rarity", "first_seen", or "volume_baseline"
 	MinSample  int
 	TimeBucket string // volume_baseline bucket granularity ("day"/"hour")
-	FractalID  string
+	// HistoryDays is the window a rarity or first_seen model scores over, 0 for
+	// all of its history. A windowed model's table has a day column to bound.
+	HistoryDays int
+	FractalID   string
 	// Distributed reports that TableName is a Distributed table (cluster mode). The
 	// model join and its strict-mode prefilter must then be GLOBAL: a non-GLOBAL
 	// subquery over a Distributed table inside a query that already reads

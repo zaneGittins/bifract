@@ -31,7 +31,7 @@ func assertPreviewQueries(t *testing.T, ch *chFake, rng PreviewRange, n int) {
 	}
 	window := rng.Start.Format("2006-01-02 15:04:05")
 	for _, q := range qs {
-		if !strings.HasSuffix(q, previewSettings) {
+		if !strings.HasSuffix(q, previewSettings) && !strings.HasSuffix(q, previewSettings+", max_block_size=256") {
 			t.Errorf("unbounded preview query: ...%s", q[max(0, len(q)-120):])
 		}
 		if !strings.Contains(q, fracA) || !strings.Contains(q, window) {
@@ -255,6 +255,29 @@ func TestPreviewNetworkFailures(t *testing.T) {
 		script(env.ch)
 		if _, err := env.mgr.Preview(context.Background(), fracA, ModelTypeBeacon, ModelDefinition{}, lastDay()); err == nil || !strings.Contains(err.Error(), "preview "+name) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A windowed model counts only its window, so a preview over a longer range
+// scores the window's last days, and says so in its start.
+func TestPreviewWindowedRarityScoresTheWindow(t *testing.T) {
+	env := newEnv(t)
+	end := time.Now().UTC().Truncate(time.Second)
+	rng := PreviewRange{Start: end.Add(-30 * 24 * time.Hour), End: end, Label: "30d"}
+	def := rarityDef
+	def.HistoryDays = 7
+	res, err := env.mgr.Preview(context.Background(), fracA, ModelTypeRarity, def, rng)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := end.Add(-7 * 24 * time.Hour); !res.Start.Equal(want) {
+		t.Errorf("start %v, want %v", res.Start, want)
+	}
+	window := res.Start.Format("2006-01-02 15:04:05")
+	for _, q := range env.ch.Queried() {
+		if !strings.Contains(q, "timestamp >= '"+window+"'") {
+			t.Errorf("query scans past the window: %s", q[:min(len(q), 300)])
 		}
 	}
 }
