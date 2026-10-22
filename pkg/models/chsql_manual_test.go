@@ -17,13 +17,14 @@ import (
 	"testing"
 	"time"
 
+	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 )
 
 type chDB struct {
-	t  *testing.T
-	c  *storage.ClickHouseClient
-	db string
+	t        *testing.T
+	c        *storage.ClickHouseClient
+	db, pass string
 }
 
 func newCHDB(t *testing.T) *chDB {
@@ -54,7 +55,7 @@ func newCHDB(t *testing.T) *chDB {
 		_ = admin.Conn().Exec(context.Background(), "DROP DATABASE IF EXISTS "+db)
 		admin.Close()
 	})
-	d := &chDB{t: t, c: connect(db), db: db}
+	d := &chDB{t: t, c: connect(db), db: db, pass: pass}
 	t.Cleanup(func() { _ = d.c.Close() })
 	d.exec(`CREATE TABLE logs (
     fractal_id LowCardinality(String),
@@ -105,7 +106,7 @@ func TestCHBeaconReadKeepsEveryDay(t *testing.T) {
 	}
 	d.exec(BuildNetStateTableDDL("s", 7), ins)
 
-	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", 7) + scorerReadSettings())
+	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", 7, "") + scorerReadSettings())
 	if len(rows) != 1 || getString(rows[0], "src") != "10.0.0.1" {
 		t.Fatalf("gated pairs: %v", rows)
 	}
@@ -128,7 +129,7 @@ func TestCHBeaconPreviewStaysInBudget(t *testing.T) {
 	d.connLogs("10.0.0.1", "198.51.100.1", 30*time.Second, 31*2880)
 	end := time.Now().UTC()
 	b := NetPreviewBounds{Start: end.Add(-30 * 24 * time.Hour), End: end, Days: 30}
-	q, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f1", b)
+	q, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f1", b, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,4 +362,55 @@ func TestCHStateInsertsMatchTheirTables(t *testing.T) {
 			t.Errorf("%s %+v wrote nothing", c.mt, c.def)
 		}
 	}
+}
+
+// The threat intel column marks exactly the pairs whose destination the lookup
+// holds, and the first-seen read returns each candidate's first sighting.
+func TestCHBeaconModifierReads(t *testing.T) {
+	d := newCHDB(t)
+	d.connLogs("10.0.0.1", "203.0.113.10", time.Minute, 600)
+	d.connLogs("10.0.0.2", "198.51.100.20", time.Minute, 600)
+	def := ModelDefinition{}
+	ins, _ := BuildNetStateInsert(def, "s", "logs", "", "f1")
+	d.exec(BuildNetStateTableDDL("s", 1), ins,
+		"CREATE TABLE iocs (ip String) ENGINE = MergeTree ORDER BY ip",
+		"INSERT INTO iocs VALUES ('203.0.113.10')",
+		fmt.Sprintf(`CREATE DICTIONARY d_ioc (ip String) PRIMARY KEY ip
+SOURCE(CLICKHOUSE(TABLE 'iocs' DB '%s' USER 'default' PASSWORD '%s')) LAYOUT(COMPLEX_KEY_HASHED()) LIFETIME(0)`, d.db, d.pass))
+
+	hit, err := parserLookup(d.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", 1, hit) + scorerReadSettings())
+	for _, r := range rows {
+		p := pairFromRow(r, 0)
+		if want := p.Dst == "203.0.113.10"; p.ThreatIntelHit != want {
+			t.Errorf("%s: threat intel %v, want %v", p.Dst, p.ThreatIntelHit, want)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("pairs: %v", rows)
+	}
+
+	fsDef := ModelDefinition{KeyFields: []string{"dst_ip"}}
+	fsDDL, _ := GenerateDDL(fsDef, ModelTypeFirstSeen, "fs")
+	fsIns, _ := BuildBackfillInsert(fsDef, ModelTypeFirstSeen, "fs", "logs", "", "f1")
+	d.exec(fsDDL, fsIns)
+	fs := d.rows(firstSeenContextSQL("fs", "f1", false, BuildNetPairsQuery(def, ModelTypeBeacon, "s", "f1", 1)))
+	if len(fs) != 2 {
+		t.Fatalf("first sightings: %v", fs)
+	}
+	for _, r := range fs {
+		if age := time.Since(time.Unix(int64(getUint64(r, "fs")), 0)); age < 9*time.Hour || age > 11*time.Hour {
+			t.Errorf("%s first seen %v ago, want about 10h", getString(r, "k"), age)
+		}
+	}
+}
+
+func parserLookup(db string) (string, error) {
+	return parser.LookupMembership("dst", "iocs", "ip", parser.QueryOptions{
+		DictionaryDatabase: db,
+		Dictionaries:       map[string]map[string]string{"iocs": {"ip": "d_ioc"}},
+	})
 }

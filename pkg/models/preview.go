@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -551,11 +552,23 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			return nil, fmt.Errorf("preview prevalence: %w", err)
 		}
 	}
+	// Modifier context, aged from the window's end, the model's "now" for it.
+	var fs firstSeenContext
+	var warnings []string
+	if networkSize > 0 {
+		pairsSQL, err := BuildNetPreviewPairs(def, mt, source, fractalID, bounds)
+		if err != nil {
+			return nil, err
+		}
+		fs, warnings = m.loadFirstSeen(ctx, fractalID, def, pairsSQL, cfg.settings(), rng.End)
+	}
+	ti, tiWarnings := m.threatIntelColumn(ctx, fractalID, def)
+	warnings = append(warnings, tiWarnings...)
 	if networkSize == 0 {
 		networkSize = 1 // avoid div-by-zero; no data yields an empty preview below
 	}
 
-	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, bounds)
+	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, bounds, ti)
 	if err != nil {
 		return nil, err
 	}
@@ -574,6 +587,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		final          float64
 		rs             RegularityScore
 		prev           float64
+		mods           Modifiers
 	}
 	var top []scoredPair
 
@@ -592,7 +606,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			rs = ScoreBeacon(p, bp, windowSecs)
 		}
 		prevRatio := float64(prevalence[p.Dst]) / float64(networkSize)
-		final, _ := ApplyModifiers(rs.Score, prevRatio, mp)
+		final, mods := ApplyPairModifiers(rs.Score, fs.context(p, prevRatio, rng.End, mp), mp)
 
 		band := int(final * 10)
 		if band > 9 {
@@ -616,7 +630,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		if final > maxScore {
 			maxScore = final
 		}
-		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio)})
+		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio), mods: mods})
 		return nil
 	}, nil)
 	if streamErr != nil {
@@ -642,6 +656,9 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			"hist_score": sp.rs.HistScore,
 			"prevalence": sp.prev,
 			"conn_count": sp.cnt,
+
+			"first_seen_score":   sp.mods.FirstSeenScore,
+			"threat_intel_score": sp.mods.ThreatIntelScore,
 		})
 	}
 
@@ -672,14 +689,30 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		Distribution: dist,
 		FlagBasis:    fmt.Sprintf("final score >= %g", threshold),
 		Top:          topRows,
-		TopColumns:   []string{"src_ip", "dst_ip", "dst_port", "score", "regularity", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "conn_count"},
+		TopColumns:   previewNetworkColumns(def),
 		Stats: sanitizeStats(map[string]interface{}{
-			"pairs_scanned": uint64(scanned),
-			"pairs_scored":  uint64(scored),
-			"max_score":     round3(maxScore),
-			"network_size":  networkSize,
+			"pairs_scanned":    uint64(scanned),
+			"pairs_scored":     uint64(scored),
+			"max_score":        round3(maxScore),
+			"network_size":     networkSize,
+			"modifier_warning": strings.Join(warnings, "; "),
 		}),
 	}, nil
+}
+
+// previewNetworkColumns lists the top table's columns, with a modifier's only
+// when the model links it.
+func previewNetworkColumns(def ModelDefinition) []string {
+	cols := []string{"src_ip", "dst_ip", "dst_port", "score", "regularity", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence"}
+	if mp := def.Modifiers; mp != nil {
+		if strings.TrimSpace(mp.FirstSeenModel) != "" {
+			cols = append(cols, "first_seen_score")
+		}
+		if strings.TrimSpace(mp.ThreatIntelLookup) != "" {
+			cols = append(cols, "threat_intel_score")
+		}
+	}
+	return append(cols, "conn_count")
 }
 
 func plural(n int) string {

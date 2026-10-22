@@ -40,6 +40,15 @@ func TestParamDefaults(t *testing.T) {
 	if mp.PrevalenceLowThreshold != 0.02 || mp.PrevalenceHighThreshold != 0.5 || mp.PrevalenceIncrease != 0.15 || mp.PrevalenceDecrease != 0.15 {
 		t.Errorf("modifier defaults: %+v", mp)
 	}
+	if mp.FirstSeenRecentDays != 7 || mp.FirstSeenEstablishedDays != 90 || mp.FirstSeenIncrease != 0.15 || mp.FirstSeenDecrease != 0.15 || mp.ThreatIntelIncrease != 0.25 {
+		t.Errorf("context modifier defaults: %+v", mp)
+	}
+	// Setting one field leaves the others at their defaults, and a negative
+	// adjustment turns that side off.
+	partial := (&ModifierParams{FirstSeenModel: "fs", PrevalenceDecrease: -1}).WithDefaults()
+	if partial.PrevalenceIncrease != 0.15 || partial.FirstSeenIncrease != 0.15 || partial.PrevalenceDecrease != 0 {
+		t.Errorf("partial modifiers: %+v", partial)
+	}
 }
 
 func TestAlertConfigRejectsMalformedInput(t *testing.T) {

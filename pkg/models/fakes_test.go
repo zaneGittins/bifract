@@ -273,6 +273,14 @@ func (db *modelDB) respond(q string, args []driver.Value) (fakedb.PGResult, bool
 		}
 		return fakedb.PGResult{}, true
 
+	case "SELECT id, definition, created_at, backfill_anchor, COALESCE(backfill_status, ''), backfill_from FROM analytics_models WHERE fractal_id = $1 AND name = $2 AND model_type = 'first_seen' AND status IN ('active', 'rebuilding') ORDER BY created_at LIMIT 1":
+		for _, r := range db.sorted(byCreated) {
+			if r.fractalID == arg(0) && r.name == arg(1) && r.modelType == "first_seen" && (r.status == "active" || r.status == "rebuilding") {
+				return fakedb.PGResult{Rows: [][]driver.Value{{r.id, []byte(r.definition), r.createdAt, tval(r.bfAnchor), r.bfStatus, tval(r.bfFrom)}}}, true
+			}
+		}
+		return fakedb.PGResult{}, true
+
 	case "SELECT id, name, model_type, definition FROM analytics_models WHERE fractal_id = $1 AND status = 'active'":
 		var res fakedb.PGResult
 		for _, r := range db.sorted(nil) {

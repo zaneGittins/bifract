@@ -1129,6 +1129,42 @@ func dictMembershipSQL(dictRef, probeRef string, pattern bool) string {
 	return fmt.Sprintf("dictHas('%s', %s)", dictRef, probeRef)
 }
 
+// lookupRef is a lookup key column resolved to the dictionary object match()
+// probes.
+type lookupRef struct {
+	dict, object, ref string
+	pattern           bool
+	opts              QueryOptions
+}
+
+// resolveLookup resolves a lookup and key column in opts' scope.
+func resolveLookup(dictName, keyColumn string, opts QueryOptions) (lookupRef, error) {
+	colMap, known := opts.Dictionaries[dictName]
+	if !known {
+		return lookupRef{}, fmt.Errorf("dictionary %q not found in this fractal or prism", dictName)
+	}
+	object := colMap[keyColumn]
+	if object == "" {
+		return lookupRef{}, fmt.Errorf("dictionary %q has no key column %q - enable that column as a key on the Lookups page", dictName, keyColumn)
+	}
+	return lookupRef{dict: dictName, object: object, ref: escapeString(dictRef(opts.DictionaryDatabase, object)),
+		pattern: opts.PatternDicts[object], opts: opts}, nil
+}
+
+func (l lookupRef) probe(fieldRef string) string {
+	return dictProbe(fieldRef, l.dict, l.object, l.pattern, l.opts)
+}
+
+// LookupMembership is match()'s membership test of fieldRef, a SQL expression,
+// for a caller outside a query.
+func LookupMembership(fieldRef, dictName, keyColumn string, opts QueryOptions) (string, error) {
+	lk, err := resolveLookup(dictName, keyColumn, opts)
+	if err != nil {
+		return "", err
+	}
+	return dictMembershipSQL(lk.ref, lk.probe(fieldRef), lk.pattern), nil
+}
+
 // PatternMatchAttr mirrors dictionaries.PatternMatchAttr. Named here rather than
 // imported because the parser cannot depend on the dictionary package without a
 // cycle; pkg/query sees both and asserts they agree.
@@ -1147,20 +1183,13 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	dictName := b.Str("dict", "")
 	includeColumns := b.Strings("include")
 
-	// Resolve the ClickHouse dictionary name so we can build the real expression.
-	chLookupName := ""
-	if ctx.Opts.Dictionaries != nil && dictName != "" && keyColumn != "" {
-		if colMap, ok := ctx.Opts.Dictionaries[dictName]; ok {
-			chLookupName = colMap[keyColumn]
-		}
-	}
-
+	// Execute reports an unresolved lookup; here it only leaves the columns plain.
+	lk, lkErr := resolveLookup(dictName, keyColumn, ctx.Opts)
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
-	probeRef := dictProbe(fieldRef, dictName, chLookupName, ctx.Opts.PatternDicts[chLookupName], ctx.Opts)
 
 	for _, c := range includeColumns {
-		if chLookupName != "" && hasField && fieldRef != "" {
-			expr := matchLookupExpr(escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName)), c, keyColumn, probeRef, fieldRef, ctx.Opts.PatternDicts[chLookupName])
+		if lkErr == nil && hasField && fieldRef != "" {
+			expr := matchLookupExpr(lk.ref, c, keyColumn, lk.probe(fieldRef), fieldRef, lk.pattern)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -1193,27 +1222,19 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return fmt.Errorf("match() requires column= parameter to specify the lookup key column")
 	}
 
-	// The three ways this resolves to nothing are different problems with different
-	// fixes, and one message for all of them sent authors to the key toggle for a
-	// context that never had dictionaries at all.
 	if ctx.Opts.Dictionaries == nil {
 		return fmt.Errorf("match() is not available here: this context has no dictionaries")
 	}
-	colMap, known := ctx.Opts.Dictionaries[dictName]
-	if !known {
-		return fmt.Errorf("dictionary %q not found in this fractal or prism", dictName)
-	}
-	chLookupName := colMap[keyColumn]
-	if chLookupName == "" {
-		return fmt.Errorf("dictionary %q has no key column %q - enable that column as a key on the Lookups page", dictName, keyColumn)
+	lk, err := resolveLookup(dictName, keyColumn, ctx.Opts)
+	if err != nil {
+		return err
 	}
 
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
-	chDictRef := escapeString(dictRef(ctx.Opts.DictionaryDatabase, chLookupName))
-	isPattern := ctx.Opts.PatternDicts[chLookupName]
-	probeRef := dictProbe(fieldRef, dictName, chLookupName, isPattern, ctx.Opts)
+	chDictRef, isPattern := lk.ref, lk.pattern
+	probeRef := lk.probe(fieldRef)
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {

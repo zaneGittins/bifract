@@ -247,6 +247,9 @@ func (m *Manager) Create(ctx context.Context, fractalID string, req CreateReques
 	if _, err := m.ResolveSource(ctx, req.Definition, fractalID, ""); err != nil {
 		return nil, err
 	}
+	if err := m.validateModifierLinks(ctx, fractalID, req.ModelType, req.Definition, nil); err != nil {
+		return nil, err
+	}
 	// A type that raises no alerts is stored as such rather than rejected. The
 	// editor sends its default mode ("paused") for every type, so rejecting here
 	// made an index model impossible to create at all.
@@ -337,6 +340,9 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Mo
 		return nil, err
 	}
 	if _, err := m.ResolveSource(ctx, req.Definition, existing.FractalID, existing.PrismID); err != nil {
+		return nil, err
+	}
+	if err := m.validateModifierLinks(ctx, existing.FractalID, existing.ModelType, req.Definition, &existing.Definition); err != nil {
 		return nil, err
 	}
 
@@ -548,21 +554,32 @@ func (m *Manager) SetDictionaryResolver(d DictionaryResolver) { m.dicts = d }
 // sourceQueryOptions is the context a model's source query is compiled in: the
 // dictionaries of the model's own scope, and nothing else. The scan's fractal and
 // window are the model's, applied by the builder rather than by the translator.
+// A failure to list the dictionaries is logged and compiles without them, which
+// a source that uses none does not notice.
 func (m *Manager) sourceQueryOptions(ctx context.Context, fractalID, prismID string) parser.QueryOptions {
+	opts, err := m.sourceQueryOptionsErr(ctx, fractalID, prismID)
+	if err != nil {
+		log.Printf("models: resolve dictionaries for source query: %v", err)
+	}
+	return opts
+}
+
+// sourceQueryOptionsErr is sourceQueryOptions for a caller that must tell a
+// lookup that does not exist from one that could not be listed.
+func (m *Manager) sourceQueryOptionsErr(ctx context.Context, fractalID, prismID string) (parser.QueryOptions, error) {
 	opts := parser.QueryOptions{DictionaryDatabase: m.chDB}
 	if m.dicts == nil || (fractalID == "" && prismID == "") {
-		return opts
+		return opts, nil
 	}
 	scope, err := m.dicts.ListDictionaryMappings(ctx, fractalID, prismID)
 	if err != nil {
-		log.Printf("models: resolve dictionaries for source query: %v", err)
-		return opts
+		return opts, err
 	}
 	opts.Dictionaries = scope.Mappings
 	opts.CaseInsensitiveDicts = scope.CaseInsensitive
 	opts.NetworkDicts = scope.Network
 	opts.PatternDicts = scope.Pattern
-	return opts
+	return opts, nil
 }
 
 // ResolveSource compiles a definition's source query against the dictionaries of
@@ -1008,12 +1025,13 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 }
 
 // networkResultCols is the projection returned to the data viewer for a scored
-// pair: the final verdict plus the full breakdown (subscores + prevalence modifier)
+// pair: the final verdict plus the full breakdown (subscores and modifiers)
 // so the reviewer can see why a pair scored high.
 const networkResultCols = "src_ip, dst_ip, dst_port, " +
 	"round(final_score,3) AS final_score, round(regularity_score,3) AS regularity_score, " +
 	"round(ts_score,3) AS ts_score, round(ds_score,3) AS ds_score, round(dur_score,3) AS dur_score, round(hist_score,3) AS hist_score, " +
 	"round(prevalence,4) AS prevalence, prevalence_total, round(prevalence_score,3) AS prevalence_score, " +
+	"round(first_seen_score,3) AS first_seen_score, round(threat_intel_score,3) AS threat_intel_score, " +
 	"conn_count, round(total_duration,1) AS total_duration, first_seen, last_seen, scored_at"
 
 // networkScoreThreshold returns the model's final-score flag threshold.
@@ -1644,10 +1662,26 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		default:
 			return fmt.Errorf("invalid window for network model: %s (use 1d, 7d, or 14d)", def.Window)
 		}
+		if mp := def.Modifiers.WithDefaults(); mp.FirstSeenRecentDays >= mp.FirstSeenEstablishedDays {
+			set := ModifierParams{}
+			if def.Modifiers != nil {
+				set = *def.Modifiers
+			}
+			return fmt.Errorf("first_seen_recent_days (%d%s) must be less than first_seen_established_days (%d%s)",
+				mp.FirstSeenRecentDays, defaultNote(set.FirstSeenRecentDays), mp.FirstSeenEstablishedDays, defaultNote(set.FirstSeenEstablishedDays))
+		}
 	default:
 		return fmt.Errorf("invalid model type: %s", mt)
 	}
 	return nil
+}
+
+// defaultNote marks a value the user left unset.
+func defaultNote(set int) string {
+	if set > 0 {
+		return ""
+	}
+	return ", the default"
 }
 
 // validateHistoryDays checks a window's range, and that a rarity window covers

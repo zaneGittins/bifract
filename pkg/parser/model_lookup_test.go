@@ -1030,3 +1030,27 @@ func TestFirstSeenAggSQLShapes(t *testing.T) {
 		t.Errorf("empty scope: %q", got)
 	}
 }
+
+// LookupMembership probes as match() does, per list kind.
+func TestLookupMembership(t *testing.T) {
+	opts := QueryOptions{
+		DictionaryDatabase:   "logs",
+		Dictionaries:         map[string]map[string]string{"iocs": {"ip": "d_ioc"}, "pats": {"re": "d_pat"}, "names": {"n": "d_names"}},
+		NetworkDicts:         map[string]bool{"d_ioc": true},
+		PatternDicts:         map[string]bool{"d_pat": true},
+		CaseInsensitiveDicts: map[string]bool{"names": true},
+	}
+	for _, c := range []struct{ dict, col, want string }{
+		{"iocs", "ip", "dictHas('logs.d_ioc', toIPv6OrDefault(dst))"},
+		{"pats", "re", "dictGetOrDefault('logs.d_pat', '_match', dst, '') = '1'"},
+		{"names", "n", "dictHas('logs.d_names', lower(dst))"},
+	} {
+		got, err := LookupMembership("dst", c.dict, c.col, opts)
+		if err != nil || got != c.want {
+			t.Errorf("%s: got %q, %v; want %q", c.dict, got, err, c.want)
+		}
+	}
+	if _, err := LookupMembership("dst", "iocs", "domain", opts); err == nil || !strings.Contains(err.Error(), "no key column") {
+		t.Errorf("unknown column: %v", err)
+	}
+}

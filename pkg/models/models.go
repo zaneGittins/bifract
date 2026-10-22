@@ -303,20 +303,32 @@ func (l *LongConnParams) WithDefaults() LongConnParams {
 	return out
 }
 
-// ModifierParams tunes the false-positive-reduction layer. Prevalence (how many
-// distinct internal hosts contact a destination) reranks the base regularity score:
-// rare destinations are boosted, ubiquitous ones (shared services) penalized.
+// ModifierParams tunes the adjustments to a pair's score: prevalence always, and
+// first seen and threat intel once they link a first_seen model or a lookup.
 type ModifierParams struct {
 	PrevalenceLowThreshold  float64 `json:"prevalence_low_threshold,omitempty" yaml:"prevalence_low_threshold,omitempty"`   // <= => rare, boost
 	PrevalenceHighThreshold float64 `json:"prevalence_high_threshold,omitempty" yaml:"prevalence_high_threshold,omitempty"` // >= => common, penalize
 	PrevalenceIncrease      float64 `json:"prevalence_increase,omitempty" yaml:"prevalence_increase,omitempty"`
 	PrevalenceDecrease      float64 `json:"prevalence_decrease,omitempty" yaml:"prevalence_decrease,omitempty"`
+
+	// FirstSeenModel names a first_seen model keyed on [dst] or [src, dst].
+	FirstSeenModel           string  `json:"first_seen_model,omitempty" yaml:"first_seen_model,omitempty"`
+	FirstSeenRecentDays      int     `json:"first_seen_recent_days,omitempty" yaml:"first_seen_recent_days,omitempty"`           // first seen within => boost
+	FirstSeenEstablishedDays int     `json:"first_seen_established_days,omitempty" yaml:"first_seen_established_days,omitempty"` // first seen before => penalize
+	FirstSeenIncrease        float64 `json:"first_seen_increase,omitempty" yaml:"first_seen_increase,omitempty"`
+	FirstSeenDecrease        float64 `json:"first_seen_decrease,omitempty" yaml:"first_seen_decrease,omitempty"`
+
+	// ThreatIntelLookup and ThreatIntelColumn name a lookup and its key column,
+	// as match(dict=, column=) does; a destination it holds is boosted.
+	ThreatIntelLookup   string  `json:"threat_intel_lookup,omitempty" yaml:"threat_intel_lookup,omitempty"`
+	ThreatIntelColumn   string  `json:"threat_intel_column,omitempty" yaml:"threat_intel_column,omitempty"`
+	ThreatIntelIncrease float64 `json:"threat_intel_increase,omitempty" yaml:"threat_intel_increase,omitempty"`
 }
 
-// WithDefaults fills unset modifier thresholds with sensible defaults (rare <= 2%,
-// common >= 50%, +/-0.15 nudge). A negative increase/decrease disables that side.
+// WithDefaults fills unset modifier settings (see docs/features/models.md); an
+// unset adjustment takes its default and a negative one turns that side off.
 func (m *ModifierParams) WithDefaults() ModifierParams {
-	out := ModifierParams{PrevalenceIncrease: -1, PrevalenceDecrease: -1}
+	out := ModifierParams{}
 	if m != nil {
 		out = *m
 	}
@@ -326,13 +338,30 @@ func (m *ModifierParams) WithDefaults() ModifierParams {
 	if out.PrevalenceHighThreshold <= 0 {
 		out.PrevalenceHighThreshold = 0.5
 	}
-	if out.PrevalenceIncrease < 0 {
-		out.PrevalenceIncrease = 0.15
+	if out.FirstSeenRecentDays <= 0 {
+		out.FirstSeenRecentDays = 7
 	}
-	if out.PrevalenceDecrease < 0 {
-		out.PrevalenceDecrease = 0.15
+	if out.FirstSeenEstablishedDays <= 0 {
+		out.FirstSeenEstablishedDays = 90
 	}
+	out.PrevalenceIncrease = adjustmentOrDefault(out.PrevalenceIncrease, 0.15)
+	out.PrevalenceDecrease = adjustmentOrDefault(out.PrevalenceDecrease, 0.15)
+	out.FirstSeenIncrease = adjustmentOrDefault(out.FirstSeenIncrease, 0.15)
+	out.FirstSeenDecrease = adjustmentOrDefault(out.FirstSeenDecrease, 0.15)
+	out.ThreatIntelIncrease = adjustmentOrDefault(out.ThreatIntelIncrease, 0.25)
 	return out
+}
+
+// adjustmentOrDefault resolves one modifier adjustment: unset takes def, and a
+// negative value turns that side off.
+func adjustmentOrDefault(v, def float64) float64 {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return 0
+	}
+	return v
 }
 
 // maxNetWindowDays is the longest network model window.

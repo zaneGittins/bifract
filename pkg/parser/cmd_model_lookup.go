@@ -48,6 +48,8 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("hist_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("prevalence", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("first_seen_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("threat_intel_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("conn_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("total_duration", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		return nil
@@ -76,9 +78,9 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets", "latest_bucket")
 	case "beacon":
 		// beacon_score is the final verdict; the rest is the breakdown ("why").
-		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count")
+		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count")
 	case "long_connection":
-		reg("longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score")
+		reg("longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score")
 	}
 	return nil
 }
@@ -156,10 +158,10 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		}
 		if info.ModelType == "beacon" {
 			ctx.Plan.ModelLookupSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
-			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count"}
+			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count"}
 		} else {
 			ctx.Plan.ModelLookupSQL = buildLongConnScoringSQL(info.TableName, fractalIDs)
-			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score"}
+			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score"}
 		}
 		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
 		rightCols = []string{"src_ip", "dst_ip", "dst_port"}
@@ -309,6 +311,8 @@ func buildBeaconScoringSQL(tableName string, fractalIDs []string) string {
     argMax(hist_score, scored_at) AS hist_score,
     argMax(prevalence, scored_at) AS prevalence,
     argMax(prevalence_score, scored_at) AS prevalence_score,
+    argMax(first_seen_score, scored_at) AS first_seen_score,
+    argMax(threat_intel_score, scored_at) AS threat_intel_score,
     argMax(conn_count, scored_at) AS conn_count
 FROM %s
 WHERE %s
@@ -327,7 +331,9 @@ func buildLongConnScoringSQL(tableName string, fractalIDs []string) string {
     argMax(total_duration, scored_at) AS total_duration,
     argMax(conn_count, scored_at) AS conn_count,
     argMax(prevalence, scored_at) AS prevalence,
-    argMax(prevalence_score, scored_at) AS prevalence_score
+    argMax(prevalence_score, scored_at) AS prevalence_score,
+    argMax(first_seen_score, scored_at) AS first_seen_score,
+    argMax(threat_intel_score, scored_at) AS threat_intel_score
 FROM %s
 WHERE %s
 GROUP BY src_ip, dst_ip, dst_port`,
