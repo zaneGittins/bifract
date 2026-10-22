@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -196,6 +197,13 @@ func (m *Manager) Preview(ctx context.Context, fractalID string, mt ModelType, d
 	}
 
 	start, end := rng.Start, rng.End
+	// A windowed model counts only its window, so a longer preview would score
+	// history the model has already forgotten; the result's Start says so.
+	if n := def.HistoryDaysFor(mt); n > 0 {
+		if ws := end.Add(-time.Duration(n) * 24 * time.Hour); start.Before(ws) {
+			start = ws
+		}
+	}
 	fidEsc := storage.EscCHStr(fractalID)
 	// buildModelSelect scopes the scan to fractalID itself; whereExtra adds only the window.
 	whereExtra := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
@@ -359,7 +367,7 @@ func toInt64(v interface{}) int64 {
 }
 
 func (m *Manager) previewRarity(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition) error {
-	scored := buildRarityScoredSQL(source, fidEsc)
+	scored := buildRarityScoredSQL(source, fidEsc, 0)
 
 	// The same rule the data view counts with and the alert fires on, rendered once.
 	preds := rarityFlagPredicates(def)
@@ -410,7 +418,7 @@ LIMIT 25`, scored, minSample)
 }
 
 func (m *Manager) previewFirstSeen(ctx context.Context, res *PreviewResult, source, fidEsc string, def ModelDefinition, end time.Time, keyCol string) error {
-	agg := firstSeenAggSQL(source, fidEsc, "", keyCol, false)
+	agg := firstSeenAgg(source, fidScope(fidEsc), keyCol, 0, false, true)
 
 	// The is_new alert fires on entities the live model records for the first time,
 	// which nothing in history can replay. Instead we report the new-entity RATE:
@@ -461,7 +469,7 @@ func (m *Manager) previewVolume(ctx context.Context, res *PreviewResult, source,
 	if def.TimeBucket == "hour" {
 		lower = fmt.Sprintf("toStartOfHour(toDateTime('%s', 'UTC'))", start.Format("2006-01-02 15:04:05"))
 	}
-	scored := parser.VolumeScoredSQLAt(source, "fractal_id = '"+fidEsc+"'", def.TimeBucket, def.MinSample, lower, asOf, true)
+	scored := parser.VolumeScoredSQLAt(source, fidScope(fidEsc), def.TimeBucket, def.MinSample, lower, asOf, true)
 
 	z := 3.5
 	if def.Alert != nil && def.Alert.ZThreshold > 0 {
@@ -544,11 +552,23 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			return nil, fmt.Errorf("preview prevalence: %w", err)
 		}
 	}
+	// Modifier context, aged from the window's end, the model's "now" for it.
+	var fs firstSeenContext
+	var warnings []string
+	if networkSize > 0 {
+		pairsSQL, err := BuildNetPreviewPairs(def, mt, source, fractalID, bounds)
+		if err != nil {
+			return nil, err
+		}
+		fs, warnings = m.loadFirstSeen(ctx, fractalID, def, pairsSQL, cfg.settings(), rng.End)
+	}
+	ti, tiWarnings := m.threatIntelColumn(ctx, fractalID, def)
+	warnings = append(warnings, tiWarnings...)
 	if networkSize == 0 {
 		networkSize = 1 // avoid div-by-zero; no data yields an empty preview below
 	}
 
-	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, bounds)
+	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, bounds, ti)
 	if err != nil {
 		return nil, err
 	}
@@ -567,6 +587,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		final          float64
 		rs             RegularityScore
 		prev           float64
+		mods           Modifiers
 	}
 	var top []scoredPair
 
@@ -585,7 +606,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			rs = ScoreBeacon(p, bp, windowSecs)
 		}
 		prevRatio := float64(prevalence[p.Dst]) / float64(networkSize)
-		final, _ := ApplyModifiers(rs.Score, prevRatio, mp)
+		final, mods := ApplyPairModifiers(rs.Score, fs.context(p, prevRatio, rng.End, mp), mp)
 
 		band := int(final * 10)
 		if band > 9 {
@@ -609,7 +630,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		if final > maxScore {
 			maxScore = final
 		}
-		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio)})
+		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio), mods: mods})
 		return nil
 	}, nil)
 	if streamErr != nil {
@@ -635,6 +656,9 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			"hist_score": sp.rs.HistScore,
 			"prevalence": sp.prev,
 			"conn_count": sp.cnt,
+
+			"first_seen_score":   sp.mods.FirstSeenScore,
+			"threat_intel_score": sp.mods.ThreatIntelScore,
 		})
 	}
 
@@ -665,14 +689,30 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		Distribution: dist,
 		FlagBasis:    fmt.Sprintf("final score >= %g", threshold),
 		Top:          topRows,
-		TopColumns:   []string{"src_ip", "dst_ip", "dst_port", "score", "regularity", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "conn_count"},
+		TopColumns:   previewNetworkColumns(def),
 		Stats: sanitizeStats(map[string]interface{}{
-			"pairs_scanned": uint64(scanned),
-			"pairs_scored":  uint64(scored),
-			"max_score":     round3(maxScore),
-			"network_size":  networkSize,
+			"pairs_scanned":    uint64(scanned),
+			"pairs_scored":     uint64(scored),
+			"max_score":        round3(maxScore),
+			"network_size":     networkSize,
+			"modifier_warning": strings.Join(warnings, "; "),
 		}),
 	}, nil
+}
+
+// previewNetworkColumns lists the top table's columns, with a modifier's only
+// when the model links it.
+func previewNetworkColumns(def ModelDefinition) []string {
+	cols := []string{"src_ip", "dst_ip", "dst_port", "score", "regularity", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence"}
+	if mp := def.Modifiers; mp != nil {
+		if strings.TrimSpace(mp.FirstSeenModel) != "" {
+			cols = append(cols, "first_seen_score")
+		}
+		if strings.TrimSpace(mp.ThreatIntelLookup) != "" {
+			cols = append(cols, "threat_intel_score")
+		}
+	}
+	return append(cols, "conn_count")
 }
 
 func plural(n int) string {

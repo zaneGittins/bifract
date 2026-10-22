@@ -69,7 +69,7 @@ func TestResolvePreviewRange(t *testing.T) {
 
 func TestNetPreviewBoundsSQL(t *testing.T) {
 	b := NetPreviewBounds{Start: time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), Days: 12}
-	q, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b)
+	q, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b, "")
 	if err != nil {
 		t.Fatal(err)
 	}

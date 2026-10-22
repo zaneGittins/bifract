@@ -21,6 +21,7 @@ const AnalyticsModels = {
         keyFields: [''],
         minSample: 1,
         timeBucket: 'day',
+        historyDays: 0,      // rarity / first seen history window, 0 = all history
         alertMode: 'paused',
         alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5 },
         name: '',
@@ -458,7 +459,11 @@ const AnalyticsModels = {
             keyFields: (def.key_fields && def.key_fields.length) ? [...def.key_fields] : [''],
             minSample: def.min_sample || this._defaultMinSample(m.model_type || 'rarity', def.time_bucket),
             timeBucket: def.time_bucket || 'day',
+            historyDays: def.history_days || 0,
             network: this._networkFromDef(def),
+            // Carried whole so a save keeps modifier settings the editor has no
+            // field for (prevalence thresholds set through the API).
+            modifiers: { ...(def.modifiers || {}) },
             window: def.window || '1d',
             alertMode: m.alert_mode || 'none',
             alertConfig: alertCfg,
@@ -1018,6 +1023,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['Min history', `${minHist} day${minHist === 1 ? '' : 's'} per group`]);
             rows.push(['Coverage threshold', conf > 0 ? conf.toFixed(2) : 'Not set', AnalyticsModels.COVERAGE_TIP]);
             rows.push(['Max share of days', share > 0 ? share + '%' : 'Not set']);
+            rows.push(['History', this._historyLabel(def)]);
         } else if (mt === 'volume_baseline') {
             rows.push(['Bucket', def.time_bucket || 'day']);
             const hourly = def.time_bucket === 'hour';
@@ -1033,6 +1039,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             rows.push(['Score threshold', (def.long_conn?.score_threshold || 0.5).toFixed(2)]);
         } else if (mt === 'first_seen') {
             rows.push(['Alert on new', def.alert?.alert_on_new === false ? 'No' : 'Yes']);
+            rows.push(['History', this._historyLabel(def)]);
         }
 
         let keyLabel = 'Keys', keys = [];
@@ -1193,7 +1200,7 @@ ${m.description ? `<div class="me-sec">
         if (k === 'total_duration') return 'dur';
         if (k === 'prevalence') return 'pct1';
         if (k === 'percent') return 'pct100';
-        if (/_seen$|_at$|_bucket$/.test(k)) return 'ts';
+        if (/_seen$|_at$|_bucket$|^since$/.test(k)) return 'ts';
         if (/_score$|^coverage$|^mad$/.test(k)) return 'score';
         if (/_count$|_total$|^n_buckets$/.test(k)) return 'int';
         return '';
@@ -1704,7 +1711,8 @@ ${m.description ? `<div class="me-sec">
             (this._pivotRanges ||= new Map()).set(s.bql, s);
             return s.bql;
         };
-        const pick = (all, idx) => compact ? idx.map(i => all[i]).filter(Boolean) : all.filter(Boolean);
+        // The compact column fits three chips.
+        const pick = (all, idx) => compact ? idx.map(i => all[i]).filter(Boolean).slice(0, 3) : all.filter(Boolean);
 
         if (mt === 'rarity') {
             const pctThr = Number(def.alert?.percent_threshold) || 0;
@@ -1769,12 +1777,21 @@ ${m.description ? `<div class="me-sec">
                 title: 'Distinct sources that talked to this destination in the window, and their share of all sources',
             } : null;
             const conns = { label: 'Connections', value: int(row.conn_count), title: 'Click to search this pair', query: pivot() };
+            // The linked modifiers, stated only when they moved the score.
+            const fsAdj = Number(row.first_seen_score) || 0;
+            const firstSeen = fsAdj ? {
+                label: 'First seen', value: fsAdj > 0 ? 'Recently' : 'Long ago', tone: fsAdj > 0 ? 'warn' : 'muted',
+                title: `The linked first/last seen model ${fsAdj > 0 ? 'first saw this destination recently' : 'has known this destination for a long time'} (${fsAdj > 0 ? '+' : ''}${fix(fsAdj)})`,
+            } : null;
+            const threat = Number(row.threat_intel_score) > 0 ? {
+                value: 'Threat intel', tone: 'alert', title: `The threat intel lookup lists this destination (+${fix(row.threat_intel_score)})`,
+            } : null;
             const seen = !this._isEpochZero(row.last_seen) ? { label: 'Last seen', value: FactChips.ago(row.last_seen), title: Utils.timestampTitle(row.last_seen) } : null;
             if (mt === 'long_connection') {
                 return pick([
                     { label: 'Duration', value: this._fmtDuration(row.total_duration), tone: final > thr ? 'alert' : '' },
-                    prevalence, conns, seen,
-                ], [1, 3]);
+                    prevalence, conns, seen, threat, firstSeen,
+                ], [4, 1, 5, 3]);
             }
             const subs = [
                 ['Timing', 'ts_score', 'Consistency of the gaps between connections'],
@@ -1786,11 +1803,12 @@ ${m.description ? `<div class="me-sec">
                 // The table already shows the score, regularity and connections;
                 // the chips add who else talks to it and what drove the regularity.
                 const top = subs.filter(s => s.v > 0).sort((a, b) => b.v - a.v).slice(0, 2);
-                return [prevalence, ...top].filter(Boolean);
+                return [threat, prevalence, firstSeen, ...top].filter(Boolean).slice(0, 3);
             }
             return [
+                threat,
                 { label: 'Regularity', value: fix(row.regularity_score), tone: final > thr ? 'alert' : '', title: 'Combined timing, size, persistence and histogram regularity' },
-                prevalence, conns, ...subs, seen,
+                prevalence, firstSeen, conns, ...subs, seen,
             ].filter(Boolean);
         }
         return [];
@@ -1945,7 +1963,9 @@ ${m.description ? `<div class="me-sec">
             keyFields: [''],
             minSample: this._defaultMinSample('rarity'),
             timeBucket: 'day',
+            historyDays: 0,
             network: this._networkFromDef({}),
+            modifiers: {},
             window: '1d',
             alertMode: 'paused',
             alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
@@ -2234,6 +2254,9 @@ ${m.description ? `<div class="me-sec">
         e.timeBucket = sh.timeBucket || 'day';
         e.window = sh.window || '1d';
         e.network = this._networkFromDef({ network: sh.network || {} });
+        // A template starts from its own definition, so links to the previous
+        // model's first-seen model or lookup do not carry over.
+        e.modifiers = { ...(sh.modifiers || {}) };
         Object.assign(e.alertConfig, t.alert || {});
         e.resultMode = 'scores';
         e.dirty = true;
@@ -2420,6 +2443,49 @@ ${m.description ? `<div class="me-sec">
         return this.MODEL_TYPES.find(t => t.id === mt)?.desc || '';
     },
 
+    // The links the first-seen and threat intel modifiers read. A first/last seen
+    // model keyed on one field is read as the destination, on two as the pair.
+    _modifierLinksHTML(e) {
+        const mods = e.modifiers || {};
+        // The save refuses anything else: a model keyed on the destination, or on
+        // source and destination, that keeps all its history and is running.
+        const n = e.network;
+        const linkable = (this.models || []).filter(m => {
+            const def = m.definition || {};
+            const keyList = def.key_fields || [];
+            const keys = keyList.join('\u0000');
+            const extracted = new Set((def.extractions || []).map(x => x.output_field));
+            return m.model_type === 'first_seen' && ['active', 'rebuilding'].includes(m.status)
+                && !(def.history_days > 0) && !keyList.some(k => extracted.has(k))
+                && (keys === n.dst_field || keys === [n.src_field, n.dst_field].join('\u0000'));
+        });
+        const current = mods.first_seen_model || '';
+        const names = linkable.map(m => m.name);
+        if (current && !names.includes(current)) names.push(current);
+        return `
+<div class="field-group" style="margin-top:14px">
+    <label>First seen from</label>
+    <select id="modFirstSeen" class="full-input">
+        <option value="">None</option>
+        ${names.map(n => `<option value="${_esc(n)}" ${n === current ? 'selected' : ''}>${_esc(n)}</option>`).join('')}
+    </select>
+    <p class="config-hint">A first/last seen model keyed on ${_esc(n.dst_field)} (or on ${_esc(n.src_field)}, ${_esc(n.dst_field)}) that keeps all its history. Destinations it first saw in the last ${_esc(String(mods.first_seen_recent_days || 7))} days score higher, ones known for ${_esc(String(mods.first_seen_established_days || 90))} days or more lower.</p>
+</div>
+<div class="form-row" style="margin-top:10px">
+    <div class="field-group">
+        <label>Threat intel lookup</label>
+        <input type="text" id="modTILookup" class="full-input" value="${_esc(mods.threat_intel_lookup || '')}" placeholder="e.g. c2_ips" spellcheck="false" autocomplete="off">
+    </div>
+    <div class="field-group">
+        <label>Key column</label>
+        <input type="text" id="modTIColumn" class="full-input" value="${_esc(mods.threat_intel_column || '')}" placeholder="e.g. ip" spellcheck="false" autocomplete="off">
+    </div>
+</div>
+<p class="config-hint">${mods.threat_intel_increase < 0
+    ? 'The threat intel boost is turned off (threat_intel_increase is negative).'
+    : `A destination the lookup lists scores ${_esc(String(mods.threat_intel_increase || 0.25))} higher, matched as <em>match()</em> would.`}</p>`;
+    },
+
     // ---- Shape (right panel) ----
     _editorShapeHTML() {
         const e = this.editor;
@@ -2457,7 +2523,8 @@ ${isBeacon ? `
 </div>
 <p class="config-hint">${isBeacon
     ? 'Scores the regularity of connection timing and size per (source, destination, port). A longer window catches slower beacons (e.g. daily check-ins).'
-    : 'Scores the total connection duration per (source, destination, port). A longer window aggregates recurring long sessions.'}</p>`;
+    : 'Scores the total connection duration per (source, destination, port). A longer window aggregates recurring long sessions.'}</p>
+${this._modifierLinksHTML(e)}`;
         }
         if (e.modelType === 'rarity') {
             return `
@@ -2475,7 +2542,8 @@ ${isBeacon ? `
     <label>Min history (days)</label>
     <input type="number" id="shapeMinSample" class="model-num-input" value="${e.minSample}" min="1">
     <p class="config-hint">Days a group must have been seen before its values can alert. 14 covers two weeks of normal.</p>
-</div>`;
+</div>
+${this._historyWindowHTML(e, 'A value counts as rare when it is rare within this window. Values the group stopped using age out, so one returning after the window looks rare again.')}`;
         }
         if (e.modelType === 'volume_baseline') {
             return `
@@ -2526,7 +2594,23 @@ ${isBeacon ? `
 </div>`).join('')}</div>
     <button class="btn-add-row" id="addKeyField">+ Add Key Field</button>
 </div>
-<p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>`;
+<p class="config-hint">Example: Key=<em>src_ip</em> tracks when each IP was first and last seen.</p>
+${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as new when it returns.')}`;
+    },
+
+    // The history window select shared by rarity and first/last seen. A window
+    // set through the API that is not one of the presets is kept as an option.
+    _historyWindowHTML(e, hint) {
+        const opts = [[0, 'All history'], [30, 'Last 30 days'], [90, 'Last 90 days'], [180, 'Last 180 days'], [365, 'Last 365 days']];
+        if (!opts.some(([v]) => v === e.historyDays)) opts.push([e.historyDays, `Last ${e.historyDays} days`]);
+        return `
+<div class="field-group" style="margin-top:10px">
+    <label>History window</label>
+    <select id="shapeHistoryDays" class="full-input">
+        ${opts.map(([v, l]) => `<option value="${v}" ${e.historyDays === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+    <p class="config-hint">${hint}${e.editId ? ' Changing it rebuilds the model.' : ''}</p>
+</div>`;
     },
 
     _renderEditorShape() {
@@ -2537,13 +2621,25 @@ ${isBeacon ? `
     _bindEditorShape() {
         const e = this.editor;
         if (this._isNetworkType(e.modelType)) {
-            const bindField = (id, key) => document.getElementById(id)?.addEventListener('input', ev => { e.network[key] = ev.target.value.trim(); this._schedulePreview(); });
+            const bindField = (id, key) => {
+                const el = document.getElementById(id);
+                el?.addEventListener('input', ev => { e.network[key] = ev.target.value.trim(); this._schedulePreview(); });
+                // The first-seen picker depends on the source and destination fields.
+                if (key === 'src_field' || key === 'dst_field') el?.addEventListener('change', () => this._renderEditorShape());
+            };
             bindField('netSrc', 'src_field');
             bindField('netDst', 'dst_field');
             bindField('netPort', 'port_field');
             bindField('netBytes', 'bytes_field');
             bindField('netDuration', 'duration_field');
             document.getElementById('netWindow')?.addEventListener('change', ev => { e.window = ev.target.value; this._schedulePreview(); });
+            const setMod = (key, v) => {
+                if (v) e.modifiers[key] = v; else delete e.modifiers[key];
+                this._schedulePreview();
+            };
+            document.getElementById('modFirstSeen')?.addEventListener('change', ev => setMod('first_seen_model', ev.target.value));
+            document.getElementById('modTILookup')?.addEventListener('change', ev => setMod('threat_intel_lookup', ev.target.value.trim()));
+            document.getElementById('modTIColumn')?.addEventListener('change', ev => setMod('threat_intel_column', ev.target.value.trim()));
             return;
         }
         if (e.modelType === 'rarity') {
@@ -2552,6 +2648,7 @@ ${isBeacon ? `
             if (pSel) pSel.addEventListener('input', ev => { e.partitionKey = ev.target.value.trim(); this._schedulePreview(); });
             if (vSel) vSel.addEventListener('input', ev => { e.valueKey = ev.target.value.trim(); this._schedulePreview(); });
             document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 1; this._schedulePreview(); });
+            this._bindHistoryWindow();
         } else {
             this._bindKeyFieldEvents();
             document.getElementById('addKeyField')?.addEventListener('click', () => {
@@ -2571,7 +2668,15 @@ ${isBeacon ? `
                 });
                 document.getElementById('shapeMinSample')?.addEventListener('change', ev => { e.minSample = parseInt(ev.target.value) || 7; this._schedulePreview(); });
             }
+            if (e.modelType === 'first_seen') this._bindHistoryWindow();
         }
+    },
+
+    _bindHistoryWindow() {
+        document.getElementById('shapeHistoryDays')?.addEventListener('change', ev => {
+            this.editor.historyDays = parseInt(ev.target.value) || 0;
+            this._schedulePreview();
+        });
     },
 
     _bindKeyFieldEvents() {
@@ -3015,6 +3120,10 @@ ${isBeacon ? `
         return null;
     },
 
+    _historyLabel(def) {
+        return def.history_days > 0 ? `Last ${def.history_days} days` : 'All history';
+    },
+
     // Builds the ModelDefinition payload from the current shape + alert config.
     // parsed is the parse-query response: source_bql is what the model compiles,
     // filter/extractions are the structured half the editor displays and the
@@ -3027,6 +3136,7 @@ ${isBeacon ? `
             def.partition_key = e.partitionKey;
             def.value_key = e.valueKey;
             def.min_sample = e.minSample;
+            if (e.historyDays > 0) def.history_days = e.historyDays;
         } else if (e.modelType === 'volume_baseline') {
             def.key_fields = e.keyFields.filter(Boolean);
             def.time_bucket = e.timeBucket;
@@ -3034,6 +3144,7 @@ ${isBeacon ? `
         } else if (this._isNetworkType(e.modelType)) {
             def.network = { ...e.network };
             def.window = e.window;
+            if (Object.keys(e.modifiers || {}).length) def.modifiers = { ...e.modifiers };
             if (e.modelType === 'beacon') {
                 def.beacon = { score_threshold: e.alertConfig.beacon_threshold };
             } else {
@@ -3041,6 +3152,7 @@ ${isBeacon ? `
             }
         } else {
             def.key_fields = e.keyFields.filter(Boolean);
+            if (e.modelType === 'first_seen' && e.historyDays > 0) def.history_days = e.historyDays;
         }
         def.alert = { ...e.alertConfig };
         return def;
@@ -3230,6 +3342,11 @@ ${isBeacon ? `
             hint = `<div class="score-preview-hint">No entity has enough buckets of history in ${_esc(range)} to establish a baseline. Try a longer window or the per-hour bucket.</div>`;
         } else if (scoredTotal === 0) {
             hint = `<div class="score-preview-hint">No matching results ${_esc(range)}. If the data is older, pick a custom range.</div>`;
+        }
+        // A linked first-seen model or lookup that could not be read scores 0, which
+        // would otherwise look the same as a link with nothing to say.
+        if (s.modifier_warning) {
+            hint += `<div class="score-preview-hint">Modifiers: ${_esc(s.modifier_warning)}</div>`;
         }
 
         const countEl = document.getElementById('modelResultsCount');
@@ -3461,7 +3578,8 @@ ${isBeacon ? `
             latest_count: 'Latest', baseline_median: 'Median', mad: 'MAD', n_buckets: 'History', z_score: 'z-score',
             src_ip: 'Source', dst_ip: 'Destination', dst_port: 'Port', final_score: 'Score', score: 'Score',
             regularity: 'Regularity', ts_score: 'Timing', ds_score: 'Size', dur_score: 'Duration', hist_score: 'Histogram',
-            prevalence: 'Prevalence', conn_count: 'Conns', total_duration: 'Total dur (s)',
+            prevalence: 'Prevalence', first_seen_score: 'First seen ±', threat_intel_score: 'Intel +',
+            conn_count: 'Conns', total_duration: 'Total dur (s)',
         };
         return map[c] || c.replace(/_/g, ' ');
     },
@@ -3472,7 +3590,7 @@ ${isBeacon ? `
         if (col === 'percent') return _esc(Number(v).toFixed(2) + '%');
         if (col === 'z_score' && this._isFlatZ(v)) return _esc(this.FLAT_Z_LABEL);
         if (col === 'z_score' || col === 'baseline_median' || col === 'mad') return _esc(Number(v).toFixed(2));
-        if (col === 'score' || col === 'final_score' || col === 'regularity' || col === 'ts_score' || col === 'ds_score' || col === 'dur_score' || col === 'hist_score' || col === 'prevalence') return _esc(Number(v).toFixed(3));
+        if (col === 'score' || col === 'final_score' || col === 'regularity' || col === 'ts_score' || col === 'ds_score' || col === 'dur_score' || col === 'hist_score' || col === 'prevalence' || col === 'first_seen_score' || col === 'threat_intel_score') return _esc(Number(v).toFixed(3));
         if (col === 'conn_count' || col === 'total_duration') return _esc(this._fmtNum(Number(v)));
         if (col === 'model_count' || col === 'event_count' || col === 'latest_count' || col === 'n_buckets') return _esc(this._fmtNum(Number(v)));
         if (col === 'first_seen' || col === 'last_seen') {

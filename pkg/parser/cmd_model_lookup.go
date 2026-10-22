@@ -48,6 +48,8 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		ctx.Registry.Register("hist_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("prevalence", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("first_seen_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		ctx.Registry.Register("threat_intel_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("conn_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		ctx.Registry.Register("total_duration", FieldKindPerRow, "NULL", ctx.CmdIndex)
 		return nil
@@ -76,9 +78,9 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets", "latest_bucket")
 	case "beacon":
 		// beacon_score is the final verdict; the rest is the breakdown ("why").
-		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count")
+		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count")
 	case "long_connection":
-		reg("longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score")
+		reg("longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score")
 	}
 	return nil
 }
@@ -127,15 +129,19 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		if len(keyFields) != 2 {
 			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.MinSample, false)
+		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL",
+			fractalIDInClause(fractalIDs), info.MinSample, info.HistoryDays, false)
 		rightCols = []string{"partition_val", "value_val"}
+		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		// Partitions still learning are scored away, so the raw key set is a superset.
 		exact = info.MinSample <= 1
 		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "coverage"}
 
 	case "first_seen":
-		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, ctx.Opts.ModelNewSince)
+		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, info.HistoryDays, ctx.Opts.ModelNewSince)
 		rightCols = []string{"entity_key"}
+		// A key whose days have all left the window is no longer in the model.
+		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		exact = true // the scoring subquery drops no key
 		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
 
@@ -152,10 +158,10 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		}
 		if info.ModelType == "beacon" {
 			ctx.Plan.ModelLookupSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
-			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "conn_count"}
+			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count"}
 		} else {
 			ctx.Plan.ModelLookupSQL = buildLongConnScoringSQL(info.TableName, fractalIDs)
-			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score"}
+			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score"}
 		}
 		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
 		rightCols = []string{"src_ip", "dst_ip", "dst_port"}
@@ -230,7 +236,7 @@ func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
 // only logs whose key is in the model can survive the INNER JOIN, and the scan is the
 // one place the key sub-columns' skip indexes can prune on that set. The subquery
 // reads the model table's raw key columns with no FINAL and no aggregation, since
-// neither engine ever drops a key.
+// merging never drops a key; extraWhere bounds a windowed table to its window.
 //
 // exact reports that this key set is identical to the one the JOIN matches. A model
 // type that discards keys after aggregation (rarity's min_sample) leaves a superset:
@@ -305,6 +311,8 @@ func buildBeaconScoringSQL(tableName string, fractalIDs []string) string {
     argMax(hist_score, scored_at) AS hist_score,
     argMax(prevalence, scored_at) AS prevalence,
     argMax(prevalence_score, scored_at) AS prevalence_score,
+    argMax(first_seen_score, scored_at) AS first_seen_score,
+    argMax(threat_intel_score, scored_at) AS threat_intel_score,
     argMax(conn_count, scored_at) AS conn_count
 FROM %s
 WHERE %s
@@ -323,7 +331,9 @@ func buildLongConnScoringSQL(tableName string, fractalIDs []string) string {
     argMax(total_duration, scored_at) AS total_duration,
     argMax(conn_count, scored_at) AS conn_count,
     argMax(prevalence, scored_at) AS prevalence,
-    argMax(prevalence_score, scored_at) AS prevalence_score
+    argMax(prevalence_score, scored_at) AS prevalence_score,
+    argMax(first_seen_score, scored_at) AS first_seen_score,
+    argMax(threat_intel_score, scored_at) AS threat_intel_score
 FROM %s
 WHERE %s
 GROUP BY src_ip, dst_ip, dst_port`,
@@ -334,24 +344,47 @@ GROUP BY src_ip, dst_ip, dst_port`,
 
 // RarityScoredSQL scores every (partition, value) pair of a rarity model, the one
 // definition the data view, preview, alert counts and modelLookup() all read.
-// Counts are days, taken from the stored day set, so live and backfilled state
-// agree and replays cannot double count. model_count is the days the value was
-// seen, model_total the days its partition was seen, percent their ratio, and
-// coverage is Good-Turing coverage, 1 - (values seen on one day / total
-// value-days): how rarely the partition still produces something new.
+// Counts are days: model_count the value's, model_total its partition's, percent
+// their ratio, and coverage is Good-Turing coverage, 1 - (values seen on one day /
+// total value-days).
 //
-// source must yield the rarity state shape (partition_val, value_val, days);
-// scope is a WHERE predicate on it. withDays adds the sorted day list, which only
-// the data view needs. minHistory is how many days a partition must have been
-// seen before its values are scored (the model's learning period); the trailing
-// WHERE lets callers append AND clauses.
-func RarityScoredSQL(source, scope string, minHistory int, withDays bool) string {
+// scope is a WHERE predicate on source; minHistory is the partition's learning
+// period in days; historyDays reads a windowed table over its window. withDays
+// adds the sorted day list and since, the pair's first day (its return, for a
+// windowed model). The trailing WHERE lets callers append AND clauses.
+func RarityScoredSQL(source, scope string, minHistory, historyDays int, withDays bool) string {
 	if minHistory < 1 {
 		minHistory = 1
 	}
-	daysCol := ""
+	daysCol, sinceMid, sinceInner := "", "", ""
 	if withDays {
-		daysCol = ",\n    seen_days AS days"
+		daysCol = ",\n    seen_days AS days,\n    since"
+		sinceMid = ", since"
+	}
+	var inner string
+	if historyDays > 0 {
+		if withDays {
+			sinceInner = ",\n            lookback_days[" + historyReturnIndex("lookback_days", "", historyDays) + "] AS since"
+		}
+		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
+            arraySort(groupUniqArray(%[1]s)) AS lookback_days,
+            arrayFilter(d -> d > %[2]s, lookback_days) AS seen_days,
+            length(seen_days) AS days_seen%[3]s
+        FROM %[4]s
+        WHERE %[5]s AND %[6]s
+        GROUP BY partition_val, value_val
+        HAVING days_seen > 0`, HistoryDayColumn, historyWindowStart(historyDays), sinceInner,
+			source, scope, historyLookbackPredicate(historyDays))
+	} else {
+		if withDays {
+			sinceInner = ",\n            seen_days[1] AS since"
+		}
+		inner = fmt.Sprintf(`        SELECT partition_val, value_val,
+            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
+            length(seen_days) AS days_seen%s
+        FROM %s
+        WHERE %s
+        GROUP BY partition_val, value_val`, sinceInner, source, scope)
 	}
 	return fmt.Sprintf(`SELECT partition_val, value_val,
     days_seen AS model_count,
@@ -359,57 +392,41 @@ func RarityScoredSQL(source, scope string, minHistory int, withDays bool) string
     round(days_seen / days_observed * 100.0, 4) AS percent,
     round(1 - singletons / value_days, 4) AS coverage%s
 FROM (
-    SELECT partition_val, value_val, seen_days, days_seen,
+    SELECT partition_val, value_val, seen_days, days_seen%s,
         length(groupUniqArrayArray(seen_days) OVER w) AS days_observed,
         sum(days_seen) OVER w AS value_days,
         countIf(days_seen = 1) OVER w AS singletons
     FROM (
-        SELECT partition_val, value_val,
-            arraySort(groupUniqArrayMerge(365)(days)) AS seen_days,
-            length(seen_days) AS days_seen
-        FROM %s
-        WHERE %s
-        GROUP BY partition_val, value_val
+%s
     )
     WINDOW w AS (PARTITION BY partition_val)
 )
-WHERE days_observed >= %d`, daysCol, source, scope, minHistory)
+WHERE days_observed >= %d`, daysCol, sinceMid, inner, minHistory)
 }
 
 // buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
-// The aggregation and the derived is_new flag are split across two SELECT levels
-// with non-shadowing inner aliases (fs/ls/ec/fr): min(first_seen) AS first_seen in
-// the same level as is_new would nest aggregates (code 184). Dates are stringified
-// because DateTime64 -> *string is unsupported in the display scan path.
-//
-// is_new reads first_recorded, when the model's state first held the entity, not
-// first_seen: a late or replayed log carries an old event time but is still new
-// to the model, and seeded history (epoch) never is. newSince, an alert's window
-// start, widens the usual hour so a backlogged alert keeps what was new in it.
-func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, newSince time.Time) string {
+// is_new reads when the model recorded the entity, not its event time, so a late
+// or replayed log is still new to it and seeded history never is; newSince, an
+// alert's window start, widens the hour for a backlogged alert.
+func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, historyDays int, newSince time.Time) string {
 	horizon := "now() - INTERVAL 1 HOUR"
 	if !newSince.IsZero() {
 		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(newSince.UTC()))
 	}
+	agg := FirstSeenAggSQL(FirstSeenAgg{
+		Source:      "`" + tableName + "` FINAL",
+		Scope:       fractalIDInClause(fractalIDs),
+		KeyCol:      "entity_key",
+		HistoryDays: historyDays,
+		Recorded:    true,
+	})
 	return fmt.Sprintf(`SELECT entity_key,
-    toString(fs) AS first_seen,
-    toString(ls) AS last_seen,
-    ec AS event_count,
-    if(fr >= %s, '1', '0') AS is_new
-FROM (
-    SELECT entity_key,
-        min(first_seen) AS fs,
-        max(last_seen) AS ls,
-        sum(event_count) AS ec,
-        min(first_recorded) AS fr
-    FROM %s FINAL
-    WHERE %s
-    GROUP BY entity_key
-)`,
-		horizon,
-		"`"+tableName+"`",
-		fractalIDInClause(fractalIDs),
-	)
+    toString(first_seen) AS first_seen,
+    toString(last_seen) AS last_seen,
+    event_count,
+    if(recorded_at >= %s, '1', '0') AS is_new
+FROM (%s
+)`, horizon, agg)
 }
 
 // parseModelLookupArgs parses the model=, key=[] and strict= arguments.

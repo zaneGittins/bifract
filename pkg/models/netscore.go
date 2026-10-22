@@ -3,6 +3,7 @@ package models
 import (
 	"math"
 	"sort"
+	"time"
 )
 
 // netscore.go holds the pure scoring core for network analysis models. It has no
@@ -20,6 +21,7 @@ type PairAgg struct {
 	FirstTs        int64
 	LastTs         int64
 	TotalDuration  float64
+	ThreatIntelHit bool // the threat intel lookup lists Dst
 }
 
 // RegularityScore is the base beacon signal: timing/size/duration/histogram
@@ -34,12 +36,24 @@ type RegularityScore struct {
 }
 
 // Modifiers holds the contextual score adjustments applied on top of regularity.
-// Each is roughly +/- 0.15 and additive. Only PrevalenceScore is wired in v1;
-// the others are reserved so the results schema and breakdown stay stable.
+// Each is a small additive nudge. Prevalence is always on; first seen and threat
+// intel apply once the model links what they read (see ModifierParams).
 type Modifiers struct {
 	PrevalenceScore  float64 `json:"prevalence_score"`
 	FirstSeenScore   float64 `json:"first_seen_score"`
 	ThreatIntelScore float64 `json:"threat_intel_score"`
+}
+
+// PairContext is what the modifier layer knows about a pair beyond its own
+// traffic.
+type PairContext struct {
+	Prevalence float64 // share of the network's sources that contact the destination
+	// FirstSeenAge is how long ago the linked model first saw the destination,
+	// meaningful only when FirstSeenKnown.
+	FirstSeenAge   time.Duration
+	FirstSeenKnown bool
+	// ThreatIntelHit says the linked lookup lists the destination.
+	ThreatIntelHit bool
 }
 
 // ScoreBeacon computes the base regularity score for a pair over a window of
@@ -221,18 +235,27 @@ func ScoreLongConn(totalDuration float64, lc LongConnParams) float64 {
 	}
 }
 
-// ApplyModifiers reranks a base regularity score using contextual signals and
-// returns the final score plus the individual modifier contributions. Prevalence is
-// the fraction of the network's hosts that contact the destination: rare
-// destinations are boosted, ubiquitous ones penalized. Additive, never suppressive;
-// the final score is clamped to [0, 1].
-func ApplyModifiers(regularity, prevalence float64, mp ModifierParams) (float64, Modifiers) {
+// ApplyPairModifiers adds the modifier adjustments to a base score, clamped to
+// [0, 1], and returns each contribution.
+func ApplyPairModifiers(regularity float64, c PairContext, mp ModifierParams) (float64, Modifiers) {
 	var m Modifiers
 	switch {
-	case prevalence > 0 && prevalence <= mp.PrevalenceLowThreshold:
+	case c.Prevalence > 0 && c.Prevalence <= mp.PrevalenceLowThreshold:
 		m.PrevalenceScore = mp.PrevalenceIncrease
-	case prevalence >= mp.PrevalenceHighThreshold:
+	case c.Prevalence >= mp.PrevalenceHighThreshold:
 		m.PrevalenceScore = -mp.PrevalenceDecrease
+	}
+	if c.FirstSeenKnown {
+		day := 24 * time.Hour
+		switch {
+		case c.FirstSeenAge <= time.Duration(mp.FirstSeenRecentDays)*day:
+			m.FirstSeenScore = mp.FirstSeenIncrease
+		case c.FirstSeenAge >= time.Duration(mp.FirstSeenEstablishedDays)*day:
+			m.FirstSeenScore = -mp.FirstSeenDecrease
+		}
+	}
+	if c.ThreatIntelHit {
+		m.ThreatIntelScore = mp.ThreatIntelIncrease
 	}
 	final := clamp01(regularity + m.PrevalenceScore + m.FirstSeenScore + m.ThreatIntelScore)
 	return round3(final), m

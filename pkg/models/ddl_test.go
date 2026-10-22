@@ -300,3 +300,49 @@ func TestRarityFlagPredicates(t *testing.T) {
 		}
 	}
 }
+
+// A windowed model keeps a day column in place of the day set, in the sort key
+// and under a TTL of its lookback; inserts name their columns.
+func TestHistoryWindowLayout(t *testing.T) {
+	rarity := ModelDefinition{PartitionKey: "host", ValueKey: "port", HistoryDays: 30}
+	first := ModelDefinition{KeyFields: []string{"host", "image"}, HistoryDays: 30}
+	extracted := ModelDefinition{PartitionKey: "host", ValueKey: "ext", HistoryDays: 30,
+		Extractions: []ExtractionStep{{FromField: "image", Pattern: `([a-z]+)\.exe`, OutputField: "ext"}}}
+	for _, c := range []struct {
+		name  string
+		mt    ModelType
+		def   ModelDefinition
+		order string
+		group string
+	}{
+		{"rarity", ModelTypeRarity, rarity, "ORDER BY (fractal_id, partition_val, value_val, _day)", "GROUP BY fractal_id, partition_val, value_val, _day"},
+		{"rarity over an extraction", ModelTypeRarity, extracted, "ORDER BY (fractal_id, partition_val, value_val, _day)", "GROUP BY fractal_id, partition_val, value_val, _day"},
+		{"first_seen", ModelTypeFirstSeen, first, "ORDER BY (fractal_id, entity_key, _day)", "GROUP BY fractal_id, entity_key, _day"},
+	} {
+		ddl, err := GenerateDDL(c.def, c.mt, "`t`")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustContain(t, ddl, c.order, c.name+" sort key")
+		mustContain(t, ddl, "TTL _day + INTERVAL 61 DAY", c.name+" TTL")
+		mustContain(t, ddl, " _day ", c.name+" day column")
+		mustNotContain(t, ddl, "groupUniqArray", c.name+" keeps no day set")
+		ins, err := BuildStateInsert(c.def, c.mt, "`t`", "logs", "", "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustContain(t, ins, "toDate(timestamp) AS _day", c.name+" insert writes the day")
+		mustContain(t, ins, c.group, c.name+" insert groups by day")
+		mustContain(t, ins, "INSERT INTO `t` ("+strings.Join(stateColumns(c.def, c.mt), ", ")+")\n", c.name+" insert names its columns")
+
+		c.def.HistoryDays = 0
+		plain, _ := GenerateDDL(c.def, c.mt, "`t`")
+		mustNotContain(t, plain, "TTL", c.name+" without a window")
+		mustNotContain(t, plain, "_day", c.name+" without a window")
+		mustContain(t, plain, "AggregateFunction(groupUniqArray(365), Date)", c.name+" day set without a window")
+	}
+
+	// Volume and tlsh never take a window, even if one is stored.
+	vol, _ := GenerateDDL(ModelDefinition{KeyFields: []string{"h"}, HistoryDays: 30}, ModelTypeVolumeBaseline, "`t`")
+	mustNotContain(t, vol, "TTL", "volume")
+}

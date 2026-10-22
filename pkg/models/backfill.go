@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bifract/pkg/parser"
 	"context"
 	"database/sql"
 	"fmt"
@@ -164,6 +165,16 @@ func (m *Manager) StartBackfill(ctx context.Context, model *Model, req BackfillR
 		from, to, label, err := req.Span(started)
 		if err != nil {
 			return err
+		}
+		// A windowed model keeps twice its window; days older than that would
+		// be written only for the TTL to drop.
+		if n := model.Definition.HistoryDaysFor(model.ModelType); n > 0 {
+			if keep := started.Add(-time.Duration(parser.HistoryRetentionDays(n)-1) * 24 * time.Hour); from.Before(keep) {
+				from = keep
+			}
+			if !from.Before(to) {
+				return fmt.Errorf("the whole range is older than the %d days this model keeps", 2*n)
+			}
 		}
 		from, to = from.Truncate(time.Microsecond), to.Truncate(time.Microsecond)
 		startedAt = &started

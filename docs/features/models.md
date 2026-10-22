@@ -46,11 +46,47 @@ When `mad` is 0 (most buckets equal the median), `z_score` falls back to `(lates
 
 ### What "new" means for First / Last Seen
 
-`first_seen` and `last_seen` are event times. `is_new`, which the alert fires on, is about the model instead: it is `1` when the model first recorded the entity within the last hour. A log that arrives late, or a dataset replayed with old timestamps, still counts as new if the model has not seen its entity before. History seeded by a backfill never counts as new, so seeding does not flood the alert; run the backfill before activating the alert, or entities that only appear in history may fire once before the backfill reaches them. An alert catching up on a backlog counts everything recorded since the start of the window it is evaluating. The **Data** view shows when the model recorded each entity as `recorded_at` in the row details (empty for seeded history).
+`first_seen` and `last_seen` are event times. `is_new`, which the alert fires on, is about the model instead: it is `1` when the model first recorded the entity within the last hour. A log that arrives late, or a dataset replayed with old timestamps, still counts as new if the model has not seen its entity before (for a model with a history window, within what it remembers; see below). History seeded by a backfill never counts as new, so seeding does not flood the alert; run the backfill before activating the alert, or entities that only appear in history may fire once before the backfill reaches them. An alert catching up on a backlog counts everything recorded since the start of the window it is evaluating. The **Data** view shows when the model recorded each entity as `recorded_at` in the row details (empty for seeded history).
+
+### History window
+
+By default a Rarity or First / Last Seen model remembers everything it has ever recorded: a value a host used every day six months ago and never since is still normal to it, and its state keeps a row for every key it has ever seen. A **history window** (30, 90, 180 or 365 days in the editor; `history_days`, 7 to 365, in the API) changes both:
+
+- **Rarity** counts only days inside the window, so `model_count`, `model_total`, `percent` and `coverage` describe the last N days. A value a group stopped using ages out, and one that returns after the window is rare again. The window must be at least the learning period above (the min history, or more than 100 / share threshold days when the alert sets a share threshold), or no group could ever alert.
+- **First / Last Seen** treats an entity as new when it comes back after at least N whole days with no sighting (a 7-day window: seen on the 1st, new again on the 9th): `is_new` fires once, and `first_seen` is the return. `first_seen`, `last_seen` and `event_count` describe the window. An entity seen throughout is never new, however long the model has run.
+
+To tell a return from an entity that was there all along, a windowed model remembers twice its window: one row per key per day of event time, which ClickHouse drops once it is a day older than that. A key seen every day therefore keeps up to 2N rows rather than one, so a long window on a high-cardinality key costs more storage, not less; what the window bounds is the keys a model keeps, since one not seen for 2N days is gone. Reads apply both spans themselves, so a day leaves the results as soon as it leaves the window.
+
+New is judged against what the model remembers. A late log older than the window counts for nothing, and one inside it never makes an entity new a second time. An entity whose only earlier sighting was more than 2N days ago is new again. In the **Data** view `since` is the day it returned and `recorded_at` when the model recorded that; `recorded_at` is empty for seeded history, and both are empty for an entity that never left. The **Findings** trend and the health sparkline count returns the same way.
+
+Setting or changing the window rebuilds the model, like any other change to what it records, so seed it again afterwards. A backfill only writes the 2N days the model keeps, and a preview over a range longer than the window scores the window's last N days, as the model would.
 
 TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
 
 Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.
+
+### Network modifiers
+
+The final score is the regularity (or duration) score plus up to three adjustments, clamped to 0-1. Each is stored with the pair, as `prevalence_score`, `first_seen_score` and `threat_intel_score`, and the **Why** column and the preview name the ones that moved it.
+
+| Modifier | Applies when | Default |
+|---|---|---|
+| Prevalence | Always. A destination at most 2% of the window's sources talk to is boosted; one at least 50% talk to is lowered | +0.15 / -0.15 |
+| First seen | A **First seen from** model is linked. A destination that model first saw in the last 7 days is boosted; one it first saw 90 or more days ago is lowered | +0.15 / -0.15 |
+| Threat intel | A **Threat intel lookup** and its key column are set. A destination the lookup lists is boosted, matched as `match(dict=, column=)` would | +0.25 |
+
+The network state only holds the window, so it cannot say how long a destination has been around: a pair talking every minute for six months is more likely a business service than one that started this week. Link a First / Last Seen model keyed on the network model's destination field (`[dst_ip]`), or on its source and destination fields in that order (`[src_ip, dst_ip]`) to judge the pair rather than the destination. The save refuses a model keyed on anything else, one whose key its source query rewrites (an extraction, `lowercase()`, a lookup), since the network state holds the raw values, and one with a history window, whose first sightings could never be older than the window.
+
+Seed the linked model with a backfill. Its record starts when its table was last created (on creation, or when an edit rebuilds it) or at the start of a completed backfill, and a destination it first saw within 7 days of that start is not boosted: it may only be where the record begins. The preview and the scorer's log say when that applies. A destination the linked model has no record of gets no first-seen adjustment.
+
+In a definition these are `modifiers.first_seen_model`, `modifiers.threat_intel_lookup` and `modifiers.threat_intel_column`, with `first_seen_recent_days` (which must be less than) `first_seen_established_days`, `prevalence_low_threshold` and `prevalence_high_threshold` for the cutoffs. Every adjustment (`prevalence_increase`, `prevalence_decrease`, `first_seen_increase`, `first_seen_decrease`, `threat_intel_increase`) takes its default when left out, and a negative value turns that side off.
+
+A link must resolve when it is saved. Editing a model that keeps an existing link checks it again only if the source or destination field changed, and never refuses the edit because the linked model was deleted since. If the linked model or lookup is deleted later, or cannot be read during a pass, only its modifier stops applying: the rest of the pass is scored and the scorer logs why, once per change. A linked model that is rebuilding after an edit stays linked.
+
+The threat intel boost is larger than the others so that a listed destination with moderate regularity (0.55 or more) reaches the default 0.8 beacon threshold, while one with no regularity at all still does not.
+
+!!! note "Changed adjustment defaults"
+    Before the first-seen and threat intel modifiers, a `modifiers` object that set any one field scored every adjustment it left out as 0, and a negative adjustment took the default. Both are now the other way round, as described above. A network model defined through the API with a partial `modifiers` object scores those adjustments at their defaults from its next pass; set the ones you want off to a negative value.
 
 ## Using a Model in Queries
 

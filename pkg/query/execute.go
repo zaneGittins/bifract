@@ -155,6 +155,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 					ModelType:   string(mi.ModelType),
 					MinSample:   mi.MinSample,
 					TimeBucket:  mi.TimeBucket,
+					HistoryDays: mi.HistoryDays,
 					FractalID:   mi.FractalID,
 					Distributed: mi.Distributed,
 				}
