@@ -123,8 +123,8 @@ test.describe('ptg() | pgraph()', () => {
 
     await expect(page.locator('#outputTypeLabel')).toHaveText('Process Tree');
 
-    // No scores, so no anomalous path to narrow to: the Path | Full toggle is absent.
-    await expect(page.locator('.pg-view-btn[data-mode]')).toHaveCount(0);
+    // No scores, so no anomalous path to focus on: the stats bar offers no scope action.
+    await expect(page.locator('.pg-scope-btn')).toHaveCount(0);
 
     // The indented outline shares the model, so it must fill in too.
     await page.locator('.pg-view-btn[data-view="table"]').click();
@@ -156,21 +156,86 @@ test.describe('pgr() | pgraph()', () => {
     await page.goto(url);
     await expect(page.locator('.pg-graph .pg-node').first()).toBeVisible({ timeout: 60000 });
 
-    // Path | Full: Path never hides anything silently, Full shows everything, and the choice
-    // survives a reload.
+    // One flat frame: the chart card drops its own border and padding around the toolbar and canvas.
+    const hostCard = page.locator('.chart-container.pg-host');
+    await expect(hostCard).toHaveCount(1);
+    expect(await hostCard.evaluate(el => getComputedStyle(el).paddingTop)).toBe('0px');
+    // Scope is a state in the stats bar, not a second segmented control.
+    await expect(page.locator('.pg-mode-toggle, .pg-view-btn[data-mode]')).toHaveCount(0);
+    // Canvas controls float on the canvas; the toolbar carries no zoom buttons.
+    await expect(page.locator('.pg-graph .pg-canvas-controls #pgFitBtn')).toBeVisible();
+    await expect(page.locator('.pg-toolbar #pgFitBtn')).toHaveCount(0);
+
+    // First render frames the story: the seed is in view, and so is the first anomalous process.
+    const inView = async (loc) => {
+      const [r, h] = await Promise.all([loc.boundingBox(), page.locator('.pg-graph').boundingBox()]);
+      return !!r && r.y >= h.y && r.y + r.height <= h.y + h.height && r.x >= h.x && r.x + r.width <= h.x + h.width;
+    };
+    expect(await inView(page.locator('.pg-graph .pg-node.pg-focus .pg-hex')), 'seed framed on first render').toBe(true);
+    const hot = page.locator('.pg-graph .pg-node.pg-sev-high[data-id] .pg-hex');
+    if (await hot.count()) expect(await inView(hot.first()), 'first anomalous process framed on first render').toBe(true);
+
+    // Only elevated and high edges carry a score pill.
+    await expect(page.locator('.pg-graph .pg-elabel.pg-anom-low, .pg-graph .pg-elabel.pg-anom-none')).toHaveCount(0);
+
+    // Fit shows every node on both axes.
+    await page.locator('#pgFitBtn').click();
+    await page.waitForTimeout(400);
+    const box = await page.locator('.pg-graph').boundingBox();
+    const outside = await page.locator('.pg-graph .pg-node .pg-hex').evaluateAll((els, b) => els.filter(e => {
+      const r = e.getBoundingClientRect();
+      return r.top < b.y - 1 || r.bottom > b.y + b.height + 1 || r.left < b.x - 1 || r.right > b.x + b.width + 1;
+    }).length, box);
+    expect(outside, 'nodes outside the canvas after Fit').toBe(0);
+
+    // The minimap is opt-in and remembered.
+    await expect(page.locator('.pg-graph .pg-minimap')).toBeHidden();
+    await page.locator('#pgMapBtn').click();
+    await expect(page.locator('.pg-graph .pg-minimap')).toBeVisible();
+    await page.locator('#pgMapBtn').click();
+    await expect(page.locator('.pg-graph .pg-minimap')).toBeHidden();
+
+    // Scope: the focused view never hides anything silently, "Show all" shows everything, the
+    // choice survives a reload, and "Focus suspicious" narrows back.
     const stats = page.locator('.pg-stats-right');
-    await page.locator('.pg-view-btn[data-mode="path"]').click();
-    await expect(page.locator('.pg-view-btn[data-mode="path"]')).toHaveClass(/active/);
-    await expect(page.locator('.pg-graph .pg-node.pg-focus'), 'Path view keeps the seed').toHaveCount(1);
-    if (/Showing/.test(await stats.innerText())) {
+    const scopeBtn = page.locator('.pg-stats-right .pg-scope-btn');
+    if (await scopeBtn.count() && (await scopeBtn.getAttribute('data-scope')) === 'path') await scopeBtn.click();
+    await expect(page.locator('.pg-graph .pg-node.pg-focus'), 'focused view keeps the seed').toHaveCount(1);
+    if (await scopeBtn.count()) {
+      await expect(scopeBtn).toHaveAttribute('data-scope', 'full');
+      await expect(scopeBtn).toHaveText('Show all');
       expect(await page.locator('.pg-graph .pg-node-hidden[data-hid]').count(), 'hidden processes need a +N marker').toBeGreaterThan(0);
+      await scopeBtn.click();
+      await expect(stats).not.toContainText(' of ');
+      await expect(page.locator('.pg-graph .pg-node-hidden[data-hid]')).toHaveCount(0);
+      await expect(scopeBtn).toHaveAttribute('data-scope', 'path');
+      await expect(scopeBtn).toHaveText('Focus suspicious');
+      await page.reload();
+      await expect(page.locator('.pg-graph .pg-node').first()).toBeVisible({ timeout: 60000 });
+      await expect(scopeBtn).toHaveAttribute('data-scope', 'path');
+      await scopeBtn.click();
+      await expect(scopeBtn).toHaveAttribute('data-scope', 'full');
+      await scopeBtn.click();
     }
-    await page.reload();
-    await expect(page.locator('.pg-graph .pg-node').first()).toBeVisible({ timeout: 60000 });
-    await expect(page.locator('.pg-view-btn[data-mode="path"]')).toHaveClass(/active/);
-    await page.locator('.pg-view-btn[data-mode="full"]').click();
-    await expect(stats).not.toContainText('Showing');
-    await expect(page.locator('.pg-graph .pg-node-hidden[data-hid]')).toHaveCount(0);
+
+    // The rare stepper walks anomalous processes: each step opens that process's details or the
+    // activity that made it rare.
+    const rare = page.locator('.pg-stats-right .pg-rare-next');
+    if (await rare.count()) {
+      const d = page.locator('.pg-graph .pg-drawer.open');
+      for (let i = 0; i < 2; i++) {
+        await rare.click();
+        await expect(d).toBeVisible();
+        expect(await d.locator('.pg-anom-high').count(), 'a stepped-to drawer shows the rare score').toBeGreaterThan(0);
+      }
+      await page.keyboard.press('Escape');
+    }
+
+    // Reconnection count agrees with the Reconnected section.
+    if (seed.peers) {
+      const peerN = await page.locator('.pg-graph .pg-sec-meta').innerText().then(t => parseInt(t, 10));
+      await expect(page.locator('.pg-stat-recon .graph-stat-count')).toHaveText(String(peerN));
+    }
 
     // An explained edge score shows its facts on hover.
     const pill = page.locator('.pg-graph .pg-elabel[data-ew]').first();
@@ -203,7 +268,7 @@ test.describe('pgr() | pgraph()', () => {
     await page.locator('.pg-graph .pg-node.pg-focus .pg-hex').click();
     await page.locator('.pg-graph .pg-drawer.open .pg-act[data-act="hide"]').click();
     await expect(page.locator('.pg-graph .pg-node.pg-focus')).toHaveCount(0);
-    await expect(stats).toContainText('Showing');
+    await expect(stats).toContainText(' of ');
     await page.locator('.pg-stat-hidden').click();
     await expect(page.locator('.pg-graph .pg-node.pg-focus')).toHaveCount(1);
     await expect(page.locator('.pg-stat-hidden')).toHaveCount(0);
@@ -212,6 +277,8 @@ test.describe('pgr() | pgraph()', () => {
     await page.locator('.pg-view-btn[data-view="table"]').click();
     await expect(page.locator('.pg-tree .pg-row.pg-proc').first()).toBeVisible();
     expect(await clippedTimeCells(page), 'Time column cells clipped').toEqual([]);
+    // A collapsed group has no score in the First seen column.
+    await expect(page.locator('.pg-tree .pg-agg-row .pg-anom')).toHaveCount(0);
     const vp = page.viewportSize();
     await page.setViewportSize({ width: 900, height: vp.height });
     await page.waitForTimeout(150);

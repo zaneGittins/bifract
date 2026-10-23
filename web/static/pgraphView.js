@@ -47,6 +47,47 @@ const PgView = {
         return { vis, hidden, branches };
     },
 
+    // The one scope action the stats bar offers: 'full' to show what the focused view hides,
+    // 'path' to focus when that would actually narrow, or null.
+    scopeAction({ pathActive, pathable, shown, total, focusN }) {
+        if (pathActive) return shown < total ? 'full' : null;
+        return pathable && focusN < total ? 'path' : null;
+    },
+
+    // ---- Viewport ----
+
+    // Scale and offset that show the whole canvas (b: {w, h}) on both axes, centered.
+    fitView(b, vw, vh, { pad = 46, max = 1.2 } = {}) {
+        const s = Math.max(0.05, Math.min((vw - pad * 2) / b.w, (vh - pad * 2) / b.h, max));
+        return { s, x: (vw - b.w * s) / 2, y: (vh - b.h * s) / 2 };
+    },
+
+    // Frame a canvas box (the seed and its anomalous chain). Centered when it fits at a readable
+    // scale; otherwise held at min with its top-left in view, since an unreadable map is no view.
+    frameView(box, vw, vh, { pad = 40, min = 0.55, max = 1 } = {}) {
+        const fit = Math.min((vw - pad * 2) / (box.w || 1), (vh - pad * 2) / (box.h || 1), max);
+        if (fit < min) return { s: min, x: pad - box.x * min, y: pad - box.y * min };
+        return { s: fit, x: vw / 2 - (box.x + box.w / 2) * fit, y: vh / 2 - (box.y + box.h / 2) * fit };
+    },
+
+    // Low and unscored edges are the norm; a pill on each buries the ones that matter.
+    showsEdgePill(sev) { return sev === 'high' || sev === 'med'; },
+
+    // ---- Rare stepper ----
+
+    // Placed ids in reading order (top to bottom); ids without a position are dropped.
+    rareOrder(ids, yOf) {
+        return ids.filter(id => yOf.has(id)).sort((a, b) => yOf.get(a) - yOf.get(b));
+    },
+
+    // Next (dir 1) or previous (dir -1) id after cur, wrapping; from outside the list, the first or last.
+    stepTo(order, cur, dir) {
+        if (!order.length) return null;
+        const i = order.indexOf(cur);
+        if (i < 0) return dir < 0 ? order[order.length - 1] : order[0];
+        return order[(i + dir + order.length) % order.length];
+    },
+
     // ---- Reconnected peers ----
 
     // Groups reconnected peer trees under the bridge that links them toward the home tree.
