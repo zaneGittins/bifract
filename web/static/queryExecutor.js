@@ -2573,6 +2573,9 @@ const QueryExecutor = {
         const oldDetail = chartContainer.querySelector('.graph-detail-panel');
         if (oldDetail) oldDetail.remove();
 
+        // pgraph() brings its own toolbar and canvas frame; the card around them would nest a third.
+        chartContainer.classList.toggle('pg-host', this.chartType === 'pgraph');
+
         // Remove pie chart wrapper from a previous piechart render
         const oldPie = chartContainer.querySelector('.pie-chart-wrapper');
         if (oldPie) oldPie.remove();
@@ -3489,7 +3492,7 @@ const QueryExecutor = {
     // The one "anomalous" line: what renders red. The "rare" stat and the Path view both use it.
     _pgIsAnomalous(a) { return !isNaN(a) && this._pgSev(a) === 'high'; },
 
-    // ---- Anomalous path view (Path | Full) ----
+    // ---- Anomalous path view (Focus suspicious / Show all) ----
     // Path mode keeps only processes on a path from a root to anomalous activity, plus the seed and
     // its ancestors. Off-path siblings fold in place into a "+N hidden" marker; nothing is dropped
     // silently. The choice persists in localStorage; the default is Path for scored graphs that
@@ -3508,20 +3511,23 @@ const QueryExecutor = {
         if (mode === this._pgMode) return;
         this._pgMode = mode;
         try { localStorage.setItem('bifract-pgraph-scope', mode); } catch (_) { /* storage blocked */ }
-        const bar = this._pgToolbar;
-        if (bar) bar.querySelectorAll('.pg-view-btn[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
         this._pgRender();
     },
-    _pgPathActive() { return this._pgMode === 'path' && this._pgHasScores && this._pgScored !== false; },
+    _pgPathable() { return this._pgHasScores && this._pgScored !== false; },
+    _pgPathActive() { return this._pgMode === 'path' && this._pgPathable(); },
     // Processes kept by Path mode: anomaly anchors (plus seed, novel roots, revealed nodes and
-    // search matches) and all their ancestors. Recomputed per render.
-    _pgComputeKeep() {
+    // search matches) and all their ancestors.
+    _pgPathKeepSet() {
         const m = this._pgModel;
-        if (!this._pgPathActive()) { this._pgKeep = null; this._pgOpenSet = null; return; }
         const extra = [this._pgFocus, ...this._pgNovelRoots(), ...this._pgPathReveal];
         const term = (this._pgSearch || '').toLowerCase();
         if (term) m.procSet.forEach(g => { if (String(m.labelOf(g)).toLowerCase().includes(term)) extra.push(g); });
-        this._pgKeep = PgView.pathKeep(PgView.pathAnchors(m, a => this._pgIsAnomalous(a), extra), m.parentOf);
+        return PgView.pathKeep(PgView.pathAnchors(m, a => this._pgIsAnomalous(a), extra), m.parentOf);
+    },
+    // Recomputed per render.
+    _pgComputeKeep() {
+        if (!this._pgPathActive()) { this._pgKeep = null; this._pgOpenSet = null; return; }
+        this._pgKeep = this._pgPathKeepSet();
         this._pgOpenSet = this._pgSubtreeSet(this._pgPathOpen);
     },
     // Every process under (and including) the given roots, by spawn edges.
@@ -4225,7 +4231,8 @@ const QueryExecutor = {
         LogDetail.show(detailData, false, 'search');
     },
 
-    // Toolbar: Graph/Table and Path/Full toggles, stats, search, legend, and fit/zoom (graph-only).
+    // Toolbar: Graph/Table icons, the stats bar (which also carries the scope action), search, IOC
+    // copy and the legend. Pan/zoom controls float on the canvas (_pgRenderGraph).
     // Mirrors .graph-toolbar. The stats are refreshed per render by _pgUpdateStats.
     _pgBuildToolbar(graphHost, stage) {
         let bar = graphHost.querySelector('.graph-toolbar');
@@ -4234,25 +4241,15 @@ const QueryExecutor = {
         bar.className = 'graph-toolbar pg-toolbar';
         this._pgToolbar = bar;
         const scored = this._pgScored !== false;
-        const isTable = this._pgView === 'table';
-        const pathable = scored && this._pgHasScores;
         bar.innerHTML = `
             <div class="pg-view-toggle" role="tablist" aria-label="View">
-                <button class="pg-view-btn${this._pgView === 'graph' ? ' active' : ''}" data-view="graph" title="Diagonal process map">
-                    <span>Graph</span>
+                <button class="pg-view-btn${this._pgView === 'graph' ? ' active' : ''}" data-view="graph" role="tab" aria-label="Graph" title="Graph: process map">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="5" r="2.5"/><circle cx="12" cy="12" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="m7 7 3 3M14 14l3 3"/></svg>
                 </button>
-                <button class="pg-view-btn${this._pgView === 'table' ? ' active' : ''}" data-view="table" title="Indented process tree">
-                    <span>Table</span>
+                <button class="pg-view-btn${this._pgView === 'table' ? ' active' : ''}" data-view="table" role="tab" aria-label="Table" title="Table: indented process tree">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M8 12h12M12 19h8"/></svg>
                 </button>
             </div>
-            ${pathable ? `<div class="pg-view-toggle pg-mode-toggle" role="tablist" aria-label="Scope">
-                <button class="pg-view-btn${this._pgMode === 'path' ? ' active' : ''}" data-mode="path" title="Only processes on a path to anomalous activity, plus the start process. Hidden siblings fold into +N markers">
-                    <span>Path</span>
-                </button>
-                <button class="pg-view-btn${this._pgMode !== 'path' ? ' active' : ''}" data-mode="full" title="Every process in the graph">
-                    <span>Full</span>
-                </button>
-            </div>` : ''}
             <div class="graph-stats pg-stats-right"></div>
             <div class="pg-filters">
                 <div class="pg-search-wrap">
@@ -4261,42 +4258,36 @@ const QueryExecutor = {
                 </div>
             </div>
             <div class="graph-controls pg-common-controls">
-                ${scored ? `<button class="toolbar-icon-btn" id="pgCopyIocBtn" title="Copy IOCs (IPs, domains, files) to clipboard"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>` : ''}
+                ${scored ? `<button class="toolbar-icon-btn" id="pgCopyIocBtn" title="Copy IOCs: IPs, domains and files in this graph" aria-label="Copy IOCs"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12h6M9 15h4"/></svg></button>` : ''}
                 <button class="toolbar-icon-btn" id="pgLegendBtn" title="Legend and keyboard"><span class="pg-legend-q">?</span></button>
                 <div class="pg-legend" hidden>
                     ${scored ? `<div class="pg-legend-title">Anomaly</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-high"></span>High (rare / suspicious)</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-med"></span>Elevated</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-low"></span>Common</div>` : ''}
+                    <div class="pg-legend-row pg-legend-inline"><span><span class="pg-legend-swatch pg-sw-high"></span>High</span><span><span class="pg-legend-swatch pg-sw-med"></span>Elevated</span><span><span class="pg-legend-swatch pg-sw-low"></span>Common</span></div>` : ''}
                     <div class="pg-legend-title">Nodes</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-focus"></span>Start (queried)</div>
                     ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-new"></span>First time this parent spawned this child</div>` : ''}
                     ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>` : ''}
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Collapsed similar processes (&times;N)</div>
-                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation (name from another event)</div>
-                    ${pathable ? `<div class="pg-legend-row"><span class="pg-hidden-pill pg-legend-hidden">+N</span>Path view: processes off the anomalous path, click to show</div>` : ''}
+                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Similar processes (&times;N)</div>
+                    <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation event</div>
                     <div class="pg-legend-title">Edges</div>
                     <div class="pg-legend-row"><span class="pg-legend-line pg-ll-spawn"></span>Spawned</div>
-                    ${scored ? `<div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shared IP / domain / dropped file) &mdash; hover either end to reveal</div>
-                    <div class="pg-legend-note">Chips on a node count its files / connections / DNS / links. Hover a score to see why it scored.</div>`
-                        : `<div class="pg-legend-note">Process creation only &mdash; ptg() has no file / network / DNS activity or anomaly scoring. Use pgr() for those.</div>`}
-                    <div class="pg-legend-title">Keyboard (Table)</div>
-                    <div class="pg-legend-keys">
-                        <span><kbd>↑</kbd><kbd>↓</kbd> or <kbd>j</kbd><kbd>k</kbd></span><span>Move</span>
-                        <span><kbd>Enter</kbd></span><span>Open details</span>
-                        <span><kbd>←</kbd><kbd>→</kbd></span><span>Collapse / expand</span>
-                        <span><kbd>Esc</kbd></span><span>Close details</span>
+                    ${scored ? `<div class="pg-legend-row"><span class="pg-legend-line pg-ll-recon"></span>Reconnection (shown on hover)</div>
+                    <div class="pg-legend-note">Chips count a process's files, connections, domains and links. Hover a score to see why.</div>`
+                        : `<div class="pg-legend-note">Process creation only: ptg() has no activity or scoring. Use pgr() for those.</div>`}
+                    <div class="pg-legend-keys-wrap">
+                        <div class="pg-legend-title">Keyboard (Table)</div>
+                        <div class="pg-legend-keys">
+                            <span><kbd>↑</kbd><kbd>↓</kbd> or <kbd>j</kbd><kbd>k</kbd></span><span>Move</span>
+                            <span><kbd>Enter</kbd></span><span>Open details</span>
+                            <span><kbd>←</kbd><kbd>→</kbd></span><span>Collapse / expand</span>
+                            <span><kbd>Esc</kbd></span><span>Close details</span>
+                        </div>
                     </div>
                 </div>
-            </div>
-            <div class="graph-controls pg-graph-controls"${isTable ? ' style="display:none"' : ''}>
-                <button class="toolbar-icon-btn" id="pgFitBtn" title="Fit to view"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg></button>
-                <button class="toolbar-icon-btn" id="pgZoomInBtn" title="Zoom in"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6"/><path d="M8 11h6"/></svg></button>
-                <button class="toolbar-icon-btn" id="pgZoomOutBtn" title="Zoom out"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg></button>
             </div>`;
+        bar.dataset.view = this._pgView;
         graphHost.insertBefore(bar, stage);
         bar.querySelectorAll('.pg-view-btn[data-view]').forEach(btn => btn.addEventListener('click', () => this._pgSetView(btn.dataset.view)));
-        bar.querySelectorAll('.pg-view-btn[data-mode]').forEach(btn => btn.addEventListener('click', () => this._pgSetMode(btn.dataset.mode)));
         const searchInput = bar.querySelector('.pg-search');
         if (searchInput) searchInput.addEventListener('input', Utils.debounce((e) => {
             this._pgSearch = e.target.value.trim();
@@ -4305,9 +4296,6 @@ const QueryExecutor = {
             if (this._pgView === 'table' || this._pgPathActive()) { this._pgKeepView = true; this._pgRender(); }
             else this._pgApplySearch();
         }, 160));
-        bar.querySelector('#pgFitBtn')?.addEventListener('click', () => this._pgFit(true));
-        bar.querySelector('#pgZoomInBtn')?.addEventListener('click', () => this._pgZoomBy(1.25));
-        bar.querySelector('#pgZoomOutBtn')?.addEventListener('click', () => this._pgZoomBy(1 / 1.25));
         bar.querySelector('#pgCopyIocBtn')?.addEventListener('click', () => this._pgCopyIOCs());
         const legendBtn = bar.querySelector('#pgLegendBtn'), legend = bar.querySelector('.pg-legend');
         if (legendBtn && legend) {
@@ -4320,14 +4308,14 @@ const QueryExecutor = {
         this._pgView = v;
         const bar = this._pgToolbar;
         if (bar) {
+            bar.dataset.view = v;
             bar.querySelectorAll('.pg-view-btn[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
-            const gc = bar.querySelector('.pg-graph-controls'); if (gc) gc.style.display = v === 'table' ? 'none' : '';
         }
         this._pgRender();
     },
 
-    // Triage summary: process scope ("Showing X of N" when anything is hidden), hosts, cross-tree
-    // reconnections, rare behaviors, analyst-hidden branches, and the relative-shading flag.
+    // Triage summary: process scope (with the one scope action), hosts, reconnected trees, rare
+    // behaviors (with a stepper), analyst-hidden branches, and the relative-shading flag.
     _pgUpdateStats() {
         const bar = this._pgToolbar, box = bar && bar.querySelector('.pg-stats-right');
         const m = this._pgModel;
@@ -4335,34 +4323,39 @@ const QueryExecutor = {
         const procN = m.procSet.size, shownN = this._pgVisibleCount();
         const hostN = m.procHost ? new Set(Array.from(m.procHost.values()).filter(Boolean)).size : 0;
         const ls = m.linkStats || { pairs: 0, pairTotal: 0, bridges: 0, capped: false, scanCapped: false };
-        const reconN = ls.pairs;
-        // Shown as "50 of 312" when the pair cap trims the tail, so a capped view never reads as
-        // the whole picture. The bridge count (what actually links the trees) rides in the title.
-        const reconLabel = ls.capped ? `${reconN} of ${ls.pairTotal}${ls.scanCapped ? '+' : ''}` : String(reconN);
-        const reconTitle = `${ls.bridges} cross-tree bridge${ls.bridges === 1 ? '' : 's'} (shared artifacts) linking ${ls.pairTotal}${ls.scanCapped ? '+' : ''} process pair${ls.pairTotal === 1 ? '' : 's'}` +
-            (ls.capped ? `, showing the strongest ${reconN}` : '') + '. Click to list them';
-        // "Rare" is the same line the Path view uses (_pgIsAnomalous): what renders red.
-        let rareN = 0;
-        const tally = (a) => { if (this._pgIsAnomalous(a)) rareN++; };
-        if (m.leafMeta) m.leafMeta.forEach(v => tally(v.anomaly));
-        m.interactions.forEach(list => list.forEach(it => tally(it.anomaly)));
+        // Reconnected trees, the unit the Reconnected section lists; pairs and bridges ride in the title.
+        const peerN = this._pgPeers ? this._pgPeers.peerRoots.size : 0;
+        const pairs = ls.capped ? `${ls.pairs} of ${ls.pairTotal}${ls.scanCapped ? '+' : ''}` : String(ls.pairs);
+        const reconTitle = (peerN ? `${peerN} reconnected tree${peerN === 1 ? '' : 's'} via ` : '') + `${ls.bridges} bridge${ls.bridges === 1 ? '' : 's'} (shared artifacts), ` +
+            `${pairs} linked process pair${ls.pairTotal === 1 ? '' : 's'}${ls.capped ? ', strongest first' : ''}. Click to list them`;
+        const rareN = this._pgRareOrder().length;
         const ss = this._pgSevScale || {};
-        const rareTitle = ss.rel
-            ? `Rare / anomalous events: the top third of this graph's saturated score range (${(ss.lo + ss.span * 0.66).toFixed(2)}+)`
-            : `Rare / anomalous events (${((this._pgCutoffs && this._pgCutoffs.high) || 0.9).toFixed(2)}+)`;
+        const rareLine = ss.rel ? `the top third of this graph's saturated score range (${(ss.lo + ss.span * 0.66).toFixed(2)}+)` : `${((this._pgCutoffs && this._pgCutoffs.high) || 0.9).toFixed(2)}+`;
         const sep = '<span class="graph-stat-separator"></span>';
         const hb = this._pgHiddenBranches.size;
-        const scopeTitle = this._pgPathActive()
-            ? 'Path view: only processes on a path to anomalous activity, plus the start process. Use Full to see everything.'
-            : 'Some branches are hidden from this view.';
-        const scope = shownN < procN
-            ? `<span class="graph-stat-item pg-stat-scope" title="${scopeTitle}">Showing <span class="graph-stat-count">${shownN}</span> of <span class="graph-stat-count">${procN}</span> processes</span>`
-            : `<span class="graph-stat-item"><span class="graph-stat-count">${procN}</span> processes</span>`;
-        box.innerHTML = scope +
+        const pathActive = this._pgPathActive();
+        const scope = PgView.scopeAction({
+            pathActive, pathable: this._pgPathable(), shown: shownN, total: procN,
+            focusN: !pathActive && this._pgPathable() ? this._pgPathKeepSet().size : procN,
+        });
+        const scopeBtn = scope === 'full'
+            ? `<button class="pg-scope-btn" data-scope="full" title="Show every process, including branches off the anomalous path">Show all</button>`
+            : scope === 'path'
+                ? `<button class="pg-scope-btn" data-scope="path" title="Show only processes on a path to anomalous activity, plus the start process. The rest fold into +N markers">Focus suspicious</button>` : '';
+        const count = shownN < procN
+            ? `<span class="graph-stat-count">${shownN}</span> of <span class="graph-stat-count">${procN}</span> processes`
+            : `<span class="graph-stat-count">${procN}</span> processes`;
+        const chev = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+        box.innerHTML = `<span class="graph-stat-item pg-stat-scope">${count}${scopeBtn ? '<span class="pg-stat-dot">·</span>' + scopeBtn : ''}</span>` +
             (hb ? sep + `<span class="graph-stat-item pg-stat-hidden pg-stat-click" role="button" tabindex="0" title="Branches you hid from this view. Click to show them again">${hb} hidden branch${hb === 1 ? '' : 'es'} · show</span>` : '') +
             (hostN ? sep + `<span class="graph-stat-item"><span class="graph-stat-count">${hostN}</span> host${hostN === 1 ? '' : 's'}</span>` : '') +
-            (reconN ? sep + `<span class="graph-stat-item pg-stat-recon pg-stat-click" role="button" tabindex="0" title="${reconTitle}"><span class="graph-stat-count">${reconLabel}</span> reconnect${reconN === 1 ? 'ion' : 'ions'}</span>` : '') +
-            (rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="${rareTitle}"><span class="graph-stat-count">${rareN}</span> rare</span>` : '') +
+            // Links inside one tree (no peer trees) still count, as pairs.
+            (peerN || ls.pairs ? sep + `<span class="graph-stat-item pg-stat-recon pg-stat-click" role="button" tabindex="0" title="${reconTitle}">` +
+                (peerN ? `<span class="graph-stat-count">${peerN}</span> reconnected` : `<span class="graph-stat-count">${pairs}</span> linked pair${ls.pairTotal === 1 ? '' : 's'}`) + '</span>' : '') +
+            (rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="Processes with rare or anomalous activity (${rareLine}). Step through them with the arrows">` +
+                `<button class="pg-rare-step pg-rare-prev" aria-label="Previous rare process">${chev('m15 6-6 6 6 6')}</button>` +
+                `<span class="graph-stat-count">${rareN}</span> rare` +
+                `<button class="pg-rare-step pg-rare-next" aria-label="Next rare process">${chev('m9 6 6 6-6 6')}</button></span>` : '') +
             // Saturated scores switch shading to relative so contrast survives; flag it so a grey
             // node isn't misread as low.
             (ss.rel ? sep + `<span class="graph-stat-item pg-stat-rel" title="Anomaly scores are saturated (diffusion or a thin baseline), so node color is shaded RELATIVE to this graph's range to keep contrast. The number on each node is still the true anomaly score.">relative shading</span>` : '');
@@ -4371,9 +4364,74 @@ const QueryExecutor = {
             el.addEventListener('click', fn);
             el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); } });
         };
+        box.querySelector('.pg-scope-btn')?.addEventListener('click', (e) => { this._pgKeepView = false; this._pgSetMode(e.currentTarget.dataset.scope); });
+        box.querySelector('.pg-rare-prev')?.addEventListener('click', () => this._pgStepRare(-1));
+        box.querySelector('.pg-rare-next')?.addEventListener('click', () => this._pgStepRare(1));
         onAct(box.querySelector('.pg-stat-hidden'), () => { this._pgHiddenBranches.clear(); this._pgKeepView = true; this._pgRender(); });
-        // "N reconnections" opens the graph-wide overview drawer (_pgOpenReconOverview).
+        // "N reconnected" opens the graph-wide overview drawer (_pgOpenReconOverview).
         onAct(box.querySelector('.pg-stat-recon'), () => { this._pgSetView('graph'); this._pgOpenReconOverview(); });
+    },
+
+    // Processes owning activity at or above the anomaly line, in spawn-tree reading order.
+    _pgRareOrder() {
+        const m = this._pgModel;
+        if (!m || !this._pgPathable()) return [];
+        // The anomaly line moves when calibrated cutoffs arrive or the shading scale changes.
+        const c = this._pgRareCache;
+        if (c && c.m === m && c.cut === this._pgCutoffs && c.sev === this._pgSevScale) return c.order;
+        const rank = new Map();
+        const visit = (g) => {
+            const stack = [g];
+            while (stack.length) {
+                const c = stack.pop();
+                if (rank.has(c)) continue;
+                rank.set(c, rank.size);
+                const kids = m.spawnKids.get(c) || [];
+                for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+            }
+        };
+        const roots = m.homeRoot ? [m.homeRoot, ...m.roots.filter(r => r !== m.homeRoot)] : m.roots;
+        roots.forEach(visit);
+        m.procSet.forEach(visit);
+        const order = PgView.rareOrder(Array.from(PgView.pathAnchors(m, a => this._pgIsAnomalous(a), [])), rank);
+        this._pgRareCache = { m, cut: this._pgCutoffs, sev: this._pgSevScale, order };
+        return order;
+    },
+    // Move to the next/previous rare process: reveal it, center it, and open its details.
+    _pgStepRare(dir) {
+        const next = PgView.stepTo(this._pgRareOrder(), this._pgRareCur, dir);
+        if (next == null) return;
+        this._pgRareCur = next;
+        if (this._pgView === 'table') {
+            const host = this._pgTreeHost;
+            const sel = (window.CSS && CSS.escape) ? CSS.escape(next) : next;
+            const rowOf = () => host && host.querySelector(`.pg-row.pg-proc[data-guid="${sel}"]`);
+            if (!rowOf() && !this._pgReveal(next)) return this._pgHiddenToast();
+            const row = rowOf();
+            if (row) {
+                host.querySelectorAll('.pg-row.pg-kbsel').forEach(r => r.classList.remove('pg-kbsel'));
+                row.classList.add('pg-kbsel');
+                this._pgTreeSelGuid = next;
+                row.scrollIntoView({ block: 'center' });
+            }
+        } else {
+            if (this._pgPositions && !this._pgPositions.has(next) && !this._pgReveal(next)) return this._pgHiddenToast();
+            if (this._pgCenterOn(next, Math.max(0.8, (this._pgVS && this._pgVS.s) || 0.9))) this._pgPulse(next);
+        }
+        // A process flagged for its activity, not its own spawn, opens on that activity.
+        const t = this._pgIsAnomalous(this._pgModel.anomalyByNode.get(next)) ? null : this._pgHotActivity(next);
+        if (t) this._pgOpenDrawer(next, t); else this._pgOpenNodeDrawer(next);
+    },
+    // The first activity type (file, net, dns, inject) of a process with an anomalous entry.
+    _pgHotActivity(guid) {
+        const m = this._pgModel, hot = (x) => this._pgIsAnomalous(x.anomaly);
+        const grp = m.leafGroups.get(guid);
+        const t = grp && ['file', 'net', 'dns'].find(k => (grp[k] || []).some(hot));
+        if (t) return t;
+        return (m.interactions.get(guid) || []).some(hot) ? 'inject' : null;
+    },
+    _pgHiddenToast() {
+        if (window.Toast) Toast.show('That process is in a branch you hid (show hidden branches to see it)', 'info');
     },
 
     // Extract the distinct indicators (external IPs, domains, written/dropped files) from the
@@ -4451,16 +4509,7 @@ const QueryExecutor = {
         const host = this._pgGraphHost, b = this._pgBounds; if (!host || !b) return;
         const vw = host.clientWidth, vh = host.clientHeight;
         if (!vw || !vh || !b.w || !b.h) return;
-        const pad = 46, vs = this._pgVS;
-        const sByW = (vw - pad * 2) / b.w, sByH = (vh - pad * 2) / b.h;
-        const full = Math.min(sByW, sByH, 1.2);
-        if (full < 0.5) {
-            // A tall outline: fit to width so labels stay readable, top-aligned, pan/scroll down.
-            const s = Math.max(0.2, Math.min(sByW, 1.2));
-            vs.s = s; vs.x = (vw - b.w * s) / 2; vs.y = pad;
-        } else {
-            vs.s = full; vs.x = (vw - b.w * full) / 2; vs.y = (vh - b.h * full) / 2;
-        }
+        Object.assign(this._pgVS, PgView.fitView(b, vw, vh, { pad: 46, max: 1.2 }));
         this._pgApplyTransform(animate);
         this._pgDrawMinimap();
     },
@@ -4668,7 +4717,7 @@ const QueryExecutor = {
         let elabels = '';
         this._pgEdgeWhy = [];
         edgeSegs.forEach(e => {
-            if (isNaN(e.a) || e.recon) return; // recon bridges are long curves; a midpoint pill floats and clutters
+            if (isNaN(e.a) || e.recon || !PgView.showsEdgePill(e.sev)) return; // recon bridges are long curves; a midpoint pill floats and clutters
             const mx = ((e.x1 + e.x2) / 2).toFixed(1), my = ((e.y1 + e.y2) / 2).toFixed(1);
             // Pills with an explanation get a hover card (_pgShowEdgeTip); the rest keep a plain title.
             const ew = e.why ? ` data-ew="${this._pgEdgeWhy.push(e) - 1}"` : ` title="anomaly ${e.a.toFixed(2)}"`;
@@ -4756,9 +4805,29 @@ const QueryExecutor = {
         // edge labels + nodes; a minimap and a slide-out chip drawer float on top.
         const gtop = host.getBoundingClientRect().top;
         host.style.height = Math.max(460, Math.floor(window.innerHeight - gtop - 28)) + 'px';
+        const mapOn = this._pgMinimapOn();
+        const ctl = (id, title, path) => `<button class="pg-ctl" id="${id}" title="${title}" aria-label="${title}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></button>`;
         host.innerHTML = `<div class="pg-canvas" style="width:${W}px;height:${H}px">${svg}${elabels}${nodesHtml}</div>` +
-            `<canvas class="graph-minimap pg-minimap" width="200" height="130"></canvas>` +
+            `<canvas class="graph-minimap pg-minimap" width="200" height="130"${mapOn ? '' : ' hidden'}></canvas>` +
+            `<div class="pg-canvas-controls">` +
+            ctl('pgZoomInBtn', 'Zoom in', '<path d="M12 5v14M5 12h14"/>') +
+            ctl('pgZoomOutBtn', 'Zoom out', '<path d="M5 12h14"/>') +
+            ctl('pgFitBtn', 'Fit to view', '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>') +
+            ctl('pgMapBtn', 'Minimap', '<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/>') +
+            `</div>` +
             `<div class="pg-drawer" hidden></div>`;
+        host.querySelector('#pgFitBtn').addEventListener('click', () => this._pgFit(true));
+        host.querySelector('#pgZoomInBtn').addEventListener('click', () => this._pgZoomBy(1.25));
+        host.querySelector('#pgZoomOutBtn').addEventListener('click', () => this._pgZoomBy(1 / 1.25));
+        const mapBtn = host.querySelector('#pgMapBtn');
+        mapBtn.classList.toggle('active', mapOn);
+        mapBtn.addEventListener('click', () => {
+            const on = !this._pgMinimapOn();
+            try { localStorage.setItem('bifract-pgraph-minimap', on ? '1' : '0'); } catch (_) { /* storage blocked */ }
+            mapBtn.classList.toggle('active', on);
+            host.querySelector('.pg-minimap').hidden = !on;
+            this._pgDrawMinimap();
+        });
         this._pgGraphHost = host;
         this._pgCanvas = host.querySelector('.pg-canvas');
         this._pgNodeEls = host.querySelectorAll('.pg-node');
@@ -4767,11 +4836,32 @@ const QueryExecutor = {
         this._pgBindGraphInput(host);
         if (this._pgSearch) this._pgApplySearch();
         if (keepView) { this._pgApplyTransform(false); this._pgDrawMinimap(); }
-        else requestAnimationFrame(() => {
-            // First render: frame the queried start node rather than the whole graph.
-            if (this._pgFocus && this._pgCenterOn(this._pgFocus, 0.95)) return;
-            this._pgFit(false);
-        });
+        else requestAnimationFrame(() => this._pgFrameStory());
+    },
+
+    // First render: frame the seed and its anomalous chain (the story) rather than the whole
+    // graph or the seed alone; without either, fit everything.
+    _pgFrameStory() {
+        const host = this._pgGraphHost, pos = this._pgPositions;
+        if (!host || !pos) return;
+        const m = this._pgModel;
+        const home = (id) => !m.homeRoot || (m.rootOf.get(id) || id) === m.homeRoot;
+        // Two ancestors give the chain its context; with nothing rare, the seed's subtree is the story.
+        const f = this._pgFocus, up = m.parentOf.get(f);
+        const rare = this._pgRareOrder();
+        const story = rare.length ? rare : (f != null ? Array.from(this._pgSubtreeSet([f])) : []);
+        const ids = [m.parentOf.get(up), up, f, ...story].filter(id => id != null && pos.has(id) && home(id));
+        if (!ids.length) { this._pgFit(false); return; }
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        ids.forEach(id => { const p = pos.get(id); x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); });
+        // Room for the hex on the left and above, and for the label to its right.
+        const box = { x: x0 - 30, y: y0 - 30, w: x1 - x0 + 260, h: y1 - y0 + 60 };
+        Object.assign(this._pgVS, PgView.frameView(box, host.clientWidth, host.clientHeight, { pad: 40, min: 0.75, max: 1 }));
+        this._pgApplyTransform(false);
+        this._pgDrawMinimap();
+    },
+    _pgMinimapOn() {
+        try { return localStorage.getItem('bifract-pgraph-minimap') === '1'; } catch (_) { return false; }
     },
 
     // Center the viewport on a node (queried start) at a readable scale, placed in the upper
@@ -4832,7 +4922,7 @@ const QueryExecutor = {
     _pgBindGraphInput(host) {
         host.onwheel = (e) => {
             // Let the drawer (and minimap) scroll natively instead of zooming the graph underneath.
-            if (e.target.closest('.pg-drawer') || e.target.closest('.pg-minimap')) return;
+            if (e.target.closest('.pg-drawer, .pg-minimap, .pg-canvas-controls')) return;
             e.preventDefault();
             this._pgHideEdgeTip();
             const vs = this._pgVS;
@@ -4850,7 +4940,7 @@ const QueryExecutor = {
             moved = false; // reset here so a click after a pan is never mistaken for a drag
             // Don't pan/capture when the press starts on a node, the minimap, or the drawer --
             // capturing the pointer would swallow their own clicks (close button, rows).
-            if (e.target.closest('.pg-node') || e.target.closest('.pg-minimap') || e.target.closest('.pg-drawer') || e.target.closest('.pg-ctxmenu')) return;
+            if (e.target.closest('.pg-node, .pg-minimap, .pg-drawer, .pg-ctxmenu, .pg-canvas-controls')) return;
             this._pgHideEdgeTip();
             dragging = true; sx = e.clientX; sy = e.clientY; ox = this._pgVS.x; oy = this._pgVS.y;
             host.classList.add('pg-panning');
@@ -4967,7 +5057,7 @@ const QueryExecutor = {
         const pill = isNaN(p.score) ? '' : `<span class="pg-anom pg-anom-${this._pgSev(p.score)}">${p.score.toFixed(2)}</span>`;
         return `<div class="pg-node pg-node-peer pg-sev-${this._pgSev(p.score)}${open ? ' pg-peer-open' : ''}" data-peer="${esc(p.root)}" style="${style}" role="button" tabindex="0" aria-expanded="${open}" ` +
             `title="${esc(String(name))}${host ? ' on ' + esc(host) : ''}\n${size} process${size === 1 ? '' : 'es'} in this tree. Click to ${open ? 'collapse' : 'expand'}">` +
-            `<span class="pg-peer-chev">${open ? '−' : '+'}</span>` +
+            `<span class="pg-peer-chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></span>` +
             (host ? `<span class="pg-peer-host">${esc(PgView.shortHost(host))}</span><span class="pg-peer-sep">·</span>` : '') +
             `<span class="pg-peer-proc">${esc(this._pgShort(name))}</span>${pill}</div>`;
     },
@@ -5209,14 +5299,14 @@ const QueryExecutor = {
         if (!id) return;
         this._pgCloseDrawer();
         if (this._pgPositions && !this._pgPositions.has(id)) this._pgReveal(id);
-        if (this._pgCenterOn(id, Math.max(0.7, (this._pgVS && this._pgVS.s) || 0.9))) {
-            const host = this._pgGraphHost;
-            const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
-            const el = host && host.querySelector(`.pg-node[data-id="${sel}"]`);
-            if (el) { el.classList.remove('pg-pulse'); void el.offsetWidth; el.classList.add('pg-pulse'); setTimeout(() => el.classList.remove('pg-pulse'), 1300); }
-        } else if (window.Toast) {
-            Toast.show('That process is in a branch you hid (show hidden branches to see it)', 'info');
-        }
+        if (this._pgCenterOn(id, Math.max(0.7, (this._pgVS && this._pgVS.s) || 0.9))) this._pgPulse(id);
+        else this._pgHiddenToast();
+    },
+    _pgPulse(id) {
+        const host = this._pgGraphHost;
+        const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
+        const el = host && host.querySelector(`.pg-node[data-id="${sel}"]`);
+        if (el) { el.classList.remove('pg-pulse'); void el.offsetWidth; el.classList.add('pg-pulse'); setTimeout(() => el.classList.remove('pg-pulse'), 1300); }
     },
     // The drawer lives in whichever view is showing: the graph canvas or the Table.
     _pgDrawerHost() { return this._pgView === 'table' ? this._pgTreeHost : this._pgGraphHost; },
@@ -5390,7 +5480,7 @@ const QueryExecutor = {
     _pgDrawMinimap() {
         const host = this._pgGraphHost, b = this._pgBounds, pos = this._pgPositions;
         const mm = host && host.querySelector('.pg-minimap');
-        if (!mm || !b || !pos) return;
+        if (!mm || mm.hidden || !b || !pos) return;
         const cv = ThemeManager.getCSSVar;
         const ctx = mm.getContext('2d');
         const w = mm.width, h = mm.height, pad = 8;
@@ -5660,7 +5750,8 @@ const QueryExecutor = {
                 const ag = this._pgAggMeta.get(c.id); if (!ag) return;
                 const exp = this._pgExpandedAggs && this._pgExpandedAggs.has(c.id);
                 const chevA = `<button class="pg-chev${exp ? '' : ' pg-collapsed'}" data-aggtoggle="${esc(c.id)}" title="${exp ? 'Collapse' : 'Expand'} ${ag.count} similar processes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg></button>`;
-                rows.push(`<div class="pg-row pg-agg-row" data-agg="${esc(c.id)}" title="${ag.count} similar ${esc(String(ag.image))} processes — click to ${exp ? 'collapse' : 'expand'}"><span class="pg-gutter"></span>${guidesHtml(cAnc, isLastEntry)}${chevA}<span class="pg-name-wrap"><span class="pg-name">${hl(ag.image)} <span class="pg-agg-count">×${ag.count}</span></span></span>${anomalyPill(ag.anomaly)}</div>`);
+                // Severity colors the name, as on process rows; the trailing cells keep the columns aligned.
+                rows.push(`<div class="pg-row pg-agg-row pg-sev-${this._pgSev(ag.anomaly)}" data-agg="${esc(c.id)}" title="${ag.count} similar ${esc(String(ag.image))} processes${isNaN(ag.anomaly) ? '' : ', peak anomaly ' + ag.anomaly.toFixed(2)}. Click to ${exp ? 'collapse' : 'expand'}"><span class="pg-gutter"></span>${guidesHtml(cAnc, isLastEntry)}${chevA}<span class="pg-name-wrap"><span class="pg-name">${hl(ag.image)} <span class="pg-agg-count">×${ag.count}</span></span></span><span class="pg-badges"></span><span class="pg-fs"></span></div>`);
                 if (exp) {
                     const mAnc = cAnc.slice(); mAnc[mAnc.length - 1] = !isLastEntry;
                     const mr = this._pgViewEntries(c.id, ag.members.map(id => ({ kind: 'proc', id })));

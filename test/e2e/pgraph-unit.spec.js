@@ -207,3 +207,68 @@ test.describe('search pivots', () => {
     expect(new URL(PgView.searchUrl('https://b.example', 'x', { kind: 'prism', name: 'all' }, '-24h')).searchParams.get('prism')).toBe('all');
   });
 });
+
+test.describe('scope', () => {
+  test('a focused view offers everything; a full view offers focus only when it would narrow', () => {
+    expect(PgView.scopeAction({ pathActive: true, shown: 24, total: 46, focusN: 24 })).toBe('full');
+    expect(PgView.scopeAction({ pathActive: false, pathable: true, shown: 46, total: 46, focusN: 24 })).toBe('path');
+    // Focus would keep every process: offering it would do nothing.
+    expect(PgView.scopeAction({ pathActive: false, pathable: true, shown: 46, total: 46, focusN: 46 })).toBe(null);
+    // Unscored (ptg) has no anomalous path to focus on.
+    expect(PgView.scopeAction({ pathActive: false, pathable: false, shown: 46, total: 46, focusN: 0 })).toBe(null);
+    // Path is on but keeps everything: nothing to show more of, and focus is already on.
+    expect(PgView.scopeAction({ pathActive: true, shown: 46, total: 46, focusN: 46 })).toBe(null);
+  });
+});
+
+test.describe('viewport', () => {
+  test('fit frames the whole graph on both axes, centered', () => {
+    const v = PgView.fitView({ w: 1000, h: 4000 }, 1200, 600, { pad: 50, max: 1.2 });
+    expect(v.s).toBeCloseTo(0.125);
+    expect(v.y).toBeCloseTo((600 - 4000 * v.s) / 2);
+    expect(v.x).toBeCloseTo((1200 - 1000 * v.s) / 2);
+    expect(PgView.fitView({ w: 100, h: 100 }, 1200, 600, { pad: 50, max: 1.2 }).s).toBe(1.2);
+  });
+
+  test('framing centers a story that fits at a readable scale', () => {
+    const box = { x: 400, y: 300, w: 600, h: 400 };
+    const v = PgView.frameView({ x: 400, y: 300, w: 600, h: 800 }, 1200, 600, { pad: 40, min: 0.55, max: 1 });
+    expect(v.s).toBeCloseTo(520 / 800);
+    // Capped at max, then the box center lands on the viewport center.
+    const c = PgView.frameView(box, 2000, 2000, { pad: 40, min: 0.55, max: 1 });
+    expect(c.s).toBe(1);
+    expect(c.x + (box.x + box.w / 2) * c.s).toBeCloseTo(1000);
+    expect(c.y + (box.y + box.h / 2) * c.s).toBeCloseTo(1000);
+  });
+
+  test('a story too tall to read pins its top-left instead of shrinking past legibility', () => {
+    const box = { x: 100, y: 200, w: 800, h: 3000 };
+    const v = PgView.frameView(box, 1200, 600, { pad: 40, min: 0.55, max: 1 });
+    expect(v.s).toBe(0.55);
+    expect(v.x + box.x * v.s).toBeCloseTo(40);
+    expect(v.y + box.y * v.s).toBeCloseTo(40);
+  });
+});
+
+test.describe('quiet encoding', () => {
+  test('only elevated and high edges carry a score pill', () => {
+    expect(PgView.showsEdgePill('high')).toBe(true);
+    expect(PgView.showsEdgePill('med')).toBe(true);
+    expect(PgView.showsEdgePill('low')).toBe(false);
+    expect(PgView.showsEdgePill('none')).toBe(false);
+  });
+});
+
+test.describe('rare stepper', () => {
+  test('steps through anomalous processes top to bottom and wraps', () => {
+    const order = PgView.rareOrder(['c', 'a', 'b', 'gone'], new Map([['a', 10], ['b', 20], ['c', 30]]));
+    expect(order).toEqual(['a', 'b', 'c']);
+    expect(PgView.stepTo(order, null, 1)).toBe('a');
+    expect(PgView.stepTo(order, null, -1)).toBe('c');
+    expect(PgView.stepTo(order, 'a', 1)).toBe('b');
+    expect(PgView.stepTo(order, 'c', 1)).toBe('a');
+    expect(PgView.stepTo(order, 'a', -1)).toBe('c');
+    expect(PgView.stepTo(order, 'elsewhere', 1)).toBe('a');
+    expect(PgView.stepTo([], null, 1)).toBe(null);
+  });
+});

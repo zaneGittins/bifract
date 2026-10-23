@@ -92,7 +92,7 @@ pgr(start="{GUID}", peers=200) | pgraph()
 
 Use `reconnect=false` to show only the seeded tree.
 
-The graph's **reconnections** stat counts linked process pairs, and reads `50 of 312` when the view is showing the strongest ones. Hovering it reports how many distinct bridges (shared artifacts) are behind those pairs, which is usually the smaller and more useful number: one rare domain touched by twenty processes is one bridge, not twenty.
+The graph's **reconnected** stat counts peer trees, the same number the Reconnected section lists. Hovering it reports the bridges (shared artifacts) behind them and the linked process pairs, including `50 of 312` when the pair cap is showing the strongest ones; clicking it lists the pairs.
 
 In the graph, peers sit in a **Reconnected** section below the seeded tree, grouped by the bridge that links them (the artifact, its rarity chips, and how many peers it reaches), strongest bridge first. Each peer is one line (host, process, score) that expands to its tree on click; a group lists its first three peers and folds the rest into `+N more`.
 
@@ -100,7 +100,9 @@ In the graph, peers sit in a **Reconnected** section below the seeded tree, grou
 
 | Control | What it does |
 |---------|--------------|
-| **Path / Full** | Path (the default for larger scored graphs) shows only processes on a path to activity scored red, plus the seeded process and its ancestors. Everything else folds in place into `+N hidden` markers; click one to show that branch. The stats bar reads `Showing 12 of 85 processes`. The choice is remembered. |
-| **Graph / Table** | The same view as a canvas or an indented table. The table's Time column shows the clock to the second, the date only when it changes, and the gap since the parent beneath it. |
+| **Graph / Table** | The two icons at the left of the toolbar: the same view as a canvas or an indented table. The table's Time column shows the clock to the second, the date only when it changes, and the gap since the parent beneath it. |
+| **Show all / Focus suspicious** | Larger scored graphs open focused: only processes on a path to activity scored red, plus the seeded process and its ancestors. The stats bar reads `12 of 85 processes · Show all`; everything else folds in place into `+N hidden` markers, and clicking one shows that branch. `Focus suspicious` narrows a full view again. The choice is remembered. |
+| **N rare ‹ ›** | Steps through processes with rare activity, top to bottom. Each step centers the process and opens its details, or the file, network or DNS activity that made it rare. |
+| Canvas controls | Zoom, fit (the whole graph on both axes) and the minimap, bottom-left of the canvas. The first view frames the seeded process and its anomalous chain. The minimap is off until you turn it on. |
 | Process drawer | Click a process. Actions: search this process, its image hash, or everything on its host within 5 minutes (each opens in a new tab), copy the command line, or hide its branch (undo from `N hidden branches · show`). |
 | Keyboard (Table) | `↑` `↓` or `j` `k` move, `Enter` opens the drawer, `←` `→` collapse and expand, `Esc` closes the drawer. |
