@@ -4,7 +4,7 @@
 // ClickHouse, including resuming after a crash part way and a clear landing mid-copy.
 //
 //	docker run -d --name bfrepart -e CLICKHOUSE_PASSWORD=bifract -p 19011:9000 \
-//	  clickhouse/clickhouse-server:26.6.2.81-alpine
+//	  clickhouse/clickhouse-server:26.8.34.13-alpine
 //	go test -tags chrepartition ./pkg/storage/ -run TestConvertPartitioning -v
 package storage
 

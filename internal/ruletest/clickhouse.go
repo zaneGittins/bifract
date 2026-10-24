@@ -17,7 +17,7 @@ import (
 // ClickHouseImage is the image the tester starts when no endpoint is supplied. It is
 // pinned to the same version docker-compose.yml runs so a rule behaves identically in
 // a test and in a real deployment; version_test.go enforces that they stay in step.
-const ClickHouseImage = "clickhouse/clickhouse-server:26.6.2.81-alpine"
+const ClickHouseImage = "clickhouse/clickhouse-server:26.8.34.13-alpine"
 
 // logsDatabase is the database the schema lives in (see db/init-clickhouse.sql).
 const logsDatabase = "logs"

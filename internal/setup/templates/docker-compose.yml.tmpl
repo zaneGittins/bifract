@@ -50,7 +50,7 @@ services:
 
 {{- if .CHBundled}}
   clickhouse:
-    image: clickhouse/clickhouse-server:26.6.2.81-alpine
+    image: clickhouse/clickhouse-server:26.8.34.13-alpine
     container_name: bifract-clickhouse
     # No init.sql mount: the app owns the ClickHouse schema. Provisioning it here left
     # the schema current but _bifract_migrations empty, so the app took its upgrade path

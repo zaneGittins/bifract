@@ -3,7 +3,7 @@ services:
     image: zookeeper:3.9
     environment: { ZOO_4LW_COMMANDS_WHITELIST: "*" }
   ch1:
-    image: clickhouse/clickhouse-server:26.6.2.81-alpine
+    image: clickhouse/clickhouse-server:26.8.34.13-alpine
     depends_on: [zk]
     environment: { CLICKHOUSE_PASSWORD: bifract }
     ports: ["19001:9000"]
@@ -13,7 +13,7 @@ services:
       - ./workload.xml:/etc/clickhouse-server/config.d/workload.xml:ro
     ulimits: { nofile: { soft: 262144, hard: 262144 } }
   ch2:
-    image: clickhouse/clickhouse-server:26.6.2.81-alpine
+    image: clickhouse/clickhouse-server:26.8.34.13-alpine
     depends_on: [zk]
     environment: { CLICKHOUSE_PASSWORD: bifract }
     ports: ["19002:9000"]

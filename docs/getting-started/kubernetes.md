@@ -210,6 +210,8 @@ The command will:
 
 Apply the changes with `kubectl apply -k`. PVCs are not modified. Existing data is preserved across upgrades.
 
+When a release moves to a newer ClickHouse, the operator restarts the ClickHouse and Keeper pods on the new image as part of the apply. ClickHouse cannot be downgraded, so do not apply manifests from `.backups/` that predate that release: an older ClickHouse cannot read data the newer one wrote, and those logs disappear from search. See [Rolling back after a ClickHouse upgrade](../administration/backup-restore.md#rolling-back-after-a-clickhouse-upgrade).
+
 ## Reconfiguring
 
 Use `--reconfigure-k8s` to change settings without upgrading the version. This is useful for switching IP access modes, changing the domain, or picking up template improvements after a binary update.

@@ -5,7 +5,7 @@
 // the current schema by the numbered migrations alone.
 //
 //	docker run -d --name bfupgrade -e CLICKHOUSE_PASSWORD=bifract -p 19010:9000 \
-//	  clickhouse/clickhouse-server:26.6.2.81-alpine
+//	  clickhouse/clickhouse-server:26.8.34.13-alpine
 //	go test -tags chupgrade ./pkg/storage/ -run TestUpgradeFrom -v
 package storage
 

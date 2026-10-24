@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -131,14 +132,16 @@ func bareTermWhere(t *testing.T, query string) string {
 
 // predicateAfterTimestamps strips the generated timestamp bounds and returns the
 // remaining user predicate, so it can run against the fixture table.
+var timestampBoundRe = regexp.MustCompile(`00:00:00(?:\.\d+)?' AND `)
+
 func predicateAfterTimestamps(t *testing.T, sql string) string {
 	t.Helper()
-	const anchor = "00:00:00' AND "
-	i := strings.LastIndex(sql, anchor)
-	if i < 0 {
+	// The bounds may carry fractional seconds ('...00:00:00.000').
+	locs := timestampBoundRe.FindAllStringIndex(sql, -1)
+	if locs == nil {
 		t.Fatalf("no timestamp bounds in generated SQL: %s", sql)
 	}
-	rest := sql[i+len(anchor):]
+	rest := sql[locs[len(locs)-1][1]:]
 	j := strings.Index(rest, " ORDER BY")
 	if j < 0 {
 		t.Fatalf("could not isolate predicate from: %s", sql)

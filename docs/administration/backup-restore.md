@@ -198,3 +198,30 @@ Plan DR around the window you actually need online:
 2. **Query the deep history in place with Recall** (the fractal's **Recall** page), which reads Iceberg directly and never writes to ClickHouse, so it has no merge cost and no retention ceiling.
 
 Restore the narrowest window that meets the need. If you are reaching for a multi-month restore to answer an investigative question, Recall is the better tool.
+
+## Rolling back after a ClickHouse upgrade
+
+ClickHouse supports upgrades, not downgrades. If an older ClickHouse is started on data a newer one wrote, it cannot read those parts. It moves them to a `detached/` directory with a `broken-on-start_` prefix and carries on, so the logs vanish from search without an error. Nothing is deleted.
+
+To get them back, run the newer ClickHouse again (re-run the newer `bifract --upgrade` or `--upgrade-k8s`), then reattach the parts with this script:
+
+```sh
+clickhouse-client --password "$CLICKHOUSE_PASSWORD" -q "SELECT database, table, name, path FROM system.detached_parts WHERE reason = 'broken-on-start' FORMAT TSV" |
+while IFS="$(printf '\t')" read -r db tbl name path; do
+  part="${name#broken-on-start_}"
+  mv "${path%/}" "$(dirname "${path%/}")/$part"
+  clickhouse-client --password "$CLICKHOUSE_PASSWORD" -q "ALTER TABLE \`$db\`.\`$tbl\` ATTACH PART '$part'"
+done
+```
+
+Save it as `reattach.sh` and run it inside ClickHouse. On Kubernetes, run it once per shard pod.
+
+```bash
+# Docker Compose
+docker exec -i bifract-clickhouse sh < reattach.sh
+
+# Kubernetes
+kubectl -n bifract exec -i bifract-ch-clickhouse-0-0-0 -- sh < reattach.sh
+```
+
+Afterwards `SELECT count() FROM system.detached_parts` should return 0.

@@ -43,23 +43,25 @@ func TestReconcileQueryWorkloadsAcrossCluster(t *testing.T) {
 				t.Errorf("%s: workload %q missing (count=%d)", addr, w, n)
 			}
 		}
-		var res uint64
-		if err := conn.QueryRow(ctx,
-			"SELECT count() FROM system.resources WHERE name IN (?, ?)",
-			QueryCPUResource, QueryMemoryResource).Scan(&res); err != nil {
-			conn.Close()
-			t.Fatalf("%s: query resources: %v", addr, err)
-		}
-		if res != 2 {
-			t.Errorf("%s: expected cpu+memory resources, got %d", addr, res)
+		// The memory resource must be gone: it engages the reservation deadlock
+		// described on dropMemoryReservationResource.
+		for res, want := range map[string]uint64{QueryCPUResource: 1, QueryMemoryResource: 0} {
+			var n uint64
+			if err := conn.QueryRow(ctx, "SELECT count() FROM system.resources WHERE name = ?", res).Scan(&n); err != nil {
+				conn.Close()
+				t.Fatalf("%s: query resources: %v", addr, err)
+			}
+			if n != want {
+				t.Errorf("%s: resource %s count = %d, want %d", addr, res, n, want)
+			}
 		}
 
-		// The search workload must carry a real ceiling, not just exist.
+		// The search workload must carry a real CPU ceiling; memory is capped per query.
 		var create string
 		if err := conn.QueryRow(ctx,
 			"SELECT create_query FROM system.workloads WHERE name = ?", QuerySearchWorkload).Scan(&create); err == nil {
-			if !strings.Contains(create, "max_concurrent_threads_ratio_to_cores") || !strings.Contains(create, "max_memory") {
-				t.Errorf("%s: search workload has no CPU/memory ceiling: %q", addr, create)
+			if !strings.Contains(create, "max_concurrent_threads_ratio_to_cores") || strings.Contains(create, "max_memory") {
+				t.Errorf("%s: search workload must cap CPU and not set max_memory: %q", addr, create)
 			}
 		}
 		conn.Close()
