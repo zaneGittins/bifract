@@ -484,6 +484,7 @@ type preparedQuery struct {
 	chartConfig         map[string]interface{}
 	streamable          bool
 	chunkable           bool // safe to split the row scan into newest-first time chunks
+	singleScan          bool // older histogram chunks also locate the rows (see HandleQueryStream)
 	appliedCursorPaging bool
 	queryMaxRows        int
 	isBloomQuery        bool
@@ -643,6 +644,77 @@ func (p *preparedQuery) buildChunkSQL(c streamChunk, limit int) (string, error) 
 		return "", err
 	}
 	return result.SQL, nil
+}
+
+// rowChunk is histogram chunk i clipped to the requested range. A row on a chunk's
+// upper bound belongs to the newer chunk, as it does in the histogram.
+func (p *preparedQuery) rowChunk(i int) streamChunk {
+	c := p.histChunks[i]
+	rc := streamChunk{start: c.start, end: c.end, endExclusive: i > 0}
+	if rc.start.Before(p.startTime) {
+		rc.start = p.startTime
+	}
+	if i == 0 {
+		rc.end = p.endTime
+	}
+	return rc
+}
+
+// buildNewestSQL builds the single scan of histogram chunk i: its bucket counts,
+// and the event times of its newest n matching rows within the requested range.
+func (p *preparedQuery) buildNewestSQL(i, n int) (string, error) {
+	c, rc := p.histChunks[i], p.rowChunk(i)
+	opts := p.translationOpts
+	opts.StartTime = c.start
+	opts.EndTime = c.end
+	return parser.BuildHistogramNewestSQL(p.pipeline, opts, p.histBucketSec, n, rc.start, rc.end)
+}
+
+// buildFetchSQL re-translates the query over just the rows at these event times,
+// newest first; its ORDER BY and LIMIT break ties within an instant as before.
+func (p *preparedQuery) buildFetchSQL(times []time.Time, limit int) (string, error) {
+	opts := p.translationOpts
+	opts.StartTime = times[len(times)-1]
+	opts.EndTime = times[0]
+	opts.EndExclusive = false
+	opts.EventTimes = times
+	opts.MaxRows = limit
+	result, err := parser.TranslateToSQLWithOrder(p.pipeline, opts)
+	if err != nil {
+		return "", err
+	}
+	return result.SQL, nil
+}
+
+// parseNewestScan reads a single scan's bucket counts and distinct event times.
+func parseNewestScan(row map[string]interface{}) ([]uint64, []time.Time, error) {
+	counts, ok := row["hist_counts"].([]uint64)
+	if !ok {
+		return nil, nil, fmt.Errorf("single scan: hist_counts is %T", row["hist_counts"])
+	}
+	negMs, ok := row["newest_ms"].([]int64)
+	if !ok {
+		return nil, nil, fmt.Errorf("single scan: newest_ms is %T", row["newest_ms"])
+	}
+	times := make([]time.Time, 0, len(negMs))
+	for i, v := range negMs {
+		if i > 0 && v == negMs[i-1] {
+			continue
+		}
+		times = append(times, time.UnixMilli(-v).UTC())
+	}
+	return counts, times, nil
+}
+
+// projectsTimestamp reports whether the scan computes a column named timestamp,
+// which shadows the event time in the row query's own predicates.
+func projectsTimestamp(projections []parser.SourceProjection) bool {
+	for _, p := range projections {
+		if p.Alias == "timestamp" {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareQuery resolves auth, scope, and the translated SQL shared by the search
@@ -1163,6 +1235,13 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		}
 	}
 
+	// When the scan filter is the whole row selection, an older chunk's rows are the
+	// newest matches its histogram scan already reads, given a bounded row budget.
+	singleScan := chunkable && needsHistogram && histRollupTable == "" && len(histChunks) > 1 &&
+		translationResult.SourceWhereComplete && !projectsTimestamp(translationResult.SourceProjections) &&
+		opts.SourceMode != parser.SourceIceberg && !opts.UseIngestTimestamp &&
+		(queryMaxRows > 0 || appliedCursorPaging)
+
 	// A source command (pgr) may request a top-level scan budget; SETTINGS must be last (illegal
 	// inside the subquery), so append after all LIMIT/cursor edits. Server-enforced, so a
 	// pathological tree aborts here instead of scanning the whole window across every shard.
@@ -1180,6 +1259,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		chartConfig:         chartConfig,
 		streamable:          streamable,
 		chunkable:           chunkable,
+		singleScan:          singleScan,
 		appliedCursorPaging: appliedCursorPaging,
 		queryMaxRows:        queryMaxRows,
 		isBloomQuery:        isBloomQuery,
@@ -1848,30 +1928,43 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 		coveredFrom int   // buckets [coveredFrom, bucketCount) have been scanned
 	}
 	histCh := make(chan histUpdate, len(prep.histChunks))
-	if prep.needsHistogram {
-		go func() {
-			defer close(histCh)
-			cumulative := make([]int, prep.histBucketCount)
-			for i, chunk := range prep.histChunks {
-				// Chunks are ordered newest-first; only cache the historical ones.
-				chunkSQL, sqlErr := prep.buildHistogramSQL(chunk.start, chunk.end, i > 0)
-				if sqlErr != nil {
-					log.Printf("[QueryHandler] Streaming histogram SQL failed (non-critical): %v", sqlErr)
-					return
-				}
-				rows, qErr := h.db.QueryUserSearchWithID(queryCtx, fmt.Sprintf("%s-h%d", searchID, i), chunkSQL)
-				if qErr != nil {
-					// Keep whatever earlier chunks already delivered; the client
-					// renders it as a partial histogram rather than losing it.
-					log.Printf("[QueryHandler] Streaming histogram chunk failed (non-critical): %v", qErr)
-					return
-				}
-				foldHistogramRows(cumulative, rows, prep.histBucketStart, prep.histBucketSec, chunk.loIdx, chunk.hiIdx)
-				snapshot := make([]int, len(cumulative))
-				copy(snapshot, cumulative)
-				histCh <- histUpdate{buckets: snapshot, coveredFrom: chunk.loIdx}
+	publishHistogram := func(cumulative []int, coveredFrom int) {
+		snapshot := make([]int, len(cumulative))
+		copy(snapshot, cumulative)
+		histCh <- histUpdate{buckets: snapshot, coveredFrom: coveredFrom}
+	}
+	// countChunk runs chunk i's histogram query. Chunks are ordered newest-first;
+	// only the historical ones are cached.
+	countChunk := func(i int) ([]map[string]interface{}, error) {
+		c := prep.histChunks[i]
+		sql, err := prep.buildHistogramSQL(c.start, c.end, i > 0)
+		if err != nil {
+			return nil, err
+		}
+		return h.db.QueryUserSearchWithID(queryCtx, fmt.Sprintf("%s-h%d", searchID, i), sql)
+	}
+	// foldChunk adds chunk i's histogram rows to cumulative and publishes the result.
+	foldChunk := func(i int, rows []map[string]interface{}, cumulative []int) {
+		c := prep.histChunks[i]
+		foldHistogramRows(cumulative, rows, prep.histBucketStart, prep.histBucketSec, c.loIdx, c.hiIdx)
+		publishHistogram(cumulative, c.loIdx)
+	}
+	// runHistogram counts the chunks from index from onward into cumulative, then
+	// closes histCh. A failed chunk ends it: the client keeps what earlier chunks
+	// delivered and shows the rest as unscanned rather than zero.
+	runHistogram := func(from int, cumulative []int) {
+		defer close(histCh)
+		for i := from; i < len(prep.histChunks); i++ {
+			rows, err := countChunk(i)
+			if err != nil {
+				log.Printf("[QueryHandler] Streaming histogram chunk failed (non-critical): %v", err)
+				return
 			}
-		}()
+			foldChunk(i, rows, cumulative)
+		}
+	}
+	if prep.needsHistogram && !prep.singleScan {
+		go runHistogram(0, make([]int, prep.histBucketCount))
 	}
 
 	histDone := !prep.needsHistogram
@@ -1933,6 +2026,14 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			"error":      msg,
 			"error_type": "execution",
 		})
+	}
+
+	failScan := func(err error) {
+		if queryCtx.Err() == context.DeadlineExceeded {
+			writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
+		} else {
+			emitExecError(err)
+		}
 	}
 
 	if prep.streamable {
@@ -1997,43 +2098,201 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			})
 		}
 
-		// Each chunk is a full read-in-order scan of its own slice that stops at the
-		// remaining row budget, so a dense search still finishes inside the first
-		// (smallest) chunk. Chunking exists for the opposite case: when matches are
-		// rarer than the limit, ClickHouse cannot emit anything until the scan ends,
-		// and one query over the whole range would show nothing until it completed.
-		chunks := []streamChunk{{start: prep.startTime, end: prep.endTime}}
-		if prep.chunkable {
-			if c := streamChunks(prep.startTime, prep.endTime); len(c) > 0 {
-				chunks = c
-			}
-		}
-
-		for i, chunk := range chunks {
-			chunkSQL := prep.sql
-			if len(chunks) > 1 {
-				var sqlErr error
-				if chunkSQL, sqlErr = prep.buildChunkSQL(chunk, prep.queryMaxRows-count); sqlErr != nil {
-					emitExecError(sqlErr)
-					return
-				}
-			}
-			streamErr := h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-c%d", searchID, i), chunkSQL, onRow, onProgress)
+		// streamRows runs one row query and streams what it returns. False means the
+		// request is over: the client left, or the scan failed and said so.
+		streamRows := func(queryID, sql string) bool {
+			streamErr := h.db.StreamQuery(queryCtx, queryID, sql, onRow, onProgress)
 			flushBatch()
 			if clientGone || r.Context().Err() != nil {
-				return
+				return false
 			}
 			if streamErr != nil && !errors.Is(streamErr, errStreamPageFull) && !errors.Is(streamErr, errStreamClient) {
-				if queryCtx.Err() == context.DeadlineExceeded {
-					writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
-				} else {
-					emitExecError(streamErr)
-				}
-				return
+				failScan(streamErr)
+				return false
 			}
 			drainHistogram(false)
-			if count >= prep.queryMaxRows {
-				break
+			return true
+		}
+
+		// scanChunk streams one chunk's rows with the plain row query.
+		scanChunk := func(queryID string, rc streamChunk) bool {
+			sql, err := prep.buildChunkSQL(rc, prep.queryMaxRows-count)
+			if err != nil {
+				emitExecError(err)
+				return false
+			}
+			return streamRows(queryID, sql)
+		}
+
+		// budgetFull: the row cap is reached, or with no cap the cursor page is full.
+		budgetFull := func() bool { return hasMoreOut || (prep.queryMaxRows > 0 && count >= prep.queryMaxRows) }
+		// rowsWanted is how many more rows the response takes: the remaining budget,
+		// or on a cursor page one past the page, the row that sets has_more.
+		rowsWanted := func() int {
+			want := prep.queryMaxRows - count
+			if prep.appliedCursorPaging {
+				if page := cursorPageSize + 1 - count; prep.queryMaxRows <= 0 || page < want {
+					want = page
+				}
+			}
+			return want
+		}
+
+		// singleScanChunk counts older chunk i and fetches the rows it located in the
+		// same scan. scanned is false when that scan failed and the chunk still needs
+		// its plain queries; ok is false when the request is over.
+		singleScanChunk := func(i int, cumulative []int) (scanned, ok bool) {
+			var counts []uint64
+			var times []time.Time
+			got := false
+			sql, err := prep.buildNewestSQL(i, rowsWanted())
+			if err == nil {
+				err = h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-s%d", searchID, i), sql, func(row map[string]interface{}) error {
+					var perr error
+					counts, times, perr = parseNewestScan(row)
+					got = perr == nil
+					return perr
+				}, onProgress)
+			}
+			if r.Context().Err() != nil {
+				return false, false
+			}
+			if err != nil && queryCtx.Err() != nil {
+				failScan(err)
+				return false, false
+			}
+			if err == nil && !got {
+				err = errors.New("single scan returned no row")
+			}
+			if err != nil {
+				log.Printf("[QueryHandler] Single scan of chunk %d failed, using plain scans (non-critical): %v", i, err)
+				return false, true
+			}
+			c := prep.histChunks[i]
+			for k, n := range counts {
+				if idx := c.loIdx + k; idx < c.hiIdx {
+					cumulative[idx] += int(n)
+				}
+			}
+			publishHistogram(cumulative, c.loIdx)
+			drainHistogram(false)
+			if len(times) == 0 {
+				return true, true
+			}
+			fetchSQL, err := prep.buildFetchSQL(times, prep.queryMaxRows-count)
+			if err != nil {
+				emitExecError(err)
+				return false, false
+			}
+			return true, streamRows(fmt.Sprintf("%s-r%d", searchID, i), fetchSQL)
+		}
+
+		// singleScanRows reads the rows along the histogram's chunks: the newest by a
+		// plain row scan beside its histogram, so a dense search still answers from one
+		// short read, and each older one by singleScanChunk. False means the request is over.
+		singleScanRows := func() bool {
+			cumulative := make([]int, prep.histBucketCount)
+			type countResult struct {
+				rows []map[string]interface{}
+				err  error
+			}
+			first := make(chan countResult, 1)
+			go func() {
+				rows, err := countChunk(0)
+				first <- countResult{rows, err}
+			}()
+			if !scanChunk(searchID+"-c0", prep.rowChunk(0)) {
+				return false
+			}
+			// foldFirst folds chunk 0's histogram, false if it failed.
+			foldFirst := func() bool {
+				res := <-first
+				if res.err != nil {
+					log.Printf("[QueryHandler] Streaming histogram chunk failed (non-critical): %v", res.err)
+					return false
+				}
+				foldChunk(0, res.rows, cumulative)
+				return true
+			}
+			if budgetFull() {
+				// The rows are in; the timeline finishes behind the done frame.
+				go func() {
+					if foldFirst() {
+						runHistogram(1, cumulative)
+					} else {
+						close(histCh)
+					}
+				}()
+				return true
+			}
+
+			// While histOwned, this goroutine publishes the timeline and must close histCh.
+			histOwned := foldFirst()
+			if histOwned {
+				drainHistogram(false)
+			} else {
+				close(histCh)
+			}
+			next := 1
+			for ; next < len(prep.histChunks) && !budgetFull(); next++ {
+				if histOwned {
+					scanned, ok := singleScanChunk(next, cumulative)
+					if !ok {
+						return false
+					}
+					if scanned {
+						continue
+					}
+					// Hand the rest of the timeline to the plain histogram.
+					go runHistogram(next, cumulative)
+					histOwned = false
+				}
+				if !scanChunk(fmt.Sprintf("%s-c%d", searchID, next), prep.rowChunk(next)) {
+					return false
+				}
+			}
+			if histOwned {
+				if next < len(prep.histChunks) {
+					go runHistogram(next, cumulative)
+				} else {
+					close(histCh)
+				}
+			}
+			return true
+		}
+
+		if prep.singleScan {
+			if !singleScanRows() {
+				return
+			}
+		} else {
+			// Each chunk is a full read-in-order scan of its own slice that stops at the
+			// remaining row budget, so a dense search still finishes inside the first
+			// (smallest) chunk. Chunking exists for the opposite case: when matches are
+			// rarer than the limit, ClickHouse cannot emit anything until the scan ends,
+			// and one query over the whole range would show nothing until it completed.
+			chunks := []streamChunk{{start: prep.startTime, end: prep.endTime}}
+			if prep.chunkable {
+				if c := streamChunks(prep.startTime, prep.endTime); len(c) > 0 {
+					chunks = c
+				}
+			}
+
+			for i, chunk := range chunks {
+				chunkSQL := prep.sql
+				if len(chunks) > 1 {
+					var sqlErr error
+					if chunkSQL, sqlErr = prep.buildChunkSQL(chunk, prep.queryMaxRows-count); sqlErr != nil {
+						emitExecError(sqlErr)
+						return
+					}
+				}
+				if !streamRows(fmt.Sprintf("%s-c%d", searchID, i), chunkSQL) {
+					return
+				}
+				if budgetFull() {
+					break
+				}
 			}
 		}
 
@@ -2055,13 +2314,8 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	} else {
 		rows, qErr := h.db.QueryUserSearchWithID(queryCtx, searchID+"-main", prep.sql)
 		if qErr != nil {
-			if r.Context().Err() != nil {
-				return
-			}
-			if queryCtx.Err() == context.DeadlineExceeded {
-				writeFrame(map[string]interface{}{"type": "error", "error": "Query timeout: add more specific filters or reduce the time range", "error_type": "timeout"})
-			} else {
-				emitExecError(qErr)
+			if r.Context().Err() == nil {
+				failScan(qErr)
 			}
 			return
 		}

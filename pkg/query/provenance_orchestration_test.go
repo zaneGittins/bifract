@@ -106,6 +106,10 @@ func chResultOf(rows []map[string]interface{}) fakedb.CHResult {
 				types[k] = "Int64"
 			case float64:
 				types[k] = "Float64"
+			case []uint64:
+				types[k] = "Array(UInt64)"
+			case []int64:
+				types[k] = "Array(Int64)"
 			default:
 				panic(fmt.Sprintf("chResultOf: unsupported %T in column %s", v, k))
 			}
