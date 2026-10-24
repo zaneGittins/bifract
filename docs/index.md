@@ -1,6 +1,6 @@
 # Welcome to Bifract
 
-Bifract is an open source log management, detection, and collaboration platform.
+Bifract is a self-hosted, open source SIEM built on ClickHouse. It adds process provenance graphs, behavioral baselines, and collaborative investigation to fast log search, all on your own infrastructure.
 
 ## Where to Start
 

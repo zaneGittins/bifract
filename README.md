@@ -1,7 +1,7 @@
 <div align="center">
   <img src="web/static/logo.png" alt="Bifract" width="80">
   <h1>Bifract</h1>
-  <p>Open source log management, detection, and collaboration</p>
+  <p>Self-hosted, open source SIEM built on ClickHouse</p>
 
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-9c6ade" alt="License"></a>
   <a href="https://github.com/zaneGittins/bifract/releases"><img src="https://img.shields.io/github/v/release/zaneGittins/bifract?color=9c6ade" alt="Release"></a>
@@ -10,7 +10,7 @@
 
 ![Provenance graph](docs/images/pgr.gif)
 
-Bifract is a log platform for security teams, built on ClickHouse for high-volume storage and search. It pairs a pipe-based query language with behavioral baselines, process provenance, and collaborative investigation.
+Bifract is an open source SIEM you run on your own infrastructure. Logs are stored and searched in ClickHouse and archived to your object storage as Parquet. On top of that it adds what generic log tools leave out: process provenance graphs, behavioral baselines, and collaborative investigation, all driven by a pipe-based query language built for analysts. There are no license keys or feature gates.
 
 ## Quick Start
 
