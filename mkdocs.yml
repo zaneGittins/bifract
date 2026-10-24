@@ -1,5 +1,5 @@
 site_name: Bifract Documentation
-site_description: Open source log management, detection, and collaboration
+site_description: Self-hosted, open source SIEM built on ClickHouse
 site_url: https://docs.bifract.io
 repo_url: https://github.com/zaneGittins/bifract
 repo_name: zaneGittins/bifract
