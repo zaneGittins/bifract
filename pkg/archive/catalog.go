@@ -179,8 +179,8 @@ const (
 //
 // Requires ClickHouse >= 26.6 to read the arrow-go bloom filters correctly: CH
 // 26.2 mis-read them and false-negative pruned (dropped real matches). The
-// bundled ClickHouse image is pinned to 26.6, and --upgrade/--upgrade-k8s carry
-// that to existing installs, so bloom read is safe.
+// bundled ClickHouse image is pinned to 26.6 or newer, and --upgrade/--upgrade-k8s
+// carry that to existing installs, so bloom read is safe.
 func iceTableProperties() iceberg.Properties {
 	props := iceberg.Properties{
 		"write.parquet.compression-codec": "zstd",

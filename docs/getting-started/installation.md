@@ -18,6 +18,9 @@ sudo bifract --upgrade
 
 This automatically checks for a newer version of `bifract` itself, downloads it if available, then runs the upgrade.
 
+!!! warning "ClickHouse cannot be downgraded"
+    An upgrade can move the bundled ClickHouse to a newer version. After it starts, do not go back to an older `docker-compose.yml`: an older ClickHouse cannot read data the newer one wrote, so those logs disappear from search. If that happens, see [Rolling back after a ClickHouse upgrade](../administration/backup-restore.md#rolling-back-after-a-clickhouse-upgrade).
+
 To install without the wizard, for example from cloud-init or CI, see [Non-interactive Install](non-interactive.md).
 
 ## Architecture

@@ -211,7 +211,7 @@ it. Startup is a one-time cost of roughly ten seconds; after that thousands of c
 insert and one query each.
 
 Use the same ClickHouse version your deployment runs. That is
-`clickhouse/clickhouse-server:26.6.2.81-alpine` in the shipped `docker-compose.yml`.
+`clickhouse/clickhouse-server:26.8.34.13-alpine` in the shipped `docker-compose.yml`.
 
 ### GitHub Actions
 
@@ -238,7 +238,7 @@ jobs:
     needs: lint
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.6.2.81-alpine
+        image: clickhouse/clickhouse-server:26.8.34.13-alpine
         ports: ['9000:9000']
         env:
           CLICKHOUSE_USER: default
@@ -293,7 +293,7 @@ test-detections:
   stage: test
   image: alpine:3.20
   services:
-    - name: clickhouse/clickhouse-server:26.6.2.81-alpine
+    - name: clickhouse/clickhouse-server:26.8.34.13-alpine
       alias: clickhouse
   variables:
     CLICKHOUSE_USER: default
