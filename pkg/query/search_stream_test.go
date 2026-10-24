@@ -16,6 +16,10 @@ import (
 // pin its frame protocol: meta first, rows newest-first, one done frame carrying
 // the outcome, histogram frames that fill in newest-first and end complete (or say
 // they did not), and an error frame in place of done when the scan fails.
+//
+// The row-chunk tests search "*": its histogram reads the per-minute rollup, so
+// its rows keep their own chunks. A filtered search shares its scans with the
+// histogram instead (search_singlescan_test.go).
 
 func runStream(t *testing.T, e *testEnv, req QueryRequest) []frame {
 	t.Helper()
@@ -62,9 +66,9 @@ func TestHandleQueryStreamProtocol(t *testing.T) {
 		if isHistogramSQL(sql) {
 			// One count per chunk, in the chunk's own newest bucket.
 			switch {
-			case strings.Contains(sql, "'2026-10-01 22:00:00.000' AND timestamp <= '2026-10-02"):
+			case strings.Contains(sql, "minute >= '2026-10-01 22:00:00'"):
 				return []map[string]interface{}{{"bucket": "2026-10-01 23:45:00", "cnt": uint64(3)}}, nil
-			case strings.Contains(sql, "timestamp >= '2026-10-01 18:00:00.000'"):
+			case strings.Contains(sql, "minute >= '2026-10-01 18:00:00'"):
 				return []map[string]interface{}{{"bucket": "2026-10-01 21:45:00", "cnt": uint64(2)}}, nil
 			}
 			return []map[string]interface{}{}, nil
@@ -78,13 +82,13 @@ func TestHandleQueryStreamProtocol(t *testing.T) {
 		return []map[string]interface{}{}, nil
 	})
 
-	frames := runStream(t, e, QueryRequest{Query: "level=error", FractalID: "f1"})
+	frames := runStream(t, e, QueryRequest{Query: "*", FractalID: "f1"})
 	kinds := frameKinds(frames)
 	if kinds[0] != "meta" {
 		t.Fatalf("first frame %q, want meta (%v)", kinds[0], kinds)
 	}
 	meta := frames[0]
-	if meta["streaming"] != true || !strings.Contains(meta["sql"].(string), "fields.`level`") {
+	if meta["streaming"] != true || !strings.Contains(meta["sql"].(string), "fractal_id = 'f1'") {
 		t.Errorf("meta = %v", meta)
 	}
 	if hm, _ := meta["histogram_meta"].(map[string]interface{}); hm == nil || hm["bucket_count"] != 96.0 || hm["bucket_seconds"] != 900.0 {
@@ -178,13 +182,40 @@ func TestHandleQueryStreamRowBudget(t *testing.T) {
 		t.Errorf("scanned past a full budget: %s", sql)
 		return []map[string]interface{}{}, nil
 	})
-	frames := runStream(t, e, QueryRequest{Query: "level=error", FractalID: "f1"})
+	frames := runStream(t, e, QueryRequest{Query: "*", FractalID: "f1"})
 	scans := rowScans(e.ch)
 	if len(scans) != 2 || !strings.HasSuffix(scans[0], "LIMIT 3") || !strings.HasSuffix(scans[1], "LIMIT 1") {
 		t.Errorf("scans = %v", scans)
 	}
 	done := framesOf(frames, "done")
 	if len(done) != 1 || done[0]["count"] != 3.0 || done[0]["limit_hit"] != "search" {
+		t.Errorf("done = %v", done)
+	}
+}
+
+// With no deployment row cap the response is a cursor page, so a sparse search
+// keeps scanning older chunks rather than stopping after the newest.
+func TestHandleQueryStreamUncappedScansEveryChunk(t *testing.T) {
+	e := newTestEnv(t, 0)
+	e.respond(func(sql string) ([]map[string]interface{}, error) {
+		switch {
+		case isHistogramSQL(sql):
+			return []map[string]interface{}{}, nil
+		case strings.Contains(sql, newestChunk):
+			return logRows(1, testEndTime, "f1"), nil
+		case strings.Contains(sql, secondChunk):
+			return logRows(1, testEndTime.Add(-2*time.Hour), "f1"), nil
+		}
+		return []map[string]interface{}{}, nil
+	})
+	frames := runStream(t, e, QueryRequest{Query: "*", FractalID: "f1"})
+	if scans := rowScans(e.ch); len(scans) != 4 {
+		t.Errorf("row scans = %d, want every chunk", len(scans))
+	}
+	if got := len(streamedRows(frames)); got != 2 {
+		t.Errorf("streamed %d rows, want 2", got)
+	}
+	if done := framesOf(frames, "done")[0]; done["has_more"] != false {
 		t.Errorf("done = %v", done)
 	}
 }
@@ -281,7 +312,7 @@ func TestHandleQueryStreamPartialHistogram(t *testing.T) {
 		}
 		return logRows(1, testEndTime, "f1"), nil
 	})
-	frames := runStream(t, e, QueryRequest{Query: "level=error", FractalID: "f1"})
+	frames := runStream(t, e, QueryRequest{Query: "*", FractalID: "f1"})
 	hist := framesOf(frames, "histogram")
 	if len(hist) != 1 || hist[0]["complete"] != false {
 		t.Errorf("histogram frames = %v", hist)

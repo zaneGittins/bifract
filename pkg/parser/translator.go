@@ -39,6 +39,7 @@ type QueryOptions struct {
 	EndTime               time.Time
 	EndExclusive          bool // emit "timestamp < EndTime" instead of "<="; lets adjacent chunks abut without dropping or duplicating a row
 	MaxRows               int
+	EventTimes            []time.Time                  // narrow the scan to rows at exactly these event times (timestamp, never ingest_timestamp)
 	FractalID             string                       // Fractal UUID for filtering logs to specific fractal
 	FractalIDs            []string                     // Multiple fractal UUIDs (prism context); overrides FractalID when set
 	IncludeEmptyFractalID bool                         // Include logs with no fractal_id (legacy data) when querying default fractal
@@ -520,6 +521,29 @@ func BuildHistogramSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds 
 	return sql, nil
 }
 
+// BuildHistogramNewestSQL counts BuildHistogramSQL's buckets as one array from
+// opts.StartTime and, in the same scan, the event times (negated Unix ms, newest
+// first) of the newest matches in [from, to).
+func BuildHistogramNewestSQL(pipeline *PipelineNode, opts QueryOptions, bucketSeconds, newest int, from, to time.Time) (string, error) {
+	if newest < 1 {
+		return "", fmt.Errorf("newest must be at least 1, got %d", newest)
+	}
+	if bucketSeconds <= 0 || opts.StartTime.Unix()%int64(bucketSeconds) != 0 {
+		return "", fmt.Errorf("window start %s is not on a %ds bucket boundary", opts.StartTime, bucketSeconds)
+	}
+	with, where, err := scanFilter(pipeline, opts)
+	if err != nil {
+		return "", err
+	}
+	sql := fmt.Sprintf(
+		"%sSELECT countResample(%d, %d, %d)(toUnixTimestamp(toStartOfInterval(timestamp, INTERVAL %d SECOND))) AS hist_counts, "+
+			"groupArraySortedIf(%d)(-toUnixTimestamp64Milli(timestamp), timestamp >= '%s' AND timestamp < '%s') AS newest_ms FROM %s WHERE %s",
+		with, opts.StartTime.Unix(), opts.EndTime.Unix(), bucketSeconds, bucketSeconds,
+		newest, chTimeLiteral(from), chTimeLiteral(to), opts.EffectiveTableName(), where,
+	)
+	return sql, nil
+}
+
 // FieldStatsParams configures the sampled field-statistics aggregation.
 type FieldStatsParams struct {
 	SampleSize int // max rows scanned (a bounded, most-recent superset of the results window)
@@ -755,6 +779,13 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 	}
 	source := plan.SourceStage()
 	source.Layer.Where = append(source.Layer.Where, windowConditions(opts)...)
+	if len(opts.EventTimes) > 0 {
+		lits := make([]string, len(opts.EventTimes))
+		for i, t := range opts.EventTimes {
+			lits[i] = "'" + chTimeLiteral(t) + "'"
+		}
+		source.Layer.Where = append(source.Layer.Where, "timestamp IN ("+strings.Join(lits, ", ")+")")
+	}
 
 	if opts.MaxEventLagSeconds > 0 {
 		source.Layer.Where = append(source.Layer.Where,
