@@ -210,32 +210,23 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	if isPrismContext {
 		fractalIDForQuery = ""
 	}
-	opts := parser.QueryOptions{
-		StartTime:             start,
-		EndTime:               end,
-		MaxRows:               maxRows,
-		FractalID:             fractalIDForQuery,
-		FractalIDs:            prismFractalIDs,
-		IncludeEmptyFractalID: includeEmptyFractalID,
-		Dictionaries:          dictScope.Mappings,
-		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
-		NetworkDicts:          dictScope.Network,
-		PatternDicts:          dictScope.Pattern,
-		Models:                modelInfos,
-		HasCommentFilter:      hasCommentFilter,
-		CommentLogIDs:         commentLogIDs,
-		HasTLSHFilter:         hasTLSHFilter,
-		TLSHMatches:           tlshMatches,
-		GeoIPEnabled:          h.geoIPEnabled,
-		DictionaryDatabase:    h.dictDatabase(),
-		TableName:             h.queryTableName(),
-		ProcLineageTable:      h.procLineageTableName(),
-		ProcFreqTable:         h.procFreqTableName(),
-		ProcEdgesTable:        h.procEdgesTableName(),
-		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
-		IncludeIngestTime:     true,
-		DisplayTimezone:       scope.Timezone,
-	}
+	opts := h.logsQueryOptions()
+	opts.StartTime = start
+	opts.EndTime = end
+	opts.MaxRows = maxRows
+	opts.FractalID = fractalIDForQuery
+	opts.FractalIDs = prismFractalIDs
+	opts.IncludeEmptyFractalID = includeEmptyFractalID
+	opts.Dictionaries = dictScope.Mappings
+	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
+	opts.NetworkDicts = dictScope.Network
+	opts.PatternDicts = dictScope.Pattern
+	opts.Models = modelInfos
+	opts.HasCommentFilter = hasCommentFilter
+	opts.CommentLogIDs = commentLogIDs
+	opts.HasTLSHFilter = hasTLSHFilter
+	opts.TLSHMatches = tlshMatches
+	opts.DisplayTimezone = scope.Timezone
 
 	// Source commands (e.g. pgr()) generate the pipeline's source. Resolve into a subquery
 	// source and drop the command; the rest of the pipeline (including pgraph()) translates

@@ -40,6 +40,7 @@ type QueryOptions struct {
 	EndExclusive          bool // emit "timestamp < EndTime" instead of "<="; lets adjacent chunks abut without dropping or duplicating a row
 	MaxRows               int
 	EventTimes            []time.Time                  // narrow the scan to rows at exactly these event times (timestamp, never ingest_timestamp)
+	NormLogIndexHints     bool                         // hint eligible field filters to the norm_log n-gram index (see normLogHint)
 	FractalID             string                       // Fractal UUID for filtering logs to specific fractal
 	FractalIDs            []string                     // Multiple fractal UUIDs (prism context); overrides FractalID when set
 	IncludeEmptyFractalID bool                         // Include logs with no fractal_id (legacy data) when querying default fractal
@@ -217,6 +218,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		}
 	}
 	registry := NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
+	registry.normLogIndexHints = opts.NormLogIndexHints && opts.SourceMode != SourceIceberg && opts.SourceSubquery == ""
 	// A subquery source (a resolved source command) exposes flat columns; register them so
 	// bare references resolve to the column name (not fields.`x` JSON access). Numeric columns
 	// register as Assignment (already numeric -> no toFloat64OrZero coercion, which errors on a
