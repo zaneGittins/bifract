@@ -81,6 +81,8 @@ type FieldRegistry struct {
 	// aggregation before them (firstStageView, a case branch, a chain step): count,
 	// sum and avg name log fields there, not aggregates.
 	rowLevel bool
+	// normLogIndexHints allows norm_log index hints on scan filters (see normLogHint).
+	normLogIndexHints bool
 }
 
 // NewFieldRegistry creates a registry pre-populated with base fields for the
@@ -123,6 +125,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 		groupKeyCmd: r.groupKeyCmd,
 		rowLevel:    r.rowLevel,
 	}
+	c.normLogIndexHints = r.normLogIndexHints
 	for k, v := range r.groupKeys {
 		c.groupKeys[k] = v
 	}
@@ -141,6 +144,7 @@ func (r *FieldRegistry) Clone() *FieldRegistry {
 func (r *FieldRegistry) firstStageView() *FieldRegistry {
 	v := NewFieldRegistry(r.sourceMode, r.icePromoted)
 	v.rowLevel = true
+	v.normLogIndexHints = r.normLogIndexHints
 	for _, name := range r.order {
 		if e := r.fields[name]; e.ProducedBy < 0 {
 			entry := *e

@@ -486,14 +486,14 @@ func fieldFirstStage(field string, plan *QueryPlan) int {
 
 // materializeAtPositions ANDs conds, each run written at one position resolved
 // against the registry there.
-func materializeAtPositions(conds []HavingCondition, registry *FieldRegistry, plan *QueryPlan) string {
+func materializeAtPositions(conds []HavingCondition, registry *FieldRegistry, plan *QueryPlan, atScan bool) string {
 	var clauses []string
 	for i := 0; i < len(conds); {
 		j := i + 1
 		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex && conds[j].AssignIndex == conds[i].AssignIndex {
 			j++
 		}
-		if clause := materializeCondGroup(conds[i:j], plan.conditionRegistry(conds[i], registry), nil); clause != "" {
+		if clause := materializeCondGroup(conds[i:j], plan.conditionRegistry(conds[i], registry), nil, atScan); clause != "" {
 			clauses = append(clauses, clause)
 		}
 		i = j
@@ -530,7 +530,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		}
 		byStage[idx] = append(byStage[idx], cond)
 	}
-	if clause := materializeAtPositions(firstStage, registry, plan); clause != "" {
+	if clause := materializeAtPositions(firstStage, registry, plan, true); clause != "" {
 		source := plan.SourceStage()
 		source.Layer.Where = slices.Insert(source.Layer.Where, min(plan.baseWhereLen, len(source.Layer.Where)), clause)
 	}
@@ -551,7 +551,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 			groups[dst] = append(groups[dst], cond)
 		}
 		for _, dst := range dests {
-			if clause := materializeAtPositions(groups[dst], registry, plan); clause != "" {
+			if clause := materializeAtPositions(groups[dst], registry, plan, idx == 0 && dst == &layer.Where); clause != "" {
 				*dst = append(*dst, clause)
 			}
 		}
@@ -567,7 +567,7 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 		havingByStage[idx] = append(havingByStage[idx], cond)
 	}
 	for _, idx := range havingOrder {
-		if clause := materializeAtPositions(havingByStage[idx], registry, plan); clause != "" {
+		if clause := materializeAtPositions(havingByStage[idx], registry, plan, false); clause != "" {
 			plan.Stages[idx].Layer.Having = append(plan.Stages[idx].Layer.Having, clause)
 		}
 	}
@@ -587,12 +587,12 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 				postJoin = append(postJoin, c)
 			}
 		}
-		if clause := materializeCondGroup(postJoin, registry, nil); clause != "" {
+		if clause := materializeCondGroup(postJoin, registry, nil, false); clause != "" {
 			plan.PostJoinWhere = append(plan.PostJoinWhere, clause)
 		}
 		deferred = outer
 	}
-	if clause := materializeCondGroup(deferred, registry, plan.deferredScope()); clause != "" {
+	if clause := materializeCondGroup(deferred, registry, plan.deferredScope(), false); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
 	}
 }
@@ -651,7 +651,9 @@ func fieldOwningStage(field string, plan *QueryPlan) int {
 
 // materializeCondGroup builds SQL for a group of conditions, recursing into
 // compound nodes, and joins them with their connectors.
-func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry, scope *deferredScope) string {
+// atScan marks conditions bound to the logs scan's own WHERE, the only place a
+// norm_log index hint may go.
+func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
 	if len(conditions) == 0 {
 		return ""
 	}
@@ -661,7 +663,7 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry,
 	for _, cond := range conditions {
 		var condSQL string
 		if cond.IsCompound {
-			inner := materializeCondGroup(cond.Children, registry, scope)
+			inner := materializeCondGroup(cond.Children, registry, scope, atScan)
 			if inner == "" {
 				continue
 			}
@@ -675,7 +677,7 @@ func materializeCondGroup(conditions []HavingCondition, registry *FieldRegistry,
 		} else if cond.PredicateSQL != "" {
 			condSQL = cond.PredicateSQL
 		} else {
-			condSQL = buildConditionSQL(cond, registry, scope)
+			condSQL = buildConditionSQL(cond, registry, scope, atScan)
 			if condSQL == "" {
 				continue
 			}
@@ -738,11 +740,23 @@ func joinCondGroups(groups []condGroup) string {
 	return clause
 }
 
-// buildConditionSQL builds the SQL for a single HavingCondition using the registry.
-func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope) string {
-	var fieldRef string
-	isJSONField := false
+// buildConditionSQL builds the SQL for a single HavingCondition using the registry,
+// with a norm_log index hint when it filters a stored field on the logs scan.
+func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
+	fieldRef, isJSONField := resolveConditionField(cond, registry)
+	sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField)
+	if sql == "" || !atScan || !isJSONField || !registry.normLogIndexHints {
+		return sql
+	}
+	if hint := normLogHint(cond, registry.sourceMode); hint != "" {
+		return "(" + sql + " AND " + hint + ")"
+	}
+	return sql
+}
 
+// resolveConditionField returns the reference a condition's field compiles to, and
+// whether that is a stored JSON path rather than a column or computed field.
+func resolveConditionField(cond HavingCondition, registry *FieldRegistry) (fieldRef string, isJSONField bool) {
 	entry := registry.Get(cond.Field)
 	if entry != nil {
 		switch entry.Kind {
@@ -777,6 +791,12 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 			isJSONField = true
 		}
 	}
+	return fieldRef, isJSONField
+}
+
+// conditionSQL compiles a single HavingCondition, its field already resolved.
+func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, fieldRef string, isJSONField bool) string {
+	entry := registry.Get(cond.Field)
 
 	// At a deferred layer a source expression must be read from its exported hidden
 	// column; bare column names pass through untouched.
@@ -812,10 +832,7 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 	}
 
 	if cond.Operator == "=~" || cond.Operator == "=^" || cond.Operator == "=$" {
-		values := cond.Values
-		if len(values) == 0 && cond.Value != "" {
-			values = []string{cond.Value}
-		}
+		values := conditionValues(cond)
 		switch cond.Operator {
 		case "=~":
 			return buildContainsAnySQL(fieldRef, values, cond.Negate, sourceModeOf(registry))
@@ -830,10 +847,11 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 		// Comma-separated equality list -> IN / NOT IN. Negation is folded into
 		// the operator by negateHavingCondition (= <-> !=), matching single value.
 		negate := cond.Operator == "!="
+		values := conditionValues(cond)
 		if registry.sourceMode == SourceIceberg && isJSONField {
-			return buildIcebergEqualityListSQL(cond.Field, cond.Values, negate, registry.icePromoted)
+			return buildIcebergEqualityListSQL(cond.Field, values, negate, registry.icePromoted)
 		}
-		return buildEqualityListSQL(fieldRef, cond.Values, negate, isJSONField)
+		return buildEqualityListSQL(fieldRef, values, negate, isJSONField)
 	}
 
 	switch cond.Operator {
@@ -872,6 +890,23 @@ func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *def
 	return ""
 }
 
+// conditionValues returns the values a condition compares against, as conditionSQL
+// reads them: a contains/prefix/suffix list or its single value, an equality list
+// of two or more, or else the single value.
+func conditionValues(cond HavingCondition) []string {
+	switch cond.Operator {
+	case "=~", "=^", "=$":
+		if len(cond.Values) == 0 && cond.Value != "" {
+			return []string{cond.Value}
+		}
+		return cond.Values
+	}
+	if len(cond.Values) > 1 {
+		return cond.Values
+	}
+	return []string{cond.Value}
+}
+
 // conditionsPredicate compiles a sub-pipeline's conditions (a case branch, a chain
 // step) into one predicate against registry. Such a sub-pipeline is evaluated row
 // by row, so every column it references is in scope and nothing is routed to a
@@ -885,7 +920,7 @@ func conditionsPredicate(conds []HavingCondition, registry *FieldRegistry, opts 
 			return "", err
 		}
 	}
-	return materializeCondGroup(conds, registry, nil), nil
+	return materializeCondGroup(conds, registry, nil, false), nil
 }
 
 // SplitFirstStage separates the conditions written before a pipeline's first

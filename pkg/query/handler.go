@@ -130,6 +130,22 @@ func (h *QueryHandler) SetGeoIPEnabled(enabled bool) {
 	h.geoIPEnabled = enabled
 }
 
+// logsQueryOptions holds the QueryOptions every BQL query over the logs table takes
+// from the handler rather than the request.
+func (h *QueryHandler) logsQueryOptions() parser.QueryOptions {
+	return parser.QueryOptions{
+		GeoIPEnabled:       h.geoIPEnabled,
+		DictionaryDatabase: h.dictDatabase(),
+		TableName:          h.queryTableName(),
+		ProcLineageTable:   h.procLineageTableName(),
+		ProcFreqTable:      h.procFreqTableName(),
+		ProcEdgesTable:     h.procEdgesTableName(),
+		IncludeShardNum:    h.db != nil && h.db.Topology().DistributedTables,
+		IncludeIngestTime:  true,
+		NormLogIndexHints:  true,
+	}
+}
+
 // queryTableName returns "logs_distributed" in cluster mode, "logs" otherwise.
 func (h *QueryHandler) queryTableName() string {
 	if h.db == nil {
@@ -1053,36 +1069,27 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	if isPrismContext {
 		fractalIDForQuery = ""
 	}
-	opts := parser.QueryOptions{
-		StartTime:             startTime,
-		EndTime:               endTime,
-		MaxRows:               maxRows,
-		FractalID:             fractalIDForQuery,
-		FractalIDs:            prismFractalIDs,
-		IncludeEmptyFractalID: includeEmptyFractalID,
-		Dictionaries:          dictScope.Mappings,
-		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
-		NetworkDicts:          dictScope.Network,
-		PatternDicts:          dictScope.Pattern,
-		Models:                modelInfos,
-		HasCommentFilter:      hasCommentFilter,
-		CommentLogIDs:         commentLogIDs,
-		HasTLSHFilter:         hasTLSHFilter,
-		TLSHMatches:           tlshMatches,
-		GeoIPEnabled:          h.geoIPEnabled,
-		DictionaryDatabase:    h.dictDatabase(),
-		TableName:             h.queryTableName(),
-		ProcLineageTable:      h.procLineageTableName(),
-		ProcFreqTable:         h.procFreqTableName(),
-		ProcEdgesTable:        h.procEdgesTableName(),
-		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
-		IncludeIngestTime:     true,
-		// An ad-hoc query has one viewer and no cache to share, so its time
-		// buckets snap to that person's zone. An API key resolves to empty
-		// here, which is UTC. A request that pins a zone (a notebook section,
-		// whose results are cached and read by everyone) overrides that.
-		DisplayTimezone: requestTimezone(r.Context(), req.Timezone),
-	}
+	opts := h.logsQueryOptions()
+	opts.StartTime = startTime
+	opts.EndTime = endTime
+	opts.MaxRows = maxRows
+	opts.FractalID = fractalIDForQuery
+	opts.FractalIDs = prismFractalIDs
+	opts.IncludeEmptyFractalID = includeEmptyFractalID
+	opts.Dictionaries = dictScope.Mappings
+	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
+	opts.NetworkDicts = dictScope.Network
+	opts.PatternDicts = dictScope.Pattern
+	opts.Models = modelInfos
+	opts.HasCommentFilter = hasCommentFilter
+	opts.CommentLogIDs = commentLogIDs
+	opts.HasTLSHFilter = hasTLSHFilter
+	opts.TLSHMatches = tlshMatches
+	// An ad-hoc query has one viewer and no cache to share, so its time
+	// buckets snap to that person's zone. An API key resolves to empty
+	// here, which is UTC. A request that pins a zone (a notebook section,
+	// whose results are cached and read by everyone) overrides that.
+	opts.DisplayTimezone = requestTimezone(r.Context(), req.Timezone)
 	if purpose == purposeExport {
 		opts.MaxRows = 0
 		opts.IncludeShardNum = false
@@ -1443,34 +1450,25 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: tlshErr.Error()})
 		return
 	}
-	opts := parser.QueryOptions{
-		StartTime:             startTime,
-		EndTime:               endTime,
-		MaxRows:               h.maxRows,
-		FractalID:             fractalIDForQuery,
-		FractalIDs:            prismFractalIDs,
-		IncludeEmptyFractalID: false,
-		Dictionaries:          dictScope.Mappings,
-		CaseInsensitiveDicts:  dictScope.CaseInsensitive,
-		NetworkDicts:          dictScope.Network,
-		PatternDicts:          dictScope.Pattern,
-		Models:                modelInfos,
-		HasCommentFilter:      hasComment,
-		HasTLSHFilter:         hasTLSH,
-		GeoIPEnabled:          h.geoIPEnabled,
-		DictionaryDatabase:    h.dictDatabase(),
-		TableName:             h.queryTableName(),
-		ProcLineageTable:      h.procLineageTableName(),
-		ProcFreqTable:         h.procFreqTableName(),
-		ProcEdgesTable:        h.procEdgesTableName(),
-		IncludeShardNum:       h.db != nil && h.db.Topology().DistributedTables,
-		IncludeIngestTime:     true,
-		// An ad-hoc query has one viewer and no cache to share, so its time
-		// buckets snap to that person's zone. An API key resolves to empty
-		// here, which is UTC. A request that pins a zone (a notebook section,
-		// whose results are cached and read by everyone) overrides that.
-		DisplayTimezone: requestTimezone(r.Context(), req.Timezone),
-	}
+	opts := h.logsQueryOptions()
+	opts.StartTime = startTime
+	opts.EndTime = endTime
+	opts.MaxRows = h.maxRows
+	opts.FractalID = fractalIDForQuery
+	opts.FractalIDs = prismFractalIDs
+	opts.IncludeEmptyFractalID = false
+	opts.Dictionaries = dictScope.Mappings
+	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
+	opts.NetworkDicts = dictScope.Network
+	opts.PatternDicts = dictScope.Pattern
+	opts.Models = modelInfos
+	opts.HasCommentFilter = hasComment
+	opts.HasTLSHFilter = hasTLSH
+	// An ad-hoc query has one viewer and no cache to share, so its time
+	// buckets snap to that person's zone. An API key resolves to empty
+	// here, which is UTC. A request that pins a zone (a notebook section,
+	// whose results are cached and read by everyone) overrides that.
+	opts.DisplayTimezone = requestTimezone(r.Context(), req.Timezone)
 	// A source command (pgr()) builds the pipeline's source from the database, which
 	// validation must not touch. Check its placement and arguments, then translate
 	// the rest of the pipeline over a stand-in with the same columns, as execution
