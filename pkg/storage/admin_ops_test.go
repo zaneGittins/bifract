@@ -469,12 +469,17 @@ func TestProbeCapabilities(t *testing.T) {
 		return fakedb.CHResult{Cols: []fakedb.Col{{Column: "total_space", Type: "UInt64"}, {Column: "free_space", Type: "UInt64"}}, Rows: [][]any{{total, free}}}
 	}
 
+	settingCount := func(n uint64) fakedb.CHResult {
+		return fakedb.CHResult{Cols: []fakedb.Col{{Column: "count()", Type: "UInt64"}}, Rows: [][]any{{n}}}
+	}
+
 	c, f := newFakeClient()
 	f.On("asynchronous_metrics", metrics([]any{"OSUserTime", 1.0}, []any{"OSIdleTime", 3.0}))
 	f.On("system.disks", disks(100, 50))
+	f.On("system.settings", settingCount(1))
 	c.ProbeCapabilities(context.Background())
 	caps := c.Capabilities()
-	if caps[CapHostCPUMetrics].State != CapAvailable || caps[CapHostDiskMetrics].State != CapAvailable {
+	if caps[CapHostCPUMetrics].State != CapAvailable || caps[CapHostDiskMetrics].State != CapAvailable || caps[CapStatisticsSetting].State != CapAvailable {
 		t.Errorf("caps = %+v", caps)
 	}
 
@@ -483,9 +488,10 @@ func TestProbeCapabilities(t *testing.T) {
 	c, f = newFakeClient()
 	f.On("asynchronous_metrics", metrics())
 	f.On("system.disks", disks(0, 0))
+	f.On("system.settings", settingCount(0))
 	c.ProbeCapabilities(context.Background())
 	caps = c.Capabilities()
-	if caps[CapHostCPUMetrics].State != CapUnavailable || caps[CapHostDiskMetrics].State != CapUnavailable {
+	if caps[CapHostCPUMetrics].State != CapUnavailable || caps[CapHostDiskMetrics].State != CapUnavailable || caps[CapStatisticsSetting].State != CapUnavailable {
 		t.Errorf("caps = %+v", caps)
 	}
 }

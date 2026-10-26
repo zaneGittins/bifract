@@ -88,6 +88,9 @@ const (
 	// service that autoscales reports host metrics that describe nothing stable.
 	CapHostCPUMetrics  CapabilityKey = "host_cpu_metrics"
 	CapHostDiskMetrics CapabilityKey = "host_disk_metrics"
+	// CapStatisticsSetting is whether the server has the use_statistics setting,
+	// which searches turn off to skip loading column statistics per query.
+	CapStatisticsSetting CapabilityKey = "statistics_setting"
 )
 
 // Capabilities is the full set, keyed by capability.
@@ -215,6 +218,24 @@ func (c *ClickHouseClient) ProbeCapabilities(ctx context.Context) {
 	default:
 		c.recordCapability(CapHostDiskMetrics, nil)
 	}
+
+	var known uint64
+	err = c.conn.QueryRow(ctx, "SELECT count() FROM system.settings WHERE name = 'use_statistics'").Scan(&known)
+	switch {
+	case err != nil:
+		c.recordCapability(CapStatisticsSetting, err)
+	case known == 0:
+		c.caps.set(CapStatisticsSetting, CapUnavailable, "this server has no use_statistics setting")
+	default:
+		c.recordCapability(CapStatisticsSetting, nil)
+	}
+}
+
+// state returns a capability's recorded state, CapUnknown before it is checked.
+func (s *capabilityStore) state(k CapabilityKey) CapabilityState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.caps[k].State
 }
 
 // set records a state directly, for the cases where the server answered

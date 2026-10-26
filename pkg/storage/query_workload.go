@@ -486,6 +486,14 @@ func contextQueryBudget(ctx context.Context) int {
 	return sec
 }
 
+// canSkipStatistics reports whether queries may turn off column statistics. They
+// only steer the optimizer, and on ClickHouse 26.8 loading them costs seconds per
+// query per shard; the setting goes only to a server known to have it, since an
+// unknown setting fails the query.
+func (c *ClickHouseClient) canSkipStatistics() bool {
+	return c.caps.state(CapStatisticsSetting) == CapAvailable
+}
+
 // applyQuerySettings adds the settings ctx implies -- the workload tag when it is
 // marked and that workload is provisioned, the class's per-query memory ceiling, and
 // the execution ceiling when one was attached. Callers pass the settings map they were
@@ -503,7 +511,8 @@ func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clic
 	}
 	budget := contextQueryBudget(ctx)
 	comment := ContextTag(ctx).String()
-	if !tag && budget <= 0 && memCap <= 0 && comment == "" {
+	skipStats := name == QuerySearchWorkload && c.canSkipStatistics()
+	if !tag && budget <= 0 && memCap <= 0 && comment == "" && !skipStats {
 		return settings
 	}
 	if settings == nil {
@@ -521,6 +530,9 @@ func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clic
 	if budget > 0 {
 		settings["max_execution_time"] = budget
 		settings["timeout_overflow_mode"] = "throw"
+	}
+	if skipStats {
+		settings["use_statistics"] = 0
 	}
 	return settings
 }
