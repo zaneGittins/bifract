@@ -2075,12 +2075,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			return nil
 		}
 
-		onProgress := func(read, total uint64) {
-			now := time.Now()
-			if now.Sub(lastProgress) < streamProgIval {
-				return
-			}
-			lastProgress = now
+		writeProgress := func(read, total uint64) {
 			ratio := 0.0
 			if total > 0 {
 				ratio = float64(read) / float64(total)
@@ -2094,6 +2089,14 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 				"total_rows": total,
 				"ratio":      ratio,
 			})
+		}
+		onProgress := func(read, total uint64) {
+			now := time.Now()
+			if now.Sub(lastProgress) < streamProgIval {
+				return
+			}
+			lastProgress = now
+			writeProgress(read, total)
 		}
 
 		// streamRows runs one row query and streams what it returns. False means the
@@ -2136,58 +2139,96 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 			return want
 		}
 
-		// singleScanChunk counts older chunk i and fetches the rows it located in the
-		// same scan. scanned is false when that scan failed and the chunk still needs
-		// its plain queries; ok is false when the request is over.
-		singleScanChunk := func(i int, cumulative []int) (scanned, ok bool) {
-			var counts []uint64
-			var times []time.Time
-			got := false
-			sql, err := prep.buildNewestSQL(i, rowsWanted())
-			if err == nil {
-				err = h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-s%d", searchID, i), sql, func(row map[string]interface{}) error {
-					var perr error
-					counts, times, perr = parseNewestScan(row)
-					got = perr == nil
-					return perr
-				}, onProgress)
+		// newestResult is one older chunk's single scan: its bucket counts and the
+		// event times of its newest matches.
+		type newestResult struct {
+			counts []uint64
+			times  []time.Time
+			err    error
+		}
+		// Progress of the concurrent single scans, reported as one combined scan.
+		// Stopped when the handler returns, since a scan can outlive it.
+		var scanProgressMu sync.Mutex
+		scanProgressStopped := false
+		defer func() {
+			scanProgressMu.Lock()
+			scanProgressStopped = true
+			scanProgressMu.Unlock()
+		}()
+
+		// startSingleScans starts the single scans of every older chunk together, each
+		// asking for want rows: the most any chunk can still be asked for, since the
+		// budget only shrinks. Every scan is needed anyway for its chunk's timeline.
+		startSingleScans := func(want int) []chan newestResult {
+			n := len(prep.histChunks)
+			results := make([]chan newestResult, n)
+			reads, totals := make([]uint64, n), make([]uint64, n)
+			var last time.Time
+			for i := 1; i < n; i++ {
+				results[i] = make(chan newestResult, 1)
+				go func(i int) {
+					progress := func(read, total uint64) {
+						scanProgressMu.Lock()
+						defer scanProgressMu.Unlock()
+						reads[i], totals[i] = read, total
+						if now := time.Now(); !scanProgressStopped && now.Sub(last) >= streamProgIval {
+							last = now
+							var r, t uint64
+							for k := range reads {
+								r, t = r+reads[k], t+totals[k]
+							}
+							writeProgress(r, t)
+						}
+					}
+					var res newestResult
+					got := false
+					sql, err := prep.buildNewestSQL(i, want)
+					if err == nil {
+						err = h.db.StreamQuery(queryCtx, fmt.Sprintf("%s-s%d", searchID, i), sql, func(row map[string]interface{}) error {
+							var perr error
+							res.counts, res.times, perr = parseNewestScan(row)
+							got = perr == nil
+							return perr
+						}, progress)
+					}
+					if err == nil && !got {
+						err = errors.New("single scan returned no row")
+					}
+					res.err = err
+					results[i] <- res
+				}(i)
 			}
-			if r.Context().Err() != nil {
-				return false, false
-			}
-			if err != nil && queryCtx.Err() != nil {
-				failScan(err)
-				return false, false
-			}
-			if err == nil && !got {
-				err = errors.New("single scan returned no row")
-			}
-			if err != nil {
-				log.Printf("[QueryHandler] Single scan of chunk %d failed, using plain scans (non-critical): %v", i, err)
-				return false, true
-			}
-			c := prep.histChunks[i]
-			for k, n := range counts {
-				if idx := c.loIdx + k; idx < c.hiIdx {
-					cumulative[idx] += int(n)
+			return results
+		}
+
+		// countScanned adds chunk i to the timeline from its single scan, or from a
+		// plain histogram query when that scan failed. False means the timeline stops
+		// before chunk i.
+		countScanned := func(i int, res newestResult, cumulative []int) bool {
+			if res.err == nil {
+				c := prep.histChunks[i]
+				for k, n := range res.counts {
+					if idx := c.loIdx + k; idx < c.hiIdx {
+						cumulative[idx] += int(n)
+					}
 				}
+				publishHistogram(cumulative, c.loIdx)
+				return true
 			}
-			publishHistogram(cumulative, c.loIdx)
-			drainHistogram(false)
-			if len(times) == 0 {
-				return true, true
-			}
-			fetchSQL, err := prep.buildFetchSQL(times, prep.queryMaxRows-count)
+			log.Printf("[QueryHandler] Single scan of chunk %d failed, using plain scans (non-critical): %v", i, res.err)
+			rows, err := countChunk(i)
 			if err != nil {
-				emitExecError(err)
-				return false, false
+				log.Printf("[QueryHandler] Streaming histogram chunk failed (non-critical): %v", err)
+				return false
 			}
-			return true, streamRows(fmt.Sprintf("%s-r%d", searchID, i), fetchSQL)
+			foldChunk(i, rows, cumulative)
+			return true
 		}
 
 		// singleScanRows reads the rows along the histogram's chunks: the newest by a
 		// plain row scan beside its histogram, so a dense search still answers from one
-		// short read, and each older one by singleScanChunk. False means the request is over.
+		// short read, and the older ones by concurrent single scans, each counting its
+		// chunk and locating its rows, then a fetch of those rows. False means the request is over.
 		singleScanRows := func() bool {
 			cumulative := make([]int, prep.histBucketCount)
 			type countResult struct {
@@ -2224,37 +2265,69 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 				return true
 			}
 
-			// While histOwned, this goroutine publishes the timeline and must close histCh.
-			histOwned := foldFirst()
-			if histOwned {
-				drainHistogram(false)
-			} else {
+			n := len(prep.histChunks)
+			if !foldFirst() {
+				// No timeline to share a scan with: the rows carry on alone.
 				close(histCh)
-			}
-			next := 1
-			for ; next < len(prep.histChunks) && !budgetFull(); next++ {
-				if histOwned {
-					scanned, ok := singleScanChunk(next, cumulative)
-					if !ok {
+				for i := 1; i < n && !budgetFull(); i++ {
+					if !scanChunk(fmt.Sprintf("%s-c%d", searchID, i), prep.rowChunk(i)) {
 						return false
 					}
-					if scanned {
-						continue
-					}
-					// Hand the rest of the timeline to the plain histogram.
-					go runHistogram(next, cumulative)
-					histOwned = false
 				}
-				if !scanChunk(fmt.Sprintf("%s-c%d", searchID, next), prep.rowChunk(next)) {
+				return true
+			}
+			drainHistogram(false)
+
+			// The older chunks scan concurrently; their results are taken newest-first so
+			// rows and timeline frames keep their order. While histOwned, this goroutine
+			// publishes the timeline and must close histCh.
+			results := startSingleScans(rowsWanted())
+			histOwned := true
+			next := 1
+			for ; next < n && !budgetFull(); next++ {
+				res := <-results[next]
+				if r.Context().Err() != nil {
 					return false
+				}
+				if res.err != nil && queryCtx.Err() != nil {
+					failScan(res.err)
+					return false
+				}
+				if histOwned {
+					if countScanned(next, res, cumulative) {
+						drainHistogram(false)
+					} else {
+						close(histCh)
+						histOwned = false
+					}
+				}
+				if res.err != nil {
+					if !scanChunk(fmt.Sprintf("%s-c%d", searchID, next), prep.rowChunk(next)) {
+						return false
+					}
+					continue
+				}
+				if len(res.times) > 0 {
+					fetchSQL, err := prep.buildFetchSQL(res.times, prep.queryMaxRows-count)
+					if err != nil {
+						emitExecError(err)
+						return false
+					}
+					if !streamRows(fmt.Sprintf("%s-r%d", searchID, next), fetchSQL) {
+						return false
+					}
 				}
 			}
 			if histOwned {
-				if next < len(prep.histChunks) {
-					go runHistogram(next, cumulative)
-				} else {
-					close(histCh)
-				}
+				// The rows are in; the scans still running finish the timeline.
+				go func(from int) {
+					defer close(histCh)
+					for i := from; i < n; i++ {
+						if !countScanned(i, <-results[i], cumulative) {
+							return
+						}
+					}
+				}(next)
 			}
 			return true
 		}
