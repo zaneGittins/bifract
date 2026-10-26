@@ -141,30 +141,22 @@ const FractalListing = {
         if (!container) return;
 
         if (items.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-icon">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.4;">
-                            <path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7z"></path>
-                        </svg>
-                    </div>
-                    <p class="empty-message">${this.searchQuery ? 'No items match your search' : 'No fractals found'}</p>
-                    ${!this.searchQuery ? '<p class="empty-hint">Click "Create Fractal" to get started, or check if the server is running properly.</p>' : ''}
-                </div>
-            `;
+            container.innerHTML = this.searchQuery
+                ? '<div class="admin-empty">No fractals match this search</div>'
+                : '<div class="admin-empty"><strong>No fractals yet</strong>Create one to start sending logs.</div>';
             this.updatePaginationUI(0, 0);
             return;
         }
 
         let html = `
-            <div class="fractal-listing-table">
-                <table>
+            <div class="fractal-listing-table admin-list">
+                <table class="list-table">
                     <thead>
                         <tr>
                             <th>Name</th>
                             <th>Size</th>
                             <th>Retention</th>
-                            <th>Latest Event</th>
+                            <th>Latest event</th>
                         </tr>
                     </thead>
                     <tbody>

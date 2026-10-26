@@ -34,12 +34,16 @@
     margin-top: 1rem;
 }
 
-.users-table {
+/* The one table style for admin and list pages. .list-table is the neutral name
+   for new tables; .users-table predates it. */
+.users-table,
+.list-table {
     width: 100%;
     border-collapse: collapse;
 }
 
-.users-table th {
+.users-table th,
+.list-table th {
     text-align: left;
     padding: 0.625rem 0.75rem;
     background: var(--bg-secondary);
@@ -49,10 +53,16 @@
     white-space: nowrap;
 }
 
-.users-table td {
+.users-table td,
+.list-table td {
     padding: 0.75rem;
     border-top: 1px solid var(--border-color);
     font-size: 0.875rem;
+    vertical-align: middle;
+}
+
+.list-table tbody tr:hover {
+    background: var(--overlay-subtle);
 }
 
 .users-table tr[ondblclick]:hover {

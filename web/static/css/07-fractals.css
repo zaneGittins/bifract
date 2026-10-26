@@ -12,7 +12,7 @@
     flex-direction: column;
 }
 
-#fractalListingTabContent > .results-section {
+#fractalListingTabContent > .list-page {
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -24,42 +24,7 @@
     overflow-y: auto;
 }
 
-.fractal-listing-header {
-    display: flex;
-    align-items: center;
-    margin-bottom: 1rem;
-}
 
-.fractal-listing-controls {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    width: 100%;
-}
-
-.fractal-listing-header h2 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin: 0;
-}
-
-
-
-.fractal-listing-search {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    color: var(--text-primary);
-    padding: 0.5rem 0.75rem;
-    border-radius: 4px;
-    font-size: 0.875rem;
-    min-width: 250px;
-}
-
-.fractal-listing-search:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-}
 
 .btn-icon-small {
     padding: 0.25rem 0.5rem;
@@ -219,53 +184,10 @@
     white-space: nowrap;
 }
 
-/* Fractal Listing Table - matches notebooks/dashboards style */
-.fractal-listing-table {
-    width: 100%;
-    background: var(--bg-secondary);
-    border-radius: 8px;
-    overflow: hidden;
-    box-shadow: var(--shadow-sm);
-    margin-bottom: 20px;
-}
-
-.fractal-listing-table table {
-    width: 100%;
-    border-collapse: collapse;
-}
-
-.fractal-listing-table thead {
-    background: var(--bg-tertiary);
-}
-
-.fractal-listing-table th {
-    padding: 12px 15px;
-    text-align: left;
-    font-size: 0.9rem;
-    font-weight: 500;
-    color: var(--text-secondary);
-    border-bottom: 1px solid var(--border-color);
-}
-
 .fractal-listing-table tbody tr {
     border-bottom: 1px solid var(--border-color);
     cursor: pointer;
     transition: var(--transition);
-}
-
-.fractal-listing-table tbody tr:last-child {
-    border-bottom: none;
-}
-
-.fractal-listing-table tbody tr:hover {
-    background: var(--bg-hover);
-}
-
-.fractal-listing-table td {
-    padding: 12px 15px;
-    font-size: 0.9rem;
-    color: var(--text-primary);
-    vertical-align: middle;
 }
 
 .fractal-name {
@@ -346,29 +268,6 @@
 @media (max-width: 768px) {
     .fractal-listing-grid {
         grid-template-columns: 1fr;
-    }
-
-    .fractal-listing-controls {
-        flex-direction: column;
-        align-items: stretch;
-        width: 100%;
-    }
-
-    .fractal-listing-search {
-        min-width: 100%;
-    }
-
-    .fractal-listing-table th,
-    .fractal-listing-table td {
-        padding: 0.75rem 1rem;
-    }
-
-    .fractal-listing-table th {
-        font-size: 0.8125rem;
-    }
-
-    .fractal-listing-table td {
-        font-size: 0.8125rem;
     }
 
     .fractal-name {
