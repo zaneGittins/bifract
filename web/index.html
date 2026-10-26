@@ -669,43 +669,51 @@
             <div id="mainSettingsTabContent" style="display: none;">
         <!-- Settings View (Admin Only) -->
         <div id="settingsView" class="admin-only" style="display: none;">
-            <section class="settings-view-section">
+            <section class="settings-view-section settings-column">
                 <!-- Settings Sub-Tabs -->
                 <div class="alerts-sub-tabs" id="settingsSubTabs">
                     <button class="alerts-sub-tab active" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
                     <button class="alerts-sub-tab" data-subtab="groups" onclick="SettingsView.switchSubTab('groups')">Groups</button>
-                    <button class="alerts-sub-tab" data-subtab="apikeys" onclick="SettingsView.switchSubTab('apikeys')">API Keys</button>
-                    <button class="alerts-sub-tab" data-subtab="context" onclick="SettingsView.switchSubTab('context')">Context Links</button>
-                    <button class="alerts-sub-tab" data-subtab="settings" onclick="SettingsView.switchSubTab('settings')">General</button>
+                    <button class="alerts-sub-tab" data-subtab="apikeys" onclick="SettingsView.switchSubTab('apikeys')">API keys</button>
+                    <button class="alerts-sub-tab" data-subtab="context" onclick="SettingsView.switchSubTab('context')">Context links</button>
+                    <button class="alerts-sub-tab" data-subtab="platform" onclick="SettingsView.switchSubTab('platform')">Platform</button>
+                    <button class="alerts-sub-tab" data-subtab="security" onclick="SettingsView.switchSubTab('security')">Security</button>
+                    <button class="alerts-sub-tab alerts-sub-tab-danger" data-subtab="danger" onclick="SettingsView.switchSubTab('danger')">Danger zone</button>
                 </div>
 
                 <!-- Users Sub-Tab -->
                 <div id="settingsSubTabUsers" class="settings-sub-panel">
-                <div class="settings-card">
-                    <div class="admin-toolbar">
-                        <input type="text" id="usersSearch" class="admin-search" placeholder="Search users..." autocomplete="off">
-                        <span class="admin-toolbar-spacer"></span>
-                        <button id="addUserBtnSettings" class="btn-primary btn-sm">+ Add User</button>
+                <header class="admin-page-head">
+                    <div>
+                        <h2>Users</h2>
+                        <p>People who can sign in to this tenant, and their role.</p>
                     </div>
-                    <div id="usersListSettings" class="users-list">
+                    <button id="addUserBtnSettings" class="btn-primary btn-sm">Add user</button>
+                </header>
+                    <div class="admin-toolbar" id="usersToolbar">
+                        <input type="text" id="usersSearch" class="admin-search" placeholder="Search users" autocomplete="off">
+                    </div>
+                    <div id="usersListSettings" class="admin-list">
                         <div class="loading">Loading users...</div>
                     </div>
-                </div>
 
                 </div><!-- end settingsSubTabUsers -->
 
                 <!-- Groups Sub-Tab -->
                 <div id="settingsSubTabGroups" class="settings-sub-panel" style="display:none;">
-                <div class="settings-card">
                     <!-- Groups List View -->
                     <div id="groupsListView">
-                        <p class="admin-panel-desc">Groups let you assign fractal permissions to multiple users at once.</p>
-                        <div class="admin-toolbar">
-                            <input type="text" id="groupsSearch" class="admin-search" placeholder="Search groups..." autocomplete="off">
-                            <span class="admin-toolbar-spacer"></span>
-                            <button id="addGroupBtn" class="btn-primary btn-sm">+ Create Group</button>
+                        <header class="admin-page-head">
+                            <div>
+                                <h2>Groups</h2>
+                                <p>Assign fractal permissions to many users at once.</p>
+                            </div>
+                            <button id="addGroupBtn" class="btn-primary btn-sm">Create group</button>
+                        </header>
+                        <div class="admin-toolbar" id="groupsToolbar">
+                            <input type="text" id="groupsSearch" class="admin-search" placeholder="Search groups" autocomplete="off">
                         </div>
-                        <div id="groupsList" class="groups-list">
+                        <div id="groupsList" class="groups-list admin-list">
                             <div class="loading">Loading groups...</div>
                         </div>
                     </div>
@@ -735,33 +743,27 @@
                             <div id="groupMembersList"></div>
                         </div>
                     </div>
-                </div>
 
                 </div><!-- end settingsSubTabGroups -->
 
-                <!-- Settings Sub-Tab -->
-                <div id="settingsSubTabSettings" class="settings-sub-panel" style="display:none;">
-                <div class="sp-layout">
-                    <!-- Section rail -->
-                    <nav class="sp-rail" id="settingsSectionRail" aria-label="Settings sections">
-                        <button class="sp-rail-item active" data-section="spSectionQuery">Query &amp; Alerting</button>
-                        <button class="sp-rail-item" data-section="spSectionEndpoint">Endpoint Analytics</button>
-                        <button class="sp-rail-item" data-section="spSectionArchive">Archive</button>
-                        <button class="sp-rail-item" data-section="spSectionSecurity">Security</button>
-                        <button class="sp-rail-item sp-rail-danger" data-section="spSectionDanger">Danger Zone</button>
-                    </nav>
-
+                <!-- Platform Sub-Tab -->
+                <div id="settingsSubTabPlatform" class="settings-sub-panel" style="display:none;">
+                <header class="admin-page-head">
+                    <div>
+                        <h2>Platform</h2>
+                        <p>Limits and background services that apply to the whole deployment.</p>
+                    </div>
+                </header>
                     <div class="sp-content">
-                        <!-- Query & Alerting -->
-                        <section class="sp-section" id="spSectionQuery">
+                        <section class="sp-section">
                             <header class="sp-section-head">
-                                <h3>Query &amp; Alerting</h3>
-                                <p>Execution limits that keep a single query or alert from degrading the cluster.</p>
+                                <h3>Search</h3>
+                                <p>Interactive searches run by users.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="queryTimeoutSettings" class="sp-row-label">Search query timeout</label>
+                                        <label for="queryTimeoutSettings" class="sp-row-label">Query timeout</label>
                                         <p class="sp-row-desc">Maximum runtime for a user search before it is cancelled.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -773,10 +775,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="queryCPUPercentSettings" class="sp-row-label">Search CPU share</label>
+                                        <label for="queryCPUPercentSettings" class="sp-row-label">CPU share</label>
                                         <p class="sp-row-desc">Share of the ClickHouse service's CPU that running searches may use in total.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -790,10 +791,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="queryMemoryPercentSettings" class="sp-row-label">Search memory share</label>
+                                        <label for="queryMemoryPercentSettings" class="sp-row-label">Memory share</label>
                                         <p class="sp-row-desc">The largest share of each ClickHouse node's memory budget any one search may use.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -807,10 +807,18 @@
                                         </select>
                                     </div>
                                 </div>
+                            </div>
+                        </section>
 
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Alerts</h3>
+                                <p>Scheduled alert evaluation.</p>
+                            </header>
+                            <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="alertTimeoutSettings" class="sp-row-label">Alert query timeout</label>
+                                        <label for="alertTimeoutSettings" class="sp-row-label">Query timeout</label>
                                         <p class="sp-row-desc">Maximum runtime for an alert query, after which the alert is disabled automatically.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -823,10 +831,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="alertEvalIntervalSettings" class="sp-row-label">Alert evaluation interval</label>
+                                        <label for="alertEvalIntervalSettings" class="sp-row-label">Evaluation interval</label>
                                         <p class="sp-row-desc">How often the alert engine evaluates every enabled alert.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -839,10 +846,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="alertRevisionRetentionSettings" class="sp-row-label">Alert history depth</label>
+                                        <label for="alertRevisionRetentionSettings" class="sp-row-label">History depth</label>
                                         <p class="sp-row-desc">How many definition revisions each alert keeps for diffing and rollback, including the current one.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -855,10 +861,18 @@
                                         </select>
                                     </div>
                                 </div>
+                            </div>
+                        </section>
 
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Recall</h3>
+                                <p>Searches over the archive.</p>
+                            </header>
+                            <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="recallTimeoutSettings" class="sp-row-label">Recall search timeout</label>
+                                        <label for="recallTimeoutSettings" class="sp-row-label">Search timeout</label>
                                         <p class="sp-row-desc">Maximum runtime for an archive (Recall) search before it is cancelled.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -870,10 +884,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="recallMaxBytesSettings" class="sp-row-label">Recall scan limit</label>
+                                        <label for="recallMaxBytesSettings" class="sp-row-label">Scan limit</label>
                                         <p class="sp-row-desc">Rejects a Recall search before it runs when its time window holds more than this much archived data.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -887,10 +900,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="recallConcurrencySettings" class="sp-row-label">Concurrent Recall searches</label>
+                                        <label for="recallConcurrencySettings" class="sp-row-label">Concurrent searches</label>
                                         <p class="sp-row-desc">How many archive searches may run at once across the deployment.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -905,10 +917,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="recallCPUPercentSettings" class="sp-row-label">Recall CPU share</label>
+                                        <label for="recallCPUPercentSettings" class="sp-row-label">CPU share</label>
                                         <p class="sp-row-desc">Share of the ClickHouse service's CPU that running Recall searches may use in total.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -921,10 +932,9 @@
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="recallMemoryPercentSettings" class="sp-row-label">Recall memory share</label>
+                                        <label for="recallMemoryPercentSettings" class="sp-row-label">Memory share</label>
                                         <p class="sp-row-desc">The largest share of each ClickHouse node's memory budget any one Recall search may use.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -937,10 +947,18 @@
                                         </select>
                                     </div>
                                 </div>
+                            </div>
+                        </section>
 
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Schema</h3>
+                                <p>Background measurement for the Schema page.</p>
+                            </header>
+                            <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="schemaSweepIntervalSettings" class="sp-row-label">Schema measurement interval</label>
+                                        <label for="schemaSweepIntervalSettings" class="sp-row-label">Measurement interval</label>
                                         <p class="sp-row-desc">How often Bifract measures field coverage, storage, and column capacity for the Schema page.</p>
                                     </div>
                                     <div class="sp-row-control">
@@ -956,10 +974,9 @@
                             </div>
                         </section>
 
-                        <!-- Endpoint Analytics -->
-                        <section class="sp-section" id="spSectionEndpoint">
+                        <section class="sp-section">
                             <header class="sp-section-head">
-                                <h3>Endpoint Analytics</h3>
+                                <h3>Endpoint analytics</h3>
                                 <p>Process lineage and behavioral baselines behind <code>ptg</code> and <code>pgr</code>.</p>
                             </header>
                             <div class="sp-card">
@@ -976,7 +993,6 @@
                                         </label>
                                     </div>
                                 </div>
-
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="pgrSensitivitySettings" class="sp-row-label">Process graph sensitivity</label>
@@ -1001,8 +1017,7 @@
                             </div>
                         </section>
 
-                        <!-- Archive -->
-                        <section class="sp-section" id="spSectionArchive">
+                        <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Archive</h3>
                                 <p>Durable, engine-independent copy of your logs in object storage.</p>
@@ -1023,12 +1038,22 @@
                                 </div>
                             </div>
                         </section>
+                    </div>
+                </div><!-- end settingsSubTabPlatform -->
 
-                        <!-- Security -->
-                        <section class="sp-section" id="spSectionSecurity">
+                <!-- Security Sub-Tab -->
+                <div id="settingsSubTabSecurity" class="settings-sub-panel" style="display:none;">
+                <header class="admin-page-head">
+                    <div>
+                        <h2>Security</h2>
+                        <p>How people prove who they are before they reach your logs, and what can be reached without signing in.</p>
+                    </div>
+                </header>
+                    <div class="sp-content">
+                        <section class="sp-section">
                             <header class="sp-section-head">
-                                <h3>Security</h3>
-                                <p>How people prove who they are before they reach your logs, and what can be reached without signing in.</p>
+                                <h3>Authentication</h3>
+                                <p>How people sign in.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -1044,6 +1069,15 @@
                                         </label>
                                     </div>
                                 </div>
+                            </div>
+                        </section>
+
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Network exposure</h3>
+                                <p>What can be reached without signing in, and which proxies are trusted.</p>
+                            </header>
+                            <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
                                         <label for="sharedLinksEnabledToggle" class="sp-row-label">Dashboard shared links</label>
@@ -1076,29 +1110,35 @@
                                         <p class="sp-row-desc">Reverse proxies whose <code>X-Forwarded-For</code> and <code>X-Real-IP</code> headers are believed when deciding which address a request came from. That address is what login and ingest rate limits count against and what the auth log records. One CIDR range or IP address per line.</p>
                                         <p class="sp-row-meta sp-row-cost">The defaults are the loopback and private ranges, where the bundled Caddy, Docker networks and Kubernetes ingress run. A request from any other address is counted against that address, whatever its headers say. An empty list trusts no proxy.</p>
                                         <textarea id="trustedProxiesInput" class="sp-textarea" rows="4" spellcheck="false" autocomplete="off" placeholder="10.0.0.0/8&#10;203.0.113.10"></textarea>
-                                    </div>
-                                    <div class="sp-row-control">
-                                        <button type="button" id="trustedProxiesSaveBtn" class="btn-secondary">Save</button>
+                                        <div class="sp-row-actions">
+                                            <button type="button" id="trustedProxiesSaveBtn" class="btn-secondary btn-sm">Save</button>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </section>
+                    </div>
+                </div><!-- end settingsSubTabSecurity -->
 
-                        <section class="sp-section" id="spSectionDanger">
-                            <header class="sp-section-head">
-                                <h3>Danger Zone</h3>
-                                <p>Irreversible operations. Read the consequences before continuing.</p>
-                            </header>
-                            <div class="sp-card sp-card-danger">
+                <!-- Danger Zone Sub-Tab -->
+                <div id="settingsSubTabDanger" class="settings-sub-panel" style="display:none;">
+                <header class="admin-page-head">
+                    <div>
+                        <h2>Danger zone</h2>
+                        <p>Irreversible operations. Each one asks you to type a confirmation before it runs.</p>
+                    </div>
+                </header>
+                    <div class="sp-content">
+                        <div class="sp-card sp-card-danger">
                                 <div class="sp-row" id="archiveClearCatalogItem">
                                     <div class="sp-row-info">
                                         <span class="sp-row-label">Clear Iceberg catalog</span>
                                         <p class="sp-row-desc">Drops every archived table and resets the footprint to zero so archiving starts fresh.</p>
                                         <p class="sp-row-meta">Data files in object storage are not deleted. Empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables.</p>
-                                        <p class="sp-row-blocked" id="archiveClearCatalogBlocked" style="display:none;">Disable the Iceberg archive above before clearing the catalog.</p>
+                                        <p class="sp-row-blocked" id="archiveClearCatalogBlocked" style="display:none;">Turn off the Iceberg archive on the Platform tab before clearing the catalog.</p>
                                     </div>
                                     <div class="sp-row-control">
-                                        <button id="archiveClearCatalogBtn" class="danger-btn">Clear Catalog</button>
+                                        <button id="archiveClearCatalogBtn" class="danger-btn">Clear catalog</button>
                                     </div>
                                 </div>
                                 <div class="sp-row" id="archiveClearSpoolItem">
@@ -1106,10 +1146,10 @@
                                         <span class="sp-row-label">Clear archive spool</span>
                                         <p class="sp-row-desc">Discards un-archived buffered logs on every ingest pod. Use before pointing at a fresh archive so the old spool's tail does not drain into the new one.</p>
                                         <p class="sp-row-meta">Not needed when migrating backends: there the buffered tail correctly bridges the gap into the new archive. Each ingest pod applies this within about 10 seconds.</p>
-                                        <p class="sp-row-blocked" id="archiveClearSpoolBlocked" style="display:none;">Disable the Iceberg archive above before clearing the spool.</p>
+                                        <p class="sp-row-blocked" id="archiveClearSpoolBlocked" style="display:none;">Turn off the Iceberg archive on the Platform tab before clearing the spool.</p>
                                     </div>
                                     <div class="sp-row-control">
-                                        <button id="archiveClearSpoolBtn" class="danger-btn">Clear Spool</button>
+                                        <button id="archiveClearSpoolBtn" class="danger-btn">Clear spool</button>
                                     </div>
                                 </div>
                                 <div class="sp-row" id="distQueueResetItem" style="display:none;">
@@ -1118,7 +1158,7 @@
                                         <p class="sp-row-desc">Drops and recreates <code>logs_distributed</code> on one shard, discarding its queued log batches.</p>
                                     </div>
                                     <div class="sp-row-control">
-                                        <button id="distQueueResetBtn" class="danger-btn">Reset Queue</button>
+                                        <button id="distQueueResetBtn" class="danger-btn">Reset queue</button>
                                     </div>
                                 </div>
                                 <div class="sp-row" id="endpointBaselinesClearItem">
@@ -1128,7 +1168,7 @@
                                         <p class="sp-row-meta">Until the baselines refill, nearly every process edge is first-seen, so pgr() flags most activity as high severity.</p>
                                     </div>
                                     <div class="sp-row-control">
-                                        <button id="endpointBaselinesClearBtn" class="danger-btn">Clear Baselines</button>
+                                        <button id="endpointBaselinesClearBtn" class="danger-btn">Clear baselines</button>
                                     </div>
                                 </div>
                                 <div class="sp-row" id="schemaResetItem">
@@ -1138,38 +1178,44 @@
                                         <p class="sp-row-meta">Reserving and removing fields is instant and reversible on its own, so this is rarely needed. Its one unique effect is discarding type hints that have accumulated over time: reconciliation only ever adds them. Fractal configs, normalizers, and other settings are unaffected.</p>
                                     </div>
                                     <div class="sp-row-control">
-                                        <button id="schemaFieldResetBtn" class="danger-btn">Reset Schema</button>
+                                        <button id="schemaFieldResetBtn" class="danger-btn">Reset schema</button>
                                     </div>
                                 </div>
-                            </div>
-                        </section>
+                        </div>
                     </div>
-                </div>
-                </div><!-- end settingsSubTabSettings -->
+                </div><!-- end settingsSubTabDanger -->
 
                 <!-- API Keys Sub-Tab -->
                 <div id="settingsSubTabApikeys" class="settings-sub-panel" style="display:none;">
-                <div class="settings-card">
-                    <div class="admin-toolbar">
-                        <input type="text" id="apiKeysAdminSearch" class="admin-search" placeholder="Search keys..." autocomplete="off">
-                        <label class="inline-perm-toggle" style="margin-left:0.75rem;"><input type="checkbox" id="apiKeysAdminOnlyAdmin"> Tenant admin only</label>
-                        <span class="admin-toolbar-spacer"></span>
-                        <button id="apiKeysAdminNew" class="btn-primary btn-sm">New key</button>
-                        <button id="apiKeysAdminRefresh" class="btn-secondary btn-sm">Refresh</button>
+                <header class="admin-page-head">
+                    <div>
+                        <h2>API keys</h2>
+                        <p>Keys for scripts and integrations. A key acts with the permissions it was created with.</p>
                     </div>
-                    <div id="apiKeysAdminList">
+                    <button id="apiKeysAdminNew" class="btn-primary btn-sm">Create API key</button>
+                </header>
+                    <div class="admin-toolbar" id="apiKeysAdminToolbar">
+                        <input type="text" id="apiKeysAdminSearch" class="admin-search" placeholder="Search keys" autocomplete="off">
+                        <label class="inline-perm-toggle"><input type="checkbox" id="apiKeysAdminOnlyAdmin"> Tenant admin keys only</label>
+                    </div>
+                    <div id="apiKeysAdminList" class="admin-list">
                         <div class="loading">Loading API keys...</div>
                     </div>
-                </div>
                 </div><!-- end settingsSubTabApikeys -->
 
                 <!-- Context Links Sub-Tab -->
                 <div id="settingsSubTabContext" class="settings-sub-panel" style="display:none;">
-                    <div class="admin-toolbar">
-                        <span class="admin-toolbar-spacer"></span>
-                        <button id="contextLinkCreateBtn" class="btn-primary btn-sm">+ Add Context Link</button>
+                <header class="admin-page-head">
+                    <div>
+                        <h2>Context links</h2>
+                        <p>Lookup links shown on matching field values in search results.</p>
                     </div>
-                    <div id="contextLinksListContainer">
+                    <button id="contextLinkCreateBtn" class="btn-primary btn-sm">Add context link</button>
+                </header>
+                    <div class="admin-toolbar" id="contextLinksToolbar">
+                        <input type="text" id="contextLinksSearch" class="admin-search" placeholder="Search context links" autocomplete="off">
+                    </div>
+                    <div id="contextLinksListContainer" class="admin-list">
                         <div class="loading">Loading context links...</div>
                     </div>
 

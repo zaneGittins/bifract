@@ -77,7 +77,6 @@ const SettingsView = {
             ?.addEventListener('click', () => this.confirmClearEndpointBaselines());
 
         this.loadDistQueueShards();
-        this.initSectionRail();
     },
 
     // Shows the row whenever the deployment is cluster mode (the button opens
@@ -144,48 +143,6 @@ const SettingsView = {
             select.disabled = false;
             DangerConfirm.revalidate();
         });
-    },
-
-    // Section rail for the Settings sub-tab: click to scroll, and highlight the
-    // section currently in view. Observed sections are static, so a single
-    // observer set up once is enough.
-    initSectionRail() {
-        const rail = document.getElementById('settingsSectionRail');
-        if (!rail) return;
-
-        const items = Array.from(rail.querySelectorAll('.sp-rail-item'));
-        const sections = items
-            .map(item => document.getElementById(item.dataset.section))
-            .filter(Boolean);
-
-        const activate = (id) => {
-            items.forEach(item => item.classList.toggle('active', item.dataset.section === id));
-        };
-
-        items.forEach(item => {
-            item.addEventListener('click', () => {
-                const target = document.getElementById(item.dataset.section);
-                if (!target) return;
-                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                activate(item.dataset.section);
-            });
-        });
-
-        if (!sections.length || !window.IntersectionObserver) return;
-
-        // Track visible sections and always highlight the topmost one, so the
-        // rail stays stable when several sections share the viewport.
-        const visible = new Set();
-        const observer = new IntersectionObserver(entries => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) visible.add(entry.target.id);
-                else visible.delete(entry.target.id);
-            });
-            const topmost = sections.find(s => visible.has(s.id));
-            if (topmost) activate(topmost.id);
-        }, { rootMargin: '-8% 0px -70% 0px', threshold: 0 });
-
-        sections.forEach(s => observer.observe(s));
     },
 
     // Clearing the catalog is rejected server-side while archiving is on. Reflect
@@ -451,8 +408,8 @@ const SettingsView = {
     },
 
     switchSubTab(tabName, skipPush = false) {
-        // The Limits tab was renamed to Settings; keep old deep links working.
-        if (tabName === 'limits') tabName = 'settings';
+        // General (once Limits) became Platform; keep old deep links working.
+        if (tabName === 'limits' || tabName === 'settings') tabName = 'platform';
         if (!skipPush) window.App?.pushSubPath(tabName);
         const tabBar = document.getElementById('settingsSubTabs');
         if (tabBar) {
@@ -790,8 +747,10 @@ const SettingsView = {
         if (!container) return;
 
         const all = this._users || [];
+        const toolbar = document.getElementById('usersToolbar');
+        if (toolbar) toolbar.hidden = all.length === 0;
         if (all.length === 0) {
-            container.innerHTML = '<div class="admin-empty">Only the default admin user exists</div>';
+            container.innerHTML = '<div class="admin-empty"><strong>No users yet</strong>Add a user to give someone else access to this tenant.</div>';
             return;
         }
 
@@ -806,7 +765,7 @@ const SettingsView = {
         }
 
         let html = '<table class="users-table"><thead><tr>';
-        html += '<th>User</th><th>Role</th><th>Status</th><th class="kebab-th"></th>';
+        html += '<th>User</th><th>Role</th><th>Status</th><th>Last sign-in</th><th class="kebab-th"></th>';
         html += '</tr></thead><tbody>';
 
         const currentUser = Auth.getCurrentUser();
@@ -847,8 +806,9 @@ const SettingsView = {
             } else if (user.invite_pending) {
                 html += `<td><span class="role-badge role-pending">Invite pending</span></td>`;
             } else {
-                html += `<td class="text-muted">${lastLogin}</td>`;
+                html += `<td><span class="role-badge role-active">Active</span></td>`;
             }
+            html += `<td class="text-muted">${lastLogin}</td>`;
 
             // Secondary / destructive actions live in a hover-revealed kebab overflow menu.
             const items = [];

@@ -1,6 +1,6 @@
 # Alerts
 
-Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from **Settings > General > Query &amp; Alerting > Alert evaluation interval**) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
+Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from **Settings > Platform > Alerts > Evaluation interval**) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
 
 Re-enabling a previously disabled alert resets its cursor to a few minutes before now rather than resuming from its old, potentially stale value. This avoids a large cold-storage catch-up scan across the disabled window, at the cost of not retroactively evaluating logs that arrived while the alert was disabled.
 
@@ -86,4 +86,4 @@ image=/powershell/i | table(image, user, commandline, timestamp, log_id)
 | Alert evaluation interval | `60s` | How often the alert ticker runs, minimum 60s. |
 | Alert query timeout | `5s` | Maximum runtime for a single alert query. Alerts that exceed it are disabled automatically, with the reason recorded on the alert. |
 
-Both live under **Settings > General > Query &amp; Alerting** (admin only). Neither is an environment variable: they are stored in PostgreSQL and take effect without a restart.
+Both live under **Settings > Platform > Alerts** (admin only). Neither is an environment variable: they are stored in PostgreSQL and take effect without a restart.

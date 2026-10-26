@@ -7,8 +7,7 @@ async function openDangerZone(page) {
   await login(page);
   await page.goto('/');
   await openNav(page, 'settings');
-  await page.locator('#settingsSubTabs .alerts-sub-tab[data-subtab="settings"]').click();
-  await page.locator('#settingsSectionRail [data-section="spSectionDanger"]').click();
+  await page.locator('#settingsSubTabs .alerts-sub-tab[data-subtab="danger"]').click();
 }
 
 const dialog = page => page.locator('.modal.danger-confirm');
@@ -84,7 +83,7 @@ test('a fractal dialog refuses to act once the selected fractal changes', async 
   await page.route('**/api/v1/logs?*', route => { calls++; return route.abort(); });
 
   await openFractal(page, 'manage', a.name);
-  await page.locator('.alerts-sub-tab[data-subtab="danger"][onclick*="switchSubTab"]').click();
+  await page.locator('#manageSubTabs .alerts-sub-tab[data-subtab="danger"]').click();
   await page.locator('#manageClearFractalLogsBtn').click();
 
   const d = dialog(page);

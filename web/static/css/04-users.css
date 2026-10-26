@@ -41,13 +41,12 @@
 
 .users-table th {
     text-align: left;
-    padding: 0.75rem;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    font-size: 0.8125rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    padding: 0.625rem 0.75rem;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
 }
 
 .users-table td {
@@ -150,6 +149,11 @@
 .role-pending {
     background: rgba(245, 158, 11, 0.15);
     color: #f59e0b;
+}
+
+.role-active {
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+    color: var(--success);
 }
 
 .role-disabled {

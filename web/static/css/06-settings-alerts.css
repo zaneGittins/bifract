@@ -207,7 +207,7 @@
 .alerts-view-section {
     max-width: 100%;
     margin: 0;
-    padding: 1rem;
+    padding: 1rem 0;
 }
 
 .alerts-view-section > h2 {
@@ -644,7 +644,7 @@
 
 /* Actions Manage View */
 .actions-manage-section {
-    padding: 1rem 0.75rem;
+    padding: 1rem 0;
 }
 
 .actions-manage-header {

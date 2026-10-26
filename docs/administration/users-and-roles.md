@@ -59,7 +59,7 @@ Bifract uses standard TOTP, which works with Google Authenticator, 1Password, Au
 
 Individual users can enroll at any time from the user menu by selecting **Two-Factor Authentication**. Nothing needs to be enabled first.
 
-To require it for everyone, turn on **Require two-factor authentication** under **Settings > General > Security**. Users are required to enroll at their next sign in.
+To require it for everyone, turn on **Require two-factor authentication** under **Settings > Security**. Users are required to enroll at their next sign in.
 
 Two exemptions:
 
