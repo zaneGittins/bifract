@@ -3,7 +3,6 @@
 // including the instance-wide grants no single fractal page would show.
 const APIKeysAdmin = {
     keys: [],
-    loaded: false,
 
     init() {
         const search = document.getElementById('apiKeysAdminSearch');
@@ -11,9 +10,6 @@ const APIKeysAdmin = {
 
         const onlyAdmin = document.getElementById('apiKeysAdminOnlyAdmin');
         if (onlyAdmin) onlyAdmin.addEventListener('change', () => this.render());
-
-        const refresh = document.getElementById('apiKeysAdminRefresh');
-        if (refresh) refresh.addEventListener('click', () => this.load());
 
         const create = document.getElementById('apiKeysAdminNew');
         if (create) create.addEventListener('click', () => this.showCreate());
@@ -158,8 +154,10 @@ const APIKeysAdmin = {
         }
     },
 
+    // Reload on every visit: keys are also issued from fractal pages, and this
+    // list has no other refresh.
     async show() {
-        if (!this.loaded) await this.load();
+        await this.load();
     },
 
     async load() {
@@ -170,7 +168,6 @@ const APIKeysAdmin = {
             if (!res.ok) throw new Error(await Utils.errorMessage(res, 'Failed to load API keys'));
             const data = await res.json();
             this.keys = data.data || [];
-            this.loaded = true;
             this.render();
         } catch (err) {
             if (container) {
@@ -210,9 +207,17 @@ const APIKeysAdmin = {
         const container = document.getElementById('apiKeysAdminList');
         if (!container) return;
 
+        // Search and filter have nothing to act on until a key exists.
+        const toolbar = document.getElementById('apiKeysAdminToolbar');
+        if (toolbar) toolbar.hidden = this.keys.length === 0;
+
         const rows = this.filtered();
+        if (this.keys.length === 0) {
+            container.innerHTML = '<div class="admin-empty"><strong>No API keys yet</strong>Create a key to query or ingest from scripts and integrations.</div>';
+            return;
+        }
         if (rows.length === 0) {
-            container.innerHTML = '<div class="text-muted" style="padding:0.75rem;">No API keys match.</div>';
+            container.innerHTML = '<div class="admin-empty">No API keys match this search</div>';
             return;
         }
 

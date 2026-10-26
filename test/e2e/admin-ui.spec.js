@@ -98,7 +98,7 @@ test.describe('Admin panels', () => {
   ]) {
     test(`${subtab}: primary action sits right, free of notebook chrome`, async ({ page }) => {
       await openAdmin(page, subtab);
-      const toolbar = page.locator(`${panel} .admin-toolbar`).first();
+      const toolbar = page.locator(`${panel} .admin-page-head`).first();
       await expect(toolbar).toBeVisible();
       await expectActionsRightAligned(page, toolbar);
 
@@ -109,10 +109,8 @@ test.describe('Admin panels', () => {
     });
   }
 
-  // A table capped short of the full-width nav/sub-tab bar reads as truncated,
-  // with dead space to its right. The tables must reach the same right edge as
-  // the chrome above them. Settings is deliberately exempt: it is a form, and
-  // .sp-content caps it to a readable measure.
+  // A table capped short of the sub-tab bar reads as truncated, with dead space
+  // to its right. The tables must reach the same right edge as the bar above.
   test('table panels fill the width rather than stranding space on the right', async ({ page }) => {
     await page.setViewportSize({ width: 1920, height: 1080 });
     await openAdmin(page, 'users');
@@ -150,11 +148,13 @@ test.describe('Admin panels', () => {
 
   test('groups search filters the list', async ({ page }) => {
     await openAdmin(page, 'groups');
-    const search = page.locator('#groupsSearch');
-    await expect(search).toBeVisible();
-
+    await expect(page.locator('#groupsList .loading')).toHaveCount(0);
     const rows = page.locator('#groupsList tbody tr');
     test.skip(await rows.count() === 0, 'no groups configured');
+
+    // With no groups the search is hidden, so this only holds once one exists.
+    const search = page.locator('#groupsSearch');
+    await expect(search).toBeVisible();
     const before = await rows.count();
 
     await search.fill('zzz-no-such-group');
@@ -164,19 +164,9 @@ test.describe('Admin panels', () => {
     await expect(page.locator('#groupsList tbody tr')).toHaveCount(before);
   });
 
-  test('groups description sits above the toolbar', async ({ page }) => {
-    await openAdmin(page, 'groups');
-    const desc = page.locator('#groupsListView .admin-panel-desc');
-    await expect(desc).toBeVisible();
-    const descBox = await desc.boundingBox();
-    const barBox = await page.locator('#groupsListView .admin-toolbar').boundingBox();
-    expect(descBox.y, 'description must precede the toolbar').toBeLessThan(barBox.y);
-    expect(await desc.getAttribute('style'), 'spacing patched inline again').toBeFalsy();
-  });
-
   test('admin panels do not scroll sideways at a laptop width', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
-    for (const subtab of ['users', 'groups', 'context', 'settings']) {
+    for (const subtab of ['users', 'groups', 'context', 'platform']) {
       await openAdmin(page, subtab);
       const overflow = await page.evaluate(() =>
         document.documentElement.scrollWidth - document.documentElement.clientWidth);

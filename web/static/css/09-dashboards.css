@@ -733,33 +733,6 @@ body.dash-resizing-se * { cursor: nwse-resize !important; user-select: none; }
    Context Links
    ============================ */
 
-/* Admin management table */
-.context-links-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85rem;
-}
-
-.context-links-table th {
-    text-align: left;
-    padding: 0.6rem 0.8rem;
-    color: var(--text-secondary);
-    border-bottom: 1px solid var(--border-color);
-    font-weight: 500;
-    white-space: nowrap;
-}
-
-.context-links-table td {
-    padding: 0.6rem 0.8rem;
-    border-bottom: 1px solid var(--border-color);
-    color: var(--text-primary);
-    vertical-align: middle;
-}
-
-.context-links-table tr:hover td {
-    background: var(--bg-hover);
-}
-
 .context-link-fields {
     max-width: 250px;
     word-break: break-word;

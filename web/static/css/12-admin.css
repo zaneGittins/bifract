@@ -5,85 +5,16 @@
    tags and do not load a subset. */
 /* ============================
    Admin -> Settings panel
-   Section rail + grouped rows. Scoped with .sp- so it does not
+   Grouped setting rows. Scoped with .sp- so it does not
    collide with the legacy .setting-item styles used elsewhere.
    ============================ */
-
-.sp-layout {
-    display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 2.5rem;
-    align-items: start;
-    padding: 0.5rem 0 3rem;
-}
-
-/* Section rail */
-.sp-rail {
-    position: sticky;
-    top: 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    border-left: 1px solid var(--border-color);
-}
-
-.sp-rail-item {
-    position: relative;
-    background: none;
-    border: none;
-    border-radius: 0 4px 4px 0;
-    padding: 0.4rem 0.75rem;
-    text-align: left;
-    font-family: var(--font-main);
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: var(--transition);
-}
-
-.sp-rail-item::before {
-    content: '';
-    position: absolute;
-    left: -1px;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: transparent;
-    transition: var(--transition);
-}
-
-.sp-rail-item:hover {
-    color: var(--text-secondary);
-    background: rgba(156, 106, 222, 0.06);
-}
-
-.sp-rail-item.active {
-    color: var(--text-primary);
-    font-weight: 500;
-}
-
-.sp-rail-item.active::before {
-    background: var(--accent-primary);
-}
-
-.sp-rail-item.sp-rail-danger.active {
-    color: var(--error);
-}
-
-.sp-rail-item.sp-rail-danger.active::before {
-    background: var(--error);
-}
 
 /* Content column */
 .sp-content {
     display: flex;
     flex-direction: column;
-    gap: 2.25rem;
-    max-width: 920px;
-}
-
-.sp-section {
-    scroll-margin-top: 1rem;
+    gap: 2rem;
+    padding-bottom: 3rem;
 }
 
 .sp-section-head {
@@ -249,26 +180,14 @@
     cursor: not-allowed;
 }
 
+/* Buttons under a row's own input, such as Save under a textarea. */
+.sp-row-actions {
+    display: flex;
+    align-items: center;
+    margin-top: 0.625rem;
+}
+
 @media (max-width: 900px) {
-    .sp-layout {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 1.25rem;
-    }
-
-    .sp-rail {
-        position: static;
-        flex-direction: row;
-        flex-wrap: wrap;
-        border-left: none;
-        border-bottom: 1px solid var(--border-color);
-        padding-bottom: 0.5rem;
-        gap: 0.25rem;
-    }
-
-    .sp-rail-item::before {
-        display: none;
-    }
-
     .sp-row {
         flex-direction: column;
         gap: 0.75rem;
@@ -301,25 +220,58 @@
    notebook cell-header bar and does not belong in admin.
    ============================ */
 
-/* No width cap here on purpose. Settings caps .sp-content because a form needs
-   a readable measure, but these panels are data tables and the surrounding
-   chrome (nav, sub-tab bar, footer) is full width: a capped table reads as
-   truncated against it. Tables take the width they are given.
-
-   They did inherit a bordered .settings-card that is also stretched to full
-   viewport height, which framed a single row in a huge empty box. Drop the box,
-   keeping the class so descendant rules still apply. */
-#settingsSubTabUsers > .settings-card,
-#settingsSubTabGroups > .settings-card {
-    background: none;
-    border: none;
-    border-radius: 0;
-    padding: 0;
+/* One column for every settings tab. The tab bar and each panel share its
+   edges, so nothing shifts when you switch tabs; the cap keeps setting rows and
+   descriptions at a readable measure on wide screens. */
+.settings-column {
+    max-width: 1040px;
 }
 
-/* The toolbar already provides the gap above the table. */
-#settingsSubTabUsers .users-list {
-    margin-top: 0;
+.alerts-sub-tab.alerts-sub-tab-danger {
+    margin-left: auto;
+    color: var(--error);
+}
+
+.alerts-sub-tab.alerts-sub-tab-danger.active {
+    border-bottom-color: var(--error);
+}
+
+/* Title and description on the left, the page's primary action on the right. */
+.admin-page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.5rem;
+    margin: 0.75rem 0 1.25rem;
+}
+
+.admin-page-head h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 0.25rem;
+}
+
+.admin-page-head p {
+    font-size: 0.8125rem;
+    color: var(--text-muted);
+    max-width: 80ch;
+    margin: 0;
+}
+
+.admin-page-head > button {
+    flex-shrink: 0;
+}
+
+/* A list's table sits in a rounded frame; empty and loading states do not. */
+.admin-list:has(> table) {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    overflow-x: auto;
+}
+
+.admin-list > table tr:last-child td {
+    border-bottom: none;
 }
 
 .admin-toolbar {
@@ -366,10 +318,20 @@
 }
 
 .admin-empty {
-    padding: 1.5rem;
+    padding: 3rem 1.5rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
     text-align: center;
     color: var(--text-muted);
     font-size: 0.8125rem;
+}
+
+.admin-empty strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 0.25rem;
 }
 
 /* Clickable row identity: the primary way into a record from a list table. */

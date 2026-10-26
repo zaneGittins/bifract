@@ -49,7 +49,7 @@ The rows of a URL lookup are read-only: editing, importing, and alert dictionary
 | Administrator | Set, change, or detach a source |
 | Analyst | **Refresh now**, which fetches immediately, at most once a minute |
 
-By default a source can reach only public addresses; turn on **Lookup sources on the internal network** under **Settings > General > Security** to allow private and loopback addresses. Cloud metadata addresses are always refused, and HTTP proxy settings are not used. A file may be at most 64 MiB, expand to at most 512 MiB, and hold at most 2 million rows, or 100,000 for a Patterns lookup, since every pattern is compiled on every ClickHouse node.
+By default a source can reach only public addresses; turn on **Lookup sources on the internal network** under **Settings > Security** to allow private and loopback addresses. Cloud metadata addresses are always refused, and HTTP proxy settings are not used. A file may be at most 64 MiB, expand to at most 512 MiB, and hold at most 2 million rows, or 100,000 for a Patterns lookup, since every pattern is compiled on every ClickHouse node.
 
 ### Glob keys
 

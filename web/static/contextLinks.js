@@ -9,6 +9,10 @@ const ContextLinks = {
         if (createBtn) {
             createBtn.addEventListener('click', () => this.openCreateForm());
         }
+        document.getElementById('contextLinksSearch')?.addEventListener('input', (e) => {
+            this.filter = e.target.value;
+            this.renderContextLinks();
+        });
         // Pre-load enabled links for log detail panel
         this.loadEnabledLinks();
     },
@@ -50,27 +54,39 @@ const ContextLinks = {
         const container = document.getElementById('contextLinksListContainer');
         if (!container) return;
 
+        const toolbar = document.getElementById('contextLinksToolbar');
+        if (toolbar) toolbar.hidden = this.links.length === 0;
+
         if (this.links.length === 0) {
-            container.innerHTML = '<p class="empty-state">No context links configured.</p>';
+            container.innerHTML = '<div class="admin-empty"><strong>No context links yet</strong>Add a link to look up matching field values in an external tool.</div>';
             return;
         }
 
-        let html = `<table class="context-links-table">
+        const q = (this.filter || '').trim().toLowerCase();
+        const links = q
+            ? this.links.filter(l => `${l.short_name || ''} ${(l.match_fields || []).join(' ')}`.toLowerCase().includes(q))
+            : this.links;
+        if (links.length === 0) {
+            container.innerHTML = '<div class="admin-empty">No context links match this search</div>';
+            return;
+        }
+
+        let html = `<table class="users-table context-links-table">
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th>Match Fields</th>
-                    <th>Regex</th>
+                    <th>Match fields</th>
+                    <th>Pattern</th>
                     <th>Enabled</th>
                     <th></th>
                 </tr>
             </thead>
             <tbody>`;
 
-        this.links.forEach(link => {
+        links.forEach(link => {
             const fields = (link.match_fields || []).map(f => Utils.escapeHtml(f)).join(', ');
             const regex = link.validation_regex ? Utils.escapeHtml(link.validation_regex) : '-';
-            const defaultBadge = link.is_default ? ' <span class="context-link-badge">default</span>' : '';
+            const defaultBadge = link.is_default ? ' <span class="context-link-badge">Default</span>' : '';
             html += `<tr>
                 <td>${Utils.escapeHtml(link.short_name)}${defaultBadge}</td>
                 <td class="context-link-fields">${fields}</td>

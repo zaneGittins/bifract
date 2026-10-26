@@ -580,12 +580,14 @@
 }
 
 /* Alert Feeds */
+/* No horizontal padding on the bar or the tabs: the first label starts on the
+   content edge below it, and the gap alone spaces the labels. */
 .alerts-sub-tabs {
     display: flex;
-    gap: 0;
+    gap: 1.5rem;
     border-bottom: 1px solid var(--border-color);
     margin-bottom: 1rem;
-    padding: 0 1rem;
+    padding: 0;
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -596,7 +598,7 @@
     background: none;
     border: none;
     color: var(--text-secondary);
-    padding: 0.6rem 1rem;
+    padding: 0.6rem 0;
     font-size: 0.85rem;
     font-weight: 500;
     cursor: pointer;
