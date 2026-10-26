@@ -133,14 +133,21 @@ func TestSingleScanSparseSearch(t *testing.T) {
 	if len(newest) != 3 {
 		t.Fatalf("single scans = %d, want one per older chunk", len(newest))
 	}
-	for i, n := range []string{"998", "995", "995"} {
-		if !strings.Contains(newest[i], "groupArraySortedIf("+n+")") {
-			t.Errorf("single scan %d does not ask for the %s rows still owed: %s", i, n, newest[i])
+	// The older chunks start together, each asking for every row still owed when
+	// they start, which is at least what any of them can be asked for later.
+	for _, w := range []string{chunk1Window, chunk2Window, chunk3Window} {
+		if n := len(queriesWhere(e, func(q string) bool { return isNewestSQL(q) && strings.Contains(q, w) })); n != 1 {
+			t.Errorf("%d single scans of %s, want 1", n, w)
+		}
+	}
+	for i, q := range newest {
+		if !strings.Contains(q, "groupArraySortedIf(998)") {
+			t.Errorf("single scan %d does not ask for the 998 rows still owed: %s", i, q)
 		}
 		// Rows must never come from the query cache: a late event in an old chunk
 		// would be hidden from a re-run.
-		if strings.Contains(newest[i], "use_query_cache") {
-			t.Errorf("single scan %d is cached: %s", i, newest[i])
+		if strings.Contains(q, "use_query_cache") {
+			t.Errorf("single scan %d is cached: %s", i, q)
 		}
 	}
 	fetches := queriesWhere(e, isFetchSQL)
@@ -205,7 +212,8 @@ func TestSingleScanDenseSearchOnlyCounts(t *testing.T) {
 	}
 }
 
-// Once a single scan fills the budget, the chunks behind it are only counted.
+// Once a single scan fills the budget, the chunks behind it only feed the
+// timeline: their scans were already running for its counts, and fetch nothing.
 func TestSingleScanStopsRowWorkAtBudget(t *testing.T) {
 	e := newTestEnv(t, 4)
 	e.respond(func(sql string) ([]map[string]interface{}, error) {
@@ -213,10 +221,13 @@ func TestSingleScanStopsRowWorkAtBudget(t *testing.T) {
 		case isHistogramSQL(sql):
 			return []map[string]interface{}{}, nil
 		case isNewestSQL(sql):
-			if !strings.Contains(sql, chunk1Window) {
-				t.Errorf("single scan after the budget was full: %s", sql)
+			switch {
+			case strings.Contains(sql, chunk1Window):
+				return newestScan(16, map[int]uint64{15: 5}, "2026-10-01 21:59:00.000", "2026-10-01 21:58:00.000"), nil
+			case strings.Contains(sql, chunk2Window):
+				return newestScan(32, map[int]uint64{0: 7}, "2026-10-01 10:00:00.000"), nil
 			}
-			return newestScan(16, map[int]uint64{15: 5}, "2026-10-01 21:59:00.000", "2026-10-01 21:58:00.000"), nil
+			return newestScan(40, map[int]uint64{0: 9}, "2026-10-01 00:00:00.000"), nil
 		case isFetchSQL(sql):
 			if !strings.HasSuffix(sql, "LIMIT 2") {
 				t.Errorf("fetch limit: %s", sql)
@@ -232,22 +243,34 @@ func TestSingleScanStopsRowWorkAtBudget(t *testing.T) {
 	})
 	frames := runStream(t, e, QueryRequest{Query: "level=error", FractalID: "f1"})
 	newest := queriesWhere(e, isNewestSQL)
-	if len(newest) != 1 || !strings.Contains(newest[0], "groupArraySortedIf(2)") {
-		t.Errorf("single scans = %v", newest)
+	if len(newest) != 3 {
+		t.Errorf("single scans = %d, want one per older chunk", len(newest))
 	}
-	if h := e.ch.QueriedMatching("AS bucket"); len(h) != 3 {
-		t.Errorf("plain histogram scans = %d, want the newest chunk and the two behind the full budget", len(h))
+	for _, q := range newest {
+		if !strings.Contains(q, "groupArraySortedIf(2)") {
+			t.Errorf("single scan does not ask for the 2 rows owed at launch: %s", q)
+		}
 	}
-	if hist := framesOf(frames, "histogram"); len(hist) != 4 || hist[3]["complete"] != true {
-		t.Errorf("histogram frames = %v", hist)
+	if f := queriesWhere(e, isFetchSQL); len(f) != 1 {
+		t.Errorf("fetches = %d, want only the chunk that filled the budget", len(f))
+	}
+	if h := e.ch.QueriedMatching("AS bucket"); len(h) != 1 {
+		t.Errorf("plain histogram scans = %d, want only the newest chunk", len(h))
+	}
+	hist := framesOf(frames, "histogram")
+	if len(hist) != 4 || hist[3]["complete"] != true {
+		t.Fatalf("histogram frames = %v", hist)
+	}
+	if b := hist[3]["buckets"].([]interface{}); b[87] != 5.0 || b[40] != 7.0 || b[0] != 9.0 {
+		t.Errorf("chunks behind the full budget were not counted: [87]=%v [40]=%v [0]=%v", b[87], b[40], b[0])
 	}
 	if done := framesOf(frames, "done"); len(done) != 1 || done[0]["count"] != 4.0 || done[0]["limit_hit"] != "search" {
 		t.Errorf("done = %v", done)
 	}
 }
 
-// A single scan that fails costs neither the rows nor the timeline: the rows fall
-// back to plain chunk scans and the remaining chunks are counted the plain way.
+// A single scan that fails costs neither the rows nor the timeline: that chunk
+// falls back to a plain histogram query and a plain row scan.
 func TestSingleScanFailureFallsBackToPlainScans(t *testing.T) {
 	e := newTestEnv(t, 1000)
 	e.respond(func(sql string) ([]map[string]interface{}, error) {
@@ -264,8 +287,8 @@ func TestSingleScanFailureFallsBackToPlainScans(t *testing.T) {
 		return []map[string]interface{}{}, nil
 	})
 	frames := runStream(t, e, QueryRequest{Query: "level=error", FractalID: "f1"})
-	if n := len(queriesWhere(e, isNewestSQL)); n != 1 {
-		t.Errorf("single scans = %d, want the one that failed", n)
+	if n := len(queriesWhere(e, isNewestSQL)); n != 3 {
+		t.Errorf("single scans = %d, want every older chunk attempted", n)
 	}
 	if scans := plainRowScans(e); len(scans) != 4 {
 		t.Errorf("plain row scans = %d, want every chunk", len(scans))
@@ -384,9 +407,9 @@ func TestSingleScanClipsRowsToRequestedStart(t *testing.T) {
 	if len(newest) != 3 {
 		t.Fatalf("single scans = %d", len(newest))
 	}
-	oldest := newest[2]
-	if !strings.Contains(oldest, chunk3Window) ||
-		!strings.Contains(oldest, "timestamp >= '2026-10-01 00:07:00.000' AND timestamp < '2026-10-01 10:00:00.000') AS newest_ms") {
+	oldest := queriesWhere(e, func(q string) bool { return isNewestSQL(q) && strings.Contains(q, chunk3Window) })
+	if len(oldest) != 1 ||
+		!strings.Contains(oldest[0], "timestamp >= '2026-10-01 00:07:00.000' AND timestamp < '2026-10-01 10:00:00.000') AS newest_ms") {
 		t.Errorf("oldest chunk not clipped to the requested start: %s", oldest)
 	}
 }
@@ -418,10 +441,13 @@ func TestSingleScanUncappedFillsCursorPage(t *testing.T) {
 		case isHistogramSQL(sql):
 			return []map[string]interface{}{}, nil
 		case isNewestSQL(sql):
-			if !strings.Contains(sql, chunk1Window) || !strings.Contains(sql, "groupArraySortedIf(51)") {
+			if !strings.Contains(sql, "groupArraySortedIf(51)") {
 				t.Errorf("single scan: %s", sql)
 			}
-			return newestScan(16, map[int]uint64{11: 60}, older...), nil
+			if strings.Contains(sql, chunk1Window) {
+				return newestScan(16, map[int]uint64{11: 60}, older...), nil
+			}
+			return newestScan(40, nil), nil
 		case isFetchSQL(sql):
 			rows := make([]map[string]interface{}, len(older))
 			for i, ts := range older {
@@ -442,8 +468,82 @@ func TestSingleScanUncappedFillsCursorPage(t *testing.T) {
 	if done["has_more"] != true || err != nil || cur.LID != "lid-"+older[49] {
 		t.Errorf("done = %v (cursor %+v, %v)", done, cur, err)
 	}
-	if n := len(queriesWhere(e, isNewestSQL)); n != 1 {
-		t.Errorf("single scans = %d, want none past the full page", n)
+	if n := len(queriesWhere(e, isFetchSQL)); n != 1 {
+		t.Errorf("fetches = %d, want none past the full page", n)
+	}
+}
+
+// The older chunks' single scans run at the same time, yet rows and timeline
+// frames still arrive newest-first however the scans finish. The newest of them
+// only answers once the two older ones have started, which cannot happen if
+// they run one after another.
+func TestSingleScanChunksRunConcurrently(t *testing.T) {
+	e := newTestEnv(t, 1000)
+	started := map[string]chan struct{}{chunk2Window: make(chan struct{}), chunk3Window: make(chan struct{})}
+	var once sync.Map
+	e.respond(func(sql string) ([]map[string]interface{}, error) {
+		switch {
+		case isHistogramSQL(sql):
+			return []map[string]interface{}{}, nil
+		case isNewestSQL(sql):
+			switch {
+			case strings.Contains(sql, chunk1Window):
+				for w, ch := range started {
+					select {
+					case <-ch:
+					case <-time.After(5 * time.Second):
+						t.Errorf("chunk %s had not started while the newer chunk ran", w)
+					}
+				}
+				return newestScan(16, map[int]uint64{12: 1}, "2026-10-01 21:00:00.000"), nil
+			case strings.Contains(sql, chunk2Window):
+				if _, dup := once.LoadOrStore(chunk2Window, true); !dup {
+					close(started[chunk2Window])
+				}
+				return newestScan(32, map[int]uint64{20: 1}, "2026-10-01 15:00:00.000"), nil
+			default:
+				if _, dup := once.LoadOrStore(chunk3Window, true); !dup {
+					close(started[chunk3Window])
+				}
+				return newestScan(40, map[int]uint64{10: 1}, "2026-10-01 02:30:00.000"), nil
+			}
+		case isFetchSQL(sql):
+			for _, ts := range []string{"2026-10-01 21:00:00.000", "2026-10-01 15:00:00.000", "2026-10-01 02:30:00.000"} {
+				if strings.Contains(sql, "'"+ts+"'") {
+					return []map[string]interface{}{logRow(ts, "lid-"+ts, "f1")}, nil
+				}
+			}
+		case strings.Contains(sql, chunk0Window):
+			return logRows(1, testEndTime, "f1"), nil
+		}
+		return []map[string]interface{}{}, nil
+	})
+	frames := runStream(t, e, QueryRequest{Query: "level=error", FractalID: "f1"})
+
+	var got []string
+	for _, r := range streamedRows(frames) {
+		got = append(got, r["timestamp"].(string))
+	}
+	if want := "2026-10-02 00:00:00.000 2026-10-01 21:00:00.000 2026-10-01 15:00:00.000 2026-10-01 02:30:00.000"; strings.Join(got, " ") != want {
+		t.Errorf("rows %v, want newest-first %s", got, want)
+	}
+	hist := framesOf(frames, "histogram")
+	if len(hist) != 4 {
+		t.Fatalf("%d histogram frames, want one per chunk", len(hist))
+	}
+	prevFrom := 97.0
+	for _, h := range hist {
+		from := h["covered_from"].(float64)
+		if from >= prevFrom {
+			t.Errorf("covered_from not decreasing: %v after %v", from, prevFrom)
+		}
+		prevFrom = from
+	}
+	if b := hist[3]["buckets"].([]interface{}); hist[3]["complete"] != true || b[84] != 1.0 || b[60] != 1.0 || b[10] != 1.0 {
+		t.Errorf("final histogram complete=%v [84]=%v [60]=%v [10]=%v", hist[3]["complete"], b[84], b[60], b[10])
+	}
+	if done := framesOf(frames, "done"); len(done) != 1 || done[0]["count"] != 4.0 {
+		t.Errorf("done = %v", done)
 	}
 }
 
