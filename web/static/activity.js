@@ -376,7 +376,7 @@ const Activity = {
         this.toggle('actChips', live);
         this.toggle('actLive', live);
         this.toggle('actFailStrip', live && this.failureCount() > 0);
-        this.setText('actModeHint', live ? '' : 'grouped by normalized query, over the selected range');
+        this.setText('actModeHint', live ? '' : 'Grouped by normalized query, over the selected range');
         const search = document.getElementById('actSearch');
         if (search) search.style.display = live ? '' : 'none';
         const node = document.getElementById('actNode');

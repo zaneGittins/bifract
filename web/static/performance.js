@@ -120,6 +120,9 @@ const Performance = {
             const el = document.getElementById(id);
             if (el) el.style.display = (k === name) ? '' : 'none';
         });
+        // Storage keeps its own history window and Archive has none.
+        const range = document.getElementById('perfRangeCtl');
+        if (range) range.hidden = name === 'storage' || name === 'archive';
     },
 
     async show(subPath = '') {
@@ -446,7 +449,7 @@ const Performance = {
         this.setText('archiveFractals', String(d.fractal_count || 0));
         this.setText('archiveSize', this.formatBytes(d.total_bytes || 0));
         this.setText('archiveRecords', d.total_records ? `${Number(d.total_records).toLocaleString()} records` : '');
-        this.setText('archiveLastCommit', d.last_commit_at ? this.timeAgo(d.last_commit_at) : 'never');
+        this.setText('archiveLastCommit', d.last_commit_at ? this.timeAgo(d.last_commit_at) : 'Never');
 
         // Maintenance (compaction + snapshot expiry) -- a periodic batch job's
         // last-run summary, distinct from the archiver's always-on heartbeat above.
@@ -519,7 +522,7 @@ const Performance = {
                 : 'Run a compaction + snapshot-expiry pass now';
         }
 
-        this.setText('maintainLastRun', m.last_run_at ? this.timeAgo(m.last_run_at) : 'never');
+        this.setText('maintainLastRun', m.last_run_at ? this.timeAgo(m.last_run_at) : 'Never');
         this.setText('maintainDuration', m.last_run_at ? `took ${this.formatDuration(m.duration_ms)}` : '');
         this.setText('maintainTables', hasRunOnce ? `${m.compacted || 0} / ${m.tables_seen || 0} compacted` : '--');
         this.setText('maintainExpired', m.expired ? `${m.expired} expired` : '');
@@ -607,9 +610,9 @@ const Performance = {
         if (hint) {
             let msg = '';
             if (!d.provisioned) {
-                msg = 'The archiver sidecar is not provisioned. Run bifract --upgrade to add it, then enable archiving in Admin → Settings.';
+                msg = 'The archiver sidecar is not provisioned. Run bifract --upgrade to add it, then turn it on in Settings > Platform > Archive.';
             } else if (!d.enabled) {
-                msg = 'Enable archiving in Admin → Settings to start writing a durable Iceberg copy of all logs.';
+                msg = 'Turn on archiving in Settings > Platform > Archive to start writing a durable Iceberg copy of all logs.';
             }
             hint.textContent = msg;
             hint.style.display = msg ? '' : 'none';
@@ -1334,7 +1337,7 @@ const Performance = {
 
             // Card 2: worst-node memory utilization.
             const pct = typeof cluster.mem_peak_pct === 'number' ? cluster.mem_peak_pct : 0;
-            if (memLabel) memLabel.textContent = 'Peak Memory';
+            if (memLabel) memLabel.textContent = 'Peak memory';
             const memEl = document.getElementById('metricMemory');
             if (memEl) {
                 memEl.textContent = pct.toFixed(0) + '%';
@@ -1360,7 +1363,7 @@ const Performance = {
         }
 
         // Single-node: node-local gauges.
-        if (memLabel) memLabel.textContent = 'Memory Usage';
+        if (memLabel) memLabel.textContent = 'Memory usage';
         if (memSub) memSub.textContent = '';
         if (upLabel) upLabel.textContent = 'Uptime';
         if (upSub) upSub.textContent = '';
@@ -1676,8 +1679,8 @@ const Performance = {
         const el = document.getElementById('hotStrip');
         if (!el) return;
         if (!hot) {
-            el.textContent = 'unavailable';
-            el.className = 'perf-section-hint perf-hint-value';
+            el.textContent = 'Unavailable';
+            el.className = 'perf-section-hint';
             return;
         }
         const bits = [
@@ -1696,7 +1699,7 @@ const Performance = {
             drifted = mins > 150;
         }
         el.textContent = bits.join(' \u00b7 ');
-        el.className = 'perf-section-hint perf-hint-value' + (drifted ? ' perf-metric-warning' : '');
+        el.className = 'perf-section-hint' + (drifted ? ' perf-metric-warning' : '');
     },
 
     epochLabel(unixSec) {

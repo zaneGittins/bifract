@@ -133,12 +133,13 @@
                         <div class="performance-header">
                             <div class="alerts-sub-tabs perf-sub-tabs" id="perfSubTabs">
                                 <button class="alerts-sub-tab active" data-subtab="overview" onclick="Performance.switchSubTab('overview')">Overview</button>
-                                <button class="alerts-sub-tab" data-subtab="storage" onclick="Performance.switchSubTab('storage')">Storage &amp; Ingest</button>
+                                <button class="alerts-sub-tab" data-subtab="storage" onclick="Performance.switchSubTab('storage')">Storage &amp; ingest</button>
                                 <button class="alerts-sub-tab" data-subtab="activity" onclick="Performance.switchSubTab('activity')">Activity</button>
                                 <button class="alerts-sub-tab" data-subtab="alerts" onclick="Performance.switchSubTab('alerts')">Alert engine</button>
                                 <button class="alerts-sub-tab" data-subtab="archive" onclick="Performance.switchSubTab('archive')">Archive</button>
                             </div>
                             <div class="performance-controls">
+                                <label class="perf-ctl" id="perfRangeCtl">Range
                                 <select id="perfTimeRange" class="setting-select perf-refresh-select">
                                     <option value="1h" selected>Last 1 hour</option>
                                     <option value="8h">Last 8 hours</option>
@@ -146,32 +147,36 @@
                                     <option value="7d">Last 7 days</option>
                                     <option value="30d">Last 30 days</option>
                                 </select>
+                                </label>
+                                <label class="perf-ctl">Refresh
                                 <select id="perfRefreshRate" class="setting-select perf-refresh-select">
-                                    <option value="3000">3s refresh</option>
-                                    <option value="5000" selected>5s refresh</option>
-                                    <option value="10000">10s refresh</option>
-                                    <option value="30000">30s refresh</option>
+                                    <option value="3000">Every 3s</option>
+                                    <option value="5000" selected>Every 5s</option>
+                                    <option value="10000">Every 10s</option>
+                                    <option value="30000">Every 30s</option>
                                 </select>
+                                </label>
                             </div>
                         </div>
 
                         <!-- Overview Sub-Tab -->
                         <div id="perfPaneOverview" class="perf-pane">
                             <!-- Server Overview Cards -->
-                            <div class="perf-metrics-group-label">Server</div>
                             <div class="perf-metrics-grid">
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Active Queries</div>
+                                    <div class="perf-metric-label">Active queries</div>
                                     <div class="perf-metric-value" id="metricActiveQueries">--</div>
+                                    <div class="perf-metric-sub"></div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label" id="metricMemoryLabel">Memory Usage</div>
+                                    <div class="perf-metric-label" id="metricMemoryLabel">Memory usage</div>
                                     <div class="perf-metric-value" id="metricMemory">--</div>
                                     <div class="perf-metric-sub" id="metricMemorySub"></div>
                                 </div>
                                 <div class="perf-metric-card">
-                                    <div class="perf-metric-label">Active Merges</div>
+                                    <div class="perf-metric-label">Active merges</div>
                                     <div class="perf-metric-value" id="metricMerges">--</div>
+                                    <div class="perf-metric-sub"></div>
                                 </div>
                                 <div class="perf-metric-card">
                                     <div class="perf-metric-label" id="metricUptimeLabel">Uptime</div>
@@ -185,12 +190,12 @@
                                 <div class="perf-metrics-group-label">Cluster</div>
                                 <div class="perf-charts-row">
                                     <div class="perf-chart-card">
-                                        <h3>Distribution Queue</h3>
+                                        <h3>Distribution queue</h3>
                                         <div id="perfDistQueuePlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
                                         <canvas id="perfDistQueueChart" style="display:none"></canvas>
                                     </div>
                                     <div class="perf-chart-card">
-                                        <h3>DDL Queue</h3>
+                                        <h3>DDL queue</h3>
                                         <div id="perfDDLQueuePlaceholder" class="perf-chart-placeholder">Waiting for samples...</div>
                                         <canvas id="perfDDLQueueChart" style="display:none"></canvas>
                                     </div>
@@ -199,7 +204,7 @@
 
                             <div class="perf-charts-row">
                                 <div class="perf-chart-card perf-chart-card-wide">
-                                    <h3>CPU &amp; Memory</h3>
+                                    <h3>CPU and memory</h3>
                                     <div id="perfCpuPlaceholder" class="perf-chart-placeholder">Loading...</div>
                                     <canvas id="perfCpuChart"></canvas>
                                 </div>
@@ -208,7 +213,7 @@
                             <div class="perf-section" style="margin-top: 1rem;">
                                 <div class="perf-section-header">
                                     <h3>Background operations</h3>
-                                    <span class="perf-section-hint">merges, mutations, replication</span>
+                                    <span class="perf-section-hint">Merges, mutations and replication</span>
                                     <span class="filters-spacer"></span>
                                     <span class="perf-section-hint" id="actBgSummary"></span>
                                 </div>
@@ -250,17 +255,19 @@
                                         <button type="button" class="act-mode" data-metric="disk">On disk</button>
                                         <button type="button" class="act-mode" data-metric="rows">Rows</button>
                                     </div>
-                                    <span class="perf-section-hint perf-hint-value" id="ingestSummary"></span>
+                                    <span class="perf-section-hint" id="ingestSummary"></span>
                                     <span class="filters-spacer"></span>
                                     <div class="perf-ingest-controls">
                                         <select id="perfIngestFractal" class="setting-select perf-refresh-select">
                                             <option value="">All fractals</option>
                                         </select>
+                                        <label class="perf-ctl">History
                                         <select id="perfIngestDays" class="setting-select perf-refresh-select">
                                             <option value="14">14 days</option>
                                             <option value="30" selected>30 days</option>
                                             <option value="90">90 days</option>
                                         </select>
+                                        </label>
                                     </div>
                                 </div>
                                 <div class="perf-ingest-chart-wrap">
@@ -272,9 +279,9 @@
                             <div class="perf-section perf-section-slim">
                                 <div class="perf-section-header">
                                     <h3>Hot table</h3>
-                                    <span class="perf-section-hint">the recent window alert evaluation reads</span>
+                                    <span class="perf-section-hint">The recent window alert evaluation reads</span>
                                     <span class="filters-spacer"></span>
-                                    <span class="perf-section-hint perf-hint-value" id="hotStrip"></span>
+                                    <span class="perf-section-hint" id="hotStrip"></span>
                                 </div>
                             </div>
                         </div>
@@ -328,7 +335,7 @@
                                     <span class="act-live" id="actLive"><span class="act-live-dot"></span><span id="actLiveText">Live</span></span>
                                     <span class="perf-section-hint" id="actModeHint"></span>
                                     <span class="filters-spacer"></span>
-                                    <input type="text" id="actSearch" class="perf-search-input" placeholder="Filter query, user, fractal..." autocomplete="off" spellcheck="false">
+                                    <input type="text" id="actSearch" class="perf-search-input" placeholder="Filter query, user or fractal" autocomplete="off" spellcheck="false">
                                     <select id="actNode" class="setting-select perf-refresh-select" style="display:none"></select>
                                 </div>
                                 <div class="act-chips" id="actChips">
@@ -405,7 +412,7 @@
                                     <span class="perf-section-hint" id="aeModeHint"></span>
                                     <span class="perf-count" id="aeModeWindow" title="The alert window is capped so this page cannot become the load it is watching"></span>
                                     <span class="filters-spacer"></span>
-                                    <input type="text" id="aeSearch" class="perf-search-input" placeholder="Filter alert name..." autocomplete="off" spellcheck="false">
+                                    <input type="text" id="aeSearch" class="perf-search-input" placeholder="Filter alert name" autocomplete="off" spellcheck="false">
                                     <select id="aeFractal" class="setting-select perf-refresh-select">
                                         <option value="">All fractals</option>
                                     </select>
@@ -418,6 +425,29 @@
                         </div>
 
                         <div id="perfPaneArchive" class="perf-pane" style="display:none;">
+                            <div class="perf-metrics-grid">
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Spool usage</div>
+                                    <div class="perf-metric-value" id="archiveSpoolValue">&mdash;</div>
+                                    <div class="perf-metric-sub" id="archiveSpoolSub"></div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Archived fractals</div>
+                                    <div class="perf-metric-value" id="archiveFractals">&mdash;</div>
+                                    <div class="perf-metric-sub"></div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Archived size</div>
+                                    <div class="perf-metric-value" id="archiveSize">&mdash;</div>
+                                    <div class="perf-metric-sub" id="archiveRecords"></div>
+                                </div>
+                                <div class="perf-metric-card">
+                                    <div class="perf-metric-label">Last commit</div>
+                                    <div class="perf-metric-value" id="archiveLastCommit">&mdash;</div>
+                                    <div class="perf-metric-sub"></div>
+                                </div>
+                            </div>
+
                             <div id="archiveSpoolBanner" class="system-pressure-banner" style="display:none;">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
                                 <span>Archive spool near capacity: ingestion is applying backpressure (429) until the archiver drains it.</span>
@@ -425,7 +455,7 @@
 
                             <div class="perf-section">
                                 <div class="perf-section-header">
-                                    <h3>Iceberg Archive</h3>
+                                    <h3>Iceberg archive</h3>
                                     <span class="perf-section-hint">Durable, engine-independent copy of all logs on object storage</span>
                                 </div>
 
@@ -440,34 +470,13 @@
                                     </div>
                                 </div>
 
-                                <div class="perf-metrics-grid" style="margin-top: 16px;">
-                                    <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Spool Usage</div>
-                                        <div class="perf-metric-value" id="archiveSpoolValue">&mdash;</div>
-                                        <div class="perf-metric-sub" id="archiveSpoolSub"></div>
-                                    </div>
-                                    <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Archived Fractals</div>
-                                        <div class="perf-metric-value" id="archiveFractals">&mdash;</div>
-                                    </div>
-                                    <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Archived Size</div>
-                                        <div class="perf-metric-value" id="archiveSize">&mdash;</div>
-                                        <div class="perf-metric-sub" id="archiveRecords"></div>
-                                    </div>
-                                    <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Last Commit</div>
-                                        <div class="perf-metric-value" id="archiveLastCommit">&mdash;</div>
-                                    </div>
-                                </div>
-
                                 <p class="perf-section-hint" id="archiveHint" style="margin-top: 14px; display:none;"></p>
                             </div>
 
                             <div class="perf-section">
                                 <div class="perf-section-header">
                                     <h3>Maintenance</h3>
-                                    <span class="perf-section-hint">Compaction + snapshot expiry, always-on with an hourly schedule and on-demand runs</span>
+                                    <span class="perf-section-hint">Compaction and snapshot expiry, hourly and on demand</span>
                                 </div>
 
                                 <div class="archive-status-row">
@@ -480,7 +489,7 @@
 
                                 <div class="perf-metrics-grid" style="margin-top: 16px;">
                                     <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Last Run</div>
+                                        <div class="perf-metric-label">Last run</div>
                                         <div class="perf-metric-value" id="maintainLastRun">&mdash;</div>
                                         <div class="perf-metric-sub" id="maintainDuration"></div>
                                     </div>
@@ -490,11 +499,12 @@
                                         <div class="perf-metric-sub" id="maintainExpired"></div>
                                     </div>
                                     <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Groups Failed</div>
+                                        <div class="perf-metric-label">Groups failed</div>
                                         <div class="perf-metric-value" id="maintainGroupsFailed">&mdash;</div>
+                                        <div class="perf-metric-sub"></div>
                                     </div>
                                     <div class="perf-metric-card">
-                                        <div class="perf-metric-label">Backlog Compacted</div>
+                                        <div class="perf-metric-label">Backlog compacted</div>
                                         <div class="perf-metric-value" id="maintainBacklog">&mdash;</div>
                                         <div class="perf-metric-sub" id="maintainBacklogSub"></div>
                                     </div>
@@ -528,10 +538,10 @@
                             <div class="perf-section archive-restore-section">
                                 <div class="perf-section-header restore-header">
                                     <div class="restore-header-text">
-                                        <h3>Restore from Archive</h3>
+                                        <h3>Restore from archive</h3>
                                         <span class="perf-section-hint">Replay archived logs from Iceberg back into the hot store</span>
                                     </div>
-                                    <button type="button" class="btn-primary btn-sm" onclick="Performance.openRestoreForm()">+ New restore</button>
+                                    <button type="button" class="btn-primary btn-sm" onclick="Performance.openRestoreForm()">New restore</button>
                                 </div>
 
                                 <div class="restore-table-controls">
