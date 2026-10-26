@@ -144,7 +144,7 @@ const AlertEngine = {
         this.mode = mode;
         document.querySelectorAll('#aeModes .act-mode').forEach(b =>
             b.classList.toggle('active', b.dataset.mode === mode));
-        const hint = mode === 'alerts' ? '' : 'from the execution log, bounded by its retention';
+        const hint = mode === 'alerts' ? '' : 'From the execution log, bounded by its retention';
         this.setText('aeModeHint', hint);
         this.toggle('aeModeHint', !!hint);
         this.renderDisabledStrip((this.summary || {}).disabled_alerts || []);
