@@ -178,6 +178,36 @@ func TestApplyQuerySettingsMemoryCap(t *testing.T) {
 	}
 }
 
+// Searches skip the per-query statistics load, which costs seconds per shard on
+// ClickHouse 26.8 and only steers the optimizer. The setting goes only to a server
+// known to have it: an unknown setting would fail every search.
+func TestApplyQuerySettingsSkipsStatisticsForSearch(t *testing.T) {
+	c := &ClickHouseClient{}
+	c.setActiveWorkloads(nil)
+	search := UserSearchContext(context.Background())
+
+	if got := c.applyQuerySettings(search, nil); got != nil {
+		t.Errorf("unprobed server must not be sent use_statistics, got %v", got)
+	}
+
+	c.caps.set(CapStatisticsSetting, CapAvailable, "")
+	got := c.applyQuerySettings(search, clickhouse.Settings{"max_query_size": 42})
+	if got["use_statistics"] != 0 || got["max_query_size"] != 42 {
+		t.Errorf("search must skip statistics alongside caller settings, got %v", got)
+	}
+	if got := c.applyQuerySettings(RecallContext(context.Background()), nil); got != nil {
+		t.Errorf("recall must keep statistics, got %v", got)
+	}
+	if got := c.applyQuerySettings(context.Background(), nil); got != nil {
+		t.Errorf("unmarked work (alerts, ingest) must keep statistics, got %v", got)
+	}
+
+	c.caps.set(CapStatisticsSetting, CapUnavailable, "no such setting")
+	if got := c.applyQuerySettings(search, nil); got != nil {
+		t.Errorf("a server without the setting must not be sent it, got %v", got)
+	}
+}
+
 // Query classes must never be configurable to reserve more memory than the node
 // has: the leftover is what inserts, their MV cascade, and merges run in.
 func TestClampCombinedMemory(t *testing.T) {
