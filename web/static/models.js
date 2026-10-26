@@ -196,15 +196,22 @@ const AnalyticsModels = {
         container.innerHTML = `
 <div class="models-view-section">
     <div class="models-listing">
-        <div class="models-filters">
-            <input type="text" id="modelsSearchInput" class="models-search" placeholder="Search models...">
-            <span class="filters-spacer"></span>
-            <button class="btn-secondary" id="modelsImportBtn">Import YAML</button>
-            <button class="btn-primary" id="modelsNewBtn">+ New Model</button>
+        <header class="admin-page-head">
+            <div>
+                <h2>Analytics</h2>
+                <p>Models that learn this fractal's normal behavior and surface what departs from it.</p>
+            </div>
+            <div class="admin-page-actions">
+                <button class="btn-secondary btn-sm" id="modelsImportBtn">Import YAML</button>
+                <button class="btn-primary btn-sm" id="modelsNewBtn">Create model</button>
+            </div>
+        </header>
+        <div class="admin-toolbar models-filters">
+            <input type="text" id="modelsSearchInput" class="admin-search" placeholder="Search models">
         </div>
         <input type="file" id="modelsImportFile" accept=".yaml,.yml" style="display:none">
-        <div id="modelsTableWrap" class="models-table-wrap">
-            <div class="models-empty">Loading...</div>
+        <div id="modelsTableWrap" class="admin-list">
+            <div class="loading">Loading...</div>
         </div>
     </div>
 </div>`;
@@ -224,11 +231,13 @@ const AnalyticsModels = {
             m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q)
         );
         if (!filtered.length) {
-            wrap.innerHTML = `<div class="models-empty">${this.models.length ? 'No models match your search.' : 'No models yet. Create one to get started.'}</div>`;
+            wrap.innerHTML = this.models.length
+                ? '<div class="admin-empty">No models match this search</div>'
+                : '<div class="admin-empty"><strong>No models yet</strong>Create one to learn this fractal\'s normal behavior.</div>';
             return;
         }
         wrap.innerHTML = `
-<table class="models-table">
+<table class="models-table list-table">
     <thead><tr>
         <th>Name</th><th>Type</th><th>State</th>
         <th title="What the model surfaced over the last 7 days">Findings <span class="models-th-sub">7d</span></th>

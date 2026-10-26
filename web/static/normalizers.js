@@ -88,17 +88,17 @@ const Normalizers = {
         if (!container) return;
 
         if (this.normalizers.length === 0) {
-            container.innerHTML = '<p class="empty-state">No normalizers configured.</p>';
+            container.innerHTML = '<div class="admin-empty"><strong>No normalizers yet</strong>Create one to rename and reshape fields as logs arrive.</div>';
             return;
         }
 
-        let html = `<table class="context-links-table">
+        let html = `<table class="list-table">
             <thead>
                 <tr>
                     <th>Name</th>
                     <th>Transforms</th>
-                    <th>Field Mappings</th>
-                    <th>Used By</th>
+                    <th>Field mappings</th>
+                    <th>Used by</th>
                     <th></th>
                 </tr>
             </thead>
@@ -107,10 +107,10 @@ const Normalizers = {
         this.normalizers.forEach(n => {
             const transforms = (n.transforms || []).join(', ') || 'None';
             const mappingCount = (n.field_mappings || []).length;
-            const defaultBadge = n.is_default ? ' <span class="context-link-badge">default</span>' : '';
+            const defaultBadge = n.is_default ? ' <span class="context-link-badge">Default</span>' : '';
             html += `<tr>
                 <td><button class="table-name-link" onclick="Normalizers.openEditForm('${Utils.escapeJs(n.id)}')" title="Edit normalizer">${Utils.escapeHtml(n.name)}</button>${defaultBadge}</td>
-                <td class="context-link-fields">${Utils.escapeHtml(transforms)}</td>
+                <td class="text-muted">${Utils.escapeHtml(transforms)}</td>
                 <td>${mappingCount} mapping${mappingCount !== 1 ? 's' : ''}</td>
                 <td><span class="normalizer-usage-cell" id="normalizer-usage-${n.id}">--</span></td>
                 <td class="kebab-cell">

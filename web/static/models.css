@@ -12,36 +12,21 @@
     flex-direction: column;
     flex: 1;
     min-height: 0;
-    padding: 16px;
     gap: 16px;
     overflow-y: auto;
 }
 
 /* Listing */
+/* The shared page head and toolbar carry their own spacing. */
 .models-listing {
     display: flex;
     flex-direction: column;
-    gap: 12px;
 }
 
 .models-filters {
     display: flex;
     gap: 8px;
     align-items: center;
-}
-
-.models-search {
-    flex: 1;
-    min-width: 200px;
-    max-width: 400px;
-    padding: 0.5rem 0.875rem;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    font-family: var(--font-main);
-    font-size: 0.8125rem;
-    transition: var(--transition);
 }
 
 /* A row of controls is one row: the search box and the buttons beside it settle
@@ -53,38 +38,10 @@
     box-sizing: border-box;
 }
 
-.models-search:focus {
-    outline: none;
-    border-color: var(--accent-primary);
-}
-
 .filters-spacer { flex: 1; }
 
 .models-table-wrap {
     overflow-x: auto;
-}
-
-.models-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-}
-
-.models-table th,
-.models-table td {
-    padding: 8px 12px;
-    text-align: left;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.models-table th {
-    color: var(--text-muted, #888);
-    font-weight: 500;
-    white-space: nowrap;
-}
-
-.models-table tr:hover td {
-    background: var(--bg-hover, rgba(255,255,255,0.03));
 }
 
 .model-name {

@@ -107,17 +107,21 @@
 
             <!-- Fractal Listing Tab Content -->
             <div id="fractalListingTabContent">
-                <section class="results-section">
-                    <div class="fractal-listing-header">
-                        <div class="fractal-listing-controls">
-                            <input type="text" id="fractalListingSearch" class="fractal-listing-search" placeholder="Search fractals...">
-                            <div class="fractal-listing-pagination">
-                                <button id="fractalListingPrevBtn" class="page-btn-compact">←</button>
-                                <span id="fractalListingPageInfo" class="page-info-compact"></span>
-                                <button id="fractalListingNextBtn" class="page-btn-compact">→</button>
-                            </div>
-                            <span class="filters-spacer"></span>
-                            <button id="createFractalBtn" class="btn-primary admin-only" style="display: none;">+ Create</button>
+                <section class="list-page">
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Fractals</h2>
+                            <p>Fractals hold your logs; prisms search several fractals at once.</p>
+                        </div>
+                        <button id="createFractalBtn" class="btn-primary btn-sm admin-only" style="display: none;">Create</button>
+                    </header>
+                    <div class="admin-toolbar">
+                        <input type="text" id="fractalListingSearch" class="admin-search" placeholder="Search fractals">
+                        <span class="admin-toolbar-spacer"></span>
+                        <div class="fractal-listing-pagination">
+                            <button id="fractalListingPrevBtn" class="page-btn-compact">←</button>
+                            <span id="fractalListingPageInfo" class="page-info-compact"></span>
+                            <button id="fractalListingNextBtn" class="page-btn-compact">→</button>
                         </div>
                     </div>
                     <div id="fractalListingContainer">
@@ -1404,12 +1408,17 @@
             <div id="mainNormalizersTabContent" style="display: none;">
                 <div id="normalizersView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
-                        <div class="admin-toolbar">
-                            <span class="admin-toolbar-spacer"></span>
-                            <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
-                            <button id="normalizerCreateBtn" class="btn-primary btn-sm">+ Create Normalizer</button>
-                        </div>
-                        <div id="normalizersListContainer">
+                        <header class="admin-page-head">
+                            <div>
+                                <h2>Normalizers</h2>
+                                <p>Rules that rename and reshape fields as logs arrive.</p>
+                            </div>
+                            <div class="admin-page-actions">
+                                <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
+                                <button id="normalizerCreateBtn" class="btn-primary btn-sm">Create normalizer</button>
+                            </div>
+                        </header>
+                        <div id="normalizersListContainer" class="admin-list">
                             <div class="loading">Loading normalizers...</div>
                         </div>
                     </section>
@@ -2061,27 +2070,33 @@
                         <!-- Notebook Listing -->
                         <div id="notebookListing" class="notebooks-listing">
                             <!-- Search, Filters + Actions -->
-                            <div class="notebooks-filters">
-                                <input type="text" id="notebookSearchInput" class="notebooks-search" placeholder="Search notebooks..." />
-                                <span class="filters-spacer"></span>
-                                <button id="importNotebookBtn" class="btn-secondary" onclick="Notebooks.importNotebook()">Import YAML</button>
-                                <button id="createNotebookBtn" class="btn-primary">New Notebook</button>
+                            <header class="admin-page-head">
+                                <div>
+                                    <h2>Notebooks</h2>
+                                    <p>Investigations that keep queries, results and notes together.</p>
+                                </div>
+                                <div class="admin-page-actions">
+                                    <button id="importNotebookBtn" class="btn-secondary btn-sm" onclick="Notebooks.importNotebook()">Import YAML</button>
+                                    <button id="createNotebookBtn" class="btn-primary btn-sm">Create notebook</button>
+                                </div>
+                            </header>
+                            <div class="admin-toolbar">
+                                <input type="text" id="notebookSearchInput" class="admin-search" placeholder="Search notebooks" />
                             </div>
 
                             <!-- Empty State -->
-                            <div id="notebooksEmptyState" class="listing-empty-state" style="display: none;">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
+                            <div id="notebooksEmptyState" class="admin-empty" style="display: none;">
                                 <p>No notebooks found</p>
                             </div>
 
                             <!-- Notebooks Table -->
-                            <div class="notebooks-table-container" style="display: none;">
-                                <table id="notebooksTable" class="notebooks-table">
+                            <div class="notebooks-table-container admin-list" style="display: none;">
+                                <table id="notebooksTable" class="notebooks-table list-table">
                                     <thead>
                                         <tr>
                                             <th>Name</th>
                                             <th>Description</th>
-                                            <th>Time Range</th>
+                                            <th>Time range</th>
                                             <th>Created</th>
                                             <th>Updated</th>
                                             <th class="kebab-th"></th>
@@ -2166,25 +2181,31 @@
                     <section class="dashboards-view-section">
                         <!-- Dashboard Listing -->
                         <div id="dashboardListing" class="dashboards-listing">
-                            <div class="dashboards-filters">
-                                <input type="text" id="dashboardSearchInput" class="dashboards-search" placeholder="Search dashboards..." />
-                                <span class="filters-spacer"></span>
-                                <button id="importDashboardBtn" class="btn-secondary" onclick="Dashboards.importDashboard()">Import YAML</button>
-                                <button id="createDashboardBtn" class="btn-primary">New Dashboard</button>
+                            <header class="admin-page-head">
+                                <div>
+                                    <h2>Dashboards</h2>
+                                    <p>Saved panels of queries and charts for this fractal.</p>
+                                </div>
+                                <div class="admin-page-actions">
+                                    <button id="importDashboardBtn" class="btn-secondary btn-sm" onclick="Dashboards.importDashboard()">Import YAML</button>
+                                    <button id="createDashboardBtn" class="btn-primary btn-sm">Create dashboard</button>
+                                </div>
+                            </header>
+                            <div class="admin-toolbar">
+                                <input type="text" id="dashboardSearchInput" class="admin-search" placeholder="Search dashboards" />
                             </div>
                             <!-- Empty State -->
-                            <div id="dashboardsEmptyState" class="listing-empty-state" style="display: none;">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+                            <div id="dashboardsEmptyState" class="admin-empty" style="display: none;">
                                 <p>No dashboards yet</p>
                             </div>
 
-                            <div class="dashboards-table-container" style="display: none;">
-                                <table id="dashboardsTable" class="dashboards-table">
+                            <div class="dashboards-table-container admin-list" style="display: none;">
+                                <table id="dashboardsTable" class="dashboards-table list-table">
                                     <thead>
                                         <tr>
                                             <th>Name</th>
                                             <th>Description</th>
-                                            <th>Time Range</th>
+                                            <th>Time range</th>
                                             <th>Created</th>
                                             <th>Updated</th>
                                             <th class="kebab-th"></th>
@@ -2272,20 +2293,24 @@
 
                         <!-- Lookup Listing -->
                         <div id="dictListing" class="dashboards-listing">
-                            <div class="dashboards-filters">
-                                <input type="text" id="dictSearchInput" class="dashboards-search" placeholder="Search lookups...">
-                                <span class="filters-spacer"></span>
-                                <button id="dictCreateBtn" class="btn-primary">+ New Lookup</button>
+                            <header class="admin-page-head">
+                                <div>
+                                    <h2>Lookups</h2>
+                                    <p>Tables of reference data that queries can match and enrich against.</p>
+                                </div>
+                                <button id="dictCreateBtn" class="btn-primary btn-sm">Create lookup</button>
+                            </header>
+                            <div class="admin-toolbar">
+                                <input type="text" id="dictSearchInput" class="admin-search" placeholder="Search lookups">
                             </div>
 
                             <!-- Empty State -->
-                            <div id="dictsEmptyState" class="listing-empty-state" style="display: none;">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+                            <div id="dictsEmptyState" class="admin-empty" style="display: none;">
                                 <p>No lookups yet</p>
                             </div>
 
-                            <div class="dashboards-table-container" style="display: none;">
-                                <table id="dictsTable" class="dashboards-table">
+                            <div class="dashboards-table-container admin-list" style="display: none;">
+                                <table id="dictsTable" class="dashboards-table list-table">
                                     <thead>
                                         <tr>
                                             <th>Name</th>
@@ -2675,22 +2700,28 @@
                             <div id="ingestDynamicPanels"></div>
 
                             <!-- Search and Filters -->
-                            <div class="ingest-filters">
-                                <input type="text" id="ingestTokenSearchInput" class="ingest-search" placeholder="Search tokens..." />
-                                <button id="ingestTokensRefreshBtn" class="btn-secondary">Refresh</button>
-                                <span class="filters-spacer"></span>
-                                <button id="createIngestTokenBtn" class="btn-primary">New Token</button>
+                            <header class="admin-page-head">
+                                <div>
+                                    <h2>Ingest</h2>
+                                    <p>Tokens that let shippers send logs into this fractal.</p>
+                                </div>
+                                <div class="admin-page-actions">
+                                    <button id="ingestTokensRefreshBtn" class="btn-secondary btn-sm">Refresh</button>
+                                    <button id="createIngestTokenBtn" class="btn-primary btn-sm">Create token</button>
+                                </div>
+                            </header>
+                            <div class="admin-toolbar">
+                                <input type="text" id="ingestTokenSearchInput" class="admin-search" placeholder="Search tokens" />
                             </div>
 
                             <!-- Empty State -->
-                            <div id="ingestEmptyState" class="listing-empty-state" style="display: none;">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+                            <div id="ingestEmptyState" class="admin-empty" style="display: none;">
                                 <p>No ingest tokens yet</p>
                             </div>
 
                             <!-- Tokens Table -->
-                            <div class="ingest-tokens-table-container">
-                                <table class="ingest-tokens-table">
+                            <div class="ingest-tokens-table-container admin-list">
+                                <table class="ingest-tokens-table list-table">
                                     <thead>
                                         <tr>
                                             <th>Name</th>
@@ -2882,7 +2913,7 @@
             <!-- Manage Tab Content -->
             <div id="fractalManageTabContent" class="fractal-admin-only" style="display: none;">
                 <!-- Prism management section (shown when a prism is selected) -->
-                <div id="prismManageSection" class="fractal-manage-view" style="display:none;">
+                <div id="prismManageSection" class="fractal-manage-view settings-column" style="display:none;">
                     <span id="managePrismTitle" style="display:none;"></span>
 
                     <!-- Prism Manage Sub-Tabs -->
@@ -2890,66 +2921,86 @@
                         <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchPrismSubTab('overview')">Overview</button>
                         <button class="alerts-sub-tab" data-subtab="members" onclick="FractalManageTab.switchPrismSubTab('members')">Members</button>
                         <button class="alerts-sub-tab" data-subtab="access" onclick="FractalManageTab.switchPrismSubTab('access')">Access</button>
-                        <button class="alerts-sub-tab" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger Zone</button>
+                        <button class="alerts-sub-tab alerts-sub-tab-danger" data-subtab="danger" onclick="FractalManageTab.switchPrismSubTab('danger')">Danger zone</button>
                     </div>
 
                     <!-- Prism Overview Sub-Tab -->
                     <div id="prismSubTabOverview" class="prism-sub-panel">
-                    <div class="fractal-details-grid">
-                        <div class="detail-section">
-                            <div class="section-header-row" style="border:none;margin:0;padding:0 0 0.5rem 0;">
-                                <h3 style="margin:0;">Basic Information</h3>
-                                <button id="manageEditPrismBtnInline" class="btn-secondary btn-xs" onclick="FractalManageTab.editPrism()" title="Edit name and description">Edit</button>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Name:</span>
-                                <span id="managePrismName" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Description:</span>
-                                <span id="managePrismDescription" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Created by:</span>
-                                <span id="managePrismCreatedBy" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Created:</span>
-                                <span id="managePrismCreatedAt" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Last updated:</span>
-                                <span id="managePrismUpdatedAt" class="detail-value"></span>
-                            </div>
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Overview</h2>
+                            <p>Name, ownership and members of this prism.</p>
                         </div>
-
-                        <div class="detail-section">
-                            <h3>Composition</h3>
-                            <div class="detail-row highlight">
-                                <span class="detail-label">Member fractals:</span>
-                                <span id="managePrismMemberCount" class="detail-value">0</span>
+                        <button id="manageEditPrismBtnInline" class="btn-secondary btn-sm" onclick="FractalManageTab.editPrism()" title="Edit name and description">Edit</button>
+                    </header>
+                    <div class="sp-content">
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Details</h3>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Name</span>
+                                    <span id="managePrismName" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Description</span>
+                                    <span id="managePrismDescription" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Created by</span>
+                                    <span id="managePrismCreatedBy" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Created</span>
+                                    <span id="managePrismCreatedAt" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Last updated</span>
+                                    <span id="managePrismUpdatedAt" class="detail-value"></span>
+                                </div>
                             </div>
-                        </div>
+                        </section>
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Composition</h3>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Member fractals</span>
+                                    <span id="managePrismMemberCount" class="detail-value">0</span>
+                                </div>
+                            </div>
+                        </section>
                     </div>
                     </div><!-- end prismSubTabOverview -->
 
                     <!-- Prism Members Sub-Tab -->
                     <div id="prismSubTabMembers" class="prism-sub-panel" style="display:none;">
-                    <div class="fractal-settings">
-                        <h3>Member Fractals</h3>
-                        <p class="section-description">Queries against this prism run across all member fractals.</p>
-                        <div id="prismMembersList" style="margin-bottom:1rem;"></div>
-                        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
-                            <select id="prismAddMemberSelect" class="setting-select" style="flex:1;min-width:180px;">
-                                <option value="">Select a fractal to add...</option>
-                            </select>
-                            <button onclick="FractalManageTab.addPrismMember()" class="btn-secondary">Add</button>
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Members</h2>
+                            <p>Queries against this prism run across all member fractals.</p>
                         </div>
+                    </header>
+                    <div id="prismMembersList" class="prism-members-list"></div>
+                    <div class="admin-toolbar">
+                        <select id="prismAddMemberSelect" class="setting-select prism-add-select">
+                            <option value="">Select a fractal to add</option>
+                        </select>
+                        <button onclick="FractalManageTab.addPrismMember()" class="btn-secondary btn-sm">Add</button>
                     </div>
                     </div><!-- end prismSubTabMembers -->
 
                     <!-- Prism Access Sub-Tab -->
                     <div id="prismSubTabAccess" class="prism-sub-panel" style="display:none;">
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Access</h2>
+                            <p>Who can use this prism, and the API keys scoped to it.</p>
+                        </div>
+                    </header>
+
                     <div class="access-panel">
 
                         <!-- Permissions Card -->
@@ -2959,7 +3010,7 @@
                                     <h3>Permissions</h3>
                                     <span class="access-card-subtitle">Control which users and groups can access this prism and their role level.</span>
                                 </div>
-                                <button id="grantPrismPermissionBtn" class="btn-ghost btn-sm" onclick="GroupsView.showPrismGrantForm()">+ Grant Access</button>
+                                <button id="grantPrismPermissionBtn" class="btn-secondary btn-sm" onclick="GroupsView.showPrismGrantForm()">Grant access</button>
                             </div>
 
                             <div id="prismPermissionsList" class="permissions-list">
@@ -2971,10 +3022,10 @@
                         <div class="access-card">
                             <div class="access-card-header">
                                 <div class="access-card-title">
-                                    <h3>API Keys</h3>
-                                    <span class="access-card-subtitle">Manage programmatic access to this prism. Prism API keys can query across all member fractals.</span>
+                                    <h3>API keys</h3>
+                                    <span class="access-card-subtitle">Programmatic access to this prism. Its keys can query across all member fractals.</span>
                                 </div>
-                                <button id="createPrismAPIKeyInlineBtn" class="btn-ghost btn-sm">+ Create Key</button>
+                                <button id="createPrismAPIKeyInlineBtn" class="btn-secondary btn-sm">Create API key</button>
                             </div>
 
                             <div id="prismInlineAPIKeysList" class="api-keys-inline-list">
@@ -2987,25 +3038,30 @@
 
                     <!-- Prism Danger Zone Sub-Tab -->
                     <div id="prismSubTabDanger" class="prism-sub-panel" style="display:none;">
-                    <div class="danger-section">
-                        <h3>Danger Zone</h3>
-                        <div class="danger-actions">
-                            <div class="danger-action-item">
-                                <div class="danger-action-info">
-                                    <span class="danger-action-label">Delete Prism</span>
-                                    <span class="danger-action-desc">Permanently delete this prism. Member fractals will not be affected.</span>
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Danger zone</h2>
+                            <p>Irreversible operations. Each one asks for confirmation before it runs.</p>
+                        </div>
+                    </header>
+                        <div class="sp-card sp-card-danger">
+                            <div class="sp-row">
+                                <div class="sp-row-info">
+                                    <span class="sp-row-label">Delete prism</span>
+                                    <p class="sp-row-desc">Permanently delete this prism. Member fractals are not affected.</p>
                                 </div>
-                                <button onclick="FractalManageTab.deletePrism()" class="danger-btn">Delete</button>
+                                <div class="sp-row-control">
+                                    <button onclick="FractalManageTab.deletePrism()" class="danger-btn">Delete prism</button>
+                                </div>
                             </div>
                         </div>
-                    </div>
                     </div><!-- end prismSubTabDanger -->
 
                     <div id="managePrismError" class="error-message" style="display:none;"></div>
                 </div>
 
                 <!-- Fractal management section (shown when a fractal is selected) -->
-                <div id="fractalOnlyManageSection" class="fractal-manage-view">
+                <div id="fractalOnlyManageSection" class="fractal-manage-view settings-column">
                     <span id="manageFractalTitle" style="display:none;"></span>
                     <button id="manageEditFractalBtn" style="display:none;"></button>
 
@@ -3014,64 +3070,81 @@
                         <button class="alerts-sub-tab active" data-subtab="overview" onclick="FractalManageTab.switchSubTab('overview')">Overview</button>
                         <button class="alerts-sub-tab fractal-admin-only" data-subtab="access" onclick="FractalManageTab.switchSubTab('access')">Access</button>
                         <button class="alerts-sub-tab fractal-admin-only" data-subtab="lifecycle" onclick="FractalManageTab.switchSubTab('lifecycle')">Lifecycle</button>
-                        <button class="alerts-sub-tab fractal-admin-only" data-subtab="danger" onclick="FractalManageTab.switchSubTab('danger')">Danger Zone</button>
+                        <button class="alerts-sub-tab alerts-sub-tab-danger fractal-admin-only" data-subtab="danger" onclick="FractalManageTab.switchSubTab('danger')">Danger zone</button>
                     </div>
 
                     <!-- Overview Sub-Tab -->
                     <div id="manageSubTabOverview" class="manage-sub-panel">
-                    <div class="fractal-details-grid">
-                        <div class="detail-section">
-                            <div class="section-header-row" style="border:none;margin:0;padding:0 0 0.5rem 0;">
-                                <h3 style="margin:0;">Basic Information</h3>
-                                <button id="manageEditFractalBtnInline" class="btn-secondary btn-xs" onclick="FractalManageTab.editFractal()" title="Edit name and description">Edit</button>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Name:</span>
-                                <span id="manageFractalName" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Description:</span>
-                                <span id="manageFractalDescription" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Created by:</span>
-                                <span id="manageFractalCreatedBy" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Created:</span>
-                                <span id="manageFractalCreatedAt" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Last updated:</span>
-                                <span id="manageFractalUpdatedAt" class="detail-value"></span>
-                            </div>
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Overview</h2>
+                            <p>Name, ownership and storage for this fractal.</p>
                         </div>
-
-                        <div class="detail-section">
-                            <h3>Statistics</h3>
-                            <div class="detail-row highlight">
-                                <span class="detail-label">Total logs:</span>
-                                <span id="manageFractalLogCount" class="detail-value"></span>
+                        <button id="manageEditFractalBtnInline" class="btn-secondary btn-sm" onclick="FractalManageTab.editFractal()" title="Edit name and description">Edit</button>
+                    </header>
+                    <div class="sp-content">
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Details</h3>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Name</span>
+                                    <span id="manageFractalName" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Description</span>
+                                    <span id="manageFractalDescription" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Created by</span>
+                                    <span id="manageFractalCreatedBy" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Created</span>
+                                    <span id="manageFractalCreatedAt" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Last updated</span>
+                                    <span id="manageFractalUpdatedAt" class="detail-value"></span>
+                                </div>
                             </div>
-                            <div class="detail-row highlight">
-                                <span class="detail-label">Storage size:</span>
-                                <span id="manageFractalSizeBytes" class="detail-value"></span>
+                        </section>
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Storage</h3>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Total logs</span>
+                                    <span id="manageFractalLogCount" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Storage size</span>
+                                    <span id="manageFractalSizeBytes" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Earliest log</span>
+                                    <span id="manageFractalEarliestLog" class="detail-value"></span>
+                                </div>
+                                <div class="sp-row sp-row-kv">
+                                    <span class="sp-row-label">Latest log</span>
+                                    <span id="manageFractalLatestLog" class="detail-value"></span>
+                                </div>
                             </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Earliest log:</span>
-                                <span id="manageFractalEarliestLog" class="detail-value"></span>
-                            </div>
-                            <div class="detail-row">
-                                <span class="detail-label">Latest log:</span>
-                                <span id="manageFractalLatestLog" class="detail-value"></span>
-                            </div>
-                        </div>
+                        </section>
                     </div>
-
                     </div><!-- end manageSubTabOverview -->
 
                     <!-- Access Sub-Tab -->
                     <div id="manageSubTabAccess" class="manage-sub-panel" style="display:none;">
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Access</h2>
+                            <p>Who can use this fractal, and the API keys scoped to it.</p>
+                        </div>
+                    </header>
+
                     <div class="access-panel">
 
                         <!-- Permissions Card -->
@@ -3081,7 +3154,7 @@
                                     <h3>Permissions</h3>
                                     <span class="access-card-subtitle">Control which users and groups can access this fractal and their role level.</span>
                                 </div>
-                                <button id="grantPermissionBtn" class="btn-ghost btn-sm">+ Grant Access</button>
+                                <button id="grantPermissionBtn" class="btn-secondary btn-sm">Grant access</button>
                             </div>
 
                             <div id="fractalPermissionsList" class="permissions-list">
@@ -3093,10 +3166,10 @@
                         <div class="access-card">
                             <div class="access-card-header">
                                 <div class="access-card-title">
-                                    <h3>API Keys</h3>
-                                    <span class="access-card-subtitle">Manage programmatic access to this fractal</span>
+                                    <h3>API keys</h3>
+                                    <span class="access-card-subtitle">Programmatic access to this fractal.</span>
                                 </div>
-                                <button id="createAPIKeyInlineBtn" class="btn-ghost btn-sm">+ Create Key</button>
+                                <button id="createAPIKeyInlineBtn" class="btn-secondary btn-sm">Create API key</button>
                             </div>
 
                             <div id="inlineAPIKeysList" class="api-keys-inline-list">
@@ -3109,89 +3182,114 @@
 
                     <!-- Lifecycle Sub-Tab -->
                     <div id="manageSubTabLifecycle" class="manage-sub-panel" style="display:none;">
-                    <div class="fractal-settings lifecycle-section">
-                        <h3>Log Lifecycle</h3>
-
-                        <div id="lifecycleSummary" class="lifecycle-summary"></div>
-
-                        <div class="setting-item">
-                            <div class="setting-info">
-                                <label for="manageFractalRetentionSelect" class="setting-label">Delete logs after</label>
-                                <p class="setting-description">Logs ingested more than this long ago are permanently removed. Runs hourly.</p>
-                            </div>
-                            <select id="manageFractalRetentionSelect" class="setting-select">
-                                <option value="">Never (keep forever)</option>
-                                <option value="7">7 days</option>
-                                <option value="14">14 days</option>
-                                <option value="30">30 days</option>
-                                <option value="90">90 days</option>
-                                <option value="180">180 days</option>
-                                <option value="365">365 days</option>
-                            </select>
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Lifecycle</h2>
+                            <p>How long this fractal keeps logs, and how much disk it may use.</p>
                         </div>
-
-                        <div class="setting-item">
-                            <div class="setting-info">
-                                <label for="manageFractalArchiveRetentionInput" class="setting-label">Delete archived data after</label>
-                                <p class="setting-description">Applies to the Iceberg archive only, independently of the log retention above. Any number of days; blank keeps the archive forever.</p>
+                    </header>
+                    <div class="sp-content">
+                        <section class="sp-section">
+                            <header class="sp-section-head">
+                                <h3>Retention</h3>
+                                <p id="lifecycleSummary"></p>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="manageFractalRetentionSelect" class="sp-row-label">Delete logs after</label>
+                                        <p class="sp-row-desc">Logs ingested more than this long ago are permanently removed. Runs hourly.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="manageFractalRetentionSelect" class="setting-select">
+                                            <option value="">Never</option>
+                                            <option value="7">7 days</option>
+                                            <option value="14">14 days</option>
+                                            <option value="30">30 days</option>
+                                            <option value="90">90 days</option>
+                                            <option value="180">180 days</option>
+                                            <option value="365">365 days</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="manageFractalArchiveRetentionInput" class="sp-row-label">Delete archived data after</label>
+                                        <p class="sp-row-desc">Days to keep data in the Iceberg archive, independently of the log retention above. Blank keeps it forever.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <input type="number" id="manageFractalArchiveRetentionInput" class="setting-input" min="1" step="1" placeholder="Never">
+                                    </div>
+                                </div>
                             </div>
-                            <input type="number" id="manageFractalArchiveRetentionInput" class="setting-input" min="1" step="1" placeholder="Never (keep forever)">
-                        </div>
+                        </section>
 
-                        <div class="lifecycle-divider fractal-admin-only"></div>
-
-                        <div class="setting-item fractal-admin-only">
-                            <div class="setting-info">
-                                <label for="manageFractalQuotaInput" class="setting-label">Disk quota</label>
-                                <p class="setting-description">Limit how much disk this fractal can consume (measured as raw log bytes). Leave empty for no limit.</p>
+                        <section class="sp-section fractal-admin-only">
+                            <header class="sp-section-head">
+                                <h3>Quota</h3>
+                            </header>
+                            <div class="sp-card">
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="manageFractalQuotaInput" class="sp-row-label">Disk quota</label>
+                                        <p class="sp-row-desc">Limit how much disk this fractal can consume, measured as raw log bytes. Leave empty for no limit.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <div class="quota-input-group">
+                                            <input type="text" inputmode="numeric" pattern="[0-9]*" id="manageFractalQuotaInput" class="setting-input" placeholder="No limit">
+                                            <span class="quota-unit">GB</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
+                                        <label for="manageFractalQuotaAction" class="sp-row-label">When quota is reached</label>
+                                        <p class="sp-row-desc">Reject stops accepting new logs (429). Rollover deletes the oldest logs to make room.</p>
+                                        <p class="sp-row-blocked" id="manageQuotaRolloverWarning" style="display:none;">Rollover silently deletes your oldest logs to stay within quota. For sensitive data, enable the Iceberg archive so older logs are copied to durable object storage rather than lost.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <select id="manageFractalQuotaAction" class="setting-select">
+                                            <option value="reject">Reject new logs</option>
+                                            <option value="rollover">Rollover</option>
+                                        </select>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="quota-input-group">
-                                <input type="text" inputmode="numeric" pattern="[0-9]*" id="manageFractalQuotaInput" class="setting-input" placeholder="No limit" style="width:90px;">
-                                <span class="quota-unit">GB</span>
+                            <div class="sp-row-actions sp-section-actions">
+                                <button onclick="FractalManageTab.saveDiskQuota()" class="btn-primary btn-sm">Save quota</button>
                             </div>
-                        </div>
-
-                        <div class="setting-item fractal-admin-only">
-                            <div class="setting-info">
-                                <label for="manageFractalQuotaAction" class="setting-label">When quota is reached</label>
-                                <p class="setting-description">Reject stops accepting new logs (429). Rollover deletes the oldest logs to make room.</p>
-                                <p class="setting-description lifecycle-warning" id="manageQuotaRolloverWarning" style="display:none;">Rollover silently deletes your oldest logs to stay within quota. For sensitive data, enable the Iceberg archive so older logs are copied to durable object storage rather than lost.</p>
-                            </div>
-                            <select id="manageFractalQuotaAction" class="setting-select">
-                                <option value="reject">Reject new logs</option>
-                                <option value="rollover">Rollover (delete oldest)</option>
-                            </select>
-                        </div>
-
-                        <div class="setting-item fractal-admin-only" style="justify-content:flex-end;">
-                            <button onclick="FractalManageTab.saveDiskQuota()" class="btn-primary btn-sm">Save Quota</button>
-                        </div>
+                        </section>
                     </div>
-
                     </div><!-- end manageSubTabLifecycle -->
 
                     <!-- Danger Zone Sub-Tab -->
                     <div id="manageSubTabDanger" class="manage-sub-panel" style="display:none;">
-                    <div class="danger-section">
-                        <h3>Danger Zone</h3>
-                        <div class="danger-actions">
-                            <div class="danger-action-item">
-                                <div class="danger-action-info">
-                                    <span class="danger-action-label">Clear Fractal Logs</span>
-                                    <span class="danger-action-desc">Permanently delete all logs. The fractal structure will remain.</span>
+                    <header class="admin-page-head">
+                        <div>
+                            <h2>Danger zone</h2>
+                            <p>Irreversible operations. Each one asks you to type the fractal name before it runs.</p>
+                        </div>
+                    </header>
+                        <div class="sp-card sp-card-danger">
+                            <div class="sp-row">
+                                <div class="sp-row-info">
+                                    <span class="sp-row-label">Clear fractal logs</span>
+                                    <p class="sp-row-desc">Permanently delete all logs. The fractal itself, its keys and settings remain.</p>
                                 </div>
-                                <button id="manageClearFractalLogsBtn" class="danger-btn">Clear Logs</button>
+                                <div class="sp-row-control">
+                                    <button id="manageClearFractalLogsBtn" class="danger-btn">Clear logs</button>
+                                </div>
                             </div>
-                            <div class="danger-action-item" id="deleteFractalDangerItem">
-                                <div class="danger-action-info">
-                                    <span class="danger-action-label">Delete Fractal</span>
-                                    <span class="danger-action-desc">Permanently delete this fractal and all its data, alerts, and permissions.</span>
+                            <div class="sp-row" id="deleteFractalDangerItem">
+                                <div class="sp-row-info">
+                                    <span class="sp-row-label">Delete fractal</span>
+                                    <p class="sp-row-desc">Permanently delete this fractal and all its data, alerts, and permissions.</p>
                                 </div>
-                                <button id="manageDeleteFractalBtn" class="danger-btn">Delete</button>
+                                <div class="sp-row-control">
+                                    <button id="manageDeleteFractalBtn" class="danger-btn">Delete fractal</button>
+                                </div>
                             </div>
                         </div>
-                    </div>
-
                     </div><!-- end manageSubTabDanger -->
 
                     <div id="manageFractalError" class="error-message" style="display: none;"></div>

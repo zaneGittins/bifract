@@ -161,7 +161,7 @@ const FractalManageTab = {
                 ? this.currentPrismData.members.map(m => m.fractal_id)
                 : [];
 
-            select.innerHTML = '<option value="">Select a fractal to add...</option>';
+            select.innerHTML = '<option value="">Select a fractal to add</option>';
             fractals.forEach(f => {
                 if (!currentMembers.includes(f.id)) {
                     const opt = document.createElement('option');

@@ -80,7 +80,7 @@ test.describe('Normalizer list', () => {
 
   test('toolbar actions are right-aligned without an inline style', async ({ page }) => {
     await openNormalizers(page);
-    const toolbar = page.locator('#normalizersView .admin-toolbar');
+    const toolbar = page.locator('#normalizersView .admin-page-head');
     await expect(toolbar).toBeVisible();
     await expectActionsRightAligned(page, toolbar);
     expect(await toolbar.getAttribute('style'), 'alignment patched inline again').toBeFalsy();
