@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,6 +23,7 @@ type fractalResult struct {
 	MaxPaths    int
 	Fields      map[string]*fieldSample
 	Bytes       map[string]*fieldMeta
+	SampledAt   time.Time
 }
 
 // saveStats replaces the whole measured set in one transaction. Replacing rather
@@ -44,8 +46,8 @@ func saveStats(ctx context.Context, pg *storage.PostgresClient, results []fracta
 	for _, r := range results {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO schema_fractal_stats (fractal_id, sampled_rows, max_paths, total_bytes, sampled_at)
-			 VALUES ($1, $2, $3, $4, NOW())`,
-			r.Meta.ID, int64(r.SampledRows), r.MaxPaths, int64(r.Meta.TotalBytes)); err != nil {
+			 VALUES ($1, $2, $3, $4, $5)`,
+			r.Meta.ID, int64(r.SampledRows), r.MaxPaths, int64(r.Meta.TotalBytes), r.SampledAt); err != nil {
 			return fmt.Errorf("insert fractal stats %q: %w", r.Meta.ID, err)
 		}
 
@@ -87,6 +89,47 @@ func saveStats(ctx context.Context, pg *storage.PostgresClient, results []fracta
 		}
 	}
 	return tx.Commit()
+}
+
+// loadPreviousSample reads a fractal's last persisted distribution, so a pass
+// whose sample fails can carry it forward instead of writing it as unmeasured.
+// A fractal never measured before returns a zero sample.
+func loadPreviousSample(ctx context.Context, pg *storage.PostgresClient, fractalID string) (fractalResult, error) {
+	out := fractalResult{Fields: map[string]*fieldSample{}}
+	var sampled int64
+	err := pg.QueryRow(ctx, `SELECT sampled_rows, max_paths, sampled_at
+		FROM schema_fractal_stats WHERE fractal_id = $1`, fractalID).
+		Scan(&sampled, &out.MaxPaths, &out.SampledAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fractalResult{}, nil
+	}
+	if err != nil {
+		return fractalResult{}, fmt.Errorf("load previous fractal stats: %w", err)
+	}
+	out.SampledRows = uint64(sampled)
+
+	rows, err := pg.Query(ctx, `SELECT field_name, present, cardinality, top_values
+		FROM schema_field_stats WHERE fractal_id = $1 AND present > 0`, fractalID)
+	if err != nil {
+		return fractalResult{}, fmt.Errorf("load previous field stats: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name          string
+			present, card int64
+			topJSON       sql.NullString
+		)
+		if err := rows.Scan(&name, &present, &card, &topJSON); err != nil {
+			return fractalResult{}, fmt.Errorf("scan previous field stat: %w", err)
+		}
+		fs := &fieldSample{Present: uint64(present), Cardinality: uint64(card)}
+		if topJSON.Valid && topJSON.String != "" {
+			_ = json.Unmarshal([]byte(topJSON.String), &fs.Top)
+		}
+		out.Fields[name] = fs
+	}
+	return out, rows.Err()
 }
 
 // aggregateStats is the cross-fractal view the schema tab renders. The schema is

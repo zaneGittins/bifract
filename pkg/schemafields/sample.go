@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"bifract/pkg/parser"
@@ -46,6 +48,24 @@ const windowSafetyFactor = 4
 // considered too narrow and is widened.
 const thinSampleRatio = 4
 
+// sampleStrata is how many time slices the window is split into, each sampled
+// for an equal share in its own query. One unsorted LIMIT over the whole window
+// fills from the oldest parts read, so a source ingested later in the window was
+// missed entirely.
+const sampleStrata = 8
+
+// sampleTopN and sampleMaxFields are what the tab shows per field and fractal.
+// Each slice lists sampleSliceTopN values so fields with up to that many per
+// slice merge to exact counts.
+const (
+	sampleTopN      = 5
+	sampleSliceTopN = 20
+	sampleMaxFields = 500
+)
+
+// sliceShare is each stratum's row limit.
+func sliceShare(want int) int { return (want + sampleStrata - 1) / sampleStrata }
+
 // maxWidenRounds bounds the widening ladder. Each round costs one cheap count
 // probe, not a norm_log read.
 const maxWidenRounds = 3
@@ -83,14 +103,16 @@ func (s *Sweeper) sampleFractal(ctx context.Context, fm *fractalMeta) (map[strin
 		return nil, 0, 0, nil // no data in range: nothing to describe
 	}
 
-	sql := parser.BuildFieldSampleSQL(parser.FieldSampleParams{
-		Table:      s.ch.ReadTable(),
-		Where:      windowPredicate(fm.ID, anchor, window),
-		SampleSize: want,
-	})
-	rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("field sample: %w", err)
+	// One query per stratum, in sequence, so peak memory is one slice's rather
+	// than every slice's reader at once.
+	queries := sliceSampleSQL(s.ch.ReadTable(), fm.ID, anchor, window, want)
+	slices := make([]map[string]*fieldSample, 0, len(queries))
+	for _, sql := range queries {
+		rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("field sample: %w", err)
+		}
+		slices = append(slices, parseSlice(rows))
 	}
 
 	// Advisory: a failed capacity probe must not discard the distribution that
@@ -100,19 +122,143 @@ func (s *Sweeper) sampleFractal(ctx context.Context, fm *fractalMeta) (map[strin
 		log.Printf("[SchemaSweep] dynamic paths for %s: %v", fm.ID, err)
 	}
 
+	return mergeSlices(slices, sampleSliceTopN, sampleTopN, sampleMaxFields), sampled, maxPaths, nil
+}
+
+// sliceSampleSQL builds one distribution query per stratum of the window.
+func sliceSampleSQL(table, fractalID string, anchor time.Time, window time.Duration, want int) []string {
+	where := windowPredicate(fractalID, anchor, window)
+	strata := windowStrata(anchor, window, sampleStrata)
+	out := make([]string, len(strata))
+	for i, st := range strata {
+		out[i] = parser.BuildFieldSampleSQL(parser.FieldSampleParams{
+			Table:      table,
+			Where:      where + " AND (" + st + ")",
+			SampleSize: sliceShare(want),
+			TopN:       sampleSliceTopN,
+			MaxFields:  sampleMaxFields,
+		})
+	}
+	return out
+}
+
+func parseSlice(rows []map[string]interface{}) map[string]*fieldSample {
 	out := make(map[string]*fieldSample, len(rows))
 	for _, r := range rows {
 		name, _ := r["key"].(string)
 		if name == "" {
 			continue
 		}
+		hashes, _ := r["distinct_hashes"].([]uint64)
 		out[name] = &fieldSample{
 			Present:     asUint64(r["present"]),
 			Cardinality: asUint64(r["cardinality"]),
 			Top:         parseTopK(r),
+			distinct:    hashes,
 		}
 	}
-	return out, sampled, maxPaths, nil
+	return out
+}
+
+// mergeSlices combines the strata into one distribution.
+//
+// Distinct counts union the value hashes, which is exact while every slice is
+// under the hash cap; past it the count is a lower bound above the set-index
+// threshold, the only decision it drives. A merged top-value count is exact only
+// if each slice holding the field listed the value or listed all its values
+// (fewer than sliceTopN), since otherwise the value may sit in that slice's tail.
+func mergeSlices(slices []map[string]*fieldSample, sliceTopN, topN, maxFields int) map[string]*fieldSample {
+	type valueSum struct {
+		count  uint64
+		approx bool
+	}
+	type acc struct {
+		out     *fieldSample
+		hashes  map[uint64]struct{}
+		capped  bool
+		values  map[string]*valueSum
+		holders []map[string]bool // per slice holding the field: its listed values, nil if exhaustive
+	}
+	all := map[string]*acc{}
+	for _, slice := range slices {
+		for name, fs := range slice {
+			a := all[name]
+			if a == nil {
+				a = &acc{out: &fieldSample{}, hashes: map[uint64]struct{}{}, values: map[string]*valueSum{}}
+				all[name] = a
+			}
+			a.out.Present += fs.Present
+			a.out.Cardinality = max(a.out.Cardinality, fs.Cardinality)
+			a.capped = a.capped || len(fs.distinct) >= parser.FieldSampleDistinctCap
+			for _, h := range fs.distinct {
+				a.hashes[h] = struct{}{}
+			}
+			var listed map[string]bool
+			if len(fs.Top) >= sliceTopN {
+				listed = map[string]bool{}
+			}
+			for _, v := range fs.Top {
+				vs := a.values[v.Value]
+				if vs == nil {
+					vs = &valueSum{}
+					a.values[v.Value] = vs
+				}
+				vs.count += v.Count
+				vs.approx = vs.approx || v.Approx
+				if listed != nil {
+					listed[v.Value] = true
+				}
+			}
+			a.holders = append(a.holders, listed)
+		}
+	}
+
+	out := make(map[string]*fieldSample, len(all))
+	for name, a := range all {
+		if n := uint64(len(a.hashes)); !a.capped {
+			a.out.Cardinality = n
+		} else {
+			a.out.Cardinality = max(a.out.Cardinality, n)
+		}
+		top := make([]TopValue, 0, len(a.values))
+		for v, vs := range a.values {
+			approx := vs.approx
+			for _, listed := range a.holders {
+				if listed != nil && !listed[v] {
+					approx = true
+				}
+			}
+			top = append(top, TopValue{Value: v, Count: vs.count, Approx: approx})
+		}
+		sort.Slice(top, func(i, j int) bool {
+			if top[i].Count != top[j].Count {
+				return top[i].Count > top[j].Count
+			}
+			return top[i].Value < top[j].Value
+		})
+		if len(top) > topN {
+			top = top[:topN]
+		}
+		a.out.Top = top
+		out[name] = a.out
+	}
+
+	if len(out) > maxFields {
+		names := make([]string, 0, len(out))
+		for n := range out {
+			names = append(names, n)
+		}
+		sort.Slice(names, func(i, j int) bool {
+			if out[names[i]].Present != out[names[j]].Present {
+				return out[names[i]].Present > out[names[j]].Present
+			}
+			return names[i] < names[j]
+		})
+		for _, n := range names[maxFields:] {
+			delete(out, n)
+		}
+	}
+	return out
 }
 
 // dynamicPathSample bounds the JSON-structure probe. Dynamic paths are a
@@ -149,6 +295,7 @@ type fieldSample struct {
 	Present     uint64
 	Cardinality uint64
 	Top         []TopValue
+	distinct    []uint64 // one slice's capped value hashes, consumed by mergeSlices
 }
 
 // derivedWindow sizes the sample window from the fractal's measured ingest rate,
@@ -174,16 +321,38 @@ func derivedWindow(rowsPerSec float64, want int) time.Duration {
 // the relevant partitions are opened, and the caller's LIMIT stops the read there.
 // The anchor comes from system.parts min/max, which is also the ingest axis.
 func windowPredicate(fractalID string, anchor time.Time, window time.Duration) string {
-	from := anchor.Add(-window).UTC()
-	return fmt.Sprintf("fractal_id = %s AND ingest_timestamp >= toDateTime64('%s', 3, 'UTC')",
-		quoteCH(fractalID), from.Format("2006-01-02 15:04:05.000"))
+	return fmt.Sprintf("fractal_id = %s AND ingest_timestamp >= %s",
+		quoteCH(fractalID), chTime(anchor.Add(-window)))
 }
 
-// probeCount reports how many rows the window would contribute, without reading
+// windowStrata splits the window into n equal slices that tile it exactly. The
+// first slice takes its lower bound from windowPredicate and the last is open, so
+// rows ingested while the sweep runs still land in a slice.
+func windowStrata(anchor time.Time, window time.Duration, n int) []string {
+	from := anchor.Add(-window)
+	step := window / time.Duration(n)
+	out := make([]string, n)
+	for i := range out {
+		var conds []string
+		if i > 0 {
+			conds = append(conds, "ingest_timestamp >= "+chTime(from.Add(step*time.Duration(i))))
+		}
+		if i < n-1 {
+			conds = append(conds, "ingest_timestamp < "+chTime(from.Add(step*time.Duration(i+1))))
+		}
+		out[i] = strings.Join(conds, " AND ")
+	}
+	return out
+}
+
+func chTime(t time.Time) string {
+	return fmt.Sprintf("toDateTime64('%s', 3, 'UTC')", t.UTC().Format("2006-01-02 15:04:05.000"))
+}
+
+// probeCount reports how many rows the sample would read, without reading
 // norm_log, so widening a too-narrow window costs almost nothing.
 func (s *Sweeper) probeCount(ctx context.Context, fractalID string, anchor time.Time, window time.Duration, limit int) (uint64, error) {
-	sql := fmt.Sprintf("SELECT count() AS n FROM (SELECT 1 FROM %s WHERE %s LIMIT %d)",
-		s.ch.ReadTable(), windowPredicate(fractalID, anchor, window), limit)
+	sql := probeSQL(s.ch.ReadTable(), fractalID, anchor, window, limit)
 	rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
 	if err != nil {
 		return 0, fmt.Errorf("sample probe: %w", err)
@@ -192,6 +361,12 @@ func (s *Sweeper) probeCount(ctx context.Context, fractalID string, anchor time.
 		return 0, nil
 	}
 	return asUint64(rows[0]["n"]), nil
+}
+
+// probeSQL counts the rows sliceSampleSQL reads, reading only ingest_timestamp.
+func probeSQL(table, fractalID string, anchor time.Time, window time.Duration, want int) string {
+	return fmt.Sprintf("SELECT count() AS n FROM (\n%s\n)", parser.BuildSampleScanSQL(
+		table, "1", windowPredicate(fractalID, anchor, window), windowStrata(anchor, window, sampleStrata), sliceShare(want)))
 }
 
 // parseTopK reads the parallel top-value arrays into the display shape. The
