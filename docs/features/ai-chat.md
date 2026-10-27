@@ -1,96 +1,84 @@
 # AI Chat
 
-LLM-powered chat assistant scoped to each fractal. It queries your logs using BQL, discovers fields, and presents structured findings in a conversational interface.
+An assistant inside each fractal that answers questions by running BQL against your logs. Use it for quick, in-app investigation; for an assistant on your own machine, see the [MCP server](mcp-server.md).
 
-![AI Chat conversation](../images/ai.png)
+## Set up
 
-## Setup
+Chat runs through a [LiteLLM](https://docs.litellm.ai/) container that ships with Bifract. It needs an API key for one provider.
 
-Chat requires a [LiteLLM](https://docs.litellm.ai/) proxy container and an API key for at least one supported provider (OpenAI, Anthropic, etc). AI keys are not configured during initial setup; add them manually to your `.env` file after installation.
+1. In your install directory, set the key in `.env`:
 
-### 1. Add your API key to .env
+    ```bash
+    LITELLM_API_KEY=<your provider key>
+    ```
 
-Open the `.env` file in your install directory and set `LITELLM_API_KEY` to your provider key:
+2. Optionally change the model in `litellm-config.yaml`. The default is `anthropic/claude-haiku-4-5-20251001`. Keep `model_name: bifract-chat`; Bifract asks for that name.
 
-```bash
-LITELLM_API_KEY=sk-ant-...
-```
+    ```yaml
+    model_list:
+      - model_name: bifract-chat
+        litellm_params:
+          model: openai/gpt-4o-mini
+          api_key: os.environ/LITELLM_API_KEY
+          drop_params: true
+    ```
 
-### 2. Configure a model (optional)
+3. Restart: `docker compose up -d`.
 
-The default `litellm-config.yaml` uses Anthropic. To use a different provider, edit the file:
+Any LiteLLM provider works. LiteLLM listens only on the internal Docker network.
 
-```yaml
-model_list:
-  - model_name: bifract-chat
-    litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/LITELLM_API_KEY
-```
+## Ask a question
 
-Change the `model` field to match your provider. The model name must stay `bifract-chat`.
+1. Open the fractal and click **Chat** in the sidebar.
+2. Click **New conversation**.
+3. Set the time range in the composer (**Last 1h** to **All time**, default **Last 24h**).
+4. Type in **Ask about your logs...** and press Enter.
 
-### 3. Restart the stack
+The reply streams in, with each tool call shown inline. Click **Open in search** on a query call to run it on the **Query** page. Conversations are titled automatically and listed on the left; use **Clear** to empty one, **Delete** to remove it, or **Clear all** to remove every conversation.
 
-```bash
-docker compose up -d
-```
+To start from a single event, open it on the **Query** page and click **Analyze with AI**.
 
-LiteLLM runs on the internal Docker network only and is not exposed to the host.
+## Approve actions
 
-## Features
+Tools that change something are proposed, not run. A card shows the exact arguments with **Approve** and **Decline**; nothing happens until you click **Approve**.
 
-- **Per-fractal conversations** scoped to the selected fractal's log data
-- **Streaming** responses token-by-token via SSE
-- **Time range control** from a selector in the chat header
-- **Multiple conversations** with create, rename, and delete support
-- **Search integration** by clicking the magnifying glass on any query tool call
-- **Custom instructions** that shape how the assistant behaves in this deployment
+| Tool | Approving it |
+|------|--------------|
+| `add_comment`, `add_tag`, `remove_tag` | Writes a comment or changes its tags |
+| `create_notebook`, `add_notebook_section` | Writes to a notebook |
+| `create_alert`, `update_alert` | Creates or changes a live detection |
+| `search_archive` | Starts an archive scan (minutes, reads object storage) |
 
-### Tools
+The server holds the arguments, so what the card shows is what runs. The action runs with your own role, so approving never grants more than you have. Unanswered proposals expire after 15 minutes.
 
-The assistant uses the same tool definitions as the [MCP server](mcp-server.md), dispatched inside the server as the signed-in user. It can reach exactly what you can reach and nothing else: every call passes the same role and scope checks as a request from the UI.
+## What the assistant can read
 
-Reading tools run as the assistant needs them:
+Tools run as you, with your role and scope checks. The time range from the composer replaces any range the assistant asks for.
 
 | Area | Tools |
 |------|-------|
 | Query | `query_logs`, `validate_bql`, `get_fields`, `get_field_stats`, `get_recent_logs`, `get_bql_reference` |
-| Detections | `list_alerts`, `get_alert`, `get_alert_executions`, `get_attack_coverage` |
+| Detections | `list_alerts`, `get_alert`, `get_alert_executions`, `get_alert_tests`, `run_alert_tests`, `get_alert_policies`, `get_attack_coverage` |
 | Investigation | `find_processes`, `get_provenance_graph` |
 | Enrichment | `list_dictionaries`, `get_dictionary`, `search_dictionary`, `list_models`, `get_model`, `get_model_data` |
 | Collaboration | `list_comments`, `get_log_comments`, `list_comment_tags`, `list_notebooks`, `get_notebook`, `list_saved_queries`, `list_dashboards`, `get_dashboard` |
-| Libraries | `list_instruction_libraries`, `get_instruction_library`, `read_instruction_page` |
-| Archive | `search_archive`, `get_archive_search`, `cancel_archive_search` |
+| Instructions | `list_instruction_libraries`, `get_instruction_library`, `read_instruction_page` |
+| Archive | `get_archive_search`, `cancel_archive_search` |
 
-Three more tools draw in the conversation rather than calling anything: `think`, `render_chart` and `present_results`.
+`think`, `render_chart` and `present_results` only draw in the conversation.
 
-The time range comes from the selector in the chat header and replaces whatever the assistant asks for, so a question cannot widen its own scan.
+!!! note "Why some MCP tools are missing"
+    Tool results contain log data, which anyone who can send logs can influence. Chat therefore leaves out tools a hidden instruction could abuse for lasting effect: `delete_alert` (a removed detection fails silently), `add_dictionary_rows` (watchlists feed detections), and the instruction-page writes (those pages become part of the assistant's prompt). Use the UI or the MCP server for those.
 
-### Actions you approve
+## Give the assistant context
 
-Tools that change something are proposed, not run. The assistant's request appears as a card showing the exact arguments, and nothing happens until you approve it:
+Each fractal has one instruction library: markdown pages with folders and `[[wiki links]]` for your conventions, runbooks and known-good baselines. Every conversation in the fractal uses it.
 
-| Tool | What approving it does |
-|------|------------------------|
-| `add_comment`, `add_tag`, `remove_tag` | Writes a comment or changes its tags |
-| `create_notebook`, `add_notebook_section` | Writes to a notebook |
-| `create_alert`, `update_alert` | Creates or changes a live detection |
-| `search_archive` | Starts an archive scan, which takes minutes and reads from object storage |
+1. Click **Instructions** in the sidebar.
+2. Click **New page** (or **New folder**) and write the page.
+3. Tick **Always include (pinned)** for pages the assistant should always see. Other pages are listed for it to open with `read_instruction_page` when relevant.
 
-The arguments are held on the server between the proposal and your answer, so what the card shows is what runs. Approving still requires the analyst role: approval does not raise your own permissions.
-
-Some MCP tools are deliberately unavailable in chat, whether or not you would be allowed to call them yourself. Tool results contain ingested log data, which anyone who can write to a log source can influence, so an instruction hidden in a log line must not be able to reach anything with lasting effect. `delete_alert` is excluded because a removed detection fails silently; `add_dictionary_rows` because watchlists feed live detections; and the instruction-page writes because those pages become part of the assistant's own prompt, which would let one poisoned log line persist across conversations and users. Use the UI or the MCP server for those.
-
-### Instruction Libraries
-
-A **Library** is a set of markdown pages (organized in folders, with wiki-style `[[links]]` between them) that you attach to a conversation to give the assistant durable, environment-specific knowledge: your naming conventions, escalation procedures, known-good baselines, or triage runbooks. Manage them from the fractal's **Instructions** page, and attach one or more to a conversation so the assistant can read them via `read_instruction_page`.
-
-Libraries can also be synced from a Git repository, so runbooks stay version-controlled alongside the rest of your detection content.
+To keep pages in Git, open **Library settings**, set **Source** to **Git Repository**, and fill in **Repository URL** and **Branch**.
 
 !!! tip
-    Importing an [alert feed](../alerting/alert-feeds.md) gives the assistant context on your detection rules, enabling it to write more relevant BQL queries for your environment.
-
-## Supported Providers
-
-Any provider supported by LiteLLM works. Change the `model` field in `litellm-config.yaml` to match your provider (e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5-20251001`). Set `LITELLM_API_KEY` to the corresponding API key. Some providers may need `drop_params: true` in `litellm_params`.
+    Importing an [alert feed](../alerting/alert-feeds.md) gives the assistant your detection rules as context for writing BQL.

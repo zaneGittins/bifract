@@ -1,175 +1,204 @@
 # Visualizations
 
-## Pie Chart
+A chart command at the end of a query draws its results as a chart instead of a table. Charts render in search, notebooks and dashboards.
+
+| Command | Draws | Input |
+|---------|-------|-------|
+| [`piechart()`](#piechart) | share per group | `groupby()` output |
+| [`barchart()`](#barchart) | count per group | `groupby()` output |
+| [`timechart()`](#timechart) | values over time | log rows |
+| [`singleval()`](#singleval) | one large number | a single-row aggregate |
+| [`histogram()`](#histogram) | distribution of a number | log rows or an aggregate |
+| [`boxplot()`](#boxplot) | quartiles and outliers | log rows or an aggregate |
+| [`scatter()`](#scatter) | two numbers against each other | log rows or an aggregate |
+| [`heatmap()`](#heatmap) | value per pair of fields | log rows |
+| [`graph()`](#graph) | parent-child hierarchy | rows with a child and parent field |
+| [`mesh()`](#mesh) | many-to-many network | `groupby(src, dst)` output |
+| `pgraph()` | process map | `ptg()` or `pgr()`: see [Graph Traversal](graph-traversal.md) |
+| `graphWorld()` | points on a world map | latitude and longitude: see [World map](field-operations.md#world-map) |
+
+## Render caps and row limits
+
+`piechart()`, `barchart()`, `graph()`, `mesh()`, `pgraph()` and `graphWorld()` accept both `render=` and `limit=`: `render=` caps the marks drawn, `limit=` caps the rows the query returns. For `boxplot()`, `scatter()` and `heatmap()`, `limit=` has the meaning given in their tables.
 
 ```
-* | groupBy(status) | piechart()
-* | groupBy(image, function=count()) | piechart(render=5)
+* | groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip, render=300, limit=5000)
 ```
 
-## Bar Chart
+## piechart()
 
 ```
-* | groupBy(user, function=count()) | barchart()
-* | groupBy(status) | barchart(render=10)
+* | groupby(image) | piechart()
 ```
 
-## Graph (Relationship View)
+![Pie chart of events per image](../images/bql/piechart.png)
+
+Must follow `groupby()`. `render=` sets the slices drawn (default 10).
+
+## barchart()
 
 ```
-* | table(process_guid, parent_process_guid) | graph(child=process_guid, parent=parent_process_guid)
-* | graph(child=process_guid, parent=parent_process_guid, render=200)
+* | groupby(user) | barchart()
 ```
 
-Both `child=` and `parent=` are required. Default limit 100, max 500.
+![Bar chart of events per user](../images/bql/barchart.png)
 
-## Mesh (Network View)
+Must follow `groupby()`. `render=` sets the bars drawn (default 10).
 
-Renders a force-directed graph of source-to-destination relationships. Where `graph()` draws a hierarchy, `mesh()` draws a many-to-many network, which suits traffic, authentication, and peer-to-peer data.
+## timechart()
 
-```
-* | mesh(src=src_ip, dst=dst_ip)
-* | mesh(src=src_ip, dst=dst_ip, weight=_count, directed=true, render=300)
-* | mesh(src=user, dst=computer_name, color=department, labels=user)
-```
-
-### Parameters
-
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `src` | Yes | Field for source nodes |
-| `dst` | Yes | Field for destination nodes |
-| `weight` | No | Field controlling edge thickness (default: `_count`) |
-| `size` | No | Field summed per node to control node size (default: `_count`, falling back to node degree) |
-| `color` | No | Coloring mode. Default `auto`: by IP subnet when nodes look like IPs, else by degree. Also `subnet` (or `subnet/16`), `degree`, `role`, or a field name (top-8 palette) |
-| `labels` | No | Comma-separated fields to display as node labels |
-| `directed` | No | Draw src-to-dst arrows (default: `false`) |
-| `limit` | No | Max edges to render (default: 100, max: 500) |
-
-## Single Value
-
-Display a single aggregate statistic as a large number. Requires an aggregation that produces a single row.
+Buckets events by time and aggregates each bucket.
 
 ```
-* | count() | singleval()
-* | avg(response_time) | singleval(title="Avg Response Time")
-* | groupBy(computer_name) | count() | singleval(title="Unique Computers")
+* | timechart(span=1h)
 ```
 
-### Parameters
+![Time chart of events per hour](../images/bql/timechart.png)
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `label`   | No       | Text displayed below the value. Defaults to the aggregation field name. |
-
-## Histogram
-
-Distribute a numeric field into equal-width bins:
+One line per host:
 
 ```
-* | histogram(response_time)
-* | histogram(bytes, buckets=30)
+* | timechart(span=1h, groupby(computer_name))
 ```
 
-### Parameters
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `span` | `1h` | Bucket size: `s`, `m`, `h`, `d` or `w`, such as `5m` |
+| `function` | `count()` | Per-bucket aggregate. May be written without `function=`. |
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `field`   | Yes      | Numeric field to build distribution for |
-| `buckets` | No       | Number of equal-width bins (default: 20, max: 200) |
+| Function | Plots |
+|----------|-------|
+| `count()` | events per bucket |
+| `sum(f)`, `avg(f)`, `min(f)`, `max(f)` | that aggregate of numeric field `f` |
+| `groupby(f)` | one line per value of `f` |
+| `groupby(f, distinct=true)` | distinct values of `f` per bucket, as one line |
+| `percent(f)` | share of rows where boolean `f` is true, one line per field |
 
-## Box Plot
+`groupby(f) | timechart(...)` also draws one line per value of `f`.
 
-Summarize a numeric field's distribution, optionally one box per group:
+!!! note
+    Results stop at the instance row limit (250 rows by default), and each bucket of each line is a row. Over a long range, pick a larger `span` or fewer lines.
 
-```
-* | len(commandline) | boxplot(_len, by=image)
-* | groupby(computer_name) | boxplot(_count)
-* | boxplot(duration, fence=3)
-```
+## singleval()
 
-The box spans the first to third quartile (Q1 to Q3) with a line at the median and a diamond at the mean. Values past a fence (`Q1 - fence * IQR`, `Q3 + fence * IQR`) are outliers and drawn as points. Each whisker ends at the most extreme value inside its fence. The fences are in the result table, ready to use as alert thresholds.
-
-Quartiles are approximate (0.1% rank error) so the chart stays fast on billions of rows. Up to `outliers` of the most extreme values are kept at each end of each box. If that many lie past a fence, more may exist, and the tooltip says so.
-
-### Parameters
-
-| Parameter  | Required | Description |
-|------------|----------|-------------|
-| `field`    | Yes      | Numeric field to summarize |
-| `by`       | No       | One box per value of this field, most frequent first |
-| `fence`    | No       | IQR multiplier for the outlier fences (default: 1.5) |
-| `limit`    | No       | Max groups (default: 20, max: 100) |
-| `outliers` | No       | Extreme values kept at each end per group (default: 10, max: 100) |
-
-## Scatter Plot
-
-Plot two numeric fields against each other, one point per row:
+Shows one aggregate as a large number. The query must return a single row.
 
 ```
-* | groupby(src_ip) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | scatter(x=received, y=sent, label=src_ip, line=trend)
-* | scatter(x=duration, y=orig_bytes)
+* | count() | singleval(title="Events")
 ```
 
-After an aggregation each point is a group, which is the usual way to use it: hosts that break a trend the rest follow stand out. Before an aggregation each point is an event, taken from the newest events that carry both values. Axes switch to a log scale when positive values span three or more orders of magnitude.
+![Single value showing an event count](../images/bql/singleval.png)
 
-`line=` draws a reference line and colors the points above it apart from those below. `diagonal` is y = x, the line hosts that send as much as they receive sit on. `trend` is the best fit through the points (a straight line on the axes as drawn, so a power law on log axes). Most hosts download far more than they upload, so against y = x nearly every host is "below"; against the trend, the hosts that send unusually much for what they receive are the ones above. The tooltip shows each point as a multiple of the line.
+`title=` sets the caption (default: the column name).
 
-### Parameters
+## histogram()
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `x`       | Yes      | Numeric field for the X axis |
-| `y`       | Yes      | Numeric field for the Y axis |
-| `label`   | No       | Field that names each point in the tooltip |
-| `line`    | No       | `diagonal` (y = x) or `trend` (best fit); colors points above and below it |
-| `limit`   | No       | Max points (default: 5000, max: 50000) |
-
-## Heatmap
-
-Render a 2D density heatmap with aggregated values:
+Splits a numeric field into equal-width bins.
 
 ```
-* | heatmap(x=src_ip, y=dst_port, value=count())
-* | heatmap(x=user, y=action, value=sum(bytes))
+bifract_category="network_connect" orig_bytes<100000
+| histogram(orig_bytes, buckets=30)
 ```
 
-### Parameters
+![Histogram of bytes sent](../images/bql/histogram.png)
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `x`       | Yes      | Field for the X axis |
-| `y`       | Yes      | Field for the Y axis |
-| `value`   | No       | Aggregation function (default: `count()`) |
-| `limit`   | No       | Max distinct values per axis (default: 50, max: 200) |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `field` (required) | | Numeric field |
+| `buckets` | 20 | Number of bins, up to 200 |
 
-## Time Chart
+## boxplot()
 
-Render a time series line chart. Buckets events into time intervals and applies an aggregation function.
+Summarizes a numeric field, optionally one box per group.
 
 ```
-* | timechart(span=5m, function=count())
-* | timechart(span=1h, function=avg(response_time))
+bifract_category="network_connect" | boxplot(resp_bytes, by=computer_name)
 ```
 
-Combine with `groupBy()` for multi-series charts (one line per group):
+![Box plot of bytes received per computer](../images/bql/boxplot.png)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `field` (required) | | Numeric field |
+| `by` | | One box per value of this field, most frequent first |
+| `fence` | 1.5 | IQR multiplier for the outlier fences, above 0 and up to 10 |
+| `limit` | 20 | Most boxes, up to 100 |
+| `outliers` | 10 | Extreme values kept at each end of each box, up to 100 |
+
+The box spans Q1 to Q3, with a line at the median and a diamond at the mean. Values beyond `Q1 - fence x IQR` or `Q3 + fence x IQR` are drawn as outliers, and each whisker ends at the most extreme value inside its fence. The result table includes the fences, ready to use as alert thresholds. Quartiles are approximate (0.1% rank error) so the chart stays fast on large data.
+
+## scatter()
+
+Plots two numeric fields, one point per row.
 
 ```
-* | groupBy(status) | timechart(span=5m, function=count())
+dst_ip="10.0.5.21"
+| groupby(src_ip)
+| multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received))
+| scatter(x=received, y=sent, label=src_ip, line=trend)
 ```
 
-### Parameters
+![Scatter of bytes sent and received per source IP](../images/bql/scatter.png)
 
-| Parameter  | Required | Description |
-|------------|----------|-------------|
-| `span`     | No       | Bucket interval. Supports `s`, `m`, `h`, `d`, `w`. Default: `5m`. |
-| `function` | No       | Aggregation function to apply per bucket: `count()`, `sum(field)`, `avg(field)`, `max(field)`, `min(field)`. Default: `count()`. |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `x`, `y` (required) | | Numeric fields for the axes. Must differ. |
+| `label` | | Field that names each point in the tooltip |
+| `line` | | `diagonal` (y = x) or `trend` (best fit). Points above and below the line are colored differently. |
+| `limit` | 5000 | Most points, up to 50000 |
 
-## Render caps vs row limits
+After an aggregation each point is a group; before one, each point is an event (the newest events carrying both values). Axes switch to log scale when values span three or more orders of magnitude. Use `line=trend` to find hosts that send unusually much for what they receive.
 
-`render=` is how many marks a chart draws; `limit=` bounds the rows the query
-returns. A chart with a large result set usually wants both.
+## heatmap()
+
+Colors each pair of `x` and `y` values by an aggregate.
 
 ```
-* | groupBy(src_ip) | mesh(src=src_ip, dst=dst_ip, render=300, limit=5000)
+* | heatmap(x=computer_name, y=user)
 ```
+
+![Heat map of events per computer and user](../images/bql/heatmap.png)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `x`, `y` (required) | | Fields for the axes |
+| `value` | `count()` | `count()`, `sum(f)`, `avg(f)`, `min(f)` or `max(f)` |
+| `limit` | 50 | Most distinct values per axis, up to 200 |
+
+## graph()
+
+Draws a top-down hierarchy from a child field and a parent field.
+
+```
+bifract_category="process_creation" computer_name="WKSTN-00042.corp.example.com"
+| table(process_guid, parent_process_guid, image)
+| graph(child=process_guid, parent=parent_process_guid, labels=[image])
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `child`, `parent` (required) | | Fields holding node IDs |
+| `labels` | | Fields shown as node labels and details |
+| `render` | 100 | Rows (edges) drawn, up to 500 |
+
+## mesh()
+
+Draws a force-directed network of source-to-destination links, for traffic, authentication or peer data.
+
+```
+* | groupby(src_ip, dst_ip) | mesh(src=src_ip, dst=dst_ip)
+```
+
+![Network mesh of source and destination IPs](../images/bql/mesh.png)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `src`, `dst` (required) | | Fields for the two ends of each edge |
+| `weight` | `_count` | Field setting edge thickness |
+| `size` | `_count` | Field summed per node to set node size |
+| `color` | `auto` | `subnet` (or `subnet/16`), `degree`, `role` (source or destination), or a field name (top 8 values). `auto` uses subnet when nodes look like IPs, else degree. |
+| `labels` | all other fields | Fields shown in node details. A `color=` field must be among them. |
+| `directed` | `false` | Draw arrows from source to destination |
+| `render` | 100 | Rows (edges) drawn, up to 500 |
+
+Each row is one edge, so aggregate with `groupby(src, dst)` first.

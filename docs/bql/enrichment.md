@@ -1,304 +1,137 @@
 # Enrichment
 
+Enrichment commands add context to log rows at query time: lookup columns (`match()`), model baselines (`modelLookup()`), analyst comments (`comment()`) and fuzzy-hash similarity (`tlsh()`). For GeoIP, see [`lookupIP()`](field-operations.md#geoip-enrichment).
+
 ## match()
 
-Enrich log events with data from a dictionary. Each matching log row gets additional columns from the dictionary lookup.
+Adds columns from a [lookup](../features/dictionaries.md) to each row whose field value matches a key.
 
 ```
 * | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category])
 ```
-
-### Parameters
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `dict`    | Yes      | Name of the lookup (created on the Lookups page) |
-| `field`   | Yes      | Log field to use as the lookup key |
-| `column`  | Yes      | Dictionary column to match against |
-| `include` | Yes      | Dictionary columns to add to results: `include=[col1,col2]` |
-| `require` | No       | When `true`, only return rows that have a match in the dictionary. Default: `false` |
+| `dict` | Yes | Lookup name, as shown on the **Lookups** page |
+| `field` | Yes | Log field to look up |
+| `column` | Yes | Lookup key column to match against |
+| `include` | Yes | Lookup columns to add: `include=[col1,col2]` |
+| `require` | No | `true` drops rows with no match. Default `false`: unmatched rows are kept with empty columns. |
 
-By default non-matching rows are kept, with empty strings for the included columns. With `require=true`, non-matching rows are filtered out entirely.
-
-### Examples
-
-Enrich logs with threat intelligence data:
+Keep only rows found in the lookup:
 
 ```
-* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category])
+* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score], require=true)
 ```
 
-Only keep logs that match the dictionary:
+Including the key column itself reports membership: it holds the field value on a hit and is empty on a miss.
 
-```
-* | match(dict="threat_intel", field=src_ip, column=ip, include=[threat_score,category], require=true)
-```
+### Lookup kinds
 
-Combine with other pipeline stages:
+A lookup's kind is chosen when it is created and decides how keys are compared. The query is written the same way for all three.
 
-```
-* | match(dict="asset_inventory", field=hostname, column=name, include=[owner,department])
-  | groupBy(department, function=count())
-```
+| Kind | Keys hold | A value matches |
+|------|-----------|-----------------|
+| Values | names, hashes, indicators | the key, exactly. **Ignore case** on the lookup makes it case-insensitive. |
+| Networks | IPv4 and IPv6 CIDR ranges | the narrowest range containing the address. A value that is not an IP misses. |
+| Patterns | regular expressions | the first expression, in row order, that matches. Case-sensitive unless the expression starts with `(?i)`. |
 
-### List kinds
-
-A lookup is one of three kinds, chosen when it is created. `match()` is written the same
-way for all of them: the list's kind decides how the key is compared.
-
-| Kind | Keys hold | A lookup matches |
-|------|-----------|------------------|
-| Values | names, hashes, indicators | the key, byte for byte |
-| Networks | CIDR ranges | an address to the narrowest range holding it |
-| Patterns | regular expressions | the first expression matching the value |
-
-#### Networks
-
-A Networks list is looked up with an address rather than a string, so `10.1.2.3` finds a row
-keyed `10.1.0.0/16` in preference to one keyed `10.0.0.0/8`:
+On a Patterns lookup, put specific expressions above general ones: with `mimikatz` above `\.exe$`, `mimikatz.exe` matches `mimikatz`; reversed, it matches `\.exe$`. Lookups filled from a URL can use [glob keys](../features/dictionaries.md#glob-keys), which ignore case.
 
 ```
 * | match(dict="corp_ranges", field=src_ip, column=network, include=[site,owner])
 ```
 
-IPv4 and IPv6 ranges live in the same list. A field carrying something that is not an address
-misses rather than failing the query, and a row whose key is not a CIDR range is refused when
-it is saved.
-
-Asking for the key column reports membership: it returns the looked-up value on a hit and an
-empty string on a miss, so `require=true` keeps only the rows inside one of the ranges.
-
-```
-* | match(dict="corp_ranges", field=src_ip, column=network, include=[network], require=true)
-```
-
-#### Patterns
-
-A Patterns list holds regular expressions, matched against the value rather than compared to it:
-
-```
-* | match(dict="tooling", field=commandline, column=pattern, include=[tool,risk])
-```
-
-Expressions are tried in the order the rows are listed and the first one that matches answers,
-so put the specific expressions above the general ones. A list holding `mimikatz` above
-`\.exe$` reports `mimikatz.exe` as Mimikatz; reverse the two and it reports it as an
-executable.
-
-Matching is case-sensitive. Write `(?i)` at the front of an expression that should ignore case:
-`(?i)powershell` matches `POWERSHELL.EXE`. A list filled from a URL can instead take
-[glob keys](../features/dictionaries.md#glob-keys), which ignore case.
-
-Asking for the key column reports membership here too, and does so correctly even when the
-matched row's other columns are empty.
-
-```
-* | match(dict="tooling", field=commandline, column=pattern, include=[pattern], require=true)
-```
-
-An expression that does not compile is refused when the row is saved, because a list holding one
-fails to load and takes every lookup against it with it.
-
-#### Ignoring case
-
-Ignoring case is a Values list setting, and turning it on for another kind is refused. A CIDR
-range has no casing, and a Patterns list says it per expression with `(?i)`; lowering the value
-a pattern is matched against would stop every expression carrying an upper-case letter from
-matching at all.
-
 ## modelLookup()
 
-Enrich rows with the baseline an analytics [model](../features/models.md) has built, so a query can score each event against learned history.
+Adds the baseline an analytics [model](../features/models.md) has learned to each row, so a query can score events against history.
 
 ```
-* | modelLookup(model="rare_parent_child", key=[parent_image, image])
+* | modelLookup(model="rare_parent_child", key=[parent_image, image]) | percent < 1
 ```
-
-### Parameters
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `model` | Yes | Name of an active model in this fractal |
+| `model` | Yes | Name of a model in this fractal |
 | `key` | Yes | Log fields matched against the model's key, in order |
-| `require` | No | `true` (default) returns only rows the model scored; `false` keeps the rest with empty enrichment |
+| `require` | No | Default `true`: only rows the model scored. `false` keeps the rest with empty enrichment. |
 
-The key shape depends on the model type:
+| Model type | `key=` | Columns added |
+|------------|--------|---------------|
+| `rarity` | `[partition, value]` ([scoring](../features/models.md#how-rarity-is-scored)) | `percent`, `coverage`, `model_count`, `model_total` |
+| `first_seen` | `[entity]` ([what is_new means](../features/models.md#what-new-means-for-first-last-seen)) | `first_seen`, `last_seen`, `event_count`, `is_new` |
+| `volume_baseline` | `[entity]` ([scoring](../features/models.md#how-volume-is-scored)) | `z_score`, `baseline_median`, `latest_count`, `mad`, `n_buckets`, `latest_bucket` |
+| `beacon` | `[src_ip, dst_ip, dst_port]` | `beacon_score`, `conn_count`, `prevalence` and per-signal scores |
+| `long_connection` | `[src_ip, dst_ip, dst_port]` | `longconn_score`, `total_duration`, `conn_count`, `prevalence` and per-signal scores |
 
-| Model type | `key=` |
-|---|---|
-| `rarity` | `[partition_key, value_key]` ([how it is scored](../features/models.md#how-rarity-is-scored)) |
-| `first_seen` | `[entity]` ([what is_new means](../features/models.md#what-new-means-for-first-last-seen)) |
-| `volume_baseline` | `[entity]` ([how it is scored](../features/models.md#how-volume-is-scored)) |
-| `beacon`, `long_connection` | `[src_ip, dst_ip, dst_port]` |
-
-Enrichment columns can be filtered and aggregated like any other field.
+Use the added columns like any other field. Only one `modelLookup()` per query, and it cannot be combined with `join()`.
 
 ### Position in the pipeline
 
-Placement relative to an aggregation (`groupby`, stats functions, [`chain()`](chain.md)) decides what gets enriched:
-
-- `modelLookup()` before the aggregation enriches rows first. Model columns can then be group keys, aggregation inputs, row filters ahead of the aggregation, and step conditions inside `chain()`.
-- `modelLookup()` after the aggregation enriches the aggregated results instead, so the key fields must be among the group columns.
-
-Count events by whether the model has seen the user before:
+- **Before an aggregation** (`groupby()`, stats, [`chain()`](chain.md)): rows are enriched first, so model columns can be group keys, aggregation inputs and chain step conditions.
+- **After an aggregation:** the aggregated rows are enriched, so the key fields must be group columns.
 
 ```
 * | modelLookup(model="known_users", key=[user]) | groupby(is_new)
 ```
 
-Sequence a first-ever-seen user straight into process execution:
+!!! warning "require=false and thresholds"
+    Unscored rows get type defaults (`0` for a score), which compare like real values. `require=false | percent < 0.1` returns every row the model has never seen. Use `require=false` only to find unscored rows.
 
-```
-* | modelLookup(model="known_users", key=[user]) | chain(user, within=10m) {
-  is_new="1";
-  bifract_category="process_creation"
-}
-```
-
-### require
-
-By default a row the model never scored is dropped. The model's key set is pushed into the log scan, so the query reads only the logs that can match rather than every log in the range and discarding the rest after the join.
-
-`require=false` keeps unscored rows with their enrichment columns at ClickHouse's type defaults (`0` for a score, empty for a date). Those defaults compare like real values, so a threshold that looks for something small matches every unscored row:
-
-```
-* | modelLookup(model="rare_images", key=[computer_name, image], require=false) | percent < 0.1
-```
-
-That query returns every log the model has no entry for. Use `require=false` only to see which rows went unscored, and test the enrichment column for emptiness rather than thresholding it.
-
-A model scores forward from its creation (plus whatever its backfill covered), so under the default a query over a window older than the model returns nothing.
+A model scores from its creation forward, plus any backfill, so with the default `require=true` a query over older data returns nothing.
 
 ## comment()
 
-Filter logs to only those that have comments. Optionally narrow by tag labels or keyword search in comment text.
+Keeps only logs that have analyst comments, optionally narrowed by tag or text.
 
 ```
-* | comment()
+* | comment(tags=[security,critical], keyword="timeout")
 ```
-
-### Parameters
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `tags`    | No       | One or more tag labels (OR logic, case sensitive): `tags=[a,b]` |
-| `keyword` | No       | Search term matched against comment text (case insensitive) |
+| `tags` | No | Tag labels, case-sensitive. A log matches if any comment has any listed tag. |
+| `keyword` | No | Substring of the comment text, case-insensitive |
 
-With no arguments, returns all logs that have at least one comment.
-
-### Tag Filtering
-
-```
-* | comment(tags=[security])
-* | comment(tags=[security,critical])
-```
-
-Multiple tags use OR logic. This matches logs with comments tagged `security` OR `critical`.
-
-Brackets match every other list parameter in BQL (`include=[...]`, `key=[...]`, `values=[...]`). The unbracketed `tags=security,critical` is still accepted so existing saved queries keep working.
-
-### Keyword Filtering
-
-```
-* | comment(keyword="timeout")
-```
-
-Matches logs with comments containing "timeout" (case insensitive).
-
-### Combined
-
-```
-* | comment(keyword="error", tags=[security])
-```
-
-Keyword AND at least one matching tag.
-
-### Pipeline Usage
-
-`comment()` can be combined with other pipeline commands:
-
-```
-* | comment(tags=[incident]) | groupby(src_ip, function=count())
-* | comment() | table(timestamp, norm_log, src_ip)
-```
+With no arguments, `comment()` returns every commented log. Tags and keyword together must both match. At most 50,000 commented logs are considered per query.
 
 ## tlsh()
 
-Filter logs to those whose fuzzy-hash digest is similar to one or more known digests. TLSH survives recompilation and repacking, so it matches variants of a file that a SHA-256 comparison would miss.
+Keeps logs whose TLSH fuzzy-hash digest is close to a known digest. TLSH survives recompiling and repacking, so it finds variants that an exact SHA-256 match misses.
 
 ```
-event_id=1 | tlsh(field=tlsh, dict="known_bad", threshold=30)
+event_id=1 | tlsh(field=tlsh, dict="known_bad", threshold=30) | sort(tlsh_distance)
 ```
 
-### Parameters
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `field` | Yes | Stored log field holding the digest (not a computed one) |
+| `hash` | One of | Digest(s) to compare against: `hash=[d1,d2]` |
+| `dict` | One of | Lookup whose key column holds the digests |
+| `threshold` | No | Maximum distance, 0 to 200. Default 30. |
 
-| Parameter   | Required | Description |
-|-------------|----------|-------------|
-| `field`     | Yes      | Log field holding the TLSH digest. Must be a stored field, not one produced by an earlier command. |
-| `hash`      | One of   | Literal digest to compare against: `hash=[d1,d2]` for several. |
-| `dict`      | One of   | Dictionary whose key column holds the digests to compare against. |
-| `threshold` | No       | Maximum TLSH distance. Defaults to 30. |
+Distance 0 is identical; up to 30 is similar, up to 50 loosely similar. Digests are 70 hex characters, with or without the `T1` prefix, in any case.
 
-Supply either `hash` or `dict`, not both.
+Adds `tlsh_distance` (distance to the closest needle) and `tlsh_match` (that needle). Only one `tlsh()` per query, and it must come before any aggregation.
 
-Distance runs from 0 (identical) upward. The convention is `<=30` for similar and `<=50` for loosely similar; the maximum accepted is 200.
-
-Digests are accepted as 70 hex characters, with or without the `T1` version prefix, in either case. Producers differ: the Go implementation behind Velociraptor's `tlsh_hash()` writes bare lowercase, while MalwareBazaar publishes the uppercase prefixed form.
-
-### Requires a TLSH index
-
-`tlsh()` reads a **tlsh analytics model** on the same field, which indexes the distinct digests present in the fractal. With nothing in scope indexed, the query fails and names the model to create, because an empty result would read as "no matches" rather than "not searched".
-
-The index is what makes this affordable. Digests repeat heavily across rows, so the comparison runs over the number of distinct digests rather than the number of rows, which is why the filter works over billions of logs. The model's view admits only well-formed digests, so the empty and truncated values that producers emit for inputs under 50 bytes never enter the index. That matters: two empty digests compare at distance 0, which would otherwise match everything.
-
-Create the model under Analytics Models, then run a backfill to cover existing history.
-
-In a prism, each member fractal is read from its own index. A member with no index is **skipped, not scanned**: the query still runs over the indexed members and returns a `partial coverage` notice naming what was left out. So a fractal that holds no digests for that field needs no model, and one member missing an index never blocks the whole prism.
-
-### Added columns
-
-| Column          | Description |
-|-----------------|-------------|
-| `tlsh_distance` | Distance to the closest matching needle |
-| `tlsh_match`    | The needle that matched: the dictionary key, or the literal digest |
-
-```
-event_id=1 | tlsh(field=tlsh, dict="known_bad") | sort(tlsh_distance)
-```
-
-### Pulling other dictionary columns onto a hit
-
-A needle dictionary can carry more than the digest: a family name, a source, a reference. Chain [`match()`](#match) keyed on **`tlsh_match`** to bring those columns onto the matching rows.
+To bring other lookup columns onto a hit, key `match()` on `tlsh_match`, not on the log field: the log's digest is only similar to the lookup key, never equal.
 
 ```
 event_id=1
 | tlsh(field=tlsh, dict="known_bad")
 | match(dict="known_bad", field=tlsh_match, column=digest, include=[name])
-| table(timestamp, image, tlsh_distance, name)
 ```
 
-`column=` names your dictionary's own key column (`digest` above); substitute whatever yours is.
+### TLSH index
 
-Key on `tlsh_match`, never on the log field itself. The log row's digest is only *similar* to the needle, not equal to it, so a lookup keyed on the log field would search for a key the dictionary does not contain and enrich nothing. `tlsh_match` holds the needle that actually matched, which is a real dictionary key.
+`tlsh()` reads a **TLSH Index** model on the same field, which stores the distinct digests in the fractal. Create one under **Analytics** and run **Backfill** for existing data. Without an index the query fails and names the model to create.
 
-### Position in the pipeline
-
-`tlsh()` filters log rows, so it must come before `groupby()` or any aggregation. Placing it after one is an error rather than a silent re-interpretation as a filter on the pre-aggregation rows.
-
-```
-event_id=1 | tlsh(field=tlsh, dict="known_bad") | groupby(computer_name, function=count())
-```
-
-### Cost
-
-Work scales with distinct digests multiplied by needle count. Aim to keep that product under roughly 10^9 for interactive hunting and 10^8 for alerting, which means curated, family-representative digest lists rather than corpus dumps.
-
-Three limits are enforced, each with an error naming the numbers involved:
+In a prism, a member with no index is skipped and the results show a `partial coverage` notice naming it.
 
 | Limit | Value |
 |-------|-------|
 | Distinct digests in the index | 500,000 |
 | Digests in a `dict` | 50,000 |
-| Distinct digests x needles | 2 x 10^9 |
+| Distinct digests x needles | 2,000,000,000 |
 
-`tlsh()` works in alerts as well as in search. The index probe runs on each evaluation, which is cheap because it reads the model rather than the log table.
+Cost grows with distinct digests times needles, so prefer curated, family-representative digest lists over full corpus dumps. `tlsh()` also works in alert rules.

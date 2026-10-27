@@ -1,29 +1,47 @@
 # Fractals
 
-A fractal is an isolated log container. Each fractal has its own log data in ClickHouse and its own set of API keys, alerts, and comments.
+A fractal is an isolated log container with its own logs, ingest tokens, API keys, alerts, comments and permissions. Create one per team, environment or data source you want to keep apart. To search several at once, group them in a [prism](prisms.md).
 
-Admins manage fractals from the **Fractals** page at the top of the sidebar.
+![Fractals page](../images/administration/fractals-list.png)
 
-- **Create fractal**: Provide a name and optional description.
-- **Delete fractal**: From **Fractal settings > Danger Zone**. Removes all associated log data, API keys, and configuration. This is **irreversible**.
+## Create a fractal
 
-Each fractal's own settings live under its **Fractal settings** page, which has four sections:
+Tenant admins only.
 
-| Sub-tab | Contents |
-|---------|----------|
-| **Overview** | Name, description, and fractal statistics |
-| **Access** | Per-fractal user and group permissions, plus API keys |
-| **Lifecycle** | Retention, archive retention, and [disk quota](disk-quotas.md) |
-| **Danger Zone** | Clear logs, delete fractal |
+1. Click **Fractals** at the top of the sidebar.
+2. Click **Create**.
+3. Leave **Fractal** selected, enter a **Name** (letters, numbers, hyphens and underscores, starting with a letter) and an optional **Description**.
+4. Click **Create fractal**.
 
-## Clearing Logs
+![Create fractal dialog](../images/administration/create-fractal.png)
 
-Admins can delete all logs for a fractal from **Fractal settings > Danger Zone > Clear Logs**. The fractal itself, its API keys, and its configuration remain. This is **irreversible**.
+The new fractal gets a default ingest token on its **Ingest** page.
 
-## Disk Quotas
+## Fractal settings
 
-Each fractal can have a configurable disk quota that caps raw log storage. See [Disk Quotas](disk-quotas.md) for configuration details and enforcement modes.
+Open a fractal from **Fractals**, then click **Fractal settings** in the sidebar. Changes on every tab other than **Overview** need a tenant admin.
 
-## Prisms
+| Tab | Contents |
+|-----|----------|
+| **Overview** | Name, description (**Edit**), creator, log count, size, earliest and latest log |
+| **Access** | **Permissions** (see [Grant access](users-and-roles.md#grant-access-to-a-fractal-or-prism)) and [API keys](ingest-tokens.md) |
+| **Lifecycle** | Retention, archive retention and [disk quota](disk-quotas.md) |
+| **Danger zone** | **Clear logs** and **Delete fractal** |
 
-Prisms are views of multiple fractals. They do not store data themselves. Create alerts and attach alert feeds to prisms so the member fractals can change as your deployment grows. Admins can create Prisms from the main Fractal listing and add member Fractals on the Prism's manage page.
+## Set retention
+
+1. Open **Fractal settings > Lifecycle**.
+2. Pick **Delete logs after**: Never, or 7, 14, 30, 90, 180 or 365 days. It saves on change.
+3. With the [Iceberg archive](backup-restore.md#iceberg-archive) on, optionally set **Delete archived data after** in days. Blank keeps archived data forever.
+
+![Lifecycle tab](../images/administration/fractal-lifecycle.png)
+
+Retention runs hourly and removes logs by ingest time.
+
+## Clear logs or delete a fractal
+
+!!! warning "Irreversible"
+    Both actions permanently delete log data. Each asks you to type the fractal name to confirm.
+
+- **Clear logs** (**Fractal settings > Danger zone**) deletes every log and its comments. The fractal, alerts, keys and settings stay.
+- **Delete fractal** (tenant admins) deletes the fractal with its logs, alerts, comments and permissions. The default and system fractals cannot be deleted.

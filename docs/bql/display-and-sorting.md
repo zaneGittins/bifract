@@ -1,75 +1,54 @@
 # Display & Sorting
 
+These commands choose which columns appear, in what order, and how many rows come back.
+
 ## Table
 
-Select specific columns to display:
-
 ```
-* | table(timestamp, image, user)
-* | groupBy(image, function=count()) | table(image, _count)
+* | table(timestamp, image, user, limit=5)
 ```
 
-Aggregations are projected under a fixed generated alias, not the function name and not the field name: `count()` produces `_count`, `sum(bytes)` produces `_sum`, `avg(x)` produces `_avg`, `min`/`max` produce `_min`/`_max`. Reference that alias in `table()`, `sort()`, and post-aggregation filters, or set your own with `as=`.
-
-!!! note "Filters after an aggregation"
-    After `groupBy()` or a stats command, only its grouping keys and aggregate columns exist. A filter on any other name, such as `| sum_bytes > 1000` or `| user="bob"`, is an error naming the columns that do exist. Use `_sum`, name the column yourself with `function=sum(bytes, as=sum_bytes)`, or move a log-field filter before the aggregation.
-
-Note the difference between the two ways to combine `groupBy` with `count()`:
-
-```
-// one row per image, with its _count
-* | groupBy(image, function=count())
-
-// a single row: how many distinct images
-* | groupBy(image) | count()
-```
-
-Use `function=` when you want a value per group and need the grouped field downstream in `table()` or `sort()`. A trailing `| count()` counts the rows the groupBy produced, so the result is a single total and the grouped field is no longer in scope.
-
-Aggregation functions can be used inline in `table()`:
+Shows only the listed columns, in that order. `limit=` caps the rows. Fields can be expressions (`table(user, len(commandline))`) or aggregates:
 
 ```
 * | table(user, sum(bytes), avg(response_time))
 ```
 
-Limit number of rows:
+After an aggregation, list its output columns by name (`_count`, `_sum`, or your `as=` name):
+
 ```
-* | table(timestamp, image, user, limit=5)
+* | groupBy(image) | table(image, _count)
 ```
+
+!!! note "Filters after an aggregation"
+    After `groupBy()` or another aggregate, only its group keys and output columns exist. Filtering on any other name is an error that lists the columns that do exist. Move log-field filters before the aggregation.
 
 ### Built-in columns
 
-Alongside the fields a log carries, every event has these columns. They can be
-selected, sorted and matched for equality like any other name.
+Every event has these columns besides its own fields. They can be selected, sorted and matched like any field.
 
 | Column | Meaning |
-|--------|---------|
-| `timestamp` | When the event happened, parsed from the log by the normalizer |
+|---|---|
+| `timestamp` | When the event happened, parsed from the log |
 | `ingest_timestamp` | When Bifract received it |
-| `log_id` | The event's identifier, used by permalinks and comments |
+| `log_id` | The event's identifier |
 | `fractal_id` | The fractal the event belongs to |
-| `norm_log` | The canonical normalized event text |
+| `norm_log` | The normalized event text |
 | `normalizer` | The normalizer that shaped the event, as `name@version` |
-
-The gap between the two times is ingest lag, which the log detail panel shows
-beside the event time:
 
 ```
 * | table(timestamp, ingest_timestamp, image)
-* | sort(ingest_timestamp)
 ```
 
-An `eval()` that binds one of these names shadows the column for the rest of the
-pipeline, so pick a different name unless you mean to replace it.
+An assignment or `eval()` that uses one of these names replaces the column for the rest of the query.
 
 ## Sort
 
 ```
-* | sort(timestamp, order=asc)
 * | sort(bytes, order=desc)
 ```
 
-Default direction is ascending.
+Default order is ascending. The order can also be given positionally (`sort(bytes, desc)`), and the field can be an expression (`sort(len(commandline), desc)`).
 
 ## Limit
 
@@ -77,37 +56,20 @@ Default direction is ascending.
 * | limit(100)
 ```
 
-## Filtering on Aggregated Results
+Returns at most N rows.
 
-Filter on computed or aggregated fields after a pipeline stage:
-
-```
-* | groupBy(image, function=count()) | _count > 100
-* | groupBy(user, function=sum(bytes)) | _sum >= 1000000
-```
-
-You can also add bare string or regex filters after the initial pipeline to further narrow results:
-
-```
-event_id=1 | "powershell"
-* | /error.*timeout/i
-```
-
-## Dedup
-
-Deduplicate results by one or more fields, keeping the first occurrence:
-
-```
-* | dedup(user)
-* | dedup(src_ip, dst_ip)
-level=error | dedup(host, service) | table(host, service, message)
-```
-
-## Head / Tail
-
-Return the first or last N events (default: 200):
+## Head and tail
 
 ```
 * | head(50)
-* | tail(50)
 ```
+
+`head(n)` returns the earliest N events and `tail(n)` the latest, by `timestamp`. Default N is 200. After an aggregation they take the first or last N rows of the current order instead.
+
+## Dedup
+
+```
+level=error | dedup(host, service) | table(host, service, message)
+```
+
+Keeps one row for each distinct combination of the listed fields. After an aggregation, dedup only on its output columns.

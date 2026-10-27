@@ -1,10 +1,18 @@
 # API Reference
 
-Every operation this release serves, generated from the server's own router. There is no
-second copy of the contract to drift: the same description powers the API page inside
-Bifract, where you can run any operation against your own instance.
+Every operation the server exposes, generated from its own router. Read [Authentication](authentication.md) first for keys and the scope header.
 
-Read [Authentication](authentication.md) first for how to obtain a key and which scope
-header to send.
+## Try the API in Bifract
+
+Tenant admins can run any operation against their own instance:
+
+1. Click **API** in the admin section of the sidebar.
+2. Find an operation with **Search operations, paths, tags...**, or pick a quick start such as **Run a BQL query**.
+3. Choose the scope from the selector next to the search box, fill in parameters and the request body.
+4. Click **Execute**, or **Copy as curl** to run it elsewhere.
+
+![API page with an operation open](../images/api/api-explorer.png)
+
+## All operations
 
 <swagger-ui src="../openapi.json"/>

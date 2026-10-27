@@ -1,6 +1,6 @@
 # Join (Subquery Correlation)
 
-Correlate results from two independent queries by joining on a shared field. The subquery runs with the same time range and fractal isolation as the outer query.
+`join()` correlates the outer query with a subquery on one shared field, for example denied connections from IPs that also logged in successfully. The subquery runs with the same time range and fractal as the outer query.
 
 ## Syntax
 
@@ -8,65 +8,45 @@ Correlate results from two independent queries by joining on a shared field. The
 | join(key, type=inner|left, max=N, include=[field1,field2]) { subquery }
 ```
 
-**Parameters:**
-- `key` (required) - Field to join on. Must exist in both the outer query results and the subquery results.
-- `type` (optional) - Join type: `inner` (default) keeps only matching rows, `left` keeps all outer rows with NULLs for non-matches.
-- `max` (optional) - Maximum rows the subquery can return (default: 10000, hard max: 100000). Safety guardrail for memory.
-- `include` (optional) - Specific fields to include from the subquery. If omitted, all subquery fields are included with a `_join_` prefix.
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `key` (required) | | Field to join on. The subquery must output it, so aggregate with `groupby(key)`, not a bare `count()`. |
+| `type` | `inner` | `inner` keeps only outer rows with a match. `left` keeps every outer row; non-matches get empty values (`0` for counts). |
+| `max` | 10000 | Most rows the subquery may return. Capped at 100000. |
+| `include` | all | Subquery columns to bring back. Each must exist in the subquery output. |
 
-**Block syntax:**
-- The subquery inside `{ }` is a full BQL query (filters, pipes, commands).
-- Nested joins are not supported.
-- The subquery inherits the same fractal and time range constraints.
+The block `{ }` holds a full BQL query. Subquery columns come back prefixed with `_join_`, so `_count` becomes `_join__count`. The join key is matched on and not repeated.
 
 ## Examples
 
-Find IPs that were denied but also had successful logins:
+IPs that were denied and also logged in successfully, with their login count:
+
 ```
 action="denied" | join(src_ip) {
-  action="login_success" | groupby(src_ip, function=count())
+  action="login_success" | groupby(src_ip)
 }
 ```
 
-Enrich events with user metadata using a left join:
+Add each user's department and role to every event, keeping users with no match:
+
 ```
-* | join(user, type=left, include=[first_department,first_role]) {
-  * | groupby(user) | selectFirst(department) | selectFirst(role)
+* | join(user, type=left, include=[department,role]) {
+  * | groupby(user, function=[selectFirst(department, as=department), selectFirst(role, as=role)])
 }
 ```
 
-Correlate login failures with successes by user:
-```
-action="login_failed" | join(user) {
-  action="login_success" | groupby(user, function=count())
-}
-```
+Sort by a joined column, with a larger subquery cap:
 
-Join with a custom max limit:
 ```
 * | join(src_ip, max=50000) {
-  * | groupby(src_ip, function=count())
+  * | groupby(src_ip)
 } | sort(_join__count, desc)
 ```
 
-Combine with other pipeline commands:
-```
-event_id=1 | join(user) {
-  event_id=4624 | groupby(user, function=count())
-} | sort(timestamp, desc) | limit(100)
-```
-
-## How It Works
-
-1. The outer query runs normally and produces results.
-2. The subquery is parsed and translated independently with the same security context (fractal ID, time range).
-3. ClickHouse performs a hash join between the two result sets on the join key.
-4. Subquery fields are prefixed with `_join_` to avoid name collisions (unless `include` is specified, in which case only those fields are added with the prefix).
-
 ## Limitations
 
-- **No nested joins** - the subquery cannot itself contain a `join()`.
-- **Single join key** - only one field can be used as the join key; a second is an error.
-- **Aggregation runs first** - an aggregation after `join()` runs on the outer rows before the join, so it must keep the join key. To count or aggregate only the rows another query matches, filter first with a [result-set binding](basics.md#result-sets): `let &keys := <subquery>; ... | in(field, &keys) | count()`.
-- **Max subquery rows** - capped at 100,000 to prevent memory issues. Use `max=` to adjust within this limit.
-- **Join types** - only `inner` and `left` are supported.
+- **One key, one join.** A second key is an error. Use one `join()` per query.
+- **No nested joins.** The subquery cannot contain `join()`.
+- **No `modelLookup()`** in the same query as `join()`.
+- **Aggregation runs first.** An aggregation after `join()` runs on the outer rows before the join, and is rejected if it drops the key. To count only rows another query matches, filter with a [result-set binding](basics.md#result-sets) instead: `let &keys := <subquery>; ... | in(field, &keys) | count()`.
+- **Only** `inner` **and** `left` join types exist.
