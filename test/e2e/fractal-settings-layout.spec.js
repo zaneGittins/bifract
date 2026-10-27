@@ -30,7 +30,18 @@ test.describe('Fractal settings layout', () => {
       await expectNoPageTitle(panel, name.trim());
       const edges = await firstBlockEdges(panel);
       expect(Math.abs(edges.left - bar.x), `${tab} content left edge`).toBeLessThanOrEqual(1);
-      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} content right edge`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('on a wide screen the tab bar spans the page and forms keep a readable column', async ({ page }) => {
+    await openManage(page);
+    await page.setViewportSize({ width: 2560, height: 1080 });
+    const section = await page.locator('#fractalOnlyManageSection').boundingBox();
+    const bar = await page.locator('#manageSubTabs').boundingBox();
+    expect(Math.abs(bar.x + bar.width - (section.x + section.width)), 'tab bar stops short of the page').toBeLessThanOrEqual(1);
+    for (const tab of ['overview', 'lifecycle']) {
+      const form = await (await openTab(page, tab)).locator('.sp-content').boundingBox();
+      expect(form.width, `${tab} form stretches across the screen`).toBeLessThanOrEqual(961);
     }
   });
 

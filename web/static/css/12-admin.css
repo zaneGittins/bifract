@@ -10,10 +10,14 @@
    ============================ */
 
 /* Content column */
+/* Tables and the tab bar take the full width like every other page. Setting
+   rows do not: on a wide screen a full-width row puts the control far from its
+   label, so forms keep one readable column on the shared left edge. */
 .sp-content {
     display: flex;
     flex-direction: column;
     gap: 2rem;
+    max-width: 960px;
     padding-bottom: 3rem;
 }
 
@@ -275,13 +279,6 @@
    Replaces the bare .section-header, whose winning definition is the
    notebook cell-header bar and does not belong in admin.
    ============================ */
-
-/* One column for every settings tab. The tab bar and each panel share its
-   edges, so nothing shifts when you switch tabs; the cap keeps setting rows and
-   descriptions at a readable measure on wide screens. */
-.settings-column {
-    max-width: 1040px;
-}
 
 .alerts-sub-tab.alerts-sub-tab-danger {
     margin-left: auto;

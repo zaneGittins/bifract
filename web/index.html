@@ -116,7 +116,7 @@
                             <span id="fractalListingPageInfo" class="page-info-compact"></span>
                             <button id="fractalListingNextBtn" class="page-btn-compact">→</button>
                         </div>
-                        <button id="createFractalBtn" class="btn-primary btn-sm admin-only" style="display: none;">Create</button>
+                        <button id="createFractalBtn" class="btn-primary btn-sm admin-only">Create</button>
                     </div>
                     <div id="fractalListingContainer">
                         <!-- Fractal cards will be rendered here -->
@@ -677,7 +677,7 @@
             <div id="mainSettingsTabContent" style="display: none;">
         <!-- Settings View (Admin Only) -->
         <div id="settingsView" class="admin-only" style="display: none;">
-            <section class="settings-view-section settings-column">
+            <section class="settings-view-section">
                 <!-- Settings Sub-Tabs -->
                 <div class="alerts-sub-tabs" id="settingsSubTabs">
                     <button class="alerts-sub-tab active" data-subtab="users" onclick="SettingsView.switchSubTab('users')">Users</button>
@@ -2823,7 +2823,7 @@
             <!-- Manage Tab Content -->
             <div id="fractalManageTabContent" class="fractal-admin-only" style="display: none;">
                 <!-- Prism management section (shown when a prism is selected) -->
-                <div id="prismManageSection" class="fractal-manage-view settings-column" style="display:none;">
+                <div id="prismManageSection" class="fractal-manage-view" style="display:none;">
                     <span id="managePrismTitle" style="display:none;"></span>
 
                     <!-- Prism Manage Sub-Tabs -->
@@ -2945,7 +2945,7 @@
                 </div>
 
                 <!-- Fractal management section (shown when a fractal is selected) -->
-                <div id="fractalOnlyManageSection" class="fractal-manage-view settings-column">
+                <div id="fractalOnlyManageSection" class="fractal-manage-view">
                     <span id="manageFractalTitle" style="display:none;"></span>
                     <button id="manageEditFractalBtn" style="display:none;"></button>
 
@@ -3601,7 +3601,7 @@
             </div>
             <div class="modal-body">
                 <!-- User Management (Admin Only) -->
-                <div class="settings-section admin-only" id="userManagementSection" style="display: none;">
+                <div class="settings-section admin-only" id="userManagementSection">
                     <div class="section-header">
                         <h3>User Management</h3>
                         <button id="addUserBtn" class="btn-primary btn-sm">+ Add User</button>
