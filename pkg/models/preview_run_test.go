@@ -22,14 +22,14 @@ func lastDay() PreviewRange {
 }
 
 // Every preview query is bounded by the preview settings and reads only the
-// model's own fractal within the window.
-func assertPreviewQueries(t *testing.T, ch *chFake, rng PreviewRange, n int) {
+// model's own fractal within the window from start.
+func assertPreviewQueries(t *testing.T, ch *chFake, start time.Time, n int) {
 	t.Helper()
 	qs := ch.Queried()
 	if len(qs) != n {
 		t.Fatalf("%d queries, want %d:\n%s", len(qs), n, strings.Join(qs, "\n---\n"))
 	}
-	window := rng.Start.Format("2006-01-02 15:04:05")
+	window := start.Format("2006-01-02 15:04:05")
 	for _, q := range qs {
 		if !strings.HasSuffix(q, previewSettings) && !strings.HasSuffix(q, previewSettings+", max_block_size=256") {
 			t.Errorf("unbounded preview query: ...%s", q[max(0, len(q)-120):])
@@ -61,7 +61,7 @@ func TestPreviewRarity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertPreviewQueries(t, env.ch, rng, 3)
+	assertPreviewQueries(t, env.ch, rng.Start, 3)
 	if res.Histogram[9].Count != 6 || res.Histogram[5].Count != 10 {
 		t.Errorf("histogram: %+v", res.Histogram)
 	}
@@ -111,7 +111,7 @@ func TestPreviewFirstSeen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertPreviewQueries(t, env.ch, rng, 3)
+		assertPreviewQueries(t, env.ch, rng.Start, 3)
 		if res.Histogram[0].Count != 7 || res.Histogram[3].Count != 2 || len(res.Histogram) != len(firstSeenHistLabels) {
 			t.Errorf("histogram: %+v", res.Histogram)
 		}
@@ -204,7 +204,8 @@ func TestPreviewNetworkLongConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertPreviewQueries(t, env.ch, rng, 3)
+	// A network preview starts on the hour, as the model's window does.
+	assertPreviewQueries(t, env.ch, netPreviewWindow(rng).Start, 3)
 	var scores []float64
 	for _, row := range res.Top {
 		scores = append(scores, row["score"].(float64))

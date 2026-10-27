@@ -1,39 +1,24 @@
 package models
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
 
-// groupArray keeps neither list in time order. Timestamps and sizes are parallel,
-// so trimming to the window must keep the sizes of the connections inside it.
-func TestPairFromRowKeepsSizesWithTheirTimestamps(t *testing.T) {
-	cutoff := int64(150)
+// A pair-read row becomes a pair as read: its points in their order, and first
+// and last seen from the row rather than its kept points.
+func TestPairFromRow(t *testing.T) {
 	p := pairFromRow(map[string]interface{}{
-		"src": "10.0.0.1", "dst": "10.0.0.2", "port": "443", "cnt": uint64(4),
-		"ts_list":   []uint32{300, 100, 200, 50},
-		"size_list": []float64{3, 1, 2, 0.5},
-	}, cutoff)
-	if len(p.TsList) != 2 || p.TsList[0] != 200 || p.TsList[1] != 300 {
-		t.Fatalf("ts = %v, want [200 300]", p.TsList)
-	}
-	if len(p.SizeList) != 2 || p.SizeList[0] != 2 || p.SizeList[1] != 3 {
-		t.Fatalf("sizes = %v, want [2 3]: the sizes of the in-window connections", p.SizeList)
-	}
-	if p.FirstTs != 200 || p.LastTs != 300 || p.Src != "10.0.0.1" || p.Count != 4 {
-		t.Fatalf("pair = %+v", p)
-	}
-}
-
-// A size list that is not parallel (it should always be) is trimmed by position
-// rather than trusted, and one shorter than the trim is dropped.
-func TestPairFromRowMismatchedSizes(t *testing.T) {
-	p := pairFromRow(map[string]interface{}{
-		"ts_list":   []int64{10, 20, 30},
-		"size_list": []float64{1},
-	}, 25)
-	if len(p.TsList) != 1 || p.SizeList != nil {
-		t.Fatalf("ts %v sizes %v", p.TsList, p.SizeList)
+		"src": "10.0.0.1", "dst": "10.0.0.2", "port": "443", "cnt": uint64(9),
+		"ts_list": []uint32{100, 200, 300}, "size_list": []float64{1, 2, 3},
+		"total_duration": float64(7), "first_ts": uint32(90), "last_ts": uint32(950), "ti_hit": uint64(1),
+	})
+	want := PairAgg{Src: "10.0.0.1", Dst: "10.0.0.2", Port: "443", Count: 9,
+		TsList: []int64{100, 200, 300}, SizeList: []float64{1, 2, 3},
+		TotalDuration: 7, FirstTs: 90, LastTs: 950, ThreatIntelHit: true}
+	if !reflect.DeepEqual(p, want) {
+		t.Fatalf("pair = %+v\nwant %+v", p, want)
 	}
 }
 

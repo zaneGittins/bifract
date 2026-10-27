@@ -140,8 +140,8 @@ func backfillChunks(start, end time.Time) []timeChunk {
 func (m *Manager) StartBackfill(ctx context.Context, model *Model, req BackfillRequest) error {
 	var startedAt *time.Time
 	if model.ModelType.IsScheduled() {
-		// Scheduled (network) models self-seed: the MV + TTL maintain the rolling
-		// window from ingest, so there is nothing to backfill.
+		// Scheduled (network) models self-seed: state maintenance and the TTL keep
+		// the rolling window, so there is nothing to backfill.
 		return fmt.Errorf("backfill is not applicable to %s models (the rolling window self-seeds)", model.ModelType)
 	}
 	if model.Status != "active" {

@@ -77,6 +77,8 @@ Templates:
 4. Optionally link a **First seen from** model and a **Threat intel lookup** with its **Key column** (see [Network modifiers](#network-modifiers)).
 5. Under **Detection**, set **Beacon score threshold** (default 0.8) or **Long-connection score threshold** (default 0.5).
 
+The state keeps the earliest 84 connections per pair in each hour, so a busy pair is still scored across the whole day. Scoring and previews cover the window's complete hours, up to the start of the current one.
+
 ### Source query rules
 
 - The query must keep one row per log. Filters, `match()` against a [lookup](dictionaries.md), CIDR ranges, regexes and lists are fine.

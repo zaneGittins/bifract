@@ -480,12 +480,15 @@ type chFake struct {
 	blankRows map[string]bool
 	// existing are tables that were there before the test sent any DDL.
 	existing map[string]bool
+	// oldNetState are network state tables in an older layout until dropped.
+	oldNetState map[string]bool
 }
 
 var (
 	createTableRe = regexp.MustCompile("^CREATE TABLE IF NOT EXISTS `([^`]+)`")
 	dropTableRe   = regexp.MustCompile("^DROP TABLE IF EXISTS `([^`]+)`")
 	addColumnRe   = regexp.MustCompile("^ALTER TABLE `([^`]+)` ADD COLUMN IF NOT EXISTS `([^`]+)`")
+	netStateRe    = regexp.MustCompile(`table IN \('([^']+)', '([^']+)'\)`)
 )
 
 func newCH(t testing.TB) *chFake {
@@ -509,7 +512,7 @@ func newClusterCH(t testing.TB) *chFake {
 }
 
 func wireCH(client *storage.ClickHouseClient, ch *fakedb.CH) *chFake {
-	f := &chFake{CH: ch, client: client, columns: map[string][]string{}, existing: map[string]bool{}}
+	f := &chFake{CH: ch, client: client, columns: map[string][]string{}, existing: map[string]bool{}, oldNetState: map[string]bool{}}
 	ch.Respond(f.respond)
 	return f
 }
@@ -574,6 +577,24 @@ func (f *chFake) respond(q string, args []any) (fakedb.CHResult, bool) {
 			}
 		}
 		return fakedb.Count(0), true
+	case strings.Contains(q, "countIf(name = 'points'"):
+		var old uint64
+		if m := netStateRe.FindStringSubmatch(q); m != nil {
+			dropped := map[string]bool{}
+			for _, s := range f.Executed() {
+				if d := dropTableRe.FindStringSubmatch(s); d != nil {
+					dropped[d[1]] = true
+				}
+			}
+			f.mu.Lock()
+			for _, name := range m[1:] {
+				if f.oldNetState[name] && !dropped[name] {
+					old++
+				}
+			}
+			f.mu.Unlock()
+		}
+		return fakedb.Count(old), true
 	case strings.Contains(q, "engine = 'MaterializedView'"):
 		f.mu.Lock()
 		defer f.mu.Unlock()

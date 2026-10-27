@@ -29,8 +29,8 @@ func TestResolvePreviewRange(t *testing.T) {
 	if err != nil || r.Label != "" || r.Start.Format(time.RFC3339) != "2026-08-29T00:00:00Z" || r.End.Format(time.RFC3339) != "2026-09-10T00:00:00Z" {
 		t.Errorf("explicit range: %+v %v", r, err)
 	}
-	if r.days() != 12 || r.endsNow(now) {
-		t.Errorf("explicit range: days %d endsNow %v", r.days(), r.endsNow(now))
+	if r.endsNow(now) {
+		t.Error("explicit past range ends now")
 	}
 
 	// Offsets normalize to UTC.
@@ -67,8 +67,8 @@ func TestResolvePreviewRange(t *testing.T) {
 	}
 }
 
-func TestNetPreviewBoundsSQL(t *testing.T) {
-	b := NetPreviewBounds{Start: time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), Days: 12}
+func TestNetWindowSQL(t *testing.T) {
+	b := NetWindow{Start: time.Date(2026, 8, 29, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), Days: 12}
 	q, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b, "")
 	if err != nil {
 		t.Fatal(err)

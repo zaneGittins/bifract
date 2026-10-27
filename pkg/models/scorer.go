@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -254,39 +253,38 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	windowDays := m.def.WindowDays()
 	windowSecs := int64(windowDays) * 86400
 	stateRead := e.mgr.networkStateReadTable(m.id)
+	now := time.Now()
+	win := netWindowAt(now, windowDays)
 
 	// Prevalence context: distinct-source count per destination, and the total
 	// distinct-source count (network size) as the denominator.
-	networkSize, err := e.readNetworkSize(ctx, stateRead, m.fractalID, windowDays)
+	networkSize, err := e.readNetworkSize(ctx, stateRead, m.fractalID, win)
 	if err != nil {
 		return fmt.Errorf("network size: %w", err)
 	}
 	if networkSize == 0 {
 		return nil // warming up: no state yet
 	}
-	prevalence, err := e.readPrevalence(ctx, stateRead, m.fractalID, windowDays)
+	prevalence, err := e.readPrevalence(ctx, stateRead, m.fractalID, win)
 	if err != nil {
 		return fmt.Errorf("prevalence: %w", err)
 	}
 
-	now := time.Now()
-
 	// Modifier context the model links; what cannot be read scores 0.
 	fs, warnings := e.mgr.loadFirstSeen(ctx, m.fractalID, m.def,
-		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays), "", now)
+		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, win), "", now)
 	ti, tiWarnings := e.mgr.threatIntelColumn(ctx, m.fractalID, m.def)
 	e.warnModifiers(m.id, append(warnings, tiWarnings...))
 
 	bp := m.def.Beacon.WithDefaults(windowSecs)
 	lc := m.def.LongConn.WithDefaults()
 	mp := m.def.Modifiers.WithDefaults()
-	cutoff := now.Unix() - windowSecs
 
 	buf := newResultBuffer(e.ch, m.tableName)
 	var count int
 	truncated := false
 
-	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays, ti) + scorerReadSettings()
+	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, win, ti) + scorerReadSettings()
 	streamErr := e.ch.StreamQuery(ctx, "", readSQL, func(row map[string]interface{}) error {
 		if count >= scorerPerModelPairCap {
 			truncated = true
@@ -294,10 +292,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		}
 		count++
 
-		p := pairFromRow(row, cutoff)
-		if !p.inWindow() {
-			return nil
-		}
+		p := pairFromRow(row)
 		prevTotal := prevalence[p.Dst]
 		prevRatio := float64(prevTotal) / float64(networkSize)
 
@@ -339,18 +334,18 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	return nil
 }
 
-func (e *ScorerEngine) readNetworkSize(ctx context.Context, stateRead, fractalID string, windowDays int) (uint64, error) {
+func (e *ScorerEngine) readNetworkSize(ctx context.Context, stateRead, fractalID string, w NetWindow) (uint64, error) {
 	var n uint64
-	err := e.ch.QueryRow(ctx, BuildNetNetworkSizeQuery(stateRead, fractalID, windowDays)).Scan(&n)
+	err := e.ch.QueryRow(ctx, BuildNetNetworkSizeQuery(stateRead, fractalID, w)).Scan(&n)
 	if err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
-func (e *ScorerEngine) readPrevalence(ctx context.Context, stateRead, fractalID string, windowDays int) (map[string]uint64, error) {
+func (e *ScorerEngine) readPrevalence(ctx context.Context, stateRead, fractalID string, w NetWindow) (map[string]uint64, error) {
 	out := make(map[string]uint64)
-	err := e.ch.StreamQuery(ctx, "", BuildNetPrevalenceQuery(stateRead, fractalID, windowDays),
+	err := e.ch.StreamQuery(ctx, "", BuildNetPrevalenceQuery(stateRead, fractalID, w),
 		func(row map[string]interface{}) error {
 			out[getString(row, "dst")] = getUint64(row, "prev_total")
 			return nil
@@ -418,65 +413,23 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 
 // ---- row -> PairAgg ----
 
-// pairFromRow builds a PairAgg from a state-read row, sorting timestamps ascending
-// and trimming them to the exact window (cutoff = now - windowSecs).
-func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
-	ts := getInt64Slice(row, "ts_list")
-	sizes := getFloat64Slice(row, "size_list")
-	// size_list is parallel to ts_list, and groupArray keeps neither in time
-	// order, so they are sorted together: sorting ts alone and trimming sizes by
-	// the same index kept whichever sizes happened to sit at the tail, not the
-	// ones belonging to the connections inside the window.
-	if len(sizes) == len(ts) {
-		sort.Sort(tsSizes{ts, sizes})
-	} else {
-		sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
-	}
-	// Trim to the window; ts is sorted so find the first index >= cutoff.
-	idx := sort.Search(len(ts), func(i int) bool { return ts[i] >= cutoff })
-	ts = ts[idx:]
-	if len(sizes) >= idx {
-		sizes = sizes[idx:]
-	} else {
-		sizes = nil
-	}
-
-	p := PairAgg{
+// pairFromRow builds a PairAgg from a pair-read row, whose points arrive in time
+// order. First and last seen are the pair's own, not its first and last kept point.
+func pairFromRow(row map[string]interface{}) PairAgg {
+	return PairAgg{
 		Src:           getString(row, "src"),
 		Dst:           getString(row, "dst"),
 		Port:          getString(row, "port"),
 		Count:         getUint64(row, "cnt"),
-		TsList:        ts,
-		SizeList:      sizes,
+		TsList:        getInt64Slice(row, "ts_list"),
+		SizeList:      getFloat64Slice(row, "size_list"),
 		TotalDuration: getFloat64(row, "total_duration"),
+		FirstTs:       int64(getUint64(row, "first_ts")),
+		LastTs:        int64(getUint64(row, "last_ts")),
 
 		ThreatIntelHit: getUint64(row, "ti_hit") > 0,
 	}
-	if len(ts) > 0 {
-		p.FirstTs = ts[0]
-		p.LastTs = ts[len(ts)-1]
-	}
-	return p
 }
-
-// tsSizes sorts a pair's timestamps ascending, carrying each one's size along.
-type tsSizes struct {
-	ts    []int64
-	sizes []float64
-}
-
-func (s tsSizes) Len() int           { return len(s.ts) }
-func (s tsSizes) Less(i, j int) bool { return s.ts[i] < s.ts[j] }
-func (s tsSizes) Swap(i, j int) {
-	s.ts[i], s.ts[j] = s.ts[j], s.ts[i]
-	s.sizes[i], s.sizes[j] = s.sizes[j], s.sizes[i]
-}
-
-// inWindow reports whether any of the pair's connections fall inside the exact
-// window. The state is read by whole day, so a pair seen only early on the
-// window's first day has none left after trimming. Scoring it anyway overwrote
-// its last real result with zero scores and an epoch first/last seen.
-func (p PairAgg) inWindow() bool { return len(p.TsList) > 0 }
 
 func unixToTime(sec int64) time.Time {
 	if sec <= 0 {

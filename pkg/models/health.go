@@ -125,7 +125,7 @@ FROM %s WHERE %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDateTime(ma
 			flagged(scored), qt, fid)
 	case ModelTypeBeacon, ModelTypeLongConnection:
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s
-FROM %s WHERE %s`, epoch("toDateTime(min(day), 'UTC')"), epoch("max(last_ts)"),
+FROM %s WHERE %s`, epoch("min(hour)"), epoch("max(last_ts)"),
 			flagged(fmt.Sprintf("SELECT * FROM %s FINAL WHERE %s", qt, fid)), "`"+stateTable+"`", fid)
 	case ModelTypeTLSH:
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest FROM %s WHERE %s`,

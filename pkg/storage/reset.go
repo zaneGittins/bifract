@@ -201,8 +201,8 @@ func ModelIDOfMVName(name string) (string, bool) {
 // ModelCHDistName is the cluster-mode distributed table over the aggregate.
 func ModelCHDistName(id string) string { return modelObjectName("model_dist_", id) }
 
-// ModelCHStateName is a scheduled (network) model's rolling-state table: the MV
-// writes here at ingest and the scorer reads from here.
+// ModelCHStateName is a scheduled (network) model's rolling-state table: state
+// maintenance writes here and the scorer reads from here.
 func ModelCHStateName(id string) string { return modelObjectName("model_state_", id) }
 
 // ModelCHStateDistName is the distributed table over the state table, so a

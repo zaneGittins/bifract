@@ -410,7 +410,7 @@ func detectionChanged(a, b ModelDefinition) bool {
 		a.TimeBucket != b.TimeBucket ||
 		// The window sets the table's layout and TTL.
 		a.HistoryDays != b.HistoryDays ||
-		// Network models: the field map determines what the MV extracts and the
+		// Network models: the field map determines what the state extracts and the
 		// window drives the state TTL, so either change requires a state rebuild.
 		// Beacon/LongConn/Modifiers params are applied fresh by the scorer at read
 		// time (like alert thresholds), so they intentionally do NOT rebuild.
@@ -698,12 +698,7 @@ func (m *Manager) stateLayoutOK(ctx context.Context, id, tableName string, def M
 	if days > 0 {
 		want = fmt.Sprintf("position(engine_full, 'TTL %s + toIntervalDay(%d)') > 0", col, parser.HistoryRetentionDays(days))
 	}
-	from := func(table string) string {
-		if c := m.ch.Topology().FanoutCluster; c != "" {
-			return fmt.Sprintf("clusterAllReplicas('%s', system.%s)", storage.EscCHStr(c), table)
-		}
-		return "system." + table
-	}
+	from := m.systemTable
 	q := fmt.Sprintf("SELECT count() FROM %s WHERE database = currentDatabase() AND name = '%s' AND NOT (%s)",
 		from("tables"), storage.EscCHStr(tableName), want)
 	if m.ch.Topology().DistributedTables {
@@ -722,6 +717,66 @@ func (m *Manager) stateLayoutOK(ctx context.Context, id, tableName string, def M
 		return false, err
 	}
 	return wrong == 0, nil
+}
+
+// systemTable is a system table read across every replica on a cluster.
+func (m *Manager) systemTable(table string) string {
+	if c := m.ch.Topology().FanoutCluster; c != "" {
+		return fmt.Sprintf("clusterAllReplicas('%s', system.%s)", storage.EscCHStr(c), table)
+	}
+	return "system." + table
+}
+
+// netStateLayoutOK reports whether every existing copy of a network model's state
+// table and its Distributed companion holds points in the current layout.
+func (m *Manager) netStateLayoutOK(ctx context.Context, id string) (bool, error) {
+	q := fmt.Sprintf(`SELECT count() FROM (
+    SELECT hostName() AS h, table, countIf(name = 'points' AND type = '%s') AS ok FROM %s
+    WHERE database = currentDatabase() AND table IN ('%s', '%s') GROUP BY h, table) WHERE ok = 0`,
+		storage.EscCHStr(netStatePointsType), m.systemTable("columns"),
+		storage.EscCHStr(chModelStateName(id)), storage.EscCHStr(chModelStateDistName(id)))
+	var wrong uint64
+	if err := m.ch.QueryRow(ctx, q).Scan(&wrong); err != nil {
+		return false, err
+	}
+	return wrong == 0, nil
+}
+
+// ensureNetStateLayout recreates a network model's state table left in an older
+// layout, which CREATE IF NOT EXISTS would keep and every state insert and read
+// would then fail against. Its Distributed companion is dropped for the caller to
+// recreate. The new table starts empty and fills from the model's watermark on.
+// A failed check is logged and skipped, so it never blocks a model's save.
+func (m *Manager) ensureNetStateLayout(ctx context.Context, id string, windowDays int) error {
+	ok, err := m.netStateLayoutOK(ctx, id)
+	if err != nil {
+		log.Printf("model %s: check state table layout: %v", id, err)
+		return nil
+	}
+	if ok {
+		return nil
+	}
+	state := chModelStateName(id)
+	log.Printf("model %s: state table %s has an older layout; recreating it", id, state)
+	if m.ch.Topology().DistributedTables {
+		if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", chModelStateDistName(id)))); err != nil && !isCHDDLTimeout(err) {
+			return fmt.Errorf("drop distributed state table: %w", err)
+		}
+	}
+	if err := m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(dropModelTableSQL(state))); err != nil && !isCHDDLTimeout(err) {
+		return fmt.Errorf("drop state table: %w", err)
+	}
+	ddl := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL("`"+state+"`", windowDays)))
+	if err := m.ch.ExecSchema(ctx, ddl); err != nil && !isCHDDLTimeout(err) {
+		return fmt.Errorf("recreate state table: %w", err)
+	}
+	ok, err = m.netStateLayoutOK(ctx, id)
+	if err != nil {
+		log.Printf("model %s: recheck state table layout: %v", id, err)
+	} else if !ok {
+		return fmt.Errorf("state table %s keeps an older layout and could not be dropped; drop it in ClickHouse and save the model again", state)
+	}
+	return nil
 }
 
 // deleteBlankEntity removes the entity a first_seen model recorded for keyless logs
@@ -755,10 +810,10 @@ func (m *Manager) ensureStateColumns(ctx context.Context, id string, mt ModelTyp
 	return nil
 }
 
-// createNetworkCHObjects creates the three ClickHouse objects a scheduled (network)
-// model owns: the rolling-state table (MV target), the results table (scorer output,
-// read by model_lookup / the data viewer), and the MV that maintains state at ingest.
-// Backfill is N/A: the MV + TTL self-seed the rolling window.
+// createNetworkCHObjects creates the two ClickHouse objects a scheduled (network)
+// model owns: the rolling-state table, kept by StateMaintainer, and the results
+// table (scorer output, read by model_lookup / the data viewer). Backfill is N/A:
+// state maintenance and the TTL keep the rolling window.
 func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	stateName := chModelStateName(id)
 	windowDays := def.WindowDays()
@@ -766,6 +821,9 @@ func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID stri
 	stateSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetStateTableDDL("`"+stateName+"`", windowDays)))
 	if err := m.ch.ExecSchema(ctx, stateSQL); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("create state table: %w", err)
+	}
+	if err := m.ensureNetStateLayout(ctx, id, windowDays); err != nil {
+		return err
 	}
 
 	resultsSQL := m.ch.InjectOnCluster(m.ch.RewriteEngine(BuildNetResultsTableDDL("`" + tableName + "`")))
@@ -854,7 +912,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 	if err := m.ch.ExecSchema(ctx, mvDrop); err != nil {
 		log.Printf("drop MV %s: %v", mvName, err)
 	}
-	// A scheduled model also owns a rolling-state table (the MV's target); drop it.
+	// A scheduled model also owns a rolling-state table; drop it.
 	if mt.IsScheduled() {
 		stateDrop := m.ch.InjectOnCluster(dropModelTableSQL(chModelStateName(id)))
 		if err := m.ch.ExecSchema(ctx, stateDrop); err != nil {
@@ -1859,6 +1917,11 @@ func (m *Manager) ReconcileCHObjects(ctx context.Context) {
 			}
 			if err := m.deleteBlankEntity(ctx, t.mt, t.def, t.table); err != nil {
 				log.Printf("models: reconcile CH objects: %s: %v", t.table, err)
+			}
+			if t.mt.IsScheduled() {
+				if err := m.ensureNetStateLayout(ctx, t.id, t.def.WindowDays()); err != nil {
+					log.Printf("models: reconcile CH objects: %s: %v", chModelStateName(t.id), err)
+				}
 			}
 			// The probe saw this table on one node, so its Distributed companions are
 			// reissued ON CLUSTER regardless. Queued without waiting, so a down shard
