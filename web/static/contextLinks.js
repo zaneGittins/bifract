@@ -118,7 +118,7 @@ const ContextLinks = {
         const modal = document.getElementById('contextLinkModal');
         if (!modal) return;
 
-        document.getElementById('contextLinkModalTitle').textContent = 'Create Context Link';
+        document.getElementById('contextLinkModalTitle').textContent = 'Create context link';
         document.getElementById('contextLinkName').value = '';
         document.getElementById('contextLinkFields').value = '';
         document.getElementById('contextLinkRegex').value = '';
@@ -139,7 +139,7 @@ const ContextLinks = {
             const modal = document.getElementById('contextLinkModal');
             if (!modal) return;
 
-            document.getElementById('contextLinkModalTitle').textContent = 'Edit Context Link';
+            document.getElementById('contextLinkModalTitle').textContent = 'Edit context link';
             document.getElementById('contextLinkName').value = link.short_name;
             document.getElementById('contextLinkFields').value = (link.match_fields || []).join(', ');
             document.getElementById('contextLinkRegex').value = link.validation_regex || '';

@@ -114,8 +114,8 @@ const FractalManagement = {
         const nameInput = document.getElementById('newFractalName');
         const fractalBtn = document.getElementById('createTypeFractal');
         const prismBtn = document.getElementById('createTypePrism');
-        if (title) title.textContent = isFractal ? 'Create New Fractal' : 'Create New Prism';
-        if (submitBtn) submitBtn.textContent = isFractal ? 'Create Fractal' : 'Create Prism';
+        if (title) title.textContent = isFractal ? 'Create fractal' : 'Create prism';
+        if (submitBtn) submitBtn.textContent = isFractal ? 'Create fractal' : 'Create prism';
         if (nameInput) nameInput.placeholder = isFractal ? 'Enter fractal name' : 'Enter prism name';
         if (fractalBtn) fractalBtn.classList.toggle('active', isFractal);
         if (prismBtn) prismBtn.classList.toggle('active', !isFractal);

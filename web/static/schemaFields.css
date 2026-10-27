@@ -309,9 +309,7 @@
 .schema-table thead th {
     text-align: left;
     padding: 9px 12px;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-size: 0.75rem;
     color: var(--text-muted);
     font-weight: 600;
     white-space: nowrap;
@@ -409,9 +407,7 @@
 }
 
 .schema-builtin {
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
+    font-size: 0.75rem;
     font-weight: 600;
     color: var(--text-muted);
     border: 1px solid var(--border-color);
@@ -661,9 +657,7 @@
 
 .schema-drawer h4 {
     margin: 20px 0 8px;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
+    font-size: 0.75rem;
     color: var(--text-muted);
     font-weight: 600;
 }
@@ -721,9 +715,7 @@
 }
 
 .schema-ref .kind {
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
+    font-size: 0.75rem;
     font-weight: 600;
     color: var(--text-muted);
     flex: none;
@@ -813,9 +805,7 @@
 
 .schema-form label {
     display: block;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
+    font-size: 0.75rem;
     color: var(--text-muted);
     font-weight: 600;
     margin-bottom: 6px;

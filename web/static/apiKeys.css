@@ -1,18 +1,5 @@
 /* ===== API Keys Management Styles ===== */
 
-.empty-state {
-    text-align: center;
-    padding: 2rem;
-    background: var(--bg-secondary);
-    border-radius: 8px;
-    border: 1px solid var(--border-color);
-}
-
-.empty-state p {
-    color: var(--text-secondary);
-    margin-bottom: 1rem;
-}
-
 /* Key rows in the Access page table */
 .key-name {
     color: var(--text-primary);

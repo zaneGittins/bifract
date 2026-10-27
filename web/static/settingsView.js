@@ -108,7 +108,7 @@ const SettingsView = {
         select.addEventListener('change', () => DangerConfirm.revalidate());
 
         DangerConfirm.open({
-            title: 'Reset Distribution Queue',
+            title: 'Reset distribution queue',
             body: [
                 'This drops and recreates logs_distributed on the selected shard, discarding its queued log batches.',
                 { text: "Other shards and this shard's own stored logs are unaffected.", muted: true },
@@ -116,7 +116,7 @@ const SettingsView = {
             extra: select,
             isReady: () => !select.disabled && !!select.value,
             phrase: 'RESET QUEUE',
-            confirmLabel: 'Reset Queue',
+            confirmLabel: 'Reset queue',
             busyLabel: 'Resetting...',
             onConfirm: async () => {
                 const shardNum = Number(select.value);
@@ -167,12 +167,12 @@ const SettingsView = {
     // un-archived data, so it is never a single click.
     confirmClearSpool() {
         DangerConfirm.open({
-            title: 'Clear Archive Spool',
+            title: 'Clear archive spool',
             body: [
                 'This discards un-archived buffered logs on every ingest pod. Each pod applies it within about 10 seconds.',
                 { text: 'Not needed when migrating backends: there the buffered tail correctly bridges the gap into the new archive.', muted: true },
             ],
-            confirmLabel: 'Clear Spool',
+            confirmLabel: 'Clear spool',
             busyLabel: 'Requesting...',
             onConfirm: async () => {
                 const d = await HttpUtils.safeFetch('/api/v1/system/archive/spool/clear', { method: 'POST' });
@@ -244,13 +244,13 @@ const SettingsView = {
     // The server rejects this while archiving is on; the row guard mirrors that.
     confirmClearCatalog() {
         DangerConfirm.open({
-            title: 'Clear Iceberg Catalog',
+            title: 'Clear Iceberg catalog',
             body: [
                 'This drops every archived table from the Iceberg catalog and resets the archive footprint to zero.',
                 { text: 'Data files in object storage are not deleted. Empty the bucket or container manually to reclaim space and avoid stale files shadowing new tables. Log data in ClickHouse is not affected.', muted: true },
             ],
             phrase: 'CLEAR CATALOG',
-            confirmLabel: 'Clear Catalog',
+            confirmLabel: 'Clear catalog',
             busyLabel: 'Clearing...',
             onConfirm: async () => {
                 await HttpUtils.safeFetch('/api/v1/system/archive/clear', { method: 'POST' });
@@ -262,13 +262,13 @@ const SettingsView = {
 
     confirmClearEndpointBaselines() {
         DangerConfirm.open({
-            title: 'Clear Endpoint Analytics Baselines',
+            title: 'Clear endpoint analytics baselines',
             body: [
                 'This empties the process lineage, frequency and edge baselines on every node. They rebuild from newly ingested logs while Collect baselines is on.',
                 { text: 'Until they refill, nearly every process edge is first-seen, so pgr() flags most activity as high severity. Log data is not affected.', muted: true },
             ],
             phrase: 'CLEAR BASELINES',
-            confirmLabel: 'Clear Baselines',
+            confirmLabel: 'Clear baselines',
             busyLabel: 'Clearing...',
             onConfirm: async () => {
                 await HttpUtils.safeFetch('/api/v1/system/endpoint-analysis/clear', { method: 'POST' });

@@ -1559,10 +1559,9 @@ body.models-workspace #modelsView {
     align-items: center;
     gap: 7px;
     margin-bottom: 7px;
-    font-size: 10px;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-secondary);
 }
 
 .me-hint {

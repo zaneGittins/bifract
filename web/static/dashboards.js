@@ -1943,7 +1943,7 @@ const Dashboards = {
         modal.innerHTML = `
             <div class="modal-content" style="width:480px;max-width:95vw;">
                 <div class="modal-header">
-                    <h3>New Dashboard</h3>
+                    <h3>Create dashboard</h3>
                     <button class="modal-close" onclick="document.getElementById('createDashboardModal').remove()">&#x2715;</button>
                 </div>
                 <div class="modal-body">
@@ -1956,30 +1956,30 @@ const Dashboards = {
                         <input type="text" id="cdDescription" class="form-input" placeholder="Optional description">
                     </div>
                     <div class="form-group">
-                        <label>Default Time Range</label>
+                        <label>Default time range</label>
                         <select id="cdTimeRange" class="form-input">
-                            <option value="last1h">Last 1 Hour</option>
-                            <option value="last24h" selected>Last 24 Hours</option>
-                            <option value="last7d">Last 7 Days</option>
-                            <option value="last30d">Last 30 Days</option>
-                            <option value="all">All Time</option>
+                            <option value="last1h">Last 1 hour</option>
+                            <option value="last24h" selected>Last 24 hours</option>
+                            <option value="last7d">Last 7 days</option>
+                            <option value="last30d">Last 30 days</option>
+                            <option value="all">All time</option>
                             <option value="custom">Custom range</option>
                         </select>
                     </div>
                     <div id="cdCustomRange" style="display:none;margin-top:8px;padding:10px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-tertiary);">
                         <div style="margin-bottom:8px;">
-                            <label style="display:block;margin-bottom:4px;font-size:0.85rem;">Start Time</label>
+                            <label>Start time</label>
                             <input type="text" placeholder="YYYY-MM-DD HH:mm" id="cdTimeStart" style="width:100%;padding:8px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);">
                         </div>
                         <div>
-                            <label style="display:block;margin-bottom:4px;font-size:0.85rem;">End Time</label>
+                            <label>End time</label>
                             <input type="text" placeholder="YYYY-MM-DD HH:mm" id="cdTimeEnd" style="width:100%;padding:8px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);">
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn-secondary" onclick="document.getElementById('createDashboardModal').remove()">Cancel</button>
-                    <button class="btn-primary" onclick="Dashboards.handleCreateDashboard()">Create Dashboard</button>
+                    <button class="btn-primary" onclick="Dashboards.handleCreateDashboard()">Create dashboard</button>
                 </div>
             </div>
         `;

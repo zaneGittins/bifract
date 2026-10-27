@@ -303,7 +303,7 @@ const SchemaFields = {
         const v = this.VERDICT[f.verdict] || this.VERDICT.none;
         const name = this.escHtml(f.name);
         const status = f.status === 'builtin'
-            ? '<span class="schema-status-res">Reserved</span><span class="schema-builtin">built in</span>'
+            ? '<span class="schema-status-res">Reserved</span><span class="schema-builtin">Built in</span>'
             : f.status === 'custom' ? '<span class="schema-status-res">Reserved</span>'
             : f.status === 'ignored' ? '<span class="schema-muted">Ignored</span>'
             : '<span class="schema-muted">Not reserved</span>';
@@ -471,7 +471,7 @@ const SchemaFields = {
 
         const refs = (f.refs || []).length
             ? `<div class="schema-refs">${f.refs.map(r =>
-                `<span class="schema-ref"><span class="kind">${this.escHtml(r.kind)}</span><span class="t">${this.escHtml(r.title)}</span></span>`).join('')}</div>`
+                `<span class="schema-ref"><span class="kind">${this.escHtml((r.kind || '').charAt(0).toUpperCase() + (r.kind || '').slice(1))}</span><span class="t">${this.escHtml(r.title)}</span></span>`).join('')}</div>`
             : '<p class="schema-muted schema-drawer-none">Nothing queries this field yet.</p>';
 
         const maxTop = (f.top || []).reduce((m, t) => Math.max(m, t.count), 0) || 1;
@@ -693,14 +693,14 @@ const SchemaFields = {
     confirmReset() {
         const phrase = 'DELETE ALL LOG DATA';
         DangerConfirm.open({
-            title: 'Reset Schema and Delete All Logs',
+            title: 'Reset schema and delete all logs',
             body: [
                 'This permanently deletes all ingested log data and rebuilds the field schema from the project defaults plus your current custom fields.',
                 { text: 'Any type hint outside that set is discarded, freeing its column. This is the only operation that removes one.', muted: true },
                 { text: 'Fractal configs, normalizers, and all other settings are not affected.', muted: true },
             ],
             phrase,
-            confirmLabel: 'Reset and Delete All Logs',
+            confirmLabel: 'Reset and delete all logs',
             busyLabel: 'Rebuilding...',
             onConfirm: async () => {
                 await HttpUtils.safeFetch('/api/v1/admin/schema-fields/reset', {

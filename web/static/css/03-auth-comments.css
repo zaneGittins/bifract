@@ -72,17 +72,6 @@
     filter: drop-shadow(0 0 30px var(--accent-glow));
 }
 
-.login-title {
-    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 0.1rem;
-    font-weight: 400;
-    color: var(--text-muted);
-    margin-bottom: 0.2rem;
-    opacity: 0.5;
-    letter-spacing: 2px;
-    text-transform: none;
-}
-
 
 
 .form-group input,

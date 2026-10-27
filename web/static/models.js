@@ -1347,7 +1347,7 @@ ${m.description ? `<div class="me-sec">
     </div>
     <div class="modal-footer">
         <button class="btn-secondary" onclick="document.getElementById('backfillModal').remove()">Cancel</button>
-        <button class="btn-primary" id="backfillModalStart">Start Backfill</button>
+        <button class="btn-primary" id="backfillModalStart">Start backfill</button>
     </div>
 </div>`;
         document.body.appendChild(modal);
@@ -2010,7 +2010,7 @@ ${m.description ? `<div class="me-sec">
         </div>
         <div class="me-actions">
             <span class="me-type-tag">Type <b id="modelTypeTagValue">${_esc(this._typeLabel(e.modelType))}</b></span>
-            <button class="btn-primary" id="modelEditorSave">${e.editId ? 'Update Model' : 'Create Model'}</button>
+            <button class="btn-primary" id="modelEditorSave">${e.editId ? 'Save' : 'Create model'}</button>
         </div>
     </div>
 

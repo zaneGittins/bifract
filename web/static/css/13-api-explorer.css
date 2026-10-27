@@ -71,9 +71,7 @@
 .api-tag-head {
     padding: 0.6rem 0.5rem 0.3rem;
     color: var(--text-muted);
-    font-size: 0.72rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: 0.75rem;
 }
 
 .api-op {
@@ -157,8 +155,6 @@
 .api-section h4 {
     margin: 0 0 0.5rem;
     font-size: 0.75rem;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
     color: var(--text-muted);
 }
 

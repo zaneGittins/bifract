@@ -776,6 +776,7 @@ body.dash-resizing-se * { cursor: nwse-resize !important; user-select: none; }
 }
 
 .nz-title-group {
+    flex: 1;
     display: flex;
     align-items: baseline;
     gap: 10px;
@@ -1060,10 +1061,8 @@ body.dash-resizing-se * { cursor: nwse-resize !important; user-select: none; }
 
 .nz-label {
     display: block;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--text-muted);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
     margin-bottom: 5px;
     font-weight: 500;
 }
