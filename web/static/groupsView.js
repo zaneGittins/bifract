@@ -88,9 +88,7 @@ const GroupsView = {
         const container = document.getElementById('groupsList');
         if (!container) return;
 
-        // Search has nothing to act on until a group exists.
-        const toolbar = document.getElementById('groupsToolbar');
-        if (toolbar) toolbar.hidden = this.groups.length === 0;
+        Utils.hideToolbarFilters('groupsToolbar', this.groups.length === 0);
 
         if (this.groups.length === 0) {
             container.innerHTML = '<div class="admin-empty"><strong>No groups yet</strong>Create a group to grant the same fractal access to several users.</div>';

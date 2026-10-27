@@ -393,7 +393,7 @@ const AlertFeeds = {
         if (!select) return;
 
         const currentVal = select.value;
-        let html = '<option value="all">All Feeds</option>';
+        let html = '<option value="all">All feeds</option>';
         for (const feed of this.facetFeeds) {
             html += `<option value="${Utils.escapeHtml(feed.id)}">${Utils.escapeHtml(feed.name || 'Unknown')} (${feed.count})</option>`;
         }
@@ -408,7 +408,7 @@ const AlertFeeds = {
         if (!select) return;
 
         const currentVal = select.value;
-        let html = '<option value="all">All Labels</option>';
+        let html = '<option value="all">All labels</option>';
         for (const label of this.facetLabels) {
             html += `<option value="${Utils.escapeHtml(label)}">${Utils.escapeHtml(label)}</option>`;
         }
@@ -429,7 +429,7 @@ const AlertFeeds = {
                 filtered: this.hasActiveFilter(),
                 noun: 'feed alerts',
                 onClear: 'AlertFeeds.clearFilters',
-                hint: 'Configure feeds in the Manage Feeds panel to sync alerts from git repositories.'
+                hint: 'Add a git repository under Manage feeds and its alerts sync here.'
             });
             return;
         }
@@ -439,8 +439,8 @@ const AlertFeeds = {
             { key: 'feed', label: 'Feed' },
             { key: 'severity', label: 'Severity', sortable: true },
             { key: 'labels', label: 'Labels' },
-            { key: 'exec_time', label: 'Exec Time', sortable: true },
-            { key: 'last_triggered', label: 'Last Triggered', sortable: true }
+            { key: 'exec_time', label: 'Exec time', sortable: true },
+            { key: 'last_triggered', label: 'Last triggered', sortable: true }
         ];
 
         const rows = this.alertRows.map(alert => AlertList.renderRow(alert, [
@@ -735,16 +735,15 @@ const AlertFeeds = {
         if (!container) return;
 
         if (this.feeds.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <p>No feeds configured.</p>
-                    <p class="empty-hint">Create a feed to sync alerts from a git repository.</p>
-                </div>`;
+            container.innerHTML = EmptyState.render({
+                title: 'No feeds yet',
+                detail: 'Add a git repository of rules, and its alerts sync here on a schedule.'
+            });
             return;
         }
 
         let html = '<div class="feeds-table-container"><table class="alerts-table feeds-table"><thead><tr>';
-        html += '<th>Name</th><th>Repository</th><th>Schedule</th><th>Last Sync</th><th>Rules</th><th>Status</th><th>Actions</th>';
+        html += '<th>Name</th><th>Repository</th><th>Schedule</th><th>Last sync</th><th>Rules</th><th>Status</th><th>Actions</th>';
         html += '</tr></thead><tbody>';
 
         for (const feed of this.feeds) {

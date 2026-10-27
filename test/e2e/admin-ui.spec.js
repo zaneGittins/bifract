@@ -80,7 +80,7 @@ test.describe('Normalizer list', () => {
 
   test('toolbar actions are right-aligned without an inline style', async ({ page }) => {
     await openNormalizers(page);
-    const toolbar = page.locator('#normalizersView .admin-page-head');
+    const toolbar = page.locator('#normalizersView .admin-toolbar');
     await expect(toolbar).toBeVisible();
     await expectActionsRightAligned(page, toolbar);
     expect(await toolbar.getAttribute('style'), 'alignment patched inline again').toBeFalsy();
@@ -98,7 +98,7 @@ test.describe('Admin panels', () => {
   ]) {
     test(`${subtab}: primary action sits right, free of notebook chrome`, async ({ page }) => {
       await openAdmin(page, subtab);
-      const toolbar = page.locator(`${panel} .admin-page-head`).first();
+      const toolbar = page.locator(`${panel} .admin-toolbar`).first();
       await expect(toolbar).toBeVisible();
       await expectActionsRightAligned(page, toolbar);
 

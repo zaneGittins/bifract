@@ -1,7 +1,8 @@
-// Fractal settings share the Settings layout: a titled header per tab, setting
-// rows whose controls line up, and a red Danger zone tab set apart on the right.
+// Fractal settings share the Settings layout: no page header, setting rows whose
+// controls line up, and a red Danger zone tab set apart on the right.
 const { test, expect } = require('@playwright/test');
 const { login, openFractal } = require('./fixtures');
+const { expectNoPageTitle, firstBlockEdges } = require('./layout');
 
 const TABS = ['overview', 'access', 'lifecycle', 'danger'];
 
@@ -14,22 +15,22 @@ async function openManage(page) {
 
 async function openTab(page, tab) {
   await page.locator(`#manageSubTabs .alerts-sub-tab[data-subtab="${tab}"]`).click();
-  const head = page.locator('#fractalOnlyManageSection .manage-sub-panel:visible .admin-page-head').first();
-  await expect(head).toBeVisible();
-  return head;
+  const panel = page.locator('#fractalOnlyManageSection .manage-sub-panel:visible');
+  await expect(panel).toHaveCount(1);
+  return panel;
 }
 
 test.describe('Fractal settings layout', () => {
-  test('every tab has a titled header on the tab bar edges', async ({ page }) => {
+  test('every tab starts on the tab bar edges without repeating its name', async ({ page }) => {
     await openManage(page);
     const bar = await page.locator('#manageSubTabs').boundingBox();
     for (const tab of TABS) {
-      const head = await openTab(page, tab);
-      await expect(head.locator('h2')).not.toBeEmpty();
-      await expect(head.locator('p').first()).not.toBeEmpty();
-      const h = await head.boundingBox();
-      expect(Math.abs(h.x - bar.x), `${tab} header left edge`).toBeLessThanOrEqual(1);
-      expect(Math.abs(h.x + h.width - (bar.x + bar.width)), `${tab} header right edge`).toBeLessThanOrEqual(1);
+      const panel = await openTab(page, tab);
+      const name = await page.locator(`#manageSubTabs .alerts-sub-tab[data-subtab="${tab}"]`).textContent();
+      await expectNoPageTitle(panel, name.trim());
+      const edges = await firstBlockEdges(panel);
+      expect(Math.abs(edges.left - bar.x), `${tab} content left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} content right edge`).toBeLessThanOrEqual(1);
     }
   });
 

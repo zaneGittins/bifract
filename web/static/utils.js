@@ -113,6 +113,14 @@ const Utils = {
         return palette[h % palette.length];
     },
 
+    // A list's search and filters have nothing to act on while it is empty. Hide
+    // them, but not the toolbar, which also carries the page's actions.
+    hideToolbarFilters(toolbarId, hidden) {
+        document.getElementById(toolbarId)
+            ?.querySelectorAll('.admin-search, .inline-perm-toggle')
+            .forEach(el => { el.hidden = hidden; });
+    },
+
     // Escape for embedding in JS string literals inside HTML onclick attributes.
     // HTML-decodes attribute values before JS execution, so we must escape at
     // the JS level. Hex-escape < and > to prevent HTML parser interference.

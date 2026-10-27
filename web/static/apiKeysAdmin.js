@@ -207,9 +207,7 @@ const APIKeysAdmin = {
         const container = document.getElementById('apiKeysAdminList');
         if (!container) return;
 
-        // Search and filter have nothing to act on until a key exists.
-        const toolbar = document.getElementById('apiKeysAdminToolbar');
-        if (toolbar) toolbar.hidden = this.keys.length === 0;
+        Utils.hideToolbarFilters('apiKeysAdminToolbar', this.keys.length === 0);
 
         const rows = this.filtered();
         if (this.keys.length === 0) {

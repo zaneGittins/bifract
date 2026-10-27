@@ -1,10 +1,11 @@
-// Settings page layout: one tab bar, one content column, one page header.
+// Settings page layout: one tab bar, one content column, actions on the toolbar.
 //
 // The sub-tabs used to each lay themselves out differently, so the content
 // edges jumped as you moved between them and the tab labels sat indented from
 // the content below. These assert the shared geometry on the rendered page.
 const { test, expect } = require('@playwright/test');
 const { login, openNav, openFractal } = require('./fixtures');
+const { expectNoPageTitle, expectActionFlushRight, firstBlockEdges } = require('./layout');
 
 const TABS = ['users', 'groups', 'apikeys', 'context', 'platform', 'security', 'danger'];
 const WITH_ACTION = ['users', 'groups', 'apikeys', 'context'];
@@ -18,9 +19,9 @@ async function openSettings(page) {
 
 async function openTab(page, tab) {
   await page.locator(`#settingsSubTabs .alerts-sub-tab[data-subtab="${tab}"]`).click();
-  const head = page.locator('#settingsView .settings-sub-panel:visible .admin-page-head').first();
-  await expect(head).toBeVisible();
-  return head;
+  const panel = page.locator('#settingsView .settings-sub-panel:visible');
+  await expect(panel).toHaveCount(1);
+  return panel;
 }
 
 // Left edge of the rendered label text, not the button box, so tab padding
@@ -41,30 +42,27 @@ test.describe('Settings layout', () => {
     expect(Math.abs(firstLabel - bar.x), 'first tab label is indented from the content edge').toBeLessThanOrEqual(1);
 
     for (const tab of TABS) {
-      const head = await (await openTab(page, tab)).boundingBox();
-      expect(Math.abs(head.x - bar.x), `${tab} header left edge`).toBeLessThanOrEqual(1);
-      expect(Math.abs(head.x + head.width - (bar.x + bar.width)), `${tab} header right edge`).toBeLessThanOrEqual(1);
+      const edges = await firstBlockEdges(await openTab(page, tab));
+      expect(Math.abs(edges.left - bar.x), `${tab} content left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} content right edge`).toBeLessThanOrEqual(1);
     }
   });
 
-  test('every tab has a title and a description', async ({ page }) => {
+  test('no tab repeats its name as a heading', async ({ page }) => {
     await openSettings(page);
     for (const tab of TABS) {
-      const head = await openTab(page, tab);
-      await expect(head.locator('h2')).not.toBeEmpty();
-      await expect(head.locator('p').first()).not.toBeEmpty();
+      const panel = await openTab(page, tab);
+      const name = await page.locator(`#settingsSubTabs .alerts-sub-tab[data-subtab="${tab}"]`).textContent();
+      await expectNoPageTitle(panel, name.trim());
     }
   });
 
-  test('the primary action sits on the title row, flush right', async ({ page }) => {
+  test('the primary action sits on the toolbar row, flush right', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openSettings(page);
+    const bar = await page.locator('#settingsSubTabs').boundingBox();
     for (const tab of WITH_ACTION) {
-      const head = await openTab(page, tab);
-      const h = await head.boundingBox();
-      const btn = await head.locator('.btn-primary').boundingBox();
-      expect(btn, `${tab} has no primary action in its header`).toBeTruthy();
-      expect(h.x + h.width - (btn.x + btn.width), `${tab} action is not flush right`).toBeLessThanOrEqual(1);
+      await expectActionFlushRight(await openTab(page, tab), bar.x + bar.width, tab);
     }
   });
 

@@ -120,26 +120,16 @@ const EmptyState = {
         return this.CLEAR_QUEUE[Math.floor(Math.random() * this.CLEAR_QUEUE.length)];
     },
 
-    // icon is one of the names below; action is optional { label, onclick }.
-    render({ icon = 'list', title, detail = '', action = null }) {
+    // The one empty state: a title, an optional line saying what to do, and an
+    // optional { label, onclick } action. detail is trusted HTML.
+    render({ title, detail = '', action = null }) {
         return `
-            <div class="es">
-                ${this.icon(icon)}
-                <div class="es-title">${Utils.escapeHtml(title)}</div>
-                ${detail ? `<div class="es-detail">${detail}</div>` : ''}
-                ${action ? `<button type="button" class="btn-secondary btn-sm es-action" onclick="${action.onclick}">${Utils.escapeHtml(action.label)}</button>` : ''}
+            <div class="admin-empty">
+                <strong>${Utils.escapeHtml(title)}</strong>
+                ${detail}
+                ${action ? `<div class="admin-empty-actions"><button type="button" class="btn-secondary btn-sm" onclick="${action.onclick}">${Utils.escapeHtml(action.label)}</button></div>` : ''}
             </div>
         `;
-    },
-
-    icon(name) {
-        const paths = {
-            review: '<path d="M6 14l5 5 11-11" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="3" width="22" height="22" rx="4" stroke="currentColor" stroke-width="1.6" fill="none"/>',
-            rules: '<rect x="4" y="6" width="20" height="4" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><rect x="4" y="14" width="20" height="4" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><rect x="4" y="22" width="12" height="4" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/>',
-            grid: '<rect x="3" y="3" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><rect x="16" y="3" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><rect x="3" y="16" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/><rect x="16" y="16" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/>',
-            list: '<path d="M5 8h18M5 14h18M5 20h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'
-        };
-        return `<svg class="es-icon" width="28" height="28" viewBox="0 0 28 28" fill="none">${paths[name] || paths.list}</svg>`;
     }
 };
 

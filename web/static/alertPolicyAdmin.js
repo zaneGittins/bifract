@@ -13,7 +13,7 @@ const AlertPolicyAdmin = {
     async show() {
         const view = document.getElementById('alertPoliciesView');
         if (!view) return;
-        view.innerHTML = '<div class="ap-empty">Loading policies...</div>';
+        view.innerHTML = '<div class="loading">Loading policies...</div>';
 
         try {
             const [catalog, policies, gate] = await Promise.all([
@@ -27,7 +27,7 @@ const AlertPolicyAdmin = {
             this._compliance = null;
             this._dirty = false;
         } catch (e) {
-            view.innerHTML = `<div class="ap-empty">Failed to load policies: ${Utils.escapeHtml(e.message)}</div>`;
+            view.innerHTML = `<div class="error">Failed to load policies: ${Utils.escapeHtml(e.message)}</div>`;
             return;
         }
 
@@ -49,67 +49,76 @@ const AlertPolicyAdmin = {
 
         view.innerHTML = `
             <section class="ap-admin">
-                ${this.renderGate()}
-
-                <div class="ap-admin-head">
-                    <div class="ap-admin-lead">
-                        ${this._policies.length ? '<button class="ap-link-btn" onclick="AlertPolicyAdmin.runCompliance()">Check existing alerts</button>' : ''}
-                    </div>
-                    <div class="ap-admin-actions">
-                        <button class="alert-btn alert-btn-ghost" onclick="AlertPolicyAdmin.exportPolicies()">Export</button>
-                        <button class="alert-btn alert-btn-ghost" onclick="AlertPolicyAdmin.openImport()">Import</button>
-                        <button class="alert-btn alert-btn-primary" onclick="AlertPolicyAdmin.addRule()">Add rule</button>
-                    </div>
+                <div class="admin-toolbar">
+                    ${this._policies.length ? '<button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.runCompliance()">Check existing alerts</button>' : ''}
+                    <span class="admin-toolbar-spacer"></span>
+                    <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.openImport()">Import</button>
+                    <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.exportPolicies()">Export</button>
+                    <button class="btn-primary btn-sm" onclick="AlertPolicyAdmin.addRule()">Add rule</button>
                 </div>
 
-                ${this._policies.length === 0 ? this.renderEmpty() : `
-                    <div class="ap-rules">
-                        ${this._policies.map((p, i) => this.renderRule(p, i)).join('')}
-                    </div>`}
+                <div class="sp-content">
+                    <section class="sp-section">
+                        <header class="sp-section-head"><h3>Review</h3></header>
+                        ${this.renderGate()}
+                    </section>
 
-                ${this._dirty ? `
-                    <div class="ap-save-bar">
-                        <span class="ap-save-hint">Unsaved changes</span>
-                        <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.show()">Discard</button>
-                        <button class="btn-primary btn-sm" onclick="AlertPolicyAdmin.save()">Save rules</button>
-                    </div>` : ''}
+                    <section class="sp-section">
+                        <header class="sp-section-head"><h3>Rules</h3></header>
+                        ${this._policies.length === 0 ? this.renderEmpty() : `
+                            <div class="ap-rules">
+                                ${this._policies.map((p, i) => this.renderRule(p, i)).join('')}
+                            </div>`}
 
-                ${this.renderCompliance()}
+                        ${this._dirty ? `
+                            <div class="ap-save-bar">
+                                <span class="ap-save-hint">Unsaved changes</span>
+                                <button class="btn-secondary btn-sm" onclick="AlertPolicyAdmin.show()">Discard</button>
+                                <button class="btn-primary btn-sm" onclick="AlertPolicyAdmin.save()">Save rules</button>
+                            </div>` : ''}
+
+                        ${this.renderCompliance()}
+                    </section>
+                </div>
             </section>
         `;
     },
 
+    // Setting rows, as on Settings: label and description left, control right.
     renderGate() {
         const g = this._gate || {};
+        const toggle = (key, on) => `
+            <label class="toggle-switch">
+                <input type="checkbox" ${on ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('${key}', this.checked)" />
+                <span class="toggle-slider"></span>
+            </label>`;
         return `
-            <div class="ap-gate${g.enabled ? ' ap-gate-on' : ''}">
-                <div class="ap-gate-head">
-                    <span class="ap-gate-title">Review</span>
-                    <label class="ap-gate-switch" title="${g.enabled ? 'Changes to alerts are proposed and reviewed before they apply' : 'Changes to alerts apply directly'}">
-                        <span class="toggle-switch">
-                            <input type="checkbox" ${g.enabled ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('enabled', this.checked)" />
-                            <span class="toggle-slider"></span>
-                        </span>
-                        <span>${g.enabled ? 'On' : 'Off'}</span>
-                    </label>
+            <div class="sp-card">
+                <div class="sp-row">
+                    <div class="sp-row-info">
+                        <span class="sp-row-label">Require review</span>
+                        <p class="sp-row-desc">Edits to alerts are proposed on the Changes tab and apply only once approved.</p>
+                    </div>
+                    <div class="sp-row-control">${toggle('enabled', g.enabled)}</div>
                 </div>
                 ${g.enabled ? `
-                    <div class="ap-gate-row">
-                        <label class="ap-gate-field">
-                            <span>Approvals required</span>
-                            <select class="ap-select" onchange="AlertPolicyAdmin.updateGate('min_approvals', parseInt(this.value, 10))">
-                                ${[1, 2, 3].map(n => `<option value="${n}"${g.min_approvals === n ? ' selected' : ''}>${n}</option>`).join('')}
-                            </select>
-                        </label>
-                        <label class="ap-gate-field ap-gate-check"
-                               title="A fractal or tenant admin may approve a proposal they wrote. An analyst never can, whatever this says.">
-                            <span>Admin self-approval</span>
-                            <span class="toggle-switch">
-                                <input type="checkbox" ${g.allow_self_approval ? 'checked' : ''} onchange="AlertPolicyAdmin.updateGate('allow_self_approval', this.checked)" />
-                                <span class="toggle-slider"></span>
-                            </span>
-                        </label>
-                    </div>` : ''}
+                <div class="sp-row">
+                    <div class="sp-row-info">
+                        <span class="sp-row-label">Approvals required</span>
+                    </div>
+                    <div class="sp-row-control">
+                        <select class="setting-select" onchange="AlertPolicyAdmin.updateGate('min_approvals', parseInt(this.value, 10))">
+                            ${[1, 2, 3].map(n => `<option value="${n}"${g.min_approvals === n ? ' selected' : ''}>${n}</option>`).join('')}
+                        </select>
+                    </div>
+                </div>
+                <div class="sp-row">
+                    <div class="sp-row-info">
+                        <span class="sp-row-label">Admin self-approval</span>
+                        <p class="sp-row-desc">A fractal or tenant admin may approve a proposal they wrote. An analyst never can.</p>
+                    </div>
+                    <div class="sp-row-control">${toggle('allow_self_approval', g.allow_self_approval)}</div>
+                </div>` : ''}
             </div>
         `;
     },
@@ -130,10 +139,8 @@ const AlertPolicyAdmin = {
 
     renderEmpty() {
         return EmptyState.render({
-            icon: 'rules',
             title: 'No rules yet',
-            detail: 'Policy rules allow you to enforce quality constraints on your rule set.',
-            action: { label: 'Add a rule', onclick: 'AlertPolicyAdmin.addRule()' }
+            detail: 'Rules every alert must meet when it is saved.'
         });
     },
 

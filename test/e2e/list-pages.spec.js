@@ -1,21 +1,22 @@
-// List pages share one layout: a titled header with the primary action on the
-// right, a toolbar, and one table style.
+// List pages share one layout: a toolbar with search on the left and actions on
+// the right, and one table style. The sidebar names the page, so no title.
 //
 // Each page used to style its own header, buttons and table, and Normalizers
 // borrowed another page's table class, so removing that page's styles left its
 // columns unaligned and unpadded. These assert the shared rules.
 const { test, expect } = require('@playwright/test');
 const { login, openNav, openFractal } = require('./fixtures');
+const { expectNoPageTitle, expectActionFlushRight } = require('./layout');
 
 // key: how to reach it; view: the page's root.
 const PAGES = [
-  { key: 'fractalListing', view: '#fractalListingTabContent', fractal: false },
-  { key: 'notebooks', view: '#notebookListing', fractal: true },
-  { key: 'dashboards', view: '#dashboardListing', fractal: true },
-  { key: 'dictionaries', view: '#dictListing', fractal: true },
-  { key: 'models', view: '#modelsView', fractal: true },
-  { key: 'ingest', view: '#ingestTokenListing', fractal: true },
-  { key: 'normalizers', view: '#normalizersView', fractal: false },
+  { key: 'fractalListing', name: 'Fractals', view: '#fractalListingTabContent', fractal: false },
+  { key: 'notebooks', name: 'Notebooks', view: '#notebookListing', fractal: true },
+  { key: 'dashboards', name: 'Dashboards', view: '#dashboardListing', fractal: true },
+  { key: 'dictionaries', name: 'Lookups', view: '#dictListing', fractal: true },
+  { key: 'models', name: 'Analytics', view: '#modelsView', fractal: true },
+  { key: 'ingest', name: 'Ingest', view: '#ingestTokenListing', fractal: true },
+  { key: 'normalizers', name: 'Normalizers', view: '#normalizersView', fractal: false },
 ];
 
 async function open(page, p) {
@@ -27,31 +28,23 @@ async function open(page, p) {
     await page.goto('/');
     await openNav(page, p.key);
   }
-  const head = page.locator(`${p.view} .admin-page-head`).first();
-  await expect(head).toBeVisible();
-  return head;
+  const toolbar = page.locator(`${p.view} .admin-toolbar`).first();
+  await expect(toolbar).toBeVisible();
+  return toolbar;
 }
 
 test.describe('List pages', () => {
   for (const p of PAGES) {
-    test(`${p.key}: titled header, action flush right, content on one edge`, async ({ page }) => {
-      const head = await open(page, p);
-      await expect(head.locator('h2')).not.toBeEmpty();
-      await expect(head.locator('p').first()).not.toBeEmpty();
+    test(`${p.key}: actions flush right on the toolbar, no page title`, async ({ page }) => {
+      const toolbar = await open(page, p);
+      const view = page.locator(p.view);
+      await expectNoPageTitle(view, p.name);
+      const viewBox = await view.boundingBox();
+      await expectActionFlushRight(view, viewBox.x + viewBox.width, p.key);
+      const bar = await toolbar.boundingBox();
+      expect(Math.abs(bar.x - viewBox.x), 'toolbar is inset from the page').toBeLessThanOrEqual(1);
 
-      const h = await head.boundingBox();
-      const btn = await head.locator('.btn-primary').last().boundingBox();
-      expect(btn, 'no primary action in the header').toBeTruthy();
-      expect(h.x + h.width - (btn.x + btn.width), 'primary action is not flush right').toBeLessThanOrEqual(1);
-
-      // Short lists (Normalizers) have no search, so no toolbar.
-      const toolbar = page.locator(`${p.view} .admin-toolbar`).first();
-      if (await toolbar.count()) {
-        const bar = await toolbar.boundingBox();
-        expect(Math.abs(bar.x - h.x), 'toolbar is inset from the header').toBeLessThanOrEqual(1);
-      }
-
-      const labels = await page.locator(`${p.view} button:visible`).allTextContents();
+      const labels = await view.locator('button:visible').allTextContents();
       expect(labels.filter(t => t.trim().startsWith('+')), 'buttons still carry a "+" prefix').toEqual([]);
     });
 

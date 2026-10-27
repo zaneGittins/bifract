@@ -21,6 +21,14 @@
     margin-bottom: 0.75rem;
 }
 
+/* A section title with its own action beside it, such as Edit on Details. */
+.sp-section-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
 .sp-section-head h3 {
     font-size: 0.9375rem;
     font-weight: 600;
@@ -284,42 +292,6 @@
     border-bottom-color: var(--error);
 }
 
-/* Title and description on the left, the page's primary action on the right. */
-.admin-page-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem 1.5rem;
-    margin: 0.75rem 0 1.25rem;
-}
-
-.admin-page-head h2 {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin: 0 0 0.25rem;
-}
-
-.admin-page-head p {
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    max-width: 80ch;
-    margin: 0;
-}
-
-.admin-page-head > button,
-.admin-page-actions {
-    flex-shrink: 0;
-}
-
-/* More than one action: secondary actions sit left of the primary one. */
-.admin-page-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
 /* A list's table sits in a rounded frame; empty and loading states do not. */
 .admin-list:has(> table) {
     border: 1px solid var(--border-color);
@@ -386,6 +358,10 @@
 .admin-empty p {
     margin: 0;
     color: var(--text-secondary);
+}
+
+.admin-empty-actions {
+    margin-top: 1rem;
 }
 
 .admin-empty strong {

@@ -108,13 +108,6 @@
             <!-- Fractal Listing Tab Content -->
             <div id="fractalListingTabContent">
                 <section class="list-page">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Fractals</h2>
-                            <p>Fractals hold your logs; prisms search several fractals at once.</p>
-                        </div>
-                        <button id="createFractalBtn" class="btn-primary btn-sm admin-only" style="display: none;">Create</button>
-                    </header>
                     <div class="admin-toolbar">
                         <input type="text" id="fractalListingSearch" class="admin-search" placeholder="Search fractals">
                         <span class="admin-toolbar-spacer"></span>
@@ -123,6 +116,7 @@
                             <span id="fractalListingPageInfo" class="page-info-compact"></span>
                             <button id="fractalListingNextBtn" class="page-btn-compact">→</button>
                         </div>
+                        <button id="createFractalBtn" class="btn-primary btn-sm admin-only" style="display: none;">Create</button>
                     </div>
                     <div id="fractalListingContainer">
                         <!-- Fractal cards will be rendered here -->
@@ -697,15 +691,10 @@
 
                 <!-- Users Sub-Tab -->
                 <div id="settingsSubTabUsers" class="settings-sub-panel">
-                <header class="admin-page-head">
-                    <div>
-                        <h2>Users</h2>
-                        <p>People who can sign in to this tenant, and their role.</p>
-                    </div>
-                    <button id="addUserBtnSettings" class="btn-primary btn-sm">Add user</button>
-                </header>
                     <div class="admin-toolbar" id="usersToolbar">
                         <input type="text" id="usersSearch" class="admin-search" placeholder="Search users" autocomplete="off">
+                        <span class="admin-toolbar-spacer"></span>
+                        <button id="addUserBtnSettings" class="btn-primary btn-sm">Add user</button>
                     </div>
                     <div id="usersListSettings" class="admin-list">
                         <div class="loading">Loading users...</div>
@@ -717,15 +706,10 @@
                 <div id="settingsSubTabGroups" class="settings-sub-panel" style="display:none;">
                     <!-- Groups List View -->
                     <div id="groupsListView">
-                        <header class="admin-page-head">
-                            <div>
-                                <h2>Groups</h2>
-                                <p>Assign fractal permissions to many users at once.</p>
-                            </div>
-                            <button id="addGroupBtn" class="btn-primary btn-sm">Create group</button>
-                        </header>
                         <div class="admin-toolbar" id="groupsToolbar">
                             <input type="text" id="groupsSearch" class="admin-search" placeholder="Search groups" autocomplete="off">
+                            <span class="admin-toolbar-spacer"></span>
+                            <button id="addGroupBtn" class="btn-primary btn-sm">Create group</button>
                         </div>
                         <div id="groupsList" class="groups-list admin-list">
                             <div class="loading">Loading groups...</div>
@@ -762,17 +746,10 @@
 
                 <!-- Platform Sub-Tab -->
                 <div id="settingsSubTabPlatform" class="settings-sub-panel" style="display:none;">
-                <header class="admin-page-head">
-                    <div>
-                        <h2>Platform</h2>
-                        <p>Limits and background services that apply to the whole deployment.</p>
-                    </div>
-                </header>
                     <div class="sp-content">
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Search</h3>
-                                <p>Interactive searches run by users.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -827,7 +804,6 @@
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Alerts</h3>
-                                <p>Scheduled alert evaluation.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -881,7 +857,6 @@
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Recall</h3>
-                                <p>Searches over the archive.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -967,7 +942,6 @@
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Schema</h3>
-                                <p>Background measurement for the Schema page.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -1034,7 +1008,6 @@
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Archive</h3>
-                                <p>Durable, engine-independent copy of your logs in object storage.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -1057,17 +1030,10 @@
 
                 <!-- Security Sub-Tab -->
                 <div id="settingsSubTabSecurity" class="settings-sub-panel" style="display:none;">
-                <header class="admin-page-head">
-                    <div>
-                        <h2>Security</h2>
-                        <p>How people prove who they are before they reach your logs, and what can be reached without signing in.</p>
-                    </div>
-                </header>
                     <div class="sp-content">
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Authentication</h3>
-                                <p>How people sign in.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -1089,7 +1055,6 @@
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Network exposure</h3>
-                                <p>What can be reached without signing in, and which proxies are trusted.</p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -1136,12 +1101,6 @@
 
                 <!-- Danger Zone Sub-Tab -->
                 <div id="settingsSubTabDanger" class="settings-sub-panel" style="display:none;">
-                <header class="admin-page-head">
-                    <div>
-                        <h2>Danger zone</h2>
-                        <p>Irreversible operations. Each one asks you to type a confirmation before it runs.</p>
-                    </div>
-                </header>
                     <div class="sp-content">
                         <div class="sp-card sp-card-danger">
                                 <div class="sp-row" id="archiveClearCatalogItem">
@@ -1201,16 +1160,11 @@
 
                 <!-- API Keys Sub-Tab -->
                 <div id="settingsSubTabApikeys" class="settings-sub-panel" style="display:none;">
-                <header class="admin-page-head">
-                    <div>
-                        <h2>API keys</h2>
-                        <p>Keys for scripts and integrations. A key acts with the permissions it was created with.</p>
-                    </div>
-                    <button id="apiKeysAdminNew" class="btn-primary btn-sm">Create API key</button>
-                </header>
                     <div class="admin-toolbar" id="apiKeysAdminToolbar">
                         <input type="text" id="apiKeysAdminSearch" class="admin-search" placeholder="Search keys" autocomplete="off">
                         <label class="inline-perm-toggle"><input type="checkbox" id="apiKeysAdminOnlyAdmin"> Tenant admin keys only</label>
+                        <span class="admin-toolbar-spacer"></span>
+                        <button id="apiKeysAdminNew" class="btn-primary btn-sm">Create API key</button>
                     </div>
                     <div id="apiKeysAdminList" class="admin-list">
                         <div class="loading">Loading API keys...</div>
@@ -1219,15 +1173,10 @@
 
                 <!-- Context Links Sub-Tab -->
                 <div id="settingsSubTabContext" class="settings-sub-panel" style="display:none;">
-                <header class="admin-page-head">
-                    <div>
-                        <h2>Context links</h2>
-                        <p>Lookup links shown on matching field values in search results.</p>
-                    </div>
-                    <button id="contextLinkCreateBtn" class="btn-primary btn-sm">Add context link</button>
-                </header>
                     <div class="admin-toolbar" id="contextLinksToolbar">
                         <input type="text" id="contextLinksSearch" class="admin-search" placeholder="Search context links" autocomplete="off">
+                        <span class="admin-toolbar-spacer"></span>
+                        <button id="contextLinkCreateBtn" class="btn-primary btn-sm">Add context link</button>
                     </div>
                     <div id="contextLinksListContainer" class="admin-list">
                         <div class="loading">Loading context links...</div>
@@ -1408,16 +1357,11 @@
             <div id="mainNormalizersTabContent" style="display: none;">
                 <div id="normalizersView" class="admin-only" style="display: none;">
                     <section class="settings-view-section">
-                        <header class="admin-page-head">
-                            <div>
-                                <h2>Normalizers</h2>
-                                <p>Rules that rename and reshape fields as logs arrive.</p>
-                            </div>
-                            <div class="admin-page-actions">
-                                <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
-                                <button id="normalizerCreateBtn" class="btn-primary btn-sm">Create normalizer</button>
-                            </div>
-                        </header>
+                        <div class="admin-toolbar">
+                            <span class="admin-toolbar-spacer"></span>
+                            <button class="btn-secondary btn-sm" onclick="Normalizers.importNormalizer()">Import YAML</button>
+                            <button id="normalizerCreateBtn" class="btn-primary btn-sm">Create normalizer</button>
+                        </div>
                         <div id="normalizersListContainer" class="admin-list">
                             <div class="loading">Loading normalizers...</div>
                         </div>
@@ -2070,18 +2014,11 @@
                         <!-- Notebook Listing -->
                         <div id="notebookListing" class="notebooks-listing">
                             <!-- Search, Filters + Actions -->
-                            <header class="admin-page-head">
-                                <div>
-                                    <h2>Notebooks</h2>
-                                    <p>Investigations that keep queries, results and notes together.</p>
-                                </div>
-                                <div class="admin-page-actions">
-                                    <button id="importNotebookBtn" class="btn-secondary btn-sm" onclick="Notebooks.importNotebook()">Import YAML</button>
-                                    <button id="createNotebookBtn" class="btn-primary btn-sm">Create notebook</button>
-                                </div>
-                            </header>
                             <div class="admin-toolbar">
                                 <input type="text" id="notebookSearchInput" class="admin-search" placeholder="Search notebooks" />
+                                <span class="admin-toolbar-spacer"></span>
+                                <button id="importNotebookBtn" class="btn-secondary btn-sm" onclick="Notebooks.importNotebook()">Import YAML</button>
+                                <button id="createNotebookBtn" class="btn-primary btn-sm">Create notebook</button>
                             </div>
 
                             <!-- Empty State -->
@@ -2181,18 +2118,11 @@
                     <section class="dashboards-view-section">
                         <!-- Dashboard Listing -->
                         <div id="dashboardListing" class="dashboards-listing">
-                            <header class="admin-page-head">
-                                <div>
-                                    <h2>Dashboards</h2>
-                                    <p>Saved panels of queries and charts for this fractal.</p>
-                                </div>
-                                <div class="admin-page-actions">
-                                    <button id="importDashboardBtn" class="btn-secondary btn-sm" onclick="Dashboards.importDashboard()">Import YAML</button>
-                                    <button id="createDashboardBtn" class="btn-primary btn-sm">Create dashboard</button>
-                                </div>
-                            </header>
                             <div class="admin-toolbar">
                                 <input type="text" id="dashboardSearchInput" class="admin-search" placeholder="Search dashboards" />
+                                <span class="admin-toolbar-spacer"></span>
+                                <button id="importDashboardBtn" class="btn-secondary btn-sm" onclick="Dashboards.importDashboard()">Import YAML</button>
+                                <button id="createDashboardBtn" class="btn-primary btn-sm">Create dashboard</button>
                             </div>
                             <!-- Empty State -->
                             <div id="dashboardsEmptyState" class="admin-empty" style="display: none;">
@@ -2293,15 +2223,10 @@
 
                         <!-- Lookup Listing -->
                         <div id="dictListing" class="dashboards-listing">
-                            <header class="admin-page-head">
-                                <div>
-                                    <h2>Lookups</h2>
-                                    <p>Tables of reference data that queries can match and enrich against.</p>
-                                </div>
-                                <button id="dictCreateBtn" class="btn-primary btn-sm">Create lookup</button>
-                            </header>
                             <div class="admin-toolbar">
                                 <input type="text" id="dictSearchInput" class="admin-search" placeholder="Search lookups">
+                                <span class="admin-toolbar-spacer"></span>
+                                <button id="dictCreateBtn" class="btn-primary btn-sm">Create lookup</button>
                             </div>
 
                             <!-- Empty State -->
@@ -2495,27 +2420,26 @@
         <!-- Manual Alerts View (existing) -->
         <div id="alertsView" class="auth-required" style="display: none;">
             <section class="alerts-view-section">
-                <!-- Alert Filters + Actions -->
-                <div class="alerts-filters">
-                    <input type="text" id="alertSearchInput" class="alerts-search" placeholder="Search alerts..." />
+                <div class="admin-toolbar alerts-toolbar">
+                    <input type="text" id="alertSearchInput" class="admin-search" placeholder="Search alerts" />
                     <div class="fb-pop">
                         <button type="button" id="alertFilterBtn" class="fb-btn">Filter<span class="fb-count" hidden>0</span></button>
                         <div id="alertFilterMenu" class="fb-menu" hidden>
                             <label class="fb-field"><span>Status</span>
                         <select id="alertStatusFilter" class="alerts-filter-select">
-                            <option value="all">All Alerts</option>
-                            <option value="enabled">Enabled Only</option>
-                            <option value="disabled">Disabled Only</option>
+                            <option value="all">All alerts</option>
+                            <option value="enabled">Enabled only</option>
+                            <option value="disabled">Disabled only</option>
                         </select>
                             </label>
                             <label class="fb-field"><span>Action</span>
                         <select id="alertActionFilter" class="alerts-filter-select">
-                            <option value="all">All Actions</option>
+                            <option value="all">All actions</option>
                         </select>
                             </label>
                             <label class="fb-field"><span>Severity</span>
                         <select id="alertSeverityFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
-                            <option value="all">All Severities</option>
+                            <option value="all">All severities</option>
                             <option value="critical">Critical</option>
                             <option value="high">High</option>
                             <option value="medium">Medium</option>
@@ -2525,30 +2449,29 @@
                             </label>
                             <label class="fb-field"><span>Label</span>
                         <select id="alertLabelFilter" class="alerts-filter-select" onchange="Alerts.filterAlerts()">
-                            <option value="all">All Labels</option>
+                            <option value="all">All labels</option>
                         </select>
                             </label>
                         </div>
                     </div>
                     <div id="alertFilterChips" class="fb-chips"></div>
-                    <button id="alertsBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkEnableFiltered()">Enable Filtered</button>
-                    <button id="alertsBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkDisableFiltered()">Disable Filtered</button>
-                    <span class="filters-spacer"></span>
+                    <button id="alertsBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkEnableFiltered()">Enable all shown</button>
+                    <button id="alertsBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.bulkDisableFiltered()">Disable all shown</button>
+                    <span class="admin-toolbar-spacer"></span>
                     <div class="kebab-wrapper alerts-tools">
-                        <button class="kebab-btn" title="More" onclick="KebabMenu.toggle(event,this)">&vellip;</button>
+                        <button class="btn-secondary btn-sm btn-menu" onclick="KebabMenu.toggle(event,this)">Import and export</button>
                         <div class="kebab-menu">
-                            <button id="alertsRefreshBtn" class="kebab-item">Refresh</button>
-                            <button id="alertsExportBundleBtn" class="kebab-item" onclick="Alerts.exportBundle()">Export bundle</button>
-                            <button id="alertsImportBundleBtn" class="kebab-item" onclick="Alerts.importBundle()">Import bundle</button>
                             <button class="kebab-item" onclick="Alerts.showImportModal()">Import YAML or Sigma</button>
+                            <button id="alertsImportBundleBtn" class="kebab-item" onclick="Alerts.importBundle()">Import bundle</button>
+                            <button id="alertsExportBundleBtn" class="kebab-item" onclick="Alerts.exportBundle()">Export bundle</button>
                         </div>
                     </div>
                     <input type="file" id="alertsBundleFile" accept=".zip,application/zip" style="display:none;">
                     <span class="alerts-drafts-wrap">
-                        <button id="alertsDraftsBtn" class="btn-secondary" style="display:none;" onclick="Alerts.toggleDraftsPanel()">Drafts <span id="alertsDraftsCount" class="alerts-drafts-count">0</span></button>
+                        <button id="alertsDraftsBtn" class="btn-secondary btn-sm" style="display:none;" onclick="Alerts.toggleDraftsPanel()">Drafts <span id="alertsDraftsCount" class="alerts-drafts-count">0</span></button>
                         <div id="alertsDraftsPanel" class="alerts-drafts-panel" hidden></div>
                     </span>
-                    <button id="createAlertBtn" class="btn-primary">Create Alert</button>
+                    <button id="createAlertBtn" class="btn-primary btn-sm">Create alert</button>
                 </div>
 
                 <!-- Alerts List -->
@@ -2561,28 +2484,28 @@
         <!-- Feed Alerts View -->
         <div id="feedAlertsView" class="auth-required" style="display: none;">
             <section class="alerts-view-section">
-                <!-- Unified Feed View - toolbar with gear toggle -->
+                <!-- Unified Feed View -->
                 <div id="feedAlertsListView">
-                    <div class="alerts-filters">
-                        <input type="text" id="feedAlertSearch" class="alerts-search" placeholder="Search feed alerts..." oninput="AlertFeeds.filterFeedAlerts()" />
+                    <div class="admin-toolbar alerts-toolbar">
+                        <input type="text" id="feedAlertSearch" class="admin-search" placeholder="Search feed alerts" oninput="AlertFeeds.filterFeedAlerts()" />
                         <div class="fb-pop">
                             <button type="button" id="feedFilterBtn" class="fb-btn">Filter<span class="fb-count" hidden>0</span></button>
                             <div id="feedFilterMenu" class="fb-menu" hidden>
                                 <label class="fb-field"><span>Status</span>
                             <select id="feedAlertStatusFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                                <option value="all">All Alerts</option>
-                                <option value="enabled">Enabled Only</option>
-                                <option value="disabled">Disabled Only</option>
+                                <option value="all">All alerts</option>
+                                <option value="enabled">Enabled only</option>
+                                <option value="disabled">Disabled only</option>
                             </select>
                                 </label>
                                 <label class="fb-field"><span>Feed</span>
                             <select id="feedAlertFeedFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                                <option value="all">All Feeds</option>
+                                <option value="all">All feeds</option>
                             </select>
                                 </label>
                                 <label class="fb-field"><span>Severity</span>
                             <select id="feedAlertSeverityFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                                <option value="all">All Severities</option>
+                                <option value="all">All severities</option>
                                 <option value="critical">Critical</option>
                                 <option value="high">High</option>
                                 <option value="medium">Medium</option>
@@ -2592,26 +2515,24 @@
                                 </label>
                                 <label class="fb-field"><span>Label</span>
                             <select id="feedAlertLabelFilter" class="alerts-filter-select" onchange="AlertFeeds.applyFilterNow()">
-                                <option value="all">All Labels</option>
+                                <option value="all">All labels</option>
                             </select>
                                 </label>
                             </div>
                         </div>
                         <div id="feedFilterChips" class="fb-chips"></div>
-                        <button id="feedBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkEnableFiltered()">Enable Filtered</button>
-                        <button id="feedBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkDisableFiltered()">Disable Filtered</button>
-                        <span class="filters-spacer"></span>
-                        <button class="btn-secondary" onclick="AlertFeeds.loadFeedAlerts()">Refresh</button>
-                        <button id="feedManageToggleBtn" class="btn-secondary" onclick="AlertFeeds.toggleFeedManagement()" title="Manage feed sources">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                        </button>
+                        <button id="feedBulkEnableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkEnableFiltered()">Enable all shown</button>
+                        <button id="feedBulkDisableBtn" class="btn-secondary btn-sm" style="display:none;" onclick="AlertFeeds.bulkDisableFiltered()">Disable all shown</button>
+                        <span class="admin-toolbar-spacer"></span>
+                        <button class="btn-secondary btn-sm" onclick="AlertFeeds.loadFeedAlerts()">Refresh</button>
+                        <button id="feedManageToggleBtn" class="btn-primary btn-sm" onclick="AlertFeeds.toggleFeedManagement()">Manage feeds</button>
                     </div>
 
-                    <!-- Feed Management (inline, toggled by gear icon) -->
+                    <!-- Feed Management (inline, toggled by Manage feeds) -->
                     <div id="feedManageView" style="display: none;">
                         <div class="feeds-manage-header">
-                            <span class="feeds-manage-title">Feed Sources</span>
-                            <button class="btn-primary btn-sm" onclick="AlertFeeds.showCreateFeedForm()">+ Add Feed</button>
+                            <span class="feeds-manage-title">Feed sources</span>
+                            <button class="btn-secondary btn-sm" onclick="AlertFeeds.showCreateFeedForm()">Add feed</button>
                         </div>
                         <div id="feedManageList"></div>
                     </div>
@@ -2645,33 +2566,27 @@
         <!-- Unified Actions View -->
         <div id="actionsManageView" class="auth-required" style="display: none;">
             <section class="actions-manage-section">
-                <!-- Compact toolbar -->
-                <div class="unified-actions-toolbar">
+                <div class="admin-toolbar">
+                    <input type="text" id="actionSearchInput" class="admin-search" placeholder="Search actions" />
                     <select id="actionTypeFilter" class="alerts-filter-select">
-                        <option value="all">All Actions</option>
-                        <option value="webhook">Webhooks</option>
+                        <option value="all">All types</option>
+                        <option value="webhook">Webhook</option>
                         <option value="email">Email</option>
                         <option value="fractal">Fractal</option>
-                        <option value="dictionary">Dictionary</option>
+                        <option value="dictionary">Lookup</option>
                     </select>
                     <select id="actionStatusFilter" class="alerts-filter-select">
-                        <option value="all">All Status</option>
+                        <option value="all">All statuses</option>
                         <option value="enabled">Enabled</option>
                         <option value="disabled">Disabled</option>
                     </select>
-                    <input type="text" id="actionSearchInput" class="alerts-search" placeholder="Search actions..." />
-                    <span class="filters-spacer"></span>
-                    <button class="btn-primary btn-sm" onclick="Alerts.showNewActionPicker()">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        New
-                    </button>
-                    <button class="btn-secondary btn-sm" onclick="Alerts.showSMTPSettings()" title="SMTP Settings">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    </button>
+                    <span class="admin-toolbar-spacer"></span>
+                    <button class="btn-secondary btn-sm" onclick="Alerts.showSMTPSettings()">Email settings</button>
+                    <button class="btn-primary btn-sm" onclick="Alerts.showNewActionPicker()">Create action</button>
                 </div>
 
                 <!-- Unified actions list -->
-                <div id="unifiedActionsList" class="unified-actions-list"></div>
+                <div id="unifiedActionsList" class="admin-list"></div>
 
                 <!-- Action editor drawer (slide-over). Forms render into the body containers below. -->
                 <div id="actionDrawerScrim" class="action-drawer-scrim" onclick="Alerts.closeActionDrawer()"></div>
@@ -2700,18 +2615,11 @@
                             <div id="ingestDynamicPanels"></div>
 
                             <!-- Search and Filters -->
-                            <header class="admin-page-head">
-                                <div>
-                                    <h2>Ingest</h2>
-                                    <p>Tokens that let shippers send logs into this fractal.</p>
-                                </div>
-                                <div class="admin-page-actions">
-                                    <button id="ingestTokensRefreshBtn" class="btn-secondary btn-sm">Refresh</button>
-                                    <button id="createIngestTokenBtn" class="btn-primary btn-sm">Create token</button>
-                                </div>
-                            </header>
                             <div class="admin-toolbar">
                                 <input type="text" id="ingestTokenSearchInput" class="admin-search" placeholder="Search tokens" />
+                                <span class="admin-toolbar-spacer"></span>
+                                <button id="ingestTokensRefreshBtn" class="btn-secondary btn-sm">Refresh</button>
+                                <button id="createIngestTokenBtn" class="btn-primary btn-sm">Create token</button>
                             </div>
 
                             <!-- Empty State -->
@@ -2926,17 +2834,11 @@
 
                     <!-- Prism Overview Sub-Tab -->
                     <div id="prismSubTabOverview" class="prism-sub-panel">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Overview</h2>
-                            <p>Name, ownership and members of this prism.</p>
-                        </div>
-                        <button id="manageEditPrismBtnInline" class="btn-secondary btn-sm" onclick="FractalManageTab.editPrism()" title="Edit name and description">Edit</button>
-                    </header>
                     <div class="sp-content">
                         <section class="sp-section">
-                            <header class="sp-section-head">
+                            <header class="sp-section-head sp-section-head-row">
                                 <h3>Details</h3>
+                                <button id="manageEditPrismBtnInline" class="btn-secondary btn-sm" onclick="FractalManageTab.editPrism()" title="Edit name and description">Edit</button>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row sp-row-kv">
@@ -2977,12 +2879,6 @@
 
                     <!-- Prism Members Sub-Tab -->
                     <div id="prismSubTabMembers" class="prism-sub-panel" style="display:none;">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Members</h2>
-                            <p>Queries against this prism run across all member fractals.</p>
-                        </div>
-                    </header>
                     <div id="prismMembersList" class="prism-members-list"></div>
                     <div class="admin-toolbar">
                         <select id="prismAddMemberSelect" class="setting-select prism-add-select">
@@ -2994,12 +2890,6 @@
 
                     <!-- Prism Access Sub-Tab -->
                     <div id="prismSubTabAccess" class="prism-sub-panel" style="display:none;">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Access</h2>
-                            <p>Who can use this prism, and the API keys scoped to it.</p>
-                        </div>
-                    </header>
 
                     <div class="access-panel">
 
@@ -3008,7 +2898,6 @@
                             <div class="access-card-header">
                                 <div class="access-card-title">
                                     <h3>Permissions</h3>
-                                    <span class="access-card-subtitle">Control which users and groups can access this prism and their role level.</span>
                                 </div>
                                 <button id="grantPrismPermissionBtn" class="btn-secondary btn-sm" onclick="GroupsView.showPrismGrantForm()">Grant access</button>
                             </div>
@@ -3023,7 +2912,6 @@
                             <div class="access-card-header">
                                 <div class="access-card-title">
                                     <h3>API keys</h3>
-                                    <span class="access-card-subtitle">Programmatic access to this prism. Its keys can query across all member fractals.</span>
                                 </div>
                                 <button id="createPrismAPIKeyInlineBtn" class="btn-secondary btn-sm">Create API key</button>
                             </div>
@@ -3038,12 +2926,6 @@
 
                     <!-- Prism Danger Zone Sub-Tab -->
                     <div id="prismSubTabDanger" class="prism-sub-panel" style="display:none;">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Danger zone</h2>
-                            <p>Irreversible operations. Each one asks for confirmation before it runs.</p>
-                        </div>
-                    </header>
                         <div class="sp-card sp-card-danger">
                             <div class="sp-row">
                                 <div class="sp-row-info">
@@ -3075,17 +2957,11 @@
 
                     <!-- Overview Sub-Tab -->
                     <div id="manageSubTabOverview" class="manage-sub-panel">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Overview</h2>
-                            <p>Name, ownership and storage for this fractal.</p>
-                        </div>
-                        <button id="manageEditFractalBtnInline" class="btn-secondary btn-sm" onclick="FractalManageTab.editFractal()" title="Edit name and description">Edit</button>
-                    </header>
                     <div class="sp-content">
                         <section class="sp-section">
-                            <header class="sp-section-head">
+                            <header class="sp-section-head sp-section-head-row">
                                 <h3>Details</h3>
+                                <button id="manageEditFractalBtnInline" class="btn-secondary btn-sm" onclick="FractalManageTab.editFractal()" title="Edit name and description">Edit</button>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row sp-row-kv">
@@ -3138,12 +3014,6 @@
 
                     <!-- Access Sub-Tab -->
                     <div id="manageSubTabAccess" class="manage-sub-panel" style="display:none;">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Access</h2>
-                            <p>Who can use this fractal, and the API keys scoped to it.</p>
-                        </div>
-                    </header>
 
                     <div class="access-panel">
 
@@ -3152,7 +3022,6 @@
                             <div class="access-card-header">
                                 <div class="access-card-title">
                                     <h3>Permissions</h3>
-                                    <span class="access-card-subtitle">Control which users and groups can access this fractal and their role level.</span>
                                 </div>
                                 <button id="grantPermissionBtn" class="btn-secondary btn-sm">Grant access</button>
                             </div>
@@ -3167,7 +3036,6 @@
                             <div class="access-card-header">
                                 <div class="access-card-title">
                                     <h3>API keys</h3>
-                                    <span class="access-card-subtitle">Programmatic access to this fractal.</span>
                                 </div>
                                 <button id="createAPIKeyInlineBtn" class="btn-secondary btn-sm">Create API key</button>
                             </div>
@@ -3182,17 +3050,10 @@
 
                     <!-- Lifecycle Sub-Tab -->
                     <div id="manageSubTabLifecycle" class="manage-sub-panel" style="display:none;">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Lifecycle</h2>
-                            <p>How long this fractal keeps logs, and how much disk it may use.</p>
-                        </div>
-                    </header>
                     <div class="sp-content">
                         <section class="sp-section">
                             <header class="sp-section-head">
                                 <h3>Retention</h3>
-                                <p id="lifecycleSummary"></p>
                             </header>
                             <div class="sp-card">
                                 <div class="sp-row">
@@ -3264,12 +3125,6 @@
 
                     <!-- Danger Zone Sub-Tab -->
                     <div id="manageSubTabDanger" class="manage-sub-panel" style="display:none;">
-                    <header class="admin-page-head">
-                        <div>
-                            <h2>Danger zone</h2>
-                            <p>Irreversible operations. Each one asks you to type the fractal name before it runs.</p>
-                        </div>
-                    </header>
                         <div class="sp-card sp-card-danger">
                             <div class="sp-row">
                                 <div class="sp-row-info">
