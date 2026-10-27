@@ -183,7 +183,7 @@ const FractalContext = {
                 : await this.selectFractalOnServer(saved.id);
             if (role === null) return false;
 
-            this._applyScope({ id: saved.id, name: saved.name }, type, role);
+            this._applyScope(await this._fullRecord({ id: saved.id, name: saved.name }, type), type, role);
             this.notifyFractalChange();
             return true;
         } catch (e) {
@@ -251,7 +251,7 @@ const FractalContext = {
     async setCurrentFractal(fractal) {
         const role = await this.selectFractalOnServer(fractal.id);
         if (role === null) return false;
-        this._applyScope(fractal, 'fractal', role);
+        this._applyScope(await this._fullRecord(fractal, 'fractal'), 'fractal', role);
         this.notifyFractalChange();
         return true;
     },
@@ -260,9 +260,24 @@ const FractalContext = {
     async setCurrentPrism(prism) {
         const role = await this.selectPrismOnServer(prism.id);
         if (role === null) return false;
-        this._applyScope(prism, 'prism', role);
+        this._applyScope(await this._fullRecord(prism, 'prism'), 'prism', role);
         this.notifyFractalChange();
         return true;
+    },
+
+    // Callers that only know an id and name (a link, a reload, a restored tab)
+    // get the stored record, so settings never render or save from a stub.
+    // Listing records carry created_at and are used as they are.
+    async _fullRecord(target, type) {
+        if (target.created_at) return target;
+        try {
+            const resp = await fetch(`/api/v1/${type === 'prism' ? 'prisms' : 'fractals'}/${target.id}`, { credentials: 'include' });
+            const data = resp.ok ? await resp.json() : null;
+            if (data?.data?.id === target.id) return data.data;
+        } catch (e) {
+            console.error('[FractalContext] Failed to load', type, target.id, e);
+        }
+        return target;
     },
 
     // Update the server session to the given fractal. Returns the role the server
