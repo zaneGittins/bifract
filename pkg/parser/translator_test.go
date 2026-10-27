@@ -4760,6 +4760,7 @@ func TestAlertAutoProjection(t *testing.T) {
 	}
 	alertOpts := baseOpts
 	alertOpts.UseIngestTimestamp = true
+	alertOpts.MinimalProjection = true
 
 	tests := []struct {
 		name           string
@@ -4876,6 +4877,7 @@ func TestAlertProjectionContractForHydration(t *testing.T) {
 		EndTime:            time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MaxRows:            10000,
 		UseIngestTimestamp: true,
+		MinimalProjection:  true,
 	}
 	pipeline, err := ParseQuery(`event_id="4624"`)
 	if err != nil {

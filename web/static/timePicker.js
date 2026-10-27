@@ -46,6 +46,11 @@ const TimePicker = {
             return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString() };
         }
 
+        // Live reads arrivals itself; anything asking for a plain range gets its window.
+        if (type === 'live') {
+            return { start: new Date(now - 15 * 60 * 1000).toISOString(), end: now.toISOString() };
+        }
+
         const ms = this._presetMs[type] || this._presetMs['24h'];
         return { start: new Date(now - ms).toISOString(), end: now.toISOString() };
     },
@@ -60,6 +65,7 @@ const TimePicker = {
             '7d': 'Last 7d', '30d': 'Last 30d',
         };
         if (type === 'all') return 'All Time';
+        if (type === 'live') return 'Live';
         if (type === 'relative') return `Last ${relativeN}${unitShort[relativeUnit] || relativeUnit[0]}`;
         if (type === 'custom') {
             if (customStart && customEnd) {
@@ -76,6 +82,8 @@ const TimePicker = {
 
     setState(newState, silent) {
         Object.assign(this.state, newState);
+        // Leaving the Live range ends Live, whether or not a search runs next.
+        if (this.state.type !== 'live' && window.LiveSearch && LiveSearch.active) LiveSearch.stop();
         this._updateLabel();
         this._updateActivePreset();
         if (!silent) this.saveToStorage();
@@ -190,6 +198,8 @@ const TimePicker = {
     _updateLabel() {
         const el = document.getElementById('timePickerLabel');
         if (el) el.textContent = this.getLabel();
+        const btn = document.getElementById('timePickerBtn');
+        if (btn) btn.classList.toggle('is-live', this.state.type === 'live');
     },
 
     _updateActivePreset() {

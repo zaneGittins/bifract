@@ -579,6 +579,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 		EndExclusive:       true,
 		MaxRows:            10000,
 		UseIngestTimestamp: true,
+		MinimalProjection:  true,
 		ModelNewSince:      newSince,
 		MaxEventLagSeconds: alert.MaxEventLagSeconds,
 		TableName:          tableName,
