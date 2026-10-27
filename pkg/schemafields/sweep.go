@@ -153,21 +153,25 @@ func (s *Sweeper) sweepStats(ctx context.Context) {
 			log.Printf("[SchemaSweep] stopping early: %v", ctx.Err())
 			return
 		}
-		fields, sampled, maxPaths, err := s.sampleFractal(ctx, meta)
+		now := time.Now().UTC()
+		res := fractalResult{SampledAt: now}
+		var err error
+		res.Fields, res.SampledRows, res.MaxPaths, err = s.sampleFractal(ctx, meta)
 		if err != nil {
-			// One fractal's failed sample must not discard every other fractal's
-			// measurement, nor its own storage figures, which came from metadata
-			// and are still good. Only its distribution is missing this pass.
+			// A failed sample keeps the fractal's last distribution. Writing it as
+			// unmeasured showed its fields as 0% present until a pass succeeded.
+			// Storage figures came from metadata and are still this pass's.
 			log.Printf("[SchemaSweep] sample fractal %s: %v", id, err)
-			fields, sampled, maxPaths = nil, 0, 0
+			res, err = loadPreviousSample(ctx, s.pg, id)
+			if err != nil {
+				log.Printf("[SchemaSweep] previous sample %s: %v", id, err)
+			}
+			if res.SampledAt.IsZero() {
+				res.SampledAt = now // never measured
+			}
 		}
-		results = append(results, fractalResult{
-			Meta:        meta,
-			SampledRows: sampled,
-			MaxPaths:    maxPaths,
-			Fields:      fields,
-			Bytes:       bytes[id],
-		})
+		res.Meta, res.Bytes = meta, bytes[id]
+		results = append(results, res)
 	}
 	if len(results) == 0 {
 		return

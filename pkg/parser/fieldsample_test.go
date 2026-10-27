@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -69,5 +70,39 @@ func TestBuildFieldSampleSQL_Defaults(t *testing.T) {
 	}
 	if !strings.Contains(sql, "LIMIT 50000") {
 		t.Errorf("default sample size missing:\n%s", sql)
+	}
+}
+
+// The sweep counts a stratified sample's rows with this scan, so each stratum
+// must be an unsorted, pruned LIMIT of the per-stratum share.
+func TestBuildSampleScanSQL_Strata(t *testing.T) {
+	sql := BuildSampleScanSQL("logs", "1", "fractal_id = 'abc'", []string{"a < 1", "a >= 1 AND a < 2", "a >= 2"}, 100)
+	scans := strings.Split(sql, "UNION ALL")
+	if len(scans) != 3 {
+		t.Fatalf("want one scan per stratum:\n%s", sql)
+	}
+	for i, s := range scans {
+		if strings.Contains(strings.ToUpper(s), "ORDER BY") {
+			t.Errorf("scan %d must not sort: %s", i, s)
+		}
+		if !strings.Contains(s, "fractal_id = 'abc'") || !strings.Contains(s, "LIMIT 100") {
+			t.Errorf("scan %d lost the predicate or share: %s", i, s)
+		}
+	}
+	if !strings.Contains(scans[1], "AND (a >= 1 AND a < 2)") {
+		t.Errorf("stratum predicate must be parenthesised into its scan: %s", scans[1])
+	}
+	if got := BuildSampleScanSQL("logs", "1", "w = 1", nil, 7); strings.TrimSpace(got) != "SELECT 1 FROM logs WHERE w = 1 LIMIT 7" {
+		t.Errorf("no strata must be a single scan: %s", got)
+	}
+}
+
+// Slices are merged in Go, which needs value hashes to count distinct values
+// across them; the hashes must stay capped so a high-cardinality field costs
+// FieldSampleDistinctCap values, not one per row.
+func TestBuildFieldSampleSQL_CappedDistinctHashes(t *testing.T) {
+	sql := BuildFieldSampleSQL(FieldSampleParams{Table: "logs", Where: "w = 1"})
+	if !strings.Contains(sql, fmt.Sprintf("groupUniqArray(%d)(cityHash64(kv.2))", FieldSampleDistinctCap)) {
+		t.Errorf("missing capped distinct hashes:\n%s", sql)
 	}
 }

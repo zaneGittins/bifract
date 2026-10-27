@@ -572,6 +572,11 @@ type FieldSampleParams struct {
 // via the error bound rather than being worth the state.
 const fieldSampleTopKReserve = 256
 
+// FieldSampleDistinctCap bounds the value hashes each field returns. One past
+// the set-index threshold of 256 is enough to merge slices into an exact count
+// below it and a definite "more" above it, at 8 bytes a value.
+const FieldSampleDistinctCap = 257
+
 // BuildFieldSampleSQL builds the schema sweep's per-field distribution query.
 //
 // It answers the same question as BuildFieldStatsSQL but under different
@@ -611,10 +616,6 @@ func BuildFieldSampleSQL(p FieldSampleParams) string {
 	if p.ValueLen <= 0 {
 		p.ValueLen = 256
 	}
-	where := p.Where
-	if strings.TrimSpace(where) == "" {
-		where = "1 = 1"
-	}
 	// approx_top_k's reserved counter size is raised above TopN so the returned
 	// counts are exact for the low-cardinality fields whose value distribution is
 	// worth showing at all; its third tuple member is the error bound, which the
@@ -627,22 +628,47 @@ func BuildFieldSampleSQL(p FieldSampleParams) string {
     cardinality,
     arrayMap(t -> t.1, top) AS top_values,
     arrayMap(t -> t.2, top) AS top_counts,
-    arrayMap(t -> t.3, top) AS top_errors
+    arrayMap(t -> t.3, top) AS top_errors,
+    distinct_hashes
 FROM (
     SELECT
         kv.1 AS key,
         count() AS present,
         uniq(kv.2) AS cardinality,
+        groupUniqArray(%d)(cityHash64(kv.2)) AS distinct_hashes,
         approx_top_k(%d, %d)(substringUTF8(kv.2, 1, %d)) AS top
     FROM (
-        SELECT norm_log FROM %s WHERE %s LIMIT %d
+%s
     )
     ARRAY JOIN JSONExtractKeysAndValues(norm_log, 'String') AS kv
     WHERE kv.1 != '' AND kv.2 != ''
     GROUP BY key
     ORDER BY present DESC
     LIMIT %d
-)`, p.TopN, fieldSampleTopKReserve, p.ValueLen, p.Table, where, p.SampleSize, p.MaxFields)
+)`, FieldSampleDistinctCap, p.TopN, fieldSampleTopKReserve, p.ValueLen,
+		BuildSampleScanSQL(p.Table, "norm_log", p.Where, nil, p.SampleSize), p.MaxFields)
+}
+
+// BuildSampleScanSQL is the schema sweep's unsorted row scan: one LIMIT per
+// stratum, or a single LIMIT without strata. Each scan stays O(limit) and prunes
+// parts by their ingest_timestamp min-max.
+//
+// The sweep samples each stratum in its own query and counts the rows with this
+// UNION ALL. Sampling through the UNION ALL keeps every stratum's reader open at
+// once and measured over four times the memory of one scan; the count reads only
+// the predicate column, so its UNION ALL stays small.
+func BuildSampleScanSQL(table, column, where string, strata []string, limit int) string {
+	if strings.TrimSpace(where) == "" {
+		where = "1 = 1"
+	}
+	if len(strata) == 0 {
+		return fmt.Sprintf("        SELECT %s FROM %s WHERE %s LIMIT %d", column, table, where, limit)
+	}
+	scans := make([]string, len(strata))
+	for i, st := range strata {
+		scans[i] = fmt.Sprintf("        SELECT %s FROM %s WHERE %s AND (%s) LIMIT %d", column, table, where, st, limit)
+	}
+	return strings.Join(scans, "\n        UNION ALL\n")
 }
 
 // BuildFieldStatsSQL builds a bounded, sampled aggregation reporting per-field
