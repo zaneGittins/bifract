@@ -158,6 +158,7 @@ func (s *Scratch) QueryOptions(u Unit, w Window) parser.QueryOptions {
 		EndTime:            w.End,
 		MaxRows:            10000,
 		UseIngestTimestamp: true,
+		MinimalProjection:  true,
 		TableName:          s.table,
 		FractalID:          u.FractalID,
 		// Resolved from the rule's own scope, not the per-case scratch fractal above:

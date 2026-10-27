@@ -2,6 +2,7 @@ package query
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
@@ -49,4 +50,16 @@ func clickhouseErrorCode(err error) int32 {
 		return chErr.Code
 	}
 	return 0
+}
+
+// executionErrorMessage is the text a user sees for a failed query: the mapped
+// message when there is one, else the public error code, else a generic line.
+func executionErrorMessage(err error) string {
+	if friendly, ok := clickhouseUserMessage(err); ok {
+		return friendly
+	}
+	if code := clickhouseErrorCode(err); code != 0 {
+		return fmt.Sprintf("Query execution failed (ClickHouse error %d)", code)
+	}
+	return "Query execution failed"
 }

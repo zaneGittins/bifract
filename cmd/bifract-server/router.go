@@ -349,6 +349,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
+				Path:     "/query/live",
+				Request:  query.QueryRequest{},
+				Access:   api.AccessViewer,
+				Response: query.LiveResponse{},
+				Summary:  "Poll a BQL query's newest arrivals for live search; start is the previous poll's cursor.",
+				Handler:  d.queryHandler.HandleQueryLive,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
 				Path:     "/query/fieldstats",
 				Response: query.FieldStatsResponse{},
 				Request:  query.QueryRequest{},

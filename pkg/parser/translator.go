@@ -53,7 +53,11 @@ type QueryOptions struct {
 	CommentLogIDs        []string                      // Pre-fetched log_ids from PostgreSQL for comment() filtering
 	HasTLSHFilter        bool                          // True when query uses tlsh() and the digest match has been resolved
 	TLSHMatches          []TLSHMatch                   // Digests within threshold of a needle, resolved server-side against the tlsh model index
-	UseIngestTimestamp   bool                          // Filter on ingest_timestamp instead of timestamp (used by alerts)
+	UseIngestTimestamp   bool                          // Filter on ingest_timestamp instead of timestamp (alerts, live search, Recall)
+	// MinimalProjection projects only the fields the filter references plus log_id
+	// and timestamp, for callers that match rows rather than display them (alert
+	// evaluation, the rule tester).
+	MinimalProjection bool
 	// ModelNewSince is the start of an alert's evaluation window. A first_seen
 	// model's is_new also admits an entity recorded since then, so an alert
 	// catching up on a backlog older than the usual hour still sees what was new
@@ -1342,10 +1346,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 	// No commands and no assignments: use default field set
 	if len(ctx.Pipeline.Commands) == 0 && len(ctx.Pipeline.Assignments) == 0 {
 		// Alert queries: project only referenced fields + log_id + timestamp.
-		// This minimal projection keys on UseIngestTimestamp, which Recall also
-		// sets for ingest-time pruning; exclude iceberg so Recall gets the normal
-		// full projection.
-		if ctx.Opts.UseIngestTimestamp && ctx.Opts.SourceMode != SourceIceberg && len(ctx.Pipeline.HavingConditions) > 0 {
+		if ctx.Opts.MinimalProjection && ctx.Opts.SourceMode != SourceIceberg && len(ctx.Pipeline.HavingConditions) > 0 {
 			fields := map[string]bool{}
 			collectHavingConditionFields(ctx.Pipeline.HavingConditions, fields)
 			// Include alert-configured extra fields (throttle field, template fields)

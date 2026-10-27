@@ -1576,6 +1576,7 @@
                             <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/>
                             <path d="M8 5v3.5l2 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
                         </svg>
+                        <span class="live-dot" aria-hidden="true"></span>
                         <span id="timePickerLabel">Last 24h</span>
                         <svg class="toolbar-menu-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none">
                             <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1585,6 +1586,7 @@
                     <div id="timePickerPanel" class="time-picker-panel" style="display:none">
                         <div class="tp-section-label">Presets</div>
                         <div class="tp-presets">
+                            <button class="tp-preset tp-live" data-value="live" type="button"><span class="live-dot" aria-hidden="true"></span>Live <span class="tp-live-sub">new events as they arrive</span></button>
                             <button class="tp-preset" data-value="5m" type="button">5m</button>
                             <button class="tp-preset" data-value="15m" type="button">15m</button>
                             <button class="tp-preset" data-value="30m" type="button">30m</button>
@@ -4306,6 +4308,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/notebookRail.js"></script>
     <script src="/static/columnSizing.js"></script>
     <script src="/static/queryExecutor.js"></script>
+    <script src="/static/liveSearch.js"></script>
     <!-- Fractal selector removed - using main page fractal listing instead -->
     <script src="/static/fractalManagement.js"></script>
     <script src="/static/fractalManageTab.js"></script>

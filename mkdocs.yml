@@ -110,6 +110,7 @@ nav:
     - Provenance Graph: features/provenance-graph.md
     - Dashboards & Notebooks: features/dashboards.md
     - Deep Links: features/deep-links.md
+    - Live Search: features/live-search.md
     - Lookups: features/dictionaries.md
     - Normalizers: features/normalizers.md
     - AI Chat: features/ai-chat.md

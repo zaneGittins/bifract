@@ -732,6 +732,7 @@ const QueryPalette = {
             return 'Custom';
         }
         if (t === 'all') return 'All time';
+        if (t === 'live') return 'Live';
         const map = {
             '5m': 'Last 5m', '15m': 'Last 15m', '30m': 'Last 30m',
             '1h': 'Last 1h', '2h': 'Last 2h', '4h': 'Last 4h',

@@ -26888,6 +26888,67 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/query/live": {
+      "post": {
+        "operationId": "post_api_v1_query_live",
+        "summary": "Poll a BQL query's newest arrivals for live search; start is the previous poll's cursor.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "query"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/query.QueryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/query.LiveResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/query/reference": {
       "get": {
         "operationId": "get_api_v1_query_reference",
@@ -38251,6 +38312,82 @@
           "approximate",
           "supported",
           "fields"
+        ]
+      },
+      "query.LiveHistogram": {
+        "type": "object",
+        "properties": {
+          "bucket_seconds": {
+            "type": "integer"
+          },
+          "bucket_start": {
+            "type": "string"
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        },
+        "required": [
+          "bucket_start",
+          "bucket_seconds",
+          "buckets"
+        ]
+      },
+      "query.LiveResponse": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_type": {
+            "type": "string"
+          },
+          "execution_ms": {
+            "type": "integer"
+          },
+          "field_order": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "histogram": {
+            "$ref": "#/components/schemas/query.LiveHistogram"
+          },
+          "limit_hit": {
+            "type": "boolean"
+          },
+          "live_unsupported": {
+            "type": "boolean"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {
+                "description": "Any JSON value."
+              }
+            }
+          },
+          "success": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "success",
+          "execution_ms"
         ]
       },
       "query.LogByTimestampRequest": {
