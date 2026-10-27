@@ -1,108 +1,97 @@
 # Provenance Graph
 
-The provenance graph (`pgr()`) reconstructs what a suspicious process did and cuts it down to what matters. Point it at a single process and it rebuilds the spawn tree, scores every file, network, DNS, and injection action by how unusual it is, and prunes the everyday noise, so a handful of suspicious actions surface instead of thousands of raw events to sift through.
+The provenance graph (`pgr()`) rebuilds what a suspicious process did, scores every file, network, DNS and injection action by how unusual it is, and prunes the everyday noise. Use it to triage a process: a handful of suspicious actions surface instead of thousands of raw events.
 
-![Provenance graph of a process tree](../images/pgr.png)
+![Provenance graph of a process tree](../images/features/pgr-graph.png)
 
-## Enabling it
+## Turn it on
 
-Provenance requires baselines built from your endpoint logs, so it is **off by default**. An admin turns it on under **Settings > Platform > Endpoint analytics > Collect baselines**.
+Provenance needs baselines built from endpoint logs, so it is off by default. A tenant admin enables it:
 
-When enabled, Bifract maintains two lightweight baselines as logs arrive: process lineage (who spawned whom) and behavior frequency (how common each file, IP, and domain is across your fleet). These run on every ingested log, so leave the toggle off unless you use these features. When you re-enable it, baselines resume from that point forward.
+1. Open **Settings** in the sidebar, then the **Platform** tab.
+2. Under **Endpoint analytics**, turn on **Collect baselines**.
 
-!!! note "Requirements"
-    Provenance needs an endpoint/EDR source (for example Sysmon). Set the query time range to cover the whole investigation window; lineage outside the selected range is not included.
+Bifract then maintains two baselines as logs arrive: process lineage (who spawned whom) and behavior frequency (how common each file, IP and domain is across hosts). They run on every ingested log, so leave this off if you do not use `pgr()`. Baselines start from the moment you enable it.
 
-## Required fields and categories
+## Investigate a process
 
-Provenance reads from a small set of normalized fields. Your [normalizer](normalizers.md) must map each source event to a `bifract_category` and populate the fields below (all field names are relative to the `fields` column). The graph works from whichever categories you send: `process_creation` alone builds the spawn tree, and each additional category adds that layer of activity.
+1. Open **Query** and set the time range to cover the whole investigation; lineage outside the range is not included.
+2. Find the process and copy its `process_guid`, for example:
+   ```
+   bifract_category=process_creation image=~powershell
+   ```
+3. Run:
+   ```
+   pgr(start="{GUID}") | pgraph()
+   ```
+4. Use the **‹ ›** arrows beside **N rare** in the stats bar to step through the processes with rare activity.
+5. Click a process to open its drawer and pivot from there.
 
-Every event should also carry `computer_name` (the host) and an event `timestamp`.
+For just the spawn tree, without scoring or file, network and DNS activity, use `ptg(start="{GUID}") | pgraph()`. It reads only the lineage table, so it is faster. See [Graph Traversal](../bql/graph-traversal.md) for all arguments.
 
-| `bifract_category` | Adds | Required fields |
-|--------------------|------|-----------------|
-| `process_creation` | The spawn tree (required backbone) | `process_guid`, `parent_process_guid`, `image`, `parent_image`, `commandline`, `computer_name` |
-| `file_write` | Files a process wrote | `process_guid`, `image`, `target_file`, `computer_name` |
-| `network_connect` | Outbound network destinations | `process_guid`, `image`, `dst_ip`, `computer_name` |
-| `dns_query` | Domains a process resolved | `process_guid`, `image`, `query`, `computer_name` |
-| `remote_thread` | Process injection edges (opt-in, see below) | `source_process_guid`, `target_process_guid`, `image`, `target_image`, `computer_name` |
-| `process_access` | Handle-access edges (opt-in, see below) | `source_process_guid`, `target_process_guid`, `image`, `target_image`, `computer_name` |
+## Required fields
+
+Your [normalizer](normalizers.md) must set `bifract_category` and the fields below (under the `fields` column). Every event also needs `computer_name` and a `timestamp`. `process_creation` alone builds the tree; each extra category adds a layer.
+
+| `bifract_category` | Adds | Required fields | Sysmon event |
+|--------------------|------|-----------------|---|
+| `process_creation` | The spawn tree (required) | `process_guid`, `parent_process_guid`, `image`, `parent_image`, `commandline` | 1 |
+| `file_write` | Files a process wrote | `process_guid`, `image`, `target_file` | 11 |
+| `network_connect` | Outbound destinations | `process_guid`, `image`, `dst_ip` | 3 |
+| `dns_query` | Domains a process resolved | `process_guid`, `image`, `query` | 22 |
+| `remote_thread` | Injection edges (opt-in) | `source_process_guid`, `target_process_guid`, `image`, `target_image` | 8 |
+| `process_access` | Handle-access edges (opt-in) | `source_process_guid`, `target_process_guid`, `image`, `target_image` | 10 |
+
+Optional: `user` on `process_creation` (shown in the drawer) and `query_results` on `dns_query` (lets reconnection match resolved IPs).
 
 !!! note "Injection edges are opt-in"
-    `pgr()` generates `file_write`, `net_connect`, and `dns_query` leaves by default. `remote_thread` and `process_access` are **not** generated unless you ask for them, because they key off `source_process_guid`, which has no skip index: including them forces an unindexed full-window scan per branch. Request them explicitly when you need them:
+    `remote_thread` and `process_access` are left out by default because they force an unindexed scan per branch. Ask for them explicitly:
 
     ```
     pgr(start="{GUID}", include="remote_thread,process_access") | pgraph()
     ```
 
-!!! tip "Optional fields"
-    `user` (on `process_creation`) is shown in a process's detail panel, and `query_results` (on `dns_query`) lets reconnection match resolved IPs as well as domains. Neither is required for the graph to build.
+## Read the graph
 
-These map directly to Sysmon events: `process_creation` = 1, `network_connect` = 3, `dns_query` = 22, `file_write` = 11, `remote_thread` = 8 (Sysmon CreateRemoteThread), `process_access` = 10.
+| Control | What it does |
+|---------|--------------|
+| **Graph / Table** icons | Toggle between the canvas and an indented table. The table's time column shows the gap since the parent. |
+| **Show all** / **Focus suspicious** | Larger scored graphs open focused: only processes on a path to red activity, plus the seed and its ancestors. The rest folds into `+N hidden` markers; click one to expand it. |
+| **N rare** with **‹ ›** | Steps through processes with rare activity, centering each and opening its details. |
+| Canvas controls | Zoom, fit and minimap, bottom left. The minimap is off until you turn it on. |
+| Process drawer | Click a process. **Search process**, **Search hash** and **Host ±5 min** open searches in a new tab; **Copy command** copies the command line; **Hide branch** hides it (undo from the hidden branches stat). |
+| Keyboard (table) | `↑` `↓` or `j` `k` move, `Enter` opens the drawer, `←` `→` collapse and expand, `Esc` closes. |
 
-## Using it
+## Anomaly scoring
 
-Run `pgr()` seeded on a process, then pipe to `pgraph()` to visualize:
+Every action gets an `anomaly_score` from 0 (common everywhere) to 1 (never seen before). Scores also add up along the chain, so a sequence of individually common steps (living off the land) still stands out.
 
-```
-pgr(start="{GUID}") | pgraph()
-```
+- **Host-days, not events.** An action counts once per host per day, so 10,000 beacons to one IP is one host-day.
+- **Leave-one-out.** The tree being scored is subtracted from the baseline, so an attack never vouches for itself.
+- **Known source.** For an image that ran on other hosts, the score is how rarely it made this move elsewhere: `winword.exe` starting its first-ever child scores 1.
+- **New source.** For a binary never seen on another host, the score is how rarely anyone touched the target.
 
-`pgraph()` also renders a plain process tree from `ptg()`:
+Each action shows a **Why** sentence and fact chips in the drawer and on edge hover, for example `cmd.exe → node.exe: never seen from cmd.exe on any other host` with **First seen**, **Target on**, **Other host-days**, **Own** and **Inherited**. Clicking **Target on** searches that IP, domain, file or image in a new tab.
 
-```
-ptg(start="{GUID}") | pgraph()
-```
+??? note "Score columns"
+    | Column | Meaning |
+    |--------|---------|
+    | `edge_score` | The action's own score; `anomaly_score` minus it is what the chain added |
+    | `score_basis` | `transition` (known source), `new_source`, `no_source` (parent never logged), or `reconnect` |
+    | `edge_host_days` | Other host-days on which this source made this exact move |
+    | `source_host_days` | Other host-days on which this source made any move of this type |
+    | `source_exec_host_days` | Other host-days on which this source binary ran |
+    | `target_host_days` | Other host-days on which any process touched the target |
+    | `target_hosts`, `total_hosts` | Hosts that touched the target (capped at 256) out of all hosts |
+    | `first_seen` | First day the relationship was observed |
 
-That is the same canvas with process creation only: no anomaly scoring, no file/network/DNS activity, and no reconnection, since `ptg()` reads the process-lineage table alone. Use it when you want the spawn tree quickly, or when behavioral analytics is off; use `pgr()` when you want to know which parts of that tree are unusual.
+## Reconnection
 
-### Anomaly scoring
+`pgr()` also pulls in other process trees that share a **rare** artifact with the seeded one: a file this tree wrote that another tree executed, or the same rare IP or domain. This is how lateral spread shows up. Common artifacts (CDNs, resolvers, update servers) do not bridge.
 
-Every action gets an `anomaly_score` from 0 to 1, where 1 is never-seen-before and 0 is ubiquitous across your environment. Rare behavior surfaces; common noise fades. Scoring also follows the chain, so a sequence of individually-common steps (a classic living-off-the-land pattern) adds up and stands out even when no single step looks unusual on its own.
-
-How an action is scored:
-
-* **Host-days, not events.** Frequency counts each action once per host per day, so a process beaconing 10,000 times to one IP is one host-day, not 10,000 observations of normal behavior.
-* **Leave-one-out.** The tree being scored, including reconnected trees, is subtracted from the baseline first. An action counts as common only if *other* host-days did it, so an attack never vouches for itself, even when a replayed dataset lands on a single ingest day.
-* **Known source.** For a process image that has run elsewhere, the score is how rarely that source made this move on its other host-days: `winword.exe` starting its first-ever child scores 1.
-* **New source.** For a binary that never ran on another host, the score is how rarely anyone else touched the target: its connection to a never-seen IP scores 1, its lookup of a shared resolver scores near 0. The binary itself stands out through the edge that started it.
-
-Each row carries the evidence behind its score. The graph shows it as a **Why** sentence plus one fact chip per fact, in the process drawer, in activity drawer rows, and when hovering an edge's score: for example `cmd.exe → node.exe: never seen from cmd.exe on any other host` with chips `First seen · today`, `Target on · 1 of 4 hosts`, `Other host-days · 0 of 1,240`, `Own · 0.98`, `Inherited · +0.02`. Unusual facts are tinted, and `Target on` opens a search for that IP, domain, file, or image in a new tab.
-
-| Column | Meaning |
-|--------|---------|
-| `edge_score` | The action's own score; `anomaly_score` minus it is what the chain above added |
-| `score_basis` | `transition` (known source), `new_source`, `no_source` (parent never logged), or `reconnect` |
-| `edge_host_days` | Other host-days on which this source made this exact move |
-| `source_host_days` | Other host-days on which this source made any move of this type |
-| `source_exec_host_days` | Other host-days on which this source binary ran |
-| `target_host_days` | Other host-days on which any process touched the target |
-| `target_hosts`, `total_hosts` | Hosts that touched the target (including this one, capped at 256) out of the fleet |
-| `first_seen` | First day the relationship was ever observed |
-
-### Reconnection
-
-`pgr()` also pulls in **other** process trees that share a rare artifact with the one you seeded: a file this tree wrote that another tree then executed, or the same rare external IP or domain touched by both. That is how lateral spread shows up without you hunting for it. Only artifacts that are rare across your fleet bridge, so shared CDNs, resolvers, and update servers do not reconnect everything.
-
-The number of peers admitted is capped at the 50 strongest bridges (a peer reached through several rare artifacts ranks above one reached through a single IP). Tune it with `peers=`:
+- Peers appear in a **Reconnected** section below the seeded tree, grouped by the artifact that links them, strongest first. Click a peer to expand its tree.
+- Up to 50 peers are admitted by default. Change it with `peers=` (max 500), or turn reconnection off with `reconnect=false`:
 
 ```
 pgr(start="{GUID}", peers=200) | pgraph()
 ```
-
-Use `reconnect=false` to show only the seeded tree.
-
-The graph's **reconnected** stat counts peer trees, the same number the Reconnected section lists. Hovering it reports the bridges (shared artifacts) behind them and the linked process pairs, including `50 of 312` when the pair cap is showing the strongest ones; clicking it lists the pairs.
-
-In the graph, peers sit in a **Reconnected** section below the seeded tree, grouped by the bridge that links them (the artifact, its rarity chips, and how many peers it reaches), strongest bridge first. Each peer is one line (host, process, score) that expands to its tree on click; a group lists its first three peers and folds the rest into `+N more`.
-
-### Reading the graph
-
-| Control | What it does |
-|---------|--------------|
-| **Graph / Table** | The two icons at the left of the toolbar: the same view as a canvas or an indented table. The table's Time column shows the clock to the second, the date only when it changes, and the gap since the parent beneath it. |
-| **Show all / Focus suspicious** | Larger scored graphs open focused: only processes on a path to activity scored red, plus the seeded process and its ancestors. The stats bar reads `12 of 85 processes · Show all`; everything else folds in place into `+N hidden` markers, and clicking one shows that branch. `Focus suspicious` narrows a full view again. The choice is remembered. |
-| **N rare ‹ ›** | Steps through processes with rare activity, top to bottom. Each step centers the process and opens its details, or the file, network or DNS activity that made it rare. |
-| Canvas controls | Zoom, fit (the whole graph on both axes) and the minimap, bottom-left of the canvas. The first view frames the seeded process and its anomalous chain. The minimap is off until you turn it on. |
-| Process drawer | Click a process. Actions: search this process, its image hash, or everything on its host within 5 minutes (each opens in a new tab), copy the command line, or hide its branch (undo from `N hidden branches · show`). |
-| Keyboard (Table) | `↑` `↓` or `j` `k` move, `Enter` opens the drawer, `←` `→` collapse and expand, `Esc` closes the drawer. |

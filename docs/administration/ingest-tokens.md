@@ -1,29 +1,52 @@
 # API Keys
 
-There are two types of API keys: generic keys and ingest tokens.
+Bifract has two kinds of credentials for programs:
 
-Ingest tokens authenticate external log senders and are scoped to a single fractal. They use the prefix `bifract_ingest_` and are managed from the fractal's **Ingest** page. Every fractal gets a default ingest token when it is created.
+| Kind | Prefix | Used for | Managed in |
+|------|--------|----------|------------|
+| Ingest token | `bifract_ingest_` | Sending logs to one fractal | The fractal's **Ingest** page |
+| API key | `bifract_<scope>_` | The query, comment, alert, notebook and dashboard APIs, the [MCP server](../features/mcp-server.md) and [exports](exporting-logs.md) | **Fractal settings > Access** (or **Prism settings > Access**), and **Settings > API keys** |
 
-Generic API keys authenticate programmatic access to the query, comment, alert, notebook, and dashboard APIs. They use the prefix `bifract_` and are managed from **Fractal settings > Access > API Keys** (or **Prism settings > Access** for prism-scoped keys). Every issued key, whatever its scope, is also listed under **Settings > API Keys**. See the [API Reference](../api/authentication.md) for endpoint details.
+Every fractal gets a default ingest token when it is created. To create more, see [Get an ingest token](../ingestion/overview.md#get-an-ingest-token). The rest of this page covers API keys; for how to send them, see [Authentication](../api/authentication.md).
 
-- **Create key**: Provide a name, optional description, expiration, and the role the key holds. The full key value is shown only once at creation. Store it securely.
-- **Toggle key**: Enable or disable a key without deleting it.
-- **Delete key**: Permanently revoke a key.
+## Create an API key for a fractal or prism
+
+Tenant admins only.
+
+1. Open the fractal or prism, click **Fractal settings** (or **Prism settings**) in the sidebar, then the **Access** tab.
+2. Under **API keys**, click **Create API key**.
+3. Enter a **Name**, set **Expires** (defaults to 30 days) or tick **Never expires**, and pick a **Role**.
+4. Click **Create**.
+5. Click **Copy**. The key is shown only once.
+
+![Create API key dialog](../images/administration/create-api-key.png)
+
+In the key list, **Deactivate** turns a key off without deleting it (**Activate** turns it back on) and **Delete** revokes it permanently.
 
 ## Roles
 
-A key is authorized exactly like a person: it holds one role on the fractal or prism it was issued for. Follow the principle of least privilege and issue the lowest role that does the job.
+A key holds one role on the fractal or prism it was issued for, authorized exactly like a person with that role. Issue the lowest role that does the job.
 
-| Role | Description |
-|------|-------------|
-| `viewer` | Read logs, comments, alerts, notebooks, and dashboards |
-| `analyst` | Everything a viewer can do, plus create and edit them |
-| `admin` | Everything an analyst can do, plus manage the scope itself and [export its logs](exporting-logs.md) |
+| Role | Can do |
+|------|--------|
+| `viewer` | Read logs, comments, alerts, notebooks and dashboards |
+| `analyst` | Viewer, plus create and edit them |
+| `admin` | Analyst, plus alert policies and change review, and [export logs](exporting-logs.md) |
 
-## Instance-wide keys
+## Tenant admin keys
 
-A tenant admin key administers the whole instance, so it belongs to no fractal or prism and holds no scope role. It uses the prefix `bifract_admin_`, must carry an expiry, and is issued only from **Settings > API Keys**. Because it is not bound to a scope, a request made with one names the fractal or prism it means with the `X-Bifract-Scope` header, the same way a browser session does.
+A tenant admin key administers the whole instance. It belongs to no fractal or prism, uses the prefix `bifract_admin_`, and must have an expiry.
 
-Scoped and instance-wide are exclusive: a key is one or the other, and neither can be converted into the other after it is issued.
+1. Open **Settings**, then the **API keys** tab.
+2. Click **Create API key**.
+3. Enter a **Name**, tick **Tenant admin**, and set **Expires**.
+4. Click **Create** and copy the key.
 
-For details on using API keys for ingestion, see the [API Reference](../api/ingestion.md).
+![Settings API keys tab](../images/administration/settings-api-keys.png)
+
+Requests made with a tenant admin key name the fractal or prism they act on in the `X-Bifract-Scope` header. A key is either scoped or tenant admin, and cannot be converted later.
+
+The **API keys** tab also lists every scoped key in the instance and can create one for any fractal or prism (leave **Tenant admin** unticked and pick a **Scope** and **Role**). Use **Tenant admin keys only** to filter the list, and **Revoke** in a row's **⋮** menu to disable a key.
+
+!!! warning
+    API keys skip two-factor authentication. Give tenant admin keys a short expiry and revoke them when done.

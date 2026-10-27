@@ -1,125 +1,69 @@
 # Sending Logs
 
-## Overview
+Send logs to Bifract over HTTP with an ingest token. Use this page to get a token and pick an endpoint; for the payload contract see [Log Ingestion](../api/ingestion.md), and for bulk file uploads see the [CLI tool](cli-tool.md).
 
-Bifract accepts logs via HTTP and inserts them into ClickHouse through a buffered worker pool. All ingestion endpoints require token-based authentication and are rate-limited.
+![Ingest page with the default token](../images/ingestion/ingest-tokens.png)
 
-## Authentication
+## Get an ingest token
 
-Ingest tokens are scoped per-fractal and carry per-token configuration (parser type, normalization, timestamp fields). Each fractal gets a default token automatically on creation.
+Every fractal gets a default token when it is created. Each token sends logs to exactly one fractal.
 
-### Getting a Token
-
-1. Open **Ingest** in the fractal's sidebar
-2. Copy the token (format: `bifract_ingest_{32_hex_chars}`)
-3. Include it in the `Authorization` header:
+1. Open the fractal and click **Ingest** in the sidebar.
+2. Click the copy icon (**Copy token**) in the **Token** column, or the eye icon to show it. Tokens start with `bifract_ingest_`.
+3. Send it in the `Authorization` header:
 
 ```bash
-curl -X POST http://localhost:8443/api/v1/ingest \
-  -H "Authorization: Bearer bifract_ingest_abc123..." \
+curl -X POST https://bifract.example.com:8443/api/v1/ingest \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '[{"event":"login","user":"admin"}]'
 ```
 
-Requests without a valid token receive `401 Unauthorized`.
+Caddy serves ingestion on port **8443** and refuses every other path there. A missing or wrong token returns `401`.
 
-### Token Features
+## Create a token for a new source
 
-Each token has its own configuration:
-- **Parser type**: `json` (default), `kv` (key-value), or `syslog`
-- **Normalization**: Automatically normalize field names
-- **Timestamp fields**: Define which fields hold timestamps
+Give each log source its own token so it can be parsed, normalized and revoked separately.
 
-## Supported Formats
+1. On the **Ingest** page, click **Create token**.
+2. Enter a **Name** and, optionally, a **Description**.
+3. Pick a **Parser**: **JSON** (default), **Key=Value**, or **Syslog**.
+4. Pick a **Normalizer**, or **None (no normalization)**. See [Normalizers](../features/normalizers.md).
+5. Click **Create token**, then copy it from the **Token Created** panel.
 
-All formats are sent to `POST /api/v1/ingest`.
+![Create ingest token dialog](../images/ingestion/create-token.png)
 
-**JSON array** (multiple logs in one request):
+Each row has a switch to disable the token, plus **Edit token** and **Delete token** icons. The default token cannot be deleted.
+
+## Endpoints
+
+| Endpoint | Use for |
+|---|---|
+| `POST /api/v1/ingest` | JSON array, single JSON object, or NDJSON |
+| `POST` or `PUT /_bulk` | Elasticsearch bulk clients (Velociraptor and similar) |
+| `POST /v1/logs` | OpenTelemetry OTLP/HTTP, protobuf or JSON |
+
+All three take `Authorization: Bearer <token>` (`ApiKey <token>` also works) and accept `Content-Encoding: gzip`.
+
+### NDJSON example
+
 ```bash
-curl -X POST http://localhost:8443/api/v1/ingest \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '[{"event":"login","user":"admin"},{"event":"logout","user":"admin"}]'
-```
-
-**Single object:**
-```bash
-curl -X POST http://localhost:8443/api/v1/ingest \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"message":"user login","source_ip":"10.0.0.1"}'
-```
-
-**NDJSON** (newline-delimited JSON):
-```bash
-curl -X POST http://localhost:8443/api/v1/ingest \
+curl -X POST https://bifract.example.com:8443/api/v1/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @logs.ndjson
 ```
 
-### Elasticsearch Bulk API
+### OpenTelemetry Collector
 
-Bifract also accepts `POST /_bulk` and `PUT /_bulk` for compatibility with Elasticsearch-style clients. These endpoints also require the `Authorization: Bearer` header.
-
-### OpenTelemetry (OTLP)
-
-Bifract accepts OTLP/HTTP log exports at `POST /v1/logs`, the standard OTLP endpoint path. Both protobuf (`application/x-protobuf`) and JSON (`application/json`) content types are supported.
-
-```bash
-curl -X POST http://localhost:8443/v1/logs \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "resourceLogs": [{
-      "resource": {
-        "attributes": [
-          {"key": "service.name", "value": {"stringValue": "my-service"}}
-        ]
-      },
-      "scopeLogs": [{
-        "logRecords": [{
-          "timeUnixNano": "1711063200000000000",
-          "severityText": "INFO",
-          "body": {"stringValue": "Request completed successfully"},
-          "attributes": [
-            {"key": "http.method", "value": {"stringValue": "GET"}}
-          ]
-        }]
-      }]
-    }]
-  }'
-```
-
-**Field mapping:**
-
-| OTLP field | Bifract field |
-|---|---|
-| `Body` | `message` |
-| `SeverityText` | `severity_text` |
-| `SeverityNumber` | `severity_number` |
-| `TraceId` | `trace_id` (hex) |
-| `SpanId` | `span_id` (hex) |
-| `Resource.Attributes` | Prefixed with `resource.` (e.g. `resource.service.name`) |
-| `Scope.Name/Version` | `scope.name`, `scope.version` |
-| `Scope.Attributes` | Prefixed with `scope.` |
-| `Attributes` | Stored directly (e.g. `http.method`) |
-| `TimeUnixNano` | `timestamp` |
-
-**OpenTelemetry Collector configuration:**
+Bifract accepts logs only, so add the exporter to a `logs` pipeline:
 
 ```yaml
 exporters:
   otlphttp:
-    endpoint: https://bifract.example.com
+    endpoint: https://bifract.example.com:8443
     headers:
       Authorization: "Bearer bifract_ingest_..."
-    # Only send logs - Bifract does not accept traces or metrics
-    signal:
-      traces:
-        enabled: false
-      metrics:
-        enabled: false
 
 service:
   pipelines:
@@ -127,36 +71,30 @@ service:
       exporters: [otlphttp]
 ```
 
-Normalizers configured on the ingest token apply to OTLP field names the same way they do for other formats.
+OTLP fields map as follows. The token's normalizer applies afterwards, as for other formats.
 
-## Fractal Routing
-
-Each ingest token is scoped to a single fractal. Logs are routed to the fractal associated with the token.
+| OTLP field | Bifract field |
+|---|---|
+| `Body` | `message` |
+| `SeverityText`, `SeverityNumber` | `severity_text`, `severity_number` |
+| `TraceId`, `SpanId` | `trace_id`, `span_id` (hex) |
+| `Flags` | `flags` |
+| `Resource.Attributes` | `resource.` prefix (e.g. `resource.service.name`) |
+| `Scope.Name`, `Scope.Version`, `Scope.Attributes` | `scope.name`, `scope.version`, `scope.` prefix |
+| `Attributes` | Stored as-is (e.g. `http.method`) |
+| `TimeUnixNano` | Event timestamp (falls back to `ObservedTimeUnixNano`) |
 
 ## Timestamps
 
-Bifract extracts timestamps automatically:
+Bifract takes the event time from the first match below, otherwise the ingest time:
 
-1. Token-configured timestamp fields (set per token on the Ingest page)
-2. Configured timestamp fields (set in Settings)
-3. Common fields: `timestamp`, `@timestamp`, `time`, `ts`, `_time`
-4. Falls back to ingestion time if none found
+1. Timestamp fields set on the token (API only: `timestamp_fields` on the token).
+2. The **Timestamp Fields** of the token's normalizer.
+3. Instance defaults: `system_time`, `timestamp`, `@timestamp`, `time`.
+4. Auto-detected from `timestamp`, `@timestamp`, `time`, `ts`, `_time`.
 
-Supported formats: RFC3339, unix seconds/millis/micros/nanos, and common ISO variants.
+Step 3 runs only when neither the token nor its normalizer defines timestamp fields. Auto-detection reads RFC 3339 and `2006-01-02 15:04:05` style strings, not epoch numbers. For Unix time, add a timestamp field with format `unix`, `unixmilli`, `unixmicro` or `unixnano` to the normalizer.
 
-## Parsing Philosophy
+## Parse upstream
 
-Bifract is intentionally minimal when it comes to parsing. It accepts well-structured log formats (JSON, key-value, syslog) and focuses on what happens *after* logs arrive: storage, querying, alerting, and collaboration at scale.
-
-Complex log parsing and transformation (extracting fields from unstructured text, grok patterns, multi-line assembly, etc.) is deliberately out of scope. Mature, battle-tested tools already exist for this:
-
-- **Logstash** - Broad plugin ecosystem for parsing and routing
-- **Cribl** - Stream processing and log transformation
-- **Fluentd / Fluent Bit** - Lightweight log collection and parsing
-- **Vector** - High-performance log pipeline
-
-Use these tools upstream of Bifract to parse raw logs into structured formats before ingestion.
-
-### What Bifract Does Handle
-
-**Normalization.** Bifract normalizes field names across log sources to ensure consistency. This means alert rules, saved queries, and dashboards work reliably regardless of which source produced the log. Normalization can be configured per ingest token.
+Bifract parses structured formats (JSON, key=value, syslog) and normalizes field names. It does not do grok patterns, multi-line assembly or other free-text extraction. Use Logstash, Cribl, Fluent Bit or Vector upstream for that, and send Bifract structured events.

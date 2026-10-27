@@ -1,89 +1,104 @@
 # Alerts
 
-Alerts run BQL queries on a schedule and trigger actions on hits. A background ticker (default 60 seconds, configurable from **Settings > Platform > Alerts > Evaluation interval**) evaluates all enabled alerts using a cursor-based approach on the ingest timestamp. Each alert tracks `last_evaluated_at`, so no logs are missed across restarts. Changing the interval takes effect on the next tick, with no restart required.
+An alert is a BQL query that Bifract runs on a schedule, sending matches to one or more actions (webhook, email, fractal, lookup). Use alerts to turn a search into a detection.
 
-Re-enabling a previously disabled alert resets its cursor to a few minutes before now rather than resuming from its old, potentially stale value. This avoids a large cold-storage catch-up scan across the disabled window, at the cost of not retroactively evaluating logs that arrived while the alert was disabled.
+![Alerts list](../images/alerting/alert-list.png)
 
-## Alert Configuration
+## Create an alert
+
+1. Open a fractal or prism and select **Alerts** in the sidebar. The **Rules** tab opens.
+2. Click **Create alert**.
+3. Type a name in **Name this alert**. `{{field}}` placeholders are filled from the first matching row.
+4. Enter the BQL query and click **Run** to preview what it would have matched.
+5. In the right-hand panel, pick a **Type** and **Severity**, and add **Labels**, **Actions**, **References** and a **Description** as needed.
+6. Click **Create alert**.
+
+![Alert editor](../images/alerting/alert-editor.png)
+
+To change an alert, click its row in the list, then **Edit**. The editor's **Tests** tab holds sample events the rule should or should not match; for testing rules from a repository or CI, see [Testing Rules](testing-rules.md).
+
+To bring in existing rules, use **Import and export > Import YAML or Sigma**, or sync them from Git with [Alert Feeds](alert-feeds.md).
+
+## Alert types
+
+| Type | How it runs |
+|------|-------------|
+| **Event** | Matches new logs as they arrive. Cannot use aggregations (`groupBy()`, `count()` and so on). |
+| **Compound** | Aggregates over a fixed **Window** (default 15 minutes), for thresholds such as "5 failed logins from one IP". |
+| **Scheduled** | Runs on a **Schedule** (hourly, daily, weekly, monthly or a cron expression) over a **Query window** looking back from now. |
+
+The editor sets the type from the query: an aggregation switches it to Compound.
+
+## Editor fields
 
 | Field | Description |
 |-------|-------------|
-| Name | Display name for the alert. Supports `{{field}}` templates, resolved from the first matching result |
-| Description | Free-text context shown in the UI and included in webhook payloads |
-| Query | BQL query to evaluate |
-| Type | `event` (per-match) or `compound` (threshold-based) |
-| Severity | Severity label carried through to actions |
-| Labels | Tags for organization and filtering (e.g. `sigma:high`, `product:windows`) |
-| References | External links for context (e.g. MITRE ATT&CK URLs) |
-| Throttle | Suppression window in seconds, optionally per value via a **throttle field** (see [Throttling](#throttling)) |
-| Max event lag | Ignore matches that arrived more than this many seconds after their event time, 0 to accept any (see [Late logs](#late-logs)) |
-| Actions | One or more actions to run on a hit (see below) |
+| Severity | Critical, High, Medium, Low or Info. Carried into action payloads. |
+| Labels | Tags for filtering, e.g. `attack.t1059.001`. ATT&CK tags feed [ATT&CK Coverage](attack-coverage.md). |
+| Throttle | **Suppress repeats for** a number of seconds, optionally **Per** field value (see [Throttling](#throttling)). |
+| Late logs | **Ignore matches delayed by** more than this many seconds; 0 turns it off (see [Late logs](#late-logs)). |
+| Actions | Actions to run on a hit. Actions are defined once and shared across alerts. |
+| References | Links for context, e.g. MITRE ATT&CK pages. |
+| Description | What the alert detects and what to do. Included in webhook payloads. |
 
-An alert has no single "webhook URL" field. Actions are defined once and attached to any number of alerts.
+## Create an action
 
-## Actions
+1. In **Alerts**, open the **Actions** tab.
+2. Click **Create action** and pick a type.
+3. Fill in the form and click **Save**.
+4. Attach it to an alert from the editor's **Actions** list.
+
+![Webhook action form](../images/alerting/action-webhook.png)
 
 | Action | What it does |
 |--------|--------------|
-| **Webhook** | POSTs the alert payload to an HTTP endpoint. See [Webhooks](../api/webhooks.md) for the payload schema and configuration |
-| **Email** | Sends an email via the configured SMTP settings |
-| **Fractal** | Writes the alert result back into a fractal as new log events, so detections are themselves searchable and can feed other alerts |
-| **Dictionary** | Upserts matched values into a [lookup](../features/dictionaries.md), building a live watchlist (e.g. accumulating suspicious IPs for later enrichment) |
+| **Webhook** | Sends the alert to an HTTP endpoint (POST, PUT or PATCH) with optional auth, custom headers and a custom body template. **Preview payload** and **Send test** check it before saving. See [Webhooks](../api/webhooks.md). |
+| **Email** | Emails recipients. Configure the mail server first under **Email settings**. |
+| **Fractal** | Writes matching logs into a target fractal, so detections are searchable and can feed other alerts. |
+| **Lookup** | Upserts matched values into a [lookup](../features/dictionaries.md), e.g. to build a watchlist of suspicious IPs. |
 
-Actions are managed from **Alerts > Actions** and can be attached to multiple alerts.
+## How evaluation works
+
+The alert engine evaluates every enabled alert on each tick (default every 60 seconds). Event alerts track a cursor on ingest time, so no logs are missed across restarts. One evaluation reads at most 10,000 rows.
+
+Re-enabling a disabled alert restarts its cursor 5 minutes before now. Logs that arrived while it was disabled are not evaluated.
+
+Execution history, including matched and suppressed counts, is under **System > Alert engine**.
 
 ## Throttling
 
-A throttle suppresses repeat firings for a window. Suppression is per key: the key is the value of the throttle field on the matched row, or the alert itself when no field is set. With a throttle field of `host`, a hit on a host whose window has elapsed is delivered while another host in the same result set stays suppressed. Withheld rows reach no action, including the system `alerts` fractal.
+A throttle suppresses repeat firings for a window. Without a **Per** field, the whole alert shares one window. With **Per** set to `host`, each host gets its own window: a new host fires while a host already seen stays suppressed.
 
-Open windows are stored in PostgreSQL, so a restart or a change of which replica holds the evaluation lock does not release them.
+Suppressed rows reach no action, including the system `alerts` fractal. Windows are stored in PostgreSQL, so a restart does not reset them.
 
-An execution records `log_count` (every row matched) and `suppressed_count` (how many of those were withheld), so a partly suppressed firing is visible under **System > Alert engine**.
+## Late logs
 
-## Late Logs
+Alerts evaluate on arrival time, so a source that reconnects and flushes a week-old backlog would fire on all of it. **Ignore matches delayed by** drops a match whose event time trails its arrival by more than the set number of seconds.
 
-Alerts evaluate on arrival, not event time, so a source that reconnects and flushes a buffered backlog presents week-old events as new and the alert fires on all of them. **Max event lag** bounds that: a match whose event time trails its arrival by more than the configured number of seconds is dropped. 0, the default, turns the filter off and alerts on everything.
+- The check is one-sided: an event dated in the future (a fast clock) is never dropped.
+- It runs inside the ClickHouse query, so a compound alert counts only timely events and `join()` applies it to both sides.
+- Dropped rows are not recorded anywhere.
+- Restored archive data is never evaluated by alerts, so you do not need this setting for restores.
+- The editor's **Tests** tab ignores it, since test events are old by nature.
 
-The comparison is one-sided. An event dated ahead of its arrival, which is what a fast clock produces, is never dropped.
+## Fields sent to actions
 
-The filter runs in ClickHouse as part of the alert query, before any row is returned:
+A filter-only query (no pipeline commands and no `:=` assignments) reads just `timestamp`, `log_id`, the fields in its conditions, the **Per** throttle field and any `{{field}}` in the name. This keeps evaluation cheap, but means webhook, email and lookup actions receive only those fields.
 
-| Consequence | |
-|---|---|
-| Aggregation | A compound alert counts only timely events, so a backlog cannot trip a threshold |
-| Correlation | `join()` carries the same filter, so a late event cannot serve as the other side of a match |
-| Row budget | An alert reads at most 10,000 rows per evaluation; filtering server-side keeps a backlog from consuming that budget and starving genuinely new matches |
+Fractal actions are not affected: they re-fetch the full log for up to 1,000 rows per trigger.
 
-Dropped rows are not counted anywhere: they never reach the engine. An alert's execution history shows what fired, not what the lag filter excluded.
-
-Restored archive data keeps its original ingest timestamp, so it lands behind every alert cursor and is never evaluated. This setting is not needed for restores.
-
-Alert tests ignore the setting: a test corpus is a frozen sample whose timestamps are historical by nature, so enforcing it would fail cases for the age of the sample rather than for anything about the rule.
-
-## Auto-Projection
-
-Alert queries that consist only of filter conditions (no `table()`, `groupby()`, or other pipeline commands) are automatically optimized. Instead of reading all columns from ClickHouse, Bifract projects only:
-
-- `timestamp` and `log_id` (always included)
-- The specific fields referenced in the query's WHERE conditions
-- The alert's throttle field, if configured
-- Any `{{field}}` placeholders in the alert name template
-
-This cuts ClickHouse disk I/O for alerts that filter on a small number of fields, which is common with Sigma rules imported via [Alert Feeds](alert-feeds.md): a rule referencing 3-5 fields avoids reading dozens of unused columns on every evaluation tick.
-
-**What this means for actions:** Webhook payloads, fractal actions, and dictionary actions will only contain the projected fields, not the full log. The `log_id` is always present so the original log can be retrieved. If an action needs additional fields, add an explicit `table()` to the alert query:
+To send more fields to a webhook, add an explicit `table()`:
 
 ```
 image=/powershell/i | table(image, user, commandline, timestamp, log_id)
 ```
 
-**When auto-projection is skipped:** Queries that contain any pipeline command (`table()`, `groupby()`, `multi()`, `match()`, etc.) or field assignments (`:=`) are never modified. Regular user search queries are also unaffected.
-
 ## Settings
+
+Admins set these under **Settings > Platform > Alerts**. They are stored in PostgreSQL and apply without a restart.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Alert evaluation interval | `60s` | How often the alert ticker runs, minimum 60s. |
-| Alert query timeout | `5s` | Maximum runtime for a single alert query. Alerts that exceed it are disabled automatically, with the reason recorded on the alert. |
-
-Both live under **Settings > Platform > Alerts** (admin only). Neither is an environment variable: they are stored in PostgreSQL and take effect without a restart.
+| Query timeout | 5s | Maximum runtime of one alert query. An alert that exceeds it is disabled, with the reason shown on the alert. |
+| Evaluation interval | 60s | How often the engine runs. Minimum 60s. |
+| History depth | 10 | How many revisions each alert keeps for diffing and rollback. |

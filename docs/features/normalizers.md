@@ -1,48 +1,54 @@
 # Normalizers
 
-Normalizers transform field names and extract timestamps during log ingestion. They consolidate inconsistent naming conventions from different log sources into canonical field names.
+A normalizer renames and reshapes fields as logs are ingested, so data from different sources shares one set of field names. It can also derive fields such as `bifract_category` and say where to read the event timestamp. Normalizers are assigned to ingest tokens.
 
-## Creating a Normalizer
+![Normalizer editor](../images/features/normalizer-editor.png)
 
-Admins manage normalizers from the **Normalizers** page in the sidebar's Admin section.
+## Create a normalizer
 
-- **Name** and optional **Description**
-- **Transforms** - ordered list of field name transformations
-- **Field mappings** - map one or more source field names to a target name
-- **Timestamp fields** - custom field names and their Go time format strings
+Tenant admins only.
+
+1. Open **Normalizers** in the sidebar's admin section.
+2. Click **Create normalizer**.
+3. Enter a **Name** and optional **Description**.
+4. Under **Transforms**, pick a transform from **Add a transform...** and click **Add**. Repeat; drag to reorder.
+5. Under **Field Mappings**, click **+ Add mapping** and map one or more source names to a target.
+6. Under **Derived Fields**, click **+ Add derived field** to map a field's values to a new field (for example `event_id` 1 to `bifract_category` `process_creation`).
+7. Under **Timestamp Fields**, click **+ Add timestamp field** and give a field name and Go time format.
+8. Check the **Preview** panel: paste a sample event, or pick a fractal and click **Capture** to pull recent logs. The output updates live.
+9. Click **Save**.
+
+To use it, pick it as the **Normalizer** on an [ingest token](../administration/ingest-tokens.md). Each token uses one normalizer. **Import YAML**, **Export**, **Duplicate** and **Set Default** are on the Normalizers page.
 
 ## Transforms
 
-Transforms modify field names in order. The following are available:
+Transforms rename every field, in order.
 
-| Transform | Example |
-|-----------|---------|
-| `flatten_leaf` | `user.profile.name` &rarr; `name` |
-| `snake_case` | `UserID` &rarr; `user_id` |
-| `camelCase` | `user_id` &rarr; `userId` |
-| `PascalCase` | `user_id` &rarr; `UserId` |
-| `dedot` | `user.profile.name` &rarr; `user_profile_name` |
-| `lowercase` | `EventID` &rarr; `eventid` |
-| `uppercase` | `event_id` &rarr; `EVENT_ID` |
+| Transform | Example | Cannot combine with |
+|-----------|---------|---|
+| `flatten_leaf` | `user.profile.name` &rarr; `name` | `flatten_full`, `dedot` |
+| `flatten_full` | `user.profile.name` &rarr; `user_profile_name` | `flatten_leaf`, `dedot` |
+| `dedot` | `user.profile.name` &rarr; `user_profile_name` | `flatten_leaf`, `flatten_full` |
+| `snake_case` | `UserID` &rarr; `user_id` | `camelCase`, `PascalCase` |
+| `camelCase` | `user_id` &rarr; `userId` | `snake_case`, `PascalCase` |
+| `PascalCase` | `user_id` &rarr; `UserId` | `snake_case`, `camelCase` |
+| `lowercase` | `EventID` &rarr; `eventid` | `uppercase` |
+| `uppercase` | `event_id` &rarr; `EVENT_ID` | `lowercase` |
 
-Order matters. Some transforms conflict (e.g., `flatten_leaf` and `dedot` cannot be combined).
+## Field mappings
 
-## Field Mappings
-
-Map multiple source names to a single target:
+Map several source names to one target:
 
 | Sources | Target |
 |---------|--------|
 | `userId`, `user_id`, `uid` | `user_id` |
 | `srcIP`, `src_ip`, `source_address` | `src_ip` |
 
-This is useful when ingesting logs from different vendors that use different field names for the same concept.
+If one event has several fields that map to the same target, the one already named the target wins, otherwise the earliest source counting from the top. The preview flags these collisions.
 
-When one event has several fields that resolve to the same target, ingestion keeps one value: a field already named the target, otherwise the earliest source, counting mappings from the top. The editor's preview flags these collisions.
+### Map by raw path
 
-### Mapping by raw path
-
-A source starting with `$.` names a path in the raw event instead of a field name after transforms. Use it when two nested fields would otherwise get the same name, such as Velociraptor's `System.Execution.ProcessID` (the event log service) and `EventData.ProcessId` (the process the event is about):
+A source starting with `$.` names a path in the raw event rather than a field name after transforms. Use it when two nested fields would otherwise get the same name, such as Velociraptor's `System.Execution.ProcessID` and `EventData.ProcessId`:
 
 ```yaml
 field_mappings:
@@ -50,21 +56,18 @@ field_mappings:
     target: execution_process_id
 ```
 
-| Behavior | Detail |
-|----------|--------|
-| Matching | Segments are split on `.` and compared to the raw JSON keys, case-sensitively. A number selects an element of an array of up to 16 objects (`$.args.0.name`). Keys that contain a dot cannot be addressed. |
-| Naming | The field is stored under the target exactly as written. Transforms do not rename it, and other mappings do not remap it. |
-| Precedence | The path source's value always wins its target. Under `flatten_leaf`, another field that would get the same name keeps its full path instead (`event_data_process_id`); under `flatten_full` it is numbered (`execution_process_id_2`); when a name-based mapping has the same target, the other value is dropped. If two path sources share a target and both match, the one listed first wins. |
-| Transforms | A nested path needs `flatten_leaf` or `flatten_full`, placed before any rename transform. Without a flatten, only top-level keys (`$.EventID`) can be matched. |
-| Sigma | Sigma rules use field names, so path sources never apply to them. |
+??? note "Raw path rules"
+    | Rule | Detail |
+    |----------|--------|
+    | Matching | Segments split on `.` and match raw JSON keys case-sensitively. A number selects an element of an array of up to 16 objects (`$.args.0.name`). Keys containing a dot cannot be addressed. |
+    | Naming | Stored under the target exactly as written; transforms and other mappings do not rename it. |
+    | Precedence | The path value always wins its target. Under `flatten_leaf` a clashing field keeps its full path (`event_data_process_id`); under `flatten_full` it is numbered (`execution_process_id_2`); a name-based mapping to the same target is dropped. Between two matching path sources, the first listed wins. |
+    | Transforms | A nested path needs `flatten_leaf` or `flatten_full` before any rename transform. Without a flatten, only top-level keys (`$.EventID`) match. |
+    | Sigma | Sigma rules use field names, so path sources never apply to them. |
 
-## Event Categories
+## Event categories
 
-`bifract_category` is the canonical taxonomy field. It is what routes events into the
-provenance graph's backing tables and what [Sigma rules](../alerting/alert-feeds.md) are
-scoped against, so a normalizer handling endpoint telemetry should set it.
-
-Derive it with a value mapping from whatever your source uses to identify the event type:
+`bifract_category` routes events into the [provenance graph](provenance-graph.md) and scopes [Sigma rules](../alerting/alert-feeds.md), so a normalizer for endpoint data should set it. Add it as a derived field (`value_mappings` in YAML):
 
 ```yaml
 value_mappings:
@@ -79,17 +82,9 @@ value_mappings:
       "22": dns_query
 ```
 
-Value mappings run *after* field mappings, so `from_field` must name the target field, not
-the original source name.
+Derived fields run after field mappings, so `from_field` must be the target name, not the original source name. An optional `default` sets the value when nothing in `map` matches.
 
-Use **Sigma's `logsource.category` vocabulary** for these values, since Sigma rules are
-prefiltered by category. The exception is registry: emit `registry_event` for all registry
-activity, and Bifract maps Sigma's four registry categories onto it.
-
-### Common categories
-
-Only the first group builds [provenance graph](provenance-graph.md) edges. The rest are
-searchable and usable by Sigma rules like any other category.
+Use Sigma's `logsource.category` names. The exception is registry: emit `registry_event` for all registry activity, and Bifract maps Sigma's four registry categories onto it. Unlisted categories are used as written.
 
 | Category | Sysmon event | Builds graph edges |
 |---|---|---|
@@ -107,27 +102,17 @@ searchable and usable by Sigma rules like any other category.
 | `create_stream_hash` | 15 | no |
 | `file_delete` | 23, 26 | no |
 
-Categories not listed here still work: an unrecognised category is used verbatim, so any
-Sigma `logsource.category` is supported as long as your normalizer emits the same string.
+## Timestamp fields
 
-## Timestamp Fields
+Formats use Go layout syntax (`2006-01-02T15:04:05Z07:00` for RFC 3339), or `unix`, `unixmilli`, `unixmicro` or `unixnano` for epoch values. Bifract uses the first level that has timestamp fields configured:
 
-Define custom timestamp field names and their formats. During ingestion, Bifract checks for timestamps in this order:
+1. The ingest token's timestamp fields.
+2. Otherwise the normalizer's.
+3. Otherwise the global timestamp settings.
+4. Then common names (`timestamp`, `@timestamp`, `time`, `ts`, `_time`). If none match, ingest time is used.
 
-1. Per-token timestamp fields (if configured on the ingest token)
-2. Normalizer timestamp fields
-3. Global timestamp settings
-4. Common field name fallbacks
+## Default normalizer
 
-Formats use Go time layout syntax (e.g., `2006-01-02T15:04:05Z07:00` for RFC3339).
+The normalizer marked **Default** (set with **Set Default**) is applied to Bifract's internal logs. It cannot be deleted.
 
-## Assigning Normalizers
-
-Normalizers are assigned to **ingest tokens**, not applied globally. Each token can reference one normalizer. When logs arrive via that token, the normalizer is applied during parsing.
-
-[Alert feeds](../alerting/alert-feeds.md) can also reference a normalizer. When a feed syncs detection rules, the normalizer is applied to field names in the imported alerts so they match your ingested data.
-
-One normalizer can be marked as the **default**, which is used for internal log sources.
-
-!!! warning
-    The default normalizer cannot be deleted.
+[Alert feeds](../alerting/alert-feeds.md) can also reference a normalizer, which renames fields in the imported rules to match your data.

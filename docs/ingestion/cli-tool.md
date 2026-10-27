@@ -1,52 +1,37 @@
 # Ingest CLI
 
-The `bifract --ingest` command provides bulk log ingestion with batching, parallelism, and retry logic. By default it auto-detects workers and batch size, and adapts concurrency at runtime based on server feedback.
+`bifract --ingest` uploads log files in parallel batches with automatic retries. Use it for one-off imports and backfills; use a log shipper for continuous collection.
 
-## Installation
+## Install
 
-Install bifract from the [releases page](https://github.com/zaneGittins/bifract/releases) or build from source:
+Download `bifract` from the [releases page](https://github.com/zaneGittins/bifract/releases), or build it:
 
 ```bash
 go build -o bifract ./cmd/bifract
 ```
 
-## Usage
+## Upload files
+
+1. Copy an ingest token from the fractal's **Ingest** page (see [Sending Logs](overview.md#get-an-ingest-token)).
+2. Run the upload against the ingest port (8443):
 
 ```bash
-# Basic usage (auto mode) - note port 8443 for ingest
-bifract --ingest --url https://bifract.example.com:8443 --token bifract_ingest_abc123... file.json
+bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN file.json
+```
 
-# Multiple files
+More examples:
+
+```bash
+# Several files
 bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN *.json
 
-# Recursive directory ingestion
-bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
-  --recursive /var/log/exports/
+# A directory tree
+bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN -r /var/log/exports/
 
-# Override auto-detected parameters
+# Fixed concurrency instead of auto mode
 bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
   --workers 8 --batch-size 2000 *.json
 ```
-
-## Supported File Formats
-
-- JSON (arrays or single objects)
-- NDJSON (newline-delimited JSON)
-- CSV
-- TSV
-- Parquet (detected by `.parquet` extension or file header)
-
-Parquet rows are sent as JSON objects, so normalizers and timestamp detection apply as usual. Nested structs, lists and maps become nested JSON. Values are converted so nothing is lost on the way in:
-
-| Parquet type | Sent as |
-|------|---------|
-| `TIMESTAMP`, `INT96` | RFC 3339 string in UTC |
-| `DATE`, `TIME` | `2006-01-02`, `15:04:05.999999999` |
-| `DECIMAL` | Exact decimal string |
-| Integers beyond ±2^53 | Decimal string (JSON numbers lose precision there) |
-| `UUID` | Canonical UUID string |
-| Binary that is not valid UTF-8 | Hex string |
-| `NaN`, `±Inf` | `"NaN"`, `"+Inf"`, `"-Inf"` |
 
 ## Options
 
@@ -55,11 +40,34 @@ Parquet rows are sent as JSON objects, so normalizers and timestamp detection ap
 | `--url`, `-u` | `http://localhost:8443` | Bifract server URL |
 | `--token`, `-t` | (required) | Ingest token |
 | `--batch-size`, `-b` | auto (5000) | Logs per batch |
-| `--workers`, `-w` | auto (CPU cores) | Concurrent upload workers |
+| `--workers`, `-w` | auto (CPU cores, 2 to 32) | Concurrent upload workers |
 | `--limit`, `-l` | unlimited | Max logs per file |
-| `--recursive`, `-r` | false | Recursively find files in subdirectories |
-| `--insecure`, `-k` | false | Skip TLS certificate verification |
+| `--recursive`, `-r` | off | Recurse into directories |
+| `--insecure`, `-k` | off | Skip TLS certificate verification |
+| `--help`, `-h` | | Show help |
 
-When `--workers` and `--batch-size` are omitted, bifract runs in **auto mode**: it detects initial parameters from system resources and adapts concurrency at runtime based on server feedback (429 responses). Providing either flag switches to manual mode with fixed values.
+**Auto mode** is on when you pass neither `--workers` nor `--batch-size`: the CLI starts from your CPU count and lowers or raises concurrency based on `429` responses. Passing either flag fixes both values.
 
-The CLI automatically retries on `429` (rate limit / queue full) and `5xx` errors with exponential backoff (up to 5 retries).
+**Retries:** a `429` is retried, honoring `Retry-After`, for up to 15 minutes per batch. `5xx` and connection errors are retried 5 times with exponential backoff. A `413` fails the batch; lower `--batch-size`. Payloads over 4 KB are gzip-compressed.
+
+## Supported files
+
+| Format | Detected by |
+|---|---|
+| JSON array, single JSON object, NDJSON | File content |
+| CSV, TSV | `.csv`, `.tsv` extension |
+| Parquet | `.parquet` extension or the `PAR1` file header |
+
+With `-r`, only files ending in `.json`, `.ndjson`, `.jsonl`, `.csv`, `.tsv` or `.parquet` are picked up.
+
+Parquet rows are sent as JSON objects, so normalizers and timestamp detection apply. Nested structs, lists and maps become nested JSON. Values convert without loss:
+
+| Parquet type | Sent as |
+|------|---------|
+| `TIMESTAMP`, `INT96` | RFC 3339 string in UTC |
+| `DATE`, `TIME` | `2006-01-02`, `15:04:05.999999999` |
+| `DECIMAL` | Exact decimal string |
+| Integers beyond 2^53 (either sign) | Decimal string |
+| `UUID` | Canonical UUID string |
+| Binary that is not valid UTF-8 | Hex string |
+| `NaN`, `+Inf`, `-Inf` | `"NaN"`, `"+Inf"`, `"-Inf"` |

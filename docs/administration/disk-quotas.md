@@ -1,35 +1,31 @@
 # Disk Quotas
 
-Disk quotas let you cap how much data a fractal stores. When a fractal reaches its quota, Bifract either rejects new logs or automatically deletes the oldest to free up space for new data.
+A disk quota caps how much storage one fractal can use. When it is full, Bifract either rejects new logs or deletes the oldest ones to make room.
 
-## Configuration
+## Set a quota
 
-Quotas are configured per fractal from **Fractal settings > Lifecycle**.
+Tenant admins only.
 
-| Field | Description |
-|-------|-------------|
-| **Quota (GB)** | Maximum raw log storage for this fractal. Leave blank for unlimited. |
-| **Action** | What happens when the quota is reached: `Reject` or `Rollover`. |
+1. Open the fractal from **Fractals**, click **Fractal settings** in the sidebar, then the **Lifecycle** tab.
+2. Under **Quota**, enter a **Disk quota** in GB. Leave it empty for no limit.
+3. Pick **When quota is reached**: **Reject new logs** or **Rollover**.
+4. Click **Save quota**.
 
-Quota usage is estimated from ClickHouse part metadata, not by scanning logs, so checking it is cheap and always reflects the real table.
+![Quota settings](../images/administration/disk-quota.png)
 
+Usage is estimated from ClickHouse part metadata, so checking it never scans logs.
 
-## Enforcement Modes
+## Reject new logs
 
-### Reject
+The default. Once estimated usage plus an incoming batch would exceed the quota, the batch is refused with `429 Too Many Requests` and `Retry-After: 30`. Existing logs are kept. Shippers should back off longer than for normal queue pressure, or send elsewhere.
 
-New log batches are refused with `429 Too Many Requests` once the fractal's estimated usage plus the incoming batch would exceed the quota. Existing logs are not modified.
+## Rollover
 
-The client should treat 429 responses with a longer backoff than standard queue pressure. The `Retry-After` header is set to `30` seconds.
+New logs are always accepted. Once a minute, a background sweep checks each rollover fractal and, if it is over quota, deletes its oldest ingest days until usage is back to 80% of the quota.
 
-This mode is the default and is suitable when you want to preserve existing logs and signal upstream shippers to slow down or route elsewhere.
+- It drops whole days (one partition per fractal per ingest day), so a fractal with a few large days can end up well below 80%.
+- Oldest means earliest ingested, not earliest event timestamp.
+- The newest day is never dropped.
 
-### Rollover
-
-New logs are always accepted. A background sweep runs once a minute, and for any rollover fractal over its quota it drops the oldest data until usage is back at 80% of the quota, leaving headroom before the next trim.
-
-Rollover drops whole ClickHouse **partitions** (one fractal per ingest day each), which is a near-instant metadata operation rather than a row-level mutation. Because it works a day at a time, actual usage after a trim can sit noticeably below the 80% target when a fractal has few, large days. Oldest means oldest *ingested*, so a trim evicts the data you have held longest rather than whichever day carries the oldest event timestamps.
-
-Usage is read fresh from ClickHouse part metadata on every sweep, so the trim is self-correcting and needs no running total. In a multi-replica deployment a Postgres advisory lock ensures exactly one app pod runs the sweep at a time.
-
-This mode is suitable for long-running streams where recent data is most valuable and you want zero rejection of incoming traffic.
+!!! warning "Rollover deletes data"
+    Rollover silently deletes your oldest logs. For data you must keep, turn on the [Iceberg archive](backup-restore.md#iceberg-archive) so a copy survives.

@@ -1,167 +1,221 @@
 # Analytics Models
 
-Analytics **Models** turn a BQL query into a continuously-maintained detection baseline. Each model captures matching logs as they are ingested, summarizes them into a compact table, and can raise an alert when something deviates. Models are **fractal-scoped** and live under the fractal's **Analytics** page.
+An analytics model turns a BQL query into a baseline that updates as logs arrive, and can raise an alert when something deviates from it. Use one when a fixed rule cannot say what "normal" is, for example a port a host has never used or a sudden spike in connections. Models are fractal-scoped and live on the **Analytics** page.
 
-## Model Types
+![Analytics page](../images/features/models-list.png)
+
+## Model types
 
 | Type | Answers | Shape |
 |------|---------|-------|
-| **Rarity** | How unusual is a value within its group? | Group by (e.g. host), value (e.g. port), min history |
+| **Rarity** | How unusual is a value within its group? | **Group by** (e.g. host), **Value** (e.g. port), **Min history (days)** |
 | **First / Last Seen** | When was an entity first and last observed? | One or more key fields |
-| **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, time bucket (hour/day), min history |
-| **TLSH Index** | Which fuzzy-hash digests exist here? | One digest field |
-| **Beacon** | Is this pair talking on a suspiciously regular interval? | `src_ip`, `dst_ip`, `dst_port` |
-| **Long Connection** | Is this pair holding an unusually long-lived session? | `src_ip`, `dst_ip`, `dst_port` |
+| **Volume Baseline** | Does an entity's volume deviate from its own history? | Entity fields, **Bucket** (per day or per hour), min history |
+| **TLSH Index** | Which fuzzy-hash digests exist here? | One digest field. Not a detection on its own: it is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row |
+| **Beacon** | Is this pair talking on a suspiciously regular interval? | Source, destination and port fields, bytes field, rolling window |
+| **Long Connection** | Is this pair holding an unusually long-lived session? | Source, destination and port fields, duration field, rolling window |
 
-### How rarity is scored
+## Create a model
 
-Rarity counts **days**, not events: a value seen 10,000 times on one day counts once, so a burst cannot make itself look normal. For each value in a group (the "Group by" field):
+1. Open **Analytics** in the sidebar (under **Data**).
+2. Click **Create model**.
+3. Pick a template under **Start from a template**, or click **Start blank**. A template fills the query, type, shape and thresholds.
+4. Type a name in **Name this model**.
+5. In the query box, write a BQL filter for the logs that feed the model (leave it empty to use every log). Click **Run** to preview matching logs and the fields you can key on.
+6. In the right panel, pick a **Type**, then fill in **Shape** (see the sections below).
+7. Set the thresholds under **Detection**.
+8. Open the **Scores** tab to see what the model would flag over the last 1, 7 or 30 days, or a **Custom range** of up to 90 days. Moving a threshold recounts the flagged rows without another scan.
+9. Click **Create model**.
 
-| Output | Meaning |
-|---|---|
-| `model_count` | Days the value was seen |
-| `model_total` | Days the group was seen with any value |
-| `percent` | `model_count / model_total`, the share of the group's days the value appeared on |
-| `coverage` | Good-Turing coverage of the group: 1 minus (values seen on only one day / total value-days). Near 1 means the group rarely produces a new value; low means new values are routine there |
+![Model editor](../images/features/models-editor.png)
 
-The alert fires on a value whose `percent` is below the share threshold while `coverage` is above its threshold. Port 22 appearing once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `coverage` 0.99; on a host that touches a new port most days, `coverage` stays low and new ports do not alert.
+Saving creates a paused alert with the chosen thresholds (TLSH Index creates none). Activate it from the **Alert** column on the Analytics page, and set actions, throttling and severity on the **Alerts** page. See [Alerts](../alerting/alerts.md).
 
-**Min history** is the learning period: the days a group must have been seen (`model_total`) before any of its values can alert. It defaults to 14, two weeks of normal. The share threshold adds its own floor, since a value seen on one day only falls below it once the group has more than 100 / threshold days (10% needs more than 10), so the effective learning period is the longer of the two. A value is never held back for being new: first sightings are what the model finds.
+A model records new logs from the moment it is created. To score older logs, [seed it with a backfill](#seed-history-backfill).
 
-### How volume is scored
+Templates:
 
-Volume Baseline scores the latest **complete** time bucket (`latest_bucket`, yesterday for a daily model) against the entity's own history; the current incomplete bucket is excluded. History runs from the entity's first bucket in the window (90 days for daily, 30 days for hourly) up to, but not including, the scored bucket. Buckets with no events count as zero, so a quiet entity's bursts and drops show, and an empty scored bucket scores as 0 events.
-
-An hourly model compares an hour only with the same hour on the same kind of day: 3am on a weekday against past weekday 3am hours, Saturday 2pm against past weekend 2pm hours (UTC). Pooling every hour made a normal working morning an outlier against quiet nights, and let a night-time burst pass as an ordinary busy hour. Its history and min history therefore count past samples of that hour, one a day: a weekday hour gathers about 21 in the window and a weekend hour 8, so min history is at most 8.
-
-| Output | Meaning |
-|---|---|
-| `latest_count` | Events in `latest_bucket` (0 when it was empty) |
-| `baseline_median` | Median count per bucket over the history |
-| `mad` | Median absolute deviation of the history |
-| `n_buckets` | Buckets of history, empty ones included: days for a daily model, past samples of the same hour for an hourly one. An entity is scored once this reaches **min history** (default 7 daily, 4 hourly) |
-| `z_score` | Modified z-score, `0.6745 * (latest_count - median) / mad`. 3.5 is the standard cutoff |
-
-When `mad` is 0 (most buckets equal the median), `z_score` falls back to `(latest_count - median) / (1.253314 * mean absolute deviation)`. When the history is perfectly flat (every bucket the same), any change scores `z_score` 1000000, or -1000000 for a drop, shown as "flat history, any change". Daily models do not separate weekdays from weekends.
-
-### What "new" means for First / Last Seen
-
-`first_seen` and `last_seen` are event times. `is_new`, which the alert fires on, is about the model instead: it is `1` when the model first recorded the entity within the last hour. A log that arrives late, or a dataset replayed with old timestamps, still counts as new if the model has not seen its entity before (for a model with a history window, within what it remembers; see below). History seeded by a backfill never counts as new, so seeding does not flood the alert; run the backfill before activating the alert, or entities that only appear in history may fire once before the backfill reaches them. An alert catching up on a backlog counts everything recorded since the start of the window it is evaluating. The **Data** view shows when the model recorded each entity as `recorded_at` in the row details (empty for seeded history).
-
-### History window
-
-By default a Rarity or First / Last Seen model remembers everything it has ever recorded: a value a host used every day six months ago and never since is still normal to it, and its state keeps a row for every key it has ever seen. A **history window** (30, 90, 180 or 365 days in the editor; `history_days`, 7 to 365, in the API) changes both:
-
-- **Rarity** counts only days inside the window, so `model_count`, `model_total`, `percent` and `coverage` describe the last N days. A value a group stopped using ages out, and one that returns after the window is rare again. The window must be at least the learning period above (the min history, or more than 100 / share threshold days when the alert sets a share threshold), or no group could ever alert.
-- **First / Last Seen** treats an entity as new when it comes back after at least N whole days with no sighting (a 7-day window: seen on the 1st, new again on the 9th): `is_new` fires once, and `first_seen` is the return. `first_seen`, `last_seen` and `event_count` describe the window. An entity seen throughout is never new, however long the model has run.
-
-To tell a return from an entity that was there all along, a windowed model remembers twice its window: one row per key per day of event time, which ClickHouse drops once it is a day older than that. A key seen every day therefore keeps up to 2N rows rather than one, so a long window on a high-cardinality key costs more storage, not less; what the window bounds is the keys a model keeps, since one not seen for 2N days is gone. Reads apply both spans themselves, so a day leaves the results as soon as it leaves the window.
-
-New is judged against what the model remembers. A late log older than the window counts for nothing, and one inside it never makes an entity new a second time. An entity whose only earlier sighting was more than 2N days ago is new again. In the **Data** view `since` is the day it returned and `recorded_at` when the model recorded that; `recorded_at` is empty for seeded history, and both are empty for an entity that never left. The **Findings** trend and the health sparkline count returns the same way.
-
-Setting or changing the window rebuilds the model, like any other change to what it records, so seed it again afterwards. A backfill only writes the 2N days the model keeps, and a preview over a range longer than the window scores the window's last N days, as the model would.
-
-TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
-
-Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one.
-
-### Network modifiers
-
-The final score is the regularity (or duration) score plus up to three adjustments, clamped to 0-1. Each is stored with the pair, as `prevalence_score`, `first_seen_score` and `threat_intel_score`, and the **Why** column and the preview name the ones that moved it.
-
-| Modifier | Applies when | Default |
+| Template | Type | Shape |
 |---|---|---|
-| Prevalence | Always. A destination at most 2% of the window's sources talk to is boosted; one at least 50% talk to is lowered | +0.15 / -0.15 |
-| First seen | A **First seen from** model is linked. A destination that model first saw in the last 7 days is boosted; one it first saw 90 or more days ago is lowered | +0.15 / -0.15 |
-| Threat intel | A **Threat intel lookup** and its key column are set. A destination the lookup lists is boosted, matched as `match(dict=, column=)` would | +0.25 |
+| New programs per host | First / Last Seen | `computer_name`, `image` |
+| Rare child of Office apps | Rarity | `image` per `parent_image` |
+| New outbound ports per host | Rarity | `dst_port` per `computer_name` |
+| Network volume spike per host | Volume Baseline, per hour | `computer_name` |
+| Beaconing | Beacon | `src_ip`, `dst_ip`, `dst_port`, `orig_bytes` |
 
-The network state only holds the window, so it cannot say how long a destination has been around: a pair talking every minute for six months is more likely a business service than one that started this week. Link a First / Last Seen model keyed on the network model's destination field (`[dst_ip]`), or on its source and destination fields in that order (`[src_ip, dst_ip]`) to judge the pair rather than the destination. The save refuses a model keyed on anything else, one whose key its source query rewrites (an extraction, `lowercase()`, a lookup), since the network state holds the raw values, and one with a history window, whose first sightings could never be older than the window.
+### Rarity
 
-Seed the linked model with a backfill. Its record starts when its table was last created (on creation, or when an edit rebuilds it) or at the start of a completed backfill, and a destination it first saw within 7 days of that start is not boosted: it may only be where the record begins. The preview and the scorer's log say when that applies. A destination the linked model has no record of gets no first-seen adjustment.
+1. Set **Group by** to the field that gets its own baseline, e.g. `computer_name`.
+2. Set **Value** to what is rare or common within a group, e.g. `dst_port`.
+3. Set **Min history (days)**: days a group must be seen before its values can alert (default 14).
+4. Optionally pick a **History window** (see [History window](#history-window)).
+5. Under **Detection**, set **Min coverage** (default 0.9) and **Max % of days** (default 10).
 
-In a definition these are `modifiers.first_seen_model`, `modifiers.threat_intel_lookup` and `modifiers.threat_intel_column`, with `first_seen_recent_days` (which must be less than) `first_seen_established_days`, `prevalence_low_threshold` and `prevalence_high_threshold` for the cutoffs. Every adjustment (`prevalence_increase`, `prevalence_decrease`, `first_seen_increase`, `first_seen_decrease`, `threat_intel_increase`) takes its default when left out, and a negative value turns that side off.
+### First / Last Seen
 
-A link must resolve when it is saved. Editing a model that keeps an existing link checks it again only if the source or destination field changed, and never refuses the edit because the linked model was deleted since. If the linked model or lookup is deleted later, or cannot be read during a pass, only its modifier stops applying: the rest of the pass is scored and the scorer logs why, once per change. A linked model that is rebuilding after an edit stays linked.
+1. Add one or more fields under **Key Fields (entity to track)**, e.g. `computer_name` and `image`.
+2. Optionally pick a **History window**.
+3. Leave **Alert on new entities only** checked to alert on each new entity.
 
-The threat intel boost is larger than the others so that a listed destination with moderate regularity (0.55 or more) reaches the default 0.8 beacon threshold, while one with no regularity at all still does not.
+### Volume Baseline
 
-!!! note "Changed adjustment defaults"
-    Before the first-seen and threat intel modifiers, a `modifiers` object that set any one field scored every adjustment it left out as 0, and a negative adjustment took the default. Both are now the other way round, as described above. A network model defined through the API with a partial `modifiers` object scores those adjustments at their defaults from its next pass; set the ones you want off to a negative value.
+1. Add one or more fields under **Entity Fields (baseline per)**, e.g. `user`.
+2. Pick **Bucket**: **Per day** or **Per hour**.
+3. Set min history (default 7 days, or 4 same-hour samples for hourly, at most 8).
+4. Under **Detection**, set **Z-score threshold** (default 3.5).
 
-## Using a Model in Queries
+### TLSH Index
 
-Any model can be read from BQL with `modelLookup()`, which joins the model's baseline onto matching rows so you can filter or aggregate on it:
+1. Set **Digest Field** to the field holding TLSH digests.
+2. Save, then run a backfill to index existing history.
+
+### Beacon and Long Connection
+
+1. Set **Source field**, **Destination field** and **Port field** (defaults `src_ip`, `dst_ip`, `dst_port`).
+2. Beacon: set **Bytes field (connection size)**. Long Connection: set **Duration field (seconds)**.
+3. Pick a **Rolling window**: 1, 7 or 14 days. Longer windows catch slower beacons.
+4. Optionally link a **First seen from** model and a **Threat intel lookup** with its **Key column** (see [Network modifiers](#network-modifiers)).
+5. Under **Detection**, set **Beacon score threshold** (default 0.8) or **Long-connection score threshold** (default 0.5).
+
+### Source query rules
+
+- The query must keep one row per log. Filters, `match()` against a [lookup](dictionaries.md), CIDR ranges, regexes and lists are fine.
+- Not allowed: aggregations, `sort`, `head`, `dedup`, anything that limits rows (`limit`, a chart's `limit=`), and commands that read outside the cycle's window (`join`, `chain`, `modelLookup`, `tlsh`, `pgr`). The editor names the reason inline.
+- Use `regex()` to extract fields from `norm_log` or another field. `raw_log` cannot be a source: it is kept for only 7 days.
+- A key can be a log field, a `regex(... as=)` extraction, or any column the query computes and names with `as=`. Generated names starting with `_` are refused. Network models cannot key on computed columns.
+
+!!! warning "Computed keys follow their source"
+    A key computed from a lookup takes the lookup's value when each cycle runs. Renaming a lookup entry splits one entity into two, and the new one looks brand new. Key on the stored field when that matters.
+
+## Seed history (backfill)
+
+1. Open the model from the Analytics page.
+2. Click **Backfill**.
+3. Pick **Last 24h**, **Last 7 days**, **Last 30 days**, **Last 90 days**, or **Custom range** (up to 90 days, in your display timezone).
+4. Click **Start backfill**.
+
+Progress shows per day and can be cancelled. A failed or cancelled backfill resumes from where it stopped without double-counting. A completed backfill cannot be run again; editing what the model records rebuilds it and clears its data, after which you can seed it again.
+
+API: `POST /models/{id}/backfill` with either `window` or `from` and `to` (RFC 3339).
+
+## View results
+
+Click a model name to open it.
+
+![Model findings](../images/features/models-data.png)
+
+- **Findings** lists what the alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search and paging.
+- The summary line counts findings and, for Rarity and First / Last Seen, what was new this week.
+- The **Why** column and row details give the facts behind each row (days seen, group coverage, latest against typical volume, regularity). Click a fact that names activity to search for it. **All columns** in the row details shows every stored column.
+
+| Type | A finding is | Ordered by |
+|---|---|---|
+| Rarity | A value meeting the coverage and share-of-days thresholds | Share of days, then coverage |
+| Volume Baseline | An entity whose `z_score` is above the threshold | `z_score`, highest first |
+| First / Last Seen | An entity first recorded in the last 7 days | Newest first |
+| Beacon, Long Connection | A pair whose score is above the threshold | Score, highest first |
+
+TLSH Index has no findings. API: `GET /models/{id}/data?view=findings`.
+
+## Model health
+
+The **State** column shows the worst state that applies; hover for the reason.
+
+| State | Meaning |
+|---|---|
+| **Error** | The model failed to build |
+| **Not updating** / **Not started** / **Behind** | State maintenance is failing, never picked the model up, or lags the logs |
+| **Rebuilding** | Its tables are being created |
+| **Backfill n%** | History is being seeded |
+| **Stale** | Newest recorded event is over 2 days old (3 hours for an hourly Volume Baseline) |
+| **Learning k/n** | Not enough history yet: Rarity its learning period per group, Volume Baseline its min history, First / Last Seen 7 days, network models one full window |
+| **Healthy** | Recording and scoring normally |
+
+**Findings 7d** counts what the model surfaced in the last 7 days, with a daily sparkline for Rarity and First / Last Seen. **Last alert** is when the linked alert last fired. Both come from the model's own tables and are cached for two minutes.
+
+## Use a model in queries
+
+`modelLookup()` joins a model's output onto matching rows:
 
 ```
 * | modelLookup(model="rare_parent_child", key=[parent_image, image])
 ```
 
-See [Enrichment](../bql/enrichment.md#modellookup) for the key shape each model type expects.
+See [Enrichment](../bql/enrichment.md#modellookup) for the key shape of each type.
 
-## Building a Model
+## Import and export
 
-A new model opens on a gallery of templates over the normalized schema: new programs per host (First / Last Seen on `computer_name`, `image`), rare child of Office apps (Rarity of `image` per `parent_image`), new outbound ports per host (Rarity of `dst_port` per `computer_name`), network volume spike per host (hourly Volume Baseline on `computer_name`), and beaconing. A template fills the query, shape and thresholds and scores the result; **Start blank** skips it.
+Click **Export** on a model to download its YAML. Click **Import YAML** on the Analytics page to load one into the current fractal.
 
-The **Scores** tab estimates what the model would produce over a window: the last 1, 7 or 30 days, or a **custom range** of up to 90 days that can end in the past, so a model over older data can be judged on it. The threshold controls above the distribution recount "would flag" as they move, without another scan.
+## Scoring reference
 
-The editor is a split panel:
+### How rarity is scored
 
-- **Left - source query.** Write a BQL filter to narrow which logs feed the model, and use `regex()` to pull fields out of `norm_log` (the normalized event text) or a specific field. Run it against a time range to preview matching logs and the fields you extracted. `raw_log` cannot be an extraction source: it is only retained for 7 days, while model state is long-lived.
+Rarity counts **days**, not events: a value seen 10,000 times on one day counts once, so a burst cannot make itself look normal.
 
-  The source accepts any BQL that keeps one row per log, so a filter can consult a [lookup](dictionaries.md) (`match()`), a CIDR range, a regex or a list. What it cannot accept is a query that changes the row set: an aggregation, `sort`/`head`/`dedup`, anything that bounds the rows it returns (`limit`, a chart's `limit=`), or a command that reads outside the window a cycle covers (`join`, `chain`, `modelLookup`, `tlsh`, `pgr`). The editor names the reason inline.
-
-  A key can be a log field, a `regex(... as=)` extraction, or a column the query computes: a `match(include=[...])` lookup, a `lowercase()` rewrite, anything you name with `as=`. The model's scan projects it. Two exceptions: a generated name (anything starting with `_`) is refused because you did not choose it, so name it with `as=`; and a network model cannot key on a computed column at all, because its state is one flat aggregate over the log table with nowhere to compute one.
-
-  A computed key follows whatever computed it. Keying on a dictionary lookup means the key is whatever the list said **when that cycle ran**: rename a list entry and rows read afterwards carry the new name while state already built keeps the old one, so the same tool appears as two entities and the new one looks brand new. Key on the stored value instead when that matters.
-- **Right - shape and alert.** Pick the model type, map its keys to extracted or base fields, and optionally attach an alert.
-
-Models capture new logs from the moment they are created. They do **not** retroactively process history until you seed it (see below).
-
-## Seeding History (Backfill)
-
-From a model's **Data** view, seed historical data over a lookback window (24h, 7d, 30d, or 90d) or a custom from/to range of up to 90 days, entered in your display timezone. The API takes either `window` or `from` and `to` (RFC 3339) on `POST /models/{id}/backfill`. Progress is shown per-day and can be cancelled; a failed or cancelled backfill can be resumed from where it stopped without double-counting. Seeding is terminal once complete - to re-seed, edit the model (which resets its data).
-
-## Alerts
-
-Each model has an alert mode:
-
-- **Collect data only** - the model runs silently; view its data anytime.
-- **Paused** (recommended default) - the alert is created but does not fire until enabled.
-- **Active** - the alert fires when its threshold is exceeded.
-
-Thresholds depend on the model type (coverage and max share of days for Rarity, z-score for Volume Baseline, new-entities-only for First/Last Seen). Toggle the mode from the listing or the data viewer. See [Alerts](../alerting/alerts.md) for actions and feeds.
-
-## Model Health
-
-The listing shows one state per model, the worst that applies, with the reason on hover:
-
-| State | Meaning |
+| Output | Meaning |
 |---|---|
-| **Error** | The model failed to build |
-| **Not updating** / **Not started** / **Behind** | State maintenance is failing, never took the model over, or lags the logs |
-| **Rebuilding** | Its tables are being created |
-| **Backfill n%** | History is being seeded |
-| **Stale** | The newest event the model recorded is more than 2 days old (3 hours for an hourly Volume Baseline, which otherwise scores every entity against an empty bucket) |
-| **Learning k/n** | Too little history for scores to mean much. Rarity needs its min history in days per group, or more than 100 / share threshold days if that is longer, Volume Baseline its min history in buckets, First / Last Seen 7 days, network models one full window |
-| **Healthy** | Recording and scoring normally |
+| `model_count` | Days the value was seen |
+| `model_total` | Days the group was seen with any value |
+| `percent` | `model_count / model_total`, the value's share of the group's days |
+| `coverage` | Good-Turing coverage: 1 minus (values seen on only one day / total value-days). Near 1 means the group rarely produces new values |
 
-**Findings** counts what the model surfaced over the last 7 days: entities first recorded per day (First / Last Seen) or value pairs first seen per day (Rarity), each with a daily sparkline; entities above the z threshold in the latest bucket (Volume Baseline); pairs at or above the score threshold (network models). **Last alert** is when the linked alert last fired. Both are read from the model's own tables, never raw logs, and cached for two minutes.
+The alert fires when `percent` is below **Max % of days** and `coverage` is above **Min coverage**. Example: port 22 seen once on a host that used ports 80, 443 and 8080 every day for 30 days scores `percent` 3.3 and `coverage` 0.99, so it alerts. On a host that uses a new port most days, `coverage` stays low and nothing alerts.
 
-## Viewing Results
+Learning period: a group must reach **Min history** days, and a value seen once only drops below the share threshold after more than 100 / threshold days (10% needs more than 10). The longer of the two applies.
 
-The **Data** view opens on **Findings**: the rows the model's alert would raise, most unusual first. **All rows** lists everything the model scored, with sorting, search, and pagination.
+### How volume is scored
 
-| Type | A finding is | Ordered by |
+Volume Baseline scores the latest **complete** bucket (`latest_bucket`, yesterday for a daily model) against the entity's own history. History runs from the entity's first bucket in the window (90 days daily, 30 days hourly) up to the scored bucket. Empty buckets count as zero.
+
+Hourly models compare an hour only with the same hour on the same kind of day (UTC): weekday 3am against past weekday 3am hours, Saturday 2pm against past weekend 2pm hours. A weekday hour has about 21 samples in the window and a weekend hour 8, so hourly min history is at most 8. Daily models do not separate weekdays from weekends.
+
+| Output | Meaning |
+|---|---|
+| `latest_count` | Events in `latest_bucket` |
+| `baseline_median` | Median count per bucket over the history |
+| `mad` | Median absolute deviation of the history |
+| `n_buckets` | Buckets of history, empty ones included. Scored once this reaches min history |
+| `z_score` | Modified z-score, `0.6745 * (latest_count - median) / mad` |
+
+??? note "Edge cases"
+    - When `mad` is 0, `z_score` is `(latest_count - median) / (1.253314 * mean absolute deviation)`.
+    - When every bucket is the same, any change scores 1000000 (or -1000000 for a drop), shown as "flat history, any change".
+
+### What "new" means for First / Last Seen
+
+`first_seen` and `last_seen` are event times. `is_new`, which the alert fires on, is `1` when the model **first recorded** the entity in the last hour. So late logs and replayed data still count as new if the entity is new to the model.
+
+- History seeded by a backfill never counts as new. Run the backfill before activating the alert, or entities only in history may fire once before the backfill reaches them.
+- The **Data** view shows `recorded_at` in the row details (empty for seeded history).
+
+### History window
+
+By default Rarity and First / Last Seen remember everything they ever recorded. A **History window** (30, 90, 180 or 365 days in the editor; `history_days` 7 to 365 in the API) limits that:
+
+- **Rarity** counts only days inside the window. A value the group stopped using ages out and is rare again when it returns. The window must be at least the learning period.
+- **First / Last Seen** treats an entity as new again after N whole days without a sighting (7-day window: seen on the 1st, new again on the 9th). `first_seen`, `last_seen` and `event_count` describe the window. In the **Data** view, `since` is the day it returned.
+
+!!! note
+    A windowed model keeps one row per key per day for twice its window, so a long window on a high-cardinality key costs more storage, not less. Changing the window rebuilds the model; seed it again afterwards.
+
+### Network modifiers
+
+Beacon and Long Connection keep rolling per-pair state and score it on a schedule. The final score is the regularity (or duration) score plus up to three adjustments, clamped to 0 to 1. Each is stored with the pair (`prevalence_score`, `first_seen_score`, `threat_intel_score`) and named in the **Why** column.
+
+| Modifier | Applies when | Default |
 |---|---|---|
-| Rarity | A value meeting the alert's coverage and share-of-days thresholds | Share of days, then coverage |
-| Volume Baseline | An entity whose `z_score` is above the alert's threshold | `z_score`, highest first |
-| First / Last Seen | An entity first recorded by the model in the last 7 days | Newest first |
-| Beacon, Long Connection | A pair whose score is above the alert's threshold | Score, highest first |
+| Prevalence | Always. Boosts a destination at most 2% of the window's sources talk to; lowers one at least 50% talk to | +0.15 / -0.15 |
+| First seen | A **First seen from** model is linked. Boosts a destination first seen in the last 7 days; lowers one first seen 90 or more days ago | +0.15 / -0.15 |
+| Threat intel | A **Threat intel lookup** and **Key column** are set. Boosts a destination the lookup lists, matched as `match(dict=, column=)` | +0.25 |
 
-A rarity model with no thresholds has no findings, and a TLSH Index has no alert, so it shows only its rows. The same rows are available from the API as `GET /models/{id}/data?view=findings`.
+The threat intel boost lets a listed destination with moderate regularity (0.55 or more) reach the default 0.8 beacon threshold.
 
-A summary line above the table counts the findings and, for rarity and first/last seen models, what was new this week, with a 30-day sparkline of new values per day. A **Why** column and the row details state the facts behind each row (days seen, group coverage, latest against typical volume, connection regularity); a fact that names the row's activity opens it in search. The row details keep every stored column under **All columns**.
+??? note "Linking a First seen from model"
+    - Key it on the network model's destination field (`[dst_ip]`), or source and destination in that order (`[src_ip, dst_ip]`) to judge the pair.
+    - Save refuses a model keyed on anything else, one whose key its query rewrites (an extraction, `lowercase()`, a lookup), and one with a history window.
+    - Seed it with a backfill. A destination first seen within 7 days of the start of its record (creation, rebuild, or a completed backfill's start) is not boosted. A destination it has no record of gets no adjustment.
+    - If a linked model or lookup is deleted or unreadable, only that modifier stops applying; the scorer logs why.
 
-## Import / Export
-
-Models export to YAML for version control or sharing between fractals and deployments, and can be re-imported from the listing.
+??? note "Modifier fields in YAML and the API"
+    `modifiers.first_seen_model`, `modifiers.threat_intel_lookup`, `modifiers.threat_intel_column`, cutoffs `first_seen_recent_days` (must be less than `first_seen_established_days`), `prevalence_low_threshold`, `prevalence_high_threshold`, and adjustments `prevalence_increase`, `prevalence_decrease`, `first_seen_increase`, `first_seen_decrease`, `threat_intel_increase`. A missing adjustment takes its default; a negative value turns it off.

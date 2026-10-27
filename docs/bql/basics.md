@@ -1,207 +1,95 @@
 # Basics & Filtering
 
-BQL is Bifract's query language for searching and analyzing logs. It uses a pipeline model where results are filtered and transformed through a series of commands separated by `|`.
+BQL is Bifract's query language for searching and analyzing logs. A query is a filter followed by commands, joined with `|`, and runs against the selected fractal and time range.
 
-## Basics
+![Query page with a query and results](../images/bql/query-page.png)
+
+## Run a query
+
+1. Open a fractal, then click **Query** in the sidebar.
+2. Pick the time range with the time picker in the toolbar (default **Last 24h**).
+3. Type a query in the query bar, for example `event_id=4625 | groupBy(src_ip)`.
+4. Press **Enter** or click **Run**. **Shift+Enter** adds a new line.
+
+While typing, type `?` inside a function's parentheses to see its signature, then click **Browse all** for the full reference. **Ctrl+/** comments out the current line.
+
+## Query structure
 
 ```
 filter | command() | command()
 ```
 
-- Start with a filter expression (or `*` to match all logs)
-- Chain commands with `|`
-- A filter can follow any `|` and means the same there as at the start. It applies to the rows as they are where it is written: `level="a" | lowercase(level)` compares the original value, `lowercase(level) | level="a"` the lowercased one
-- All queries run against the selected time range and fractal
-
-### Comments
-
-A line beginning with `//` is a comment and is stripped before the query runs. Comments must
-be on their own line; `//` after query text on the same line is not a comment.
+- Start with a filter, or `*` to match every log.
+- A filter can also follow any `|`. It applies to the rows at that point: `level="a" | lowercase(level)` compares the original value, `lowercase(level) | level="a"` the lowercased one.
+- A line starting with `//` is a comment. `//` after query text on the same line is not.
 
 ```
 // failed logons, busiest source first
-event_id=4625 | groupBy(src_ip, function=count()) | sort(_count, order=desc)
+event_id=4625 | groupBy(src_ip) | sort(_count, order=desc)
 ```
 
-## Filtering
+## Filters
 
-### Match all logs
+| Filter | Matches | Example |
+|---|---|---|
+| `*` | Every log | `*` |
+| `=` | Exact value | `event_id=1` |
+| `!=` | Not the value (also rows missing the field) | `status!=200` |
+| `=/regex/` | Regex; add `i` for case-insensitive | `image=/powershell/i` |
+| `!=/regex/` | Does not match the regex | `image!=/svchost/` |
+| `=~` | Contains any of the terms, case-insensitive | `image=~powershell,pwsh,cmd` |
+| `=^` | Starts with any of the terms, case-insensitive | `image=^mimikatz,impacket` |
+| `=$` | Ends with any of the terms, case-insensitive | `image=$exe,dll,bat` |
+| `=*` | Field is present and not empty | `user=*` |
+| `>` `<` `>=` `<=` | Numeric comparison | `status_code>=500` |
+| `"text"` or `/regex/` | Case-insensitive search of `norm_log`, the normalized event text | `"authentication failed"` |
 
-```
-*
-```
+`=~` is faster than an equivalent regex for multi-term searches. Quote a term that contains a space: `commandline=^"powershell -enc"`.
 
-### Field equality
+### Compare two fields
 
-```
-event_id=1
-status=error
-```
-
-### Regex match
-
-```
-image=/powershell/i
-| commandline=/cmd\.exe/
-```
-
-Append `i` for case-insensitive matching.
-
-### Contains-any (`=~`)
-
-Case-insensitive substring match against a comma-separated list of terms. Faster than equivalent regex for multi-term searches: it uses SIMD multi-pattern search internally and gains additional speed from text indexes when present.
+The right side of a comparison is a literal, so `src_port=dst_port` matches the text "dst_port". Wrap it in `field()` to compare against another field:
 
 ```
-image=~powershell,pwsh,cmd
-commandline=~encodedcommand,bypass,hidden
-parent_image=~wscript,cscript,mshta
-```
-
-Single-term form also works:
-
-```
-image=~mimikatz
-```
-
-### Starts-with-any (`=^`)
-
-Case-insensitive prefix match against a comma-separated list of terms.
-
-```
-image=^mimikatz,impacket
-commandline=^"powershell -enc"
-src_ip=^192.168,10.
-```
-
-### Ends-with-any (`=$`)
-
-Case-insensitive suffix match against a comma-separated list of terms.
-
-```
-image=$exe,dll,bat
-image=$powershell.exe,cmd.exe
-```
-
-### Negative match
-
-```
-image!=/powershell/
-status!=200
-```
-
-### Wildcard value
-
-Match any non-empty value for a field:
-
-```
-user=*
-```
-
-### Comparison operators
-
-```
-status_code>=500
-bytes>1000
-response_time<200
-```
-
-### Compare two fields (`field()`)
-
-The right-hand side of a comparison is normally a literal: `src_port=dst_port` matches rows whose `src_port` is the text "dst_port". Wrap it in `field()` to compare against another field's value instead.
-
-```
-src_port = field(dst_port)
 src_bytes > field(dst_bytes)
-user != field(process_owner)
 ```
 
-Valid with `=`, `!=`, `>`, `<`, `>=` and `<=`. `=` and `!=` compare the two as text; the ordering operators compare them numerically. A row missing either field never matches `=` and always matches `!=`.
+Works with `=`, `!=`, `>`, `<`, `>=` and `<=`. `=` and `!=` compare as text, the others as numbers. This cannot use a skip index, so put a selective filter in front of it.
 
-Both fields are read per row, so the comparison cannot prune granules through a skip index. Put a time range or another selective filter in front of it.
-
-### In (value list)
-
-Filter by a set of values:
+### Value lists and IP ranges
 
 ```
 * | in(status, "200,301,404")
-```
-
-### CIDR range
-
-Filter by IP address range:
-
-```
 * | cidr(src_ip, "10.0.0.0/8")
-* | cidr(dst_ip, "192.168.1.0/24")
 * | !cidr(src_ip, "10.0.0.0/8")
 ```
 
-Use `!cidr()` to exclude a range.
-
-### Bare string search
-
-Searches `norm_log` (the canonical normalized event text) for a substring or pattern. `norm_log` carries an n-gram text index, so these searches prune granules rather than scanning every row.
-
-```
-"authentication failed"
-/failed.*login/i
-```
+`in()` matches any listed value. `cidr()` matches addresses in the range; `!` negates either.
 
 ### Boolean logic
 
 ```
-event_id=1 AND image=/powershell/i
-status=error OR status=critical
-NOT image=/svchost/
+(status=error OR status=critical) AND NOT image=/svchost/
 ```
 
-AND has higher precedence than OR. Use parentheses to group:
-
-```
-(status=error OR status=critical) AND user=admin
-```
-
-Implicit AND: multiple conditions without an operator are ANDed together.
-
-```
-event_id=1 image=/powershell/i
-```
-
-A condition that starts with a field binds like AND (`a=1 OR b=2 c=3` is `a=1 OR (b=2 AND c=3)`). Any other term written without an operator (NOT, a search string, a function, a bracketed group) ANDs with everything before it, so this line-per-condition query means `(status=error OR status=critical) AND NOT image=/svchost/`:
-
-```
-status=error OR status=critical
-NOT image=/svchost/
-```
-
-Condition functions are operands like any other, so they group and negate the same way:
-
-```
-cidr(dst_ip, "10.0.0.0/8") OR cidr(dst_ip, "192.168.0.0/16")
-!in(status, "200,301") AND user=admin
-```
+- `AND` binds tighter than `OR`. Use parentheses to group.
+- Conditions with no operator between them are ANDed: `event_id=1 image=/powershell/i`.
+- A field condition without an operator binds like `AND` (`a=1 OR b=2 c=3` is `a=1 OR (b=2 AND c=3)`). Any other term (NOT, a search string, a function, a group) ANDs with everything before it, so a new line starting with `NOT` applies to the whole query above it.
+- `in()`, `cidr()` and other condition functions group and negate like any filter: `cidr(dst_ip, "10.0.0.0/8") OR cidr(dst_ip, "192.168.0.0/16")`.
 
 ## Variables
 
-Search, notebooks, and dashboards support variables that act as placeholders in queries. Define variables in the variables bar, then reference them with `@` in any query:
+Queries in search, notebooks and dashboards can use `@name` placeholders. Set their values in the variables bar under the query.
 
 ```
 user=@target_user AND image=@process
 ```
 
-When the query runs, `@target_user` and `@process` are replaced with the values set in the variables bar. Variables default to `*` if no value is set, so a notebook or dashboard is reused across investigations by changing values instead of editing every query.
-
-A variable is supplied from outside the query. A name the query defines for itself is a
-[binding](#bindings-let), written `&name`.
+An unset variable becomes `*`, so the same query works across investigations by changing values instead of editing it.
 
 ## Bindings (`let`)
 
-A `let` statement names an expression, a filter, or a pipeline so a query states it once and
-uses it in several places. Unlike an `@variable`, which a dashboard or notebook supplies, a
-binding belongs to the query that declares it.
-
-Statements come before the query, separated by `;`. A binding is made with `:=`, the assignment operator, and a reference carries the `&` sigil:
+A `let` statement names a value, expression, filter or subquery so the query can reuse it. Statements come first, end with `;`, and are referenced with `&name`:
 
 ```
 let &lolbin := lower(image) =~ "rundll32.exe","regsvr32.exe","mshta.exe";
@@ -210,28 +98,19 @@ let &officey := lower(parent_image) =~ "winword.exe","excel.exe";
 * | &lolbin AND &officey | table(computer_name, user, image, commandline)
 ```
 
-A binding holds anything the expression grammar accepts, plus the string, number and regex
-literals BQL already has, so it can be a value, a computed field, or a whole filter. A literal
-binding stands wherever a value goes; a computed one is used on its own:
-
 | Binding | Used as |
 |---|---|
 | `let &n := 500;` | `len(commandline) > &n` |
-| `let &cmdlen := len(commandline);` | `&cmdlen > 500 AND &cmdlen < 4000`, `table(&cmdlen)` |
-| `let &lolbin := lower(image) =~ "mshta.exe";` | `&lolbin`, `NOT &lolbin`, `&lolbin AND user="bob"` |
-| `let &user := "CORP\\rpatel";` | `user=&user`, `user =~ &user,"other"`, `in(user, &user)` |
+| `let &cmdlen := len(commandline);` | `&cmdlen > 500`, `table(&cmdlen)` (column named `cmdlen`) |
+| `let &lolbin := lower(image) =~ "mshta.exe";` | `&lolbin`, `NOT &lolbin` |
+| `let &user := "CORP\\rpatel";` | `user=&user`, `in(user, &user)` |
 | `let &enc := /-enc(odedcommand)?\s/;` | `commandline=&enc` |
 
-The `&` is part of the name, so a binding never collides with a log field, and a misspelled
-reference is an error rather than a field lookup that quietly matches nothing. A binding may
-use one declared before it; referencing itself or a later one is an error.
-
-A column a command produces is named after the binding, so `table(&cmdlen)` returns a column
-called `cmdlen`.
+A misspelled `&name` is an error, never a field lookup. A binding may use one declared before it, not itself or a later one.
 
 ### Result sets
 
-A binding whose value is a pipeline names a set of rows. Use it in `in()` or as a `join()` block:
+A binding whose value is a pipeline is a set of rows. Use it in `in()` or as a `join()` block:
 
 ```
 let &admins  := user_type="admin" | groupby(user);
@@ -243,25 +122,10 @@ event_id="4624"
   | groupby(user, computer_name) | count()
 ```
 
-`join()` takes no nested joins, so two set memberships against two subqueries can only be
-written this way.
-
-The column tested is the one named after the field, which is how a `join()` block names its key.
-A binding returning exactly one column needs no name match; one returning several unrelated
-columns is an error naming them.
-
-A result-set binding is scoped exactly like the query around it: same fractal, same time range,
-and it may build on a binding declared before it. Read it in more than one place and the query
-builds it once and reads it twice, rather than running the same subquery again.
+`in()` tests the column with the same name as the field; a subquery returning a single column needs no name match. The subquery uses the same fractal and time range as the outer query and runs once even if referenced twice. This is how to test two subquery memberships, since `join()` cannot nest.
 
 ## Boolean parameters
 
-Most switches are off by default and turned on: `require=true`, `distinct=true`,
-`percent=true`, `directed=true`.
+Switches such as `require=`, `distinct=`, `percent=` and `directed=` are off by default. They accept `true`/`false`, `yes`/`no` or `1`/`0`; any other value leaves the default, so a typo cannot flip a switch.
 
-`pgr()` is the exception. Its `reconnect=` and `diffuse=` are on by default,
-because a provenance graph without them is the narrower answer, so you write
-`reconnect=false` or `diffuse=false` to turn them off.
-
-Anything a parameter does not recognise as a yes or a no leaves the default
-alone, so a typo cannot silently flip a switch.
+`pgr()` is the exception: `reconnect=` and `diffuse=` default to on, so write `reconnect=false` or `diffuse=false` to turn them off.

@@ -1,64 +1,61 @@
 # MCP Server
 
-Connect [Claude Code](https://claude.com/claude-code) or any [Model Context Protocol](https://modelcontextprotocol.io/) client to your Bifract instance. Query logs with BQL, manage detection alerts, annotate logs with comments, and more from your local terminal.
+Connect [Claude Code](https://claude.com/claude-code) or any [Model Context Protocol](https://modelcontextprotocol.io/) client to Bifract, to query logs, manage alerts and annotate findings from your terminal.
 
-The MCP server is a mode of the `bifract` CLI, so there is nothing extra to install. It
-runs on your own machine and reaches your instance over the same HTTP API the web UI
-uses, authenticating with a Bifract API key: a tool can never do more than that key is
-allowed to do.
+The server is a mode of the `bifract` CLI (`bifract --mcp`), so there is nothing extra to install. It runs on your machine, calls your instance's HTTP API with a Bifract API key, and can never do more than that key allows.
 
-## Prerequisites
+## Set up Claude Code
 
-- A running Bifract instance
-- The `bifract` CLI (the same binary used to install and manage a deployment)
-- A Bifract [API key](../administration/ingest-tokens.md) with at least `query` permission
+1. Create an API key for the fractal (see [Create an API key](#create-an-api-key)).
+2. Create `.mcp.json` in the directory where you run Claude Code:
 
-## Configure Claude Code
-
-Create a `.mcp.json` file in the directory where you use Claude Code:
-
-```json
-{
-  "mcpServers": {
-    "bifract": {
-      "command": "bifract",
-      "args": ["--mcp"],
-      "env": {
-        "BIFRACT_URL": "https://your-bifract-instance.example.com",
-        "BIFRACT_API_KEY": "bifract_your_api_key_here"
+    ```json
+    {
+      "mcpServers": {
+        "bifract": {
+          "command": "bifract",
+          "args": ["--mcp"],
+          "env": {
+            "BIFRACT_URL": "https://bifract.example.com",
+            "BIFRACT_API_KEY": "bifract_default_..."
+          }
+        }
       }
     }
-  }
-}
-```
+    ```
 
-Use the full path to the binary if `bifract` is not on the PATH the client launches with.
-`bifract --mcp --help` prints the settings it reads.
+3. Start Claude Code and ask it to call `get_context` to confirm the instance, fractal and role.
+
+Use the full path to `bifract` if it is not on the client's `PATH`. `bifract --mcp --help` lists the settings below.
+
+## Create an API key
+
+1. Open the fractal and click **Fractal settings** in the sidebar.
+2. Open the **Access** tab and click **Create API key**.
+3. Pick a **Role**: **Viewer** for read-only tools, **Analyst** for tools that write (alerts, comments, notebooks, dictionaries).
+4. Click **Create** and copy the key. It is shown once.
+
+The key's prefix names its scope: `bifract_default_...` belongs to the fractal `default`. See [Authentication](../api/authentication.md) for tenant admin keys.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BIFRACT_URL` | Yes | Base URL of your Bifract instance |
-| `BIFRACT_API_KEY` | Yes | API key. Determines the scope and the role. |
-| `BIFRACT_FRACTAL_ID` | No | The fractal to act in. Only an instance-wide key needs it; see below. |
-| `BIFRACT_PRISM_ID` | No | A prism to act in instead, for reading across fractals |
-| `BIFRACT_CA_CERT` | No | Path to a CA bundle, for an instance behind a private or self-signed CA |
-| `BIFRACT_CLIENT_CERT` | No | Client certificate for mTLS (a combined PEM, or the cert half of a pair) |
-| `BIFRACT_CLIENT_KEY` | No | Client private key, when `BIFRACT_CLIENT_CERT` holds only the certificate |
-| `BIFRACT_VERIFY_SSL` | No | Set to `false` to skip certificate verification. Prefer `BIFRACT_CA_CERT`. |
+| `BIFRACT_URL` | Yes | Base URL of your instance (`http://` or `https://`) |
+| `BIFRACT_API_KEY` | Yes | API key; sets the scope and role |
+| `BIFRACT_FRACTAL_ID` | No | Fractal to act in. Only a tenant admin key needs it |
+| `BIFRACT_PRISM_ID` | No | Prism to act in instead, for reading across fractals. Not with `BIFRACT_FRACTAL_ID` |
+| `BIFRACT_CA_CERT` | No | CA bundle for a private or self-signed CA |
+| `BIFRACT_CLIENT_CERT` | No | mTLS client certificate (combined PEM, or the cert half) |
+| `BIFRACT_CLIENT_KEY` | No | mTLS private key, when the cert file holds only the certificate |
+| `BIFRACT_VERIFY_SSL` | No | `false` skips certificate checks. Prefer `BIFRACT_CA_CERT` |
 | `BIFRACT_TIMEOUT` | No | Request timeout in seconds (default 60) |
-
-`bifract --mcp --help` prints this list without leaving the terminal.
 
 ### Choosing the scope
 
-A key issued for one fractal or prism (`bifract_<name>_...`) carries its scope already.
-Every query, alert and comment lands there with nothing else to configure, and
-`get_context` reports which one.
+A fractal or prism key already carries its scope, and no argument can widen it.
 
-An instance-wide key (`bifract_admin_...`) belongs to no fractal, so it names the one it
-means on each request. Give the session a fractal to act in:
+A tenant admin key (`bifract_admin_...`) has no fractal, so name one with `BIFRACT_FRACTAL_ID`, or pass `fractal_id` to individual tools to work across fractals:
 
 ```json
 "env": {
@@ -68,30 +65,16 @@ means on each request. Give the session a fractal to act in:
 }
 ```
 
-Every tool also takes a `fractal_id` argument, so one session can work across several
-fractals without being reconfigured. A key issued for one fractal ignores it: the server
-fixes that key's scope, and no argument widens it.
-
-Without either, a call that acts in a fractal is refused rather than answered in whichever
-one the server falls back to. `list_fractals` and `get_bql_reference` run unscoped and
-ignore the argument, since naming a fractal cannot be a precondition of finding out which
-fractals exist.
-
-Prefer a fractal-scoped key where one will do: it cannot reach past the fractal it was
-issued for, whichever way the session is configured.
+Without either, scoped calls are refused rather than sent to a fallback fractal. `list_fractals` and `get_bql_reference` need no scope. Prefer a fractal key where one will do.
 
 ### Connecting through mTLS
 
-A deployment fronted by Caddy with mTLS needs a client certificate, downloaded from **Settings > Users** with **Download mTLS Cert** in the user's row menu:
+If Caddy requires client certificates, download one from **Settings > Users** with **Download mTLS Cert** in the user's row menu, then add:
 
 ```json
-"env": {
-  "BIFRACT_URL": "https://bifract.example.com",
-  "BIFRACT_API_KEY": "bifract_...",
-  "BIFRACT_CA_CERT": "/etc/bifract/ca.pem",
-  "BIFRACT_CLIENT_CERT": "/etc/bifract/client.pem",
-  "BIFRACT_CLIENT_KEY": "/etc/bifract/client-key.pem"
-}
+"BIFRACT_CA_CERT": "/etc/bifract/ca.pem",
+"BIFRACT_CLIENT_CERT": "/etc/bifract/client.pem",
+"BIFRACT_CLIENT_KEY": "/etc/bifract/client-key.pem"
 ```
 
 ## Available Tools
@@ -100,32 +83,30 @@ A deployment fronted by Caddy with mTLS needs a client certificate, downloaded f
 
 | Tool | Description |
 |------|-------------|
-| `get_context` | Which instance, fractal, and role this session is bound to |
-| `list_fractals` | The fractals and prisms this credential can reach |
-| `get_fields` | The field names available to queries, optionally filtered |
+| `get_context` | The instance, fractal and role this session is bound to |
+| `list_fractals` | Fractals and prisms this key can reach |
+| `get_fields` | Field names available to queries, optionally filtered |
 | `get_bql_reference` | The full BQL syntax reference |
 
 ### Log Querying
 
+Hot storage only; for older data use [Recall](#recall).
+
 | Tool | Description |
 |------|-------------|
-| `query_logs` | Execute a BQL query with optional time range |
-| `validate_bql` | Check a query for syntax errors without running it (no database work) |
-| `get_field_stats` | Per-field coverage, cardinality, and top values for a query's matches |
-| `get_recent_logs` | Fetch recent logs to see the real event shape and data freshness |
-
-Hot storage only. To search past the fractal's retention window, see [Recall](#recall).
+| `query_logs` | Run a BQL query with an optional time range |
+| `validate_bql` | Check a query for syntax errors without running it |
+| `get_field_stats` | Per-field coverage, cardinality and top values for a query's matches |
+| `get_recent_logs` | Recent logs, to see the event shape and data freshness |
 
 ### Provenance
 
 | Tool | Description |
 |------|-------------|
-| `find_processes` | Locate process-creation events and their `process_guid` |
+| `find_processes` | Find process-creation events and their `process_guid` |
 | `get_provenance_graph` | Expand a GUID into a scored process tree with its notable activity |
 
-`get_provenance_graph` runs [`pgr()`](provenance-graph.md) and returns a rendered tree, the highest-anomaly file, network, and DNS actions, and any cross-tree reconnections, rather than a raw edge list. It needs endpoint behavioral analytics enabled and endpoint/EDR data normalized to `bifract_category` `process_creation`.
-
-A typical sequence:
+`get_provenance_graph` runs [`pgr()`](provenance-graph.md). It needs endpoint behavioral analytics enabled and EDR data normalized to `bifract_category` `process_creation`.
 
 ```
 find_processes(image="rundll32", start="2026-07-26T00:00:00Z")
@@ -137,172 +118,125 @@ add_comment(log_id="...", text="...", tags=["IR-Rundll32"])
 
 | Tool | Description |
 |------|-------------|
-| `list_models` | The behavioral baselines defined in this fractal |
-| `get_model` | One model's full definition and backfill state |
-| `get_model_data` | The rows a model has accumulated, to check whether an artifact is normal |
+| `list_models` | Behavioral baselines in this fractal |
+| `get_model` | One model's definition and backfill state |
+| `get_model_data` | A model's accumulated rows, to check whether an artifact is normal |
 
 ### Dashboards
 
 | Tool | Description |
 |------|-------------|
 | `list_dashboards` | Dashboard summaries |
-| `get_dashboard` | A dashboard with every widget and the BQL behind it |
+| `get_dashboard` | A dashboard with every widget and its BQL |
 
 ### Alerts
 
 | Tool | Description |
 |------|-------------|
-| `list_alerts` | List all detection alerts in the fractal |
-| `get_alert` | Get full details of a specific alert |
-| `create_alert` | Create a new detection alert with a BQL query |
-| `update_alert` | Modify an existing alert |
+| `list_alerts` | All detection alerts in the fractal |
+| `get_alert` | Full details of one alert |
+| `create_alert` | Create an alert from a BQL query |
+| `update_alert` | Change an alert |
 | `delete_alert` | Remove an alert |
-| `get_alert_executions` | View when an alert fired and what it matched |
-| `get_alert_tests` | Show the test cases stored with an alert |
-| `run_alert_tests` | Run test cases against a query without saving anything |
-| `get_alert_policies` | List the policy rules this scope enforces on a definition |
+| `get_alert_executions` | When an alert fired and what it matched |
+| `get_alert_tests` | Test cases stored with an alert |
+| `run_alert_tests` | Run test cases against a query without saving |
+| `get_alert_policies` | Policy rules this scope enforces on a definition |
 
 ### Alert governance
 
-A fractal or prism can keep a history of every alert definition, enforce policy rules on
-what a definition must contain, and review changes before they go live. Where review is
-on, `create_alert`, `update_alert` and `delete_alert` are refused and the work is
-submitted with `propose_alert_change` instead.
-
-Read `get_alert_policies` before writing a definition: a rule with severity `block`
-refuses the save outright. Where a policy requires passing tests, `run_alert_tests`
-checks them before anything is submitted. An update proposal carries the alert's existing
-actions and tests forward unless new ones are named.
-
-Approving and merging a proposal are not exposed as tools. A model that could approve its
-own proposal would make the gate meaningless, so those stay with a reviewer.
+Where change review is on, `create_alert`, `update_alert` and `delete_alert` are refused; submit with `propose_alert_change` instead. Check `get_alert_policies` first, since a `block` rule refuses the save. Approving and merging stay with a human reviewer.
 
 | Tool | Description |
 |------|-------------|
-| `get_alert_history` | Show how an alert's definition changed, and who changed it |
-| `list_alert_changes` | List proposed alert changes awaiting review |
+| `get_alert_history` | How an alert's definition changed, and who changed it |
+| `list_alert_changes` | Proposed alert changes awaiting review |
 | `propose_alert_change` | Propose a create, update or delete for review |
 
 ### Dictionaries
 
-Watchlists and lookup tables detections join against, rather than hard-coding values in a query.
+Watchlists and lookup tables that detections join against.
 
 | Tool | Description |
 |------|-------------|
-| `list_dictionaries` | The dictionaries in the fractal, with their key column and row count |
-| `get_dictionary` | One dictionary's columns and key definition |
-| `search_dictionary` | Read rows, optionally filtered, to check an indicator against a watchlist |
-| `add_dictionary_rows` | Insert or update rows, changing what live detections match on |
-| `upload_dictionary_file` | Load a local file into a dictionary, whatever its size |
-| `get_dictionary_key_collisions` | The keys that stop being distinct when case is ignored |
+| `list_dictionaries` | Dictionaries in the fractal, with key column and row count |
+| `get_dictionary` | One dictionary's columns and key |
+| `search_dictionary` | Read rows, optionally filtered, e.g. to check an indicator |
+| `add_dictionary_rows` | Insert or update rows; changes what live detections match |
+| `upload_dictionary_file` | Load a local file into a dictionary, any size |
+| `get_dictionary_key_collisions` | Keys that collide when case is ignored |
 | `set_dictionary_case_insensitive` | Turn case-insensitive key lookups on or off |
 
-`upload_dictionary_file` takes a path, not rows. The file is read on the machine the MCP
-server runs on and streamed to the instance in chunks, so a list of millions of
-indicators is one call rather than a conversation the model has to hold the file in.
-CSV, TSV, JSON array, NDJSON, and a plain one-value-per-line list are recognised from the
-extension and the content, and a `.gz` file is decompressed as it is read.
+`upload_dictionary_file` reads a file on the machine running the MCP server and streams it in chunks. It reads CSV, TSV, JSON array, NDJSON and one-value-per-line lists, and decompresses `.gz`. Rows are keyed, so re-uploading updates rather than duplicates. Useful arguments:
 
-Rows are keyed, so re-uploading a corrected file updates rather than duplicates; rows the
-file no longer lists stay as they are. A file that repeats a key therefore loads fewer rows
-than it holds, which the summary says rather than leaving as an apparent loss. Columns the
-dictionary lacks are added, and a column name the schema will not take is renamed and the
-rename reported. Naming a `dictionary_name` that does not exist creates it, keyed on the
-file's first column; pass `is_global` to make that one visible to every fractal. Pass
-`key_field` where the file's key column is named something else, and `dry_run` to see what
-a file would write before writing it.
+- `dictionary_name`: load by name; a missing dictionary is created, keyed on the first column.
+- `is_global`: make a newly created dictionary visible to every fractal.
+- `key_field`: the file's key column, when named differently from the dictionary's.
+- `dry_run`: report what would be written without writing.
 
-An instance-wide key (`bifract_admin_...`) belongs to no fractal, so it must name one:
-pass `fractal_id`, or set `BIFRACT_FRACTAL_ID` for the session. Without either, the load is
-refused rather than sent to whichever fractal the server falls back to. The summary always
-reports the fractal and scope the rows landed in.
-
-It is the only tool that touches the filesystem, and it exists only here: the same tool in
-the in-product [chat](ai-chat.md) would read files off the server rather than off the
-analyst's machine.
+This tool exists only in the MCP server, not in [AI Chat](ai-chat.md).
 
 ### ATT&CK Coverage
 
 | Tool | Description |
 |------|-------------|
-| `get_attack_coverage` | Which techniques the configured detections cover, optionally by tactic, and which uncovered ones a synced feed already has rules for |
-
-Coverage is derived from the `attack.*` labels on the alerts that exist, so it reports what is configured rather than what has fired.
+| `get_attack_coverage` | Techniques the configured detections cover (from their `attack.*` labels), optionally by tactic, and which uncovered ones a synced feed has rules for |
 
 ### Recall
 
-[Recall](../administration/backup-restore.md) searches the object-storage archive, for hunts that reach further back than hot retention. A search is submitted as a job and polled, because an archive scan can take minutes.
+[Recall](../administration/backup-restore.md) searches the object-storage archive beyond hot retention. Searches run as jobs because a scan can take minutes.
 
 | Tool | Description |
 |------|-------------|
-| `search_archive` | Submit a BQL search over the archive for an explicit time window |
-| `get_archive_search` | Poll a Recall job and read its rows once it succeeds |
-| `cancel_archive_search` | Stop a pending or running Recall job |
+| `search_archive` | Submit a BQL search over the archive for a time window |
+| `get_archive_search` | Poll a job and read its rows once done |
+| `cancel_archive_search` | Stop a pending or running job |
 
 ### Collaboration
 
 | Tool | Description |
 |------|-------------|
-| `add_comment` | Annotate a log entry with findings or notes |
-| `list_comments` | View all comments in the fractal |
-| `list_comment_tags` | Find the `IR-<Name>` tag for an investigation already under way |
-| `add_tag` | Add a tag to existing comments, to group them into one investigation |
+| `add_comment` | Annotate a log entry |
+| `list_comments` | All comments in the fractal |
+| `list_comment_tags` | Find the `IR-<Name>` tag of an ongoing investigation |
+| `add_tag` | Add a tag to existing comments |
 | `remove_tag` | Remove a tag from existing comments |
-| `get_log_comments` | Read the comments on one log entry |
-| `list_saved_queries` | Browse saved BQL queries for common patterns |
+| `get_log_comments` | Comments on one log entry |
+| `list_saved_queries` | Saved BQL queries |
 
 ### Notebooks
 
 | Tool | Description |
 |------|-------------|
-| `list_notebooks` | List notebooks in the fractal |
-| `get_notebook` | Read a notebook and all its sections |
-| `create_notebook` | Create a new notebook |
-| `add_notebook_section` | Append a markdown or query section to a notebook |
+| `list_notebooks` | Notebooks in the fractal |
+| `get_notebook` | A notebook and its sections |
+| `create_notebook` | Create a notebook |
+| `add_notebook_section` | Append a markdown or query section |
 
 ### Instruction Libraries
 
 | Tool | Description |
 |------|-------------|
-| `list_instruction_libraries` | List available instruction libraries |
-| `get_instruction_library` | Read a library and its page structure |
-| `read_instruction_page` | Read a single page's content |
-| `create_instruction_library` | Create a new library |
-| `create_instruction_page` | Add a page to a library |
-| `update_instruction_page` | Edit an existing page |
+| `list_instruction_libraries` | Available instruction libraries |
+| `get_instruction_library` | A library and its page structure |
+| `read_instruction_page` | One page's content |
+| `create_instruction_library` | Create a library |
+| `create_instruction_page` | Add a page |
+| `update_instruction_page` | Edit a page |
 
-## Example Prompts
+## Example prompts
 
-Once configured, ask Claude Code things like:
-
-- "Query Bifract for all error logs in the last hour"
-- "Show me the top 10 source IPs with failed logins"
-- "What alerts are currently configured?"
-- "Show me recent logs so I can understand the field structure"
+- "Show me the top 10 source IPs with failed logins in the last hour"
+- "What alerts are configured, and which ATT&CK tactics have no coverage?"
 - "Find every rundll32 process yesterday and build the provenance graph for the most suspicious one"
-- "What did this process write to disk, and is that path normal for our fleet?"
 - "Add a comment to log abc123 noting this is a confirmed true positive"
 
-## Creating an API Key
+## MCP server or AI Chat
 
-1. Log in to your Bifract instance
-2. Navigate to the fractal you want to query
-3. Go to **Fractal settings > Access > API Keys**
-4. Create a new key with at least `query` permission
-5. For alert management, also enable `alert_manage`
-6. Copy the generated key. It is shown once.
-
-The key is named for the scope it was issued for, so `bifract_default_...` belongs to the
-fractal called `default`. An instance-wide key is `bifract_admin_...` and belongs to none;
-see [Choosing the scope](#choosing-the-scope).
-
-## How It Compares to AI Chat
-
-The built-in [AI Chat](ai-chat.md) runs inside the Bifract UI and uses a server-side LLM via LiteLLM. The MCP server is the inverse: it runs locally and lets your own Claude Code instance call Bifract's API directly. Use whichever fits your workflow, or both.
-
-| | AI Chat | MCP Server |
+| | [AI Chat](ai-chat.md) | MCP server |
 |---|---------|------------|
-| Runs in | Bifract UI (browser) | Local terminal (Claude Code) |
-| LLM | Server-side via LiteLLM | Your local Claude Code |
-| Auth | Session cookie | API key |
-| Best for | Quick in-app investigations | Deep analysis alongside code, scripting, automation |
+| Runs in | Bifract UI | Your terminal |
+| LLM | Server-side, via LiteLLM | Your own client |
+| Auth | Your session | API key |
+| Writes | Each one needs your approval | Limited by the key's role and your client's prompts |
+| Best for | Quick in-app investigation | Deep analysis, scripting, automation |
