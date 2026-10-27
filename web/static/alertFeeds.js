@@ -846,7 +846,7 @@ const AlertFeeds = {
                             <input type="text" id="feedFormName" placeholder="e.g. SigmaHQ Windows Rules" value="${Utils.escapeHtml(feed?.name || '')}">
                         </div>
                         <div class="form-group">
-                            <label for="feedFormSchedule">Sync Schedule</label>
+                            <label for="feedFormSchedule">Sync schedule</label>
                             <select id="feedFormSchedule">
                                 <option value="never" ${feed?.sync_schedule === 'never' ? 'selected' : ''}>Never</option>
                                 <option value="hourly" ${feed?.sync_schedule === 'hourly' ? 'selected' : ''}>Hourly</option>
@@ -885,9 +885,9 @@ const AlertFeeds = {
                     </div>
                     <div class="form-row-2col">
                         <div class="form-group">
-                            <label for="feedFormMinLevel">Minimum Severity</label>
+                            <label for="feedFormMinLevel">Minimum severity</label>
                             <select id="feedFormMinLevel">
-                                <option value="" ${!feed?.min_level ? 'selected' : ''}>All Levels</option>
+                                <option value="" ${!feed?.min_level ? 'selected' : ''}>All levels</option>
                                 <option value="informational" ${feed?.min_level === 'informational' ? 'selected' : ''}>Informational</option>
                                 <option value="low" ${feed?.min_level === 'low' ? 'selected' : ''}>Low</option>
                                 <option value="medium" ${feed?.min_level === 'medium' ? 'selected' : ''}>Medium</option>
@@ -896,9 +896,9 @@ const AlertFeeds = {
                             </select>
                         </div>
                         <div class="form-group">
-                            <label for="feedFormMinStatus">Minimum Status</label>
+                            <label for="feedFormMinStatus">Minimum status</label>
                             <select id="feedFormMinStatus">
-                                <option value="" ${!feed?.min_status ? 'selected' : ''}>All Statuses</option>
+                                <option value="" ${!feed?.min_status ? 'selected' : ''}>All statuses</option>
                                 <option value="unsupported" ${feed?.min_status === 'unsupported' ? 'selected' : ''}>Unsupported</option>
                                 <option value="deprecated" ${feed?.min_status === 'deprecated' ? 'selected' : ''}>Deprecated</option>
                                 <option value="experimental" ${feed?.min_status === 'experimental' ? 'selected' : ''}>Experimental</option>

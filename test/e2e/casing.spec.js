@@ -47,6 +47,36 @@ test.describe('Text case', () => {
   });
 });
 
+// Labels are also written in sentence case, not only left alone by CSS.
+test.describe('Written case', () => {
+  const FORMS = [
+    { name: 'feed form', scope: '#feedFormModal', open: async p => {
+      await p.locator('#alertsSubTabs [data-subtab="feeds"]').click();
+      await p.locator('#feedManageToggleBtn').click();
+      await p.getByRole('button', { name: 'Add feed' }).click();
+    } },
+    { name: 'webhook form', scope: '#actionDrawer', open: async p => {
+      await p.locator('#alertsSubTabs [data-subtab="actions"]').click();
+      await p.locator('#actionsManageView .btn-primary').click();
+      await p.locator('.action-type-tile[onclick*="webhook"]').click();
+      await p.locator('#webhookRetries').waitFor();
+    } },
+  ];
+  for (const f of FORMS) {
+    test(`${f.name}: labels in sentence case`, async ({ page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await login(page);
+      await openFractal(page, 'alerts');
+      await f.open(page);
+      // Options keyed by an id name a user's own record, which keeps its own case.
+      const texts = await page.locator(f.scope).first().evaluate(root => [...root.querySelectorAll('label, h3, button, option')]
+        .filter(el => !(el.tagName === 'OPTION' && /^[0-9a-f-]{36}$/.test(el.value)))
+        .map(el => el.textContent.trim()));
+      expect(texts.filter(t => /^[A-Z][a-z]+( [A-Z][a-z]+)+$/.test(t))).toEqual([]);
+    });
+  }
+});
+
 test('normalizer editor keeps Discard and Save at the right of its top bar', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await login(page);

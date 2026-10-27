@@ -240,13 +240,6 @@ const Alerts = {
             }
         });
 
-        // Action tabs switching (for actions manage view)
-        document.addEventListener('click', (e) => {
-            if (e.target.classList.contains('action-tab')) {
-                this.switchActionTab(e.target.dataset.tab);
-            }
-        });
-
         // Remove selected action from alert editor
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('selected-action-remove')) {
@@ -535,7 +528,7 @@ const Alerts = {
             <div id="alertDetailsPanel" class="alert-details-panel">
                 <div class="alert-details-resize" title="Drag to resize"></div>
                 <div class="alert-details-header">
-                    <h3 id="alertDetailsTitle">Alert Details</h3>
+                    <h3 id="alertDetailsTitle">Alert details</h3>
                     <span class="alert-details-navhint" title="Move between alerts">
                         <kbd>&uarr;</kbd><kbd>&darr;</kbd>
                     </span>
@@ -745,11 +738,11 @@ const Alerts = {
         }
 
         let html = '<option value="all">All actions</option>';
-        html += '<option value="none">No Actions</option>';
+        html += '<option value="none">No actions</option>';
 
         if (webhooks.size > 0) {
             html += '<optgroup label="Webhooks">';
-            html += '<option value="webhook:*">Any Webhook</option>';
+            html += '<option value="webhook:*">Any webhook</option>';
             for (const [id, name] of [...webhooks.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
                 html += `<option value="webhook:${id}">${Utils.escapeHtml(name)}</option>`;
             }
@@ -1237,27 +1230,6 @@ const Alerts = {
         updateHighlighting();
     },
 
-    showAlertModal(alertId = null) {
-        const modal = document.getElementById('alertModal');
-        const title = document.getElementById('alertModalTitle');
-
-        if (!modal) return;
-
-        // Reset form
-        this.resetAlertForm();
-
-        if (alertId) {
-            title.textContent = 'Edit alert';
-            this.loadAlertForEdit(alertId);
-        } else {
-            title.textContent = 'Create alert';
-            this.currentAlert = null;
-        }
-
-        this.loadWebhooksForAlert();
-        modal.style.display = 'flex';
-    },
-
     showInlineWebhookCreate() {
         this.closeAllInlineForms();
         this.inlineWebhookForm = 'create';
@@ -1322,20 +1294,20 @@ const Alerts = {
                         <input type="number" id="webhookTimeout" value="30" min="5" max="300">
                     </div>
                     <div class="actions-form-group">
-                        <label for="webhookRetries">Retry Count</label>
+                        <label for="webhookRetries">Retry count</label>
                         <input type="number" id="webhookRetries" value="3" min="0" max="10">
                     </div>
                     <div class="actions-form-group">
                         <label for="webhookAuthType">Authentication</label>
                         <select id="webhookAuthType" onchange="Alerts.handleAuthTypeChange(this.value)">
                             <option value="none">None</option>
-                            <option value="bearer">Bearer Token</option>
-                            <option value="basic">Basic Auth</option>
+                            <option value="bearer">Bearer token</option>
+                            <option value="basic">Basic auth</option>
                         </select>
                     </div>
                     <div class="actions-form-group full-width" id="webhookAuthConfig" style="display: none;">
                         <div id="bearerConfig" style="display: none;">
-                            <label for="bearerToken">Bearer Token</label>
+                            <label for="bearerToken">Bearer token</label>
                             <input type="password" id="bearerToken" placeholder="Enter bearer token">
                         </div>
                         <div id="basicConfig" style="display: none;">
@@ -1352,7 +1324,7 @@ const Alerts = {
                         </div>
                     </div>
                     <div class="actions-form-group full-width">
-                        <label>Custom Headers</label>
+                        <label>Custom headers</label>
                         <div id="customHeaders">
                             <div class="header-row">
                                 <input type="text" placeholder="Header name" class="header-name">
@@ -1373,7 +1345,7 @@ const Alerts = {
                         <input type="text" id="webhookContentType" placeholder="application/json">
                     </div>
                     <div class="actions-form-group full-width" id="webhookTemplateGroup" style="display: none;">
-                        <label for="webhookBodyTemplate">Body Template</label>
+                        <label for="webhookBodyTemplate">Body template</label>
                         <div class="webhook-template-presets">
                             <span>Start from:</span>
                             <button type="button" class="btn-sm btn-secondary" onclick="Alerts.applyTemplatePreset('hec')">Splunk HEC</button>
@@ -1972,219 +1944,6 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
             enabled,
             webhook_action_ids: webhookActionIDs
         };
-    },
-
-    async loadAlertForEdit(alertId) {
-        try {
-            const response = await fetch(`/api/v1/alerts/${alertId}`, {
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to load alert');
-            }
-
-            const alert = data.data;
-            this.currentAlert = alert;
-
-            // Populate form
-            document.getElementById('alertName').value = alert.name || '';
-            document.getElementById('alertDescription').value = alert.description || '';
-
-            const alertQueryTextarea = document.getElementById('editorQueryInput');
-            alertQueryTextarea.value = alert.query_string || '';
-
-            // Trigger syntax highlighting manually
-            setTimeout(() => {
-                if (window.SyntaxHighlight) {
-                    SyntaxHighlight.updateHighlight('editorQueryInput', 'alertQueryHighlight');
-                }
-            }, 200);
-
-            document.getElementById('alertLabels').value = (alert.labels || []).join(', ');
-            document.getElementById('alertThrottleTime').value = alert.throttle_time_seconds || 0;
-            document.getElementById('alertThrottleField').value = alert.throttle_field || '';
-            document.getElementById('alertEnabled').checked = alert.enabled;
-
-            // Update webhook selections after loading webhooks
-            this.selectedWebhookIds = (alert.webhook_actions || []).map(wh => wh.id);
-
-            // Update fractal action selections
-            this.selectedFractalActionIds = (alert.fractal_actions || []).map(fa => fa.id);
-
-        } catch (error) {
-            console.error('Load alert error:', error);
-            Toast.show('Failed to load alert for editing', 'error');
-        }
-    },
-
-    resetAlertForm() {
-        const inputs = ['alertName', 'alertDescription', 'editorQueryInput', 'alertLabels', 'alertThrottleField'];
-        inputs.forEach(id => {
-            const element = document.getElementById(id);
-            if (element) element.value = '';
-        });
-
-        const throttleTime = document.getElementById('alertThrottleTime');
-        if (throttleTime) throttleTime.value = '0';
-
-        const enabled = document.getElementById('alertEnabled');
-        if (enabled) enabled.checked = true;
-
-        this.hideError(document.getElementById('alertError'));
-        this.selectedWebhookIds = [];
-        this.selectedFractalActionIds = [];
-    },
-
-    // Webhook Operations
-    async loadWebhooks() {
-        const webhooksList = document.getElementById('webhooksList');
-        if (!webhooksList) return;
-
-        try {
-            const response = await fetch('/api/v1/webhooks', {
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to load webhooks');
-            }
-
-            this.renderWebhooks(data.data || []);
-        } catch (error) {
-            console.error('Load webhooks error:', error);
-            webhooksList.innerHTML = '<div class="error">Failed to load webhooks</div>';
-        }
-    },
-
-    async loadWebhooksForAlert() {
-        const container = document.getElementById('alertWebhooksList');
-        if (!container) return;
-
-        try {
-            const response = await fetch('/api/v1/webhooks', {
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to load webhooks');
-            }
-
-            const webhooks = data.data || [];
-            if (webhooks.length === 0) {
-                container.innerHTML = '<div class="empty-text">No webhooks configured. <a href="#" onclick="Alerts.showInlineWebhookCreate()">Create one</a>?</div>';
-                return;
-            }
-
-            const webhooksHTML = webhooks.map(webhook => {
-                const isSelected = this.selectedWebhookIds && this.selectedWebhookIds.includes(webhook.id);
-                return `
-                    <label class="webhook-checkbox">
-                        <input type="checkbox" value="${webhook.id}" ${isSelected ? 'checked' : ''}>
-                        <span class="webhook-name">${Utils.escapeHtml(webhook.name)}</span>
-                        <span class="webhook-url">${Utils.escapeHtml(webhook.url)}</span>
-                    </label>
-                `;
-            }).join('');
-
-            container.innerHTML = webhooksHTML;
-        } catch (error) {
-            console.error('Load webhooks for alert error:', error);
-            container.innerHTML = '<div class="error">Failed to load webhooks</div>';
-        }
-    },
-
-    renderWebhooks(webhooks) {
-        const container = document.getElementById('webhooksList');
-        if (!container) return;
-
-        if (webhooks.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-text">No webhooks configured</div>
-                    <button onclick="Alerts.showInlineWebhookCreate()" class="btn-primary">Create Your First Webhook</button>
-                </div>
-            `;
-            return;
-        }
-
-        const webhooksHTML = webhooks.map(webhook => `
-            <div class="webhook-card ${webhook.enabled ? 'enabled' : 'disabled'}">
-                <div class="webhook-header">
-                    <h4>${Utils.escapeHtml(webhook.name)}</h4>
-                    <div class="webhook-actions">
-                        <button onclick="Alerts.editWebhook('${webhook.id}')" class="btn-sm btn-secondary">Edit</button>
-                        <button onclick="Alerts.testWebhookDirect('${webhook.id}')" class="btn-sm btn-secondary">Test</button>
-                        <button onclick="Alerts.deleteWebhook('${webhook.id}')" class="btn-sm btn-danger">Delete</button>
-                    </div>
-                </div>
-                <div class="webhook-details">
-                    <div><strong>URL:</strong> ${Utils.escapeHtml(webhook.url)}</div>
-                    <div><strong>Method:</strong> ${webhook.method}</div>
-                    <div><strong>Status:</strong> ${webhook.enabled ? 'Enabled' : 'Disabled'}</div>
-                </div>
-            </div>
-        `).join('');
-
-        container.innerHTML = webhooksHTML;
-    },
-
-    async editWebhook(webhookId) {
-        this.showInlineWebhookEdit(webhookId);
-    },
-
-    async deleteWebhook(webhookId) {
-        if (!confirm('Are you sure you want to delete this webhook? This cannot be undone.')) {
-            return;
-        }
-
-        try {
-            const response = await fetch(`/api/v1/webhooks/${webhookId}`, {
-                method: 'DELETE',
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (data.success) {
-                this.loadAllActions();
-                Toast.show('Webhook deleted successfully', 'success');
-            } else {
-                throw new Error(data.error || 'Failed to delete webhook');
-            }
-        } catch (error) {
-            console.error('Delete webhook error:', error);
-            Toast.show('Failed to delete webhook: ' + error.message, 'error');
-        }
-    },
-
-    async testWebhookDirect(webhookId) {
-        try {
-            const response = await fetch(`/api/v1/webhooks/${webhookId}/test`, {
-                method: 'POST',
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) throw new Error(data.error || 'Test failed');
-
-            const test = data.data;
-            if (test.render_error) {
-                Toast.show(`Webhook test failed to render: ${test.render_error}`, 'error');
-                return;
-            }
-            const result = test.result;
-            if (result?.success) {
-                Toast.show(`Webhook test successful (HTTP ${result.status_code})`, 'success');
-            } else {
-                Toast.show(`Webhook test failed: ${result?.error || 'no response'}`, 'error');
-            }
-        } catch (error) {
-            console.error('Test webhook error:', error);
-            Toast.show('Failed to test webhook: ' + error.message, 'error');
-        }
     },
 
     async saveWebhook() {
@@ -4516,93 +4275,8 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
     },
 
     // ============================
-    // Action Tabs Management
-    // ============================
-
-    switchActionTab(tabName) {
-        // Close any open inline forms
-        this.closeInlineWebhookForm();
-        this.closeInlineFractalActionForm();
-        this.closeInlineDictActionForm();
-
-        // Update tab buttons
-        document.querySelectorAll('.action-tab').forEach(tab => {
-            tab.classList.remove('active');
-        });
-        document.querySelector(`[data-tab="${tabName}"]`)?.classList.add('active');
-
-        // Update tab content
-        document.querySelectorAll('.action-tab-content').forEach(content => {
-            content.classList.remove('active');
-        });
-        document.getElementById(`${tabName}-tab`)?.classList.add('active');
-
-        // Toggle header "Add" buttons based on active tab
-        const addWebhookBtn = document.getElementById('inlineAddWebhookBtn');
-        const addFractalActionBtn = document.getElementById('inlineAddFractalActionBtn');
-        const addDictActionBtn = document.getElementById('inlineAddDictActionBtn');
-        if (addWebhookBtn) addWebhookBtn.style.display = tabName === 'webhooks' ? '' : 'none';
-        if (addFractalActionBtn) addFractalActionBtn.style.display = tabName === 'fractal-actions' ? '' : 'none';
-        if (addDictActionBtn) addDictActionBtn.style.display = tabName === 'dictionary-actions' ? '' : 'none';
-    },
-
-    // ============================
     // Fractal Action Management
     // ============================
-
-    async loadFractalActionsForManage() {
-        const container = document.getElementById('fractalActionsList');
-        if (!container) return;
-
-        try {
-            const response = await fetch('/api/v1/fractal-actions', {
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to load fractal actions');
-            }
-
-            const fractalActions = data.data || [];
-            if (fractalActions.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-text">No fractal actions configured</div>
-                        <button onclick="Alerts.showInlineFractalActionCreate()" class="btn-primary">Create Your First Fractal Action</button>
-                    </div>
-                `;
-                return;
-            }
-
-            const fractalActionsHTML = fractalActions.map(action => {
-                const statusClass = action.enabled ? 'enabled' : 'disabled';
-                return `
-                    <div class="webhook-card ${statusClass}">
-                        <div class="webhook-header">
-                            <h4>${Utils.escapeHtml(action.name)}</h4>
-                            <div class="webhook-actions">
-                                <button onclick="Alerts.editFractalAction('${action.id}')" class="btn-sm btn-secondary">Edit</button>
-                                <button onclick="Alerts.deleteFractalAction('${action.id}')" class="btn-sm btn-danger">Delete</button>
-                            </div>
-                        </div>
-                        <div class="webhook-details">
-                            <div><strong>Target:</strong> ${Utils.escapeHtml(action.target_fractal_name || action.target_fractal_id)}</div>
-                            ${action.description ? `<div><strong>Description:</strong> ${Utils.escapeHtml(action.description)}</div>` : ''}
-                            <div><strong>Status:</strong> ${action.enabled ? 'Enabled' : 'Disabled'}</div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            container.innerHTML = fractalActionsHTML;
-
-        } catch (error) {
-            console.error('Failed to load fractal actions for manage:', error);
-            container.innerHTML = '<div class="error-text">Failed to load fractal actions</div>';
-        }
-    },
-
 
     async showInlineFractalActionCreate() {
         this.closeAllInlineForms();
@@ -4678,7 +4352,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                         <textarea id="fractalActionDescription" placeholder="Optional description" rows="2"></textarea>
                     </div>
                     <div class="actions-form-group">
-                        <label for="fractalActionMaxLogs">Max Logs Per Trigger</label>
+                        <label for="fractalActionMaxLogs">Max logs per trigger</label>
                         <input type="number" id="fractalActionMaxLogs" value="1000" min="1" max="10000">
                         <small class="form-help">Maximum number of logs to forward when this action triggers</small>
                     </div>
@@ -4846,90 +4520,9 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         }
     },
 
-    async editFractalAction(fractalActionId) {
-        this.showInlineFractalActionEdit(fractalActionId);
-    },
-
-    async deleteFractalAction(fractalActionId) {
-        if (!confirm('Are you sure you want to delete this fractal action?')) {
-            return;
-        }
-
-        try {
-            const response = await fetch(`/api/v1/fractal-actions/${fractalActionId}`, {
-                method: 'DELETE',
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to delete fractal action');
-            }
-
-            Toast.show('Fractal action deleted successfully', 'success');
-            this.loadAllActions(); // Refresh the list
-
-        } catch (error) {
-            console.error('Failed to delete fractal action:', error);
-            Toast.show('Failed to delete fractal action: ' + error.message, 'error');
-        }
-    },
-
     // ============================
     // Dictionary Action Management
     // ============================
-
-    async loadDictActionsForManage() {
-        const container = document.getElementById('dictActionsList');
-        if (!container) return;
-
-        try {
-            const response = await fetch('/api/v1/dictionary-actions', {
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to load dictionary actions');
-            }
-
-            const actions = data.data || [];
-            if (actions.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-text">No dictionary actions configured</div>
-                        <button onclick="Alerts.showInlineDictActionCreate()" class="btn-primary">Create Your First Dictionary Action</button>
-                    </div>
-                `;
-                return;
-            }
-
-            const html = actions.map(action => {
-                const statusClass = action.enabled ? 'enabled' : 'disabled';
-                return `
-                    <div class="webhook-card ${statusClass}">
-                        <div class="webhook-header">
-                            <h4>${Utils.escapeHtml(action.name)}</h4>
-                            <div class="webhook-actions">
-                                <button onclick="Alerts.editDictAction('${action.id}')" class="btn-sm btn-secondary">Edit</button>
-                                <button onclick="Alerts.deleteDictAction('${action.id}')" class="btn-sm btn-danger">Delete</button>
-                            </div>
-                        </div>
-                        <div class="webhook-details">
-                            <div><strong>Target Dictionary:</strong> ${Utils.escapeHtml(action.dictionary_name || '')}</div>
-                            ${action.description ? `<div><strong>Description:</strong> ${Utils.escapeHtml(action.description)}</div>` : ''}
-                            <div><strong>Status:</strong> ${action.enabled ? 'Enabled' : 'Disabled'}</div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
-            container.innerHTML = html;
-        } catch (error) {
-            console.error('Failed to load dictionary actions:', error);
-            container.innerHTML = '<div class="error-text">Failed to load dictionary actions</div>';
-        }
-    },
 
     async showInlineDictActionCreate() {
         this.closeAllInlineForms();
@@ -4992,7 +4585,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                         <textarea id="dictActionDescription" placeholder="Optional description" rows="2"></textarea>
                     </div>
                     <div class="actions-form-group">
-                        <label for="dictActionMaxLogs">Max Logs Per Trigger</label>
+                        <label for="dictActionMaxLogs">Max logs per trigger</label>
                         <input type="number" id="dictActionMaxLogs" value="1000" min="1" max="10000">
                         <small class="form-help">Maximum logs to process per alert trigger</small>
                     </div>
@@ -5089,34 +4682,6 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
             } else {
                 Toast.show('Failed to save dictionary action: ' + error.message, 'error');
             }
-        }
-    },
-
-    async editDictAction(dictActionId) {
-        this.showInlineDictActionEdit(dictActionId);
-    },
-
-    async deleteDictAction(dictActionId) {
-        if (!confirm('Are you sure you want to delete this dictionary action?')) {
-            return;
-        }
-
-        try {
-            const response = await fetch(`/api/v1/dictionary-actions/${dictActionId}`, {
-                method: 'DELETE',
-                credentials: 'include'
-            });
-
-            const data = await response.json();
-            if (!data.success) {
-                throw new Error(data.error || 'Failed to delete dictionary action');
-            }
-
-            Toast.show('Dictionary action deleted successfully', 'success');
-            this.loadAllActions();
-        } catch (error) {
-            console.error('Failed to delete dictionary action:', error);
-            Toast.show('Failed to delete dictionary action: ' + error.message, 'error');
         }
     },
 
@@ -5487,7 +5052,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                         <p class="form-help">Comma-separated email addresses</p>
                     </div>
                     <div class="actions-form-group">
-                        <label for="emailActionSubject">Subject Template</label>
+                        <label for="emailActionSubject">Subject template</label>
                         <input type="text" id="emailActionSubject" value="${Utils.escapeHtml(ea?.subject_template || '')}" placeholder="[Bifract] {{alert_name}} - {{severity}}">
                         <p class="form-help">Use {{alert_name}}, {{severity}}, {{match_count}}</p>
                     </div>
