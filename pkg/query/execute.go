@@ -217,10 +217,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	opts.FractalID = fractalIDForQuery
 	opts.FractalIDs = prismFractalIDs
 	opts.IncludeEmptyFractalID = includeEmptyFractalID
-	opts.Dictionaries = dictScope.Mappings
-	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
-	opts.NetworkDicts = dictScope.Network
-	opts.PatternDicts = dictScope.Pattern
+	dictScope.Apply(&opts)
 	opts.Models = modelInfos
 	opts.HasCommentFilter = hasCommentFilter
 	opts.CommentLogIDs = commentLogIDs

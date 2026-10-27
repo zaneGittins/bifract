@@ -225,3 +225,56 @@ func TestNetworkDictionaryInsideAJoin(t *testing.T) {
 		t.Errorf("want an address probe inside the join, got: %s", sql)
 	}
 }
+
+// A REGEXP_TREE runs every expression it cannot reduce to a literal, which is
+// every (?i) one, through RE2 one by one on each row. With a prefilter, a single
+// Hyperscan pass over the whole list goes first, and only a row it passes pays
+// for the dictionary.
+func TestPatternPrefilterGuardsEveryLookup(t *testing.T) {
+	opts := networkDictOpts()
+	opts.PatternPrefilters = map[string]string{"dict_tools_pattern": "(SELECT pats)"}
+	pipeline, err := ParseQuery(`* | match(dict="tools", field=commandline, column=pattern, include=[tool, pattern], require=true)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := TranslateToSQLWithOrder(pipeline, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := "toString(fields.`commandline`::String)"
+	guard := "multiMatchAny(" + probe + ", (SELECT pats))"
+	for _, want := range []string{
+		"(" + guard + " AND dictGetOrDefault('bifract.dict_tools_pattern', '_match', " + probe + ", '') = '1')",
+		"if(" + guard + ", dictGetOrDefault('bifract.dict_tools_pattern', 'tool', " + probe + ", ''), '')",
+	} {
+		if !strings.Contains(res.SQL, want) {
+			t.Errorf("want %s in:\n%s", want, res.SQL)
+		}
+	}
+	if lookups, guards := strings.Count(res.SQL, "dictGetOrDefault('bifract.dict_tools_pattern'"), strings.Count(res.SQL, guard); guards < lookups {
+		t.Errorf("%d lookups but %d guards:\n%s", lookups, guards, res.SQL)
+	}
+}
+
+// A list ClickHouse has not compiled for Hyperscan has no prefilter, and its
+// lookups are exactly as before.
+func TestPatternWithoutPrefilterIsUnguarded(t *testing.T) {
+	sql := networkSQL(t, `* | match(dict="tools", field=commandline, column=pattern, include=[tool, pattern], require=true)`)
+	if strings.Contains(sql, "multiMatchAny") {
+		t.Errorf("no prefilter was given: %s", sql)
+	}
+}
+
+// A key column is named after whatever field the list was built from, keywords
+// included; the safety check must read it as a name.
+func TestPatternPrefilterKeyNamedLikeAKeyword(t *testing.T) {
+	opts := networkDictOpts()
+	opts.PatternPrefilters = map[string]string{"dict_tools_pattern": "(SELECT groupArray(`last update time`) FROM `bifract`.`dict_t` FINAL WHERE notEmpty(`last update time`))"}
+	pipeline, err := ParseQuery(`* | match(dict="tools", field=commandline, column=pattern, include=[tool], require=true)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TranslateToSQLWithOrder(pipeline, opts); err != nil {
+		t.Fatal(err)
+	}
+}

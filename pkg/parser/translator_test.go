@@ -574,6 +574,12 @@ func TestSQLSafetyCheck(t *testing.T) {
 			{"SELECT * FROM logs WHERE x = 'DROP TABLE'", "SELECT * FROM logs WHERE x = ''"},
 			{"SELECT * FROM logs WHERE x = 'it\\'s a test'", "SELECT * FROM logs WHERE x = ''"},
 			{"SELECT * FROM logs", "SELECT * FROM logs"},
+			// A quoted identifier is a name, never structure: a lookup's key column
+			// can be any log field name, including one spelled like a keyword.
+			{"SELECT groupArray(`last update time`) FROM t", "SELECT groupArray(``) FROM t"},
+			{"SELECT `it``s` FROM t WHERE x = 'a`b'", "SELECT ```` FROM t WHERE x = ''"},
+			{"SELECT `a\\` DROP` FROM t", "SELECT `` FROM t"},
+			{"SELECT `x'y` FROM t WHERE z = 'DROP '", "SELECT `` FROM t WHERE z = ''"},
 		}
 		for _, tt := range tests {
 			result := stripStringLiterals(tt.input)
@@ -588,6 +594,7 @@ func TestSQLSafetyCheck(t *testing.T) {
 		dangerousSQL := []string{
 			"SELECT * FROM logs; DROP TABLE logs",
 			"SELECT * FROM logs UNION SELECT * FROM system.users",
+			"SELECT `a` FROM logs; DROP TABLE logs",
 		}
 		for _, sql := range dangerousSQL {
 			if err := validateGeneratedSQL(sql); err == nil {

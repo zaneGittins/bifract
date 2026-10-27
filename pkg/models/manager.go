@@ -575,10 +575,10 @@ func (m *Manager) sourceQueryOptionsErr(ctx context.Context, fractalID, prismID 
 	if err != nil {
 		return opts, err
 	}
-	opts.Dictionaries = scope.Mappings
-	opts.CaseInsensitiveDicts = scope.CaseInsensitive
-	opts.NetworkDicts = scope.Network
-	opts.PatternDicts = scope.Pattern
+	scope.Apply(&opts)
+	// Model SQL is compiled into materialized views, which must not depend on a
+	// prefilter that a later edit can withdraw.
+	opts.PatternPrefilters = nil
 	return opts, nil
 }
 

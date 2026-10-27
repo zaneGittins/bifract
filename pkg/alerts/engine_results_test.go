@@ -322,7 +322,7 @@ func TestCacheAndOptsCarryDictionaries(t *testing.T) {
 	}
 
 	pg.answer("WHERE fractal_id = $1 OR is_global = true", fakedb.RowsOf([]driver.Value{
-		"dict-1", "blocklist", "ip", []byte(`[{"name":"ip"},{"name":"reason"}]`), false, "value",
+		"dict-1", "blocklist", "ip", []byte(`[{"name":"ip"},{"name":"reason"}]`), false, "value", false,
 	}))
 	opts, err := e.buildQueryOpts(context.Background(), enabled[0], fixedTime, fixedTime.Add(time.Minute), nil)
 	if err != nil {

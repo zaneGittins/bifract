@@ -489,11 +489,9 @@ func dictRef(db, name string) string {
 }
 
 // validateGeneratedSQL checks the final SQL for dangerous patterns that should never
-// appear in translator output. It strips string literals first so that log data
-// containing keywords like "DROP TABLE" in search values won't trigger false positives.
+// appear in translator output, ignoring strings and quoted names so a search value
+// or field name containing a keyword is not mistaken for one.
 func validateGeneratedSQL(sql string) error {
-	// Strip all single-quoted string literals (including escaped quotes) to avoid
-	// false positives on user search values inside WHERE conditions.
 	stripped := stripStringLiterals(sql)
 
 	// Normalize to uppercase for case-insensitive matching
@@ -536,34 +534,25 @@ func validateGeneratedSQL(sql string) error {
 	return nil
 }
 
-// stripStringLiterals removes the content of all single-quoted string literals
-// from SQL, replacing them with empty strings. Handles escaped quotes (\”).
-// This allows checking the SQL structure without matching against user-supplied
-// search values that might legitimately contain SQL keywords.
+// stripStringLiterals empties every single-quoted string and backquoted
+// identifier, honouring backslash escapes, so the structure check never reads a
+// search value or a name as SQL.
 func stripStringLiterals(sql string) string {
 	var result strings.Builder
-	inString := false
-	i := 0
-	for i < len(sql) {
-		if inString {
-			if sql[i] == '\\' && i+1 < len(sql) {
-				i += 2 // skip escaped character
-			} else if sql[i] == '\'' {
-				inString = false
-				result.WriteByte('\'') // write closing quote
-				i++
-			} else {
-				i++ // skip string content
+	var quote byte
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch {
+		case quote == 0:
+			result.WriteByte(c)
+			if c == '\'' || c == '`' {
+				quote = c
 			}
-		} else {
-			if sql[i] == '\'' {
-				inString = true
-				result.WriteByte('\'') // write opening quote
-				i++
-			} else {
-				result.WriteByte(sql[i])
-				i++
-			}
+		case c == '\\':
+			i++
+		case c == quote:
+			result.WriteByte(c)
+			quote = 0
 		}
 	}
 	return result.String()

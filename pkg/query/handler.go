@@ -1076,10 +1076,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	opts.FractalID = fractalIDForQuery
 	opts.FractalIDs = prismFractalIDs
 	opts.IncludeEmptyFractalID = includeEmptyFractalID
-	opts.Dictionaries = dictScope.Mappings
-	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
-	opts.NetworkDicts = dictScope.Network
-	opts.PatternDicts = dictScope.Pattern
+	dictScope.Apply(&opts)
 	opts.Models = modelInfos
 	opts.HasCommentFilter = hasCommentFilter
 	opts.CommentLogIDs = commentLogIDs
@@ -1457,10 +1454,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	opts.FractalID = fractalIDForQuery
 	opts.FractalIDs = prismFractalIDs
 	opts.IncludeEmptyFractalID = false
-	opts.Dictionaries = dictScope.Mappings
-	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
-	opts.NetworkDicts = dictScope.Network
-	opts.PatternDicts = dictScope.Pattern
+	dictScope.Apply(&opts)
 	opts.Models = modelInfos
 	opts.HasCommentFilter = hasComment
 	opts.HasTLSHFilter = hasTLSH

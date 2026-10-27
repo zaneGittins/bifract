@@ -27,17 +27,22 @@ type Manager struct {
 	// at construction. They decide whether rows go through a Distributed companion.
 	distributed bool
 	ddlCluster  string
+	// replicated marks shards whose replicas can lag one another.
+	replicated bool
+	// background runs work that must not hold up the request; tests run it inline.
+	background func(func())
 }
 
 // NewManager creates a new dictionary manager. The database comes from the client
 // rather than a literal: CLICKHOUSE_DB is configurable, and every dictionary source
 // query and reload names its database explicitly.
 func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manager {
-	m := &Manager{pg: pg, ch: ch}
+	m := &Manager{pg: pg, ch: ch, background: func(f func()) { go f() }}
 	if ch != nil {
 		m.chDB = ch.LogsDatabase()
 		m.distributed = ch.Topology().DistributedTables
 		m.ddlCluster = ch.Topology().DDLCluster
+		m.replicated = ch.Topology().ReplicatedEngines && ch.Topology().FanoutCluster != ""
 	}
 	return m
 }
@@ -608,7 +613,7 @@ func (m *Manager) KeyCollisions(ctx context.Context, id string) (*KeyCollisionRe
 		return report, nil
 	}
 
-	table := escCH(m.rowTable(dict))
+	table := escCH(m.rowTable(dict.ID))
 	for _, col := range m.keyColumns(dict) {
 		c := escCH(col)
 		// Bounded: this runs synchronously on the toggle request, over a dictionary
@@ -855,7 +860,7 @@ func (m *Manager) rowsQueries(dict *Dictionary, search string, limit, offset int
 		where = "WHERE (" + strings.Join(searchClauses, " OR ") + ")"
 	}
 
-	table := escCH(m.rowTable(dict))
+	table := escCH(m.rowTable(dict.ID))
 	countSQL = fmt.Sprintf("SELECT count() FROM `%s` FINAL %s", table, where)
 	querySQL = fmt.Sprintf("SELECT %s, `%s` FROM `%s` FINAL %s ORDER BY `%s` ASC, `%s` ASC LIMIT %d OFFSET %d",
 		strings.Join(colRefs, ", "), seqColumn, table, where,
@@ -928,7 +933,7 @@ const maxSeqLookup = 1000
 
 // maxSeq is the highest editor ordinal in the table, 0 when it is empty.
 func (m *Manager) maxSeq(ctx context.Context, dict *Dictionary) (uint64, error) {
-	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(m.rowTable(dict))))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT max(`%s`) FROM `%s`", seqColumn, escCH(m.rowTable(dict.ID))))
 	if err != nil {
 		return 0, fmt.Errorf("failed to read dictionary row order: %w", err)
 	}
@@ -997,7 +1002,7 @@ func (m *Manager) seqLookupQuery(dict *Dictionary, rows []DictionaryRow) string 
 		return ""
 	}
 	return fmt.Sprintf("SELECT `%s`, `%s` FROM `%s` FINAL WHERE `%s` IN (%s)",
-		escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict)),
+		escCH(dict.KeyColumn), seqColumn, escCH(m.rowTable(dict.ID)),
 		escCH(dict.KeyColumn), strings.Join(keys, ", "))
 }
 
@@ -1047,7 +1052,7 @@ func (m *Manager) DeleteRow(ctx context.Context, id, key string) error {
 		return err
 	}
 	found, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() FROM `%s` FINAL WHERE `%s` = '%s'",
-		escCH(m.rowTable(dict)), escCH(dict.KeyColumn), escCHStr(key)))
+		escCH(m.rowTable(dict.ID)), escCH(dict.KeyColumn), escCHStr(key)))
 	if err != nil {
 		return fmt.Errorf("failed to look up row: %w", err)
 	}
@@ -1119,6 +1124,7 @@ func (m *Manager) reloadDictionaries(ctx context.Context, dict *Dictionary) {
 			log.Printf("[Dictionaries] reload %s: %v", n, err)
 		}
 	}
+	m.refreshPrefilter(ctx, dict)
 }
 
 const csvImportBatchSize = 1000
@@ -1298,10 +1304,21 @@ func (m *Manager) addMissingColumns(ctx context.Context, dict *Dictionary, heade
 
 // batchInsertRows inserts rows in batches of csvImportBatchSize using multi-row INSERT
 // statements. seqs carries each row's editor ordinal, parallel to rows.
-func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []DictionaryRow, seqs []uint64) error {
+func (m *Manager) batchInsertRows(ctx context.Context, dict *Dictionary, rows []DictionaryRow, seqs []uint64) (err error) {
 	if len(dict.Columns) == 0 {
 		return nil
 	}
+	// Before, so no reload loads these rows under the old verdict; after, even
+	// when the insert fails or the caller leaves, so a probe that read the table
+	// before they landed cannot record its verdict.
+	if err := m.invalidatePrefilter(ctx, dict); err != nil {
+		return err
+	}
+	defer func() {
+		if ierr := m.invalidatePrefilter(context.WithoutCancel(ctx), dict); err == nil {
+			err = ierr
+		}
+	}()
 	for i := 0; i < len(rows); i += csvImportBatchSize {
 		end := min(i+csvImportBatchSize, len(rows))
 		insertSQL, args := m.insertStatement(dict, rows[i:end], seqs[i:end])
@@ -1334,7 +1351,7 @@ func (m *Manager) insertStatement(dict *Dictionary, rows []DictionaryRow, seqs [
 	}
 
 	insertSQL := fmt.Sprintf("INSERT INTO `%s` (%s)%s VALUES %s",
-		escCH(m.rowTable(dict)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(placeholders, ", "))
+		escCH(m.rowTable(dict.ID)), strings.Join(colNames, ", "), m.insertSettings(), strings.Join(placeholders, ", "))
 	return insertSQL, args
 }
 
@@ -1356,7 +1373,7 @@ func (m *Manager) ExportCSV(ctx context.Context, id string, w io.Writer) error {
 	}
 
 	querySQL := fmt.Sprintf("SELECT %s FROM `%s` FINAL ORDER BY `%s` ASC, `%s` ASC",
-		strings.Join(colRefs, ", "), escCH(m.rowTable(dict)), seqColumn, escCH(dict.KeyColumn))
+		strings.Join(colRefs, ", "), escCH(m.rowTable(dict.ID)), seqColumn, escCH(dict.KeyColumn))
 
 	dataRows, err := m.ch.QuerySchema(ctx, querySQL)
 	if err != nil {
@@ -1610,6 +1627,9 @@ func (m *Manager) consolidateShards(ctx context.Context, dict *Dictionary) error
 }
 
 func (m *Manager) createCHObjects(ctx context.Context, dict *Dictionary) error {
+	if err := m.invalidatePrefilter(ctx, dict); err != nil {
+		return err
+	}
 	if err := m.createCHTable(ctx, dict); err != nil {
 		return err
 	}
@@ -1661,8 +1681,7 @@ func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []Dictio
 		}
 		refs = append(refs, fmt.Sprintf("`%s`", escCH(c.Name)))
 	}
-	q := fmt.Sprintf("SELECT %s FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`)",
-		strings.Join(refs, ", "), escCH(m.chDB), escCH(m.rowTable(dict)), escCH(keyCol))
+	q := fmt.Sprintf("SELECT %s %s", strings.Join(refs, ", "), m.liveRows(dict.ID, keyCol))
 	return escCHStr(q)
 }
 
@@ -1675,11 +1694,17 @@ func (m *Manager) dictSourceQuery(dict *Dictionary, keyCol string, cols []Dictio
 // constant 0, which pins every row to the first shard. That keeps the table free of
 // cross-shard duplicates, which FINAL cannot collapse, so an edit still supersedes the
 // row it replaces, and lets each shard's dictionary load the full set.
-func (m *Manager) rowTable(dict *Dictionary) string {
+func (m *Manager) rowTable(id string) string {
 	if m.distributed {
-		return chDistTableName(dict.ID)
+		return chDistTableName(id)
 	}
-	return dict.CHTableName
+	return chTableName(id)
+}
+
+// liveRows is the FROM and WHERE every read of a list's current keys shares: the
+// dictionary sources and the pattern prefilter must see exactly the same rows.
+func (m *Manager) liveRows(id, keyCol string) string {
+	return fmt.Sprintf("FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`)", escCH(m.chDB), escCH(m.rowTable(id)), escCH(keyCol))
 }
 
 // insertSettings makes a Distributed insert synchronous. The editor reads a row back
@@ -1785,6 +1810,9 @@ func (m *Manager) dictionaryDDL(name, keyCol string, attrs []string, sourceQuery
 // recreateAllCHDictionaries drops and recreates the primary dictionary and any secondary
 // key column dictionaries after a schema change.
 func (m *Manager) recreateAllCHDictionaries(ctx context.Context, dict *Dictionary, cols []DictionaryColumn) error {
+	if err := m.invalidatePrefilter(ctx, dict); err != nil {
+		return err
+	}
 	_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(dict.CHDictName))))
 	if err := m.createCHDictionary(ctx, dict, cols); err != nil {
 		return err
@@ -1797,6 +1825,7 @@ func (m *Manager) recreateAllCHDictionaries(ctx context.Context, dict *Dictionar
 			}
 		}
 	}
+	m.refreshPrefilter(ctx, dict)
 	return nil
 }
 
@@ -1833,10 +1862,10 @@ func (m *Manager) patternSourceQuery(dict *Dictionary, cols []DictionaryColumn) 
 		values = append(values, fmt.Sprintf("`%s`", escCH(c.Name)))
 	}
 	q := fmt.Sprintf(
-		"SELECT `%s` AS id, toUInt64(0) AS parent_id, `%s` AS regexp, [%s] AS keys, [%s] AS values FROM `%s`.`%s` FINAL WHERE notEmpty(`%s`) ORDER BY `%s`",
+		"SELECT `%s` AS id, toUInt64(0) AS parent_id, `%s` AS regexp, [%s] AS keys, [%s] AS values %s ORDER BY `%s`",
 		escCH(seqColumn), escCH(dict.KeyColumn),
 		strings.Join(keys, ", "), strings.Join(values, ", "),
-		escCH(m.chDB), escCH(m.rowTable(dict)), escCH(dict.KeyColumn), escCH(seqColumn))
+		m.liveRows(dict.ID, dict.KeyColumn), escCH(seqColumn))
 	return escCHStr(q)
 }
 
@@ -1860,7 +1889,7 @@ func dictLayout(kind string) string {
 }
 
 func (m *Manager) updateRowCount(ctx context.Context, dict *Dictionary) {
-	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(m.rowTable(dict)))
+	countSQL := fmt.Sprintf("SELECT count() FROM `%s` FINAL", escCH(m.rowTable(dict.ID)))
 	rows, err := m.ch.QuerySchema(ctx, countSQL)
 	if err != nil || len(rows) == 0 {
 		return
@@ -1892,10 +1921,10 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 	var q string
 	var arg string
 	if prismID != "" {
-		q = `SELECT id, name, key_column, columns, case_insensitive_keys, COALESCE(kind, 'value') FROM dictionaries WHERE prism_id = $1 OR is_global = true`
+		q = `SELECT id, name, key_column, columns, case_insensitive_keys, COALESCE(kind, 'value'), pattern_prefilter FROM dictionaries WHERE prism_id = $1 OR is_global = true`
 		arg = prismID
 	} else {
-		q = `SELECT id, name, key_column, columns, case_insensitive_keys, COALESCE(kind, 'value') FROM dictionaries WHERE fractal_id = $1 OR is_global = true`
+		q = `SELECT id, name, key_column, columns, case_insensitive_keys, COALESCE(kind, 'value'), pattern_prefilter FROM dictionaries WHERE fractal_id = $1 OR is_global = true`
 		arg = fractalID
 	}
 	rows, err := m.pg.Query(ctx, q, arg)
@@ -1908,8 +1937,8 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 	for rows.Next() {
 		var id, name, keyCol, kind string
 		var colsJSON []byte
-		var ci bool
-		if err := rows.Scan(&id, &name, &keyCol, &colsJSON, &ci, &kind); err != nil {
+		var ci, prefilter bool
+		if err := rows.Scan(&id, &name, &keyCol, &colsJSON, &ci, &kind, &prefilter); err != nil {
 			return Scope{}, err
 		}
 		var cols []DictionaryColumn
@@ -1917,6 +1946,9 @@ func (m *Manager) ListDictionaryMappings(ctx context.Context, fractalID, prismID
 			cols = nil
 		}
 		scope.add(id, name, keyCol, cols, ci, kind)
+		if prefilter && NormalizeKind(kind) == KindPattern {
+			scope.Prefilter[chDictName(id)] = m.patternArraySQL(id, keyCol)
+		}
 	}
 	return scope, rows.Err()
 }
@@ -1927,6 +1959,7 @@ func newScope() Scope {
 		CaseInsensitive: make(map[string]bool),
 		Network:         make(map[string]bool),
 		Pattern:         make(map[string]bool),
+		Prefilter:       make(map[string]string),
 	}
 }
 
@@ -2302,7 +2335,7 @@ func (m *Manager) GetKeys(ctx context.Context, id string, limit int) ([]string, 
 		limit = 1_000_000
 	}
 	sql := fmt.Sprintf("SELECT DISTINCT `%s` AS k FROM `%s` FINAL WHERE `%s` != '' LIMIT %d",
-		escCH(keyCol), escCH(m.rowTable(dict)), escCH(keyCol), limit)
+		escCH(keyCol), escCH(m.rowTable(dict.ID)), escCH(keyCol), limit)
 	rows, err := m.ch.QuerySchema(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("read dictionary keys: %w", err)

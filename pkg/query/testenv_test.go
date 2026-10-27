@@ -92,8 +92,8 @@ func (e *testEnv) answerPG(q string, args []driver.Value) (fakedb.PGResult, bool
 	case strings.Contains(q, "FROM dictionaries"):
 		var rows [][]driver.Value
 		for _, r := range e.dictRows {
-			// id, name, key_column, columns, case_insensitive_keys, kind
-			rows = append(rows, []driver.Value{r[0], r[1], r[2], []byte("[]"), false, "value"})
+			// id, name, key_column, columns, case_insensitive_keys, kind, pattern_prefilter
+			rows = append(rows, []driver.Value{r[0], r[1], r[2], []byte("[]"), false, "value", false})
 		}
 		return fakedb.RowsOf(rows...), true
 	case strings.Contains(q, "FROM analytics_models"):

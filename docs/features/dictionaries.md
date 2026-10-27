@@ -43,6 +43,8 @@ Other controls:
 
 On a Patterns list, put specific expressions above general ones: the first match answers.
 
+A Patterns list is screened with one Hyperscan pass over all its expressions, which keeps large lists fast. Hyperscan refuses a few expressions that are otherwise valid, such as `(?U)` or very large repeats like `a{1000}`. A list holding one still matches correctly, but its lookups lose the speed-up.
+
 ## Use a lookup in a query
 
 ```

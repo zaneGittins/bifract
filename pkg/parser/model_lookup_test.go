@@ -1050,6 +1050,11 @@ func TestLookupMembership(t *testing.T) {
 			t.Errorf("%s: got %q, %v; want %q", c.dict, got, err, c.want)
 		}
 	}
+	opts.PatternPrefilters = map[string]string{"d_pat": "(SELECT pats)"}
+	want := "(multiMatchAny(dst, (SELECT pats)) AND dictGetOrDefault('logs.d_pat', '_match', dst, '') = '1')"
+	if got, err := LookupMembership("dst", "pats", "re", opts); err != nil || got != want {
+		t.Errorf("prefiltered: got %q, %v; want %q", got, err, want)
+	}
 	if _, err := LookupMembership("dst", "iocs", "domain", opts); err == nil || !strings.Contains(err.Error(), "no key column") {
 		t.Errorf("unknown column: %v", err)
 	}
