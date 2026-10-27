@@ -473,3 +473,33 @@ func TestSMTPSettingsHandlers(t *testing.T) {
 	pg.answer("SELECT value FROM settings WHERE key = $1", fakedb.Row(`{`))
 	expect(t, serve(h, getSMTP, hcall{as: admin}), 500, "")
 }
+
+// Alert IDs are global, so a batch toggle must only reach alerts in the caller's own scope.
+func TestBatchTogglesStayInCallerScope(t *testing.T) {
+	plain := func(h *Handler) http.HandlerFunc { return h.HandleBatchToggleAlerts }
+	feed := func(h *Handler) http.HandlerFunc { return h.HandleBatchToggleFeedAlerts }
+	prismAnalyst := caller{user: &storage.User{Username: "ana"}, prismRole: "analyst", prism: "p1"}
+
+	for _, tc := range []struct {
+		name  string
+		fn    func(*Handler) http.HandlerFunc
+		as    caller
+		where string
+		scope string
+	}{
+		{"alerts in a fractal", plain, analyst, "feed_id IS NULL AND fractal_id = $4", "f1"},
+		{"alerts in a prism", plain, prismAnalyst, "feed_id IS NULL AND prism_id = $4", "p1"},
+		{"feed alerts in a fractal", feed, analyst, "feed_id IS NOT NULL AND fractal_id = $4", "f1"},
+		{"feed alerts in a prism", feed, prismAnalyst, "feed_id IS NOT NULL AND prism_id = $4", "p1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, pg := newDBHandler(t)
+			pg.answer("WHERE id = ANY($3)", fakedb.Affected(1))
+			expect(t, serve(h, tc.fn, hcall{as: tc.as, method: "POST", body: `{"alert_ids":["mine","other-fractal"],"enabled":true}`}), 200, `"toggled":1`)
+			calls := pg.Matching("WHERE id = ANY($3)")
+			if len(calls) != 1 || !strings.Contains(calls[0].Query, tc.where) || calls[0].Args[3] != tc.scope {
+				t.Fatalf("update not limited to %q: %+v", tc.scope, calls)
+			}
+		})
+	}
+}

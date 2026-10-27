@@ -1201,15 +1201,15 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 		h.respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	fractalID, prismID, ok := h.requireScope(w, r, "feed alert batch toggle")
+	if !ok {
+		return
+	}
 
 	var count int
 	var err error
 	switch {
 	case req.Filter != nil:
-		fractalID, prismID, ok := h.requireScope(w, r, "feed alert batch toggle")
-		if !ok {
-			return
-		}
 		unset := func(v string) string {
 			if v == "all" {
 				return ""
@@ -1232,7 +1232,7 @@ func (h *Handler) HandleBatchToggleFeedAlerts(w http.ResponseWriter, r *http.Req
 		h.respondError(w, http.StatusBadRequest, "too many alert IDs (max 5000)")
 		return
 	default:
-		count, err = h.manager.BatchToggleFeedAlerts(r.Context(), req.AlertIDs, req.Enabled, h.attributionUser(r))
+		count, err = h.manager.BatchToggleFeedAlerts(r.Context(), req.AlertIDs, fractalID, prismID, req.Enabled, h.attributionUser(r))
 	}
 	if err != nil {
 		log.Printf("[Alerts] Failed to batch toggle feed alerts: %v", err)
@@ -1268,8 +1268,12 @@ func (h *Handler) HandleBatchToggleAlerts(w http.ResponseWriter, r *http.Request
 		h.respondError(w, http.StatusBadRequest, "too many alert IDs (max 5000)")
 		return
 	}
+	fractalID, prismID, ok := h.requireScope(w, r, "alert batch toggle")
+	if !ok {
+		return
+	}
 
-	count, err := h.manager.BatchToggleAlerts(r.Context(), req.AlertIDs, req.Enabled, h.attributionUser(r))
+	count, err := h.manager.BatchToggleAlerts(r.Context(), req.AlertIDs, fractalID, prismID, req.Enabled, h.attributionUser(r))
 	if err != nil {
 		log.Printf("[Alerts] Failed to batch toggle alerts: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update alerts")

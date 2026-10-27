@@ -405,18 +405,18 @@ func TestFeedAlertMaintenance(t *testing.T) {
 		t.Error(err)
 	}
 
-	if n, err := m.BatchToggleAlerts(ctx, nil, true, "bob"); n != 0 || err != nil {
+	if n, err := m.BatchToggleAlerts(ctx, nil, "f1", "", true, "bob"); n != 0 || err != nil {
 		t.Error("an empty batch is a no-op")
 	}
-	pg.answer("WHERE id = ANY($3) AND feed_id IS NULL", fakedb.Affected(2))
-	if n, err := m.BatchToggleAlerts(ctx, []string{"a1", "a2"}, true, "bob"); n != 2 || err != nil {
+	pg.answer("WHERE id = ANY($3) AND feed_id IS NULL AND fractal_id = $4", fakedb.Affected(2))
+	if n, err := m.BatchToggleAlerts(ctx, []string{"a1", "a2"}, "f1", "", true, "bob"); n != 2 || err != nil {
 		t.Errorf("batch = %d %v", n, err)
 	}
-	pg.answer("WHERE id = ANY($3) AND feed_id IS NOT NULL", fakedb.Affected(1))
-	if n, err := m.BatchToggleFeedAlerts(ctx, []string{"a1"}, false, "bob"); n != 1 || err != nil {
+	pg.answer("WHERE id = ANY($3) AND feed_id IS NOT NULL AND prism_id = $4", fakedb.Affected(1))
+	if n, err := m.BatchToggleFeedAlerts(ctx, []string{"a1"}, "", "p1", false, "bob"); n != 1 || err != nil {
 		t.Errorf("feed batch = %d %v", n, err)
 	}
-	if n, err := m.BatchToggleFeedAlerts(ctx, nil, false, "bob"); n != 0 || err != nil {
+	if n, err := m.BatchToggleFeedAlerts(ctx, nil, "", "p1", false, "bob"); n != 0 || err != nil {
 		t.Error("an empty feed batch is a no-op")
 	}
 	m.RefreshCache(ctx)
