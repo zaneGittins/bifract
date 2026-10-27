@@ -2,6 +2,7 @@ package query
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -563,5 +564,29 @@ func TestSingleScanSkipsRollupHistogram(t *testing.T) {
 	}
 	if h := e.ch.QueriedMatching("logs_histogram"); len(h) == 0 {
 		t.Error("the rollup histogram was not used")
+	}
+}
+
+// ClickHouse refuses to cache a query holding a non-deterministic function such as
+// dictHas or dictGet (code 704), so every older histogram chunk of a match() search failed
+// and the timeline stopped at the newest chunk.
+func TestCachedHistogramChunksSurviveALookup(t *testing.T) {
+	e := newTestEnv(t, 3)
+	e.dictRows = [][]driver.Value{{"d1", "users", "name"}}
+	e.respond(func(sql string) ([]map[string]interface{}, error) {
+		switch {
+		case strings.Contains(sql, "use_query_cache = 1") && (strings.Contains(sql, "dictHas(") || strings.Contains(sql, "dictGet")) &&
+			!strings.Contains(sql, "query_cache_nondeterministic_function_handling = 'ignore'"):
+			return nil, fakedb.Exception(704, "The query result was not cached because the query contains a non-deterministic function")
+		case isHistogramSQL(sql):
+			return []map[string]interface{}{}, nil
+		case strings.Contains(sql, chunk0Window):
+			return logRows(3, testEndTime, "f1"), nil
+		}
+		return []map[string]interface{}{}, nil
+	})
+	frames := runStream(t, e, QueryRequest{Query: `* | match(dict="users", field=user, column=name, include=[tier], require=true)`, FractalID: "f1"})
+	if hist := framesOf(frames, "histogram"); len(hist) != 4 || hist[3]["complete"] != true {
+		t.Errorf("histogram stopped early: %d frames, %v", len(hist), framesOf(frames, "histogram_end"))
 	}
 }
