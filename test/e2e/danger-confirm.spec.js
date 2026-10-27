@@ -19,7 +19,7 @@ test('a typed phrase gates the action and must match exactly', async ({ page }) 
 
   const d = dialog(page);
   await expect(d).toBeVisible();
-  await expect(d.locator('.danger-confirm-title')).toHaveText('Clear Endpoint Analytics Baselines');
+  await expect(d.locator('.danger-confirm-title')).toHaveText('Clear endpoint analytics baselines');
   const ok = d.locator('.danger-confirm-ok');
   const input = d.locator('#dangerConfirmInput');
   await expect(input).toBeFocused();

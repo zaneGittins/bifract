@@ -758,7 +758,7 @@ const Alerts = {
 
         if (fractals.size > 0) {
             html += '<optgroup label="Fractal Actions">';
-            html += '<option value="fractal:*">Any Fractal Action</option>';
+            html += '<option value="fractal:*">Any fractal action</option>';
             for (const [id, name] of [...fractals.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
                 html += `<option value="fractal:${id}">${Utils.escapeHtml(name)}</option>`;
             }
@@ -767,7 +767,7 @@ const Alerts = {
 
         if (dictionaries.size > 0) {
             html += '<optgroup label="Dictionary Actions">';
-            html += '<option value="dictionary:*">Any Dictionary Action</option>';
+            html += '<option value="dictionary:*">Any lookup action</option>';
             for (const [id, name] of [...dictionaries.entries()].sort((a, b) => a[1].localeCompare(b[1]))) {
                 html += `<option value="dictionary:${id}">${Utils.escapeHtml(name)}</option>`;
             }
@@ -1124,7 +1124,7 @@ const Alerts = {
         if (summaryGroup) summaryGroup.hidden = !proposing;
 
         const btn = document.getElementById('importYamlBtn');
-        if (btn) btn.textContent = !gated ? 'Import Alert' : (proposing ? 'Open proposal' : 'Save draft');
+        if (btn) btn.textContent = !gated ? 'Import' : (proposing ? 'Open proposal' : 'Save draft');
     },
 
     detectSigmaRule(yamlContent) {
@@ -1247,10 +1247,10 @@ const Alerts = {
         this.resetAlertForm();
 
         if (alertId) {
-            title.textContent = 'Edit Alert';
+            title.textContent = 'Edit alert';
             this.loadAlertForEdit(alertId);
         } else {
-            title.textContent = 'Create Alert';
+            title.textContent = 'Create alert';
             this.currentAlert = null;
         }
 
@@ -1287,7 +1287,7 @@ const Alerts = {
 
         const isEdit = this.inlineWebhookForm !== 'create';
         const panelClass = isEdit ? 'actions-edit-panel' : 'actions-create-panel';
-        const title = isEdit ? 'Edit Webhook' : 'Create Webhook';
+        const title = isEdit ? 'Edit webhook' : 'Create webhook';
 
         container.innerHTML = `
             <div class="${panelClass}">
@@ -1408,7 +1408,7 @@ const Alerts = {
                     <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
                     <button id="previewWebhookBtn" class="btn-secondary" onclick="Alerts.testWebhook(false)">Preview payload</button>
                     <button id="testWebhookBtn" class="btn-secondary" onclick="Alerts.testWebhook(true)">Send test</button>
-                    <button id="saveWebhookBtn" class="btn-primary" onclick="Alerts.saveWebhook()">Save Webhook</button>
+                    <button id="saveWebhookBtn" class="btn-primary" onclick="Alerts.saveWebhook()">Save</button>
                 </div>
                 <div id="webhookError" class="error-message" style="display: none;"></div>
                 <div id="webhookTestOutput" class="webhook-test-output" style="display: none;"></div>
@@ -2472,13 +2472,13 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
         if (alertId && !this.editingFeedAlert) {
             // Edit mode (manual alert)
-            if (saveBtn) saveBtn.textContent = 'Update Alert';
+            if (saveBtn) saveBtn.textContent = 'Save';
         } else if (this.editingFeedAlert) {
             // Feed alert mode: will create a copy on save
             if (saveBtn) saveBtn.textContent = 'Save as Manual Alert';
         } else {
             // Create mode
-            if (saveBtn) saveBtn.textContent = 'Create Alert';
+            if (saveBtn) saveBtn.textContent = 'Create alert';
             this.clearAlertEditor();
         }
 
@@ -3768,7 +3768,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         }
         if (saveBtn && !this.editingFeedAlert) {
             if (this.gateEnabled) saveBtn.textContent = 'Propose change';
-            else saveBtn.textContent = alertId ? 'Update Alert' : 'Create Alert';
+            else saveBtn.textContent = alertId ? 'Save' : 'Create alert';
         }
 
     },
@@ -4638,7 +4638,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
         const isEdit = this.inlineFractalActionForm !== 'create';
         const panelClass = isEdit ? 'actions-edit-panel' : 'actions-create-panel';
-        const title = isEdit ? 'Edit Fractal Action' : 'Create Fractal Action';
+        const title = isEdit ? 'Edit fractal action' : 'Create fractal action';
 
         // Build the fractal target options from the already-loaded select
         const existingSelect = document.getElementById('fractalActionTarget');
@@ -4705,7 +4705,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 </div>
                 <div class="actions-form-actions">
                     <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
-                    <button id="saveFractalActionBtn" class="btn-primary" onclick="Alerts.saveFractalAction()">Save Fractal Action</button>
+                    <button id="saveFractalActionBtn" class="btn-primary" onclick="Alerts.saveFractalAction()">Save</button>
                 </div>
                 <div id="fractalActionError" class="error-message" style="display: none;"></div>
             </div>
@@ -4963,7 +4963,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
 
         const isEdit = this.inlineDictActionForm !== 'create';
         const panelClass = isEdit ? 'actions-edit-panel' : 'actions-create-panel';
-        const title = isEdit ? 'Edit Dictionary Action' : 'Create Dictionary Action';
+        const title = isEdit ? 'Edit lookup action' : 'Create lookup action';
 
         container.innerHTML = `
             <div class="${panelClass}">
@@ -5005,7 +5005,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 </div>
                 <div class="actions-form-actions">
                     <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
-                    <button id="saveDictActionBtn" class="btn-primary" onclick="Alerts.saveDictAction()">Save Dictionary Action</button>
+                    <button id="saveDictActionBtn" class="btn-primary" onclick="Alerts.saveDictAction()">Save</button>
                 </div>
                 <div id="dictActionError" class="error-message" style="display: none;"></div>
             </div>
@@ -5404,7 +5404,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         container.innerHTML = `
             <div class="actions-create-panel">
                 <div class="actions-panel-header">
-                    <h3>New Action</h3>
+                    <h3>Create action</h3>
                     <button class="btn-icon" onclick="Alerts.closeActionDrawer()" title="Close">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
@@ -5412,8 +5412,8 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 <div class="action-type-picker">
                     ${tile('webhook', 'Webhook', 'POST matching alerts to an HTTP endpoint.', '<path d="M4 12h16"/><path d="M14 6l6 6-6 6"/>')}
                     ${tile('email', 'Email', 'Send an email to recipients when an alert fires.', '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>')}
-                    ${tile('fractal', 'Fractal Action', 'Forward matching logs into another fractal.', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/>')}
-                    ${tile('dictionary', 'Dictionary Action', 'Write matching logs into a ClickHouse dictionary.', '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>')}
+                    ${tile('fractal', 'Fractal', 'Forward matching logs into another fractal.', '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/>')}
+                    ${tile('dictionary', 'Lookup', 'Write matching logs into a lookup.', '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>')}
                 </div>
             </div>
         `;
@@ -5506,7 +5506,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 <div class="actions-form-actions">
                     <button class="btn-secondary" onclick="Alerts.closeActionDrawer()">Cancel</button>
                     ${isEdit ? '<button class="btn-secondary" onclick="Alerts.testUnifiedAction(\'' + ea.id + '\', \'email\')">Test</button>' : ''}
-                    <button class="btn-primary" onclick="Alerts.saveEmailAction()">Save Email Action</button>
+                    <button class="btn-primary" onclick="Alerts.saveEmailAction()">Save</button>
                 </div>
                 <div id="emailActionError" class="error-message" style="display: none;"></div>
             </div>

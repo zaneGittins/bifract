@@ -828,7 +828,7 @@ const AlertFeeds = {
         } catch (e) { /* ignore */ }
 
         const isEdit = !!feed;
-        const title = isEdit ? 'Edit Feed' : 'Create Feed';
+        const title = isEdit ? 'Edit feed' : 'Create feed';
 
         const overlay = document.createElement('div');
         overlay.id = 'feedFormModal';
@@ -922,7 +922,7 @@ const AlertFeeds = {
                 </div>
                 <div class="modal-footer">
                     <button class="btn-secondary" onclick="AlertFeeds.closeFeedForm()">Cancel</button>
-                    <button class="btn-primary" onclick="AlertFeeds.saveFeed(${isEdit ? `'${feed.id}'` : 'null'})">${isEdit ? 'Update Feed' : 'Create Feed'}</button>
+                    <button class="btn-primary" onclick="AlertFeeds.saveFeed(${isEdit ? `'${feed.id}'` : 'null'})">${isEdit ? 'Save' : 'Create feed'}</button>
                 </div>
             </div>`;
 

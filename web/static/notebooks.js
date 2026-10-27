@@ -390,12 +390,12 @@ const Notebooks = {
             <div id="createNotebookModal" class="modal-overlay">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h3>Create New Notebook</h3>
+                        <h3>Create notebook</h3>
                         <button class="modal-close" id="createNotebookCloseBtn">&times;</button>
                     </div>
                     <form id="createNotebookForm" onsubmit="Notebooks.handleCreateNotebook(event)">
                         <div class="form-group">
-                            <label for="notebookName">Name *</label>
+                            <label for="notebookName">Name</label>
                             <input type="text" id="notebookName" name="name" required maxlength="255">
                         </div>
                         <div class="form-group">
@@ -403,35 +403,35 @@ const Notebooks = {
                             <textarea id="notebookDescription" name="description" rows="3" maxlength="1000"></textarea>
                         </div>
                         <div class="form-group">
-                            <label for="notebookTimeRange">Time Range *</label>
+                            <label for="notebookTimeRange">Time range</label>
                             <select id="notebookTimeRange" name="time_range_type" required>
                                 <option value="1h">Last 1 hour</option>
                                 <option value="24h" selected>Last 24 hours</option>
                                 <option value="7d">Last 7 days</option>
                                 <option value="30d">Last 30 days</option>
-                                <option value="all">All Time</option>
+                                <option value="all">All time</option>
                                 <option value="custom">Custom range</option>
                             </select>
                         </div>
                         <div id="customTimeRange" class="form-group" style="display: none; margin-top: 10px; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-tertiary);">
                             <div style="margin-bottom: 10px;">
-                                <label for="timeRangeStart" style="display: block; margin-bottom: 5px; font-weight: bold;">Start Time</label>
+                                <label for="timeRangeStart">Start time</label>
                                 <input type="text" placeholder="YYYY-MM-DD HH:mm" id="timeRangeStart" name="time_range_start"
                                        style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
                             </div>
                             <div>
-                                <label for="timeRangeEnd" style="display: block; margin-bottom: 5px; font-weight: bold;">End Time</label>
+                                <label for="timeRangeEnd">End time</label>
                                 <input type="text" placeholder="YYYY-MM-DD HH:mm" id="timeRangeEnd" name="time_range_end"
                                        style="width: 100%; padding: 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary);">
                             </div>
                         </div>
                         <div class="form-group">
-                            <label for="maxResultsPerSection">Max Results per Section</label>
+                            <label for="maxResultsPerSection">Max results per section</label>
                             <input type="number" id="maxResultsPerSection" name="max_results_per_section" value="1000" min="1" max="10000">
                         </div>
                         <div class="modal-buttons">
                             <button type="button" class="btn-secondary" onclick="Notebooks.closeCreateNotebookModal()">Cancel</button>
-                            <button type="submit" class="btn-primary">Create Notebook</button>
+                            <button type="submit" class="btn-primary">Create notebook</button>
                         </div>
                     </form>
                 </div>
@@ -2296,7 +2296,7 @@ const Notebooks = {
         } finally {
             if (btn) {
                 btn.disabled = false;
-                btn.textContent = 'Run All';
+                btn.textContent = 'Run all';
             }
         }
     },
@@ -3883,7 +3883,7 @@ const Notebooks = {
             <div id="notebookSettingsModal" class="modal-overlay">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h3>Notebook Settings</h3>
+                        <h3>Notebook settings</h3>
                         <button class="modal-close" id="notebookSettingsCloseBtn">&times;</button>
                     </div>
                     <form id="notebookSettingsForm" onsubmit="Notebooks.handleUpdateNotebook(event)">

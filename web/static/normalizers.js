@@ -326,7 +326,7 @@ const Normalizers = {
         document.getElementById('normalizerTimestampFields').innerHTML = '';
 
         this._setUsageChip(null);
-        this._initEditorSession('Create Normalizer');
+        this._initEditorSession('Create normalizer');
         document.getElementById('normalizerName')?.focus();
     },
 
@@ -363,7 +363,7 @@ const Normalizers = {
                 this.addTimestampFieldRow(tf.field, tf.format);
             });
 
-            this._initEditorSession('Edit Normalizer');
+            this._initEditorSession('Edit normalizer');
             this._loadEditorUsage(id);
         } catch (err) {
             Utils.showNotification('Failed to load normalizer', 'error');

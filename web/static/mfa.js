@@ -16,7 +16,7 @@ const MFA = {
         modal.innerHTML = `
             <div class="modal-content modal-sm">
                 <div class="modal-header">
-                    <h3>Two-Factor Authentication</h3>
+                    <h3>Two-factor authentication</h3>
                     <button class="close-panel-btn" onclick="MFA.close()">&times;</button>
                 </div>
                 <div class="modal-body" id="mfaModalBody">
@@ -91,8 +91,8 @@ const MFA = {
             ` : ''}
             <div id="mfaError" class="error-message" style="display: none;"></div>
             <div class="form-actions">
-                <button class="btn-primary" id="mfaStartBtn" onclick="MFA.startEnrollment()" ${unavailable ? 'disabled' : ''}>Set Up Authenticator</button>
                 <button class="btn-secondary" onclick="MFA.close()">Close</button>
+                <button class="btn-primary" id="mfaStartBtn" onclick="MFA.startEnrollment()" ${unavailable ? 'disabled' : ''}>Set up authenticator</button>
             </div>
         `);
     },
@@ -124,7 +124,7 @@ const MFA = {
                 </div>
             `}
             <div class="form-actions">
-                <button class="btn-primary" id="mfaRegenBtn" onclick="MFA.regenerateCodes()">New Recovery Codes</button>
+                <button class="btn-primary" id="mfaRegenBtn" onclick="MFA.regenerateCodes()">New recovery codes</button>
                 ${this.status.required ? '' : `<button class="btn-danger" id="mfaDisableBtn" onclick="MFA.disable()">Remove</button>`}
                 <button class="btn-secondary" onclick="MFA.close()">Close</button>
             </div>
@@ -143,8 +143,8 @@ const MFA = {
                 <input type="text" id="mfaConfirmCode" placeholder="000000" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
             </div>
             <div class="form-actions">
-                <button class="btn-primary" id="mfaConfirmBtn" onclick="MFA.confirm()">Confirm</button>
                 <button class="btn-secondary" onclick="MFA.cancelEnrollment()">Cancel</button>
+                <button class="btn-primary" id="mfaConfirmBtn" onclick="MFA.confirm()">Confirm</button>
             </div>
         `);
 
@@ -170,8 +170,8 @@ const MFA = {
             </p>
             <div class="mfa-codes">${this.recoveryCodes.map(c => `<span>${Utils.escapeHtml(c)}</span>`).join('')}</div>
             <div class="form-actions">
+                <button class="btn-secondary" onclick="MFA.copyRecoveryCodes()">Copy all</button>
                 <button class="btn-primary" onclick="MFA.finishRecoveryCodes()">I have saved these codes</button>
-                <button class="btn-secondary" onclick="MFA.copyRecoveryCodes()">Copy All</button>
             </div>
         `);
     },

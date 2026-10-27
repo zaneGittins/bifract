@@ -80,7 +80,7 @@
                 </button>
                 <div id="notificationDropdown" class="notification-dropdown" style="display:none;">
                     <div class="notification-dropdown-header">
-                        <span class="notification-dropdown-title">Health Notifications</span>
+                        <span class="notification-dropdown-title">Notifications</span>
                         <button class="notification-mark-read-btn" onclick="Notifications.markAllRead()">Mark all read</button>
                     </div>
                     <div id="notificationList" class="notification-list">
@@ -1186,7 +1186,7 @@
                     <div id="contextLinkModal" class="modal" style="display: none;">
                         <div class="modal-content modal-sm">
                             <div class="modal-header">
-                                <h3 id="contextLinkModalTitle">Create Context Link</h3>
+                                <h3 id="contextLinkModalTitle">Create context link</h3>
                                 <button class="close-panel-btn" onclick="ContextLinks.closeModal()">&times;</button>
                             </div>
                             <div class="modal-body">
@@ -1195,17 +1195,17 @@
                                     <input type="text" id="contextLinkName" placeholder="e.g. VirusTotal Hash Lookup">
                                 </div>
                                 <div class="form-group">
-                                    <label for="contextLinkFields">Match Fields</label>
+                                    <label for="contextLinkFields">Match fields</label>
                                     <input type="text" id="contextLinkFields" placeholder="e.g. md5, sha1, sha256, hash">
                                     <p class="help-text">Comma-separated field names (case-insensitive)</p>
                                 </div>
                                 <div class="form-group">
-                                    <label for="contextLinkRegex">Validation Regex (optional)</label>
+                                    <label for="contextLinkRegex">Validation regex (optional)</label>
                                     <input type="text" id="contextLinkRegex" placeholder="e.g. ^[a-fA-F0-9]{32,64}$">
                                     <p class="help-text">Only show the link when the field value matches this pattern</p>
                                 </div>
                                 <div class="form-group">
-                                    <label for="contextLinkURL">URL Template</label>
+                                    <label for="contextLinkURL">URL template</label>
                                     <input type="text" id="contextLinkURL" placeholder="https://example.com/search?q=<ATTR_VALUE>">
                                     <p class="help-text">Use &lt;ATTR_VALUE&gt; as placeholder for the field value</p>
                                 </div>
@@ -1220,8 +1220,8 @@
                                     </label>
                                 </div>
                                 <div class="form-actions">
-                                    <button class="btn-primary" onclick="ContextLinks.saveLink()">Save</button>
                                     <button class="btn-secondary" onclick="ContextLinks.closeModal()">Cancel</button>
+                                    <button class="btn-primary" onclick="ContextLinks.saveLink()">Save</button>
                                 </div>
                             </div>
                         </div>
@@ -1372,7 +1372,7 @@
                 <div id="normalizerEditorView" class="admin-only" style="display: none;">
                     <div class="nz-topbar" id="normalizerTopbar">
                         <div class="nz-title-group">
-                            <h2 id="normalizerEditorTitle">Create Normalizer</h2>
+                            <h2 id="normalizerEditorTitle">Create normalizer</h2>
                             <span class="nz-dirty-dot"></span>
                             <span class="nz-dirty-label">Unsaved changes</span>
                         </div>
@@ -1953,11 +1953,11 @@
                        oninput="CommentedLogs.filterComments()" />
                 <select id="commentedTagFilter" class="alerts-filter-select"
                         onchange="CommentedLogs.filterComments()">
-                    <option value="all">All Tags</option>
+                    <option value="all">All tags</option>
                 </select>
                 <select id="commentedAuthorFilter" class="alerts-filter-select"
                         onchange="CommentedLogs.filterComments()">
-                    <option value="all">All Authors</option>
+                    <option value="all">All authors</option>
                 </select>
                 <span id="commentedSelectedCount" class="commented-selected-count"></span>
                 <button id="commentedBulkAddTagBtn" class="btn-secondary btn-sm"
@@ -1967,7 +1967,7 @@
                 <button id="commentedBulkDeleteBtn" class="btn-danger btn-sm"
                         style="display:none;" onclick="CommentedLogs.bulkDelete()">Delete</button>
                 <span class="filters-spacer"></span>
-                <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">File by Tag</button>
+                <button id="generateNotebookBtn" class="btn-secondary" style="white-space: nowrap;">File by tag</button>
                 <button id="commentedRefreshBtn" class="btn-secondary">Refresh</button>
             </div>
 
@@ -2067,7 +2067,7 @@
                                         <!-- Active users will be shown here -->
                                     </div>
 
-                                    <button id="runAllSectionsBtn" class="btn-secondary" title="Run all query sections">Run All</button>
+                                    <button id="runAllSectionsBtn" class="btn-secondary" title="Run all query sections">Run all</button>
                                     <button id="notebookLockBtn" class="btn-secondary nb-lock-btn" title="Lock this notebook"></button>
                                     <button id="notebookSettingsBtn" class="btn-secondary">Settings</button>
                                     <button id="saveNotebookBtn" class="btn-primary">Save</button>
@@ -2103,7 +2103,7 @@
                                 <div class="notebook-content">
                                     <div id="notebookSections" class="notebook-sections"></div>
                                     <div class="add-section-container">
-                                        <button id="addSectionBtn" class="btn-add-section">+ Add Section</button>
+                                        <button id="addSectionBtn" class="btn-add-section">Add section</button>
                                     </div>
                                 </div>
                             </div>
@@ -3170,7 +3170,7 @@
                                 <span class="toggle-slider"></span>
                             </span>
                         </label>
-                        <button id="saveAlertBtn" class="alert-btn alert-btn-primary">Create Alert</button>
+                        <button id="saveAlertBtn" class="alert-btn alert-btn-primary">Create alert</button>
                     </div>
                 </div>
 
@@ -3533,7 +3533,7 @@
     <div id="createFractalModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2 id="createModalTitle">Create New Fractal</h2>
+                <h2 id="createModalTitle">Create fractal</h2>
                 <button class="close-btn">&times;</button>
             </div>
             <div class="modal-body">
@@ -3554,8 +3554,8 @@
                         <textarea id="newFractalDescription" name="description" placeholder="Enter description (optional)" rows="3"></textarea>
                     </div>
                     <div class="form-actions">
-                        <button type="submit" id="createSubmitBtn" class="btn-primary">Create Fractal</button>
                         <button type="button" id="cancelCreateBtn" class="btn-secondary">Cancel</button>
+                        <button type="submit" id="createSubmitBtn" class="btn-primary">Create fractal</button>
                     </div>
                     <div id="createFractalError" class="error-message" style="display: none;"></div>
                 </form>
@@ -3566,7 +3566,7 @@
     <div id="editFractalModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Edit Fractal</h2>
+                <h2>Edit fractal</h2>
                 <button class="close-btn">&times;</button>
             </div>
             <div class="modal-body">
@@ -3581,8 +3581,8 @@
                         <textarea id="editFractalDescription" name="description" placeholder="Enter description (optional)" rows="3"></textarea>
                     </div>
                     <div class="form-actions">
-                        <button type="submit" class="btn-primary">Update Fractal</button>
                         <button type="button" id="cancelEditBtn" class="btn-secondary">Cancel</button>
+                        <button type="submit" class="btn-primary">Save</button>
                     </div>
                     <div id="editFractalError" class="error-message" style="display: none;"></div>
                 </form>
@@ -3618,7 +3618,7 @@
                         <input type="text" id="newUsername" placeholder="Enter username" required>
                     </div>
                     <div class="form-group">
-                        <label for="newDisplayName">Display Name (optional)</label>
+                        <label for="newDisplayName">Display name (optional)</label>
                         <input type="text" id="newDisplayName" placeholder="Enter display name">
                     </div>
                     <div class="form-group">
@@ -3630,14 +3630,14 @@
                         <p class="help-text">Tenant Admins can add users and clear logs. Users can query and comment.</p>
                     </div>
                     <div class="form-actions">
-                        <button id="createUserBtn" class="btn-primary">Create User</button>
                         <button id="cancelAddUserBtn" class="btn-secondary">Cancel</button>
+                        <button id="createUserBtn" class="btn-primary">Create user</button>
                     </div>
                     <div id="addUserError" class="error-message"></div>
                 </div>
 
                 <div class="modal-footer">
-                    <button id="saveSettingsBtn" class="btn-primary">Save Settings</button>
+                    <button id="saveSettingsBtn" class="btn-primary">Save</button>
                 </div>
             </div>
         </div>
@@ -3653,7 +3653,7 @@
             <div class="modal-body">
                 <div class="form-group">
                     <div class="import-yaml-source">
-                        <label for="yamlContent">YAML Configuration:</label>
+                        <label for="yamlContent">YAML</label>
                         <button type="button" class="btn-secondary btn-sm" onclick="document.getElementById('yamlFileInput').click()">Choose file</button>
                         <input type="file" id="yamlFileInput" accept=".yml,.yaml,.txt,text/yaml,text/plain" style="display:none;" onchange="Alerts.loadYamlFile(this)">
                         <span id="yamlFileName" class="import-yaml-file"></span>
@@ -3676,7 +3676,7 @@ throttleTimeSeconds: 3600"></textarea>
                     Sigma rule detected. The detection logic will be translated to BQL.
                 </div>
                 <div id="importNormalizerGroup" class="form-group" style="display: none;">
-                    <label for="importNormalizerSelect">Field Name Normalizer:</label>
+                    <label for="importNormalizerSelect">Normalizer</label>
                     <select id="importNormalizerSelect" class="search-input">
                         <option value="">None (use Sigma field names as-is)</option>
                     </select>
@@ -3695,8 +3695,8 @@ throttleTimeSeconds: 3600"></textarea>
                 </div>
                 <div id="alertImportError" class="error-message" style="display: none;"></div>
                 <div class="form-actions">
-                    <button id="importYamlBtn" class="btn-primary">Import Alert</button>
                     <button onclick="Alerts.closeModal('importYamlModal')" class="btn-secondary">Cancel</button>
+                    <button id="importYamlBtn" class="btn-primary">Import</button>
                 </div>
             </div>
         </div>
@@ -3706,7 +3706,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="apiKeyCreatedDialog" class="modal" style="display: none;">
         <div class="modal-content api-key-created-dialog">
             <div class="modal-header">
-                <h2>API Key Created</h2>
+                <h2>API key created</h2>
                 <button class="close-btn" onclick="APIKeys.dismissKeyDialog()">&times;</button>
             </div>
             <div class="modal-body">
@@ -3734,7 +3734,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="createDictModal" class="modal" onclick="if(event.target===this)Dictionaries.hideCreateForm()">
         <div class="modal-content" style="max-width:480px;">
             <div class="modal-header">
-                <h2>New Lookup</h2>
+                <h2>Create lookup</h2>
                 <button class="close-btn" onclick="Dictionaries.hideCreateForm()">&times;</button>
             </div>
             <div class="modal-body">
@@ -3771,8 +3771,8 @@ throttleTimeSeconds: 3600"></textarea>
                 </div>
                 <div id="dictCreateError" class="form-error" style="display:none;"></div>
                 <div class="form-actions">
-                    <button type="button" id="dictCreateSaveBtn" class="btn-primary">Create</button>
                     <button type="button" id="dictCreateCancelBtn" class="btn-secondary">Cancel</button>
+                    <button type="button" id="dictCreateSaveBtn" class="btn-primary">Create</button>
                 </div>
             </div>
         </div>
@@ -3782,12 +3782,12 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="createGroupModal" class="modal" onclick="if(event.target===this)GroupsView.hideCreateForm()">
         <div class="modal-content" style="max-width:480px;">
             <div class="modal-header">
-                <h2>Create New Group</h2>
+                <h2>Create group</h2>
                 <button class="close-btn" onclick="GroupsView.hideCreateForm()">&times;</button>
             </div>
             <div class="modal-body">
                 <div class="form-group">
-                    <label for="newGroupName">Group Name</label>
+                    <label for="newGroupName">Group name</label>
                     <input type="text" id="newGroupName" placeholder="Enter group name" required>
                 </div>
                 <div class="form-group">
@@ -3795,8 +3795,8 @@ throttleTimeSeconds: 3600"></textarea>
                     <input type="text" id="newGroupDescription" placeholder="Enter description">
                 </div>
                 <div class="form-actions">
-                    <button id="submitCreateGroupBtn" class="btn-primary">Create Group</button>
                     <button id="cancelCreateGroupBtn" class="btn-secondary">Cancel</button>
+                    <button id="submitCreateGroupBtn" class="btn-primary">Create group</button>
                 </div>
             </div>
         </div>
@@ -3815,8 +3815,8 @@ throttleTimeSeconds: 3600"></textarea>
                 </div>
                 <div id="memberPickerList" class="member-picker-list"></div>
                 <div class="form-actions">
-                    <button id="submitAddMembersBtn" class="btn-primary">Add selected</button>
                     <button class="btn-secondary" onclick="GroupsView.hideAddMembers()">Cancel</button>
+                    <button id="submitAddMembersBtn" class="btn-primary">Add selected</button>
                 </div>
             </div>
         </div>
@@ -3826,7 +3826,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="createUserModal" class="modal" onclick="if(event.target===this)SettingsView.hideAddUserForm()">
         <div class="modal-content" style="max-width:480px;">
             <div class="modal-header">
-                <h2>Add New User</h2>
+                <h2>Add user</h2>
                 <button class="close-btn" onclick="SettingsView.hideAddUserForm()">&times;</button>
             </div>
             <div class="modal-body">
@@ -3837,7 +3837,7 @@ throttleTimeSeconds: 3600"></textarea>
                         <input type="text" id="newUsernameSettings" placeholder="Enter username" required>
                     </div>
                     <div class="form-group">
-                        <label for="newDisplayNameSettings">Display Name (optional)</label>
+                        <label for="newDisplayNameSettings">Display name (optional)</label>
                         <input type="text" id="newDisplayNameSettings" placeholder="Enter display name">
                     </div>
                     <div class="form-group">
@@ -3850,8 +3850,8 @@ throttleTimeSeconds: 3600"></textarea>
                         <p class="help-text">A one-time invite link will be generated for the user to set their password.</p>
                     </div>
                     <div class="form-actions">
-                        <button id="createUserBtnSettings" class="btn-primary">Create User</button>
                         <button id="cancelAddUserBtnSettings" class="btn-secondary">Cancel</button>
+                        <button id="createUserBtnSettings" class="btn-primary">Create user</button>
                     </div>
                     <div id="addUserErrorSettings" class="error-message"></div>
                 </div>
@@ -3865,7 +3865,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="editUserModal" class="modal" onclick="if(event.target===this)SettingsView.hideEditUserModal()">
         <div class="modal-content" style="max-width:480px;">
             <div class="modal-header">
-                <h2>Edit User</h2>
+                <h2>Edit user</h2>
                 <button class="close-btn" onclick="SettingsView.hideEditUserModal()">&times;</button>
             </div>
             <div class="modal-body">
@@ -3875,7 +3875,7 @@ throttleTimeSeconds: 3600"></textarea>
                     <p class="help-text">Usernames are permanent and cannot be changed.</p>
                 </div>
                 <div class="form-group">
-                    <label for="editUserDisplayName">Display Name</label>
+                    <label for="editUserDisplayName">Display name</label>
                     <input type="text" id="editUserDisplayName" placeholder="Enter display name">
                 </div>
                 <div class="form-group">
@@ -3888,8 +3888,8 @@ throttleTimeSeconds: 3600"></textarea>
                     <p class="help-text" id="editUserRoleSelfNote" style="display:none;">You cannot change your own role.</p>
                 </div>
                 <div class="form-actions">
-                    <button class="btn-primary" onclick="SettingsView.saveUserEdit()">Save Changes</button>
                     <button class="btn-secondary" onclick="SettingsView.hideEditUserModal()">Cancel</button>
+                    <button class="btn-primary" onclick="SettingsView.saveUserEdit()">Save</button>
                 </div>
                 <div id="editUserError" class="error-message"></div>
             </div>
@@ -3901,7 +3901,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="grantPermissionModal" class="modal" onclick="if(event.target===this)GroupsView.hideGrantForm()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>Grant Access</h2>
+                <h2>Grant access</h2>
                 <button class="close-btn" onclick="GroupsView.hideGrantForm()">&times;</button>
             </div>
             <div class="modal-body">
@@ -3949,7 +3949,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="grantPrismPermissionModal" class="modal" onclick="if(event.target===this)GroupsView.hidePrismGrantForm()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>Grant Prism Access</h2>
+                <h2>Grant prism access</h2>
                 <button class="close-btn" onclick="GroupsView.hidePrismGrantForm()">&times;</button>
             </div>
             <div class="modal-body">
@@ -4000,13 +4000,13 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="adminCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeysAdmin.hideCreate()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>New API Key</h2>
+                <h2>Create API key</h2>
                 <button class="close-btn" onclick="APIKeysAdmin.hideCreate()">&times;</button>
             </div>
             <div class="modal-body">
                 <form id="adminCreateAPIKeyForm" class="access-grant-form" onsubmit="return false;">
                     <div class="form-group">
-                        <label for="adminApiKeyName">Name *</label>
+                        <label for="adminApiKeyName">Name</label>
                         <input type="text" id="adminApiKeyName" required placeholder="What will use this key">
                     </div>
                     <div class="form-group">
@@ -4014,7 +4014,7 @@ throttleTimeSeconds: 3600"></textarea>
                         <p class="admin-panel-desc" style="margin-top:0.35rem;">Administers the whole instance. It holds no fractal, prism or role of its own, and requires an expiry.</p>
                     </div>
                     <div class="form-group" id="adminApiKeyScopeGroup">
-                        <label for="adminApiKeyScope">Scope *</label>
+                        <label for="adminApiKeyScope">Scope</label>
                         <select id="adminApiKeyScope" class="form-control"></select>
                     </div>
                     <div class="form-group" id="adminApiKeyRoleGroup">
@@ -4044,14 +4044,14 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="inlineCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeys.hideCreateKeyModal()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>Create API Key</h2>
+                <h2>Create API key</h2>
                 <button class="close-btn" onclick="APIKeys.hideCreateKeyModal()">&times;</button>
             </div>
             <div class="modal-body">
                 <form id="inlineCreateAPIKeyFormEl" class="access-grant-form">
                     <div class="access-grant-form-fields">
                         <div class="form-group">
-                            <label for="inlineApiKeyName">Name *</label>
+                            <label for="inlineApiKeyName">Name</label>
                             <input type="text" id="inlineApiKeyName" name="name" required placeholder="Key name">
                         </div>
                         <div class="form-group">
@@ -4084,14 +4084,14 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="prismInlineCreateAPIKeyModal" class="modal" onclick="if(event.target===this)APIKeys.hideCreateKeyModal()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>Create Prism API Key</h2>
+                <h2>Create prism API key</h2>
                 <button class="close-btn" onclick="APIKeys.hideCreateKeyModal()">&times;</button>
             </div>
             <div class="modal-body">
                 <form id="prismInlineCreateAPIKeyFormEl" class="access-grant-form">
                     <div class="access-grant-form-fields">
                         <div class="form-group">
-                            <label for="prismInlineApiKeyName">Name *</label>
+                            <label for="prismInlineApiKeyName">Name</label>
                             <input type="text" id="prismInlineApiKeyName" name="name" required placeholder="Key name">
                         </div>
                         <div class="form-group">
@@ -4123,7 +4123,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="createIngestTokenModal" class="modal" onclick="if(event.target===this)IngestTokens.hideCreateModal()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>Create Ingest Token</h2>
+                <h2>Create ingest token</h2>
                 <button class="close-btn" onclick="IngestTokens.hideCreateModal()">&times;</button>
             </div>
             <div class="modal-body">
@@ -4153,7 +4153,7 @@ throttleTimeSeconds: 3600"></textarea>
                 </div>
                 <div class="form-actions">
                     <button type="button" id="cancelIngestTokenModalBtn" class="btn-secondary">Cancel</button>
-                    <button type="button" id="submitIngestTokenModalBtn" class="btn-primary">Create Token</button>
+                    <button type="button" id="submitIngestTokenModalBtn" class="btn-primary">Create token</button>
                 </div>
             </div>
         </div>
@@ -4163,7 +4163,7 @@ throttleTimeSeconds: 3600"></textarea>
     <div id="editIngestTokenModal" class="modal" onclick="if(event.target===this)IngestTokens.closeEdit()">
         <div class="modal-content" style="max-width:560px;">
             <div class="modal-header">
-                <h2>Edit Ingest Token</h2>
+                <h2>Edit ingest token</h2>
                 <button class="close-btn" onclick="IngestTokens.closeEdit()">&times;</button>
             </div>
             <div class="modal-body">
@@ -4193,7 +4193,7 @@ throttleTimeSeconds: 3600"></textarea>
                 </div>
                 <div class="form-actions">
                     <button type="button" id="cancelEditTokenModalBtn" class="btn-secondary">Cancel</button>
-                    <button type="button" id="submitEditTokenModalBtn" class="btn-primary">Save Changes</button>
+                    <button type="button" id="submitEditTokenModalBtn" class="btn-primary">Save</button>
                 </div>
             </div>
         </div>

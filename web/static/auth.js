@@ -397,7 +397,7 @@ const Auth = {
         modal.innerHTML = `
             <div class="modal-content modal-sm">
                 <div class="modal-header">
-                    <h3>Change Password</h3>
+                    <h3>Change password</h3>
                     <button class="close-panel-btn" onclick="Auth.closeChangePassword()">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -416,8 +416,8 @@ const Auth = {
                     </div>
                     <div id="cpError" class="error-message" style="display: none;"></div>
                     <div class="form-actions">
-                        <button id="cpSubmitBtn" class="btn-primary" onclick="Auth.submitChangePassword()">Change Password</button>
                         <button class="btn-secondary" onclick="Auth.closeChangePassword()">Cancel</button>
+                        <button id="cpSubmitBtn" class="btn-primary" onclick="Auth.submitChangePassword()">Change password</button>
                     </div>
                 </div>
             </div>

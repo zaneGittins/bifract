@@ -129,10 +129,8 @@
     display: inline-block;
     padding: 0.125rem 0.5rem;
     border-radius: 10px;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
 }
 
 .il-badge-manual {
@@ -1007,10 +1005,8 @@
 .il-context-section:last-child { border-bottom: none; }
 
 .il-context-head {
-    font-size: 0.68rem;
+    font-size: 0.75rem;
     font-weight: 700;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
     color: var(--text-muted);
     margin-bottom: 0.5rem;
 }
@@ -1091,10 +1087,8 @@
 .il-view-empty { color: var(--text-muted); font-style: italic; }
 
 .il-view-badge {
-    font-size: 0.62rem;
+    font-size: 0.75rem;
     font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
     color: var(--accent-secondary);
     background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
     padding: 0.1rem 0.4rem;
@@ -1230,10 +1224,8 @@
 
 /* Mode pill + hover-revealed View/Edit toggle (left of the kebab) */
 .il-mode-pill {
-    font-size: 0.6rem;
+    font-size: 0.75rem;
     font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
     padding: 0.14rem 0.45rem;
     border-radius: 9999px;
     flex-shrink: 0;

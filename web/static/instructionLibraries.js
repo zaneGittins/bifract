@@ -231,7 +231,7 @@ const InstructionLibraries = {
                 <div class="il-tree-empty">No library configured for this fractal yet.</div>
             `;
         }
-        const repoBadge = this.library.source === 'repo' ? `<span class="il-badge il-badge-repo" title="Synced from a git repo">repo</span>` : '';
+        const repoBadge = this.library.source === 'repo' ? `<span class="il-badge il-badge-repo" title="Synced from a git repo">Repo</span>` : '';
         let html = `
             <div class="il-tree-header">
                 <span class="il-tree-title">${this.esc(this.library.name)} ${repoBadge}</span>

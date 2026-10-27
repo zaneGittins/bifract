@@ -398,3 +398,121 @@
 .group-desc {
     font-size: 0.75rem;
 }
+
+/* ============================
+   Dialogs
+   One layout for every dialog, whichever of the two shells (.modal or
+   .modal-overlay) holds it. Scoped through the shell so it outranks the older
+   per-file rules, which stacked three paddings, pushed titles off the close
+   button's line, and stretched checkboxes with a form-wide input width.
+   ============================ */
+:is(.modal, .modal-overlay) .modal-content {
+    padding: 0;
+    border-radius: 10px;
+}
+
+:is(.modal, .modal-overlay) .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.875rem 1.25rem;
+    margin: 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+:is(.modal, .modal-overlay) .modal-header :is(h2, h3) {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-primary);
+}
+
+:is(.modal, .modal-overlay) .modal-header :is(.close-btn, .modal-close, .close-panel-btn) {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    margin: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
+    line-height: 1;
+}
+
+:is(.modal, .modal-overlay) .modal-body,
+:is(.modal, .modal-overlay) .modal-content > form {
+    padding: 1.25rem;
+}
+
+:is(.modal, .modal-overlay) .modal-body form {
+    padding: 0;
+}
+
+:is(.modal, .modal-overlay) .form-group {
+    margin-bottom: 1rem;
+}
+
+/* Field labels: one size and case, above their field. */
+:is(.modal, .modal-overlay) .modal-content label:not(:has(input[type="checkbox"], input[type="radio"])) {
+    display: block;
+    margin: 0 0 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-secondary);
+}
+
+/* A checkbox sits inline with its label, at its own size. */
+:is(.modal, .modal-overlay) .modal-content label:has(input[type="checkbox"], input[type="radio"]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+:is(.modal, .modal-overlay) .modal-content :is(input[type="checkbox"], input[type="radio"]) {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+}
+
+/* One column: a dialog is narrow enough that side-by-side fields leave gaps. */
+:is(.modal, .modal-overlay) .access-grant-form-fields {
+    display: block;
+    margin: 0;
+}
+
+:is(.modal, .modal-overlay) .access-grant-form .form-group {
+    margin-bottom: 1rem;
+}
+
+/* Cancel, then the primary action, at the right. */
+:is(.modal, .modal-overlay) :is(.form-actions, .modal-footer, .modal-buttons) {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1.25rem 0 0;
+    padding: 0;
+    border-top: 0;
+}
+
+:is(.modal, .modal-overlay) .modal-content > .modal-footer {
+    margin: 0;
+    padding: 0 1.25rem 1.25rem;
+}

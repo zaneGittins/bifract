@@ -273,10 +273,10 @@ const FractalManageTab = {
         if (!id) return;
         const name = this.currentFractal.name;
         DangerConfirm.open({
-            title: 'Delete Prism',
+            title: 'Delete prism',
             body: [`This permanently deletes the prism "${name}". Its member fractals and their data are not affected.`],
             phrase: name,
-            confirmLabel: 'Delete Prism',
+            confirmLabel: 'Delete prism',
             busyLabel: 'Deleting...',
             onConfirm: async () => {
                 const data = await HttpUtils.safeFetch(`/api/v1/prisms/${this._requireUnchanged(id)}`, { method: 'DELETE' });
@@ -379,12 +379,12 @@ const FractalManageTab = {
             return;
         }
         DangerConfirm.open({
-            title: 'Delete Fractal',
+            title: 'Delete fractal',
             body: [
                 `This permanently deletes the fractal "${fractal.name}" with ${this._logSummary(fractal)}, and its alerts, comments and permissions.`,
             ],
             phrase: fractal.name,
-            confirmLabel: 'Delete Fractal',
+            confirmLabel: 'Delete fractal',
             busyLabel: 'Deleting...',
             onConfirm: async () => {
                 await HttpUtils.safeFetch(`/api/v1/fractals/${this._requireUnchanged(id)}`, { method: 'DELETE' });
@@ -488,13 +488,13 @@ const FractalManageTab = {
         if (!id) return;
         const fractal = this.currentFractal;
         DangerConfirm.open({
-            title: 'Clear Fractal Logs',
+            title: 'Clear fractal logs',
             body: [
                 `This permanently deletes ${this._logSummary(fractal)} from "${fractal.name}", along with their comments.`,
                 { text: 'The fractal, its alerts and its settings remain.', muted: true },
             ],
             phrase: fractal.name,
-            confirmLabel: 'Clear Logs',
+            confirmLabel: 'Clear logs',
             busyLabel: 'Clearing...',
             onConfirm: async () => {
                 const target = encodeURIComponent(this._requireUnchanged(id));

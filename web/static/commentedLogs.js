@@ -136,7 +136,7 @@ const CommentedLogs = {
         const currentVal = select.value;
         const tags = new Set();
         this.allComments.forEach(c => (c.tags || []).forEach(t => tags.add(t)));
-        let html = '<option value="all">All Tags</option>';
+        let html = '<option value="all">All tags</option>';
         [...tags].sort().forEach(t => {
             html += `<option value="${Utils.escapeHtml(t)}">${Utils.escapeHtml(t)}</option>`;
         });
@@ -154,7 +154,7 @@ const CommentedLogs = {
                 authors.set(c.author, c.author_display_name || c.author);
             }
         });
-        let html = '<option value="all">All Authors</option>';
+        let html = '<option value="all">All authors</option>';
         [...authors.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([username, display]) => {
             html += `<option value="${Utils.escapeHtml(username)}">${Utils.escapeHtml(display)}</option>`;
         });
@@ -838,7 +838,7 @@ const CommentedLogs = {
             <div id="generateNotebookModal" class="modal-overlay">
                 <div class="modal-content" style="max-width: 420px;">
                     <div class="modal-header">
-                        <h3>Generate Notebook from Comments</h3>
+                        <h3>Generate notebook from comments</h3>
                         <button class="modal-close" id="generateNotebookCloseBtn">&times;</button>
                     </div>
                     <form id="generateNotebookForm">
