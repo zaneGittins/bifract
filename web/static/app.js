@@ -316,25 +316,9 @@ const App = {
             }
 
             if (window.FractalContext.currentFractal?.id !== id) {
-                // Resolve the fractal/prism name — needed to call setCurrentFractal/Prism.
-                // Primary: state object pushed alongside the hash (always present on back nav).
-                // Fallback: in-memory listing cache. Last resort: API fetch.
-                let name = event?.state?.fractalName;
-                if (!name) name = window.FractalListing?.getById(id, isPrism)?.name;
-                if (!name) {
-                    try {
-                        const endpoint = isPrism ? `/api/v1/prisms/${id}` : `/api/v1/fractals/${id}`;
-                        const resp = await fetch(endpoint, { credentials: 'include' });
-                        if (resp.ok) {
-                            const data = await resp.json();
-                            // Fractal API wraps the object under "index"; prism API returns it directly
-                            name = data.data?.index?.name || data.data?.name || data.name;
-                        }
-                    } catch (_) {}
-                }
-                if (!name) name = id;
-
-                const item = { id, name };
+                // A listing record is complete; otherwise FractalContext loads the stored one.
+                const item = window.FractalListing?.getById(id, isPrism)
+                    || { id, name: event?.state?.fractalName || id };
                 if (isPrism) {
                     await FractalContext.setCurrentPrism(item);
                 } else {
