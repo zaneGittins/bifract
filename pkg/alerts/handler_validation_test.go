@@ -164,6 +164,8 @@ func TestBatchToggleHandlersBoundTheRequest(t *testing.T) {
 		{"toggle needs JSON", plain, analyst, `{`, nil, 400, ""},
 		{"toggle needs ids", plain, analyst, `{"alert_ids":[]}`, nil, 400, "alert_ids required"},
 		{"toggle caps ids", plain, analyst, tooMany, nil, 400, "max 5000"},
+		{"feed toggle by ids needs a scope", feed, unscoped, `{"alert_ids":["a1"]}`, nil, 400, "No fractal or prism selected"},
+		{"toggle needs a scope", plain, unscoped, `{"alert_ids":["a1"]}`, nil, 400, "No fractal or prism selected"},
 	})
 }
 

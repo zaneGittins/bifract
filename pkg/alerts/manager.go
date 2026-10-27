@@ -2419,38 +2419,45 @@ func (m *Manager) ToggleFeedAlert(ctx context.Context, alertID string, enabled b
 	return nil
 }
 
-// BatchToggleAlerts enables or disables a set of non-feed alerts by ID.
-// Re-enabling resets last_evaluated_at to near-now; see EnableFeedAlerts.
-func (m *Manager) BatchToggleAlerts(ctx context.Context, alertIDs []string, enabled bool, updatedBy string) (int, error) {
-	if len(alertIDs) == 0 {
-		return 0, nil
-	}
-	result, err := m.pg.Exec(ctx,
-		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
-		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
-		 WHERE id = ANY($3) AND feed_id IS NULL`,
-		enabled, storage.NullableUser(updatedBy), pq.Array(alertIDs))
+// BatchToggleAlerts enables or disables a set of non-feed alerts by ID within one fractal or prism.
+func (m *Manager) BatchToggleAlerts(ctx context.Context, alertIDs []string, fractalID, prismID string, enabled bool, updatedBy string) (int, error) {
+	n, err := m.batchToggle(ctx, "feed_id IS NULL", alertIDs, fractalID, prismID, enabled, updatedBy)
 	if err != nil {
 		return 0, fmt.Errorf("batch toggle alerts: %w", err)
 	}
-	rows, _ := result.RowsAffected()
-	m.engine.RefreshAlerts(ctx)
-	return int(rows), nil
+	return n, nil
 }
 
-// BatchToggleFeedAlerts enables or disables a set of feed alerts by ID.
-// Re-enabling resets last_evaluated_at to near-now; see EnableFeedAlerts.
-func (m *Manager) BatchToggleFeedAlerts(ctx context.Context, alertIDs []string, enabled bool, updatedBy string) (int, error) {
+// BatchToggleFeedAlerts enables or disables a set of feed alerts by ID within one fractal or prism.
+func (m *Manager) BatchToggleFeedAlerts(ctx context.Context, alertIDs []string, fractalID, prismID string, enabled bool, updatedBy string) (int, error) {
+	n, err := m.batchToggle(ctx, "feed_id IS NOT NULL", alertIDs, fractalID, prismID, enabled, updatedBy)
+	if err != nil {
+		return 0, fmt.Errorf("batch toggle feed alerts: %w", err)
+	}
+	return n, nil
+}
+
+// batchToggle updates only the listed alerts that belong to the given scope, since IDs
+// alone could name alerts anywhere. Re-enabling resets last_evaluated_at to near-now;
+// see EnableFeedAlerts.
+func (m *Manager) batchToggle(ctx context.Context, kind string, alertIDs []string, fractalID, prismID string, enabled bool, updatedBy string) (int, error) {
 	if len(alertIDs) == 0 {
 		return 0, nil
 	}
-	result, err := m.pg.Exec(ctx,
+	scopeCol, scope := "fractal_id", fractalID
+	if prismID != "" {
+		scopeCol, scope = "prism_id", prismID
+	}
+	if scope == "" {
+		return 0, fmt.Errorf("no fractal or prism scope")
+	}
+	result, err := m.pg.Exec(ctx, fmt.Sprintf(
 		`UPDATE alerts SET enabled = $1, updated_by = $2, disabled_reason = '',
 		    last_evaluated_at = CASE WHEN $1 = true AND enabled = false THEN NOW() - INTERVAL '5 minutes' ELSE last_evaluated_at END
-		 WHERE id = ANY($3) AND feed_id IS NOT NULL`,
-		enabled, storage.NullableUser(updatedBy), pq.Array(alertIDs))
+		 WHERE id = ANY($3) AND %s AND %s = $4`, kind, scopeCol),
+		enabled, storage.NullableUser(updatedBy), pq.Array(alertIDs), scope)
 	if err != nil {
-		return 0, fmt.Errorf("batch toggle feed alerts: %w", err)
+		return 0, err
 	}
 	rows, _ := result.RowsAffected()
 	m.engine.RefreshAlerts(ctx)
