@@ -39,19 +39,13 @@ const FractalManageTab = {
         // Retention select
         const retentionSelect = document.getElementById('manageFractalRetentionSelect');
         if (retentionSelect) {
-            retentionSelect.addEventListener('change', () => {
-                this.saveRetentionSetting();
-                this.updateLifecycleSummary();
-            });
+            retentionSelect.addEventListener('change', () => this.saveRetentionSetting());
         }
 
         // Free-form, so commit on blur/Enter rather than per keystroke.
         const archiveRetentionInput = document.getElementById('manageFractalArchiveRetentionInput');
         if (archiveRetentionInput) {
-            archiveRetentionInput.addEventListener('change', () => {
-                this.saveArchiveRetentionSetting();
-                this.updateLifecycleSummary();
-            });
+            archiveRetentionInput.addEventListener('change', () => this.saveArchiveRetentionSetting());
         }
 
         // Quota action select - show/hide rollover warning
@@ -369,7 +363,6 @@ const FractalManageTab = {
             quotaActionSelect.value = fractal.disk_quota_action || 'reject';
         }
         this.updateRolloverWarning();
-        this.updateLifecycleSummary();
 
         // Load permissions
         if (window.GroupsView) {
@@ -556,30 +549,6 @@ const FractalManageTab = {
         } else {
             console.error('[FractalManageTab] FractalManagement not available for edit modal');
         }
-    },
-
-    updateLifecycleSummary() {
-        const el = document.getElementById('lifecycleSummary');
-        if (!el) return;
-
-        const retentionSelect = document.getElementById('manageFractalRetentionSelect');
-        const retentionDays = retentionSelect ? retentionSelect.value : '';
-
-        const parts = [];
-
-        if (retentionDays === '') {
-            parts.push('Logs are kept indefinitely.');
-        } else {
-            parts.push(`Logs older than ${retentionDays} days are deleted hourly.`);
-        }
-
-        const archiveInput = document.getElementById('manageFractalArchiveRetentionInput');
-        const archiveDays = archiveInput ? archiveInput.value.trim() : '';
-        if (archiveDays !== '') {
-            parts.push(`Archived data older than ${archiveDays} days is dropped during archive maintenance.`);
-        }
-
-        el.textContent = parts.join(' ');
     },
 
     updateRolloverWarning() {

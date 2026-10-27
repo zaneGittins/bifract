@@ -207,7 +207,7 @@
 .alerts-view-section {
     max-width: 100%;
     margin: 0;
-    padding: 1rem 0;
+    padding: 0 0 1rem;
 }
 
 .alerts-view-section > h2 {
@@ -644,7 +644,7 @@
 
 /* Actions Manage View */
 .actions-manage-section {
-    padding: 1rem 0;
+    padding: 0 0 1rem;
 }
 
 .actions-manage-header {
@@ -1820,19 +1820,6 @@
 }
 
 /* Unified Actions View */
-.unified-actions-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 1rem;
-    flex-wrap: wrap;
-}
-
-.unified-actions-toolbar .alerts-search {
-    min-width: 180px;
-    flex: 1;
-}
-
 /* Action editor drawer (slide-over) */
 .action-drawer-scrim {
     position: fixed;
@@ -2016,59 +2003,13 @@ body.drawer-open {
     }
 }
 
-.unified-actions-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-}
-
-.unified-action-card {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.625rem 0.75rem;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    transition: var(--transition);
-    gap: 0.75rem;
-}
-
-.unified-action-card:hover {
-    border-color: var(--text-muted);
-}
-
-.unified-action-info {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-}
-
-.unified-action-name {
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 .unified-action-detail {
+    max-width: 360px;
     font-size: 0.75rem;
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-.unified-action-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    flex-shrink: 0;
 }
 
 .unified-action-status {
@@ -2153,18 +2094,7 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .alerts-table thead {
-    background: var(--bg-tertiary);
     border-bottom: 1px solid var(--border-color);
-}
-
-.alerts-table th {
-    padding: 0.5rem 0.75rem;
-    text-align: left;
-    font-weight: 600;
-    color: var(--text-primary);
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 .alerts-table tbody tr {
@@ -3672,58 +3602,7 @@ body.alert-panel-resizing .alert-details-panel {
 /* ---- Policies admin tab ---- */
 
 .ap-admin {
-    padding: 4px 0 24px;
-}
-
-.ap-link-btn {
-    margin-left: 6px;
-    padding: 2px 6px;
-    background: transparent;
-    border: none;
-    border-radius: 3px;
-    color: var(--text-muted);
-    font-size: 11.5px;
-    font-weight: 400;
-    cursor: pointer;
-}
-
-.ap-link-btn:hover {
-    color: var(--accent-primary);
-    background: var(--bg-hover);
-}
-
-.ap-admin-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-    margin-bottom: 14px;
-}
-
-.ap-admin-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.ap-admin-count {
-    padding: 1px 6px;
-    border-radius: 9px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    color: var(--text-muted);
-    font-size: 10px;
-    font-family: var(--font-mono);
-}
-
-.ap-admin-actions {
-    display: flex;
-    flex: 0 0 auto;
-    gap: 6px;
+    padding: 0 0 24px;
 }
 
 .ap-rule {
@@ -3959,113 +3838,10 @@ body.alert-panel-resizing .alert-details-panel {
    Alert review gate
    ============================================ */
 
-/* Review is the frame the rules sit in, so it leads the page as one slim bar. */
-.ap-gate {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px 24px;
-    margin-bottom: 16px;
-    padding: 8px 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 5px;
-    background: var(--bg-secondary);
-}
-
-.ap-gate-on {
-    border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-color));
-}
-
-.ap-gate-head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.ap-gate-title {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--text-muted);
-}
-
-.ap-gate-switch {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 11.5px;
-    color: var(--text-secondary);
-    cursor: pointer;
-}
-
-.ap-gate-switch .toggle-switch {
-    width: 34px;
-    height: 18px;
-}
-
-.ap-gate-switch .toggle-slider:before {
-    width: 12px;
-    height: 12px;
-}
-
-.ap-gate-switch .toggle-switch input:checked + .toggle-slider:before {
-    transform: translateX(16px);
-}
-
-.ap-gate-check {
-    gap: 8px;
-}
-
-/* The same switch as Review beside it, at the size the rest of the bar uses. */
-.ap-gate-check .toggle-switch {
-    width: 34px;
-    height: 18px;
-}
-
-.ap-gate-check .toggle-slider:before {
-    width: 12px;
-    height: 12px;
-}
-
-.ap-gate-check .toggle-switch input:checked + .toggle-slider:before {
-    transform: translateX(16px);
-}
-
-.ap-gate-row {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    padding-left: 24px;
-    border-left: 1px solid var(--border-color);
-}
-
-.ap-gate-field {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 11.5px;
-    color: var(--text-secondary);
-}
-
-.ap-gate-check {
-    cursor: pointer;
-}
-
 /* ---- Changes view ---- */
 
 .ac-view {
-    padding: 4px 0 24px;
-}
-
-/* The sub-tab already names this view and carries its count, so the head holds only
-   the filter. It stays right-aligned, where it was when a title sat opposite it. */
-.ac-head {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 20px;
-    min-height: 30px;
-    margin-bottom: 14px;
+    padding: 0 0 24px;
 }
 
 .ac-count {
@@ -4076,12 +3852,6 @@ body.alert-panel-resizing .alert-details-panel {
     color: var(--text-muted);
     font-size: 10px;
     font-family: var(--font-mono);
-}
-
-.ac-head-actions {
-    display: flex;
-    align-items: center;
-    gap: 12px;
 }
 
 .ac-filter {
@@ -5158,35 +4928,23 @@ body.alert-editor-active {
    every control in these toolbars measures the same. The sizing stops at the edge of a
    popover the toolbar anchors: those are their own surfaces, and a menu item or a
    stacked row sizes to its content rather than to a toolbar's control height. */
-:is(.alerts-filters, .unified-actions-toolbar, .atk-controls, .ap-admin-actions)
-    :is(input[type="text"], select, button):not(:where(.fb-menu, .kebab-menu, .alerts-drafts-panel, .atk-filters-menu) *) {
-    height: 34px;
+:is(.alerts-filters, .admin-toolbar, .atk-controls)
+    :is(input[type="text"], select, button):not(:where(.fb-menu, .kebab-menu, .alerts-drafts-panel, .atk-filters-menu, .fractal-listing-pagination) *) {
+    height: 32px;
     box-sizing: border-box;
 }
 
-/* A row of controls is one row: the search box, the selects and the buttons all
-   settle on the same height, type and radius. */
-.ap-admin-lead {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 34px;
+/* A fixed-height select centres its own text; vertical padding would clip it. */
+:is(.alerts-filters, .admin-toolbar, .atk-controls) select {
+    padding-top: 0;
+    padding-bottom: 0;
 }
 
-.unified-actions-toolbar .btn-primary,
-.unified-actions-toolbar .btn-secondary,
 .alerts-filters .btn-primary,
 .alerts-filters .btn-secondary {
     padding: 0.5rem 1rem;
     font-size: 0.8125rem;
     line-height: normal;
-}
-
-/* An icon-only button in a toolbar keeps the row's height without stretching wide. */
-.alerts-filters #feedManageToggleBtn {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.5rem 0.75rem;
 }
 
 /* ---- Filter popover ---- */
@@ -5318,38 +5076,6 @@ body.alert-editor-active {
 
 .fb-chip-clear-all:hover {
     color: var(--accent-primary);
-}
-
-/* ---- Shared empty state ---- */
-
-.es {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    padding: 64px 24px;
-    text-align: center;
-}
-
-.es-icon {
-    color: var(--text-muted);
-    opacity: 0.45;
-}
-
-.es-title {
-    font-size: 14px;
-    color: var(--text-primary);
-}
-
-.es-detail {
-    max-width: 460px;
-    font-size: 12.5px;
-    line-height: 1.6;
-    color: var(--text-muted);
-}
-
-.es-action {
-    margin-top: 4px;
 }
 
 /* Drafts hang off the Alerts toolbar, next to where a new alert is started. */

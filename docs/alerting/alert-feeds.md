@@ -2,7 +2,7 @@
 
 Alert feeds sync detection rules from Git repositories. Feeds support both native Bifract YAML alert definitions and Sigma rules, which are automatically translated and normalized.
 
-Admins manage feeds from **Alerts > Feeds** within a fractal.
+Admins manage feeds from **Alerts > Feeds > Manage feeds** within a fractal.
 
 ## How Feeds Work
 

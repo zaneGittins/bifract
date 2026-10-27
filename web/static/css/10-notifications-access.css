@@ -806,11 +806,9 @@
 }
 
 .feeds-manage-title {
-    font-size: 0.8rem;
+    font-size: 0.875rem;
     font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: var(--text-primary);
 }
 
 #feedManageToggleBtn.panel-active {
@@ -1025,7 +1023,6 @@
     border-radius: 3px;
     font-size: 0.7rem;
     font-weight: 600;
-    text-transform: capitalize;
     cursor: pointer;
     transition: opacity 0.15s;
     white-space: nowrap;
@@ -1571,13 +1568,6 @@
     color: var(--text-primary);
 }
 
-.access-card-subtitle {
-    display: block;
-    font-size: 0.8125rem;
-    color: var(--text-muted);
-    margin-top: 0.125rem;
-}
-
 .permissions-list {
     padding: 0;
 }
@@ -1805,13 +1795,6 @@
 /* ============================
    Log Lifecycle Section
    ============================ */
-
-.lifecycle-summary {
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-    line-height: 1.5;
-    margin: 0 0 0.75rem 0;
-}
 
 .lifecycle-section .setting-item {
     background: none;

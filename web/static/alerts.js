@@ -63,16 +63,12 @@ const Alerts = {
 
         const createBtn = document.getElementById('createAlertBtn');
         const webhooksBtn = document.getElementById('manageWebhooksBtn');
-        const refreshBtn = document.getElementById('alertsRefreshBtn');
 
         if (createBtn) {
             createBtn.addEventListener('click', () => this.showAlertEditor());
         }
         if (webhooksBtn) {
             webhooksBtn.addEventListener('click', () => this.showActionsManageView());
-        }
-        if (refreshBtn) {
-            refreshBtn.addEventListener('click', () => this.loadAlerts());
         }
 
         // Alert type dropdown
@@ -394,15 +390,10 @@ const Alerts = {
         if (!alertsList) return;
 
         if (alerts.length === 0) {
-            alertsList.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-text">No Alerts Configured</div>
-                    <div class="empty-actions">
-                        <button onclick="Alerts.showAlertEditor()" class="btn-primary">Create Your First Alert</button>
-                        <button onclick="Alerts.showImportModal()" class="btn-secondary">Import from YAML</button>
-                    </div>
-                </div>
-            `;
+            alertsList.innerHTML = EmptyState.render({
+                title: 'No alerts yet',
+                detail: 'Write a detection, or import existing rules from YAML or Sigma.'
+            });
             return;
         }
 
@@ -508,8 +499,8 @@ const Alerts = {
             { key: 'type', label: 'Type' },
             { key: 'severity', label: 'Severity', sortable: true },
             { key: 'labels', label: 'Labels' },
-            { key: 'exec_time', label: 'Exec Time', sortable: true },
-            { key: 'last_triggered', label: 'Last Triggered', sortable: true }
+            { key: 'exec_time', label: 'Exec time', sortable: true },
+            { key: 'last_triggered', label: 'Last triggered', sortable: true }
         ];
 
         return `
@@ -562,7 +553,8 @@ const Alerts = {
     },
 
     renderAlertTableRow(alert) {
-        let type = Utils.escapeHtml(alert.alert_type || 'event');
+        const kind = alert.alert_type || 'event';
+        let type = Utils.escapeHtml(kind.charAt(0).toUpperCase() + kind.slice(1));
         if (alert.alert_type === 'compound' && alert.window_duration) {
             type += ` <span class="alert-window-badge">${this.formatWindowDuration(alert.window_duration)}</span>`;
         } else if (alert.alert_type === 'scheduled' && alert.schedule_cron) {
@@ -752,7 +744,7 @@ const Alerts = {
             }
         }
 
-        let html = '<option value="all">All Actions</option>';
+        let html = '<option value="all">All actions</option>';
         html += '<option value="none">No Actions</option>';
 
         if (webhooks.size > 0) {
@@ -904,7 +896,7 @@ const Alerts = {
         for (const alert of this.allAlerts) {
             for (const l of (alert.labels || [])) labels.add(l);
         }
-        select.innerHTML = '<option value="all">All Labels</option>'
+        select.innerHTML = '<option value="all">All labels</option>'
             + [...labels].sort((a, b) => a.localeCompare(b))
                 .map(l => `<option value="${Utils.escapeHtml(l)}">${Utils.escapeHtml(l)}</option>`).join('');
         if ([...select.options].some(o => o.value === current)) select.value = current;
@@ -5259,7 +5251,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 actions.push({ ...f, actionType: 'fractal', actionLabel: 'Fractal', detail: f.description || '' });
             });
             ((dictData.success ? dictData.data : null) || []).forEach(d => {
-                actions.push({ ...d, actionType: 'dictionary', actionLabel: 'Dictionary', detail: d.dictionary_name || '' });
+                actions.push({ ...d, actionType: 'dictionary', actionLabel: 'Lookup', detail: d.dictionary_name || '' });
             });
 
             actions.sort((a, b) => a.name.localeCompare(b.name));
@@ -5290,31 +5282,39 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         if (!listEl) return;
 
         if (actions.length === 0) {
-            listEl.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-text">No actions configured</div>
-                    <div class="empty-actions">
-                        <button onclick="Alerts.showNewActionPicker()" class="btn-primary">Create Your First Action</button>
-                    </div>
-                </div>`;
+            listEl.innerHTML = this.allActions.length
+                ? EmptyState.render({ title: 'No actions match these filters' })
+                : EmptyState.render({ title: 'No actions yet', detail: 'Create one, then attach it to alerts to be notified when they fire.' });
             return;
         }
 
-        listEl.innerHTML = actions.map(a => `
-            <div class="unified-action-card" data-id="${a.id}" data-type="${a.actionType}">
-                <div class="unified-action-info">
-                    <span class="action-type-badge ${a.actionType}">${Utils.escapeHtml(a.actionLabel)}</span>
-                    <span class="unified-action-name">${Utils.escapeHtml(a.name)}</span>
-                    <span class="unified-action-detail">${Utils.escapeHtml(a.detail || '')}</span>
-                </div>
-                <div class="unified-action-controls">
-                    <span class="unified-action-status ${a.enabled ? 'enabled' : 'disabled'}">${a.enabled ? 'Enabled' : 'Disabled'}</span>
-                    ${(a.actionType === 'webhook' || a.actionType === 'email') ? `<button class="btn-xs btn-secondary" onclick="Alerts.testUnifiedAction('${a.id}', '${a.actionType}')">Test</button>` : ''}
-                    <button class="btn-xs btn-secondary" onclick="Alerts.editUnifiedAction('${a.id}', '${a.actionType}')">Edit</button>
-                    <button class="btn-xs btn-danger" onclick="Alerts.deleteUnifiedAction('${a.id}', '${a.actionType}')">Delete</button>
-                </div>
-            </div>
-        `).join('');
+        const rows = actions.map(a => {
+            const id = Utils.escapeJs(String(a.id));
+            const testable = a.actionType === 'webhook' || a.actionType === 'email';
+            return `
+            <tr data-id="${Utils.escapeHtml(String(a.id))}" data-type="${a.actionType}">
+                <td><button class="table-name-link" onclick="Alerts.editUnifiedAction('${id}', '${a.actionType}')">${Utils.escapeHtml(a.name)}</button></td>
+                <td><span class="action-type-badge ${a.actionType}">${Utils.escapeHtml(a.actionLabel)}</span></td>
+                <td class="text-muted unified-action-detail">${Utils.escapeHtml(a.detail || '')}</td>
+                <td><span class="unified-action-status ${a.enabled ? 'enabled' : 'disabled'}">${a.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                <td class="kebab-cell">
+                    <div class="kebab-wrapper">
+                        <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)" title="More actions">&#8942;</button>
+                        <div class="kebab-menu">
+                            ${testable ? `<button class="kebab-item" onclick="Alerts.testUnifiedAction('${id}', '${a.actionType}')">Send test</button>` : ''}
+                            <button class="kebab-item" onclick="Alerts.editUnifiedAction('${id}', '${a.actionType}')">Edit</button>
+                            <button class="kebab-item danger" onclick="Alerts.deleteUnifiedAction('${id}', '${a.actionType}')">Delete</button>
+                        </div>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
+
+        listEl.innerHTML = `
+            <table class="list-table">
+                <thead><tr><th>Name</th><th>Type</th><th>Target</th><th>Status</th><th class="kebab-th"></th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
     },
 
     async testUnifiedAction(id, type) {

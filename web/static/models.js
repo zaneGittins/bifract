@@ -196,18 +196,11 @@ const AnalyticsModels = {
         container.innerHTML = `
 <div class="models-view-section">
     <div class="models-listing">
-        <header class="admin-page-head">
-            <div>
-                <h2>Analytics</h2>
-                <p>Models that learn this fractal's normal behavior and surface what departs from it.</p>
-            </div>
-            <div class="admin-page-actions">
-                <button class="btn-secondary btn-sm" id="modelsImportBtn">Import YAML</button>
-                <button class="btn-primary btn-sm" id="modelsNewBtn">Create model</button>
-            </div>
-        </header>
         <div class="admin-toolbar models-filters">
             <input type="text" id="modelsSearchInput" class="admin-search" placeholder="Search models">
+            <span class="admin-toolbar-spacer"></span>
+            <button class="btn-secondary btn-sm" id="modelsImportBtn">Import YAML</button>
+            <button class="btn-primary btn-sm" id="modelsNewBtn">Create model</button>
         </div>
         <input type="file" id="modelsImportFile" accept=".yaml,.yml" style="display:none">
         <div id="modelsTableWrap" class="admin-list">
@@ -1468,13 +1461,12 @@ ${m.description ? `<div class="me-sec">
         if (!v.rows.length) {
             const seeding = m.backfill_status === 'running';
             wrap.innerHTML = seeding
-                ? EmptyState.render({ icon: 'list', title: 'Backfilling historical data', detail: 'Rows appear as each day completes.' })
+                ? EmptyState.render({ title: 'Backfilling historical data', detail: 'Rows appear as each day completes.' })
                 : v.search
-                    ? EmptyState.render({ icon: 'list', title: 'No matching rows', detail: 'No result matches this search.' })
+                    ? EmptyState.render({ title: 'No matching rows', detail: 'No result matches this search.' })
                     : v.view === 'findings'
                         ? this._findingsEmptyHTML()
                         : EmptyState.render({
-                            icon: 'list',
                             title: 'No data yet',
                             detail: 'Use Backfill to seed history, or new matching logs will appear here as they are ingested.',
                         });
@@ -1551,21 +1543,21 @@ ${m.description ? `<div class="me-sec">
         const st = v.stats;
         const mt = v.model?.model_type;
         const action = { label: 'Browse all rows', onclick: "AnalyticsModels._setView('all')" };
-        if (!st) return EmptyState.render({ icon: 'list', title: 'Nothing would alert', action });
+        if (!st) return EmptyState.render({ title: 'Nothing would alert', action });
         if (mt === 'rarity' && !st.findings_rule) {
             return EmptyState.render({
-                icon: 'list', title: 'No alert thresholds set', action,
+                title: 'No alert thresholds set', action,
                 detail: 'Without a coverage or share-of-days threshold this model singles nothing out. Set them in Edit to see what would alert.',
             });
         }
         if (mt === 'first_seen') {
             return EmptyState.render({
-                icon: 'list', title: 'Nothing new this week', action,
+                title: 'Nothing new this week', action,
                 detail: 'No entity was first recorded by the model in the last 7 days. History seeded by a backfill never counts as new.',
             });
         }
         return EmptyState.render({
-            icon: 'list', title: 'Nothing would alert', action,
+            title: 'Nothing would alert', action,
             detail: _esc(`No row meets the alert rule: ${st.findings_rule}.`),
         });
     },
@@ -2198,7 +2190,7 @@ ${m.description ? `<div class="me-sec">
     },
 
     _benchEmpty(title = 'Nothing run yet', detail = 'Run the query to preview matching logs and the fields you can build a shape from.') {
-        return EmptyState.render({ icon: 'list', title, detail });
+        return EmptyState.render({ title, detail });
     },
 
     // ---- Starter templates (new models only) ----

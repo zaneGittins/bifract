@@ -43,7 +43,8 @@
 }
 
 .users-table th,
-.list-table th {
+.list-table th,
+.alerts-table th {
     text-align: left;
     padding: 0.625rem 0.75rem;
     background: var(--bg-secondary);

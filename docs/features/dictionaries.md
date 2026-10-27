@@ -4,7 +4,7 @@ Lookups are per-fractal tables for enriching log data at query time. They appear
 
 ## Creating a Lookup
 
-Open **Lookups** in the fractal's sidebar. Click **+ New Lookup** and provide:
+Open **Lookups** in the fractal's sidebar. Click **Create lookup** and provide:
 
 - **Name** - must be a valid identifier (alphanumeric and underscores)
 - **Key column** - the primary lookup column name

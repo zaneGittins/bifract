@@ -54,8 +54,7 @@ const ContextLinks = {
         const container = document.getElementById('contextLinksListContainer');
         if (!container) return;
 
-        const toolbar = document.getElementById('contextLinksToolbar');
-        if (toolbar) toolbar.hidden = this.links.length === 0;
+        Utils.hideToolbarFilters('contextLinksToolbar', this.links.length === 0);
 
         if (this.links.length === 0) {
             container.innerHTML = '<div class="admin-empty"><strong>No context links yet</strong>Add a link to look up matching field values in an external tool.</div>';

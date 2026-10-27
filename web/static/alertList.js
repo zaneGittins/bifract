@@ -62,7 +62,8 @@ const AlertList = {
     severityCell(alert, onFilter) {
         const sev = (alert.severity || 'medium').toLowerCase();
         const cls = sev === 'info' ? 'informational' : sev;
-        return `<td class="alert-severity-cell"><span class="severity-pill severity-${cls}" onclick="event.stopPropagation(); ${onFilter}('${sev}')" title="Filter by ${sev}">${sev}</span></td>`;
+        const label = cls.charAt(0).toUpperCase() + cls.slice(1);
+        return `<td class="alert-severity-cell"><span class="severity-pill severity-${cls}" onclick="event.stopPropagation(); ${onFilter}('${sev}')" title="Filter by ${sev}">${label}</span></td>`;
     },
 
     // Three pills then an overflow count, so a rule with a long ATT&CK tag list
@@ -127,15 +128,9 @@ const AlertList = {
     },
 
     renderEmptyState({ filtered, noun, onClear, hint }) {
-        return `
-            <div class="alerts-table-container">
-                <div class="empty-state">
-                    <div class="empty-text">${filtered ? `No ${noun} match your filters` : `No ${noun} found`}</div>
-                    ${filtered
-                        ? `<div class="empty-actions"><button onclick="${onClear}()" class="btn-secondary">Clear Filters</button></div>`
-                        : (hint ? `<div class="empty-hint">${hint}</div>` : '')}
-                </div>
-            </div>`;
+        return filtered
+            ? EmptyState.render({ title: `No ${noun} match these filters`, action: { label: 'Clear filters', onclick: `${onClear}()` } })
+            : EmptyState.render({ title: `No ${noun} yet`, detail: hint || '' });
     }
 };
 

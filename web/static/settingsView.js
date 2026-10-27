@@ -747,8 +747,7 @@ const SettingsView = {
         if (!container) return;
 
         const all = this._users || [];
-        const toolbar = document.getElementById('usersToolbar');
-        if (toolbar) toolbar.hidden = all.length === 0;
+        Utils.hideToolbarFilters('usersToolbar', all.length === 0);
         if (all.length === 0) {
             container.innerHTML = '<div class="admin-empty"><strong>No users yet</strong>Add a user to give someone else access to this tenant.</div>';
             return;

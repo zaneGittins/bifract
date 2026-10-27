@@ -66,7 +66,7 @@ test.describe('Alert review drafts', () => {
       ].join('\n');
 
       await openAlerts(page, fractal);
-      await page.locator('.alerts-tools .kebab-btn').click();
+      await page.locator('.alerts-tools .btn-menu').click();
       await page.locator('.alerts-tools .kebab-item', { hasText: 'Import YAML or Sigma' }).click();
 
       const modal = page.locator('#importYamlModal');

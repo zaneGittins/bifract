@@ -135,10 +135,10 @@ const AttackCoverage = {
 
         view.innerHTML = `
             <section class="atk-view">
-                <div class="atk-summary" id="atkSummary"></div>
+                <div class="perf-metrics-grid" id="atkSummary"></div>
 
                 <div class="atk-controls">
-                    <input type="text" id="atkSearch" class="atk-search" placeholder="Search technique or ID..." />
+                    <input type="text" id="atkSearch" class="admin-search" placeholder="Search technique or ID" />
                     <select id="atkColorBy" class="atk-select" title="What the cell color encodes">
                         <option value="status">Color: status</option>
                         <option value="count">Color: rule count</option>
@@ -730,9 +730,9 @@ const AttackCoverage = {
     // Summary
     // ============================
 
-    // One headline number, the weakest tactic, and a chip per thing that needs
-    // doing. A chip only exists when its count does, so a chip on screen always
-    // means work: an operator never has to read five stats to find the zeroes.
+    // Four tiles, as on System: the headline number, the weakest tactic, a chip per
+    // thing that needs doing, and the matrix version. A chip only exists when its
+    // count does, so a chip on screen always means work.
     renderSummary() {
         const el = document.getElementById('atkSummary');
         const s = this.coverage?.summary;
@@ -743,6 +743,7 @@ const AttackCoverage = {
         const weakShort = (s.weakest_tactics || [])[0];
         const weakName = this.matrix.tactics.find(t => t.short === weakShort)?.name;
         const weakStats = s.per_tactic?.[weakShort];
+        const pctText = leafPct > 0 && leafPct < 10 ? leafPct.toFixed(1) : Math.round(leafPct);
 
         const coverTip =
             `Detectable units covered: every sub-technique, plus every technique that has none. ` +
@@ -750,18 +751,25 @@ const AttackCoverage = {
             `${s.techniques_covered}/${s.techniques_total} (${techPct}%) top-level techniques have a rule somewhere under them.`;
 
         el.innerHTML = `
-            <span class="atk-headline" title="${Utils.escapeAttr(coverTip)}">
-                <span class="atk-stat-label">Coverage</span>
-                <span class="atk-headline-value">${s.leaf_covered}</span>
-                <span class="atk-headline-of">/${s.leaf_total}</span>
-                <span class="atk-meter atk-headline-meter"><span class="atk-meter-fill" style="width:${leafPct > 0 ? Math.max(leafPct, 1) : 0}%"></span></span>
-                <span class="atk-headline-pct">${leafPct > 0 && leafPct < 10 ? leafPct.toFixed(1) : Math.round(leafPct)}%</span>
-            </span>
-            ${weakName ? `<span class="atk-weakest" title="Lowest share of its detectable units covered.">Weakest
-                <b>${Utils.escapeHtml(weakName)}</b>
-                ${weakStats ? `${weakStats.leaf_covered}/${weakStats.leaf_total}` : ''}</span>` : ''}
-            <span class="atk-attn" id="atkAttn"></span>
-            <span class="atk-stat-version" title="Embedded ATT&CK Enterprise matrix version">ATT&CK v${Utils.escapeHtml(s.matrix_version || '')}</span>
+            <div class="perf-metric-card" title="${Utils.escapeAttr(coverTip)}">
+                <div class="perf-metric-label">Coverage</div>
+                <div class="perf-metric-value">${s.leaf_covered} / ${s.leaf_total}</div>
+                <div class="perf-metric-sub">${pctText}% of detectable techniques</div>
+            </div>
+            <div class="perf-metric-card" title="Lowest share of its detectable units covered.">
+                <div class="perf-metric-label">Weakest tactic</div>
+                <div class="perf-metric-value">${weakStats ? `${weakStats.leaf_covered} / ${weakStats.leaf_total}` : '--'}</div>
+                <div class="perf-metric-sub">${weakName ? Utils.escapeHtml(weakName) : ''}</div>
+            </div>
+            <div class="perf-metric-card">
+                <div class="perf-metric-label">Needs attention</div>
+                <div class="atk-attn" id="atkAttn"></div>
+            </div>
+            <div class="perf-metric-card" title="Embedded ATT&CK Enterprise matrix version">
+                <div class="perf-metric-label">Matrix</div>
+                <div class="perf-metric-value">v${Utils.escapeHtml(s.matrix_version || '')}</div>
+                <div class="perf-metric-sub">ATT&amp;CK Enterprise</div>
+            </div>
         `;
         this.renderAttention();
     },
@@ -802,7 +810,9 @@ const AttackCoverage = {
         const stale = this.filters.only && !chips.some(c => c.only === this.filters.only);
         if (stale) this.filters.only = '';
 
-        el.innerHTML = chips.map(c => this.chip(c)).join('');
+        el.innerHTML = chips.length
+            ? chips.map(c => this.chip(c)).join('')
+            : '<span class="perf-metric-sub">Nothing outstanding</span>';
         el.querySelectorAll('.atk-chip-btn[data-only]').forEach(btn => {
             btn.addEventListener('click', () => {
                 this.filters.only = this.filters.only === btn.dataset.only ? '' : btn.dataset.only;

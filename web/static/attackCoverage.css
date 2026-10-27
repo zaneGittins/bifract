@@ -36,6 +36,11 @@
     gap: 1rem;
 }
 
+/* The view's gap already spaces the tiles from the toolbar. */
+#atkSummary {
+    margin-bottom: 0;
+}
+
 /* A single strip rather than a row of cards. The matrix is what the page is for,
    and five cards were spending 130px of vertical on numbers that read fine inline. */
 .atk-summary {
@@ -135,11 +140,11 @@
 /* Chips count the work outstanding, so one that would read zero is not rendered
    at all: anything on this row means there is something to do. */
 .atk-attn {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 0.4rem;
     flex-wrap: wrap;
-    margin-left: auto;
+    margin-top: 0.25rem;
 }
 
 .atk-chip-btn {
@@ -256,7 +261,6 @@ button.atk-chip-btn:hover {
     line-height: normal;
 }
 
-.atk-search { min-width: 200px; }
 .atk-search:focus,
 .atk-select:focus {
     outline: none;

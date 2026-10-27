@@ -45,12 +45,12 @@ const AlertChanges = {
     async show() {
         const view = document.getElementById('alertChangesView');
         if (!view) return;
-        view.innerHTML = '<div class="ac-empty">Loading...</div>';
+        view.innerHTML = '<div class="loading">Loading...</div>';
 
         try {
             [this._config, this._list] = await Promise.all([this.gateConfig(), this.fetchList()]);
         } catch (e) {
-            view.innerHTML = `<div class="ac-empty">Failed to load: ${Utils.escapeHtml(e.message)}</div>`;
+            view.innerHTML = `<div class="error">Failed to load: ${Utils.escapeHtml(e.message)}</div>`;
             return;
         }
         this.render();
@@ -88,15 +88,13 @@ const AlertChanges = {
 
         view.innerHTML = `
             <section class="ac-view">
-                <div class="ac-head">
-                    <div class="ac-head-actions">
-                        ${this._list.length === 0 && this._openOnly ? '' : `
-                            <div class="ac-filter">
-                                <button type="button" class="ac-filter-btn${this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('open')">Open</button>
-                                <button type="button" class="ac-filter-btn${!this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('all')">All</button>
-                            </div>`}
+                ${this._list.length === 0 && this._openOnly ? '' : `
+                <div class="admin-toolbar">
+                    <div class="ac-filter">
+                        <button type="button" class="ac-filter-btn${this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('open')">Open</button>
+                        <button type="button" class="ac-filter-btn${!this._openOnly ? ' active' : ''}" onclick="AlertChanges.setFilter('all')">All</button>
                     </div>
-                </div>
+                </div>`}
                 ${this._list.length === 0
                     ? this.renderEmpty()
                     : `<div class="ac-rows">${this._list.map(cr => this.renderRow(cr)).join('')}</div>`}
@@ -122,17 +120,16 @@ const AlertChanges = {
     renderEmpty() {
         if (!this._config?.enabled) {
             return EmptyState.render({
-                icon: 'review',
-                title: 'Review is off for this scope',
-                detail: 'Enable reviews to require all alert edits are vetted before going live.',
+                title: 'Review is off',
+                detail: 'Turn on Require review under Policies to vet alert edits before they go live.',
                 action: { label: 'Open policies', onclick: 'AlertFeeds.showPoliciesTab()' }
             });
         }
         if (this._openOnly) {
-            return EmptyState.render({ icon: 'review', title: EmptyState.clearQueueLine(),
+            return EmptyState.render({ title: EmptyState.clearQueueLine(),
                 detail: 'Proposed changes wait here until someone approves them.' });
         }
-        return EmptyState.render({ icon: 'review', title: 'No proposals yet',
+        return EmptyState.render({ title: 'No proposals yet',
             detail: 'Editing an alert in a reviewed scope opens one here.' });
     },
 
