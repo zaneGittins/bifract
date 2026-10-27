@@ -1477,7 +1477,91 @@ func (m *Manager) ReconcileDictionaries(ctx context.Context) (int, error) {
 		}
 		reconciled++
 	}
+	if n, err := m.DropOrphans(ctx); err != nil {
+		log.Printf("[Dictionaries] reconcile: orphans: %v", err)
+	} else if n > 0 {
+		log.Printf("[Dictionaries] reconcile: dropped %d orphaned list(s)", n)
+	}
 	return reconciled, nil
+}
+
+var (
+	orphanTableRe = regexp.MustCompile(`^dict_([0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12})(_distributed)?$`)
+	orphanDictRe  = regexp.MustCompile(`^lookup_([0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12})(_by_[A-Za-z0-9_]+)?$`)
+)
+
+// DropOrphans drops the ClickHouse objects of lists that no longer have a
+// Postgres row. Deleting a fractal or prism cascades its lists' rows without
+// touching ClickHouse, so this is what reclaims their tables and dictionaries.
+// It returns the number of lists swept.
+//
+// ClickHouse is listed before Postgres: a list is inserted into Postgres before
+// its objects are created, so one being created concurrently is never mistaken
+// for an orphan.
+func (m *Manager) DropOrphans(ctx context.Context) (int, error) {
+	// system.tables lists DDL dictionaries too, with engine Dictionary.
+	q := fmt.Sprintf(`SELECT DISTINCT name FROM %s WHERE database = '%s' AND (startsWith(name, 'dict_') OR startsWith(name, 'lookup_'))`,
+		m.ch.Topology().FanoutSystemTable("system.tables"), escCHStr(m.chDB))
+	found, err := m.ch.QuerySchema(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("list lookup objects: %w", err)
+	}
+	tables := map[string][]string{}
+	dicts := map[string][]string{}
+	for _, r := range found {
+		name, _ := r["name"].(string)
+		if mt := orphanTableRe.FindStringSubmatch(name); mt != nil {
+			tables[mt[1]] = append(tables[mt[1]], name)
+		} else if md := orphanDictRe.FindStringSubmatch(name); md != nil {
+			dicts[md[1]] = append(dicts[md[1]], name)
+		}
+	}
+	if len(tables) == 0 && len(dicts) == 0 {
+		return 0, nil
+	}
+
+	rows, err := m.pg.Query(ctx, `SELECT id FROM dictionaries`)
+	if err != nil {
+		return 0, err
+	}
+	live := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		live[strings.ReplaceAll(id, "-", "_")] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	ids := map[string]bool{}
+	for id := range tables {
+		ids[id] = true
+	}
+	for id := range dicts {
+		ids[id] = true
+	}
+	swept := 0
+	for id := range ids {
+		if live[id] {
+			continue
+		}
+		// Dictionaries read from the tables, and the companion from the local
+		// table, so drop in that order.
+		for _, name := range dicts[id] {
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP DICTIONARY IF EXISTS `%s`", escCH(name))))
+		}
+		slices.SortFunc(tables[id], func(a, b string) int { return len(b) - len(a) })
+		for _, name := range tables[id] {
+			_ = m.ch.ExecSchema(ctx, m.ch.InjectOnCluster(fmt.Sprintf("DROP TABLE IF EXISTS `%s` SYNC SETTINGS max_table_size_to_drop = 0", escCH(name))))
+		}
+		swept++
+	}
+	return swept, nil
 }
 
 // writeShardNum is the shard every dictionary row lands on. The Distributed

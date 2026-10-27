@@ -9,12 +9,18 @@ import (
 
 // Manager handles prism CRUD and member management.
 type Manager struct {
-	pg *storage.PostgresClient
+	pg           *storage.PostgresClient
+	onDeleteHook func(ctx context.Context, prismID string)
 }
 
 // NewManager creates a new prism manager.
 func NewManager(pg *storage.PostgresClient) *Manager {
 	return &Manager{pg: pg}
+}
+
+// SetOnDeleteHook registers a callback invoked after a prism is deleted.
+func (m *Manager) SetOnDeleteHook(hook func(ctx context.Context, prismID string)) {
+	m.onDeleteHook = hook
 }
 
 // CreatePrism creates a new prism.
@@ -129,6 +135,9 @@ func (m *Manager) DeletePrism(ctx context.Context, id string) error {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("prism not found")
+	}
+	if m.onDeleteHook != nil {
+		m.onDeleteHook(ctx, id)
 	}
 	return nil
 }

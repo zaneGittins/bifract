@@ -297,3 +297,62 @@ func TestExecuteDictionaryActionRefusedRowsKeepTheList(t *testing.T) {
 		t.Errorf("schema changed: %v", w.columnsOf(d.ID))
 	}
 }
+
+// A list whose Postgres row is gone (its fractal or prism was deleted, which
+// cascades the row) has its table, companion and dictionaries dropped. Live
+// lists and objects that only share the prefix are left alone.
+func TestDropOrphans(t *testing.T) {
+	for _, cluster := range []bool{false, true} {
+		w := newWorld(t)
+		if cluster {
+			w = newClusterWorld(t)
+		}
+		live := w.seed(dictRec{name: "users", fractalID: fractalA, keyCol: "email", cols: []byte(`[{"name":"email"}]`)})
+		w.seedTable(live.id, []string{"email"}, row(1, "email", "a"))
+		orphan := w.newID()
+		w.seedTable(orphan, []string{"ip", "host"}, row(1, "ip", "1.1.1.1"))
+		w.mu.Lock()
+		w.dictObjs[chColDictName(orphan, "host")] = "seeded"
+		w.tables["dict_notes"] = &chTable{}
+		w.dictObjs["lookup_cache"] = "seeded"
+		w.mu.Unlock()
+
+		n, err := w.m.DropOrphans(ctx)
+		if err != nil || n != 1 {
+			t.Fatalf("cluster=%v: dropped %d %v, want 1", cluster, n, err)
+		}
+		for _, name := range []string{chTableName(orphan), chDistTableName(orphan)} {
+			if w.hasTable(name) {
+				t.Errorf("cluster=%v: %s left behind", cluster, name)
+			}
+		}
+		for _, name := range []string{chDictName(orphan), chColDictName(orphan, "host")} {
+			if w.hasDictObject(name) {
+				t.Errorf("cluster=%v: %s left behind", cluster, name)
+			}
+		}
+		if !w.hasTable(chTableName(live.id)) || !w.hasDictObject(chDictName(live.id)) || len(w.liveRows(live.id)) != 1 {
+			t.Errorf("cluster=%v: a live list was touched", cluster)
+		}
+		if !w.hasTable("dict_notes") || !w.hasDictObject("lookup_cache") {
+			t.Errorf("cluster=%v: an object Bifract does not own was dropped", cluster)
+		}
+		if q := w.ch.QueriedMatching("clusterAllReplicas"); cluster != (len(q) > 0) {
+			t.Errorf("cluster=%v: names not read from every replica: %v", cluster, w.ch.QueriedMatching("system."))
+		}
+	}
+}
+
+// Startup reconcile sweeps orphans too, so a delete that happened while the
+// sweep could not run is cleaned up on the next start.
+func TestReconcileDropsOrphans(t *testing.T) {
+	w := newWorld(t)
+	orphan := w.newID()
+	w.seedTable(orphan, []string{"ip"})
+	if _, err := w.m.ReconcileDictionaries(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if w.hasTable(chTableName(orphan)) || w.hasDictObject(chDictName(orphan)) {
+		t.Error("reconcile left an orphaned list behind")
+	}
+}
