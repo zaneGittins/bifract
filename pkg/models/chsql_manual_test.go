@@ -92,33 +92,148 @@ func (d *chDB) connLogs(src, dst string, every time.Duration, n int) {
 FROM numbers(%d)`, int(every.Seconds()), src, dst, n))
 }
 
-// A busy pair keeps the daily cap on every day of the window, timestamps and
+// connLogsAt inserts n connection logs every interval from first, each lasting
+// dur seconds.
+func (d *chDB) connLogsAt(src, dst string, first time.Time, every time.Duration, n, dur int) {
+	d.t.Helper()
+	d.exec(fmt.Sprintf(`INSERT INTO logs SELECT 'f1', toDateTime64('%s', 3, 'UTC') + toIntervalSecond(number * %d), now64(3, 'UTC'),
+    '{"src_ip":"%s","dst_ip":"%s","dst_port":"443","orig_bytes":"' || toString(number %% 997) || '","duration":"%d"}'
+FROM numbers(%d)`, first.UTC().Format(chTimeLayout), int(every.Seconds()), src, dst, dur, n))
+}
+
+// netState builds the network state table for a window and fills it from logs.
+func (d *chDB) netState(def ModelDefinition, days int) {
+	d.t.Helper()
+	ins, err := BuildNetStateInsert(def, "s", "logs", "", "f1")
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	d.exec(BuildNetStateTableDDL("s", days), ins)
+}
+
+// A busy pair keeps the hourly cap on every hour of the window, timestamps and
 // sizes stay paired, and pairs outside the gate never reach the scorer.
-func TestCHBeaconReadKeepsEveryDay(t *testing.T) {
+func TestCHBeaconReadKeepsEveryHour(t *testing.T) {
 	d := newCHDB(t)
-	d.connLogs("10.0.0.1", "198.51.100.1", 30*time.Second, 7*2880) // 2880 a day, over the cap
+	d.connLogs("10.0.0.1", "198.51.100.1", 30*time.Second, 7*2880) // 120 an hour, over the cap
 	d.connLogs("10.0.0.2", "198.51.100.2", 2*time.Second, 7*43200) // a strobe
 	d.connLogs("10.0.0.3", "198.51.100.3", time.Hour, 2)           // too few
 	def := ModelDefinition{Beacon: &BeaconParams{StrobeLimit: 100000}}
-	ins, err := BuildNetStateInsert(def, "s", "logs", "", "f1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	d.exec(BuildNetStateTableDDL("s", 7), ins)
+	d.netState(def, 7)
 
-	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", 7, "") + scorerReadSettings())
+	w := netWindowAt(time.Now(), 7)
+	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", w, "") + scorerReadSettings())
 	if len(rows) != 1 || getString(rows[0], "src") != "10.0.0.1" {
 		t.Fatalf("gated pairs: %v", rows)
 	}
-	p := pairFromRow(rows[0], time.Now().Add(-8*24*time.Hour).Unix())
-	if len(p.TsList) < 7*netStateArrayCap || len(p.TsList) > 8*netStateArrayCap {
-		t.Errorf("%d points, want the daily cap on each of 7-8 days", len(p.TsList))
+	p := pairFromRow(rows[0], w.Start.Unix())
+	// The current hour may hold fewer than the cap.
+	if len(p.TsList) < 167*netStateHourCap || len(p.TsList) > 168*netStateHourCap {
+		t.Errorf("%d points, want the hourly cap on each of 167-168 hours", len(p.TsList))
 	}
 	if span := p.LastTs - p.FirstTs; span < 6*86400 {
 		t.Errorf("points span %v, want the whole window", time.Duration(span)*time.Second)
 	}
 	if len(p.SizeList) != len(p.TsList) {
 		t.Errorf("%d sizes for %d timestamps", len(p.SizeList), len(p.TsList))
+	}
+}
+
+// A beacon too busy to keep every point still keeps the earliest run of every
+// hour, so it covers all 24 hours of each day and its intervals stay its own.
+func TestCHBeaconStateCoversEveryHour(t *testing.T) {
+	d := newCHDB(t)
+	w := netWindowAt(time.Now(), 3)
+	d.connLogsAt("10.0.0.1", "198.51.100.1", w.Start, 10*time.Second, 3*8640, 1)
+	def := ModelDefinition{}
+	d.exec(BuildNetStateTableDDL("s", 3))
+	// One insert per day, latest first, as a catching-up maintainer might.
+	for day := 2; day >= 0; day-- {
+		from := w.Start.Add(time.Duration(day) * 24 * time.Hour)
+		where := fmt.Sprintf("timestamp >= '%s' AND timestamp < '%s'",
+			from.Format(chTimeLayout), from.Add(24*time.Hour).Format(chTimeLayout))
+		ins, err := BuildNetStateInsert(def, "s", "logs", where, "f1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.exec(ins)
+	}
+
+	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", w, "") + scorerReadSettings())
+	if len(rows) != 1 {
+		t.Fatalf("pairs: %v", rows)
+	}
+	p := pairFromRow(rows[0], w.Start.Unix())
+	if p.Count != 3*8640 {
+		t.Errorf("count %d, want every connection", p.Count)
+	}
+	hours := map[int64]int{}
+	for _, ts := range p.TsList {
+		hours[ts/3600]++
+	}
+	if len(hours) != 72 {
+		t.Errorf("points in %d hours, want all 72", len(hours))
+	}
+	for h, n := range hours {
+		if n != netStateHourCap {
+			t.Errorf("hour %v keeps %d points, want %d", time.Unix(h*3600, 0).UTC(), n, netStateHourCap)
+		}
+	}
+	rs := ScoreBeacon(p, def.Beacon.WithDefaults(3*86400), 3*86400)
+	if rs.TsScore < 0.99 || rs.HistScore < 0.99 || rs.DurScore < 0.99 {
+		t.Errorf("a 10s beacon scored %+v", rs)
+	}
+}
+
+// The gate counts the span the scorer scores: connections before the window
+// start neither qualify a pair nor push it over the strobe limit, and a long
+// connection before it adds no duration.
+func TestCHNetGateMatchesTheWindow(t *testing.T) {
+	d := newCHDB(t)
+	w := netWindowAt(time.Now(), 1)
+	before := w.Start.Add(-30 * time.Minute)
+	d.connLogsAt("10.0.0.1", "198.51.100.1", before, time.Minute, 10, 1) // qualifies on old points only
+	d.connLogsAt("10.0.0.1", "198.51.100.1", w.Start, time.Hour, 2, 1)
+	d.connLogsAt("10.0.0.2", "198.51.100.2", before, time.Second, 600, 1) // a burst before the window
+	d.connLogsAt("10.0.0.2", "198.51.100.2", w.Start, 10*time.Minute, 100, 1)
+	d.connLogsAt("10.0.0.3", "198.51.100.3", before, time.Minute, 1, 7200) // long, but before
+	d.connLogsAt("10.0.0.3", "198.51.100.3", w.Start, time.Minute, 1, 60)
+	d.connLogsAt("10.0.0.4", "198.51.100.4", w.Start, time.Minute, 1, 7200)
+	d.connLogsAt("10.0.0.5", "198.51.100.5", before, time.Minute, 1, 1) // seen only before
+
+	def := ModelDefinition{Beacon: &BeaconParams{StrobeLimit: 500}}
+	d.netState(def, 1)
+
+	pairs := func(mt ModelType) map[string]PairAgg {
+		out := map[string]PairAgg{}
+		for _, r := range d.rows(BuildNetScoreReadQuery(def, mt, "s", "f1", w, "") + scorerReadSettings()) {
+			p := pairFromRow(r, w.Start.Unix())
+			out[p.Src] = p
+		}
+		return out
+	}
+	beacons := pairs(ModelTypeBeacon)
+	if _, ok := beacons["10.0.0.1"]; ok {
+		t.Error("a pair qualified on connections before the window")
+	}
+	if p, ok := beacons["10.0.0.2"]; !ok || p.Count != 100 || len(p.TsList) != 100 {
+		t.Errorf("a pair under the strobe limit in the window: %+v (present %v)", p, ok)
+	}
+	long := pairs(ModelTypeLongConnection)
+	if _, ok := long["10.0.0.3"]; ok {
+		t.Error("a long connection before the window qualified")
+	}
+	if p, ok := long["10.0.0.4"]; !ok || p.TotalDuration != 7200 {
+		t.Errorf("a long connection in the window: %+v (present %v)", p, ok)
+	}
+
+	if rows := d.rows(BuildNetNetworkSizeQuery("s", "f1", w)); getUint64(rows[0], "network_size") != 4 {
+		t.Errorf("network size %v, want the 4 sources in the window", rows)
+	}
+	for _, r := range d.rows(BuildNetPrevalenceQuery("s", "f1", w)) {
+		if getString(r, "dst") == "198.51.100.5" {
+			t.Error("prevalence counted a destination seen only before the window")
+		}
 	}
 }
 
@@ -329,6 +444,54 @@ func TestCHEnsureStateLayoutChecksTheDistributedTable(t *testing.T) {
 	}
 }
 
+// A network state table left in an older layout is recreated in the current
+// one, and one already current keeps its rows.
+func TestCHEnsureNetStateLayout(t *testing.T) {
+	d := newCHDB(t)
+	m := &Manager{ch: d.c}
+	ctx := context.Background()
+	state := chModelStateName("m1")
+	d.exec(fmt.Sprintf("CREATE TABLE `%s` (fractal_id String, day Date, ts_state AggregateFunction(groupArray(2000), UInt32)) ENGINE = AggregatingMergeTree ORDER BY (fractal_id, day)", state))
+	if ok, err := m.netStateLayoutOK(ctx, "m1"); err != nil || ok {
+		t.Fatalf("an old layout passed: %v %v", ok, err)
+	}
+	if err := m.ensureNetStateLayout(ctx, "m1", 7); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := m.netStateLayoutOK(ctx, "m1"); err != nil || !ok {
+		t.Fatalf("recreated layout: %v %v", ok, err)
+	}
+	d.exec(fmt.Sprintf("INSERT INTO `%s` (fractal_id, src, dst, port, hour, conn_count) VALUES ('f1', 'a', 'b', '443', now(), 1)", state))
+	if err := m.ensureNetStateLayout(ctx, "m1", 7); err != nil {
+		t.Fatal(err)
+	}
+	if rows := d.rows(fmt.Sprintf("SELECT count() AS n FROM `%s`", state)); getUint64(rows[0], "n") != 1 {
+		t.Error("a current state table was recreated")
+	}
+}
+
+// On a cluster a Distributed state companion in the old layout is a mismatch
+// too, and is dropped so it can be recreated over the current table.
+func TestCHEnsureNetStateLayoutChecksTheDistributedTable(t *testing.T) {
+	d := newCHDB(t)
+	topo := storage.Topology{DistributedTables: true, FanoutCluster: "default"}
+	m := &Manager{ch: storage.NewClickHouseClientFromConn(d.c.Conn(), d.db, topo)}
+	ctx := context.Background()
+	state, dist := chModelStateName("m1"), chModelStateDistName("m1")
+	d.exec(BuildNetStateTableDDL("`"+state+"`", 7),
+		"CREATE TABLE t_old (fractal_id String, day Date) ENGINE = MergeTree ORDER BY day",
+		fmt.Sprintf("CREATE TABLE `%s` AS t_old ENGINE = Distributed('default', currentDatabase(), t_old)", dist))
+	if ok, err := m.netStateLayoutOK(ctx, "m1"); err != nil || ok {
+		t.Fatalf("an old Distributed companion passed: %v %v", ok, err)
+	}
+	if err := m.ensureNetStateLayout(ctx, "m1", 7); err != nil {
+		t.Fatal(err)
+	}
+	if rows := d.rows("SELECT name FROM system.tables WHERE database = currentDatabase() AND name = '" + dist + "'"); len(rows) != 0 {
+		t.Error("the old Distributed companion was kept")
+	}
+}
+
 // Every state insert path writes into the table its definition creates.
 func TestCHStateInsertsMatchTheirTables(t *testing.T) {
 	d := newCHDB(t)
@@ -371,9 +534,9 @@ func TestCHBeaconModifierReads(t *testing.T) {
 	d.connLogs("10.0.0.1", "203.0.113.10", time.Minute, 600)
 	d.connLogs("10.0.0.2", "198.51.100.20", time.Minute, 600)
 	def := ModelDefinition{}
-	ins, _ := BuildNetStateInsert(def, "s", "logs", "", "f1")
-	d.exec(BuildNetStateTableDDL("s", 1), ins,
-		"CREATE TABLE iocs (ip String) ENGINE = MergeTree ORDER BY ip",
+	d.netState(def, 1)
+	w := netWindowAt(time.Now(), 1)
+	d.exec("CREATE TABLE iocs (ip String) ENGINE = MergeTree ORDER BY ip",
 		"INSERT INTO iocs VALUES ('203.0.113.10')",
 		fmt.Sprintf(`CREATE DICTIONARY d_ioc (ip String) PRIMARY KEY ip
 SOURCE(CLICKHOUSE(TABLE 'iocs' DB '%s' USER 'default' PASSWORD '%s')) LAYOUT(COMPLEX_KEY_HASHED()) LIFETIME(0)`, d.db, d.pass))
@@ -382,7 +545,7 @@ SOURCE(CLICKHOUSE(TABLE 'iocs' DB '%s' USER 'default' PASSWORD '%s')) LAYOUT(COM
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", 1, hit) + scorerReadSettings())
+	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", w, hit) + scorerReadSettings())
 	for _, r := range rows {
 		p := pairFromRow(r, 0)
 		if want := p.Dst == "203.0.113.10"; p.ThreatIntelHit != want {
@@ -397,7 +560,7 @@ SOURCE(CLICKHOUSE(TABLE 'iocs' DB '%s' USER 'default' PASSWORD '%s')) LAYOUT(COM
 	fsDDL, _ := GenerateDDL(fsDef, ModelTypeFirstSeen, "fs")
 	fsIns, _ := BuildBackfillInsert(fsDef, ModelTypeFirstSeen, "fs", "logs", "", "f1")
 	d.exec(fsDDL, fsIns)
-	fs := d.rows(firstSeenContextSQL("fs", "f1", false, BuildNetPairsQuery(def, ModelTypeBeacon, "s", "f1", 1)))
+	fs := d.rows(firstSeenContextSQL("fs", "f1", false, BuildNetPairsQuery(def, ModelTypeBeacon, "s", "f1", w)))
 	if len(fs) != 2 {
 		t.Fatalf("first sightings: %v", fs)
 	}

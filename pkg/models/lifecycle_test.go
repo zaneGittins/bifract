@@ -117,7 +117,7 @@ func TestCreateNetworkModel(t *testing.T) {
 		}
 	}
 	stateDDL := stmtsFor(env.ch, state)[0]
-	if !strings.Contains(stateDDL, "TTL day + INTERVAL 9 DAY") || !strings.Contains(stateDDL, "ReplicatedAggregatingMergeTree") {
+	if !strings.Contains(stateDDL, "TTL hour + INTERVAL 9 DAY") || !strings.Contains(stateDDL, "ReplicatedAggregatingMergeTree") {
 		t.Errorf("a 7d window keeps 9 days of state: %s", stateDDL)
 	}
 	for _, s := range env.ch.Executed() {
@@ -615,6 +615,25 @@ func TestReconcileCHObjects(t *testing.T) {
 	env.mgr.ReconcileCHObjects(context.Background())
 	if after := env.ch.Executed(); len(after) != before {
 		t.Errorf("not idempotent: %v", after[before:])
+	}
+}
+
+// Startup rebuilds a network model's state table left in an older layout.
+func TestReconcileCHObjectsRebuildsOldNetState(t *testing.T) {
+	env := newEnv(t)
+	r := seedModel(env, ModelTypeBeacon, ModelDefinition{}, nil)
+	env.ch.existing[r.chTable] = true
+	env.ch.On("countIf(name = 'points'", fakedb.Count(1))
+
+	env.mgr.ReconcileCHObjects(context.Background())
+
+	state := chModelStateName(r.id)
+	if len(env.ch.ExecutedMatching("DROP TABLE IF EXISTS `"+state+"` SYNC")) != 1 ||
+		len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `"+state+"`")) != 1 {
+		t.Errorf("old state table not rebuilt: %v", env.ch.Executed())
+	}
+	if len(env.ch.ExecutedMatching("`"+r.chTable+"`")) != 0 {
+		t.Error("the results table was touched")
 	}
 }
 

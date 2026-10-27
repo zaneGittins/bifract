@@ -254,39 +254,38 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	windowDays := m.def.WindowDays()
 	windowSecs := int64(windowDays) * 86400
 	stateRead := e.mgr.networkStateReadTable(m.id)
+	now := time.Now()
+	win := netWindowAt(now, windowDays)
 
 	// Prevalence context: distinct-source count per destination, and the total
 	// distinct-source count (network size) as the denominator.
-	networkSize, err := e.readNetworkSize(ctx, stateRead, m.fractalID, windowDays)
+	networkSize, err := e.readNetworkSize(ctx, stateRead, m.fractalID, win)
 	if err != nil {
 		return fmt.Errorf("network size: %w", err)
 	}
 	if networkSize == 0 {
 		return nil // warming up: no state yet
 	}
-	prevalence, err := e.readPrevalence(ctx, stateRead, m.fractalID, windowDays)
+	prevalence, err := e.readPrevalence(ctx, stateRead, m.fractalID, win)
 	if err != nil {
 		return fmt.Errorf("prevalence: %w", err)
 	}
 
-	now := time.Now()
-
 	// Modifier context the model links; what cannot be read scores 0.
 	fs, warnings := e.mgr.loadFirstSeen(ctx, m.fractalID, m.def,
-		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays), "", now)
+		BuildNetPairsQuery(m.def, m.modelType, stateRead, m.fractalID, win), "", now)
 	ti, tiWarnings := e.mgr.threatIntelColumn(ctx, m.fractalID, m.def)
 	e.warnModifiers(m.id, append(warnings, tiWarnings...))
 
 	bp := m.def.Beacon.WithDefaults(windowSecs)
 	lc := m.def.LongConn.WithDefaults()
 	mp := m.def.Modifiers.WithDefaults()
-	cutoff := now.Unix() - windowSecs
 
 	buf := newResultBuffer(e.ch, m.tableName)
 	var count int
 	truncated := false
 
-	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, windowDays, ti) + scorerReadSettings()
+	readSQL := BuildNetScoreReadQuery(m.def, m.modelType, stateRead, m.fractalID, win, ti) + scorerReadSettings()
 	streamErr := e.ch.StreamQuery(ctx, "", readSQL, func(row map[string]interface{}) error {
 		if count >= scorerPerModelPairCap {
 			truncated = true
@@ -294,7 +293,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		}
 		count++
 
-		p := pairFromRow(row, cutoff)
+		p := pairFromRow(row, win.Start.Unix())
 		if !p.inWindow() {
 			return nil
 		}
@@ -339,18 +338,18 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	return nil
 }
 
-func (e *ScorerEngine) readNetworkSize(ctx context.Context, stateRead, fractalID string, windowDays int) (uint64, error) {
+func (e *ScorerEngine) readNetworkSize(ctx context.Context, stateRead, fractalID string, w NetWindow) (uint64, error) {
 	var n uint64
-	err := e.ch.QueryRow(ctx, BuildNetNetworkSizeQuery(stateRead, fractalID, windowDays)).Scan(&n)
+	err := e.ch.QueryRow(ctx, BuildNetNetworkSizeQuery(stateRead, fractalID, w)).Scan(&n)
 	if err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
-func (e *ScorerEngine) readPrevalence(ctx context.Context, stateRead, fractalID string, windowDays int) (map[string]uint64, error) {
+func (e *ScorerEngine) readPrevalence(ctx context.Context, stateRead, fractalID string, w NetWindow) (map[string]uint64, error) {
 	out := make(map[string]uint64)
-	err := e.ch.StreamQuery(ctx, "", BuildNetPrevalenceQuery(stateRead, fractalID, windowDays),
+	err := e.ch.StreamQuery(ctx, "", BuildNetPrevalenceQuery(stateRead, fractalID, w),
 		func(row map[string]interface{}) error {
 			out[getString(row, "dst")] = getUint64(row, "prev_total")
 			return nil
@@ -419,14 +418,12 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 // ---- row -> PairAgg ----
 
 // pairFromRow builds a PairAgg from a state-read row, sorting timestamps ascending
-// and trimming them to the exact window (cutoff = now - windowSecs).
+// and trimming them to the window from cutoff.
 func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
 	ts := getInt64Slice(row, "ts_list")
 	sizes := getFloat64Slice(row, "size_list")
-	// size_list is parallel to ts_list, and groupArray keeps neither in time
-	// order, so they are sorted together: sorting ts alone and trimming sizes by
-	// the same index kept whichever sizes happened to sit at the tail, not the
-	// ones belonging to the connections inside the window.
+	// size_list is parallel to ts_list, and the hours arrive in no order, so
+	// they are sorted together to keep each size with its connection.
 	if len(sizes) == len(ts) {
 		sort.Sort(tsSizes{ts, sizes})
 	} else {

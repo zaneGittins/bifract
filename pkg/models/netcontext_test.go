@@ -98,7 +98,7 @@ func TestFirstSeenContextSQL(t *testing.T) {
 }
 
 func TestNetPairsQueriesAreGated(t *testing.T) {
-	mustContain(t, BuildNetPairsQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f", 7),
+	mustContain(t, BuildNetPairsQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f", testWindow),
 		"HAVING sum(conn_count) >= 4 AND sum(conn_count) < 604800", "scorer pairs")
 	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(86400, 0), Days: 1}
 	prev, err := BuildNetPreviewPairs(ModelDefinition{}, ModelTypeLongConnection, "logs", "f", b)
@@ -110,12 +110,12 @@ func TestNetPairsQueriesAreGated(t *testing.T) {
 
 // Threat intel is a column of the pair read itself, never a query of its own.
 func TestThreatIntelIsAPairReadColumn(t *testing.T) {
-	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f", 7, "dictHas('d', dst)")
+	read := BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f", testWindow, "dictHas('d', dst)")
 	mustContain(t, read, "toUInt64(dictHas('d', dst)) AS ti_hit", "score read")
 	b := NetPreviewBounds{Start: time.Unix(0, 0), End: time.Unix(86400, 0), Days: 1}
 	prev, _ := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f", b, "dictHas('d', dst)")
 	mustContain(t, prev, "AS ti_hit", "preview read")
-	mustNotContain(t, BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f", 7, ""), "ti_hit", "no link")
+	mustNotContain(t, BuildNetScoreReadQuery(ModelDefinition{}, ModelTypeBeacon, "`s`", "f", testWindow, ""), "ti_hit", "no link")
 	if p := pairFromRow(map[string]interface{}{"ti_hit": uint64(1), "ts_list": []uint32{1}}, 0); !p.ThreatIntelHit {
 		t.Error("ti_hit not read")
 	}

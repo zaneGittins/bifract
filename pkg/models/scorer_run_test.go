@@ -52,7 +52,7 @@ func TestScorerLongConnectionEndToEnd(t *testing.T) {
 	old := now - 2*86400
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(100)))
 	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1, "10.0.0.53": 60, "198.51.100.7": 10, "192.0.2.9": 1}))
-	env.ch.On("groupArrayMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+	env.ch.On("groupArraySortedMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
 		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{now - 600, now - 7200, now - 3600}, []float64{1, 1, 1}, 28800),
 		statePair("10.1.1.2", "10.0.0.53", 2, []uint32{now - 60, now - 120}, []float64{5, 5}, 50000),
 		statePair("10.1.1.3", "198.51.100.7", 1, []uint32{now - 60}, []float64{1}, 14400),
@@ -113,7 +113,7 @@ func TestScorerLongConnectionEndToEnd(t *testing.T) {
 func TestScorerPerfectBeacon(t *testing.T) {
 	env, e, _ := scorerEnv(t, true, ModelTypeBeacon, ModelDefinition{})
 	now := time.Now().Unix()
-	start := now - 23*3600 - 1800
+	start := now - now%3600 - 23*3600
 	var ts []uint32
 	var sizes []float64
 	for i := 23; i >= 0; i-- {
@@ -122,7 +122,7 @@ func TestScorerPerfectBeacon(t *testing.T) {
 	}
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(100)))
 	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1}))
-	env.ch.On("groupArrayMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
+	env.ch.On("groupArraySortedMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
 		statePair("10.1.1.1", "203.0.113.5", 24, ts, sizes, 0),
 	}})
 	e.scoreCycle()
@@ -174,16 +174,16 @@ func TestScorerCursorOnlyAdvancesOnSuccess(t *testing.T) {
 		},
 		"state read fails": func(env *fakeEnv) {
 			env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(5)))
-			env.ch.On("groupArrayMerge", fakedb.CHResult{Cols: stateCols, IterErr: errors.New("connection reset")})
+			env.ch.On("groupArraySortedMerge", fakedb.CHResult{Cols: stateCols, IterErr: errors.New("connection reset")})
 		},
 		"insert fails": func(env *fakeEnv) {
 			env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(5)))
-			env.ch.On("groupArrayMerge", pair)
+			env.ch.On("groupArraySortedMerge", pair)
 			env.ch.OnBatch = func(b *fakedb.Batch) { b.SendErr = errors.New("too many parts") }
 		},
 		"insert cannot be prepared": func(env *fakeEnv) {
 			env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(5)))
-			env.ch.On("groupArrayMerge", pair)
+			env.ch.On("groupArraySortedMerge", pair)
 			env.ch.PrepareErr = errors.New("no such table")
 		},
 	}
@@ -225,7 +225,7 @@ func TestScorerPairCap(t *testing.T) {
 		res.Rows[i] = statePair("10.0.0.1", "10.9.9.9", 1, ts, []float64{1}, 30000)
 	}
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(5)))
-	env.ch.On("groupArrayMerge", res)
+	env.ch.On("groupArraySortedMerge", res)
 	e.scoreCycle()
 	total := 0
 	for _, b := range env.ch.Batches() {
