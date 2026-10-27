@@ -3,6 +3,8 @@ package chat
 import (
 	"encoding/json"
 	"time"
+
+	"bifract/pkg/llm"
 )
 
 // Conversation is a named LLM chat session scoped to a fractal or prism.
@@ -57,61 +59,14 @@ type Instruction struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// LiteLLM API types
-
-type llmMessage struct {
-	Role       string          `json:"role"`
-	Content    interface{}     `json:"content"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
-	Name       string          `json:"name,omitempty"`
-}
-
-type llmToolCall struct {
-	Index    int             `json:"index"`
-	ID       string          `json:"id"`
-	Type     string          `json:"type"`
-	Function llmToolFunction `json:"function"`
-}
-
-type llmToolFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type llmRequest struct {
-	Model      string       `json:"model"`
-	Messages   []llmMessage `json:"messages"`
-	Tools      []llmTool    `json:"tools"`
-	Stream     bool         `json:"stream"`
-	ToolChoice string       `json:"tool_choice,omitempty"`
-}
-
-type llmTool struct {
-	Type     string      `json:"type"`
-	Function llmFunction `json:"function"`
-}
-
-type llmFunction struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Parameters  interface{} `json:"parameters"`
-}
-
-type llmStreamChunk struct {
-	Choices []llmStreamChoice `json:"choices"`
-}
-
-type llmStreamChoice struct {
-	Delta        llmDelta `json:"delta"`
-	FinishReason string   `json:"finish_reason"`
-}
-
-type llmDelta struct {
-	Role      string        `json:"role"`
-	Content   *string       `json:"content"`
-	ToolCalls []llmToolCall `json:"tool_calls,omitempty"`
-}
+// The model wire format is OpenAI-shaped; tool calls are stored in it.
+type (
+	llmMessage      = llm.Message
+	llmToolCall     = llm.ToolCall
+	llmToolFunction = llm.FunctionCall
+	llmTool         = llm.Tool
+	llmFunction     = llm.Function
+)
 
 type presentResultsArgs struct {
 	Summary  string           `json:"summary"`

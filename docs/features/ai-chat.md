@@ -4,28 +4,26 @@ An assistant inside each fractal that answers questions by running BQL against y
 
 ## Set up
 
-Chat runs through a [LiteLLM](https://docs.litellm.ai/) container that ships with Bifract. It needs an API key for one provider.
+Bifract calls the model provider directly. It supports Anthropic, OpenAI and Google Gemini, and needs an API key for one of them.
 
-1. In your install directory, set the key in `.env`:
+1. In your install directory, set the provider (`anthropic`, `openai` or `gemini`) in `.env`:
 
     ```bash
-    LITELLM_API_KEY=<your provider key>
+    BIFRACT_LLM_PROVIDER=anthropic
+    BIFRACT_LLM_API_KEY=<your provider key>
+    BIFRACT_LLM_MODEL=claude-haiku-4-5-20251001
     ```
 
-2. Optionally change the model in `litellm-config.yaml`. The default is `anthropic/claude-haiku-4-5-20251001`. Keep `model_name: bifract-chat`; Bifract asks for that name.
+    `BIFRACT_LLM_MODEL` is optional for Anthropic (the default is `claude-haiku-4-5-20251001`) and required for OpenAI and Gemini, for example `gpt-4.1-mini` or `gemini-2.5-flash`.
 
-    ```yaml
-    model_list:
-      - model_name: bifract-chat
-        litellm_params:
-          model: openai/gpt-4o-mini
-          api_key: os.environ/LITELLM_API_KEY
-          drop_params: true
-    ```
+2. Restart: `docker compose up -d`.
 
-3. Restart: `docker compose up -d`.
+To use an OpenAI-compatible server such as Ollama or vLLM, set `BIFRACT_LLM_PROVIDER=openai` and point `BIFRACT_LLM_BASE_URL` at it, for example `http://ollama:11434/v1`. The key is still required; any value works if the server ignores it.
 
-Any LiteLLM provider works. LiteLLM listens only on the internal Docker network.
+On Kubernetes, set `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_BASE_URL` in `bifract-secrets`.
+
+!!! note
+    Earlier versions ran a LiteLLM container. `--upgrade` and `--upgrade-k8s` carry its key, model and endpoint over and remove it; the old config is kept in `.backups`. Run the upgrade before `--reconfigure`, which refuses while LiteLLM is still installed.
 
 ## Ask a question
 

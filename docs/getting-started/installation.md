@@ -88,7 +88,6 @@ graph TB
         archiver["Archiver + Maintainer<br/><small>Iceberg Archive (off by default)</small>"]
         pg[("PostgreSQL<br/><small>Users, Config, Alerts</small>")]
         ch[("ClickHouse<br/><small>Log Storage</small>")]
-        litellm["LiteLLM<br/><small>AI Proxy</small>"]
     end
 
     users -- "HTTPS :443" --> caddy
@@ -101,8 +100,7 @@ graph TB
     ingest --> pg
     ingest --> ch
     ingest -. "spool" .-> archiver
-    app --> litellm
-    litellm -. "OpenAI / Anthropic API" .-> ext["LLM Providers"]
+    app -. "AI chat" .-> ext["LLM Provider"]
 ```
 
 The app and ingest tiers are separate containers, so ingest can be scaled or paused without affecting the UI.

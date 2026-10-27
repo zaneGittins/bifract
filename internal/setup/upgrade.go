@@ -94,6 +94,7 @@ func RunUpgrade(dir string) error {
 		{envPath, ".env"},
 		{composePath, "docker-compose.yml"},
 		{filepath.Join(dir, "caddy", "Caddyfile"), "Caddyfile"},
+		{filepath.Join(dir, legacyLiteLLMConfigFile), legacyLiteLLMConfigFile},
 	}
 	for _, bf := range backupFiles {
 		if err := copyFile(bf.src, filepath.Join(backupDir, bf.name)); err != nil && !os.IsNotExist(err) {
@@ -141,8 +142,8 @@ func RunUpgrade(dir string) error {
 		cfg.IngestPostgresPassword = pw
 		printDone("Generated least-privilege ingest Postgres password")
 	}
-	if v, ok := existingEnv["LITELLM_MASTER_KEY"]; ok {
-		cfg.LiteLLMMasterKey = v
+	if warn := migrateLiteLLM(existingEnv, "BIFRACT_", filepath.Join(dir, legacyLiteLLMConfigFile)); warn != "" {
+		printWarn(warn)
 	}
 	if v, ok := existingEnv["BIFRACT_DOMAIN"]; ok {
 		cfg.Domain = v
@@ -233,7 +234,7 @@ func RunUpgrade(dir string) error {
 	envContent := RenderEnvFile(cfg)
 	// Preserve manually-configured keys not managed by the setup wizard.
 	preserveKeys := []string{
-		"LITELLM_API_KEY",
+		"BIFRACT_LLM_PROVIDER", "BIFRACT_LLM_API_KEY", "BIFRACT_LLM_MODEL", "BIFRACT_LLM_BASE_URL",
 		"MAXMIND_LICENSE_KEY", "MAXMIND_ACCOUNT_ID", "MAXMIND_EDITION_IDS",
 		"BIFRACT_BASE_URL",
 		"BIFRACT_OIDC_ISSUER_URL", "BIFRACT_OIDC_CLIENT_ID", "BIFRACT_OIDC_CLIENT_SECRET",
@@ -258,6 +259,7 @@ func RunUpgrade(dir string) error {
 	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
 		return fmt.Errorf("write .env: %w", err)
 	}
+	removeLegacyLiteLLMConfig(dir)
 
 	caddyfile, err := RenderCaddyfile(cfg)
 	if err != nil {

@@ -10,7 +10,7 @@ Bifract is configured with environment variables. The installer generates them, 
     - Anything else: `cd /opt/bifract && sudo docker compose up -d`.
 
 !!! warning
-    `--reconfigure` and `--upgrade` rewrite `.env`. They keep the installer's own keys plus `LITELLM_API_KEY`, `MAXMIND_*`, `BIFRACT_BASE_URL`, `BIFRACT_OIDC_*`, `BIFRACT_ARCHIVE_*` (except `*_MAINTAIN_*`) and `BIFRACT_DASHBOARD_*`, and drop anything else, such as `BIFRACT_INGEST_*` tuning and the `*_MEM_LIMIT` values. Re-add those afterwards.
+    `--reconfigure` and `--upgrade` rewrite `.env`. They keep the installer's own keys plus `BIFRACT_LLM_*`, `MAXMIND_*`, `BIFRACT_BASE_URL`, `BIFRACT_OIDC_*`, `BIFRACT_ARCHIVE_*` (except `*_MAINTAIN_*`) and `BIFRACT_DASHBOARD_*`, and drop anything else, such as `BIFRACT_INGEST_*` tuning and the `*_MEM_LIMIT` values. Re-add those afterwards.
 
 ## Variables
 
@@ -34,7 +34,7 @@ Bifract is configured with environment variables. The installer generates them, 
 | `BIFRACT_BASE_URL` | `https://<domain>` | Base URL used in alert links and as the OIDC redirect base |
 | `BIFRACT_MEM_LIMIT` | `4g` | Memory limit of the app container |
 | `BIFRACT_INGEST_MEM_LIMIT` | `4g` | Memory limit of the ingest container |
-| `LITELLM_API_KEY` | empty | LLM provider key for [AI Chat](../features/ai-chat.md) |
+| `BIFRACT_LLM_PROVIDER`, `BIFRACT_LLM_API_KEY`, `BIFRACT_LLM_MODEL`, `BIFRACT_LLM_BASE_URL` | `anthropic`, empty | Model provider for [AI Chat](../features/ai-chat.md) |
 | `BIFRACT_OIDC_*` | empty | Single sign-on. See [OIDC / SSO](../administration/oidc-sso.md). |
 | `BIFRACT_S3_*` | empty | Off-host PostgreSQL backups. See [Backup & Restore](../administration/backup-restore.md). |
 | `BIFRACT_ARCHIVE_*` | archive off | Iceberg archive. See [Iceberg Archive](../administration/backup-restore.md#iceberg-archive). |
@@ -48,7 +48,7 @@ Bifract is configured with environment variables. The installer generates them, 
 | `BIFRACT_PASSWORD_PEPPER` | Mixed into every password hash; changing it locks out all local users |
 | `BIFRACT_FEED_ENCRYPTION_KEY` | Encrypts Git credentials for alert feeds |
 | `BIFRACT_BACKUP_ENCRYPTION_KEY` | Encrypts PostgreSQL backups; without it they cannot be restored |
-| `POSTGRES_PASSWORD`, `CLICKHOUSE_PASSWORD`, `BIFRACT_INGEST_*_PASSWORD`, `LITELLM_MASTER_KEY` | Database and service credentials already stored in those services |
+| `POSTGRES_PASSWORD`, `CLICKHOUSE_PASSWORD`, `BIFRACT_INGEST_*_PASSWORD` | Database and service credentials already stored in those services |
 
 !!! note
     The full list of variables the server reads, with comments, is in [`.env.example`](https://github.com/zaneGittins/bifract/blob/main/.env.example). The installer's Compose file fixes some of them (database hosts, ports, `BIFRACT_MAX_QUERY_ROWS`), so setting those in `.env` has no effect on a wizard install.

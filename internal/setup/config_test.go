@@ -278,7 +278,6 @@ func TestRenderEnvFileRoundTrips(t *testing.T) {
 		"CLICKHOUSE_PASSWORD":                "Ext3rnal@pw",
 		"BIFRACT_INGEST_POSTGRES_PASSWORD":   cfg.IngestPostgresPassword,
 		"BIFRACT_INGEST_CLICKHOUSE_PASSWORD": cfg.IngestClickHousePassword,
-		"LITELLM_MASTER_KEY":                 cfg.LiteLLMMasterKey,
 		"BIFRACT_SECURE_COOKIES":             "true",
 		"BIFRACT_CORS_ORIGINS":               "https://logs.example.com",
 		"BIFRACT_SSL_MODE":                   "letsencrypt",

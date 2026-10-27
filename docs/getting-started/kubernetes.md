@@ -19,7 +19,6 @@ graph TB
         caddy["Caddy (LoadBalancer)<br/><small>Reverse Proxy + TLS + Log Shipper</small>"]
         app["Bifract App x1<br/><small>UI + Query + Alerts</small>"]
         ingest["Bifract Ingest<br/><small>Ingestion (independently scalable)</small>"]
-        litellm["LiteLLM<br/><small>AI Proxy</small>"]
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
 
         subgraph ch ["ClickHouse Cluster (Operator-managed)"]
@@ -42,7 +41,6 @@ graph TB
     app -->|"Distributed table"| ch
     ingest -->|"Distributed table"| ch
     ingest -->|"copy of every log"| iceberg
-    app --> litellm
     shard0 & shard1 & shard2 --> keeper
 ```
 
@@ -92,7 +90,7 @@ ClickHouse is sharded for throughput but not replicated: each shard is one repli
     kubectl -n bifract get pods -w
     ```
 
-    Expect PostgreSQL, ClickHouse Keeper, one ClickHouse pod per shard, the Bifract app, Bifract ingest, the archive maintainer, Caddy (with a log shipper sidecar) and LiteLLM. ClickHouse pods can take a minute while the operator creates them.
+    Expect PostgreSQL, ClickHouse Keeper, one ClickHouse pod per shard, the Bifract app, Bifract ingest, the archive maintainer, and Caddy (with a log shipper sidecar). ClickHouse pods can take a minute while the operator creates them.
 
 5. Get Caddy's external IP and create a DNS A record for your domain pointing at it:
 
@@ -130,7 +128,7 @@ kubectl -n bifract rollout restart deployment bifract
 | [Backups](../administration/backup-restore.md) | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | `deployment bifract` |
 | [Iceberg archive](../administration/backup-restore.md#iceberg-archive) | `ARCHIVE_ENABLED`, `ARCHIVE_BACKEND`, `ARCHIVE_PREFIX`, `ARCHIVE_S3_*` or `ARCHIVE_AZURE_*` | `deployment bifract`, `statefulset bifract-ingest`, `deployment bifract-archive-maintain` |
 | [GeoIP enrichment](../bql/field-operations.md) | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | `deployment bifract` |
-| [AI Chat](../features/ai-chat.md) | `LITELLM_API_KEY` | `deployment litellm` |
+| [AI Chat](../features/ai-chat.md) | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | `deployment bifract` |
 
 `--upgrade-k8s` and `--reconfigure-k8s` copy values you set with `kubectl edit` back into the manifests, as long as `kubectl` can reach the cluster when you run them.
 

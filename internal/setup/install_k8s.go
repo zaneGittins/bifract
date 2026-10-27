@@ -55,7 +55,6 @@ type SizeProfile struct {
 	Postgres        ResourceProfile
 	Caddy           ResourceProfile
 	CaddyShipper    ResourceProfile
-	LiteLLM         ResourceProfile
 	IngestQueueSize int
 
 	// IngestWorkers is how many inserts run against ClickHouse concurrently per ingest pod.
@@ -144,7 +143,6 @@ var sizeProfiles = []SizeProfile{
 		Postgres:                  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:                     ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:                   ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 		IngestQueueSize:           100,
 		IngestWorkers:             4,
 		ArchiveMaintainByteBudget: 1 << 30,
@@ -164,7 +162,6 @@ var sizeProfiles = []SizeProfile{
 		Postgres:                  ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 		Caddy:                     ResourceProfile{"100m", "500m", "128Mi", "256Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:                   ResourceProfile{"100m", "500m", "512Mi", "1Gi"},
 		IngestQueueSize:           200,
 		IngestWorkers:             8,
 		ArchiveMaintainByteBudget: 2 << 30,
@@ -184,7 +181,6 @@ var sizeProfiles = []SizeProfile{
 		Postgres:                  ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		Caddy:                     ResourceProfile{"200m", "1", "256Mi", "512Mi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:                   ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		IngestQueueSize:           300,
 		IngestWorkers:             12,
 		ArchiveMaintainByteBudget: 4 << 30,
@@ -204,7 +200,6 @@ var sizeProfiles = []SizeProfile{
 		Postgres:                  ResourceProfile{"500m", "2", "1Gi", "4Gi"},
 		Caddy:                     ResourceProfile{"250m", "1", "256Mi", "1Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:                   ResourceProfile{"250m", "1", "512Mi", "1Gi"},
 		IngestQueueSize:           500,
 		IngestWorkers:             24,
 		ArchiveMaintainByteBudget: 8 << 30,
@@ -224,7 +219,6 @@ var sizeProfiles = []SizeProfile{
 		Postgres:                  ResourceProfile{"1", "4", "2Gi", "8Gi"},
 		Caddy:                     ResourceProfile{"500m", "2", "512Mi", "1Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "100m", "32Mi", "64Mi"},
-		LiteLLM:                   ResourceProfile{"500m", "1", "1Gi", "1Gi"},
 		IngestQueueSize:           1000,
 		IngestWorkers:             32,
 		ArchiveMaintainByteBudget: 32 << 30,
@@ -244,7 +238,6 @@ var sizeProfiles = []SizeProfile{
 		Postgres:                  ResourceProfile{"2", "4", "4Gi", "16Gi"},
 		Caddy:                     ResourceProfile{"1", "4", "1Gi", "2Gi"},
 		CaddyShipper:              ResourceProfile{"10m", "200m", "32Mi", "128Mi"},
-		LiteLLM:                   ResourceProfile{"500m", "2", "1Gi", "2Gi"},
 		IngestQueueSize:           2000,
 		IngestWorkers:             48,
 		ArchiveMaintainByteBudget: 96 << 30,
@@ -267,7 +260,7 @@ type K8sConfig struct {
 	MTLSCAKey    string // PEM-encoded CA key for signing client certs
 
 	// UserSecrets holds optional user-configured secrets that are not
-	// managed by the setup wizard (e.g. LITELLM_API_KEY, OIDC settings).
+	// managed by the setup wizard (e.g. LLM_API_KEY, OIDC settings).
 	// Preserved during upgrades, empty on fresh installs.
 	UserSecrets map[string]string
 
@@ -1130,7 +1123,6 @@ func RunInstallK8s(opts InstallOptions) error {
 		filepath.Join(cfg.OutputDir, "postgres"),
 		filepath.Join(cfg.OutputDir, "bifract"),
 		filepath.Join(cfg.OutputDir, "caddy"),
-		filepath.Join(cfg.OutputDir, "litellm"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
@@ -1229,7 +1221,6 @@ type k8sTemplateData struct {
 	AdminPasswordHash        string
 	FeedEncryptionKey        string
 	BackupEncryptionKey      string
-	LiteLLMMasterKey         string
 	IPBlock                  string
 	IPBlockIngest            string
 	MTLSEnabled              bool
@@ -1247,7 +1238,6 @@ type k8sTemplateData struct {
 	PostgresRes        ResourceProfile
 	CaddyRes           ResourceProfile
 	CaddyShipper       ResourceProfile
-	LiteLLMRes         ResourceProfile
 
 	// User-configured secrets (preserved during upgrades, empty on fresh install)
 	UserSecrets map[string]string
@@ -1255,13 +1245,12 @@ type k8sTemplateData struct {
 	// ImagePullSecrets preserves manually-added pull secret names across upgrades.
 	ImagePullSecrets []string
 
-	// Config hashes stamped onto the pods that mount the matching ConfigMap.
-	// Both are mounted with subPath, which kubelet never updates in place, and an
+	// Config hash stamped onto the pods that mount the Caddy ConfigMap.
+	// It is mounted with subPath, which kubelet never updates in place, and an
 	// unchanged Deployment spec is not rolled by kubectl apply. Without the hash
 	// in the pod template a config change reaches the cluster but never the
 	// running process: the pod keeps serving the file it booted with.
-	CaddyConfigHash   string
-	LiteLLMConfigHash string
+	CaddyConfigHash string
 
 	// MaxmindPVCAccessMode and MaxmindPVCStorageClass carry user-customized PVC
 	// settings through upgrades. Empty = use template defaults.
@@ -1362,8 +1351,6 @@ var k8sManifests = []k8sManifestFile{
 	{"templates/k8s/caddy-deployment.yaml.tmpl", "caddy/deployment.yaml"},
 	{"templates/k8s/caddy-configmap.yaml.tmpl", "caddy/configmap.yaml"},
 	{"templates/k8s/caddy-log-shipper.yaml.tmpl", "caddy/log-shipper.yaml"},
-	{"templates/k8s/litellm-deployment.yaml.tmpl", "litellm/deployment.yaml"},
-	{"templates/k8s/litellm-configmap.yaml.tmpl", "litellm/configmap.yaml"},
 	{"templates/k8s/network-policies.yaml.tmpl", "network-policies.yaml"},
 }
 
@@ -1427,7 +1414,6 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		AdminPasswordHash:        cfg.AdminPasswordHash,
 		FeedEncryptionKey:        cfg.FeedEncryptionKey,
 		BackupEncryptionKey:      cfg.BackupEncryptionKey,
-		LiteLLMMasterKey:         cfg.LiteLLMMasterKey,
 		UserSecrets:              cfg.UserSecrets,
 		IPBlock:                  buildIPBlock(cfg),
 		IPBlockIngest:            buildIPBlockIngest(cfg),
@@ -1463,25 +1449,16 @@ func writeK8sManifests(cfg *K8sConfig) error {
 		PostgresRes:                  cfg.SizeProfile.Postgres,
 		CaddyRes:                     cfg.SizeProfile.Caddy,
 		CaddyShipper:                 cfg.SizeProfile.CaddyShipper,
-		LiteLLMRes:                   cfg.SizeProfile.LiteLLM,
 	}
 
-	// Hash the rendered ConfigMaps before the main pass so the deployments that
-	// mount them carry the hash. Neither ConfigMap template reads these fields,
+	// Hash the rendered ConfigMap before the main pass so the deployment that
+	// mounts it carries the hash. The ConfigMap template does not read the field,
 	// so the pre-render is not circular.
-	for _, cm := range []struct {
-		template string
-		dest     *string
-	}{
-		{"templates/k8s/caddy-configmap.yaml.tmpl", &data.CaddyConfigHash},
-		{"templates/k8s/litellm-configmap.yaml.tmpl", &data.LiteLLMConfigHash},
-	} {
-		content, err := renderK8sTemplate(cm.template, data)
-		if err != nil {
-			return fmt.Errorf("render %s: %w", cm.template, err)
-		}
-		*cm.dest = fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	caddyConfig, err := renderK8sTemplate("templates/k8s/caddy-configmap.yaml.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render caddy configmap: %w", err)
 	}
+	data.CaddyConfigHash = fmt.Sprintf("%x", sha256.Sum256([]byte(caddyConfig)))
 
 	for _, m := range k8sManifests {
 		content, err := renderK8sTemplate(m.template, data)

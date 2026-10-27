@@ -29,12 +29,12 @@ func (d *DockerOps) Pull() error {
 }
 
 func (d *DockerOps) Up() (string, error) {
-	out, err := d.compose("up", "-d").CombinedOutput()
+	out, err := d.compose("up", "-d", "--remove-orphans").CombinedOutput()
 	return string(out), err
 }
 
 func (d *DockerOps) Down() (string, error) {
-	out, err := d.compose("down").CombinedOutput()
+	out, err := d.compose("down", "--remove-orphans").CombinedOutput()
 	return string(out), err
 }
 

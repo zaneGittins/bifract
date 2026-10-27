@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"bifract/pkg/attack"
+	"bifract/pkg/llm"
 )
 
 // SuggestLabelsRequest is the rule as it stands in the editor.
@@ -65,13 +65,14 @@ func (m *Manager) SuggestAttackLabels(ctx context.Context, req SuggestLabelsRequ
 
 	ctx, cancel := context.WithTimeout(ctx, suggestLabelsTimeout)
 	defer cancel()
-	content, err := m.completeFromLiteLLM(ctx, []llmMessage{
+	resp, err := m.llm.Complete(ctx, llm.Request{Messages: []llmMessage{
 		{Role: "system", Content: suggestLabelsPrompt},
 		{Role: "user", Content: sb.String()},
-	})
+	}})
 	if err != nil {
 		return nil, err
 	}
+	content := resp.Content
 
 	var parsed struct {
 		Techniques []string `json:"techniques"`
@@ -116,45 +117,6 @@ func (m *Manager) SuggestAttackLabels(ctx context.Context, req SuggestLabelsRequ
 		add(SuggestedLabel{Label: "attack." + short, ID: t.ID, Name: t.Name, Kind: "tactic"})
 	}
 	return out, nil
-}
-
-// completeFromLiteLLM is the one-shot, non-streaming counterpart of the chat stream.
-func (m *Manager) completeFromLiteLLM(ctx context.Context, messages []llmMessage) (string, error) {
-	body, err := json.Marshal(llmRequest{Model: "bifract-chat", Messages: messages, Tools: []llmTool{}})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.litellmURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if m.litellmKey != "" {
-		req.Header.Set("Authorization", "Bearer "+m.litellmKey)
-	}
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("AI provider unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized {
-			return "", fmt.Errorf("AI provider API key is not configured")
-		}
-		return "", fmt.Errorf("AI provider error %d", resp.StatusCode)
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("AI provider returned an empty answer")
-	}
-	return parsed.Choices[0].Message.Content, nil
 }
 
 // extractJSONObject returns the first {...} in s, so a model that wraps its answer

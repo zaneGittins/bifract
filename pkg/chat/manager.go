@@ -1,8 +1,6 @@
 package chat
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,10 +9,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"bifract/pkg/fractals"
 	"bifract/pkg/instructions"
+	"bifract/pkg/llm"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
 )
@@ -39,9 +37,7 @@ type Manager struct {
 	normalizerManager    *normalizers.Manager
 	instructionManager   *instructions.Manager
 	prismFractalResolver PrismFractalResolver
-	litellmURL           string
-	litellmKey           string
-	httpClient           *http.Client
+	llm                  *llm.Client
 }
 
 // SetPrismFractalResolver sets the resolver for prism member fractals.
@@ -55,7 +51,7 @@ func NewManager(
 	ch *storage.ClickHouseClient,
 	fractalManager *fractals.Manager,
 	normalizerManager *normalizers.Manager,
-	litellmURL, litellmKey string,
+	llmClient *llm.Client,
 ) *Manager {
 	// A name in the allowlist that no tool answers to would quietly narrow the
 	// surface, so it stops the server rather than the conversation.
@@ -69,9 +65,7 @@ func NewManager(
 		ch:                ch,
 		fractalManager:    fractalManager,
 		normalizerManager: normalizerManager,
-		litellmURL:        litellmURL,
-		litellmKey:        litellmKey,
-		httpClient:        &http.Client{Timeout: 120 * time.Second},
+		llm:               llmClient,
 	}
 }
 
@@ -436,8 +430,7 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 	// Stream loop - may iterate multiple times if tool calls are made
 	const maxToolRounds = 15
 	for round := 0; round < maxToolRounds; round++ {
-		// Call LiteLLM with streaming
-		assistantContent, toolCallsRaw, err := m.streamFromLiteLLM(ctx, w, flusher, messages, tools)
+		assistantContent, toolCallsRaw, err := m.streamFromLLM(ctx, w, flusher, messages, tools)
 		if err != nil {
 			// Whatever arrived before the failure is on screen, so it belongs in
 			// the conversation too: the turn is reread from the database when it
@@ -452,10 +445,6 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 		}
 
 		if len(toolCallsRaw) == 0 {
-			// Log if content looks like it contains XML tool calls (LiteLLM translation issue)
-			if strings.Contains(assistantContent, "<invoke") || strings.Contains(assistantContent, "<tool_use>") || strings.Contains(assistantContent, "present_results") && strings.Contains(assistantContent, "<parameter") {
-				log.Printf("[Chat] WARNING: assistant content appears to contain XML tool calls instead of proper function calls. Content length: %d. This is likely a LiteLLM streaming translation issue.", len(assistantContent))
-			}
 			// No tool calls - done
 			if _, err := m.saveMessage(store, conv.ID, "assistant", assistantContent, nil, nil); err != nil {
 				log.Printf("[Chat] failed to save assistant message: %v", err)
@@ -593,119 +582,16 @@ func (m *Manager) runAgentLoop(origin *http.Request, w io.Writer, flusher http.F
 	return nil
 }
 
-// streamFromLiteLLM calls LiteLLM with streaming and writes token events.
-// Returns the full assistant content text and any tool calls.
-func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher http.Flusher, messages []llmMessage, tools []llmTool) (string, []llmToolCall, error) {
-	reqBody := llmRequest{
-		Model:      "bifract-chat",
-		Messages:   messages,
-		Tools:      tools,
-		Stream:     true,
-		ToolChoice: "auto",
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
+// streamFromLLM streams the model's reply to the browser as it arrives and
+// returns the full text and any tool calls.
+func (m *Manager) streamFromLLM(ctx context.Context, w io.Writer, flusher http.Flusher, messages []llmMessage, tools []llmTool) (string, []llmToolCall, error) {
+	resp, err := m.llm.Stream(ctx, llm.Request{Messages: messages, Tools: tools}, func(text string) {
+		sendSSEEvent(w, flusher, StreamEvent{Type: "token", Content: text})
+	})
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to marshal request: %w", err)
+		return resp.Content, nil, err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		m.litellmURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if m.litellmKey != "" {
-		req.Header.Set("Authorization", "Bearer "+m.litellmKey)
-	}
-
-	resp, err := m.httpClient.Do(req)
-	if err != nil {
-		return "", nil, fmt.Errorf("litellm request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		bodyStr := string(body)
-		if resp.StatusCode == http.StatusUnauthorized && (strings.Contains(bodyStr, "api-key") || strings.Contains(bodyStr, "api_key") || strings.Contains(bodyStr, "AuthenticationError")) {
-			return "", nil, fmt.Errorf("AI provider API key is not configured. Set LITELLM_API_KEY in your .env file")
-		}
-		return "", nil, fmt.Errorf("litellm error %d: %s", resp.StatusCode, bodyStr)
-	}
-
-	var fullContent strings.Builder
-	// Accumulate tool call deltas by index
-	toolCallMap := make(map[int]*llmToolCall)
-	toolCallArgMap := make(map[int]*strings.Builder)
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk llmStreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-
-		for _, choice := range chunk.Choices {
-			delta := choice.Delta
-
-			// Accumulate content tokens
-			if delta.Content != nil && *delta.Content != "" {
-				fullContent.WriteString(*delta.Content)
-				sendSSEEvent(w, flusher, StreamEvent{
-					Type:    "token",
-					Content: *delta.Content,
-				})
-			}
-
-			// Accumulate tool call deltas (keyed by delta.Index)
-			for _, tc := range delta.ToolCalls {
-				idx := tc.Index
-				if _, exists := toolCallMap[idx]; !exists {
-					// First chunk for this tool call
-					toolCallMap[idx] = &llmToolCall{
-						ID:   tc.ID,
-						Type: tc.Type,
-						Function: llmToolFunction{
-							Name: tc.Function.Name,
-						},
-					}
-					toolCallArgMap[idx] = &strings.Builder{}
-				} else {
-					// Subsequent chunk: merge non-empty fields
-					if tc.ID != "" {
-						toolCallMap[idx].ID = tc.ID
-					}
-					if tc.Function.Name != "" {
-						toolCallMap[idx].Function.Name = tc.Function.Name
-					}
-				}
-				toolCallArgMap[idx].WriteString(tc.Function.Arguments)
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fullContent.String(), nil, fmt.Errorf("stream read error: %w", err)
-	}
-
-	// Assemble tool calls
-	var toolCalls []llmToolCall
-	for i := 0; i < len(toolCallMap); i++ {
-		tc := toolCallMap[i]
-		tc.Function.Arguments = toolCallArgMap[i].String()
-		toolCalls = append(toolCalls, *tc)
-
-		// Emit tool_call event so frontend can show it
+	for _, tc := range resp.ToolCalls {
 		var args interface{}
 		json.Unmarshal([]byte(tc.Function.Arguments), &args)
 		sendSSEEvent(w, flusher, StreamEvent{
@@ -715,8 +601,7 @@ func (m *Manager) streamFromLiteLLM(ctx context.Context, w io.Writer, flusher ht
 			ToolCallID: tc.ID,
 		})
 	}
-
-	return fullContent.String(), toolCalls, nil
+	return resp.Content, resp.ToolCalls, nil
 }
 
 // recordToolResult reports a tool's outcome to the browser, to the model, and
@@ -1195,7 +1080,7 @@ func capToolResultForContext(resultJSON []byte) string {
 	return string(resultJSON[:maxLen]) + "...(truncated)"
 }
 
-// buildLLMMessages converts stored messages into the LiteLLM message format.
+// buildLLMMessages converts stored messages into the model message format.
 func (m *Manager) buildLLMMessages(systemPrompt string, history []*Message) []llmMessage {
 	msgs := []llmMessage{
 		{Role: "system", Content: systemPrompt},

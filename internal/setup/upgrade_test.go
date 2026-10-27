@@ -44,7 +44,6 @@ func installedConfig(t *testing.T) *SetupConfig {
 	cfg.ClickHousePassword = "ch-pass"
 	cfg.IngestPostgresPassword = "ingest-pg"
 	cfg.IngestClickHousePassword = "Ingest-Ch-1"
-	cfg.LiteLLMMasterKey = "sk-master"
 	cfg.PasswordPepper = "pepper-value"
 	cfg.FeedEncryptionKey = strings.Repeat("f", 64)
 	cfg.BackupEncryptionKey = strings.Repeat("b", 64)
@@ -98,7 +97,6 @@ func TestRunUpgradePreservesInstall(t *testing.T) {
 		"CLICKHOUSE_PASSWORD":                "ch-pass",
 		"BIFRACT_INGEST_POSTGRES_PASSWORD":   "ingest-pg",
 		"BIFRACT_INGEST_CLICKHOUSE_PASSWORD": "Ingest-Ch-1",
-		"LITELLM_MASTER_KEY":                 "sk-master",
 		// A new pepper would invalidate every stored password hash.
 		"BIFRACT_PASSWORD_PEPPER":       "pepper-value",
 		"BIFRACT_FEED_ENCRYPTION_KEY":   strings.Repeat("f", 64),
@@ -337,4 +335,48 @@ func TestRunUpgradeIncompatibleSchemaNeedsConsent(t *testing.T) {
 			t.Error("Postgres state describing the dropped data was not cleared")
 		}
 	})
+}
+
+// A LiteLLM install comes out of the upgrade calling its provider directly,
+// with the key and model it had, and with nothing of LiteLLM left behind.
+func TestRunUpgradeMigratesLiteLLM(t *testing.T) {
+	cfg := installedConfig(t)
+	writeComposeInstall(t, cfg, "v0.9.0", map[string]string{
+		"LITELLM_API_KEY":    "sk-live",
+		"LITELLM_MASTER_KEY": "sk-master",
+	})
+	dir := cfg.InstallDir
+	if err := os.WriteFile(filepath.Join(dir, "litellm-config.yaml"), []byte(legacyLiteLLMConfig), 0644); err != nil {
+		t.Fatal(err)
+	}
+	newFakeExec(t, composeUpFails)
+
+	if _, err := runUpgrade(t, dir); err == nil || !strings.Contains(err.Error(), "docker compose up") {
+		t.Fatalf("err = %v, want the restart failure", err)
+	}
+
+	env := readEnv(t, dir)
+	for k, want := range map[string]string{
+		"BIFRACT_LLM_API_KEY":  "sk-live",
+		"BIFRACT_LLM_PROVIDER": "openai",
+		"BIFRACT_LLM_MODEL":    "gpt-4.1-mini",
+	} {
+		if env[k] != want {
+			t.Errorf("%s = %q, want %q", k, env[k], want)
+		}
+	}
+	for k := range env {
+		if strings.HasPrefix(k, "LITELLM_") {
+			t.Errorf("%s survived the upgrade", k)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "litellm-config.yaml")); !os.IsNotExist(err) {
+		t.Error("litellm-config.yaml was left behind")
+	}
+	if backups, _ := filepath.Glob(filepath.Join(dir, ".backups", "*", "litellm-config.yaml")); len(backups) != 1 {
+		t.Error("the LiteLLM config was removed without a backup")
+	}
+	if compose := readFile(t, dir, "docker-compose.yml"); strings.Contains(strings.ToLower(compose), "litellm") {
+		t.Error("compose still references LiteLLM")
+	}
 }

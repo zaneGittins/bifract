@@ -43,7 +43,6 @@ func RenderEnvFile(cfg *SetupConfig) string {
 	fmt.Fprintf(&b, "CLICKHOUSE_PASSWORD=%s\n", cfg.ClickHousePassword)
 	fmt.Fprintf(&b, "BIFRACT_INGEST_POSTGRES_PASSWORD=%s\n", cfg.IngestPostgresPassword)
 	fmt.Fprintf(&b, "BIFRACT_INGEST_CLICKHOUSE_PASSWORD=%s\n", cfg.IngestClickHousePassword)
-	fmt.Fprintf(&b, "LITELLM_MASTER_KEY=%s\n", cfg.LiteLLMMasterKey)
 	if ch := cfg.CH.PersistEnv(); len(ch) > 0 {
 		fmt.Fprintln(&b)
 		fmt.Fprintln(&b, "# External ClickHouse. Recovered on reconfigure/upgrade so the")
@@ -54,7 +53,8 @@ func RenderEnvFile(cfg *SetupConfig) string {
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "# AI chat (optional - see docs/features/ai-chat.md)")
-	fmt.Fprintln(&b, "# LITELLM_API_KEY=")
+	fmt.Fprintln(&b, "# BIFRACT_LLM_PROVIDER=anthropic")
+	fmt.Fprintln(&b, "# BIFRACT_LLM_API_KEY=")
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "BIFRACT_SECURE_COOKIES=%t\n", cfg.SecureCookies)
 	fmt.Fprintf(&b, "BIFRACT_CORS_ORIGINS=%s\n", cfg.CORSOrigins)
@@ -203,7 +203,6 @@ var staticInstallFiles = []struct {
 }{
 	{"templates/entrypoint.sh", []string{"caddy", "entrypoint.sh"}},
 	{"templates/ship-logs.sh", []string{"caddy", "ship-logs.sh"}},
-	{"templates/litellm-config.yaml", []string{"litellm-config.yaml"}},
 	// Bounds ClickHouse's own telemetry (logger level + system.*_log TTLs); see the
 	// fragment's header. Mounted into the ClickHouse container's config.d.
 	{"templates/clickhouse-system-logs.xml", []string{"clickhouse", "config.d", "system-logs.xml"}},

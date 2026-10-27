@@ -22,6 +22,9 @@ func RunReconfigure(dir string) error {
 	if _, err := os.Stat(composePath); os.IsNotExist(err) {
 		return fmt.Errorf("no installation found at %s (docker-compose.yml missing)", dir)
 	}
+	if _, err := os.Stat(filepath.Join(dir, legacyLiteLLMConfigFile)); err == nil {
+		return errLegacyLiteLLM
+	}
 
 	var existingEnv map[string]string
 	if _, statErr := os.Stat(envPath); statErr == nil {
@@ -77,9 +80,6 @@ func RunReconfigure(dir string) error {
 		}
 		cfg.IngestPostgresPassword = pw
 		printDone("Generated least-privilege ingest Postgres password")
-	}
-	if v, ok := existingEnv["LITELLM_MASTER_KEY"]; ok {
-		cfg.LiteLLMMasterKey = v
 	}
 	if v, ok := existingEnv["BIFRACT_DOMAIN"]; ok {
 		cfg.Domain = v
@@ -147,7 +147,7 @@ func RunReconfigure(dir string) error {
 	envContent := RenderEnvFile(cfg)
 	// Preserve manually-configured keys not managed by the setup wizard.
 	preserveKeys := []string{
-		"LITELLM_API_KEY",
+		"BIFRACT_LLM_PROVIDER", "BIFRACT_LLM_API_KEY", "BIFRACT_LLM_MODEL", "BIFRACT_LLM_BASE_URL",
 		"MAXMIND_LICENSE_KEY", "MAXMIND_ACCOUNT_ID", "MAXMIND_EDITION_IDS",
 		"BIFRACT_BASE_URL",
 		"BIFRACT_OIDC_ISSUER_URL", "BIFRACT_OIDC_CLIENT_ID", "BIFRACT_OIDC_CLIENT_SECRET",

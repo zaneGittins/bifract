@@ -20,8 +20,6 @@ resources:
   - caddy/deployment.yaml
   - caddy/configmap.yaml
   - caddy/log-shipper.yaml
-  - litellm/deployment.yaml
-  - litellm/configmap.yaml
 {{- if .MTLSEnabled}}
   - caddy/mtls-ca.yaml
   - bifract/mtls-ca.yaml

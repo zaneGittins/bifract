@@ -33,7 +33,7 @@ func tunedK8sConfig(dir string) *K8sConfig {
 		"OIDC_ISSUER_URL":    "https://login.example.com/realms/soc",
 		"OIDC_CLIENT_SECRET": "s3cr3t:with:colons",
 		"S3_BUCKET":          "bifract-backups",
-		"LITELLM_API_KEY":    "sk-live-123",
+		"LLM_API_KEY":        "sk-live-123",
 	}
 	return cfg
 }
@@ -81,7 +81,6 @@ func TestK8sSettingsSurviveRender(t *testing.T) {
 		{"postgres resources", s.postgresResources, cfg.SizeProfile.Postgres},
 		{"caddy resources", s.caddyResources, cfg.SizeProfile.Caddy},
 		{"shipper resources", s.caddyShipperResources, cfg.SizeProfile.CaddyShipper},
-		{"litellm resources", s.litellmResources, cfg.SizeProfile.LiteLLM},
 		{"bundled clickhouse", s.ch.Bundled(), true},
 	}
 	for _, c := range checks {
@@ -103,11 +102,10 @@ func TestK8sSettingsSurviveRender(t *testing.T) {
 		"ADMIN_PASSWORD_HASH":        cfg.AdminPasswordHash,
 		"FEED_ENCRYPTION_KEY":        cfg.FeedEncryptionKey,
 		"BACKUP_ENCRYPTION_KEY":      cfg.BackupEncryptionKey,
-		"LITELLM_MASTER_KEY":         cfg.LiteLLMMasterKey,
 		"OIDC_ISSUER_URL":            "https://login.example.com/realms/soc",
 		"OIDC_CLIENT_SECRET":         "s3cr3t:with:colons",
 		"S3_BUCKET":                  "bifract-backups",
-		"LITELLM_API_KEY":            "sk-live-123",
+		"LLM_API_KEY":                "sk-live-123",
 		"OIDC_SCOPES":                "openid,profile,email",
 	} {
 		if secrets[k] != want {
@@ -380,6 +378,12 @@ func TestRunUpgradeK8s(t *testing.T) {
 	ingest := readFile(t, dir, "bifract", "ingest-deployment.yaml")
 	os.WriteFile(filepath.Join(dir, "bifract", "ingest-deployment.yaml"),
 		[]byte(strings.Replace(ingest, "kind: StatefulSet", "kind: Deployment", 1)), 0600)
+	// A LiteLLM install that routed chat to Gemini.
+	os.MkdirAll(filepath.Join(dir, "litellm"), 0755)
+	os.WriteFile(filepath.Join(dir, "litellm", "configmap.yaml"), []byte(legacyLiteLLMConfigMap), 0600)
+	secretsYAML := readFile(t, dir, "bifract", "secrets.yaml")
+	secretsYAML = strings.Replace(secretsYAML, "  LLM_API_KEY: \"sk-live-123\"\n", "  LITELLM_API_KEY: \"sk-live-123\"\n  LITELLM_MASTER_KEY: \"sk-master\"\n", 1)
+	os.WriteFile(filepath.Join(dir, "bifract", "secrets.yaml"), []byte(secretsYAML), 0600)
 
 	var err error
 	out := captureStdout(t, func() { err = RunUpgradeK8s(dir, K8sUpgradeOpts{}) })
@@ -400,8 +404,9 @@ func TestRunUpgradeK8s(t *testing.T) {
 	}
 	after, _ := parseK8sSecrets(filepath.Join(dir, "bifract", "secrets.yaml"))
 	for k, v := range before {
-		// Seeded thresholds are the one sanctioned change; every credential stays.
-		if strings.HasPrefix(k, "ARCHIVE_") {
+		// Seeded thresholds and the LiteLLM migration are the sanctioned changes;
+		// every other credential stays.
+		if strings.HasPrefix(k, "ARCHIVE_") || strings.HasPrefix(k, "LITELLM_") || strings.HasPrefix(k, "LLM_") {
 			continue
 		}
 		if after[k] != v {
@@ -409,6 +414,18 @@ func TestRunUpgradeK8s(t *testing.T) {
 		}
 	}
 
+	if after["LLM_API_KEY"] != "sk-live-123" || after["LLM_PROVIDER"] != "gemini" || after["LLM_MODEL"] != "gemini-2.5-flash" {
+		t.Errorf("LiteLLM settings not carried over: %v", after)
+	}
+	if _, ok := after["LITELLM_API_KEY"]; ok {
+		t.Error("LITELLM_API_KEY survived the upgrade")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "litellm")); !os.IsNotExist(err) {
+		t.Error("the LiteLLM manifests were left in the tree")
+	}
+	if !strings.Contains(out, "kubectl delete deployment/litellm") {
+		t.Error("no notice to delete the live LiteLLM objects")
+	}
 	if _, err := os.Stat(filepath.Join(dir, "bifract", "archive-maintain-cronjob.yaml")); !os.IsNotExist(err) {
 		t.Error("the obsolete archive-maintain CronJob manifest was left in the tree")
 	}

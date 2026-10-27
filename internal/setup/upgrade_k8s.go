@@ -68,16 +68,7 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 	printStep("Checking live cluster secrets...")
 	live, liveErr := tryReadLiveSecrets("bifract", "bifract-secrets")
 	if live != nil {
-		merged := 0
-		for k, v := range live {
-			if v != "" && !coreSecretKeys[k] {
-				if secrets[k] != v {
-					merged++
-				}
-				secrets[k] = v
-			}
-		}
-		if merged > 0 {
+		if merged := mergeLiveSecrets(secrets, live); merged > 0 {
 			printDone(fmt.Sprintf("Synced %d user secret(s) from live cluster", merged))
 		} else {
 			printDone("Live cluster secrets match on-disk")
@@ -215,6 +206,7 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 			removedCronJob = true
 		}
 	}
+	removedLiteLLM := removeLegacyLiteLLMManifests(dir)
 
 	// Summary
 	fmt.Println()
@@ -251,6 +243,9 @@ func RunUpgradeK8s(dir string, opts K8sUpgradeOpts) error {
 		fmt.Println(DimStyle.Render("  After applying, remove the obsolete Deployment:"))
 		fmt.Println(DimStyle.Render("    kubectl delete deployment bifract-ingest -n bifract"))
 	}
+	if removedLiteLLM {
+		printLegacyLiteLLMCleanup()
+	}
 	fmt.Println()
 	printDone("Upgrade complete")
 	fmt.Println()
@@ -278,7 +273,6 @@ type k8sSettings struct {
 	postgresResources     ResourceProfile
 	caddyResources        ResourceProfile
 	caddyShipperResources ResourceProfile
-	litellmResources      ResourceProfile
 
 	// imagePullSecrets preserves manually-added pull secret names from the
 	// bifract deployment (e.g. for private GHCR images).
@@ -344,7 +338,26 @@ var coreSecretKeys = map[string]bool{
 	"ADMIN_PASSWORD_HASH":        true,
 	"FEED_ENCRYPTION_KEY":        true,
 	"BACKUP_ENCRYPTION_KEY":      true,
-	"LITELLM_MASTER_KEY":         true,
+}
+
+// mergeLiveSecrets copies user secrets set with "kubectl edit" into secrets and
+// returns how many changed. Core keys always come from disk. LiteLLM keys are
+// merged only until the migration has run: kubectl apply never removes them from
+// the live Secret, and merging them later would refill an LLM_API_KEY the
+// operator cleared on purpose.
+func mergeLiveSecrets(secrets, live map[string]string) int {
+	_, migrated := secrets["LLM_API_KEY"]
+	merged := 0
+	for k, v := range live {
+		if v == "" || coreSecretKeys[k] || (migrated && strings.HasPrefix(k, "LITELLM_")) {
+			continue
+		}
+		if secrets[k] != v {
+			merged++
+		}
+		secrets[k] = v
+	}
+	return merged
 }
 
 // tryReadLiveSecrets reads the deployed Secret from the cluster using kubectl.
@@ -644,9 +657,6 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 		content := string(data)
 		s.caddyResources = extractResources(content, "caddy")
 		s.caddyShipperResources = extractResources(content, "log-shipper")
-	}
-	if data, err := os.ReadFile(filepath.Join(dir, "litellm", "deployment.yaml")); err == nil {
-		s.litellmResources = extractResources(string(data), "litellm")
 	}
 
 	// Detect mTLS

@@ -1,8 +1,6 @@
 package notebooks
 
 import (
-	"bifract/pkg/api"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"bifract/pkg/api"
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
+	"bifract/pkg/llm"
 	"bifract/pkg/rbac"
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
@@ -29,8 +29,7 @@ type NotebookHandler struct {
 	fractalManager *fractals.Manager
 	rbacResolver   *rbac.Resolver
 	sseHub         *sse.Hub
-	litellmURL     string
-	litellmKey     string
+	llm            *llm.Client
 }
 
 // SetRBACResolver sets the RBAC resolver for fractal-level access checks.
@@ -187,18 +186,17 @@ type Response = api.Response[any]
 // would ever cancel it.
 const commentPrefetchTimeout = 2 * time.Minute
 
-func NewNotebookHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, litellmURL, litellmKey string) *NotebookHandler {
+func NewNotebookHandler(pg *storage.PostgresClient, ch *storage.ClickHouseClient, fractalManager *fractals.Manager, llmClient *llm.Client) *NotebookHandler {
 	return &NotebookHandler{
 		pg:             pg,
 		ch:             ch,
 		fractalManager: fractalManager,
-		litellmURL:     litellmURL,
-		litellmKey:     litellmKey,
+		llm:            llmClient,
 	}
 }
 
 func (h *NotebookHandler) aiEnabled() bool {
-	return h.litellmURL != "" && h.litellmKey != ""
+	return h.llm.Enabled()
 }
 
 // HandleListNotebooks retrieves all notebooks for the current fractal with search and pagination
@@ -1126,7 +1124,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 	notebookContent := strings.Join(cellTexts, "\n\n---\n\n")
 
 	if section.SectionType == "ai_attack_chain" {
-		result, err := h.callLiteLLMWithTools(r.Context(), notebookContent, sectionMap)
+		result, err := h.summarizeAttackChain(r.Context(), notebookContent, sectionMap)
 		if err != nil {
 			log.Printf("[Notebooks] AI attack chain generation failed: %v", err)
 			api.WriteError(w, http.StatusInternalServerError, "Failed to generate attack chain summary")
@@ -1145,7 +1143,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			Data:    map[string]string{"summary": result},
 		})
 	} else {
-		summary, err := h.callLiteLLM(r.Context(), notebookContent)
+		summary, err := h.summarizeNotebook(r.Context(), notebookContent)
 		if err != nil {
 			log.Printf("[Notebooks] AI summary generation failed: %v", err)
 			api.WriteError(w, http.StatusInternalServerError, "Failed to generate summary")
@@ -1166,16 +1164,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 	}
 }
 
-func (h *NotebookHandler) callLiteLLM(ctx context.Context, notebookContent string) (string, error) {
-	type msg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-	type reqBody struct {
-		Model    string `json:"model"`
-		Messages []msg  `json:"messages"`
-	}
-
+func (h *NotebookHandler) summarizeNotebook(ctx context.Context, notebookContent string) (string, error) {
 	// Cap input to avoid exceeding context limits
 	const maxContentLen = 12000
 	if len(notebookContent) > maxContentLen {
@@ -1189,58 +1178,21 @@ func (h *NotebookHandler) callLiteLLM(ctx context.Context, notebookContent strin
 		"Do not use bullet points or headers. Keep it to 3-5 sentences.\n\n" +
 		notebookContent
 
-	body := reqBody{
-		Model:    "bifract-chat",
-		Messages: []msg{{Role: "user", Content: prompt}},
-	}
-
-	bodyBytes, err := json.Marshal(body)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := h.llm.Complete(ctx, llm.Request{Messages: []llm.Message{{Role: "user", Content: prompt}}})
 	if err != nil {
-		return "", fmt.Errorf("marshal error: %w", err)
+		return "", err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		h.litellmURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("request error: %w", err)
+	if strings.TrimSpace(resp.Content) == "" {
+		return "", fmt.Errorf("empty summary from AI provider")
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if h.litellmKey != "" {
-		req.Header.Set("Authorization", "Bearer "+h.litellmKey)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("litellm call failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("litellm error %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode error: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
-	}
-
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	return strings.TrimSpace(resp.Content), nil
 }
 
-// callLiteLLMWithTools calls the LLM with function calling to get structured MITRE ATT&CK output.
+// summarizeAttackChain forces a tool call to get structured MITRE ATT&CK output.
 // sectionMap maps section_id -> description string for LLM context.
-func (h *NotebookHandler) callLiteLLMWithTools(ctx context.Context, notebookContent string, sectionMap map[string]string) (string, error) {
+func (h *NotebookHandler) summarizeAttackChain(ctx context.Context, notebookContent string, sectionMap map[string]string) (string, error) {
 	const maxContentLen = 12000
 	if len(notebookContent) > maxContentLen {
 		notebookContent = notebookContent[:maxContentLen] + "\n\n[Content truncated]"
@@ -1260,12 +1212,12 @@ func (h *NotebookHandler) callLiteLLMWithTools(ctx context.Context, notebookCont
 		notebookContent + sectionRef
 
 	// Build function schema
-	toolSchema := map[string]interface{}{
-		"type": "function",
-		"function": map[string]interface{}{
-			"name":        "mitre_attack_summary",
-			"description": "Map log investigation findings to MITRE ATT&CK tactics",
-			"parameters": map[string]interface{}{
+	tool := llm.Tool{
+		Type: "function",
+		Function: llm.Function{
+			Name:        "mitre_attack_summary",
+			Description: "Map log investigation findings to MITRE ATT&CK tactics",
+			Parameters: map[string]interface{}{
 				"type":     "object",
 				"required": []string{"executive_summary", "tactics"},
 				"properties": map[string]interface{}{
@@ -1314,77 +1266,24 @@ func (h *NotebookHandler) callLiteLLMWithTools(ctx context.Context, notebookCont
 		},
 	}
 
-	type msg struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	}
-
-	body := map[string]interface{}{
-		"model":    "bifract-chat",
-		"messages": []msg{{Role: "user", Content: prompt}},
-		"tools":    []interface{}{toolSchema},
-		"tool_choice": map[string]interface{}{
-			"type":     "function",
-			"function": map[string]string{"name": "mitre_attack_summary"},
-		},
-	}
-
-	bodyBytes, err := json.Marshal(body)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	resp, err := h.llm.Complete(ctx, llm.Request{
+		Messages:  []llm.Message{{Role: "user", Content: prompt}},
+		Tools:     []llm.Tool{tool},
+		ForceTool: tool.Function.Name,
+	})
 	if err != nil {
-		return "", fmt.Errorf("marshal error: %w", err)
+		return "", err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		h.litellmURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("request error: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if h.litellmKey != "" {
-		req.Header.Set("Authorization", "Bearer "+h.litellmKey)
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("litellm call failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("litellm error %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode error: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
-	}
-
-	msg0 := result.Choices[0].Message
-	if len(msg0.ToolCalls) > 0 && msg0.ToolCalls[0].Function.Arguments != "" {
-		return msg0.ToolCalls[0].Function.Arguments, nil
+	if len(resp.ToolCalls) > 0 && resp.ToolCalls[0].Function.Arguments != "" {
+		return resp.ToolCalls[0].Function.Arguments, nil
 	}
 
 	// Fallback: if the model returned content instead of a tool call, wrap it
-	if msg0.Content != "" {
+	if resp.Content != "" {
 		fallback := map[string]interface{}{
-			"executive_summary": strings.TrimSpace(msg0.Content),
+			"executive_summary": strings.TrimSpace(resp.Content),
 			"tactics":           []interface{}{},
 		}
 		fb, _ := json.Marshal(fallback)
@@ -1892,7 +1791,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 			notebookContent := strings.Join(cellTexts, "\n\n---\n\n")
 
 			if aiSectionType == "ai_attack_chain" {
-				result, err := h.callLiteLLMWithTools(context.Background(), notebookContent, sectionMap)
+				result, err := h.summarizeAttackChain(context.Background(), notebookContent, sectionMap)
 				if err != nil {
 					log.Printf("[Notebooks] AI attack chain generation failed: %v", err)
 					return
@@ -1902,7 +1801,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					log.Printf("[Notebooks] Failed to save AI attack chain: %v", err)
 				}
 			} else {
-				summary, err := h.callLiteLLM(context.Background(), notebookContent)
+				summary, err := h.summarizeNotebook(context.Background(), notebookContent)
 				if err != nil {
 					log.Printf("[Notebooks] AI summary generation failed: %v", err)
 					return
