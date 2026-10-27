@@ -14,6 +14,7 @@ import (
 type Manager struct {
 	storage      *Storage
 	onCreateHook func(ctx context.Context, fractal *Fractal)
+	onDeleteHook func(ctx context.Context, fractalID string)
 }
 
 // NewManager creates a new index manager
@@ -26,6 +27,11 @@ func NewManager(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Manag
 // SetOnCreateHook registers a callback invoked after a fractal is created.
 func (m *Manager) SetOnCreateHook(hook func(ctx context.Context, fractal *Fractal)) {
 	m.onCreateHook = hook
+}
+
+// SetOnDeleteHook registers a callback invoked after a fractal is deleted.
+func (m *Manager) SetOnDeleteHook(hook func(ctx context.Context, fractalID string)) {
+	m.onDeleteHook = hook
 }
 
 // CreateFractal creates a new index with validation
@@ -168,7 +174,13 @@ func (m *Manager) DeleteFractal(ctx context.Context, fractalID string) error {
 		return fmt.Errorf("cannot delete system fractal '%s'", fractal.Name)
 	}
 
-	return m.storage.DeleteFractal(ctx, fractalID)
+	if err := m.storage.DeleteFractal(ctx, fractalID); err != nil {
+		return err
+	}
+	if m.onDeleteHook != nil {
+		m.onDeleteHook(ctx, fractalID)
+	}
+	return nil
 }
 
 // ResolveFractalID resolves an index name or ID to a valid index ID

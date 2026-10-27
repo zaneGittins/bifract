@@ -435,6 +435,13 @@ func (w *world) answerDicts(q string, args []driver.Value) fakedb.PGResult {
 		}
 		return fakedb.RowsOf(rows...)
 
+	case strings.TrimSpace(q) == "SELECT id FROM dictionaries":
+		var rows [][]driver.Value
+		for _, d := range w.sortedDicts() {
+			rows = append(rows, []driver.Value{d.id})
+		}
+		return fakedb.RowsOf(rows...)
+
 	case strings.HasPrefix(strings.TrimSpace(q), "SELECT id, COALESCE(key_column, ''), columns"):
 		var rows [][]driver.Value
 		for _, d := range w.sortedDicts() {
@@ -898,6 +905,18 @@ func (w *world) answerCH(q string, _ []any) (fakedb.CHResult, bool) {
 			res.Rows = append(res.Rows, []any{g[0], g[1:]})
 		}
 		return res, true
+	case strings.Contains(q, "system.tables"):
+		if !strings.Contains(q, "database = 'logs'") {
+			w.t.Errorf("orphan scan misses the database: %s", q)
+		}
+		var names []string
+		for _, objs := range []map[string]bool{keysSet(w.tables), keysSet(w.dists), keysSet(w.dictObjs)} {
+			for n := range objs {
+				names = append(names, n)
+			}
+		}
+		sort.Strings(names)
+		return fakedb.Strs("name", names...), true
 	}
 
 	if m := reProbe.FindStringSubmatch(q); m != nil {
@@ -1060,6 +1079,14 @@ func (w *world) collisions(q string) ([][]string, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
 	return out, nil
+}
+
+func keysSet[V any](m map[string]V) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
 }
 
 // probe answers the Hyperscan compile check over a list's expressions. Real

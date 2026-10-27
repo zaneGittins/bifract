@@ -206,6 +206,10 @@ func TestEveryDDLLoadReadsKind(t *testing.T) {
 		if strings.Contains(stmt, "kind") || strings.Contains(stmt, "dictColumns") {
 			continue
 		}
+		// The orphan sweep reads only ids and builds nothing.
+		if strings.Join(strings.Fields(stmt), " ") == "SELECT id FROM dictionaries" {
+			continue
+		}
 		t.Errorf("a dictionary SELECT does not read kind, so anything it builds "+
 			"defaults to a value list:\n  %s", strings.Join(strings.Fields(stmt), " "))
 	}

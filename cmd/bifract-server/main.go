@@ -434,6 +434,21 @@ func main() {
 	dictionaryHandler := dictionaries.NewHandler(dictionaryManager, fractalManager)
 	log.Println("Dictionary manager initialized")
 
+	// Deleting a fractal or prism cascades its lookups' rows; the sweep drops the
+	// ClickHouse objects they leave behind. Detached from the request, which may
+	// end before the cluster DDL does.
+	dropOrphanedLookups := func(context.Context, string) {
+		go func() {
+			if n, err := dictionaryManager.DropOrphans(context.Background()); err != nil {
+				log.Printf("[Dictionaries] dropping orphaned lookups: %v", err)
+			} else if n > 0 {
+				log.Printf("[Dictionaries] dropped %d orphaned lookup(s)", n)
+			}
+		}()
+	}
+	fractalManager.SetOnDeleteHook(dropOrphanedLookups)
+	prismManager.SetOnDeleteHook(dropOrphanedLookups)
+
 	// Converge each dictionary's ClickHouse objects with its Postgres definition.
 	// Runs in the background: it is metadata-only but issues cluster DDL.
 	go func() {
