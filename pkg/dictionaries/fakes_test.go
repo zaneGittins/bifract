@@ -72,6 +72,8 @@ type dictRec struct {
 	createdBy          string
 	created            time.Time
 	source, status     []byte
+	prefilter          bool
+	rev                int64
 }
 
 func (d *dictRec) values() []driver.Value {
@@ -145,6 +147,7 @@ func newWorldWith(t *testing.T, topo storage.Topology) *world {
 	ch.Respond(w.answerCH)
 	ch.FailExecFunc(w.execCH)
 	w.m = NewManager(pgc, chc)
+	w.m.background = func(f func()) { f() }
 	return w
 }
 
@@ -360,6 +363,28 @@ func (w *world) answerDicts(q string, args []driver.Value) fakedb.PGResult {
 		w.dicts[d.id] = d
 		return fakedb.Row(d.id)
 
+	case strings.Contains(q, "pattern_rev = pattern_rev + 1"):
+		d := w.dicts[str(args[0])]
+		if d == nil {
+			return fakedb.Affected(0)
+		}
+		d.prefilter, d.rev = false, d.rev+1
+		return fakedb.Affected(1)
+
+	case strings.Contains(q, "AND pattern_rev = $3"):
+		d := w.dicts[str(args[0])]
+		if d == nil || d.rev != args[2].(int64) {
+			return fakedb.Affected(0)
+		}
+		d.prefilter = args[1].(bool)
+		return fakedb.Affected(1)
+
+	case strings.HasPrefix(strings.TrimSpace(q), "SELECT pattern_rev FROM dictionaries WHERE id = $1"):
+		if d := w.dicts[str(args[0])]; d != nil {
+			return fakedb.Row(d.rev)
+		}
+		return fakedb.PGResult{}
+
 	case strings.HasPrefix(strings.TrimSpace(q), "UPDATE dictionaries SET"):
 		m := pgWhereID.FindStringSubmatch(q)
 		d := w.dicts[str(argAt(args, "$"+m[1]))]
@@ -428,7 +453,7 @@ func (w *world) answerDicts(q string, args []driver.Value) fakedb.PGResult {
 		// ListDictionaryMappings.
 		var rows [][]driver.Value
 		for _, d := range w.inScope(q, str(args[0])) {
-			rows = append(rows, []driver.Value{d.id, d.name, d.keyCol, d.cols, d.ci, d.kind})
+			rows = append(rows, []driver.Value{d.id, d.name, d.keyCol, d.cols, d.ci, d.kind, d.prefilter})
 		}
 		return fakedb.RowsOf(rows...)
 
@@ -597,7 +622,10 @@ var (
 	reWhereSearch = regexp.MustCompile(`^\(positionCaseInsensitive\(` + identRe + `, ` + quotedStrs + `\) > 0`)
 
 	reSelect = regexp.MustCompile(`^SELECT (.+?) FROM ` + identRe + `( FINAL)?\s*(?:WHERE (.+?))?\s*(?:ORDER BY (.+?))?\s*(?:LIMIT (\d+)(?: OFFSET (\d+))?)?$`)
-	reLower  = regexp.MustCompile(`FROM ` + identRe + ` FINAL WHERE notEmpty\(` + identRe + `\)`)
+	reProbe  = regexp.MustCompile(`^SELECT multiMatchAny\('', \(SELECT groupArray\(` + identRe + `\) FROM ` + "`logs`\\." + identRe + ` FINAL WHERE notEmpty\(` + identRe + `\)\)\)$`)
+	// reProbeAll is the probe that reads every replica's local table.
+	reProbeAll = regexp.MustCompile(`^SELECT multiMatchAny\('', \(SELECT groupUniqArray\(` + identRe + `\) FROM clusterAllReplicas\('bifract', ` + "`logs`, " + identRe + `\) WHERE notEmpty\(` + identRe + `\)\)\)$`)
+	reLower    = regexp.MustCompile(`FROM ` + identRe + ` FINAL WHERE notEmpty\(` + identRe + `\)`)
 )
 
 func unident(s string) string { return strings.ReplaceAll(s, "``", "`") }
@@ -891,6 +919,16 @@ func (w *world) answerCH(q string, _ []any) (fakedb.CHResult, bool) {
 		return fakedb.Strs("name", names...), true
 	}
 
+	if m := reProbe.FindStringSubmatch(q); m != nil {
+		if w.cluster {
+			w.t.Errorf("a replicated cluster probed one replica: %s", q)
+		}
+		return w.probe(unident(m[1]), unident(m[2])), true
+	}
+	if m := reProbeAll.FindStringSubmatch(q); m != nil {
+		return w.probe(unident(m[1]), unident(m[2])), true
+	}
+
 	m := reSelect.FindStringSubmatch(q)
 	if m == nil {
 		w.t.Errorf("unexpected ClickHouse query: %s", q)
@@ -1049,4 +1087,19 @@ func keysSet[V any](m map[string]V) map[string]bool {
 		out[k] = true
 	}
 	return out
+}
+
+// probe answers the Hyperscan compile check over a list's expressions. Real
+// Hyperscan refuses (?U), among other things RE2 accepts.
+func (w *world) probe(keyCol, table string) fakedb.CHResult {
+	tbl, _, _, err := w.resolve(table)
+	if err != nil {
+		return fakedb.CHResult{Err: err}
+	}
+	for _, r := range tbl.rows {
+		if strings.Contains(r.vals[keyCol], "(?U)") {
+			return fakedb.CHResult{Err: fakedb.Exception(36, "Pattern '"+r.vals[keyCol]+"' failed with error 'Unsupported flag'")}
+		}
+	}
+	return fakedb.One("ok", "UInt8", uint8(0))
 }

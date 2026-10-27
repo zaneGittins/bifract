@@ -663,7 +663,7 @@ func (m *Manager) hasRows(ctx context.Context, dict *Dictionary) bool {
 	if len(dict.Columns) == 0 {
 		return false
 	}
-	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() AS n FROM `%s`", escCH(m.rowTable(dict))))
+	rows, err := m.ch.QuerySchema(ctx, fmt.Sprintf("SELECT count() AS n FROM `%s`", escCH(m.rowTable(dict.ID))))
 	if err != nil || len(rows) == 0 {
 		return false
 	}

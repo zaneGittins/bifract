@@ -288,17 +288,29 @@ const QueryExecutor = {
     async execute(config = null) {
         const elements = this.getElements(config);
 
+        // A Live tick re-running an aggregation runs the query Live started, not
+        // whatever is being typed, and must not disturb the analyst: no closed log,
+        // no URL entry, no history row per tick. Consumed first so an early return
+        // cannot leak it into the next run.
+        const liveRerun = !config && this._liveRerun;
+        const liveRerunQuery = this._liveRerunQuery;
+        this._liveRerun = false;
+        this._liveRerunQuery = null;
+
         if (!elements.queryInput) return;
 
         // An empty main search matches everything in the selected range.
-        const rawValue = elements.queryInput.value;
+        const rawValue = liveRerun ? liveRerunQuery : elements.queryInput.value;
         const stripped = this.stripComments(rawValue.trim());
         const query = stripped || (config ? '' : '*');
         if (!query) return;
         // Sent verbatim: the server blanks comments in place, so error offsets match the editor.
         const requestQuery = stripped ? rawValue : query;
 
-        if (window.LogDetail) LogDetail.close();
+        const live = !config && window.LiveSearch && LiveSearch.isLiveRange();
+        if (!config && window.LiveSearch && !liveRerun) LiveSearch.stop(live);
+
+        if (window.LogDetail && !liveRerun) LogDetail.close();
 
         // Store for use by loadMore()
         this.currentQuery = query;
@@ -318,7 +330,12 @@ const QueryExecutor = {
         // in the second after it.
         const urlSyncMode = this._urlSyncMode || 'push';
         this._urlSyncMode = null;
-        if (!config) this._syncQueryToUrl(urlSyncMode);
+        if (!config && !liveRerun) this._syncQueryToUrl(urlSyncMode);
+
+        if (live && !liveRerun) {
+            this._startLive(query, requestQuery, elements);
+            return;
+        }
 
         // Cancel any previous request
         if (this.currentRequest) {
@@ -345,7 +362,7 @@ const QueryExecutor = {
         // result count and duration are known (see _finalizeQuery).
         const trState = window.TimePicker?.state || { type: '24h' };
         const trToken = trState.type || '24h';
-        this._pendingHistory = {
+        this._pendingHistory = liveRerun ? null : {
             query: query,
             timeRange: trToken,
             customStart: trToken === 'custom' ? (this.currentTimeRange?.start || '') : '',
@@ -354,15 +371,7 @@ const QueryExecutor = {
             relativeUnit: trToken === 'relative' ? (trState.relativeUnit || '') : ''
         };
 
-        // Hide previous results and show loading
-        if (elements.errorDiv) elements.errorDiv.style.display = 'none';
-        this.clearQueryError();
-        const profilePanel = document.getElementById('profilePanel');
-        if (profilePanel) { profilePanel.style.display = 'none'; profilePanel.innerHTML = ''; }
-
-        // Reset chart/graph container so loading spinner is visible
-        const chartContainer = document.getElementById('chartContainer');
-        if (chartContainer) chartContainer.style.display = 'none';
+        this._resetResultChrome(elements);
 
         // Profiling collects per-shard execution stats over the full result,
         // which the progressive stream does not produce. When the SQL/profile
@@ -461,8 +470,48 @@ const QueryExecutor = {
         }
     },
 
+    // Hide the previous run's error, profile and chart before a new one starts.
+    _resetResultChrome(elements) {
+        if (elements.errorDiv) elements.errorDiv.style.display = 'none';
+        this.clearQueryError();
+        const profilePanel = document.getElementById('profilePanel');
+        if (profilePanel) { profilePanel.style.display = 'none'; profilePanel.innerHTML = ''; }
+        // Reset chart/graph container so loading spinner is visible
+        const chartContainer = document.getElementById('chartContainer');
+        if (chartContainer) chartContainer.style.display = 'none';
+    },
+
+    // _startLive hands the main search to LiveSearch, leaving the same state a
+    // finished run would: no request or loading chrome in flight, and the current
+    // range, scope and cursor describing this search for field stats and links.
+    _startLive(query, requestQuery, elements) {
+        this._abortQuietly();
+        this.currentTimeRange = this.getTimeRange();
+        this.currentFractalId = window.FractalContext?.currentFractal?.id || null;
+        this._emptyContext = { label: window.TimePicker ? TimePicker.getLabel() : '', matchAll: query.trim() === '*' };
+        this.currentCursor = null;
+        this._updateLoadMoreButton(false);
+        this._resetResultChrome(elements);
+        LiveSearch.start(query, requestQuery, elements);
+    },
+
+    // _abortQuietly drops an in-flight run and its loading chrome without the
+    // "Query cancelled" teardown, keeping the results already on screen.
+    _abortQuietly() {
+        if (this.currentRequest) this.currentRequest.abort();
+        this.currentRequest = null;
+        this._streamingActive = false;
+        this._clearLoadingTimer();
+        this._endLoadingIndicator();
+    },
+
     // Dispatch the Run/Cancel button: cancel an in-flight query, else run a new one.
     runOrCancel() {
+        if (window.LiveSearch && LiveSearch.active) {
+            LiveSearch.stop();
+            this._abortQuietly();
+            return;
+        }
         if (this._queryRunning) {
             this.cancelQuery();
         } else {
@@ -477,6 +526,13 @@ const QueryExecutor = {
         if (!btn) return;
         const text = btn.querySelector('.btn-text');
         const shortcut = btn.querySelector('.btn-shortcut');
+        if (window.LiveSearch && LiveSearch.active) {
+            // Live owns the button for as long as it runs; its own ticks never flip it to Cancel.
+            btn.classList.remove('is-running');
+            if (text) text.textContent = 'Stop';
+            if (shortcut) shortcut.style.display = 'none';
+            return;
+        }
         if (running) {
             btn.classList.add('is-running');
             if (text) text.textContent = 'Cancel';
@@ -973,6 +1029,7 @@ const QueryExecutor = {
     },
 
     cancelQuery() {
+        if (window.LiveSearch && LiveSearch.active) LiveSearch.stop();
         if (this.currentHistRequest) {
             this.currentHistRequest.abort();
             this.currentHistRequest = null;
@@ -1779,7 +1836,10 @@ const QueryExecutor = {
         // Rows are still streaming in (pre-sorted newest-first); defer sorting
         // until the result set is complete to avoid scrambling partial data.
         if (this._streamingActive) {
-            if (window.Toast) Toast.show('Results still loading, sort available when complete', 'info');
+            const msg = window.LiveSearch && LiveSearch.active
+                ? 'Sorting is off while Live is running'
+                : 'Results still loading, sort available when complete';
+            if (window.Toast) Toast.show(msg, 'info');
             return;
         }
         // Determine sort direction
@@ -1845,6 +1905,8 @@ const QueryExecutor = {
     // what went wrong once. Errors in the BQL are explained under the editor,
     // so the results area only points there.
     _failQuery(message, errorType, errorPos) {
+        // A failed Live run would fail the same way on every tick.
+        if (window.LiveSearch && LiveSearch.active) LiveSearch.stop();
         this.currentResults = [];
         this.chartType = '';
         this._columnsKey = null;
@@ -6617,6 +6679,8 @@ const QueryExecutor = {
     _deepLinkTime(trState) {
         const type = trState.type || '24h';
         if (type === 'all') return { from: 'all' };
+        // A link opens a fixed search; Live's window is the last 15 minutes.
+        if (type === 'live') return { from: '-15m' };
 
         if (type === 'custom') {
             const start = new Date(trState.customStart);

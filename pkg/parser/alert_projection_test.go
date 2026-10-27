@@ -20,7 +20,8 @@ func TestAlertExtraFieldInjection(t *testing.T) {
 		EndTime:            time.Now(),
 		MaxRows:            10,
 		FractalID:          "f1",
-		UseIngestTimestamp: true, // the alert path that triggers minimal projection
+		UseIngestTimestamp: true,
+		MinimalProjection:  true, // the alert path
 		AlertExtraFields:   []string{"img` , (SELECT 1) AS pwn, fields.`image"},
 	}
 	sql, err := TranslateToSQL(p, opts)
@@ -45,6 +46,7 @@ func TestAlertProjectionIsDeterministic(t *testing.T) {
 		MaxRows:            10,
 		FractalID:          "f1",
 		UseIngestTimestamp: true,
+		MinimalProjection:  true,
 		AlertExtraFields:   []string{"user", "host"},
 	}
 	var first string
@@ -74,6 +76,7 @@ func TestAlertProjectionCoversStageConditions(t *testing.T) {
 		MaxRows:            10,
 		FractalID:          "f1",
 		UseIngestTimestamp: true,
+		MinimalProjection:  true,
 	}
 	for _, q := range []string{`image=^a AND user="b"`, `* | image=^a AND user="b"`, `* | image=^a | user="b"`} {
 		p, err := ParseQuery(q)
@@ -88,5 +91,37 @@ func TestAlertProjectionCoversStageConditions(t *testing.T) {
 		if strings.Contains(head, "norm_log") || !strings.Contains(head, "`image`") || !strings.Contains(head, "`user`") {
 			t.Errorf("%s: want the minimal projection, got %s", q, head)
 		}
+	}
+}
+
+// Reading by arrival time is not the same as reading for an alert: live search
+// polls on ingest_timestamp and displays whole rows, so only MinimalProjection
+// narrows the projection.
+func TestIngestTimeAloneKeepsFullProjection(t *testing.T) {
+	p, err := ParseQuery(`event_id=1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := QueryOptions{
+		StartTime:          time.Now().Add(-time.Hour),
+		EndTime:            time.Now(),
+		MaxRows:            10,
+		FractalID:          "f1",
+		UseIngestTimestamp: true,
+	}
+	full, err := TranslateToSQL(p, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(full, "norm_log") {
+		t.Errorf("an ingest-time read must project the whole row:\n%s", full)
+	}
+	base.MinimalProjection = true
+	minimal, err := TranslateToSQL(p, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(minimal, "norm_log") {
+		t.Errorf("the alert projection must stay minimal:\n%s", minimal)
 	}
 }

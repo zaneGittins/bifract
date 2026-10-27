@@ -1376,6 +1376,89 @@ body {
     color: var(--accent-primary);
 }
 
+/* Live is a time range: its dot stands in for the clock, pulsing while it runs. */
+.toolbar-menu-btn .live-dot { display: none; }
+.toolbar-menu-btn.is-live .tp-clock-icon { display: none; }
+.toolbar-menu-btn.is-live .live-dot { display: inline-block; }
+
+.live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex: none;
+}
+
+.toolbar-menu-btn.is-live-running .live-dot,
+.tp-live .live-dot {
+    background: var(--success);
+    animation: live-pulse 1.6s infinite;
+}
+
+.toolbar-menu-btn.is-live-paused .live-dot {
+    width: 6px;
+    height: 6px;
+    background: transparent;
+    border: 1.5px solid var(--text-muted);
+    animation: none;
+}
+
+@keyframes live-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
+    70% { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.tp-live {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+}
+
+.tp-live-sub {
+    color: var(--text-muted);
+    font-family: var(--font-main);
+    font-size: 0.7rem;
+}
+
+/* Rows that just arrived in Live carry a fading edge. */
+.result-row.live-new td {
+    animation: live-row 2.4s ease-out;
+}
+
+.result-row.live-new td:first-child {
+    animation: live-row 2.4s ease-out, live-edge 2.4s ease-out;
+}
+
+@keyframes live-row {
+    from { background: color-mix(in srgb, var(--success) 9%, transparent); }
+}
+
+@keyframes live-edge {
+    from { box-shadow: inset 2px 0 0 var(--success); }
+    to { box-shadow: inset 2px 0 0 transparent; }
+}
+
+.live-meta {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.live-meta b {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .live-dot,
+    .result-row.live-new td { animation: none !important; }
+    /* Without the fade, the edge stays until the next poll redraws the table. */
+    .result-row.live-new td:first-child { box-shadow: inset 2px 0 0 var(--success); }
+}
+
 .tp-divider {
     height: 1px;
     background: var(--border-color);

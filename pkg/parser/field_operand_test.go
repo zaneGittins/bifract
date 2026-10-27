@@ -219,6 +219,7 @@ func TestFieldOperandIsProjectedForAlerts(t *testing.T) {
 	}
 	opts := fieldOperandOpts()
 	opts.UseIngestTimestamp = true
+	opts.MinimalProjection = true
 	sql, err := TranslateToSQL(pipeline, opts)
 	if err != nil {
 		t.Fatalf("translate: %v", err)

@@ -484,6 +484,8 @@ type queryPurpose int
 const (
 	purposeSearch queryPurpose = iota
 	purposeExport
+	// purposeLive is one live poll: logs_hot by arrival time over liveRange.
+	purposeLive
 )
 
 // preparedQuery holds everything resolved from a search request (auth, fractal
@@ -499,6 +501,7 @@ type preparedQuery struct {
 	chartType           string
 	chartConfig         map[string]interface{}
 	streamable          bool
+	liveSupported       bool // a live poll can serve it (see HandleQueryLive)
 	chunkable           bool // safe to split the row scan into newest-first time chunks
 	singleScan          bool // older histogram chunks also locate the rows (see HandleQueryStream)
 	appliedCursorPaging bool
@@ -812,8 +815,19 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		return
 	}
 
-	// Parse time range
-	startTime, endTime, err := h.parseTimeRange(req.Start, req.End)
+	// Parse time range. A live poll's start is its cursor; the server's clock
+	// decides the rest, so a client cannot widen the read past the live window.
+	var startTime, endTime time.Time
+	var err error
+	if purpose == purposeLive {
+		var since time.Time
+		if req.Start != "" {
+			since, err = time.Parse(time.RFC3339Nano, req.Start)
+		}
+		startTime, endTime = liveRange(since, time.Now())
+	} else {
+		startTime, endTime, err = h.parseTimeRange(req.Start, req.End)
+	}
 	if err != nil {
 		log.Printf("[QueryHandler] Invalid time range: %v", err)
 		respondJSON(w, http.StatusBadRequest, QueryResponse{
@@ -881,6 +895,17 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		return
 	}
 
+	// Source commands and comment() resolve against event time and run their own
+	// queries first, so live leaves them to the search path rather than doing that
+	// work only to report them unsupported.
+	if purpose == purposeLive {
+		_, hasSource := parser.FirstSourceCommand(pipeline)
+		_, _, hasComment := parser.ExtractCommentParams(pipeline)
+		if hasSource || hasComment {
+			return &preparedQuery{req: req}
+		}
+	}
+
 	// Determine appropriate row limit based on query type
 	maxRows := h.maxRows
 	isBloomQuery = isRawLogRegexQuery(pipeline) && !hasExplicitLimit(pipeline)
@@ -891,6 +916,10 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		log.Printf("[QueryHandler] Raw log regex query detected, applying limit: %d rows", maxRows)
 	}
 
+	// A poll re-reads the overlap, so it returns no more than the live table keeps.
+	if purpose == purposeLive && (maxRows <= 0 || maxRows > liveMaxRows) {
+		maxRows = liveMaxRows
+	}
 	queryMaxRows = maxRows
 
 	// Check if a prism is selected; resolve to member fractal IDs
@@ -1076,10 +1105,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	opts.FractalID = fractalIDForQuery
 	opts.FractalIDs = prismFractalIDs
 	opts.IncludeEmptyFractalID = includeEmptyFractalID
-	opts.Dictionaries = dictScope.Mappings
-	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
-	opts.NetworkDicts = dictScope.Network
-	opts.PatternDicts = dictScope.Pattern
+	dictScope.Apply(&opts)
 	opts.Models = modelInfos
 	opts.HasCommentFilter = hasCommentFilter
 	opts.CommentLogIDs = commentLogIDs
@@ -1094,6 +1120,13 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		opts.MaxRows = 0
 		opts.IncludeShardNum = false
 		opts.IncludeIngestTime = false
+	}
+	if purpose == purposeLive {
+		opts.UseIngestTimestamp = true
+		opts.EndExclusive = true
+		if h.db != nil {
+			opts.TableName = h.db.HotReadTable()
+		}
 	}
 
 	// Source commands (e.g. pgr()) generate the pipeline's source rather than filtering the
@@ -1170,6 +1203,10 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// model_lookup), and only for a whole-range first page.
 	chunkable := streamable && !translationResult.TimeScopedSubquery && req.Cursor == ""
 
+	// A live poll re-reads a sliding arrival window, so it needs the same plain
+	// newest-first row selection, with no subquery carrying a range of its own.
+	liveSupported := purpose == purposeLive && streamable && !translationResult.TimeScopedSubquery
+
 	// Add LIMIT to queries that don't already have one
 	if purpose == purposeSearch && !sqlLimitRE.MatchString(sql) {
 		if isAggregated {
@@ -1242,6 +1279,14 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		}
 	}
 
+	if liveSupported {
+		histogramSQL, err = parser.BuildHistogramSQL(pipeline, opts, liveBucketSec)
+		if err != nil {
+			log.Printf("[QueryHandler] Failed to build live histogram SQL: %v", err)
+			liveSupported = false
+		}
+	}
+
 	// When the scan filter is the whole row selection, an older chunk's rows are the
 	// newest matches its histogram scan already reads, given a bounded row budget.
 	singleScan := chunkable && needsHistogram && histRollupTable == "" && len(histChunks) > 1 &&
@@ -1265,6 +1310,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		chartType:           chartType,
 		chartConfig:         chartConfig,
 		streamable:          streamable,
+		liveSupported:       liveSupported,
 		chunkable:           chunkable,
 		singleScan:          singleScan,
 		appliedCursorPaging: appliedCursorPaging,
@@ -1457,10 +1503,7 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	opts.FractalID = fractalIDForQuery
 	opts.FractalIDs = prismFractalIDs
 	opts.IncludeEmptyFractalID = false
-	opts.Dictionaries = dictScope.Mappings
-	opts.CaseInsensitiveDicts = dictScope.CaseInsensitive
-	opts.NetworkDicts = dictScope.Network
-	opts.PatternDicts = dictScope.Pattern
+	dictScope.Apply(&opts)
 	opts.Models = modelInfos
 	opts.HasCommentFilter = hasComment
 	opts.HasTLSHFilter = hasTLSH
@@ -1617,12 +1660,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		// codes to friendly messages; otherwise stay generic and attach only the
 		// public numeric code for support correlation. The full detail is logged.
 		log.Printf("[QueryHandler] Failed to execute query: %v", err)
-		errMsg := "Query execution failed"
-		if friendly, ok := clickhouseUserMessage(err); ok {
-			errMsg = friendly
-		} else if code := clickhouseErrorCode(err); code != 0 {
-			errMsg = fmt.Sprintf("Query execution failed (ClickHouse error %d)", code)
-		}
+		errMsg := executionErrorMessage(err)
 		respondJSON(w, http.StatusInternalServerError, QueryResponse{
 			Success:     false,
 			Error:       errMsg,
@@ -2013,12 +2051,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 
 	emitExecError := func(execErr error) {
 		log.Printf("[QueryHandler] Streaming query failed: %v", execErr)
-		msg := "Query execution failed"
-		if friendly, ok := clickhouseUserMessage(execErr); ok {
-			msg = friendly
-		} else if code := clickhouseErrorCode(execErr); code != 0 {
-			msg = fmt.Sprintf("Query execution failed (ClickHouse error %d)", code)
-		}
+		msg := executionErrorMessage(execErr)
 		writeFrame(map[string]interface{}{
 			"type":       "error",
 			"error":      msg,
