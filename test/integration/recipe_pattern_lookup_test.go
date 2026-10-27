@@ -9,6 +9,9 @@
 package integration
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -44,7 +47,7 @@ func TestPatternLookup(t *testing.T) {
 	body := func(q string) map[string]any {
 		return map[string]any{
 			"query": q, "fractal_id": fractal.ID,
-			"start": end.Add(-time.Hour).Format(time.RFC3339Nano), "end": end.Format(time.RFC3339Nano),
+			"start": end.Add(-24 * time.Hour).Format(time.RFC3339Nano), "end": end.Format(time.RFC3339Nano),
 		}
 	}
 	logs := []map[string]any{
@@ -53,9 +56,11 @@ func TestPatternLookup(t *testing.T) {
 		{"image": `C:\tools\notanydesk.exe`},
 		{"image": `C:\Windows\System32\svchost.exe`},
 	}
+	// AnyDesk is old enough to land in a histogram chunk behind the newest.
 	for i := range logs {
 		logs[i]["timestamp"] = end.Add(-time.Duration(i+1) * time.Minute).Format(time.RFC3339Nano)
 	}
+	logs[1]["timestamp"] = end.Add(-20 * time.Hour).Format(time.RFC3339Nano)
 	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs, nil)
 	Eventually(t, "the ingested logs to become queryable", 120*time.Second, func() bool {
 		var res struct {
@@ -121,6 +126,33 @@ func TestPatternLookup(t *testing.T) {
 	})
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("screened lookup matched %v, want %v", got, want)
+	}
+
+	// The streamed timeline covers the whole range: every match is counted.
+	raw, _ := json.Marshal(body(q))
+	var counted int
+	sc := bufio.NewScanner(bytes.NewReader(c.Raw(t, "POST", "/query/stream", "application/json", raw)))
+	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	for sc.Scan() {
+		var f struct {
+			Type    string `json:"type"`
+			Buckets []int  `json:"buckets"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
+			t.Fatalf("frame %q: %v", sc.Text(), err)
+		}
+		switch f.Type {
+		case "histogram":
+			counted = 0
+			for _, n := range f.Buckets {
+				counted += n
+			}
+		case "error", "histogram_end":
+			t.Fatalf("stream frame %s: %s", f.Type, sc.Text())
+		}
+	}
+	if counted != len(want) {
+		t.Errorf("the timeline counted %d matches, want %d", counted, len(want))
 	}
 
 	// Hyperscan refuses (?U), which RE2 accepts. The list loses its screen, and

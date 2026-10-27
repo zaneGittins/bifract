@@ -355,8 +355,11 @@ const (
 	// editing downstream pipeline commands (| stats, | table) or re-running the same
 	// search reuses the scan instead of repeating it. The duration floor keeps cheap
 	// chunks out of the cache. Applied only to chunks behind the newest one, which is
-	// where freshly ingested logs land and must never be served stale.
-	histogramCacheSettings = "use_query_cache = 1, query_cache_ttl = 60, query_cache_min_query_duration = 200"
+	// where freshly ingested logs land and must never be served stale. A chunk
+	// holding a lookup (dictHas, dictGet) runs uncached rather than failing: a
+	// dictionary can change under it, and ClickHouse refuses to cache it (704).
+	histogramCacheSettings = "use_query_cache = 1, query_cache_ttl = 60, query_cache_min_query_duration = 200, " +
+		"query_cache_nondeterministic_function_handling = 'ignore'"
 )
 
 // histogramBucketSeconds returns the bucket interval for a histogram over the
