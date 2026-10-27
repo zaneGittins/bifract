@@ -410,7 +410,7 @@ func detectionChanged(a, b ModelDefinition) bool {
 		a.TimeBucket != b.TimeBucket ||
 		// The window sets the table's layout and TTL.
 		a.HistoryDays != b.HistoryDays ||
-		// Network models: the field map determines what the MV extracts and the
+		// Network models: the field map determines what the state extracts and the
 		// window drives the state TTL, so either change requires a state rebuild.
 		// Beacon/LongConn/Modifiers params are applied fresh by the scorer at read
 		// time (like alert thresholds), so they intentionally do NOT rebuild.
@@ -745,9 +745,15 @@ func (m *Manager) netStateLayoutOK(ctx context.Context, id string) (bool, error)
 // ensureNetStateLayout recreates a network model's state table left in an older
 // layout, which CREATE IF NOT EXISTS would keep and every state insert and read
 // would then fail against. Its Distributed companion is dropped for the caller to
-// recreate. The state holds only the window, which refills as state is maintained.
+// recreate. The new table starts empty and fills from the model's watermark on.
+// A failed check is logged and skipped, so it never blocks a model's save.
 func (m *Manager) ensureNetStateLayout(ctx context.Context, id string, windowDays int) error {
-	if ok, err := m.netStateLayoutOK(ctx, id); err != nil || ok {
+	ok, err := m.netStateLayoutOK(ctx, id)
+	if err != nil {
+		log.Printf("model %s: check state table layout: %v", id, err)
+		return nil
+	}
+	if ok {
 		return nil
 	}
 	state := chModelStateName(id)
@@ -764,7 +770,10 @@ func (m *Manager) ensureNetStateLayout(ctx context.Context, id string, windowDay
 	if err := m.ch.ExecSchema(ctx, ddl); err != nil && !isCHDDLTimeout(err) {
 		return fmt.Errorf("recreate state table: %w", err)
 	}
-	if ok, err := m.netStateLayoutOK(ctx, id); err == nil && !ok {
+	ok, err = m.netStateLayoutOK(ctx, id)
+	if err != nil {
+		log.Printf("model %s: recheck state table layout: %v", id, err)
+	} else if !ok {
 		return fmt.Errorf("state table %s keeps an older layout and could not be dropped; drop it in ClickHouse and save the model again", state)
 	}
 	return nil
@@ -801,10 +810,10 @@ func (m *Manager) ensureStateColumns(ctx context.Context, id string, mt ModelTyp
 	return nil
 }
 
-// createNetworkCHObjects creates the three ClickHouse objects a scheduled (network)
-// model owns: the rolling-state table (MV target), the results table (scorer output,
-// read by model_lookup / the data viewer), and the MV that maintains state at ingest.
-// Backfill is N/A: the MV + TTL self-seed the rolling window.
+// createNetworkCHObjects creates the two ClickHouse objects a scheduled (network)
+// model owns: the rolling-state table, kept by StateMaintainer, and the results
+// table (scorer output, read by model_lookup / the data viewer). Backfill is N/A:
+// state maintenance and the TTL keep the rolling window.
 func (m *Manager) createNetworkCHObjects(ctx context.Context, id, fractalID string, def ModelDefinition, mt ModelType, tableName, mvName string) error {
 	stateName := chModelStateName(id)
 	windowDays := def.WindowDays()
@@ -903,7 +912,7 @@ func (m *Manager) dropCHObjects(ctx context.Context, id, tableName, mvName strin
 	if err := m.ch.ExecSchema(ctx, mvDrop); err != nil {
 		log.Printf("drop MV %s: %v", mvName, err)
 	}
-	// A scheduled model also owns a rolling-state table (the MV's target); drop it.
+	// A scheduled model also owns a rolling-state table; drop it.
 	if mt.IsScheduled() {
 		stateDrop := m.ch.InjectOnCluster(dropModelTableSQL(chModelStateName(id)))
 		if err := m.ch.ExecSchema(ctx, stateDrop); err != nil {

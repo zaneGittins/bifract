@@ -34,19 +34,8 @@ func TestPreviewConfigFromEnv(t *testing.T) {
 	}
 }
 
-func TestPreviewRangeDays(t *testing.T) {
+func TestPreviewRangeEndsNow(t *testing.T) {
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	cases := []struct {
-		span time.Duration
-		want int
-	}{
-		{time.Hour, 1}, {24 * time.Hour, 1}, {25 * time.Hour, 2}, {7 * 24 * time.Hour, 7}, {0, 1},
-	}
-	for _, c := range cases {
-		if got := (PreviewRange{Start: base, End: base.Add(c.span)}).days(); got != c.want {
-			t.Errorf("span %v: %d days, want %d", c.span, got, c.want)
-		}
-	}
 	r := PreviewRange{Start: base, End: base.Add(time.Hour)}
 	if !r.endsNow(base.Add(time.Hour + 30*time.Second)) {
 		t.Error("a range ending within the minute ends now")

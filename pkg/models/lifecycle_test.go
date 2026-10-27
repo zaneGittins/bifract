@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -618,22 +619,55 @@ func TestReconcileCHObjects(t *testing.T) {
 	}
 }
 
-// Startup rebuilds a network model's state table left in an older layout.
+// Startup rebuilds a network model's state table left in an older layout, with
+// its Distributed companion on a cluster, and leaves a current one alone. The
+// results table is never dropped.
 func TestReconcileCHObjectsRebuildsOldNetState(t *testing.T) {
-	env := newEnv(t)
-	r := seedModel(env, ModelTypeBeacon, ModelDefinition{}, nil)
-	env.ch.existing[r.chTable] = true
-	env.ch.On("countIf(name = 'points'", fakedb.Count(1))
+	for _, c := range []struct {
+		name         string
+		cluster, old bool
+	}{
+		{"old layout", false, true},
+		{"current layout", false, false},
+		{"old layout on a cluster", true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := newEnv(t)
+			if c.cluster {
+				env = newClusterEnv(t)
+			}
+			r := seedModel(env, ModelTypeBeacon, ModelDefinition{}, nil)
+			state, dist := chModelStateName(r.id), chModelStateDistName(r.id)
+			env.ch.existing[r.chTable] = true
+			env.ch.oldNetState[state] = c.old
+			env.ch.oldNetState[dist] = c.old && c.cluster
 
-	env.mgr.ReconcileCHObjects(context.Background())
+			env.mgr.ReconcileCHObjects(context.Background())
 
-	state := chModelStateName(r.id)
-	if len(env.ch.ExecutedMatching("DROP TABLE IF EXISTS `"+state+"` SYNC")) != 1 ||
-		len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `"+state+"`")) != 1 {
-		t.Errorf("old state table not rebuilt: %v", env.ch.Executed())
-	}
-	if len(env.ch.ExecutedMatching("`"+r.chTable+"`")) != 0 {
-		t.Error("the results table was touched")
+			drops := len(env.ch.ExecutedMatching("DROP TABLE IF EXISTS `" + state + "`"))
+			creates := len(env.ch.ExecutedMatching("CREATE TABLE IF NOT EXISTS `" + state + "`"))
+			if want := map[bool]int{true: 1, false: 0}[c.old]; drops != want || creates != want {
+				t.Errorf("state table dropped %d and created %d times, want %d: %v", drops, creates, want, env.ch.Executed())
+			}
+			if c.cluster {
+				ddl := env.ch.Executed()
+				dropped := slices.IndexFunc(ddl, func(s string) bool { return strings.HasPrefix(s, "DROP TABLE IF EXISTS `"+dist+"`") })
+				recreated := slices.IndexFunc(ddl, func(s string) bool { return strings.HasPrefix(s, "CREATE TABLE IF NOT EXISTS `"+dist+"`") })
+				if dropped < 0 || recreated < dropped {
+					t.Errorf("old Distributed state companion not replaced: %v", ddl)
+				}
+			}
+			if len(env.ch.ExecutedMatching("DROP TABLE IF EXISTS `"+r.chTable+"`")) != 0 {
+				t.Error("the results table was dropped")
+			}
+
+			// A second startup finds the current layout and changes nothing.
+			before := len(env.ch.ExecutedMatching("DROP TABLE"))
+			env.mgr.ReconcileCHObjects(context.Background())
+			if len(env.ch.ExecutedMatching("DROP TABLE")) != before {
+				t.Errorf("not idempotent: %v", env.ch.Executed())
+			}
+		})
 	}
 }
 

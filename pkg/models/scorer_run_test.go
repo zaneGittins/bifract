@@ -3,6 +3,7 @@ package models
 import (
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,10 +15,16 @@ import (
 // ClickHouse shapes the real driver hands back.
 
 var stateCols = cols("src", "String", "dst", "String", "port", "String", "cnt", "UInt64",
-	"ts_list", "Array(UInt32)", "size_list", "Array(Float64)", "total_duration", "Float64")
+	"ts_list", "Array(UInt32)", "size_list", "Array(Float64)", "total_duration", "Float64",
+	"first_ts", "UInt32", "last_ts", "UInt32")
 
+// statePair is one pair-read row. Its points are ascending, as the read sorts
+// them, and its first and last seen span them.
 func statePair(src, dst string, cnt uint64, ts []uint32, sizes []float64, dur float64) []any {
-	return []any{src, dst, "443", cnt, ts, sizes, dur}
+	if !slices.IsSorted(ts) {
+		panic("statePair: the pair read returns points in time order")
+	}
+	return []any{src, dst, "443", cnt, ts, sizes, dur, slices.Min(ts), slices.Max(ts)}
 }
 
 func prevalenceRows(m map[string]uint64) fakedb.CHResult {
@@ -43,20 +50,15 @@ func scorerEnv(t *testing.T, cluster bool, mt ModelType, def ModelDefinition) (*
 //	8h on a destination 1 of 100 sources reach:   tier 0.5            + 0.15 = 0.65
 //	~13.9h on one 60 of 100 reach:  0.75 + 0.25*(6800/43200) = 0.789  - 0.15 = 0.639
 //	4h on one 10 of 100 reach:      tier 0.25, no nudge                      = 0.25
-//
-// A pair whose connections all fall before the window is not written at all: a
-// zero row would overwrite its last real score.
 func TestScorerLongConnectionEndToEnd(t *testing.T) {
 	env, e, r := scorerEnv(t, false, ModelTypeLongConnection, ModelDefinition{})
 	now := uint32(time.Now().Unix())
-	old := now - 2*86400
 	env.ch.On("AS network_size", fakedb.One("network_size", "UInt64", uint64(100)))
-	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1, "10.0.0.53": 60, "198.51.100.7": 10, "192.0.2.9": 1}))
+	env.ch.On("AS prev_total", prevalenceRows(map[string]uint64{"203.0.113.5": 1, "10.0.0.53": 60, "198.51.100.7": 10}))
 	env.ch.On("groupArraySortedMerge", fakedb.CHResult{Cols: stateCols, Rows: [][]any{
-		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{now - 600, now - 7200, now - 3600}, []float64{1, 1, 1}, 28800),
-		statePair("10.1.1.2", "10.0.0.53", 2, []uint32{now - 60, now - 120}, []float64{5, 5}, 50000),
+		statePair("10.1.1.1", "203.0.113.5", 3, []uint32{now - 7200, now - 3600, now - 600}, []float64{1, 1, 1}, 28800),
+		statePair("10.1.1.2", "10.0.0.53", 2, []uint32{now - 120, now - 60}, []float64{5, 5}, 50000),
 		statePair("10.1.1.3", "198.51.100.7", 1, []uint32{now - 60}, []float64{1}, 14400),
-		statePair("10.1.1.4", "192.0.2.9", 2, []uint32{old, old + 60}, []float64{1, 1}, 99999),
 	}})
 
 	e.scoreCycle()
@@ -70,7 +72,7 @@ func TestScorerLongConnectionEndToEnd(t *testing.T) {
 	}
 	rows := batches[0].Appended
 	if len(rows) != 3 {
-		t.Fatalf("%d rows written, want 3 (the out-of-window pair skipped)", len(rows))
+		t.Fatalf("%d rows written, want 3", len(rows))
 	}
 	want := map[string]struct {
 		regularity, prevalence, mod, final float64
@@ -107,16 +109,16 @@ func TestScorerLongConnectionEndToEnd(t *testing.T) {
 	}
 }
 
-// A beacon that fires on the hour, every hour, with a constant payload is as
-// regular as a pair can be: every subscore is 1, and the rare destination's nudge
-// cannot push it past 1. The state's timestamps arrive in no particular order.
+// A beacon that fires every hour with a constant payload is as regular as a pair
+// can be: every subscore is 1, and the rare destination's nudge cannot push it
+// past 1.
 func TestScorerPerfectBeacon(t *testing.T) {
 	env, e, _ := scorerEnv(t, true, ModelTypeBeacon, ModelDefinition{})
 	now := time.Now().Unix()
-	start := now - now%3600 - 23*3600
+	start := now - 23*3600 - 1800
 	var ts []uint32
 	var sizes []float64
-	for i := 23; i >= 0; i-- {
+	for i := 0; i < 24; i++ {
 		ts = append(ts, uint32(start+int64(i)*3600))
 		sizes = append(sizes, 512)
 	}

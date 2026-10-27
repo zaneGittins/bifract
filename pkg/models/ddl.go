@@ -602,9 +602,9 @@ func chStringLiteral(s string) string {
 // ---------------------------------------------------------------------------
 // Network analysis models (beacon / long_connection)
 //
-// A scheduled model owns three ClickHouse objects:
-//   - state table   (AggregatingMergeTree, per (fractal,src,dst,port,hour), TTL window)
-//   - materialized view (logs -> state, maintained at ingest)
+// A scheduled model owns two ClickHouse objects:
+//   - state table   (AggregatingMergeTree, per (fractal,src,dst,port,hour), TTL window),
+//     kept by StateMaintainer
 //   - results table (ReplacingMergeTree, written by the background scorer)
 // The scorer reads only the compact state, never raw logs.
 // ---------------------------------------------------------------------------
@@ -617,25 +617,47 @@ const netStateHourCap = 84
 // netStatePointsType is the state column holding each point's (timestamp, size).
 var netStatePointsType = fmt.Sprintf("AggregateFunction(groupArraySorted(%d), Tuple(UInt32, Float64))", netStateHourCap)
 
-// netPairPointBudget bounds one pair's points: the longest window's hours, plus
-// the extra hour a preview range off the hour touches, at the hourly cap.
-const netPairPointBudget = (maxNetWindowDays*24 + 1) * netStateHourCap
+// netPairPointBudget bounds one pair's points: the longest window's hours at the
+// hourly cap.
+const netPairPointBudget = maxNetWindowDays * 24 * netStateHourCap
 
-// NetWindow is the span one scorer pass reads: Days of hour buckets ending with
-// the current one. The gate and the scoring both count from Start, so a pair is
-// qualified on the same connections it is scored on.
+// NetWindow is the span of complete hours [Start, End) a network model is scored
+// over, by the scorer and the preview alike. Whole hours keep every hour of the
+// day equally represented, and the gate counts exactly what is scored. Days is
+// its length rounded up, which sets the strobe limit.
 type NetWindow struct {
-	Start time.Time
-	Days  int
+	Start, End time.Time
+	Days       int
 }
 
+// netWindowAt is the scorer's window: the days' hours before the current one.
 func netWindowAt(now time.Time, days int) NetWindow {
 	end := now.UTC().Truncate(time.Hour)
-	return NetWindow{Start: end.Add(-time.Duration(days*24-1) * time.Hour), Days: days}
+	return NetWindow{Start: end.Add(-time.Duration(days) * 24 * time.Hour), End: end, Days: days}
 }
 
-func (w NetWindow) sql() string {
-	return fmt.Sprintf("hour >= toDateTime('%s', 'UTC')", w.Start.UTC().Format("2006-01-02 15:04:05"))
+// netPreviewWindow is the preview's window: the range's hours, at least one.
+func netPreviewWindow(r PreviewRange) NetWindow {
+	start, end := r.Start.UTC().Truncate(time.Hour), r.End.UTC().Truncate(time.Hour)
+	if !end.After(start) {
+		end = start.Add(time.Hour)
+	}
+	return NetWindow{Start: start, End: end, Days: int(math.Ceil(end.Sub(start).Hours() / 24))}
+}
+
+func (w NetWindow) hours() int { return int(w.End.Sub(w.Start) / time.Hour) }
+
+// hourSQL bounds a state read to the window.
+func (w NetWindow) hourSQL() string {
+	const layout = "2006-01-02 15:04:05"
+	return fmt.Sprintf("hour >= toDateTime('%s', 'UTC') AND hour < toDateTime('%s', 'UTC')",
+		w.Start.UTC().Format(layout), w.End.UTC().Format(layout))
+}
+
+// timestampSQL bounds a raw log read to the window.
+func (w NetWindow) timestampSQL() string {
+	return fmt.Sprintf("timestamp >= toDateTime64('%s', 3, 'UTC') AND timestamp < toDateTime64('%s', 3, 'UTC')",
+		w.Start.UTC().Format(chTimeLayout), w.End.UTC().Format(chTimeLayout))
 }
 
 // netReadBlockRows keeps a block of wide pair rows small, since the driver decodes
@@ -800,27 +822,33 @@ func netPairGate(def ModelDefinition, mt ModelType, windowDays int, cnt, dur str
 }
 
 // netPairArraysSelect concatenates per-hour rows (hour_cnt, hour_points,
-// hour_dur) into one row per pair, the shape pairFromRow reads. threatIntel, an
-// expression over dst, adds the ti_hit column.
+// hour_dur, hour_first, hour_last) into one row per pair, the shape pairFromRow
+// reads, with its points in time order. threatIntel, an expression over dst,
+// adds the ti_hit column.
 func netPairArraysSelect(perHour, having, threatIntel string) string {
 	ti := ""
 	if threatIntel != "" {
 		ti = fmt.Sprintf(",\n    toUInt64(%s) AS ti_hit", threatIntel)
 	}
-	q := fmt.Sprintf(`SELECT src, dst, port,
-    sum(hour_cnt) AS cnt,
-    arrayFlatten(groupArray(hour_points)) AS points,
+	if having != "" {
+		having = "\nHAVING " + having
+	}
+	return fmt.Sprintf(`SELECT src, dst, port, cnt,
     arrayMap(p -> p.1, points) AS ts_list,
     arrayMap(p -> p.2, points) AS size_list,
-    sum(hour_dur) AS total_duration%s
+    total_duration, first_ts, last_ts%s
+FROM (
+SELECT src, dst, port,
+    sum(hour_cnt) AS cnt,
+    arraySort(arrayFlatten(groupArray(hour_points))) AS points,
+    sum(hour_dur) AS total_duration,
+    toUnixTimestamp(min(hour_first)) AS first_ts,
+    toUnixTimestamp(max(hour_last)) AS last_ts
 FROM (
 %s
 )
-GROUP BY src, dst, port`, ti, perHour)
-	if having != "" {
-		q += "\nHAVING " + having
-	}
-	return q
+GROUP BY src, dst, port%s
+)`, ti, perHour, having)
 }
 
 // netGatedPairsQuery returns the window's pairs that qualify for scoring, from
@@ -830,7 +858,7 @@ func netGatedPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID
 FROM %s
 WHERE %s AND %s
 GROUP BY src, dst, port
-HAVING %s`, stateTable, fractalScopeClause(fractalID), w.sql(),
+HAVING %s`, stateTable, fractalScopeClause(fractalID), w.hourSQL(),
 		netPairGate(def, mt, w.Days, "sum(conn_count)", "sum(dur_sum)"))
 }
 
@@ -843,11 +871,13 @@ func BuildNetScoreReadQuery(def ModelDefinition, mt ModelType, stateTable, fract
 	perHour := fmt.Sprintf(`    SELECT src, dst, port, hour,
         sum(conn_count) AS hour_cnt,
         groupArraySortedMerge(%d)(points) AS hour_points,
-        sum(dur_sum) AS hour_dur
+        sum(dur_sum) AS hour_dur,
+        min(first_ts) AS hour_first,
+        max(last_ts) AS hour_last
     FROM %s
     WHERE %s AND %s
       AND (src, dst, port) GLOBAL IN (%s)
-    GROUP BY src, dst, port, hour`, netStateHourCap, stateTable, fractalScopeClause(fractalID), w.sql(),
+    GROUP BY src, dst, port, hour`, netStateHourCap, stateTable, fractalScopeClause(fractalID), w.hourSQL(),
 		netGatedPairsQuery(def, mt, stateTable, fractalID, w))
 	return netPairArraysSelect(perHour, "", threatIntel)
 }
@@ -859,7 +889,7 @@ func BuildNetPrevalenceQuery(stateTable, fractalID string, w NetWindow) string {
 	return fmt.Sprintf(`SELECT dst, uniqExact(src) AS prev_total
 FROM %s
 WHERE %s AND %s
-GROUP BY dst`, stateTable, fractalScopeClause(fractalID), w.sql())
+GROUP BY dst`, stateTable, fractalScopeClause(fractalID), w.hourSQL())
 }
 
 // BuildNetPairsQuery returns the window's qualifying (src, dst) pairs, the keys
@@ -873,36 +903,19 @@ func BuildNetPairsQuery(def ModelDefinition, mt ModelType, stateTable, fractalID
 func BuildNetNetworkSizeQuery(stateTable, fractalID string, w NetWindow) string {
 	return fmt.Sprintf(`SELECT uniqExact(src) AS network_size
 FROM %s
-WHERE %s AND %s`, stateTable, fractalScopeClause(fractalID), w.sql())
-}
-
-// NetPreviewBounds is the window a network preview aggregates over: [Start, End)
-// on the event timestamp, Days its length rounded up (it sets the strobe limit).
-type NetPreviewBounds struct {
-	Start, End time.Time
-	Days       int
-}
-
-// hours is the number of hour buckets the range touches.
-func (b NetPreviewBounds) hours() int {
-	return int(math.Ceil(b.End.Sub(b.Start.Truncate(time.Hour)).Hours()))
-}
-
-func (b NetPreviewBounds) sql() string {
-	return fmt.Sprintf("timestamp >= toDateTime64('%s', 3, 'UTC') AND timestamp < toDateTime64('%s', 3, 'UTC')",
-		b.Start.UTC().Format(chTimeLayout), b.End.UTC().Format(chTimeLayout))
+WHERE %s AND %s`, stateTable, fractalScopeClause(fractalID), w.hourSQL())
 }
 
 // previewScope is the FROM and WHERE every preview read over raw logs shares:
 // the fractal, the window, a source and destination, and the source filter.
-func previewScope(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
+func previewScope(def ModelDefinition, sourceTable, fractalID string, w NetWindow) (string, error) {
 	nf := netFieldMap(def)
 	src, dst := chFieldRef(nf.SrcField), chFieldRef(nf.DstField)
 	preds, err := sourceFilterSQL(def)
 	if err != nil {
 		return "", err
 	}
-	where := fmt.Sprintf("FROM %s\nWHERE %s AND %s != '' AND %s != '' AND %s", sourceTable, fractalScopeClause(fractalID), src, dst, bounds.sql())
+	where := fmt.Sprintf("FROM %s\nWHERE %s AND %s != '' AND %s != '' AND %s", sourceTable, fractalScopeClause(fractalID), src, dst, w.timestampSQL())
 	for _, p := range preds {
 		where += "\n    AND " + p
 	}
@@ -911,8 +924,8 @@ func previewScope(def ModelDefinition, sourceTable, fractalID string, bounds Net
 
 // BuildNetPreviewAgg returns the preview's aggregation over raw logs in the state
 // read's per-pair shape; threatIntel is the threat intel column's expression, or "".
-func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds, threatIntel string) (string, error) {
-	scope, err := previewScope(def, sourceTable, fractalID, bounds)
+func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalID string, w NetWindow, threatIntel string) (string, error) {
+	scope, err := previewScope(def, sourceTable, fractalID, w)
 	if err != nil {
 		return "", err
 	}
@@ -920,23 +933,25 @@ func BuildNetPreviewAgg(def ModelDefinition, mt ModelType, sourceTable, fractalI
 	perHour := fmt.Sprintf(`    SELECT %s AS src, %s AS dst, %s AS port, toStartOfHour(timestamp) AS hour,
         toUInt64(count()) AS hour_cnt,
         groupArraySorted(%d)(%s) AS hour_points,
-        sum(%s) AS hour_dur
+        sum(%s) AS hour_dur,
+        min(timestamp) AS hour_first,
+        max(timestamp) AS hour_last
     %s
     GROUP BY src, dst, port, hour`, chFieldRef(nf.SrcField), chFieldRef(nf.DstField), chFieldRef(nf.PortField),
-		netPreviewHourCap(bounds.hours()), netPointExpr(chNumericFieldRef(nf.BytesField)), chNumericFieldRef(nf.DurationField), scope)
-	return netPairArraysSelect(perHour, netPairGate(def, mt, bounds.Days, "cnt", "total_duration"), threatIntel), nil
+		netPreviewHourCap(w.hours()), netPointExpr(chNumericFieldRef(nf.BytesField)), chNumericFieldRef(nf.DurationField), scope)
+	return netPairArraysSelect(perHour, netPairGate(def, mt, w.Days, "cnt", "total_duration"), threatIntel), nil
 }
 
 // netPreviewHourCap is the points a preview keeps per pair and hour, lowered past
 // the longest window to stay within netPairPointBudget.
 func netPreviewHourCap(hours int) int {
-	return min(netStateHourCap, netPairPointBudget/(max(hours, 1)+1))
+	return min(netStateHourCap, netPairPointBudget/max(hours, 1))
 }
 
 // BuildNetPreviewPrevalence returns the per-destination distinct-source counts over
 // raw logs for the preview window, over all sources rather than qualifying pairs.
-func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
-	scope, err := previewScope(def, sourceTable, fractalID, bounds)
+func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID string, w NetWindow) (string, error) {
+	scope, err := previewScope(def, sourceTable, fractalID, w)
 	if err != nil {
 		return "", err
 	}
@@ -947,8 +962,8 @@ func BuildNetPreviewPrevalence(def ModelDefinition, sourceTable, fractalID strin
 
 // BuildNetPreviewNetworkSize returns the total distinct-source count over the preview
 // window, the denominator for the prevalence ratio.
-func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
-	scope, err := previewScope(def, sourceTable, fractalID, bounds)
+func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID string, w NetWindow) (string, error) {
+	scope, err := previewScope(def, sourceTable, fractalID, w)
 	if err != nil {
 		return "", err
 	}
@@ -957,13 +972,13 @@ func BuildNetPreviewNetworkSize(def ModelDefinition, sourceTable, fractalID stri
 
 // BuildNetPreviewPairs returns the preview window's qualifying (src, dst) pairs
 // over raw logs, the preview's counterpart of BuildNetPairsQuery.
-func BuildNetPreviewPairs(def ModelDefinition, mt ModelType, sourceTable, fractalID string, bounds NetPreviewBounds) (string, error) {
-	scope, err := previewScope(def, sourceTable, fractalID, bounds)
+func BuildNetPreviewPairs(def ModelDefinition, mt ModelType, sourceTable, fractalID string, w NetWindow) (string, error) {
+	scope, err := previewScope(def, sourceTable, fractalID, w)
 	if err != nil {
 		return "", err
 	}
 	nf := netFieldMap(def)
-	gate := netPairGate(def, mt, bounds.Days, "count()", "sum("+chNumericFieldRef(nf.DurationField)+")")
+	gate := netPairGate(def, mt, w.Days, "count()", "sum("+chNumericFieldRef(nf.DurationField)+")")
 	return fmt.Sprintf("SELECT DISTINCT src, dst FROM (\nSELECT %s AS src, %s AS dst, %s AS port\n%s\nGROUP BY src, dst, port\nHAVING %s\n)",
 		chFieldRef(nf.SrcField), chFieldRef(nf.DstField), chFieldRef(nf.PortField), scope, gate), nil
 }

@@ -16,7 +16,7 @@ import (
 type PairAgg struct {
 	Src, Dst, Port string
 	Count          uint64
-	TsList         []int64   // unix seconds; sorted and window-trimmed before scoring
+	TsList         []int64   // unix seconds, ascending, within the window
 	SizeList       []float64 // per-connection byte sizes
 	FirstTs        int64
 	LastTs         int64

@@ -392,8 +392,8 @@ var modelOwnedColumns = map[string]bool{
 	"entity_key": true, "entity_val": true, "digest": true,
 	"event_count": true, "days": true, "bucket": true,
 	"first_seen": true, "last_seen": true, FirstRecordedColumn: true,
-	"src": true, "dst": true, "port": true, "day": true, parser.HistoryDayColumn: true,
-	"conn_count": true, "ts_state": true, "size_state": true, "dur_sum": true,
+	"src": true, "dst": true, "port": true, parser.HistoryDayColumn: true,
+	"conn_count": true, "dur_sum": true,
 	"first_ts": true, "last_ts": true,
 }
 

@@ -89,15 +89,6 @@ func ResolvePreviewRange(window string, start, end *time.Time, now time.Time) (P
 	return PreviewRange{Start: now.Add(-time.Duration(days) * 24 * time.Hour), End: now, Label: window}, nil
 }
 
-// days is the range's length in whole days, at least 1.
-func (r PreviewRange) days() int {
-	d := int(math.Ceil(r.End.Sub(r.Start).Hours() / 24))
-	if d < 1 {
-		return 1
-	}
-	return d
-}
-
 // endsNow reports whether the range ends at the present, so the preview scores
 // exactly as the live model does rather than as of a past instant.
 func (r PreviewRange) endsNow(now time.Time) bool {
@@ -519,8 +510,9 @@ const previewNetworkPairCap = 20000
 // scorer uses (including the prevalence modifier), so the preview matches the model
 // once it warms up.
 func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt ModelType, def ModelDefinition, rng PreviewRange) (*PreviewResult, error) {
-	windowSecs := int64(rng.days()) * 86400
-	bounds := NetPreviewBounds{Start: rng.Start, End: rng.End, Days: rng.days()}
+	// Scored over the range's complete hours, as the model scores its window.
+	w := netPreviewWindow(rng)
+	windowSecs := int64(w.Days) * 86400
 	source := m.ch.ReadTable()
 	cfg := loadPreviewConfig()
 
@@ -531,7 +523,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 
 	// Prevalence context over the same window (all sources, not just qualifying).
 	var networkSize uint64
-	sizeSQL, err := BuildNetPreviewNetworkSize(def, source, fractalID, bounds)
+	sizeSQL, err := BuildNetPreviewNetworkSize(def, source, fractalID, w)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +532,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	}
 	prevalence := make(map[string]uint64)
 	if networkSize > 0 {
-		prevSQL, err := BuildNetPreviewPrevalence(def, source, fractalID, bounds)
+		prevSQL, err := BuildNetPreviewPrevalence(def, source, fractalID, w)
 		if err != nil {
 			return nil, err
 		}
@@ -556,7 +548,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	var fs firstSeenContext
 	var warnings []string
 	if networkSize > 0 {
-		pairsSQL, err := BuildNetPreviewPairs(def, mt, source, fractalID, bounds)
+		pairsSQL, err := BuildNetPreviewPairs(def, mt, source, fractalID, w)
 		if err != nil {
 			return nil, err
 		}
@@ -568,12 +560,11 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		networkSize = 1 // avoid div-by-zero; no data yields an empty preview below
 	}
 
-	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, bounds, ti)
+	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, w, ti)
 	if err != nil {
 		return nil, err
 	}
 
-	cutoff := rng.End.Unix() - windowSecs
 	var scored, scanned int
 	var maxScore float64
 	var flagged uint64
@@ -598,7 +589,7 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			return nil // keep counting scanned; stop scoring past the cap
 		}
 		scored++
-		p := pairFromRow(row, cutoff)
+		p := pairFromRow(row)
 		var rs RegularityScore
 		if mt == ModelTypeLongConnection {
 			rs = RegularityScore{Score: ScoreLongConn(p.TotalDuration, lc)}
@@ -681,8 +672,8 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	return &PreviewResult{
 		ModelType:    mt,
 		Window:       rng.Label,
-		Start:        rng.Start,
-		End:          rng.End,
+		Start:        w.Start,
+		End:          w.End,
 		Metric:       metricLabel,
 		Histogram:    buckets,
 		WouldFlag:    flagged,

@@ -63,7 +63,7 @@ Setting or changing the window rebuilds the model, like any other change to what
 
 TLSH Index is not a detection on its own. It indexes the distinct fuzzy-hash digests in a field, which is what [`tlsh()`](../bql/enrichment.md#tlsh) probes instead of scanning every row.
 
-Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one. The state keeps up to 84 connections per pair for each hour, the earliest in that hour, so a busy pair is still scored across the whole day. A pair qualifies, and is scored, on the connections in the window's hours alone.
+Beacon and Long Connection are network models. They maintain rolling per-connection state and score it on a schedule, applying a prevalence modifier so a pattern seen across many hosts scores lower than the same pattern on one. The state keeps up to 84 connections per pair for each hour, the earliest in that hour, so a busy pair is still scored across the whole day. Scoring covers the window's complete hours, up to the start of the current one: a pair qualifies, and is scored, on those connections alone, and a preview counts its range in whole hours the same way.
 
 ### Network modifiers
 

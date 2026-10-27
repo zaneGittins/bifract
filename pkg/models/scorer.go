@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -293,10 +292,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 		}
 		count++
 
-		p := pairFromRow(row, win.Start.Unix())
-		if !p.inWindow() {
-			return nil
-		}
+		p := pairFromRow(row)
 		prevTotal := prevalence[p.Dst]
 		prevRatio := float64(prevTotal) / float64(networkSize)
 
@@ -417,63 +413,23 @@ func (b *resultBuffer) flush(ctx context.Context) error {
 
 // ---- row -> PairAgg ----
 
-// pairFromRow builds a PairAgg from a state-read row, sorting timestamps ascending
-// and trimming them to the window from cutoff.
-func pairFromRow(row map[string]interface{}, cutoff int64) PairAgg {
-	ts := getInt64Slice(row, "ts_list")
-	sizes := getFloat64Slice(row, "size_list")
-	// size_list is parallel to ts_list, and the hours arrive in no order, so
-	// they are sorted together to keep each size with its connection.
-	if len(sizes) == len(ts) {
-		sort.Sort(tsSizes{ts, sizes})
-	} else {
-		sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
-	}
-	// Trim to the window; ts is sorted so find the first index >= cutoff.
-	idx := sort.Search(len(ts), func(i int) bool { return ts[i] >= cutoff })
-	ts = ts[idx:]
-	if len(sizes) >= idx {
-		sizes = sizes[idx:]
-	} else {
-		sizes = nil
-	}
-
-	p := PairAgg{
+// pairFromRow builds a PairAgg from a pair-read row, whose points arrive in time
+// order. First and last seen are the pair's own, not its first and last kept point.
+func pairFromRow(row map[string]interface{}) PairAgg {
+	return PairAgg{
 		Src:           getString(row, "src"),
 		Dst:           getString(row, "dst"),
 		Port:          getString(row, "port"),
 		Count:         getUint64(row, "cnt"),
-		TsList:        ts,
-		SizeList:      sizes,
+		TsList:        getInt64Slice(row, "ts_list"),
+		SizeList:      getFloat64Slice(row, "size_list"),
 		TotalDuration: getFloat64(row, "total_duration"),
+		FirstTs:       int64(getUint64(row, "first_ts")),
+		LastTs:        int64(getUint64(row, "last_ts")),
 
 		ThreatIntelHit: getUint64(row, "ti_hit") > 0,
 	}
-	if len(ts) > 0 {
-		p.FirstTs = ts[0]
-		p.LastTs = ts[len(ts)-1]
-	}
-	return p
 }
-
-// tsSizes sorts a pair's timestamps ascending, carrying each one's size along.
-type tsSizes struct {
-	ts    []int64
-	sizes []float64
-}
-
-func (s tsSizes) Len() int           { return len(s.ts) }
-func (s tsSizes) Less(i, j int) bool { return s.ts[i] < s.ts[j] }
-func (s tsSizes) Swap(i, j int) {
-	s.ts[i], s.ts[j] = s.ts[j], s.ts[i]
-	s.sizes[i], s.sizes[j] = s.sizes[j], s.sizes[i]
-}
-
-// inWindow reports whether any of the pair's connections fall inside the exact
-// window. The state is read by whole day, so a pair seen only early on the
-// window's first day has none left after trimming. Scoring it anyway overwrote
-// its last real result with zero scores and an epoch first/last seen.
-func (p PairAgg) inWindow() bool { return len(p.TsList) > 0 }
 
 func unixToTime(sec int64) time.Time {
 	if sec <= 0 {

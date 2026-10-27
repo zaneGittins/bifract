@@ -215,23 +215,3 @@ func TestFillDiscovery(t *testing.T) {
 		t.Errorf("days outside the window leaked in: total %d", total)
 	}
 }
-
-// A pair whose every connection falls before the window cutoff is not scored, so
-// it never overwrites its last result with zeros and an epoch first/last seen.
-func TestPairOutsideWindowIsNotScored(t *testing.T) {
-	cutoff := int64(1_000_000)
-	stale := pairFromRow(map[string]interface{}{
-		"src": "10.0.0.1", "dst": "10.0.0.2", "port": "443", "cnt": uint64(5),
-		"ts_list": []uint32{999_000, 999_100, 999_200, 999_300, 999_400},
-	}, cutoff)
-	if stale.inWindow() {
-		t.Fatal("a pair with no connection in the window must not be scored")
-	}
-	live := pairFromRow(map[string]interface{}{
-		"src": "10.0.0.1", "dst": "10.0.0.2", "port": "443", "cnt": uint64(5),
-		"ts_list": []uint32{999_000, 1_000_100, 1_000_200},
-	}, cutoff)
-	if !live.inWindow() || live.FirstTs != 1_000_100 || live.LastTs != 1_000_200 {
-		t.Fatalf("in-window pair: %+v", live)
-	}
-}

@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func TestCHBeaconReadKeepsEveryHour(t *testing.T) {
 	if len(rows) != 1 || getString(rows[0], "src") != "10.0.0.1" {
 		t.Fatalf("gated pairs: %v", rows)
 	}
-	p := pairFromRow(rows[0], w.Start.Unix())
+	p := pairFromRow(rows[0])
 	// The current hour may hold fewer than the cap.
 	if len(p.TsList) < 167*netStateHourCap || len(p.TsList) > 168*netStateHourCap {
 		t.Errorf("%d points, want the hourly cap on each of 167-168 hours", len(p.TsList))
@@ -136,6 +137,11 @@ func TestCHBeaconReadKeepsEveryHour(t *testing.T) {
 	}
 	if len(p.SizeList) != len(p.TsList) {
 		t.Errorf("%d sizes for %d timestamps", len(p.SizeList), len(p.TsList))
+	}
+	// Last seen is the pair's last connection, not its last kept point early in
+	// the window's last hour.
+	if p.LastTs < w.End.Unix()-30 {
+		t.Errorf("last seen %v, want within 30s of %v", time.Unix(p.LastTs, 0).UTC(), w.End)
 	}
 }
 
@@ -163,7 +169,7 @@ func TestCHBeaconStateCoversEveryHour(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("pairs: %v", rows)
 	}
-	p := pairFromRow(rows[0], w.Start.Unix())
+	p := pairFromRow(rows[0])
 	if p.Count != 3*8640 {
 		t.Errorf("count %d, want every connection", p.Count)
 	}
@@ -182,6 +188,43 @@ func TestCHBeaconStateCoversEveryHour(t *testing.T) {
 	rs := ScoreBeacon(p, def.Beacon.WithDefaults(3*86400), 3*86400)
 	if rs.TsScore < 0.99 || rs.HistScore < 0.99 || rs.DurScore < 0.99 {
 		t.Errorf("a 10s beacon scored %+v", rs)
+	}
+}
+
+// A beacon firing every hour at half past is perfectly regular in time, whatever
+// minute it is scored at, and a preview of the same day scores exactly the points
+// the model does.
+func TestCHHourlyBeaconScoresWholeHours(t *testing.T) {
+	d := newCHDB(t)
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	d.connLogsAt("10.0.0.1", "198.51.100.1", base.Add(-30*time.Hour+30*time.Minute), time.Hour, 33, 1)
+	def := ModelDefinition{}
+	d.netState(def, 1)
+
+	for _, minute := range []time.Duration{10 * time.Minute, 50 * time.Minute} {
+		now := base.Add(minute)
+		w := netWindowAt(now, 1)
+		rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", w, "") + scorerReadSettings())
+		if len(rows) != 1 {
+			t.Fatalf("pairs: %v", rows)
+		}
+		p := pairFromRow(rows[0])
+		rs := ScoreBeacon(p, def.Beacon.WithDefaults(86400), 86400)
+		if len(p.TsList) != 24 || rs.TsScore != 1 || rs.HistScore != 1 || rs.DurScore != 1 {
+			t.Errorf("scored at :%02d: %d points, %+v", int(minute.Minutes()), len(p.TsList), rs)
+		}
+
+		q, err := BuildNetPreviewAgg(def, ModelTypeBeacon, "logs", "f1", netPreviewWindow(PreviewRange{Start: now.Add(-24 * time.Hour), End: now}), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev := d.rows(q)
+		if len(prev) != 1 {
+			t.Fatalf("preview pairs: %v", prev)
+		}
+		if pp := pairFromRow(prev[0]); !reflect.DeepEqual(pp, p) {
+			t.Errorf("preview %+v\nmodel   %+v", pp, p)
+		}
 	}
 }
 
@@ -207,7 +250,7 @@ func TestCHNetGateMatchesTheWindow(t *testing.T) {
 	pairs := func(mt ModelType) map[string]PairAgg {
 		out := map[string]PairAgg{}
 		for _, r := range d.rows(BuildNetScoreReadQuery(def, mt, "s", "f1", w, "") + scorerReadSettings()) {
-			p := pairFromRow(r, w.Start.Unix())
+			p := pairFromRow(r)
 			out[p.Src] = p
 		}
 		return out
@@ -237,13 +280,35 @@ func TestCHNetGateMatchesTheWindow(t *testing.T) {
 	}
 }
 
+// The health summary runs against the tables a network model creates, and
+// reports the oldest hour and latest connection its state holds.
+func TestCHNetHealthSummary(t *testing.T) {
+	d := newCHDB(t)
+	first := time.Now().UTC().Truncate(time.Hour).Add(-5 * time.Hour)
+	d.connLogsAt("10.0.0.1", "198.51.100.1", first, time.Minute, 120, 1)
+	d.netState(ModelDefinition{}, 1)
+	d.exec(BuildNetResultsTableDDL("r"))
+	for _, mt := range []ModelType{ModelTypeBeacon, ModelTypeLongConnection} {
+		rows := d.rows(healthSummarySQL(mt, ModelDefinition{}, "r", "s", "f1", time.Now()))
+		if len(rows) != 1 {
+			t.Fatalf("%s: %v", mt, rows)
+		}
+		if got := getUint64(rows[0], "oldest"); got != uint64(first.Unix()) {
+			t.Errorf("%s: oldest %v, want %v", mt, time.Unix(int64(got), 0).UTC(), first)
+		}
+		if got := getUint64(rows[0], "newest"); got != uint64(first.Add(119*time.Minute).Unix()) {
+			t.Errorf("%s: newest %v, want the last connection", mt, time.Unix(int64(got), 0).UTC())
+		}
+	}
+}
+
 // A preview longer than the longest window keeps each pair inside the point
-// budget, counting the extra calendar day a range off midnight touches.
+// budget.
 func TestCHBeaconPreviewStaysInBudget(t *testing.T) {
 	d := newCHDB(t)
 	d.connLogs("10.0.0.1", "198.51.100.1", 30*time.Second, 31*2880)
 	end := time.Now().UTC()
-	b := NetPreviewBounds{Start: end.Add(-30 * 24 * time.Hour), End: end, Days: 30}
+	b := netPreviewWindow(PreviewRange{Start: end.Add(-30 * 24 * time.Hour), End: end})
 	q, err := BuildNetPreviewAgg(ModelDefinition{}, ModelTypeBeacon, "logs", "f1", b, "")
 	if err != nil {
 		t.Fatal(err)
@@ -547,7 +612,7 @@ SOURCE(CLICKHOUSE(TABLE 'iocs' DB '%s' USER 'default' PASSWORD '%s')) LAYOUT(COM
 	}
 	rows := d.rows(BuildNetScoreReadQuery(def, ModelTypeBeacon, "s", "f1", w, hit) + scorerReadSettings())
 	for _, r := range rows {
-		p := pairFromRow(r, 0)
+		p := pairFromRow(r)
 		if want := p.Dst == "203.0.113.10"; p.ThreatIntelHit != want {
 			t.Errorf("%s: threat intel %v, want %v", p.Dst, p.ThreatIntelHit, want)
 		}
