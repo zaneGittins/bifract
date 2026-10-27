@@ -1,422 +1,211 @@
 # Field Operations
 
-## Field Assignment
+Field operations compute new values per row: assignments, expression functions, conditional `case` blocks, and transform commands such as `regex()` or `split()`.
 
-Assign computed values to new fields using `:=`:
+## Field assignment
 
-```
-severity := "high"
-score := bytes * 2
-label := status
-tag := substr(lower(image), 1, 10)
-```
-
-The right-hand side is a full expression: functions nest, arithmetic follows normal precedence, and parentheses group.
+`name := expression` adds a field. The right side is a full expression: functions nest, arithmetic follows normal precedence, and parentheses group.
 
 ```
-* | mb := round(bytes / 1048576, 2)
-* | user_host := concat(user, "@", hostname)
 * | zone := if(cidr(src_ip, "10.0.0.0/8"), "internal", "external")
 ```
 
-After an aggregation, an assignment references the computed aliases:
+After an aggregation, assignments can use its output columns:
 
 ```
-* | groupby(user) | multi(count(field=hostname, distinct=true, as=hosts), count(field=event_id, as=events)) | events_per_host := events / hosts
+* | groupBy(user) | multi(count(field=hostname, distinct=true, as=hosts), count(as=events)) | per_host := events / hosts
 ```
 
-### Types
-
-A field has no declared type, so it coerces to whatever an expression needs: `bytes * 2` works whether or not `bytes` carries a type hint. What is rejected is an operand that is definitely text.
-
-```
-score := bytes * 2              ok
-name  := concat(user, "@", domain)   ok
-name  := user + "@" + domain    error: + expects numbers, use concat()
-```
-
-A missing field reads as empty text, so `length()` of one is 0 and `isEmpty()` is true.
-
-### Named arguments
-
-Every function accepts its parameter names. Positional arguments come first, named ones after, and a parameter cannot be given both ways.
-
-```
-substr(commandline, 1, 50)
-substr(field=commandline, start=1, length=50)
-substr(commandline, length=50, start=1)
-```
-
-### Functions
-
-| Category | Functions |
-|---|---|
-| Text | `lower`, `upper`, `length`, `substring`, `concat`, `coalesce`, `splitAt`, `replaceRegex`, `trim`, `base64Decode`, `urlDecode`, `hash`, `toString` |
-| Numbers | `abs`, `floor`, `ceil`, `round`, `editDistance`, `entropy`, `toNumber` |
-| Network | `isPrivateIP`, `isIPv4`, `isIPv6`, `ipPrefix`, `cidr` |
-| Time | `dateDiff` |
-| Conditions | `isEmpty`, `startsWith`, `endsWith`, `contains`, `if` |
-
-`true` and `false` are boolean literals, so a condition can be compared to one:
-
-```
-event_id=3 | isPrivateIP(dst_ip) = false
-event_id=3 | NOT isPrivateIP(dst_ip)
-```
-
-`isPrivateIP()` covers RFC1918, loopback, link-local, CGNAT and the IPv6 equivalents, replacing a chain of `!cidr()` calls. A value that is not an address is not private.
-
-`ipPrefix(field, bits)` returns the enclosing network as `network/bits`. Group by it to find which subnets are active, which a membership test cannot answer:
-
-```
-event_id=3 | groupby(ipPrefix(src_ip, 24), function=count(dst_port, unique=true)) | _count > 50
-```
-
-`dateDiff("unit", start, end)` counts whole units between two times. Either side may be a log field holding a time in any of the usual shapes; a row whose value cannot be parsed yields no result rather than failing the query.
-
-```
-* | age := dateDiff("second", first_seen, last_seen)
-* | dateDiff("hour", process_start, timestamp) > 24
-```
-
-Where a pipeline command of the same name exists (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`), the name means the same thing in either position. As a stage it binds its documented output column; inside an expression it returns a value.
-
-```
-* | len(commandline) | _len > 500
-* | n := len(commandline) | n > 500
-```
-
-An unknown function name is an error, never a field reference, so a typo cannot quietly match nothing.
-
-### Expressions as filters
-
-An expression that reads as a condition can be a filter on its own, with no assignment:
-
-```
-* | lower(image) = "cmd.exe"
-* | len(commandline) > 500
-* | startsWith(image, "C:\\Windows")
-* | !contains(commandline, "-enc")
-```
-
-An expression that produces a value rather than a condition is an error, so `| lower(image)` on its own is rejected instead of filtering on whatever that string became.
-
-Names shared with a pipeline command keep their command meaning unless a comparison follows, so `| len(commandline)` still binds `_len` and `cidr(a) OR cidr(b)` still behaves as it always has.
-
-```
-* | len(commandline) | _len > 500      the command, binding _len
-* | len(commandline) > 500             the expression, as a filter
-```
-
-Filtering on an expression computes it per row, so it cannot prune through a skip index. Put a time range or a selective indexed filter in front of it.
-
-### Expressions in command arguments
-
-A field position accepts an expression, so a derived value can be grouped, sorted, projected or aggregated without materialising it first:
-
-```
-* | groupby(lower(user))
-* | groupby(substr(image, 1, 10), function=count())
-* | sort(len(commandline), order=desc)
-* | table(user, len(commandline))
-* | dedup(lower(user))
-* | groupby(user, function=sum(len(commandline)))
-```
-
-The output column is named after the expression, so `groupby(lower(user))` produces `lower_user`, addressable downstream like any other column.
-
-Bracket lists stay argument syntax rather than array values, so `table([a,b,c])`, `concat([a,b], as=x)` and `in(f, values=[...])` are unchanged.
+- **Types:** fields have no declared type and convert to what an expression needs, so `bytes * 2` works. An operand that is definitely text is rejected: `user + "@" + domain` is an error, use `concat()`.
+- **Missing fields** read as empty text: `length()` is 0 and `isEmpty()` is true.
+- **Named arguments:** every function accepts its parameter names after the positional ones, e.g. `substr(commandline, length=50, start=1)`.
+- **Unknown names** are an error, never a field reference, so a typo cannot quietly match nothing.
 
 ### Eval
 
-Alternative syntax for field assignments inside a pipeline. The quoted text is the same expression language:
+`eval()` is an alternative spelling of an assignment:
 
 ```
 * | eval("score = bytes + priority")
 ```
 
-## Hash
+## Expression functions
 
-Create a hash key from one or more fields:
+Use these inside `:=`, `eval()`, filters and command arguments.
+
+| Function | Returns |
+|---|---|
+| `lower(field)`, `upper(field)` | Lowercased or uppercased text. Aliases `lowercase`, `uppercase` |
+| `length(field)` | Character count. Alias `len` |
+| `substring(field, start, length)` | Part of the text, counting from 1; `length` is optional. Alias `substr` |
+| `concat(a, b, ...)` | The values joined, at least two |
+| `coalesce(a, b, ...)` | The first non-empty value |
+| `splitAt(field, delimiter, index)` | The Nth part after splitting, counting from 1 |
+| `replaceRegex(field, pattern, replacement)` | The text with every regex match replaced |
+| `trim(field)` | The text without leading and trailing whitespace |
+| `base64Decode(field)`, `urlDecode(field)` | Decoded text; empty when base64 is invalid |
+| `hash(a, ...)` | A hex hash (cityHash64) of the values |
+| `toString(value)`, `toNumber(value)` | The value as text, or as a number (empty if not numeric) |
+| `abs(value)`, `floor(value)`, `ceil(value)` | Absolute value, rounded down, rounded up |
+| `round(value, digits)` | Rounded to `digits` decimal places, or to a whole number |
+| `editDistance(a, b)` | Damerau-Levenshtein distance. Alias `levenshtein` |
+| `entropy(field)` | Shannon entropy in bits per character |
+| `isIPv4(field)`, `isIPv6(field)` | True for a valid address of that version |
+| `isPrivateIP(field)` | True for RFC1918, loopback, link-local, CGNAT and IPv6 equivalents. Non-addresses are not private |
+| `ipPrefix(field, bits)` | The enclosing network as `network/bits`, empty for a non-address |
+| `cidr(field, range)` | True when the address is in the range |
+| `dateDiff(unit, start, end)` | Whole units between two times: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`. Unparseable times give no result |
+| `isEmpty(field)` | True when missing or empty |
+| `startsWith(field, prefix)`, `endsWith(field, suffix)` | True on a match, case-sensitive |
+| `contains(field, text)` | True on a match, case-insensitive |
+| `if(condition, then, else)` | `then` or `else`. For more outcomes use `case` |
 
 ```
-* | hash(user)
-* | hash(user, computer)
-* | hash(user, event_id, as=composite_key)
+* | mb := round(bytes / 1048576, 2)
+event_id=3 | groupBy(ipPrefix(src_ip, 24), function=count(dst_port, unique=true)) | _count > 50
+* | dateDiff("hour", process_start, timestamp) > 24
 ```
 
-Uses `cityHash64` internally. Useful for creating composite keys for dictionary lookups.
+`true` and `false` are literals, so `isPrivateIP(dst_ip) = false` and `NOT isPrivateIP(dst_ip)` are the same filter.
 
-## Case Statements
+### Expressions as filters
 
-Evaluate conditional branches in order. Each branch is written as `condition | commands`, branches are separated by `;`, and `*` is the default branch:
-
-```
-case {
-  status=200 | result := "ok" ;
-  status=404 | result := "not found" ;
-  * | result := "other"
-}
-```
-
-### Conditions
-
-A branch condition accepts any filter operator (`=`, `!=`, `=~` contains-any, `=^` starts-with, `=$` ends-with, `>`, `<`, `>=`, `<=`, and `=/regex/`) as well as `in(...)` and `cidr(...)`:
+An expression that yields a condition is a filter on its own:
 
 ```
-case {
+* | startsWith(image, "C:\\Windows") AND len(commandline) > 500
+```
+
+An expression that yields a value, such as `| lower(image)` alone, is an error. Expression filters are computed per row and cannot use a skip index, so put a selective filter in front.
+
+A name that is also a command (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`) runs as the command unless a comparison follows:
+
+```
+* | len(commandline) | _len > 500    the command, which adds _len
+* | len(commandline) > 500           an expression filter
+```
+
+### Expressions in command arguments
+
+Any field argument accepts an expression, so a derived value can be grouped, sorted or aggregated directly:
+
+```
+* | groupBy(lower(user), function=sum(len(commandline)))
+```
+
+The column is named after the expression: `groupBy(lower(user))` produces `lower_user`.
+
+## Case
+
+`case` evaluates branches in order and runs the first that matches. Each branch is `condition | commands`, branches end with `;`, and `*` is the default:
+
+```
+* | case {
   image=~powershell,pwsh     | tool := "shell" ;
-  cidr(src_ip, "10.0.0.0/8") | zone := "internal" ;
+  cidr(src_ip, "10.0.0.0/8") | tool := "internal" ;
   * | tool := "other"
-}
+} | groupBy(tool)
 ```
 
-### Multiple commands per branch
+- Conditions accept any filter, including `in()` and `cidr()`.
+- A branch can run several commands, e.g. `level=error | sev := "high" | regex(...)`. They apply only to rows matching that branch.
+- Aggregates in a branch (`image=~powershell | count() | sum(bytes)`) are computed per branch in a single scan.
+- `groupBy`, `sort`, `limit`, `head`, `tail`, `dedup`, `table`, `join`, `chain`, outlier commands and charts cannot run inside a branch. Put them after the `case`.
 
-A branch can run several pipe commands. Field assignments and per-row transforms (`regex`, `eval`, `lowercase`, and others) apply only to rows matching the branch:
+## Transform commands
 
-```
-case {
-  level=error | sev := "high" | regex(field=norm_log, pattern="code=(?<code>[0-9]+)") ;
-  * | sev := "low"
-}
-```
+Each command adds one column, named as shown unless you pass `as=`.
 
-### Aggregations per branch
-
-Aggregations inside a branch compile to single-pass conditional aggregates (ClickHouse `-If` combinators), producing one column per branch aggregation in a single scan:
-
-```
-case {
-  image=~powershell | count() | sum(bytes) ;
-  image=~explorer   | count() ;
-  * | count()
-}
-```
-
-Structural commands (`groupby`, `sort`, `limit`, `join`, `chain`, window functions, and charts) cannot be used inside a branch. Place them after the `case` (for example, `case { ... } | groupby(tool)`).
-
-## String Operations
-
-### Regex Extraction
+| Command | Output | Description |
+|---|---|---|
+| `lowercase(field)`, `uppercase(field)` | the field itself | Rewrites the field in place. A second argument names a new column instead: `lowercase(user, user_lc)` |
+| `len(field)` | `_len` | Character count |
+| `entropy(field)` | `_entropy` | Shannon entropy, see [below](#entropy) |
+| `logSize(field)` | `_size` | Estimated byte size; no field means the whole event (`norm_log`) |
+| `levenshtein(a, b)` | `_distance` | Damerau-Levenshtein edit distance. A quoted argument is a literal string |
+| `base64Decode(field)` | `_decoded` | Decoded text; empty when invalid |
+| `urldecode(field)` | `_urldecoded` | URL-decoded text |
+| `split(field, "delimiter", index)` | `_split` | The Nth part, counting from 1. A negative index counts from the end |
+| `substr(field, start, length)` | `_substr` | Part of the text, counting from 1; `length` is optional |
+| `coalesce(a, b, ...)` | `_coalesced` | The first non-empty value of two or more fields |
+| `concat([a, b, ...])` | `_concat` | The values joined |
+| `hash(a, ...)` | `_hash` | A hex cityHash64 of the values, useful as a composite lookup key |
+| `sprintf(format, a, ...)` | `_sprintf` | printf-style formatting: `%s` text, `%d` integer, `%f` float |
+| `replace(field, pattern, replacement)` | the field itself | Replaces every regex match in place, or into `as=` |
+| `regex(pattern, field=...)` | named groups | Extracts with a regex, see [below](#regex) |
 
 ```
-* | regex("(\d+\.\d+\.\d+\.\d+)", field=norm_log)
+* | levenshtein(process_name, "svchost.exe") | _distance < 3
+* | split(email, "@", 2) | groupBy(_split)
+* | sprintf("%s@%s", user, domain, as=account)
+* | replace(norm_log, "password=\\S+", "password=***")
+* | logSize() | groupBy(computer_name, function=sum(_size))
 ```
 
-`field=` defaults to `norm_log`, the canonical normalized event text. `raw_log` is not addressable from BQL: it is a demoted, 7-day troubleshooting column stored in a separate table.
+!!! warning "Backslashes in quoted strings"
+    Inside `"..."` a backslash escapes the next character, so write `"\\d+"` for the regex `\d+`. A single backslash is dropped silently: `"\d+"` becomes `d+`. A `/.../` regex literal needs no doubling.
 
-Named captures extract to individual fields:
-
-```
-* | regex(field=image, regex="(.+)\\\\(?<executable_name>.*\\.exe)")
-```
-
-This creates a field called `executable_name` from the named capture group. Both `(?<name>...)` and `(?P<name>...)` are accepted. Each named group becomes its own field; a pattern with no named group and no `as=` produces the array field `regex_match` instead.
-
-### Replace
+### Regex
 
 ```
-* | replace(norm_log, "password=\S+", "password=***")
+* | regex(/(?<user>[^\\]+)$/, field=account)
 ```
 
-### Concat
-
-```
-* | concat([user, host], as=user_host)
-```
-
-### Lowercase
-
-```
-* | lowercase(user)
-```
-
-### Uppercase
-
-```
-* | uppercase(user)
-```
-
-### Length
-
-Returns the string length of a field as `_len`:
-
-```
-* | len(program_name)
-* | len(program_name) | _len > 10
-* | len(message) | sort(_len, desc)
-```
+`field=` defaults to `norm_log`. Each named group, `(?<name>...)` or `(?P<name>...)`, becomes its own field. Without named groups, `as=name` stores the first capture group; with neither, the column `_regex` holds an array of every capture group. The pattern must contain at least one capture group.
 
 ### Entropy
 
-Returns the Shannon entropy of a field as `_entropy`, in bits per character:
-
 ```
 * | entropy(query) | _entropy > 3.5
-* | entropy(commandline) > 5
 ```
 
-It is 0 for an empty string or one character repeated, and rises as the characters get more varied and evenly used. Random or encoded text scores high: generated (DGA) domains, base64, DNS tunneling labels. Ordinary words and paths score lower.
-
-Entropy also grows with length, because a longer string has room for more distinct characters, so one cutoff for strings of every length flags long ordinary names. Compare it against length instead; the points above the trend are random for their length:
+Entropy is 0 for empty or repeated text and rises as characters get more varied. Random or encoded text scores high: DGA domains, base64, DNS tunnel labels. It also grows with length, so instead of one cutoff, plot it against length and look for points above the trend:
 
 ```
-query=* | entropy(query) | len(query) | groupby(query)
+query=* | entropy(query) | len(query) | groupBy(query)
 | multi(max(_entropy, as=h), max(_len, as=n))
 | scatter(x=n, y=h, label=query, line=trend)
 ```
 
-Measure the part that varies: a subdomain label rather than the whole domain, or the encoded argument rather than the whole command line.
+Measure the part that varies, such as a subdomain label or an encoded argument, not the whole string.
 
-### Log Size
+## GeoIP enrichment
 
-Returns the byte size of a log as `_size`. With no argument it measures the whole normalized event (`norm_log`); pass a field to size that column instead. Useful for diagnosing log growth by summing or aggregating sizes:
-
-```
-* | logSize() | sort(_size, desc)
-* | logSize() | groupby(computer_name, function=sum(_size))
-* | logSize(message, as=_msgsize) | _msgsize > 4096
-```
-
-Sizes are computed at query time via ClickHouse `byteSize()` (estimated uncompressed bytes), so they work retroactively on all logs with no extra storage.
-
-### Levenshtein Distance
-
-Calculates the Damerau-Levenshtein edit distance between two fields as `_distance`:
+`lookupIP()` adds location and network columns for an IP address field. Alias `geoip`.
 
 ```
-* | levenshtein(src_host, dst_host)
-* | levenshtein(user, expected_user) | _distance < 3
+* | lookupIP(field=src_ip, include=[country,city]) | groupBy(country)
 ```
 
-Both arguments are resolved as log fields. To compare against a fixed string, materialize it first with an assignment:
+Both `field=` and `include=` are required. `include=` takes any of:
 
-```
-* | baseline := "svchost.exe" | levenshtein(process_name, baseline) | _distance < 3
-```
+| Column | Type | Description |
+|---|---|---|
+| `country` | string | Country name |
+| `city` | string | City name |
+| `subdivision` | string | State or province |
+| `continent` | string | Continent name |
+| `timezone` | string | IANA timezone |
+| `latitude`, `longitude` | float | Coordinates |
+| `postal_code` | string | Postal code |
+| `asn` | integer | Autonomous System Number |
+| `as_org` | string | AS organization name |
 
-Useful for detecting typosquatting, lookalike process names, or fuzzy matching.
+!!! note "Setup"
+    `lookupIP()` needs MaxMind GeoLite2. Get a free license key at [maxmind.com](https://www.maxmind.com/en/geolite2/signup), then set `MAXMIND_LICENSE_KEY` and `MAXMIND_ACCOUNT_ID` in `.env` (or the container environment). The databases download on startup and refresh daily. Without them the query fails with an error naming these variables.
 
-### Base64 Decode
+## World map
 
-Decodes a base64-encoded field as `_decoded`. Returns empty string on invalid input:
-
-```
-* | base64Decode(payload)
-* | base64Decode(encoded_command) | _decoded=/powershell/i
-* | base64Decode(data) | table(data, _decoded)
-```
-
-### Split
-
-Splits a field by a delimiter and returns the Nth element (1-indexed) as `_split`:
-
-```
-* | split(path, "/", 2)
-* | split(email, "@", 2) | groupby(_split, function=count())
-```
-
-The index must be a positive integer.
-
-### Substring
-
-Extracts a substring from a field as `_substr`:
-
-```
-* | substr(message, 1, 50)
-* | substr(hash, 1, 8)
-* | substr(path, 5)
-```
-
-### URL Decode
-
-Decodes a URL-encoded field as `_urldecoded`:
-
-```
-* | urldecode(request_uri)
-* | urldecode(query_string) | _urldecoded=/script/i
-```
-
-### Coalesce
-
-Returns the first non-empty value from a list of fields as `_coalesced`:
-
-```
-* | coalesce(user, username, account_name)
-* | coalesce(src_ip, client_ip) | groupby(_coalesced, function=count())
-```
-
-### Sprintf
-
-Formats fields into a string using printf-style format specifiers as `_sprintf`:
-
-```
-* | sprintf("%s - %s", username, action, as=user_action)
-* | sprintf("https://%s:%d/%s", hostname, port, path, as=full_url)
-* | sprintf("%s@%s", user, domain) | groupby(_sprintf, function=count())
-```
-
-Supports `%s` (string), `%d` (integer), `%f` (float), and other standard format specifiers. Use `as=` to set a custom output field name.
-
-## GeoIP Enrichment
-
-### lookupIP
-
-Enriches logs with geolocation and ASN data from MaxMind GeoLite2 databases. Requires `MAXMIND_LICENSE_KEY` and `MAXMIND_ACCOUNT_ID` environment variables to be configured.
-
-```
-* | lookupIP(field=src_ip, include=[country,city])
-* | lookupIP(field=client_ip, include=[asn,as_org,country])
-* | lookupIP(field=src_ip, include=[country,city]) | groupby(country, function=count())
-```
-
-**Parameters:**
-- `field` (required): The log field containing the IP address
-- `include` (required): Columns to retrieve from the GeoIP databases
-
-**Available columns:**
-
-| Column | Source | Type | Description |
-|--------|--------|------|-------------|
-| country | City DB | string | Country name |
-| city | City DB | string | City name |
-| subdivision | City DB | string | State/province |
-| continent | City DB | string | Continent name |
-| timezone | City DB | string | IANA timezone |
-| latitude | City DB | float | Geographic latitude |
-| longitude | City DB | float | Geographic longitude |
-| postal_code | City DB | string | Postal/ZIP code |
-| asn | ASN DB | integer | Autonomous System Number |
-| as_org | ASN DB | string | AS organization name |
-
-**Setup:**
-
-Add these environment variables to your `.env` file (or pass them to the container):
-
-```
-MAXMIND_LICENSE_KEY=your_license_key
-MAXMIND_ACCOUNT_ID=your_account_id
-```
-
-Obtain a free license key at [maxmind.com](https://www.maxmind.com/en/geolite2/signup). The databases are downloaded automatically on startup and refreshed daily.
-
-## World Map Visualization
-
-### graphWorld
-
-Renders data points on an interactive world map. Points with geographic proximity are clustered together at low zoom levels and split apart as you zoom in. Works in search, notebooks, and dashboards.
+`graphWorld()` plots rows on a zoomable world map, clustering nearby points. Alias `worldmap`.
 
 ```
 * | lookupIP(field=src_ip, include=[latitude,longitude,country]) | graphWorld(label=country)
-* | lookupIP(field=src_ip, include=[latitude,longitude,city,asn]) | graphWorld(label=city)
-* | graphWorld(lat=geo_lat, lon=geo_lon, limit=10000)
 ```
 
-**Parameters:**
-- `lat` (optional): Latitude field name (default: `latitude`)
-- `lon` (optional): Longitude field name (default: `longitude`)
-- `label` (optional): Field to display as marker label in popups
-- `limit` (optional): Maximum number of points (default: 5000, max: 50000)
-
-The map supports zoom, pan, and click-to-expand clusters. Individual markers show a popup with the label, coordinates, and additional fields from the result row.
+| Parameter | Description |
+|---|---|
+| `lat` | Latitude field. Default `latitude` |
+| `lon` | Longitude field. Default `longitude` |
+| `label` | Field shown in each marker's popup |
+| `render` | Maximum points drawn. Default 5000, max 50000 |
+| `limit` | Maximum rows the query returns |

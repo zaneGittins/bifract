@@ -1,34 +1,40 @@
 # Ingestion Tuning
 
-## Architecture
+How Bifract protects ClickHouse during ingest, and which settings to change when senders see `429` responses or ClickHouse sits idle.
+
+## How backpressure works
 
 ```
-HTTP Request --> Token Auth --> Healthy? --> Parse --> Enqueue --> [Worker Pool] --> ClickHouse
-                    |              |                      |
-               Invalid? 401   Pressure? 429      Backpressure? 429
+Request --> Token check --> Healthy? --> Parse --> Enqueue --> Workers --> ClickHouse
+               |               |                      |
+             401             429                    429
 ```
 
-Incoming logs are queued in memory and written to ClickHouse in batches by a pool of workers. Each queue slot holds at most 5,000 logs (larger batches are automatically split). Bifract applies layered backpressure to protect the cluster:
+Accepted logs are queued in memory and written to ClickHouse in batches by a worker pool. Every rejection is a `429` with a `Retry-After` header, so a well-behaved sender just retries. Bifract rejects when any of these hold:
 
-1. **Early rejection** - Before reading or parsing the request body, the handler checks whether the system is under pressure. This avoids wasting CPU on JSON parsing during overload.
-2. **Consecutive failures** - If 3+ sequential ClickHouse inserts fail, new batches are rejected immediately. Auto-recovers 30 seconds after the last failure.
-3. **CPU pressure** - A background monitor polls ClickHouse OS CPU metrics every 5 seconds. Activates after 6 consecutive polls above 80% (30 seconds sustained), so a single heavy user query does not interrupt ingest. Releases at 60% (hysteresis prevents oscillation). This directly measures ClickHouse health and self-calibrates to any hardware.
-4. **Memory pressure** - Same monitor, activating after 3 consecutive polls above 90% and releasing at 80%. The shorter debounce reflects that sustained high memory is close to an OOM kill, where inserts and merges die first. On containerized and Kubernetes deployments this reads the pod's own cgroup limit, not the node's.
-5. **Disk pressure** - Rejects above 90% disk usage, releasing at 80%. ClickHouse degrades near 90% and risks corruption past 95%.
-6. **Buffer bytes** - Rejects once the in-process accumulator exceeds its byte cap, which stops Bifract accepting faster than ClickHouse can drain regardless of row counts.
-7. **Queue depth** - Rejects when accepting the batch would push the queue past 50% capacity.
-8. **Archive spool** - When the [Iceberg archive](../administration/backup-restore.md#iceberg-archive) is enabled, rejects at 90% of the spool's capacity, releasing at 70%. The spool is fail-closed: a batch that cannot be durably spooled is rejected rather than acknowledged.
+| Check | Trips at | Clears at |
+|---|---|---|
+| Failed inserts | 3 consecutive ClickHouse insert failures | 30 s after the last failure |
+| ClickHouse CPU | Above 80% for 6 polls (30 s) | Below 60% |
+| ClickHouse memory | Above 90% for 3 polls (15 s); reads the pod's cgroup limit on Kubernetes | Below 80% |
+| ClickHouse disk | Above 90% used | Below 80% |
+| Buffered bytes | In-process buffer above `BIFRACT_INGEST_BUFFER_BYTES` | Buffer drains |
+| Queue depth | Batch would take the queue past half its slots | Queue drains |
+| Archive spool | 90% of spool capacity, when the [Iceberg archive](../administration/backup-restore.md#iceberg-archive) is on | Below 70% |
+| Fractal disk quota | Fractal is over its quota and set to reject | Space freed or quota raised |
+| Rate limit | More than `BIFRACT_INGEST_RATE_LIMIT` requests/second from one client IP | Next second |
 
-All rejections return `429 Too Many Requests` with a `Retry-After` header. With default settings (100 slots, 5,000 logs per slot), the queue can buffer up to 500,000 logs (~1GB).
+The health checks (failures, CPU, memory, disk, spool) run before the body is read, so an overloaded server does not spend CPU parsing. Each queue slot holds at most 5,000 logs; larger requests are split across slots. The archive spool is fail-closed: a batch that cannot be spooled is rejected, never acknowledged.
 
-## Configuration
+## Settings
 
-| Variable | Default | When to Tune |
-|----------|---------|--------------|
-| `BIFRACT_INGEST_WORKERS` | `4` | ClickHouse CPU is underutilized during bulk imports |
-| `BIFRACT_INGEST_QUEUE_SIZE` | `100` | Frequent `429` responses during ingestion spikes (increase for larger deployments) |
-| `BIFRACT_INGEST_RATE_LIMIT` | `10000` | Legitimate sources are being rate-limited |
-| `BIFRACT_INGEST_RATE_BURST` | `20000` | Bursty sources need higher peak throughput |
-| `BIFRACT_MAX_BODY_SIZE` | `209715200` | Need to accept requests larger than 200MB |
+| Variable | Default | Change when |
+|----------|---------|-------------|
+| `BIFRACT_INGEST_WORKERS` | `4` | ClickHouse CPU is idle during bulk imports |
+| `BIFRACT_INGEST_QUEUE_SIZE` | `100` | Frequent `429`s during short spikes |
+| `BIFRACT_INGEST_RATE_LIMIT` | `10000` | Legitimate senders hit the per-IP request limit |
+| `BIFRACT_INGEST_RATE_BURST` | `20000` | Bursty senders need a higher peak |
+| `BIFRACT_MAX_BODY_SIZE` | `209715200` (200 MB) | Requests larger than 200 MB; Caddy also caps the ingest port at 200 MiB |
+| `BIFRACT_INGEST_BUFFER_BYTES` | `268435456` (256 MB) | Buffered-bytes rejections while memory is free |
 
-On Kubernetes, `BIFRACT_INGEST_WORKERS` and `BIFRACT_INGEST_QUEUE_SIZE` are set per resource profile by `--install-k8s` rather than left at these defaults. See the [Sizing Guide](../getting-started/sizing.md#ingest-concurrency).
+On Kubernetes, `--install-k8s` sets `BIFRACT_INGEST_WORKERS` and `BIFRACT_INGEST_QUEUE_SIZE` per resource profile. See the [Sizing Guide](../getting-started/sizing.md#ingest-concurrency).

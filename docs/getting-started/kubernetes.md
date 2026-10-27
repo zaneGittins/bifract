@@ -1,15 +1,12 @@
 # Kubernetes Deployment
 
-ClickHouse scales vertically on a single node exceptionally well, but when you need high availability or have outgrown the resources of a single machine, Bifract supports deploying across a Kubernetes cluster. This guide walks through deploying to a managed Kubernetes provider such as AWS EKS, Azure AKS, or GKE.
-
-Docker Compose and Kubernetes are both fully supported, first-class deployment methods. Choose based on your needs: Docker Compose is the simplest path for a single node, while Kubernetes is the right choice when you need high availability or horizontal scale. See [Installation](installation.md) for the Docker Compose setup.
+Deploy Bifract to a Kubernetes cluster (EKS, AKS, GKE and similar) when you need more than one node for ClickHouse. `bifract --install-k8s` generates Kustomize manifests with secure credentials; you apply them with `kubectl`. For a single host, [Docker Compose](installation.md) is simpler.
 
 ## Prerequisites
 
-- A running Kubernetes cluster (1.28+)
-- `kubectl` configured and connected to your cluster
-- `helm` v3.0+ installed
-- A domain name
+- Kubernetes 1.28 or later, with `kubectl` connected to it
+- `helm` 3
+- A domain name you can point at a load balancer
 
 ## Architecture
 
@@ -21,7 +18,7 @@ graph TB
     subgraph k8s ["Kubernetes Cluster (bifract namespace)"]
         caddy["Caddy (LoadBalancer)<br/><small>Reverse Proxy + TLS + Log Shipper</small>"]
         app["Bifract App x1<br/><small>UI + Query + Alerts</small>"]
-        ingest["Bifract Ingest x1<br/><small>Ingestion (independently scalable)</small>"]
+        ingest["Bifract Ingest<br/><small>Ingestion (independently scalable)</small>"]
         litellm["LiteLLM<br/><small>AI Proxy</small>"]
         pg[("PostgreSQL<br/><small>StatefulSet</small>")]
 
@@ -34,223 +31,152 @@ graph TB
         keeper[("ClickHouse Keeper<br/><small>Coordinates DDL + cross-shard queries</small>")]
     end
 
-    iceberg[("Apache Iceberg archive<br/><small>Object storage - durability / DR</small>")]
+    iceberg[("Apache Iceberg archive<br/><small>Object storage, durability / DR</small>")]
 
     users -->|"HTTPS :443"| caddy
     sources -->|"HTTPS :8443"| caddy
-    caddy -->|"UI / query :8080"| app
-    caddy -->|"ingest :8080"| ingest
+    caddy -->|"UI / query"| app
+    caddy -->|"ingest"| ingest
     app --> pg
     ingest --> pg
     app -->|"Distributed table"| ch
     ingest -->|"Distributed table"| ch
-    ingest -->|"tee every log"| iceberg
+    ingest -->|"copy of every log"| iceberg
     app --> litellm
     shard0 & shard1 & shard2 --> keeper
 ```
 
-The ingest tier is a separate Deployment so it can be scaled (or paused to `0`) independently of the app tier, which keeps serving the UI, queries, and alerts.
+ClickHouse is sharded for throughput but not replicated: each shard is one replica. Durability comes from the [Iceberg archive](../administration/backup-restore.md#iceberg-archive), which receives a copy of every log once enabled. Keeper is still needed for `ON CLUSTER` DDL and cross-shard queries.
 
-ClickHouse is sharded for throughput but **not replicated**: each shard is a single replica. Durability and disaster recovery come from the Apache Iceberg archive, which receives a copy of every ingested log. Keeper remains because it coordinates distributed (`ON CLUSTER`) DDL and cross-shard query routing even without replication.
+## Deploy
 
-## Step 1: Install ClickHouse Operator
+1. Install cert-manager and wait for it:
 
-Bifract uses the [official ClickHouse Kubernetes Operator](https://clickhouse.com/docs/clickhouse-operator/overview) to manage ClickHouse and Keeper clusters.
+    ```bash
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml
+    kubectl -n cert-manager wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=120s
+    ```
 
-First, install cert-manager (required by the operator):
+2. Install the [ClickHouse operator](https://clickhouse.com/docs/clickhouse-operator/overview) and check its pod is running:
 
-```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.yaml
-```
+    ```bash
+    helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \
+      oci://ghcr.io/clickhouse/clickhouse-operator-helm
+    kubectl -n clickhouse-operator-system get pods
+    ```
 
-Wait for cert-manager to be ready:
+    Skip steps 1 and 2 if you choose an external ClickHouse or ClickHouse Cloud in the wizard.
 
-```bash
-kubectl -n cert-manager wait --for=condition=ready pod -l app.kubernetes.io/instance=cert-manager --timeout=120s
-```
+3. Generate the manifests:
 
-Then install ClickHouse operator:
+    ```bash
+    bifract --install-k8s
+    ```
 
-```bash
-helm install clickhouse-operator -n clickhouse-operator-system --create-namespace \
-  oci://ghcr.io/clickhouse/clickhouse-operator-helm
-```
+    | Step | Options |
+    |---|---|
+    | Domain | For example `bifract.example.com` |
+    | SSL | **Let's Encrypt (automatic)** or **Custom certificate** |
+    | IP access | **Allow all traffic**, **Restrict UI only (allow ingest)**, **Restrict all traffic** or **mTLS (mutual TLS for UI)** |
+    | Resources | Size profile, **Dev** to **X-Large**. See the [Sizing Guide](sizing.md). |
+    | ClickHouse | **Bundled (recommended)**, **External ClickHouse** or **ClickHouse Cloud** |
+    | Shards, storage | Bundled only. Shards default to the profile's value; storage per shard defaults to 100 GB. |
+    | Output | Manifest directory, default `./bifract-k8s` |
 
-Verify it's running:
+    Save the admin password from the summary; it is not shown again. To skip the wizard, see [Non-interactive Install](non-interactive.md).
 
-```bash
-kubectl -n clickhouse-operator-system get pods
-```
+4. Apply the manifests and watch the pods start:
 
-## Step 2: Generate Manifests
+    ```bash
+    kubectl apply -k ./bifract-k8s
+    kubectl -n bifract get pods -w
+    ```
 
-Run the Kubernetes install wizard:
+    Expect PostgreSQL, ClickHouse Keeper, one ClickHouse pod per shard, the Bifract app, Bifract ingest, the archive maintainer, Caddy (with a log shipper sidecar) and LiteLLM. ClickHouse pods can take a minute while the operator creates them.
 
-```bash
-bifract --install-k8s
-```
+5. Get Caddy's external IP and create a DNS A record for your domain pointing at it:
 
-The wizard will prompt for:
+    ```bash
+    kubectl -n bifract get svc caddy
+    ```
 
-| Setting | Description | Example |
-|---------|-------------|---------|
-| Domain | Your domain name | `bifract.example.com` |
-| SSL mode | Let's Encrypt or custom cert | Let's Encrypt |
-| IP access | Traffic restriction mode (includes mTLS option) | Allow all |
-| Resource profile | Cluster sizing preset (Dev through X-Large) | Small |
-| CH shards | ClickHouse shards for horizontal scaling | `1` |
-| CH storage | Storage per shard in GB | `100` |
-| Output dir | Where to write manifests | `./bifract-k8s` |
+    Once DNS resolves, Caddy obtains a Let's Encrypt certificate. Sign in at `https://bifract.example.com` as `admin`.
 
-The resource profile sets CPU and memory requests/limits for all components based on your expected workload. The shard count is pre-filled by the profile but can be adjusted. Each shard is a single replica; durability is handled by the Iceberg archive, not ClickHouse replication. See [Sizing Guide](sizing.md) for details on each profile and the disk performance requirements.
+!!! note "The app tier runs one replica"
+    The app pod mounts the MaxMind PVC, which is `ReadWriteOnce`, so `replicas` stays at 1 with the `Recreate` strategy. Scale the ingest StatefulSet for ingest volume instead. To run more app replicas, first move the MaxMind PVC to an RWX storage class (Azure Files, EFS, NFS).
 
-This generates a complete set of Kustomize manifests with secure credentials in the output directory. Save the admin password displayed at the end.
-
-To generate manifests from a config file instead of the wizard, see [Non-interactive Install](non-interactive.md).
-
-## Step 3: Deploy
-
-```bash
-kubectl apply -k ./bifract-k8s
-```
-
-Watch the pods come up:
+## Verify
 
 ```bash
-kubectl -n bifract get pods -w
-```
-
-You should see:
-
-- 1 PostgreSQL pod
-- 1 ClickHouse Keeper pod (managed by the operator via `KeeperCluster`)
-- 1 ClickHouse pod per shard (managed by the operator via `ClickHouseCluster`; single replica each)
-- 1 Bifract app pod
-- 1 Bifract ingest pod (a StatefulSet, independently scalable)
-- 1 Bifract archive maintainer pod (singleton; idle until archiving is enabled)
-- 1 Caddy pod (with a log shipper sidecar)
-- 1 LiteLLM pod
-
-!!! note "The app tier runs a single replica"
-    The app pod mounts the MaxMind PVC, which defaults to `ReadWriteOnce`. A second replica would land on another node and stall with a multi-attach error, so `replicas` stays at 1 and the update strategy is `Recreate`. Scale the ingest tier instead, which is what handles ingest volume. To run more than one app replica, set the MaxMind PVC to an RWX storage class (for example `azurefile-csi`, EFS, or NFS) first.
-
-ClickHouse and Keeper pods may take a minute as the operator creates and configures them.
-
-## Step 4: Configure DNS
-
-Get the load balancer's external IP:
-
-```bash
-kubectl -n bifract get svc caddy
-```
-
-Create an A record for your domain pointing to the external IP of Caddy. Once DNS propagates, Caddy will automatically provision a Let's Encrypt certificate. You can then log in at `https://your-domain.com` with the admin credentials from Step 2.
-
-## Verification
-
-Check the cluster is healthy:
-
-```bash
-# Bifract health
 curl https://bifract.example.com/api/v1/health
-
-# Bifract pod logs
 kubectl -n bifract logs -l app=bifract --tail=50
-
-# ClickHouse cluster status
 kubectl -n bifract exec -it bifract-ch-clickhouse-0-0-0 -- \
   clickhouse-client --query "SELECT * FROM system.clusters"
-
-# Network policies
 kubectl -n bifract get networkpolicies
 ```
 
-## Scaling ClickHouse
+## Post-deploy configuration
 
-The shard count is set during `--install-k8s` and can be changed at any time with `--reconfigure-k8s`. Shards distribute data across multiple nodes for increased storage capacity and query throughput. Bifract does not use ClickHouse replicas; each shard is a single replica and durability comes from the Iceberg archive, so scaling is purely a matter of adding shards.
+Optional features read their settings from the `bifract-secrets` Secret, which ships with empty placeholders. Fill in the keys, then restart the workloads that use them.
 
 ```bash
-# Scale to 3 shards (3 total ClickHouse pods, one per shard)
+kubectl -n bifract edit secret bifract-secrets
+kubectl -n bifract rollout restart deployment bifract
+```
+
+| Feature | Secret keys | Restart |
+|---|---|---|
+| [OIDC / SSO](../administration/oidc-sso.md) | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`, `OIDC_SCOPES`, `OIDC_DEFAULT_ROLE`, `OIDC_ALLOWED_DOMAINS`, `OIDC_BUTTON_TEXT` | `deployment bifract` |
+| [Backups](../administration/backup-restore.md) | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | `deployment bifract` |
+| [Iceberg archive](../administration/backup-restore.md#iceberg-archive) | `ARCHIVE_ENABLED`, `ARCHIVE_BACKEND`, `ARCHIVE_PREFIX`, `ARCHIVE_S3_*` or `ARCHIVE_AZURE_*` | `deployment bifract`, `statefulset bifract-ingest`, `deployment bifract-archive-maintain` |
+| [GeoIP enrichment](../bql/field-operations.md) | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | `deployment bifract` |
+| [AI Chat](../features/ai-chat.md) | `LITELLM_API_KEY` | `deployment litellm` |
+
+`--upgrade-k8s` and `--reconfigure-k8s` copy values you set with `kubectl edit` back into the manifests, as long as `kubectl` can reach the cluster when you run them.
+
+## Scale ClickHouse
+
+Change the shard count at any time. Each shard adds one ClickHouse pod; writes and queries are spread across all shards.
+
+```bash
 bifract --reconfigure-k8s --dir ./bifract-k8s --shards 3
 kubectl apply -k ./bifract-k8s
 ```
 
-This regenerates the ClickHouse cluster manifest and updates `CLICKHOUSE_HOSTS` automatically. Bifract's Distributed table routes queries across all shards and distributes writes evenly.
-
-## Post-Deploy Configuration
-
-Optional features are configured by editing the `bifract-secrets` Secret. The generated manifests include empty placeholders for all optional integrations. To enable a feature, populate the relevant keys and restart Bifract:
-
-```bash
-kubectl -n bifract edit secret bifract-secrets
-kubectl rollout restart deployment bifract -n bifract
-```
-
-| Feature | Secret Keys | Docs |
-|---------|------------|------|
-| OIDC / SSO | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`, `OIDC_SCOPES`, `OIDC_DEFAULT_ROLE`, `OIDC_ALLOWED_DOMAINS`, `OIDC_BUTTON_TEXT` | [OIDC/SSO](../administration/oidc-sso.md) |
-| S3 Backups | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` | [Backup & Restore](../administration/backup-restore.md) |
-| GeoIP Enrichment | `MAXMIND_LICENSE_KEY`, `MAXMIND_ACCOUNT_ID` | [Field Operations](../bql/field-operations.md) |
-| AI Chat | `LITELLM_API_KEY` | [AI Chat](../features/ai-chat.md) |
-
-## Upgrading
-
-Use `--upgrade-k8s` to upgrade to a new Bifract version. This re-renders all manifests with the new image tag while preserving your secrets, resource profiles, and settings. A timestamped backup is created before any files are modified.
+## Upgrade
 
 ```bash
 bifract --upgrade-k8s --dir ./bifract-k8s
-```
-
-The command will:
-
-1. Read your existing secrets and settings from the current manifests
-2. Check that the new version's container image is available
-3. Back up all manifests to `.backups/<timestamp>/`
-4. Re-render manifests with the new version
-
-Apply the changes with `kubectl apply -k`. PVCs are not modified. Existing data is preserved across upgrades.
-
-When a release moves to a newer ClickHouse, the operator restarts the ClickHouse and Keeper pods on the new image as part of the apply. ClickHouse cannot be downgraded, so do not apply manifests from `.backups/` that predate that release: an older ClickHouse cannot read data the newer one wrote, and those logs disappear from search. See [Rolling back after a ClickHouse upgrade](../administration/backup-restore.md#rolling-back-after-a-clickhouse-upgrade).
-
-## Reconfiguring
-
-Use `--reconfigure-k8s` to change settings without upgrading the version. This is useful for switching IP access modes, changing the domain, or picking up template improvements after a binary update.
-
-```bash
-# Switch to mTLS (generates CA automatically)
-bifract --reconfigure-k8s --dir ./bifract-k8s --ip-access mtls-app
-
-# Change domain
-bifract --reconfigure-k8s --dir ./bifract-k8s --domain new.example.com
-
-# Switch to IP-restricted access
-bifract --reconfigure-k8s --dir ./bifract-k8s --ip-access restrict-app --allowed-ips "10.0.0.0/8,192.168.1.0/24"
-
-# Re-render with no changes (picks up new templates)
-bifract --reconfigure-k8s --dir ./bifract-k8s
-```
-
-Available override flags:
-
-| Flag | Description | Values |
-|------|-------------|--------|
-| `--ip-access` | IP access control mode | `all`, `restrict-app`, `restrict-all`, `mtls-app` |
-| `--allowed-ips` | Allowed CIDRs (comma-separated) | `10.0.0.0/8,192.168.1.0/24` |
-| `--domain` | Domain name | `bifract.example.com` |
-| `--shards` | ClickHouse shard count | `1`, `2`, ... |
-
-Like `--upgrade-k8s`, a backup is created before writing. All secrets and resource profiles are preserved. After reconfiguring, apply the changes:
-
-```bash
 kubectl apply -k ./bifract-k8s
 ```
 
-## Troubleshooting
+`--upgrade-k8s` checks the new image exists, backs up the manifests to `.backups/<timestamp>/`, and re-renders them with the new version. Secrets, size profile and settings are kept; PVCs and data are not touched. Add `--size <profile>` to change the size profile in the same step.
 
-**Bifract pods crash-looping:** Check logs with `kubectl -n bifract logs <pod>`. Usually means the databases are still starting. The pods will self-recover once PostgreSQL and ClickHouse are ready.
+!!! warning "ClickHouse cannot be downgraded"
+    When a release moves to a newer ClickHouse, the operator restarts ClickHouse and Keeper on the new image. Do not apply manifests from `.backups/` that predate that release: an older ClickHouse cannot read data the newer one wrote. See [Rolling back after a ClickHouse upgrade](../administration/backup-restore.md#rolling-back-after-a-clickhouse-upgrade).
 
-**SSL errors / Let's Encrypt not issuing cert:** Verify DNS is pointing to the load balancer IP and that ports 80/443 are reachable. Check Caddy logs with `kubectl -n bifract logs -l app=caddy`. If Caddy attempted certificate issuance before DNS was ready, it may have cached a failed state. Restart the Caddy pod to retry:
+## Reconfigure
+
+`--reconfigure-k8s` re-renders the manifests without changing version, keeping secrets. Run it with no flags to pick up template changes from a newer `bifract` binary, or with overrides:
 
 ```bash
-kubectl rollout restart deployment caddy -n bifract
+bifract --reconfigure-k8s --dir ./bifract-k8s --ip-access restrict-app --allowed-ips "10.0.0.0/8,192.168.1.0/24"
+kubectl apply -k ./bifract-k8s
 ```
+
+| Flag | Values |
+|---|---|
+| `--ip-access` | `all`, `restrict-app`, `restrict-all`, `mtls-app` (generates a client CA) |
+| `--allowed-ips` | Comma-separated IPs or CIDRs |
+| `--domain` | New domain, for example `new.example.com` |
+| `--size` | `dev`, `x-small`, `small`, `medium`, `large`, `x-large` (also resets shards to the profile's value) |
+| `--shards` | ClickHouse shard count, 1 or more |
+
+A backup is written to `.backups/` before any change.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Bifract pods crash-loop right after deploy | Usually PostgreSQL or ClickHouse is still starting; the pods recover on their own. Check `kubectl -n bifract logs <pod>`. |
+| No Let's Encrypt certificate | Check DNS points at the load balancer and ports 80 and 443 are reachable. Read `kubectl -n bifract logs -l app=caddy`. If Caddy tried before DNS was ready, restart it: `kubectl -n bifract rollout restart deployment caddy`. |

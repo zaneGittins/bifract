@@ -1,26 +1,28 @@
 # Chain (Sequential Event Detection)
 
-Find entities that produced a sequence of events: a user who signed in and then launched PowerShell, a process that called out to the internet and then to an internal host.
+`chain()` finds entities that produced a sequence of events, such as a user who signed in and then launched PowerShell. Use it when the order of events, not just their presence, is the signal.
 
 ## Syntax
 
 ```
-chain(field, ..., within=DURATION, sequence=strict|any) { step1; step2; step3 }
+chain(field, ..., within=DURATION, sequence=strict|any) { step1; step2; ... }
 ```
 
-| Parameter | Description |
-|-----------|-------------|
-| `field` (required) | The identity the steps share. Several fields are aliases for one entity: an event joins a group if *any* of them holds that entity's value. |
-| `within` | Longest gap between consecutive steps, in `s`, `m`, `h` or `d`. Without it, the steps only have to fall inside the query's time range. |
-| `sequence` | Whether the steps must happen in the written order. Defaults to `strict`; `sequence=any` asks only that each step happened, and cannot be combined with `within`. |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `field` (required) | | Identity the steps share. Several fields are treated as aliases for one entity: an event joins a group if any of them holds that value. |
+| `within` | none | Longest gap between consecutive steps (`s`, `m`, `h`, `d`, `w`). Without it, steps only have to fall inside the query's time range. |
+| `sequence` | `strict` | `strict`: steps must happen in the written order. `any`: each step must happen, in any order. `any` cannot be combined with `within`. |
 
-**Block syntax:**
+**Steps:**
 
-- Steps are separated by `;`, conditions within a step by `|` (AND). At least two steps are required.
-- A step is a row condition, so it takes what a filter takes, `in()`, `cidr()` and `comment()` included. Anything that projects or aggregates (`regex()`, `groupby()`, `sort()`, `match()`) is rejected.
-- A step can test [`modelLookup()`](enrichment.md#position-in-the-pipeline) columns when `modelLookup()` comes before `chain()` in the pipeline.
+- Separate steps with `;` and conditions within a step with `|` (AND). `OR` works inside a step. At least two steps are required.
+- A step takes anything a filter takes, including `in()`, `cidr()` and `comment()`.
+- A step may compute a per-row value (`len()`, `match()`, `lookupIP()`) and filter on it in the same step: `len(commandline) | _len > 500`. The value is not visible to other steps.
+- Commands that reshape or aggregate (`groupby()`, `sort()`, `table()`, assignments) are rejected, and so is a step with no condition.
+- A step can test [`modelLookup()`](enrichment.md#modellookup) columns when `modelLookup()` comes before `chain()`.
 
-**Returns:** the identity field, named `_entity` when several were given, and `chain_count`, how many times the full sequence occurred.
+**Returns:** one row per entity with the identity field (named `_entity` when several fields were given) and `chain_count`, the number of times the full sequence occurred. Rows are sorted by `chain_count`, highest first.
 
 ## Examples
 
@@ -33,7 +35,7 @@ chain(user) {
 }
 ```
 
-The same actor across differently named fields, within a day:
+The same actor across differently named fields, each step within a day of the last:
 
 ```
 chain(user, source_user, target_user, within=1d) {
@@ -43,7 +45,7 @@ chain(user, source_user, target_user, within=1d) {
 }
 ```
 
-A process that reached the internet and then an internal host. `!cidr()` is also true of a missing address, so the first step requires a value:
+A process that reached the internet and then an internal host. `!cidr()` is also true when the field is missing, so the first step requires a value:
 
 ```
 bifract_category="network_connect" | chain(process_guid, within=5m) {
@@ -52,7 +54,7 @@ bifract_category="network_connect" | chain(process_guid, within=5m) {
 }
 ```
 
-Order does not matter here, only that the user did both:
+Both events, in any order:
 
 ```
 chain(user, sequence=any) {
@@ -61,16 +63,7 @@ chain(user, sequence=any) {
 }
 ```
 
-Filters narrow what is chained, and the results pipe on like any other rows:
-
-```
-event_source=Security | chain(user, within=1h) {
-  event_id=4624;
-  event_id=4688
-} | limit(10)
-```
-
-A stats command after `chain()` aggregates the matches, one row per entity, so this counts the users who completed the sequence:
+Count the users who completed the sequence (a stats command after `chain()` aggregates its one-row-per-entity output):
 
 ```
 chain(user, within=1h) {
@@ -79,9 +72,9 @@ chain(user, within=1h) {
 } | count()
 ```
 
-## How It Works
+## How it works
 
-- Rows group by identity. With several fields, a row is expanded into one row per identity value it carries, so an event lands in every group it belongs to.
-- Ordered chains match the steps as a sequence over event timestamps at millisecond precision, so same-second events still sequence correctly.
-- Unordered chains only require that each step occurred. `chain_count` is then the smallest per-step count: the number of complete sets.
-- Every result carries a hidden `_chain_ts`, the timestamps of one matching sequence in step order, so drilldowns and alert evidence can fetch the exact events without running the query again.
+- Rows are grouped by identity. With several fields, each row is expanded into one row per non-empty identity value, so an event lands in every group it belongs to.
+- Strict chains are matched over event timestamps at millisecond precision, so same-second events still sequence correctly.
+- With `sequence=any`, `chain_count` is the smallest per-step count: the number of complete sets.
+- Each result carries a hidden `_chain_ts`, the timestamps of one matching sequence, so drilldowns and alert evidence fetch the exact events without rerunning the query.

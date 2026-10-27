@@ -1,49 +1,30 @@
 # Log Ingestion
 
-Ingestion endpoints require token authentication and are rate-limited. Logs are accepted into a buffered queue and inserted into ClickHouse asynchronously by a worker pool.
+The request and response contract for the three ingestion endpoints. For getting a token and shipper setup, see [Sending Logs](../ingestion/overview.md); the endpoints also appear in [All Operations](reference.md).
 
-This page covers the payload formats and the backpressure contract. The endpoints themselves are in [All Operations](reference.md).
+All three authenticate with an ingest token (`Authorization: Bearer bifract_ingest_...`, or `ApiKey bifract_ingest_...` for Elasticsearch clients), are rate-limited per client IP, and accept `Content-Encoding: gzip`. Logs land in the fractal the token belongs to. Accepted logs are queued and written to ClickHouse asynchronously.
 
-## Bifract native format
+## Native: `POST /api/v1/ingest`
 
-```
-POST /api/v1/ingest
-Content-Type: application/json
-```
+Send `Content-Type: application/json` with any of:
 
-Accepts three formats:
+| Format | Example |
+|---|---|
+| JSON array | `[{"event_id": 4624, "user": "SYSTEM"}, {"event_id": 1}]` |
+| Single object | `{"message": "user login", "source_ip": "10.0.0.1"}` |
+| NDJSON | One JSON object per line |
 
-**JSON array:**
+The token's **Parser** decides how the body is read: JSON (above), key=value, or syslog lines.
+
+Response:
+
 ```json
-[
-  {"event_id": 1, "image": "C:\\Windows\\System32\\cmd.exe"},
-  {"event_id": 4624, "user": "SYSTEM"}
-]
+{"success": true, "count": 2, "message": "Accepted 2 log(s) for ingestion"}
 ```
 
-**Single object:**
-```json
-{"message": "user login", "user": "admin", "source_ip": "10.0.0.1"}
-```
+## Elasticsearch bulk: `POST` or `PUT /_bulk`
 
-**NDJSON (newline-delimited):**
-```
-{"event_id": 1, "image": "powershell.exe"}
-{"event_id": 4624, "user": "admin"}
-```
-
-## Fractal routing
-
-Each ingest token is scoped to a single fractal. Logs are routed to the fractal associated with the token.
-
-## Elasticsearch bulk format (Velociraptor compatible)
-
-```
-POST /_bulk
-PUT /_bulk
-```
-
-Accepts standard Elasticsearch NDJSON bulk format:
+Standard bulk NDJSON, compatible with Velociraptor and other Elasticsearch clients:
 
 ```
 {"index": {"_index": "logs"}}
@@ -52,37 +33,21 @@ Accepts standard Elasticsearch NDJSON bulk format:
 {"event_id": 4624, "user": "admin"}
 ```
 
-Response follows the Elasticsearch bulk response schema.
+`index` and `create` are accepted. `update` and `delete` fail per item, since ingest is append-only. The response follows the Elasticsearch bulk schema (`took`, `errors`, `items`).
 
-## OpenTelemetry (OTLP)
+## OpenTelemetry: `POST /v1/logs`
 
-```
-POST /v1/logs
-Content-Type: application/x-protobuf | application/json
-```
+An OTLP/HTTP `ExportLogsServiceRequest`, as `application/x-protobuf` or `application/json`. The reply is an `ExportLogsServiceResponse` in the request's content type, empty on full success. Field mapping is in [Sending Logs](../ingestion/overview.md#opentelemetry-collector).
 
-Accepts OTLP/HTTP `ExportLogsServiceRequest` in either protobuf or JSON encoding. This is the standard OTLP endpoint path, so most collectors and agents work without custom path configuration.
+## Status codes
 
-Resource attributes are stored with a `resource.` prefix, scope attributes with a `scope.` prefix, and log record attributes are stored directly. The log body is mapped to the `message` field. Trace and span IDs are stored as hex strings.
+| Status | Meaning | Sender should |
+|--------|---------|---------------|
+| `200` | Accepted into the queue | Continue |
+| `400` | Unparseable body, or no valid logs | Fix the payload |
+| `401` | Missing or invalid ingest token | Fix the token; do not retry |
+| `413` | Body over `BIFRACT_MAX_BODY_SIZE` (default 200 MB) | Send smaller batches |
+| `429` | Rate limit, backpressure, full queue, or fractal quota | Retry after `Retry-After` |
+| `503` | Token could not be checked (database unreachable) | Retry after `Retry-After` |
 
-Returns an `ExportLogsServiceResponse` (empty on full success) using the same content type as the request.
-
-## Response codes
-
-| Status | Meaning |
-|--------|---------|
-| `200` | Logs accepted into ingestion queue |
-| `400` | Invalid payload or no valid logs found |
-| `401` | Missing or invalid ingest token |
-| `413` | Request body exceeds size limit (default 200MB) |
-| `429` | Rate limit exceeded or ingestion queue full. Retry with backoff |
-
-## Tuning
-
-| Environment variable | Default | Description |
-|---------------------|---------|-------------|
-| `BIFRACT_INGEST_WORKERS` | 4 | Worker goroutines inserting into ClickHouse |
-| `BIFRACT_INGEST_QUEUE_SIZE` | 100 | Pending batch slots (each slot holds at most 5,000 logs) |
-| `BIFRACT_MAX_BODY_SIZE` | 209715200 | Max request body in bytes (200MB) |
-| `BIFRACT_INGEST_RATE_LIMIT` | 10000 | Sustained requests/second |
-| `BIFRACT_INGEST_RATE_BURST` | 20000 | Burst capacity |
+What triggers a `429` and how to tune it is in [Ingestion Tuning](../ingestion/tuning.md).

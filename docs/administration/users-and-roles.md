@@ -1,85 +1,108 @@
 # Users & Roles
 
-## Tenant Roles
+Tenant admins add users, decide who is a tenant admin, and grant per-fractal roles directly or through groups. Everything here lives under **Settings** in the sidebar's **Admin** section.
 
-Users are created with one of two tenant-level roles:
+![Users list](../images/administration/users-list.png)
 
-| Role | Capabilities |
-|------|-------------|
-| `admin` (Tenant Admin) | Full access: manage users, fractals, API keys, delete logs |
-| `user` | Access fractals based on per-fractal permissions |
+## Roles
 
-The first user is created during initial setup as an admin. Additional users are invited by admins from **Settings** in the sidebar's Admin section.
+Every user has one tenant role:
 
-## Fractal Roles
+| Tenant role | Shown as | Can do |
+|-------------|----------|--------|
+| `admin` | Tenant Admin | Everything: users, fractals, prisms, schema, settings, all data |
+| `user` | User | Only what their fractal and prism roles allow |
 
-Each user can be assigned a per-fractal role controlling what they can do within that fractal:
+A `user` also needs a role on each fractal or prism they should see:
 
-| Role | Capabilities |
-|------|-------------|
-| `admin` | Manage fractal settings, keys, and alerts |
-| `analyst` | Search logs, write comments, view alerts and notebooks |
-| `viewer` | Search logs only |
+| Fractal role | Can do |
+|--------------|--------|
+| `viewer` | Search logs and read comments, notebooks, dashboards and alerts |
+| `analyst` | Viewer, plus create and edit comments, notebooks, dashboards and alerts |
+| `admin` | Analyst, plus alert policies and change review, deleting others' comments, and [exports](exporting-logs.md) |
 
-Tenant admins have full access to all fractals regardless of per-fractal roles.
+Tenant admins have full access to every fractal regardless of grants. Fractal settings (access, API keys, ingest tokens, retention, quotas, clearing logs) are tenant admin only. A user's effective role is the strongest one granted directly or through any group.
 
-## User Management
+## Add a user
 
-Admins manage users from **Settings > Users**.
+1. Open **Settings** and stay on the **Users** tab.
+2. Click **Add user**.
+3. Enter a **Username**, an optional **Display name**, and pick a **Role** (**User** or **Tenant Admin**).
+4. Click **Create user**.
+5. Click **Copy** and send the invite link to the user. It expires in 7 days.
 
-- **Create user**: Provide a username, optional display name, and role (`admin` or `user`, defaults to `user`). Admins never set a password. Bifract generates a **one-time invite link** that the user opens to choose their own password. Invite links expire after 7 days; use **Reset invite** to issue a new one.
-- **Enable / disable user**: Suspend an account without deleting it. A disabled user cannot log in but their comments, notebooks, and dashboards are preserved.
-- **Reset password**: Admins can issue a password reset for a local account.
-- **Delete user**: Remove a user account. Admins cannot delete their own account.
-- **Reset two-factor**: Clear a user's authenticator enrollment when they have lost both their device and their recovery codes. They are signed out and enroll again at their next sign in.
-- **Download mTLS certificate**: When running in `mtls-app` mode, a **Cert** button appears next to each user. Click it to generate and download a `.p12` client certificate for that user. See [mTLS Client Certificates](reverse-proxy.md#mtls-client-certificates) for details.
+![Add user dialog](../images/administration/add-user.png)
 
-OIDC-provisioned users have no password and no invite; see [OIDC / SSO](oidc-sso.md).
+The user opens the link and chooses their own password. Admins never set passwords. To give the new user data access, [grant them a fractal role](#grant-access-to-a-fractal-or-prism).
 
-## Failed Sign-In Limits
+## Edit or manage a user
 
-Bifract counts failed password sign-ins two ways, each within a 15 minute window:
+Click a user's name to open **Edit user**, where you can change **Display name** and **Role**. You cannot change your own role.
 
-| Counted per | Limit | Then |
-|-------------|-------|------|
-| Account | 5 wrong passwords | Sign in to that account is refused for 5 minutes, except from addresses it signed in from in the last 30 days. |
-| Client address | 20 failures, for any usernames | Sign in from that address is refused for 15 minutes. |
+Other actions are in the row's **⋮** menu:
 
-The account limit stops guessing at one password from many addresses. Because anyone who knows a username can trigger it, the owner can still sign in from an address they used before, and the block is short for a new one. The address limit is higher because an office or VPN puts many people behind one address. Usernames that do not exist count only against the address.
+| Action | What it does |
+|--------|--------------|
+| **Resend Invite** | Issues a new invite link for a user who has not signed in yet |
+| **Reset Password** | Clears the password and gives you a new invite link to send |
+| **Disable** / **Enable** | Signs the user out and blocks sign in, keeping their comments, notebooks and dashboards |
+| **Reset Two-Factor** | Clears their authenticator after they lose both device and recovery codes; they enroll again at next sign in |
+| **Download mTLS Cert** | Only in `mtls-app` mode. Asks for a password, then downloads a `.p12` client certificate. See [mTLS client certificates](reverse-proxy.md#mtls-client-certificates) |
+| **Delete** | Removes the account. You cannot delete yourself |
 
-A successful sign in clears the account's count but never the address's, so logging in to one account does not buy more guesses at another. Blocked sign-ins return `429` and are recorded in the **system** fractal as `login_failed` events, and the failure that blocks an account is recorded as `login_account_blocked`. Wrong two-factor codes have their own limit of 5 per user, after which codes are refused for 15 minutes.
+OIDC users have no password and no invite; see [OIDC / SSO](oidc-sso.md).
 
-Behind a reverse proxy, the client address comes from the proxy's forwarding headers; see [Trusted Proxies](reverse-proxy.md#trusted-proxies).
+## Grant access to a fractal or prism
 
-## Two-Factor Authentication
+1. Open the fractal (or prism) from **Fractals**.
+2. Click **Fractal settings** (or **Prism settings**) in the sidebar, then the **Access** tab.
+3. Under **Permissions**, click **Grant access**.
+4. Set **Grant to** (**User** or **Group**), pick the user or group, and choose a **Role**.
+5. Click **Grant**.
 
-Bifract uses standard TOTP, which works with Google Authenticator, 1Password, Authy, Bitwarden, and similar.
+![Grant access dialog](../images/administration/grant-access.png)
 
-### Turning it on
-
-Individual users can enroll at any time from the user menu by selecting **Two-Factor Authentication**. Nothing needs to be enabled first.
-
-To require it for everyone, turn on **Require two-factor authentication** under **Settings > Security**. Users are required to enroll at their next sign in.
-
-Two exemptions:
-
-- **SSO accounts are exempt.** Their identity provider is responsible for MFA. See [OIDC / SSO](oidc-sso.md).
-- **API keys are unaffected.** They are not interactive logins and carry their own scoping and revocation. An API key granted tenant administration therefore reaches the API without a code, which is a reason to scope keys narrowly. See [API Keys](ingest-tokens.md).
-
-### Recovery codes
-
-Enrollment hands the user ten single-use recovery codes, shown once. Each one substitutes for an authenticator code at sign in, which is what gets someone back in after a lost or wiped phone. Users can generate a fresh set from the same screen at any time, which invalidates the previous set.
-
-### Requirements
-
-Enrollment secrets are encrypted at rest with a key derived from `BIFRACT_PASSWORD_PEPPER`. The installer generates a pepper for you and carries it across upgrades.
-
-If a deployment has no pepper set, two-factor authentication is unavailable and the settings toggle is disabled rather than storing secrets in plaintext. Rotating the pepper invalidates enrollments along with every password hash, so treat it as a one-time value.
+Tenant admins only. Use **Revoke** on a row to remove a grant.
 
 ## Groups
 
-Groups let you grant fractal and prism permissions to several users at once instead of managing each user individually. Manage them from **Settings > Groups**.
+Groups grant the same role to several users at once.
 
-- Create a group, then add users as members.
-- Grant the group a role on a fractal or prism from that fractal's **Fractal settings > Access**, exactly as you would for a single user.
-- A user's effective role is the strongest role granted to them directly or through any group they belong to.
+1. Open **Settings**, then the **Groups** tab.
+2. Click **Create group**, enter a **Group name** and optional description, and click **Create group**.
+3. Click the group, then **+ Add members** and pick users.
+4. Grant the group a role on a fractal or prism as in [Grant access](#grant-access-to-a-fractal-or-prism), with **Grant to** set to **Group**.
+
+## Two-factor authentication
+
+Bifract uses standard TOTP (Google Authenticator, 1Password, Authy, Bitwarden and similar).
+
+To enroll yourself:
+
+1. Click your name at the bottom of the sidebar and choose **Two-Factor Authentication**.
+2. Click **Set up authenticator**, scan the QR code, enter a code and click **Confirm**.
+3. Save the ten single-use recovery codes, then click **I have saved these codes**.
+
+Each recovery code replaces an authenticator code once. **New recovery codes** in the same dialog replaces the whole set.
+
+To require it for everyone, open **Settings > Security** and turn on **Require two-factor authentication**. Users enroll at their next sign in.
+
+- SSO accounts are exempt; their identity provider handles MFA.
+- [API keys](ingest-tokens.md) never ask for a code, so scope them narrowly.
+
+!!! note "Needs a password pepper"
+    Enrollment secrets are encrypted with a key derived from `BIFRACT_PASSWORD_PEPPER`, which the installer generates. Without a pepper, two-factor is unavailable and the setting is disabled. Changing the pepper invalidates all enrollments and every password, so never rotate it.
+
+## Failed sign-in limits
+
+Failed password sign-ins are counted in a 15 minute window:
+
+| Counted per | Limit | Then |
+|-------------|-------|------|
+| Account | 5 wrong passwords | Sign in to that account is refused for 5 minutes, except from addresses it signed in from in the last 30 days |
+| Client address | 20 failures, any usernames | Sign in from that address is refused for 15 minutes |
+
+- A successful sign in resets the account count, not the address count. Unknown usernames count only against the address.
+- Blocked attempts return `429` and are logged in the **system** fractal as `login_failed`; the failure that blocks an account is logged as `login_account_blocked`.
+- Wrong two-factor codes have their own limit: 5 per user, then 15 minutes blocked.
+- Behind a reverse proxy, the client address comes from forwarding headers; see [Trusted proxies](reverse-proxy.md#trusted-proxies).

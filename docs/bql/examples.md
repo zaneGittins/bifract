@@ -1,21 +1,23 @@
 # Examples
 
-## Find all PowerShell executions grouped by user
+Common queries to copy and adapt. Field names depend on your normalizers.
+
+## PowerShell executions by user
 
 ```
-image=/powershell/i | groupBy(user, function=count()) | sort(_count, order=desc)
+image=/powershell/i | groupBy(user) | sort(_count, order=desc)
 ```
 
-## Top 10 users by data transferred
+## Top 10 users by bytes transferred
 
 ```
 * | groupBy(user, function=sum(bytes)) | sort(_sum, order=desc) | limit(10)
 ```
 
-## HTTP errors in the last time window
+## HTTP errors by status code
 
 ```
-status_code>=400 | groupBy(status_code, function=count()) | barchart()
+status_code>=400 | groupBy(status_code) | barchart()
 ```
 
 ## Classify events by severity
@@ -25,19 +27,13 @@ status_code>=400 | groupBy(status_code, function=count()) | barchart()
   status_code>=500 | severity := "critical" ;
   status_code>=400 | severity := "warning" ;
   * | severity := "info"
-} | groupBy(severity, function=count())
+} | groupBy(severity)
 ```
 
-## Process ancestry graph
+## Request volume over time by status
 
 ```
-event_id=1 | table(process_guid, parent_process_guid) | graph(child=process_guid, parent=parent_process_guid)
-```
-
-## Trace a process tree from a specific process
-
-```
-ptg(start="{63047898-81ee-6860-5202-000000002502}") | pgraph()
+* | timechart(span=5m, groupby(status_code))
 ```
 
 ## Total event count as a single value
@@ -46,13 +42,19 @@ ptg(start="{63047898-81ee-6860-5202-000000002502}") | pgraph()
 * | count() | singleval(title="Total Events")
 ```
 
-## Request volume over time by status
+## Process ancestry graph
 
 ```
-* | groupBy(status_code) | timechart(span=5m, function=count())
+event_id=1 | table(process_guid, parent_process_guid) | graph(child=process_guid, parent=parent_process_guid)
 ```
 
-## Detect patterns
+## Process tree from one process
+
+```
+ptg(start="{63047898-81ee-6860-5202-000000002502}") | pgraph()
+```
+
+## Explorer followed by PowerShell for the same user
 
 ```
 chain(user, within=1h) {

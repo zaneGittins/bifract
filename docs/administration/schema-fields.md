@@ -1,43 +1,63 @@
 # Schema Fields
 
-The **Schema** page (admin-only) controls which log attributes get a dedicated ClickHouse type hint and, optionally, a secondary index for faster filtering. Bifract stores logs in a single `logs` table with attributes in a JSON column; promoting a frequently-filtered field gives it its own sub-column so equality and token lookups skip far more data.
+The **Schema** page shows every field in your logs and lets tenant admins reserve the ones queries use most. A reserved field gets its own ClickHouse column, and optionally a skip index, so filters on it read far less data. It applies to all fractals.
 
-Open it from **Schema** in the sidebar's Admin section. It is project-wide (applies across all fractals), not per-fractal.
+Open it from **Schema** in the sidebar's **Admin** section.
 
-## Project Defaults
+![Schema page](../images/administration/schema.png)
 
-Bifract ships with a set of built-in, type-hinted fields (for example `computer_name`, `src_ip`, `user`). These are always present and cannot be removed.
+## Read the table
 
-## Observed Fields
+A background sweep samples your logs and measures each field. The line at the top says when it last ran; **Refresh** runs it now.
 
-The Schema page lists the field names Bifract has actually seen in your logs, with how often each appears and a recommended index type. This is the normal way to promote a field: find it in the list and **Reserve** it, rather than typing the name from memory.
+| Column | Meaning |
+|--------|---------|
+| **In your logs** | Share of sampled logs that have the field |
+| **Uniques** | Distinct values |
+| **Size** | Bytes on disk |
+| **Queried** | How often alerts, dashboards, saved queries and recent searches use it: Never, Rarely, Sometimes, Often |
+| **Status** | **Reserved** (with **Built in** for project defaults), **Not reserved** or **Ignored** |
+| **Index** | Skip index type, **Applying** while it is added, or **Index failed** |
+| **Recommendation** | **Reserve now**, **Reserve**, **Add index**, **Keep**, **Unused**, or a dash for no action |
 
-Fields you never filter on can be **ignored**, which hides them from the list without changing how they are stored or queried.
+The capacity strip above the table counts dynamic columns against the limit of 1,024. Past it, new fields lose their own column and every query on them scans all rows; those show **Reserve now**.
 
-## Adding a Field
+Click a row to see its top values, what references it, and why it got its recommendation.
 
-Use **Add field** to reserve an attribute that has not appeared in your logs yet. Provide:
+## Reserve a field
 
-- **Field name** - letters, digits, and underscores; must start with a letter or underscore.
-- **Skip index** - one of:
-    - **No index** (default) - applies the type hint (a dedicated sub-column) with no secondary index. This alone is a large speedup for most fields, and costs the least at ingest.
-    - **Set** - for low-cardinality values, under roughly a few hundred distinct values (status, severity, region).
-    - **Bloom filter** - for high-cardinality values (IDs, hashes, hostnames).
+1. Optionally change the **All recommendations** filter to **Reserve** to list the candidates.
+2. Click the field's row.
+3. Click **Reserve field**. Bifract applies the recommended skip index.
 
-Leave the index off unless you actually filter on the field: every index is work done on every ingested row.
+![Field drawer](../images/administration/schema-drawer.png)
 
-!!! note "Indexing is forward-only"
-    A new field applies to **newly ingested logs only**. Existing logs are not retroactively indexed. New fields show an **Indexing** badge that flips to **Active** once ClickHouse finishes applying the schema change.
+To reserve several at once, tick their checkboxes and click **Reserve selected**.
 
-Removing a custom field stops queries from using its index. The underlying ClickHouse type hint and index remain until the next schema reset.
+The column applies to logs you already have. A skip index applies to newly ingested logs only.
 
-## Import / Export
+For a field not in your logs yet, click **Add field**, enter the **Field name** (letters, digits and underscores, starting with a letter or underscore), pick a **Skip index**, and click **Add field**:
 
-Custom fields can be exported to and imported from YAML for version control or moving between deployments. Importing **replaces** all current custom fields with the file's contents; log data is unaffected.
+| Skip index | Use for |
+|------------|---------|
+| **No index** | Default. Fields you read but rarely filter on |
+| **Set** | Under a few hundred distinct values (status, severity, region) |
+| **Bloom filter** | Many distinct values (IDs, hashes, hostnames) |
 
-## Schema Reset
+Every index costs work on each ingested row, so leave it off unless you filter on the field.
 
-!!! danger "Destructive"
-    Reset drops and rebuilds the `logs` table schema and **deletes all log data across every fractal**. It is the only way to retroactively change index hints for existing data. The action requires typing `DELETE ALL LOG DATA` to confirm.
+## Ignore or remove a field
 
-    With the [Iceberg archive](backup-restore.md#iceberg-archive) enabled, the archived copy is untouched by a reset, so log data can be restored afterwards. Without it, a reset is unrecoverable.
+- **Ignore** (in the row's drawer) stops recommending a field. Set the status filter to **Ignored** and click **Restore** to undo.
+- **Remove** (on a reserved custom field) un-reserves it. Its ClickHouse column and index stay until a schema reset.
+
+## Export and import
+
+**Export** downloads your custom fields as `schema-fields.yaml`. **Import** replaces all custom fields with the file's contents. Log data is unaffected.
+
+## Reset the schema
+
+!!! danger "Deletes all log data"
+    **Settings > Danger zone > Reset schema** deletes every log in every fractal and rebuilds the schema from the built-in fields plus your current custom fields. It is the only way to drop columns that are no longer reserved. You must type `DELETE ALL LOG DATA` to confirm.
+
+    With the [Iceberg archive](backup-restore.md#iceberg-archive) on, the archive is untouched and logs can be restored from it afterwards. Without it, a reset cannot be undone.

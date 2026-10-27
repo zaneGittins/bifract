@@ -1,236 +1,171 @@
 # Aggregation
 
+Aggregations collapse matching logs into counts, statistics and groups. Use them to summarize activity, find top talkers, or spot outliers.
+
+![Aggregation results as a table](../images/bql/aggregation-table.png)
 
 ## Output columns
 
-Every aggregate names its column after itself, underscore first: `count()` gives
-`_count`, `sum()` gives `_sum`, `percentile()` gives `_percentile`. The name is
-the same whether the aggregate is a pipeline command or sits inside `multi()`.
+Each aggregate names its column after itself with a leading underscore: `count()` gives `_count`, `sum()` gives `_sum`. Use that name in later filters, `sort()` and `table()`.
 
-`as=` overrides it, and is required when two aggregates of the same kind appear
-in one stage:
+`as=` renames the column. It is required when two aggregates of the same kind share a stage:
 
 ```
 * | groupBy(host, function=multi(sum(bytes_in, as=rx), sum(bytes_out, as=tx)))
 ```
 
-## Count
+After an aggregation only its group keys and output columns exist. Filter on them with a later `|`:
 
 ```
-* | count()
-event_id=1 | count()
+* | groupBy(user, function=sum(bytes)) | _sum >= 1000000
 ```
 
-### Count with Field
-
-Count non-null values of a specific field, or use `unique=true` for distinct counting:
+## Group by
 
 ```
-* | count(computer_name)
-* | count(computer_name, unique=true)
+* | groupBy(image, user)
 ```
 
-## Sum / Avg / Max / Min
+Without `function=`, each group gets `_count`. Pass `function=` for a different aggregate, or `multi()` for several:
 
 ```
-* | sum(bytes)
-* | avg(response_time)
-* | max(bytes)
-* | min(response_time)
+* | groupBy(computer_name, function=multi(count(), count(user, unique=true, as=users), sum(bytes)))
 ```
 
-## Percentile and Standard Deviation
+| Parameter | Description |
+|---|---|
+| fields | One or more fields or expressions to group by |
+| `function=` | Aggregate per group. Default: `count()` |
+| `limit=` | Maximum number of groups returned |
+
+A bare `| count()` after `groupBy()` counts the groups, not the rows in each:
 
 ```
-* | percentile(response_time)
-* | stdDev(response_time)
+* | groupBy(computer_name) | count()
 ```
 
-`percentile()` always returns the p50, p75, and p99 triple; the percentile is not configurable.
+## Basic aggregates
 
-## Median and MAD
+| Function | Output | Description |
+|---|---|---|
+| `count()` | `_count` | Number of rows |
+| `count(field, unique=true)` | `_count` | Number of distinct values. `distinct=true` is the same |
+| `sum(field)` | `_sum` | Total |
+| `avg(field)` | `_avg` | Mean |
+| `min(field)` / `max(field)` | `_min` / `_max` | Smallest or largest value. Works on `timestamp` |
+| `median(field)` | `_median` | Median |
+| `percentile(field)` | `_percentile` | The p50, p75 and p99 values. Not configurable |
+| `stddev(field)` | `_stddev` | Population standard deviation. Alias `stdDev` |
+| `skewness(field)` | `_skewness` | Population skewness. Alias `skew` |
+| `kurtosis(field)` | `_kurtosis` | Population excess kurtosis. Alias `kurt` |
+| `selectFirst(field)` | `_first` | Value from the earliest event |
+| `selectLast(field)` | `_last` | Value from the latest event |
 
 ```
-* | median(response_time)
-* | mad(response_time)
+* | groupBy(user, function=avg(response_time))
+```
+
+!!! note
+    `count(field)` counts every row, including rows without the field. To count only rows that have it, filter first: `user=* | count()`.
+
+Statistical aggregates also work on a previous aggregation's output, for example the spread of per-host counts:
+
+```
+* | groupBy(computer_name) | skewness(_count)
+```
+
+## MAD
+
+```
 * | groupBy(computer_name, function=mad(latency)) | _mad > 50
 ```
 
-`median()` returns the median value (`_median`). `mad()` returns both the median (`_median`) and the median absolute deviation (`_mad`), a robust measure of variability resistant to outliers. Unlike standard deviation, MAD is not skewed by extreme values, making it ideal for anomaly detection on noisy data.
+`mad()` is the median absolute deviation (`_mad`), a measure of spread that extreme values do not skew. As a standalone command it also returns `_median`.
 
 ## Correlation
 
-Measure whether two numeric fields move together, from -1 to 1:
-
 ```
-* | rankcorr(duration, orig_bytes)
-* | groupBy(src_ip, function=multi(rankcorr(orig_bytes, resp_bytes, as=r), count())) | sort(r)
-* | groupBy(src_ip) | multi(sum(orig_bytes, as=sent), sum(resp_bytes, as=received)) | corr(sent, received)
+* | groupBy(src_ip, function=rankcorr(orig_bytes, resp_bytes, as=r)) | sort(r)
 ```
 
-`corr()` is Pearson correlation (`_corr`): how closely the two follow a straight line. `rankcorr()` is Spearman rank correlation (`_rankcorr`): whether one rises when the other does, at any rate. 1 means they rise together, -1 that one falls as the other rises, 0 no relationship. Both are NULL for fewer than two rows or a field that never changes.
+| Function | Output | Measures |
+|---|---|---|
+| `corr(x, y)` | `_corr` | Pearson: how closely the two follow a straight line |
+| `rankcorr(x, y)` | `_rankcorr` | Spearman: whether one rises when the other does |
 
-Prefer `rankcorr()` for byte counts, durations and other heavy-tailed fields: a handful of huge values can drive `corr()` toward 1 or 0 on their own. A group larger than 100,000 rows is ranked from a random sample of that size to keep memory bounded, so its `rankcorr()` can differ by about 0.003 between runs.
+Values run from -1 (one falls as the other rises) through 0 (no relationship) to 1 (rise together). Both are empty for fewer than two rows or a constant field. Prefer `rankcorr()` for byte counts, durations and other heavy-tailed fields, where a few huge values can dominate `corr()`. Groups over 100,000 rows are ranked from a random sample, so `rankcorr()` can vary by about 0.003 between runs.
 
-Use them to choose what to plot: a strong correlation means `scatter(..., line=trend)` has a trend worth comparing against. After a `groupBy`, the last example correlates one value per group, here across hosts.
+## Multi
 
-## Select First / Last
-
-Return the value from the earliest or latest event in each group:
-
-```
-* | groupBy(user) | selectFirst(timestamp)
-* | groupBy(user) | selectLast(timestamp)
-```
-
-## Multiple Aggregations with Multi
+`multi()` computes several aggregates in one stage:
 
 ```
-* | multi(count(), avg(response_time), sum(bytes))
+* | groupBy(user) | multi(count(), avg(response_time), sum(bytes))
 ```
 
-### Count with Named Parameters
+Inside `multi()` or `function=`, aggregates take named arguments: `count(field=event_id, distinct=true, as=unique_events)`. Two extra aggregates are available there:
+
+| Function | Output | Description |
+|---|---|---|
+| `collect(field)` | `_collect` | All values of the field in the group, as an array |
+| `top(field, percent=true)` | `_top` | The 10 most frequent values, with counts, or percentages when `percent=true` |
 
 ```
-* | groupby(user) | multi(count(field=event_id, distinct=true, as=unique_events))
-* | groupby(user) | multi(count(field=event_id, as=total))
+* | groupBy(user) | multi(collect(image), top(field=event_id, percent=true, as=top_events))
 ```
 
-Use `distinct=true` or `unique=true` for unique counts (`uniqExact`), and `as=` to name the output column.
-
-### Collect (groupArray)
+## Top
 
 ```
-* | groupby(user) | multi(collect(image))
+* | top(image, limit=5)
 ```
 
-Collects all values of a field into an array per group.
-
-### Top (Frequency Distribution)
-
-```
-* | groupby(user) | multi(top(field=event_id, percent=true, as=top_events))
-```
-
-Shows the top values with their frequency. Use `percent=true` to show percentages.
-
-## Skewness and Kurtosis
-
-```
-* | skewness(response_time)
-* | kurtosis(response_time)
-```
-
-`skewness()` returns the population skewness (`_skewness`). `kurtosis()` returns the population excess kurtosis (`_kurtosis`). Both work on chained aggregation outputs:
-
-```
-* | groupby(computer_name, function=count()) | skewness(_count)
-* | groupby(computer_name, function=count()) | kurtosis(_count)
-```
+Returns the most frequent values of a field as `_top`. Default `limit=` is 10. `percent=true` shows each value's share of rows instead of its count.
 
 ## Frequency
 
-Build a frequency table with count, percentage, and cumulative percentage:
-
 ```
-* | frequency(event_name)
 * | frequency(status_code)
 ```
 
-Returns `_value`, `_count`, `_percentage`, and `_cumulative_pct` columns, sorted by count descending.
+A frequency table, sorted by count: `_value`, `_count`, `_percentage` and `_cumulative_pct`.
 
-## IQR (Interquartile Range)
-
-```
-* | iqr(response_time)
-* | groupby(computer_name, function=count()) | iqr(_count)
-```
-
-Returns `_q1` (25th percentile), `_q3` (75th percentile), and `_iqr` (Q3 - Q1).
-
-## Head/Tail (Pareto Analysis)
-
-Segment values into "head" and "tail" groups based on cumulative percentage (80/20 rule):
+## Head/tail (Pareto)
 
 ```
-* | headTail(event_name)
 * | headTail(computer_name, threshold=90)
 ```
 
-Returns `_value`, `_count`, `_percentage`, `_cumulative_pct`, and `_segment` (head or tail). Default threshold is 80%.
+Same columns as `frequency()`, plus `_segment`: `head` for values within the first `threshold` percent of rows (default 80), `tail` for the rest.
 
-## Modified Z-Score
+## IQR
 
-Per-row modified z-score using median and MAD, robust to outliers:
+```
+* | iqr(response_time)
+```
+
+Returns `_q1` (25th percentile), `_q3` (75th percentile) and `_iqr` (Q3 minus Q1).
+
+## Modified z-score
 
 ```
 * | modifiedZScore(response_time)
 ```
 
-Returns `_median`, `_mad`, `_modified_z` for each row. Formula: `0.6745 * (x - median) / MAD`.
+Adds `_median`, `_mad` and `_modified_z` to each row, where `_modified_z = 0.6745 * (x - median) / MAD`. Robust to outliers. Aliases `modifiedz`, `mzscore`.
 
-## MAD Outlier Detection
-
-Modified z-score with an outlier flag:
+## MAD outlier
 
 ```
-* | madOutlier(response_time)
-* | madOutlier(latency, threshold=2.5)
+* | madOutlier(latency, threshold=2.5) | _is_outlier = 1
 ```
 
-Returns `_median`, `_mad`, `_modified_z`, and `_is_outlier` (1 if `|_modified_z| > threshold`). Default threshold: 3.5. Filter outliers with:
+Same as `modifiedZScore()` plus `_is_outlier`: 1 when `|_modified_z|` exceeds `threshold` (default 3.5), else 0. Alias `outlier`.
+
+## Analyze fields
 
 ```
-* | madOutlier(response_time) | _is_outlier = 1
-```
-
-## Analyze Fields
-
-Compute statistics across all or selected fields:
-
-```
-* | analyzeFields()
 * | analyzeFields(response_time, bytes, limit=100000)
 ```
 
-Returns per-field stats: `field_name`, `_events`, `_distinct_vals`, `_mean`, `_min`, `_max`, `_stdev`. Default scan limit: 50,000 rows (max: 200,000, use `limit=max` for maximum).
-
-## Group By
-
-```
-* | groupBy(image)
-* | groupBy(image, user)
-```
-
-The default aggregation function is `count()`. Use `function=` to specify a different aggregation:
-
-```
-* | groupBy(user, function=sum(bytes))
-* | groupBy(user, function=avg(response_time))
-```
-
-### Counting Groups
-
-Piping `count()` after `groupBy()` counts the number of groups (not per-group counts). Combine with `singleval()` to display as a single metric:
-
-```
-* | groupBy(computer_name) | count() | singleval()
-```
-
-### Distinct Count with groupBy
-
-```
-* | groupBy(computer_name, function=count(field=user, unique=true))
-```
-
-### Multiple Aggregations with groupBy
-
-Use `function=multi(...)` to compute multiple aggregations per group:
-
-```
-* | groupBy(computer_name, function=multi(count(computer_name, as=events), count(user, unique=true, as=users), sum(bytes)))
-```
-
-Each aggregate names its output column after itself (`count()` produces `_count`,
-`sum()` produces `_sum`), so two of the same kind in one `multi()` need `as=` to
-tell them apart.
+Per-field statistics: `field_name`, `_events`, `_distinct_vals`, `_mean`, `_min`, `_max`, `_stdev`. With no fields it analyzes all of them. Scans the first 50,000 rows by default; `limit=` raises that up to 200,000.

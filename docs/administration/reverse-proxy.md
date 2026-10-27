@@ -1,111 +1,87 @@
 # Reverse Proxy (Caddy)
 
-Bifract uses Caddy as its sole ingress point. All traffic flows through Caddy before reaching the Bifract backend.
+In a Docker Compose install, all traffic enters through the bundled Caddy. This page covers its TLS certificates, IP and mTLS access control, and how Bifract finds the real client address behind a proxy.
 
-## Production
+| Port | Serves |
+|------|--------|
+| 443 | UI and API |
+| 8443 | Ingest endpoints only (`/api/v1/ingest*`, `/_bulk`, `/v1/logs`) |
+| 80 | Let's Encrypt challenges and the HTTPS redirect (Let's Encrypt and custom modes) |
 
-Ports 80, 443, and 8443 are exposed in production. Port 443 serves the UI and API; port 8443 serves ingest endpoints exclusively. All internal services (LiteLLM, PostgreSQL, ClickHouse) are accessible only within the Docker network. Caddy supports three SSL modes.
+PostgreSQL, ClickHouse and LiteLLM are reachable only inside the Docker network. Caddy's access logs are shipped to the **system** fractal.
 
-### Let's Encrypt (Automatic)
+## TLS certificates
 
-Caddy automatically obtains and renews certificates from Let's Encrypt. Your server must be reachable on ports 80 and 443 from the internet.
+Pick the mode in `bifract --install`. It is stored as `BIFRACT_SSL_MODE` in `.env`.
 
-```bash
-BIFRACT_DOMAIN=bifract.example.com \
-BIFRACT_CORS_ORIGINS=https://bifract.example.com \
-BIFRACT_SECURE_COOKIES=true \
-docker compose up -d
-```
+| Mode | Use when |
+|------|----------|
+| `letsencrypt` | The server is reachable from the internet on ports 80 and 443 with a public DNS name. Caddy obtains and renews the certificate |
+| `self-signed` | Internal or air-gapped installs. The installer generates a certificate for your IP or hostname in `caddy/certs/`. Browsers show a warning |
+| `custom` | You have a certificate from your own or a commercial CA. The installer copies the files you name into `caddy/certs/` |
 
-### Self-Signed
+To renew a custom certificate, replace `caddy/certs/cert.pem` and `caddy/certs/key.pem`, then run `docker restart bifract-caddy`. Also update the files at `BIFRACT_CERT_PATH` and `BIFRACT_KEY_PATH`, since `bifract --upgrade` copies them in again.
 
-The setup wizard generates a self-signed certificate during installation. Useful for internal or air-gapped deployments where a public certificate is not possible. Browsers will show a certificate warning.
+!!! note
+    The Caddyfile is generated from `.env`. Do not edit `caddy/Caddyfile` by hand; `--reconfigure` and `--upgrade` overwrite it.
 
-The generated certificate is stored in `caddy/certs/` and mounted into the Caddy container automatically. It supports both IP addresses and hostnames as SANs.
+## Access control
 
-### Custom Certificates
+Caddy rejects disallowed clients before they reach Bifract.
 
-Use your own certificate and key files (e.g. from an internal CA or purchased certificate). Mount the files into the Caddy container and reference them in the Caddyfile:
+| Mode | UI and API | Ingest (port 8443) |
+|------|------------|--------------------|
+| `restrict-app` | Allowed IPs only | Anyone |
+| `restrict-all` | Allowed IPs only | Allowed IPs only |
+| `mtls-app` | Client certificate required | No certificate needed |
+| `all` | Anyone (not recommended) | Anyone |
 
-```
-bifract.example.com {
-    tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
-    ...
-}
-```
+### Change the mode
 
-Mount the certificates in `docker-compose.yml`:
+1. Edit `.env` in the install directory:
 
-```yaml
-caddy:
-  volumes:
-    - ./certs/cert.pem:/etc/caddy/certs/cert.pem:ro
-    - ./certs/key.pem:/etc/caddy/certs/key.pem:ro
-```
+    ```bash
+    BIFRACT_IP_ACCESS=restrict-app
+    # IPs or CIDR ranges, used by restrict-app and restrict-all
+    BIFRACT_ALLOWED_IPS=10.0.0.0/8,192.168.1.0/24,203.0.113.5
+    ```
 
-## Access Control
+2. Apply it:
 
-Bifract supports access restrictions via Caddy. Non-allowed IPs are rejected before reaching the application.
+    ```bash
+    bifract --reconfigure --dir /opt/bifract
+    ```
 
-Four modes are available:
+### mTLS client certificates
 
-| Mode | Description |
-|------|-------------|
-| `restrict-app` | Only allowed IPs can access the UI and API. Any IP can hit ingestion endpoints. |
-| `restrict-all` | Only allowed IPs can access anything, including ingest endpoints. |
-| `mtls-app` | Require client certificates for UI and API. Ingestion endpoints do not require a client cert. |
-| `all` | No access restrictions for UI, API, or ingestion (not recommended). |
+When `mtls-app` is chosen, the installer creates a client CA (`caddy/client-ca/ca.pem`) and an initial `caddy/client-ca/admin.p12`. Switching to `mtls-app` later with `--reconfigure` creates the CA.
 
-### Configuration
+To issue a certificate for a user:
 
-IP access is configured during `bifract --install`, or by editing the `.env` file directly:
+1. Open **Settings > Users**.
+2. Open the user's **⋮** menu and choose **Download mTLS Cert**.
+3. Enter a password to protect the file. The `.p12` downloads.
 
-```bash
-# Mode: restrict-app, restrict-all, mtls-app, all
-BIFRACT_IP_ACCESS=restrict-app
+![Download mTLS cert menu](../images/administration/mtls-cert.png)
 
-# Comma-separated IPs or CIDR ranges (used by restrict-app and restrict-all)
-BIFRACT_ALLOWED_IPS=10.0.0.0/8,192.168.1.0/24,203.0.113.5
-```
-
-To apply changes after installation, regenerate the config files and restart Caddy:
+Or from the CLI:
 
 ```bash
-bifract --reconfigure --dir /opt/bifract
+bifract --gen-client-cert --name alice --password '<p12-password>' --dir /opt/bifract
 ```
 
-This re-renders the Caddyfile from `.env` and restarts Caddy without requiring a version upgrade. You can switch between any access mode at any time by editing `.env` and running `--reconfigure`.
+Import the `.p12` into the user's browser or OS keychain. Certificates are valid for 1 year.
 
-### mTLS Client Certificates
+## Trusted proxies
 
-When `mtls-app` is selected during installation, bifract automatically:
-1. Generates a client CA (`caddy/client-ca/ca.pem`)
-2. Creates an initial `admin.p12` client certificate
-3. Configures Caddy to require client certs for non-ingest routes
+Bifract applies per-address sign-in and ingest rate limits and logs the client address, so it needs the real address behind a proxy. For a request from a trusted proxy, it reads `X-Forwarded-For` from the right and takes the first address that is not a trusted proxy, falling back to `X-Real-IP`. For any other request it ignores those headers and uses the connecting address.
 
-To generate additional client certificates, use either the UI or the CLI:
+Edit the list in **Settings > Security > Trusted proxies**, one IP or CIDR range per line, and click **Save**. It applies to the next request; a separate ingest tier picks it up on restart.
 
-**UI (recommended)**: Go to **Settings > Users** and choose **Download mTLS Cert** from any user's row menu. You will be prompted for a password to protect the `.p12` file, which is then downloaded directly in your browser. The menu item only appears when `mtls-app` mode is active.
+![Trusted proxies setting](../images/administration/trusted-proxies.png)
 
-**CLI**:
-```bash
-bifract --gen-client-cert --name alice --password secretpass --dir /opt/bifract
-```
+The default trusts loopback and the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`), which covers the bundled Caddy, Docker networks and Kubernetes ingress. Change it when:
 
-Both methods create a PKCS#12 `.p12` file that can be imported into any browser. Each certificate is valid for 1 year.
-
-## Trusted Proxies
-
-Bifract works out which address each request came from so it can apply the per-address login and ingest rate limits and record the address in the auth log. When the request arrives from a trusted proxy, Bifract reads the `X-Forwarded-For` header from the right and takes the first address that is not itself a trusted proxy; without that header it uses `X-Real-IP`. When the request arrives from anywhere else, the headers are ignored and the connecting address is used, so a client cannot pick a new address for each attempt by sending its own header.
-
-The list is under **Settings > Security > Trusted proxies**, one CIDR range or IP address per line. Changes apply to the next request; a dedicated ingest tier reads the list when it starts. The default trusts loopback and the private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`), which covers the bundled Caddy, Docker networks and a Kubernetes ingress.
-
-Change it when:
-
-- Another proxy or load balancer with a public address sits in front of Bifract and appends to `X-Forwarded-For`: add its address.
-- Clients on your internal network reach Bifract directly, or through a proxy that appends to `X-Forwarded-For` (such as an AWS ALB): replace the defaults with only your proxy's address. Otherwise an internal client's own address is trusted, and a header it sends is read in its place.
-- Nothing proxies Bifract at all: clear the list to trust no proxy.
-
-## Access Logs
-
-Caddy access logs are automatically shipped to the **system** fractal. Switch to the system fractal in the UI to view them.
+- A proxy or load balancer with a public address sits in front of Bifract: add its address.
+- Internal clients reach Bifract directly, or through a proxy that appends to `X-Forwarded-For` (such as an AWS ALB): replace the defaults with only your proxy's address. Otherwise an internal client can set its own address with a header.
+- Nothing proxies Bifract: clear the list.

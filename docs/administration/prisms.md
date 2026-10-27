@@ -1,17 +1,32 @@
 # Prisms
 
-A prism is a virtual view across multiple fractals. Prisms do not store data themselves; they query all member fractals as a unified dataset.
+A prism is a view across several fractals. It stores no data; searches, dashboards, notebooks and alerts on a prism run over all its member fractals together. Use one to search multiple teams or environments at once, or to attach [alert feeds](../alerting/alert-feeds.md) that should follow your fractal layout as it grows.
 
-## When to Use Prisms
+## Create a prism
 
-- Query logs from multiple teams or environments in a single view
-- Build dashboards and notebooks that span fractal boundaries
-- Attach [alert feeds](../alerting/alert-feeds.md) so detection rules stay consistent as your fractal layout evolves
+Tenant admins only.
 
-## Creating a Prism
+1. Click **Fractals** at the top of the sidebar.
+2. Click **Create**, then choose **Prism**.
+3. Enter a **Name** and optional **Description**, then click **Create prism**.
 
-Admins create prisms from the **Fractals** page. Provide a name and optional description, then add member fractals from the prism's **Prism settings > Members**. A prism's **Prism settings > Access** carries its own permissions and API keys, independent of the member fractals.
+![Create prism dialog](../images/administration/create-prism.png)
 
-## Managing Members
+## Add or remove member fractals
 
-Add or remove fractals from a prism at any time. Changes take effect immediately for all users.
+1. Open the prism from **Fractals**.
+2. Click **Prism settings** in the sidebar, then the **Members** tab.
+3. Pick a fractal in **Select a fractal to add** and click **Add**.
+
+![Prism members tab](../images/administration/prism-members.png)
+
+To remove a member, click its **✕** button. Changes apply immediately for everyone.
+
+## Prism settings
+
+| Tab | Contents |
+|-----|----------|
+| **Overview** | Name, description (**Edit**) and member list |
+| **Members** | Add and remove member fractals |
+| **Access** | Permissions and API keys for the prism, separate from those on its members |
+| **Danger zone** | **Delete prism**. Member fractals and their data are not affected |
