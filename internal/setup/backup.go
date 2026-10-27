@@ -275,6 +275,12 @@ func RunRestore(dir string, backupFile string, nonInteractive bool) error {
 		printDone("Database restored")
 	}
 
+	// The restored flags describe pattern lists as they were at backup time, not
+	// the ClickHouse rows they now sit over; the app re-probes them on start.
+	if out, err := docker.ExecPostgres(pgUser, pgDB, "UPDATE dictionaries SET pattern_prefilter = false, pattern_rev = pattern_rev + 1"); err != nil {
+		printWarn(fmt.Sprintf("could not reset pattern lookup prefilters, restart Bifract to re-check them: %s", out))
+	}
+
 	fmt.Println()
 	fmt.Println(SuccessStyle.Render("Restore complete"))
 	fmt.Println()

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"bifract/pkg/parser"
 )
 
 // A dictionary's kind decides the ClickHouse layout it is built with, and so what
@@ -142,6 +144,19 @@ type Scope struct {
 	// Both are keyed by object name rather than list name: only a list's own
 	// dictionary carries its layout, while a secondary key column on the same
 	// list gets an ordinary HASHED one.
+
+	// Prefilter holds, per pattern object ClickHouse has compiled for Hyperscan,
+	// SQL for an array of its expressions.
+	Prefilter map[string]string
+}
+
+// Apply hands the scope to the query translator.
+func (s Scope) Apply(o *parser.QueryOptions) {
+	o.Dictionaries = s.Mappings
+	o.CaseInsensitiveDicts = s.CaseInsensitive
+	o.NetworkDicts = s.Network
+	o.PatternDicts = s.Pattern
+	o.PatternPrefilters = s.Prefilter
 }
 
 // ValidatePatternKey rejects a key a REGEXP_TREE cannot compile. ClickHouse

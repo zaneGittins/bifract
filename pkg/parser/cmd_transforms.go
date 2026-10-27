@@ -1062,18 +1062,6 @@ func matchFieldRef(a Argument, registry *FieldRegistry) string {
 	return "toString(" + ref + ")"
 }
 
-// matchLookupExpr returns the value expression for one include column. dictRef is the
-// already-escaped dictionary name.
-//
-// The key column is not an attribute of a ClickHouse dictionary: it is declared
-// separately, so dictGet cannot read it back and fails with code 36 ("No such
-// attribute"). Asking for the key is the natural shape for a watchlist, a single
-// column of names to match against, so it resolves to the looked-up value itself
-// whenever the dictionary holds that key, matching what dictGet returns for a hit on
-// any other column.
-// dictProbe is the value a match() lookup is made with. A case-insensitive
-// dictionary hashed lower(key), so the probe has to be lowered to meet it; an
-// unlowered probe would simply miss every mixed-case key.
 // dictProbe is the value a lookup is made with, in the shape the dictionary's
 // layout needs. The layout belongs to the ClickHouse object rather than to the
 // list, because a secondary key column on a network or pattern list resolves to
@@ -1103,25 +1091,9 @@ func dictProbe(fieldRef, dictName, chLookupName string, isPattern bool, opts Que
 	return "lower(" + fieldRef + ")"
 }
 
-// probeRef is the value looked up (lowercased for a case-insensitive dictionary);
-// displayRef is the value as the log carries it. They differ only for the key
-// column, which is echoed back rather than read from the dictionary: echoing the
-// probe would show a lowercased value the event never contained.
-func matchLookupExpr(dictRef, col, keyColumn, probeRef, displayRef string, pattern bool) string {
-	if col == keyColumn {
-		return fmt.Sprintf("if(%s, %s, '')", dictMembershipSQL(dictRef, probeRef, pattern), displayRef)
-	}
-	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictRef, escapeString(col), probeRef)
-}
-
-// dictMembershipSQL tests whether a lookup hits. Every caller has to use this:
-// a REGEXP_TREE supports no dictHas at all ("does not support method hasKeys"),
-// so emitting one anywhere fails the whole query at the server.
-//
-// For a pattern dictionary the answer comes from the marker attribute every
-// pattern list carries, set on every row. Reading an ordinary attribute instead
-// could not tell a row that matched but holds an empty value from one that did
-// not match at all.
+// dictMembershipSQL tests whether a lookup hits. A REGEXP_TREE has no dictHas,
+// so a pattern list answers from the marker attribute set on every one of its
+// rows, which an ordinary attribute holding an empty value could not do.
 func dictMembershipSQL(dictRef, probeRef string, pattern bool) string {
 	if pattern {
 		return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '') = '1'", dictRef, PatternMatchAttr, probeRef)
@@ -1134,7 +1106,10 @@ func dictMembershipSQL(dictRef, probeRef string, pattern bool) string {
 type lookupRef struct {
 	dict, object, ref string
 	pattern           bool
-	opts              QueryOptions
+	// prefilter is the pattern list's expressions as an array, or "" when it is
+	// not screened (see QueryOptions.PatternPrefilters).
+	prefilter string
+	opts      QueryOptions
 }
 
 // resolveLookup resolves a lookup and key column in opts' scope.
@@ -1147,12 +1122,48 @@ func resolveLookup(dictName, keyColumn string, opts QueryOptions) (lookupRef, er
 	if object == "" {
 		return lookupRef{}, fmt.Errorf("dictionary %q has no key column %q - enable that column as a key on the Lookups page", dictName, keyColumn)
 	}
-	return lookupRef{dict: dictName, object: object, ref: escapeString(dictRef(opts.DictionaryDatabase, object)),
-		pattern: opts.PatternDicts[object], opts: opts}, nil
+	l := lookupRef{dict: dictName, object: object, ref: escapeString(dictRef(opts.DictionaryDatabase, object)),
+		pattern: opts.PatternDicts[object], opts: opts}
+	if l.pattern {
+		l.prefilter = opts.PatternPrefilters[object]
+	}
+	return l, nil
 }
 
 func (l lookupRef) probe(fieldRef string) string {
 	return dictProbe(fieldRef, l.dict, l.object, l.pattern, l.opts)
+}
+
+// screen is the Hyperscan pass over every expression in the list, or "" when
+// the list has none. It assumes Hyperscan matches whatever RE2 does, so a row it
+// rejects matches no expression and and()/if() can skip the dictionary.
+func (l lookupRef) screen(probeRef string) string {
+	if l.prefilter == "" {
+		return ""
+	}
+	return fmt.Sprintf("multiMatchAny(%s, %s)", probeRef, l.prefilter)
+}
+
+// membership tests whether probeRef hits the lookup.
+func (l lookupRef) membership(probeRef string) string {
+	hit := dictMembershipSQL(l.ref, probeRef, l.pattern)
+	if s := l.screen(probeRef); s != "" {
+		return fmt.Sprintf("(%s AND %s)", s, hit)
+	}
+	return hit
+}
+
+// value returns one include column. The key column is not a dictionary
+// attribute, so it echoes displayRef, the value as the log carries it, on a hit.
+func (l lookupRef) value(col, keyColumn, probeRef, displayRef string) string {
+	if col == keyColumn {
+		return fmt.Sprintf("if(%s, %s, '')", l.membership(probeRef), displayRef)
+	}
+	get := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", l.ref, escapeString(col), probeRef)
+	if s := l.screen(probeRef); s != "" {
+		return fmt.Sprintf("if(%s, %s, '')", s, get)
+	}
+	return get
 }
 
 // LookupMembership is match()'s membership test of fieldRef, a SQL expression,
@@ -1162,7 +1173,7 @@ func LookupMembership(fieldRef, dictName, keyColumn string, opts QueryOptions) (
 	if err != nil {
 		return "", err
 	}
-	return dictMembershipSQL(lk.ref, lk.probe(fieldRef), lk.pattern), nil
+	return lk.membership(lk.probe(fieldRef)), nil
 }
 
 // PatternMatchAttr mirrors dictionaries.PatternMatchAttr. Named here rather than
@@ -1189,7 +1200,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	for _, c := range includeColumns {
 		if lkErr == nil && hasField && fieldRef != "" {
-			expr := matchLookupExpr(lk.ref, c, keyColumn, lk.probe(fieldRef), fieldRef, lk.pattern)
+			expr := lk.value(c, keyColumn, lk.probe(fieldRef), fieldRef)
 			ctx.Registry.Register(c, FieldKindPerRow, expr, ctx.CmdIndex)
 		} else {
 			ctx.Registry.Register(c, FieldKindPerRow, c, ctx.CmdIndex)
@@ -1233,21 +1244,20 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
-	chDictRef, isPattern := lk.ref, lk.pattern
 	probeRef := lk.probe(fieldRef)
 	for _, col := range includeColumns {
 		safeCol, colErr := sanitizeIdentifier(col)
 		if colErr != nil {
 			return fmt.Errorf("match(): invalid include column: %w", colErr)
 		}
-		scalarExpr := matchLookupExpr(chDictRef, col, keyColumn, probeRef, fieldRef, isPattern)
+		scalarExpr := lk.value(col, keyColumn, probeRef, fieldRef)
 		ctx.Plan.CurrentStage().Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", scalarExpr, safeCol)})
 		ctx.Registry.SetResolveExpr(col, scalarExpr)
 	}
 
 	if strict {
 		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
-			dictMembershipSQL(chDictRef, probeRef, isPattern))
+			lk.membership(probeRef))
 	}
 	return nil
 }

@@ -80,10 +80,14 @@ type QueryOptions struct {
 	// PatternDicts marks the objects built as a REGEXP_TREE. Their keys are
 	// regular expressions matched against the probe, first match wins, and the
 	// server has no dictHas for them.
+	PatternDicts map[string]bool
+	// PatternPrefilters holds, per pattern object, SQL for an array of the list's
+	// expressions. Set only for a list ClickHouse has compiled for Hyperscan:
+	// multiMatchAny over it then screens each row before the REGEXP_TREE lookup.
 	//
-	// Both are keyed by ClickHouse object name, not list name: a secondary key
-	// column on either kind of list resolves to an ordinary HASHED dictionary.
-	PatternDicts       map[string]bool
+	// All three are keyed by ClickHouse object name, not list name: a secondary
+	// key column on any list resolves to an ordinary HASHED dictionary.
+	PatternPrefilters  map[string]string
 	DictionaryDatabase string // ClickHouse database holding the dictionary objects; qualifies every dictGet
 	TableName          string // Override source table (default "logs", use "logs_distributed" in cluster mode)
 	ProcLineageTable   string // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")

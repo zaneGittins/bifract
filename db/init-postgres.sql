@@ -539,6 +539,8 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     kind VARCHAR(16) NOT NULL DEFAULT 'value',
     source JSONB,
     source_status JSONB,
+    pattern_prefilter BOOLEAN NOT NULL DEFAULT false,
+    pattern_rev BIGINT NOT NULL DEFAULT 0,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -549,6 +551,8 @@ ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS case_insensitive_keys BOOLEAN 
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'value';
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS source JSONB;
 ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS source_status JSONB;
+ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS pattern_prefilter BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dictionaries ADD COLUMN IF NOT EXISTS pattern_rev BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_dictionaries_fractal_id ON dictionaries(fractal_id);
 CREATE INDEX IF NOT EXISTS idx_dictionaries_name ON dictionaries(name);
@@ -902,6 +906,8 @@ CREATE TABLE IF NOT EXISTS dictionaries (
     kind VARCHAR(16) NOT NULL DEFAULT 'value',
     source JSONB,
     source_status JSONB,
+    pattern_prefilter BOOLEAN NOT NULL DEFAULT false,
+    pattern_rev BIGINT NOT NULL DEFAULT 0,
     created_by VARCHAR(50) REFERENCES users(username) ON DELETE SET NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
