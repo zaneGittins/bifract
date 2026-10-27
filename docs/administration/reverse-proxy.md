@@ -8,7 +8,7 @@ In a Docker Compose install, all traffic enters through the bundled Caddy. This 
 | 8443 | Ingest endpoints only (`/api/v1/ingest*`, `/_bulk`, `/v1/logs`) |
 | 80 | Let's Encrypt challenges and the HTTPS redirect (Let's Encrypt and custom modes) |
 
-PostgreSQL, ClickHouse and LiteLLM are reachable only inside the Docker network. Caddy's access logs are shipped to the **system** fractal.
+PostgreSQL and ClickHouse are reachable only inside the Docker network. Caddy's access logs are shipped to the **system** fractal.
 
 ## TLS certificates
 

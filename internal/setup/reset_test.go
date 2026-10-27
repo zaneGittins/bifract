@@ -124,7 +124,7 @@ func TestRunResetLogsOrder(t *testing.T) {
 		want = append(want, "compose exec -T clickhouse clickhouse-client --user default --password chpw --database logs "+
 			"--receive_timeout 3600 --send_timeout 3600 --query "+stmt)
 	}
-	want = append(want, "compose exec -T postgres psql -U bifract -d bifract -c "+postgresResetSQL(), "compose up -d")
+	want = append(want, "compose exec -T postgres psql -U bifract -d bifract -c "+postgresResetSQL(), "compose up -d --remove-orphans")
 
 	var got []string
 	for _, c := range fake.calls() {

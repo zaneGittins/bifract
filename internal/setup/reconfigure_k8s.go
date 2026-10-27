@@ -49,6 +49,9 @@ func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
 	if _, err := os.Stat(deployPath); os.IsNotExist(err) {
 		return fmt.Errorf("no K8s installation found at %s (bifract/deployment.yaml missing)", dir)
 	}
+	if _, err := os.Stat(filepath.Join(dir, legacyLiteLLMManifestDir)); err == nil {
+		return errLegacyLiteLLM
+	}
 
 	// Parse existing secrets
 	printStep("Reading existing secrets...")
@@ -65,16 +68,7 @@ func RunReconfigureK8s(dir string, opts K8sReconfigureOpts) error {
 	printStep("Checking live cluster secrets...")
 	live, liveErr := tryReadLiveSecrets("bifract", "bifract-secrets")
 	if live != nil {
-		merged := 0
-		for k, v := range live {
-			if v != "" && !coreSecretKeys[k] {
-				if secrets[k] != v {
-					merged++
-				}
-				secrets[k] = v
-			}
-		}
-		if merged > 0 {
+		if merged := mergeLiveSecrets(secrets, live); merged > 0 {
 			printDone(fmt.Sprintf("Synced %d user secret(s) from live cluster", merged))
 		} else {
 			printDone("Live cluster secrets match on-disk")
@@ -312,7 +306,6 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 		{"PostgreSQL", settings.postgresResources},
 		{"Caddy", settings.caddyResources},
 		{"Caddy Log Shipper", settings.caddyShipperResources},
-		{"LiteLLM", settings.litellmResources},
 	} {
 		if resourceProfileEmpty(c.parsed) {
 			printWarn(fmt.Sprintf("%s resources not found in manifests, using Dev defaults", c.name))
@@ -330,7 +323,6 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 			Postgres:        fallbackProfile(settings.postgresResources, fb.Postgres),
 			Caddy:           fallbackProfile(settings.caddyResources, fb.Caddy),
 			CaddyShipper:    fallbackProfile(settings.caddyShipperResources, fb.CaddyShipper),
-			LiteLLM:         fallbackProfile(settings.litellmResources, fb.LiteLLM),
 			IngestQueueSize: fallbackInt(settings.ingestQueueSize, fb.IngestQueueSize),
 			IngestWorkers:   fallbackInt(settings.ingestWorkers, fb.IngestWorkers),
 			SpoolPVCSizeGB:  fallbackInt(settings.spoolPVCSizeGB, fb.SpoolPVCSizeGB),
@@ -378,7 +370,6 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 	}
 	cfg.PasswordPepper = secrets["PASSWORD_PEPPER"]
 	cfg.AdminPasswordHash = secrets["ADMIN_PASSWORD_HASH"]
-	cfg.LiteLLMMasterKey = secrets["LITELLM_MASTER_KEY"]
 
 	// Encryption keys (generate if missing from older installs)
 	cfg.FeedEncryptionKey = secrets["FEED_ENCRYPTION_KEY"]
@@ -401,9 +392,16 @@ func buildK8sConfigFromExisting(dir string, secrets map[string]string, settings 
 	cfg.IPAccess = settings.ipAccess
 	cfg.AllowedIPs = settings.allowedIPs
 
+	if warn := migrateLiteLLM(secrets, "", filepath.Join(dir, legacyLiteLLMManifestDir, "configmap.yaml")); warn != "" {
+		printWarn(warn)
+	}
+
 	// User-configured secrets
 	cfg.UserSecrets = map[string]string{
-		"LITELLM_API_KEY":           secrets["LITELLM_API_KEY"],
+		"LLM_PROVIDER":              secrets["LLM_PROVIDER"],
+		"LLM_API_KEY":               secrets["LLM_API_KEY"],
+		"LLM_MODEL":                 secrets["LLM_MODEL"],
+		"LLM_BASE_URL":              secrets["LLM_BASE_URL"],
 		"S3_ENDPOINT":               secrets["S3_ENDPOINT"],
 		"S3_BUCKET":                 secrets["S3_BUCKET"],
 		"S3_ACCESS_KEY":             secrets["S3_ACCESS_KEY"],

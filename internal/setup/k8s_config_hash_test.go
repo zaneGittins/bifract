@@ -10,7 +10,6 @@ import (
 // configMounts pairs each Deployment with the ConfigMap it mounts by subPath.
 var configMounts = []struct{ name, deploy, cm string }{
 	{"caddy", "caddy/deployment.yaml", "caddy/configmap.yaml"},
-	{"litellm", "litellm/deployment.yaml", "litellm/configmap.yaml"},
 }
 
 func hashOf(s string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(s))) }

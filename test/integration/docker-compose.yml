@@ -1,5 +1,5 @@
 # The stack the API suite needs: somewhere to store configuration, somewhere to
-# store logs, and the server itself. Caddy, LiteLLM and the archivers are part of
+# store logs, and the server itself. Caddy and the archivers are part of
 # a deployment but nothing in test/integration/ touches them, so they are left
 # out to keep a CI run small.
 #
@@ -77,8 +77,6 @@ services:
       BIFRACT_SECURE_COOKIES: ${BIFRACT_SECURE_COOKIES:-false}
       BIFRACT_CORS_ORIGINS: ${BIFRACT_CORS_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
       BIFRACT_PASSWORD_PEPPER: ${BIFRACT_PASSWORD_PEPPER:-}
-      LITELLM_URL: http://litellm:8000
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-bifract-internal-key}
       BIFRACT_BACKUP_ENCRYPTION_KEY: ${BIFRACT_BACKUP_ENCRYPTION_KEY:-}
       BIFRACT_S3_ENDPOINT: ${BIFRACT_S3_ENDPOINT:-}
       BIFRACT_S3_BUCKET: ${BIFRACT_S3_BUCKET:-}

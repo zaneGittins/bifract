@@ -29,7 +29,6 @@ func composeSetupConfig(t *testing.T) *SetupConfig {
 		IngestPostgresPassword:   "ingestpgpw",
 		ClickHousePassword:       "chpw",
 		IngestClickHousePassword: "ingestchpw",
-		LiteLLMMasterKey:         "llmkey",
 		AdminPasswordHash:        "hash",
 		PasswordPepper:           "pepper",
 		FeedEncryptionKey:        strings.Repeat("a", 64),
@@ -182,7 +181,7 @@ func renderK8sInstall(t *testing.T, shards int, ch ClickHouseTarget) string {
 	cfg := freshK8sConfig(sizeProfiles[0], dir)
 	cfg.CHShards = shards
 	cfg.CH = ch
-	for _, sub := range []string{"clickhouse", "postgres", "bifract", "caddy", "litellm"} {
+	for _, sub := range []string{"clickhouse", "postgres", "bifract", "caddy"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			t.Fatal(err)
 		}

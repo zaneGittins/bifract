@@ -236,7 +236,7 @@ This tool exists only in the MCP server, not in [AI Chat](ai-chat.md).
 | | [AI Chat](ai-chat.md) | MCP server |
 |---|---------|------------|
 | Runs in | Bifract UI | Your terminal |
-| LLM | Server-side, via LiteLLM | Your own client |
+| LLM | Server-side, direct to your provider | Your own client |
 | Auth | Your session | API key |
 | Writes | Each one needs your approval | Limited by the key's role and your client's prompts |
 | Best for | Quick in-app investigation | Deep analysis, scripting, automation |

@@ -38,6 +38,7 @@ import (
 	"bifract/pkg/ingest"
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/instructions"
+	"bifract/pkg/llm"
 	"bifract/pkg/maxmind"
 	"bifract/pkg/metrics"
 	"bifract/pkg/models"
@@ -732,7 +733,12 @@ func main() {
 	groupHandler := groups.NewHandler(pg)
 
 	commentHandler := comments.NewCommentHandlerWithFractals(pg, db, fractalManager, prismManager)
-	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, config.LiteLLMURL, config.LiteLLMMasterKey)
+	// A bad AI setting disables AI features instead of stopping the server.
+	llmClient, err := llm.New(config.LLM)
+	if err != nil {
+		log.Printf("[AI] disabled: %v", err)
+	}
+	notebookHandler := notebooks.NewNotebookHandler(pg, db, fractalManager, llmClient)
 	notebookHandler.SetRBACResolver(authHandler.RBACResolver())
 	dashboardHandler := dashboards.NewDashboardHandler(pg, fractalManager)
 	dashboardHandler.SetRBACResolver(authHandler.RBACResolver())
@@ -770,7 +776,7 @@ func main() {
 	alertManager.SetTestRunner(alertTestRunner)
 	alertHandler.SetRBACResolver(authHandler.RBACResolver())
 
-	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, config.LiteLLMURL, config.LiteLLMMasterKey)
+	chatManager := chat.NewManager(pg, db, fractalManager, normalizerManager, llmClient)
 	rbacAdapter := &fractalAccessAdapter{resolver: authHandler.RBACResolver()}
 	chatHandler := chat.NewHandler(chatManager, fractalManager, rbacAdapter)
 	chatHandler.SetPrismResolver(prismManager)
@@ -942,11 +948,10 @@ type Config struct {
 	PostgresUser     string
 	PostgresPassword string
 	// CH is the whole ClickHouse contract; see storage.ClickHouseEnvFromOS.
-	CH               storage.ClickHouseEnv
-	Port             int
-	MaxQueryRows     int
-	LiteLLMURL       string
-	LiteLLMMasterKey string
+	CH           storage.ClickHouseEnv
+	Port         int
+	MaxQueryRows int
+	LLM          llm.Config
 	// Ingestion queue
 	IngestQueueSize int
 	IngestWorkers   int
@@ -994,8 +999,12 @@ func loadConfig() Config {
 		CH:               chEnv,
 		Port:             getEnvInt("BIFRACT_PORT", 8080),
 		MaxQueryRows:     getEnvInt("BIFRACT_MAX_QUERY_ROWS", 10000),
-		LiteLLMURL:       getEnv("LITELLM_URL", "http://litellm:8000"),
-		LiteLLMMasterKey: getEnv("LITELLM_MASTER_KEY", ""),
+		LLM: llm.Config{
+			Provider: getEnv("BIFRACT_LLM_PROVIDER", llm.ProviderAnthropic),
+			APIKey:   getEnv("BIFRACT_LLM_API_KEY", ""),
+			Model:    getEnv("BIFRACT_LLM_MODEL", ""),
+			BaseURL:  getEnv("BIFRACT_LLM_BASE_URL", ""),
+		},
 		// Ingestion queue defaults
 		IngestQueueSize: getEnvInt("BIFRACT_INGEST_QUEUE_SIZE", 100),
 		IngestWorkers:   getEnvInt("BIFRACT_INGEST_WORKERS", 4),
@@ -1029,7 +1038,7 @@ func loadConfig() Config {
 	log.Printf("  ClickHouse: %s", config.CH)
 	log.Printf("  Server Port: %d", config.Port)
 	log.Printf("  Max Query Rows: %d", config.MaxQueryRows)
-	log.Printf("  LiteLLM URL: %s", config.LiteLLMURL)
+	log.Printf("  LLM Provider: %s (key set: %v)", config.LLM.Provider, config.LLM.APIKey != "")
 	log.Printf("  CH Query Pool Max Conns: %d (0=default)", config.CHQueryMaxConns)
 	log.Printf("  CH Ingest Pool Max Conns: %d (0=default)", config.CHIngestMaxConns)
 	log.Printf("  Ingest Queue: %d slots, %d workers", config.IngestQueueSize, config.IngestWorkers)

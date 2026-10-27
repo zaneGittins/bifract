@@ -75,14 +75,12 @@ func TestPodSpecsDisableServiceAccountToken(t *testing.T) {
 		ArchiverRes: ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 
 		ArchiveMaintainRes: ResourceProfile{"500m", "2", "3Gi", "5Gi"},
-		LiteLLMRes:         ResourceProfile{"500m", "1", "512Mi", "1Gi"},
 	}
 	for _, tmpl := range []string{
 		"templates/k8s/bifract-deployment.yaml.tmpl",
 		"templates/k8s/bifract-ingest-deployment.yaml.tmpl",
 		"templates/k8s/bifract-archive-maintain-deployment.yaml.tmpl",
 		"templates/k8s/caddy-deployment.yaml.tmpl",
-		"templates/k8s/litellm-deployment.yaml.tmpl",
 		"templates/k8s/postgres-statefulset.yaml.tmpl",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
@@ -109,75 +107,6 @@ func TestPodSpecsDisableServiceAccountToken(t *testing.T) {
 				t.Error("automountServiceAccountToken = true, want false")
 			}
 		})
-	}
-}
-
-// LiteLLM is the only third-party image in the stack and the one with a supply-chain
-// history, so it must carry the same container hardening as the Bifract workloads. Its
-// upstream image ships USER root, so runAsUser has to be set here or the pod runs as 0.
-func TestLiteLLMDeploymentIsHardened(t *testing.T) {
-	out, err := renderK8sTemplate("templates/k8s/litellm-deployment.yaml.tmpl", k8sTemplateData{
-		LiteLLMRes: ResourceProfile{"500m", "1", "512Mi", "1Gi"},
-	})
-	if err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	var dep struct {
-		Spec struct {
-			Template struct {
-				Spec struct {
-					SecurityContext struct {
-						RunAsNonRoot *bool `yaml:"runAsNonRoot"`
-						RunAsUser    *int  `yaml:"runAsUser"`
-					} `yaml:"securityContext"`
-					Containers []struct {
-						SecurityContext struct {
-							AllowPrivilegeEscalation *bool `yaml:"allowPrivilegeEscalation"`
-							ReadOnlyRootFilesystem   *bool `yaml:"readOnlyRootFilesystem"`
-							Capabilities             struct {
-								Drop []string `yaml:"drop"`
-							} `yaml:"capabilities"`
-						} `yaml:"securityContext"`
-						VolumeMounts []struct {
-							MountPath string `yaml:"mountPath"`
-						} `yaml:"volumeMounts"`
-					} `yaml:"containers"`
-				} `yaml:"spec"`
-			} `yaml:"template"`
-		} `yaml:"spec"`
-	}
-	if err := yaml.Unmarshal([]byte(strings.Split(out, "\n---")[0]), &dep); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	pod := dep.Spec.Template.Spec
-	if pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
-		t.Error("runAsNonRoot is not true (upstream image is USER root)")
-	}
-	if pod.SecurityContext.RunAsUser == nil || *pod.SecurityContext.RunAsUser == 0 {
-		t.Error("runAsUser must be set to a non-zero uid")
-	}
-	if len(pod.Containers) != 1 {
-		t.Fatalf("containers = %d, want 1", len(pod.Containers))
-	}
-	c := pod.Containers[0]
-	if c.SecurityContext.AllowPrivilegeEscalation == nil || *c.SecurityContext.AllowPrivilegeEscalation {
-		t.Error("allowPrivilegeEscalation is not false")
-	}
-	if c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
-		t.Error("readOnlyRootFilesystem is not true")
-	}
-	if len(c.SecurityContext.Capabilities.Drop) != 1 || c.SecurityContext.Capabilities.Drop[0] != "ALL" {
-		t.Errorf("capabilities.drop = %v, want [ALL]", c.SecurityContext.Capabilities.Drop)
-	}
-	// readOnlyRootFilesystem without a writable /tmp is a pod that never starts.
-	var hasTmp bool
-	for _, vm := range c.VolumeMounts {
-		if vm.MountPath == "/tmp" {
-			hasTmp = true
-		}
-	}
-	if !hasTmp {
-		t.Error("no writable /tmp mount alongside readOnlyRootFilesystem")
 	}
 }
 

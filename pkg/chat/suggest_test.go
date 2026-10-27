@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"bifract/pkg/llm"
 )
 
 // The model's answer is advisory: only IDs the embedded matrix knows survive,
@@ -13,9 +15,9 @@ import (
 func TestSuggestAttackLabelsFiltersThroughMatrix(t *testing.T) {
 	answer := "```json\n" + `{"techniques":["T1059.001","T9999","t1003"],"tactics":["defense-evasion","execution","nonsense"]}` + "\n```"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req llmRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Stream {
-			t.Errorf("unexpected request: err=%v stream=%v", err, req.Stream)
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req["stream"] != nil {
+			t.Errorf("unexpected request: err=%v stream=%v", err, req["stream"])
 		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{"message": map[string]any{"content": answer}}},
@@ -23,7 +25,11 @@ func TestSuggestAttackLabelsFiltersThroughMatrix(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := &Manager{litellmURL: srv.URL, httpClient: srv.Client()}
+	client, err := llm.New(llm.Config{Provider: llm.ProviderOpenAI, APIKey: "k", Model: "m", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{llm: client}
 	got, err := m.SuggestAttackLabels(context.Background(), SuggestLabelsRequest{
 		Name:        "PowerShell download cradle",
 		QueryString: `image=~powershell`,

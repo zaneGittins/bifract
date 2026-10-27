@@ -47,7 +47,6 @@ type SetupConfig struct {
 	IngestPostgresPassword   string // least-privilege ingest PG role (bifract_ingest)
 	ClickHousePassword       string
 	IngestClickHousePassword string // least-privilege ingest CH user (bifract_ingest)
-	LiteLLMMasterKey         string
 	AdminPassword            string
 	AdminPasswordHash        string
 	PasswordPepper           string
@@ -143,11 +142,6 @@ func (c *SetupConfig) GeneratePasswords() error {
 	if err != nil {
 		return err
 	}
-	c.LiteLLMMasterKey, err = GenerateAlphanumeric(32)
-	if err != nil {
-		return err
-	}
-	c.LiteLLMMasterKey = "sk-" + c.LiteLLMMasterKey
 	c.PasswordPepper, err = GenerateAlphanumeric(32)
 	if err != nil {
 		return err

@@ -26,7 +26,6 @@ func freshK8sConfig(p SizeProfile, dir string) *K8sConfig {
 	cfg.IngestPostgresPassword = "ingestpgpw"
 	cfg.PasswordPepper = "pepper"
 	cfg.AdminPasswordHash = "hash"
-	cfg.LiteLLMMasterKey = "llmkey"
 	cfg.FeedEncryptionKey = strings.Repeat("a", 64)
 	cfg.BackupEncryptionKey = strings.Repeat("b", 64)
 	return cfg
@@ -204,7 +203,6 @@ func TestFreshInstallDockerComposeConfig(t *testing.T) {
 		IngestPostgresPassword:   "ingestpgpw",
 		ClickHousePassword:       "chpw",
 		IngestClickHousePassword: "ingestchpw",
-		LiteLLMMasterKey:         "llmkey",
 		AdminPasswordHash:        "hash",
 		PasswordPepper:           "pepper",
 		FeedEncryptionKey:        strings.Repeat("a", 64),

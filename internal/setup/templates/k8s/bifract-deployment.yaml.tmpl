@@ -137,13 +137,30 @@ spec:
                 configMapKeyRef:
                   name: bifract-config
                   key: CORS_ORIGINS
-            - name: LITELLM_URL
-              value: http://litellm:8000
-            - name: LITELLM_MASTER_KEY
+            - name: BIFRACT_LLM_PROVIDER
               valueFrom:
                 secretKeyRef:
                   name: bifract-secrets
-                  key: LITELLM_MASTER_KEY
+                  key: LLM_PROVIDER
+                  optional: true
+            - name: BIFRACT_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LLM_API_KEY
+                  optional: true
+            - name: BIFRACT_LLM_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LLM_MODEL
+                  optional: true
+            - name: BIFRACT_LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bifract-secrets
+                  key: LLM_BASE_URL
+                  optional: true
             # Query limits
             - name: BIFRACT_MAX_QUERY_ROWS
               value: "250"
