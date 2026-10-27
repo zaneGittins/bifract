@@ -69,6 +69,16 @@ test.describe('List pages', () => {
     }
   });
 
+  // Revealing admin-only elements once wiped their inline styles, which also
+  // un-hid views the router had hidden, such as the editor under this list.
+  // Only a direct load shows it: the reveal ran after the first route.
+  test('normalizers: the editor stays hidden under the list', async ({ page }) => {
+    await login(page);
+    await page.goto('/#normalizers');
+    await expect(page.locator('#normalizersListContainer')).toBeVisible();
+    await expect(page.locator('#normalizerEditorView')).toBeHidden();
+  });
+
   test('normalizers: cells are padded and headers sit over their columns', async ({ page }) => {
     await open(page, PAGES.find(p => p.key === 'normalizers'));
     const row = page.locator('#normalizersListContainer tbody tr').first();

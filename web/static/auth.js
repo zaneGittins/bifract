@@ -273,14 +273,10 @@ const Auth = {
             App.routeInitial();
         }
 
+        // .admin-only hides through CSS, so dropping the class is the whole reveal.
+        // An element's inline display belongs to the router, which has already run.
         if (this.currentUser && this.currentUser.is_admin) {
-            document.querySelectorAll('.admin-only').forEach(el => {
-                if (el.id === 'settingsView') {
-                    return;
-                }
-                el.classList.remove('admin-only');
-                el.removeAttribute('style');
-            });
+            document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('admin-only'));
         }
 
         // Update fractal-role-based visibility

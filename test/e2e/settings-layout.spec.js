@@ -9,6 +9,8 @@ const { expectNoPageTitle, expectActionFlushRight, firstBlockEdges } = require('
 
 const TABS = ['users', 'groups', 'apikeys', 'context', 'platform', 'security', 'danger'];
 const WITH_ACTION = ['users', 'groups', 'apikeys', 'context'];
+const TABLE_TABS = WITH_ACTION;
+const FORM_TABS = ['platform', 'security', 'danger'];
 
 async function openSettings(page) {
   await login(page);
@@ -44,7 +46,27 @@ test.describe('Settings layout', () => {
     for (const tab of TABS) {
       const edges = await firstBlockEdges(await openTab(page, tab));
       expect(Math.abs(edges.left - bar.x), `${tab} content left edge`).toBeLessThanOrEqual(1);
-      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} content right edge`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  // Lists use the whole width like every other page; forms keep a readable
+  // column so a control stays near its label. The tab bar spans the page either way.
+  test('on a wide screen, tables fill the width and forms keep a readable column', async ({ page }) => {
+    await page.setViewportSize({ width: 2560, height: 1080 });
+    await openSettings(page);
+    const view = await page.locator('#settingsView').boundingBox();
+    const bar = await page.locator('#settingsSubTabs').boundingBox();
+    expect(Math.abs(bar.x + bar.width - (view.x + view.width)), 'tab bar stops short of the page').toBeLessThanOrEqual(1);
+
+    for (const tab of TABLE_TABS) {
+      const edges = await firstBlockEdges(await openTab(page, tab));
+      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} stops short of the tab bar`).toBeLessThanOrEqual(1);
+    }
+    for (const tab of FORM_TABS) {
+      const panel = await openTab(page, tab);
+      const form = await panel.locator('.sp-content').boundingBox();
+      expect(Math.abs(form.x - bar.x), `${tab} form left edge`).toBeLessThanOrEqual(1);
+      expect(form.width, `${tab} form stretches across the screen`).toBeLessThanOrEqual(961);
     }
   });
 
