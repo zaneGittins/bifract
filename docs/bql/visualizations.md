@@ -53,13 +53,13 @@ Buckets events by time and aggregates each bucket.
 * | timechart(span=1h)
 ```
 
-![Time chart of events per hour](../images/bql/timechart.png)
-
 One line per host:
 
 ```
 * | timechart(span=1h, groupby(computer_name))
 ```
+
+![Time chart of events per hour for each host](../images/bql/timechart-groupby.png)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
