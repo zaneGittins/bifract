@@ -548,6 +548,8 @@
     gap: 0.5rem;
 }
 
+.restore-header > button { flex-shrink: 0; }
+
 .restore-table-controls {
     display: flex;
     align-items: center;

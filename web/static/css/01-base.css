@@ -2688,3 +2688,12 @@ body.col-reordering * {
 .fact-chip-pivot:hover { border-color: var(--accent-primary); }
 .fact-chip-pivot:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
 .fact-chips-compact .fact-chip { padding: 0 6px; font-size: 10.5px; }
+
+/* Marks a feature with little production use yet */
+.experimental-badge {
+    display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning); font: 500 11px/1.6 var(--font-main);
+    vertical-align: middle; white-space: nowrap;
+}

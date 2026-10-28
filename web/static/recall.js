@@ -760,7 +760,7 @@ const Recall = {
                     <path d="M32 8L8 20V44L32 56L56 44V20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" opacity="0.3"/>
                     <path d="M32 56V32M32 32L8 20M32 32L56 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
                 </svg>
-                <p>Search the archive for older, cold-tiered logs</p>
+                <p>Search the archive for older, cold-tiered logs <span class="experimental-badge">Experimental</span></p>
             </div>
         `;
     },

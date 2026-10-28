@@ -119,10 +119,7 @@ func (d routerDeps) handlePressure(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d routerDeps) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
-	enabled := false
-	if v, _ := d.pg.GetSetting(r.Context(), "archive_enabled"); v == "true" {
-		enabled = true
-	}
+	enabled := archiveEnabled(r.Context(), d.pg)
 	var updatedAt, lastCommit sql.NullTime
 	var fractalCount int
 	var totalBytes, totalRecords int64
@@ -307,7 +304,7 @@ func (d routerDeps) handleRunArchiveMaintain(w http.ResponseWriter, r *http.Requ
 	// A run-now while archiving is disabled would be claimed and then
 	// skipped (skipped_disabled), a confusing no-op; reject up front so the
 	// button's outcome is predictable.
-	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v != "true" {
+	if !archiveEnabled(r.Context(), d.pg) {
 		api.WriteError(w, http.StatusBadRequest, "Enable archiving before running maintenance.")
 		return
 	}
@@ -322,7 +319,7 @@ func (d routerDeps) handleRunArchiveMaintain(w http.ResponseWriter, r *http.Requ
 func (d routerDeps) handleClearArchiveCatalog(w http.ResponseWriter, r *http.Request) {
 	// Require archiving disabled so the archiver is not concurrently
 	// recreating tables/namespaces mid-clear (races a clean reset to zero).
-	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
+	if archiveEnabled(r.Context(), d.pg) {
 		api.WriteError(w, http.StatusConflict, "Disable archiving before clearing the catalog.")
 		return
 	}
@@ -364,7 +361,7 @@ func (d routerDeps) handleClearArchiveSpool(w http.ResponseWriter, r *http.Reque
 	// Require archiving disabled: the reset runs on the ingest (Writer)
 	// side only while the tee is not spooling, so a clear while enabled
 	// would race live writes.
-	if v, _ := d.pg.GetSetting(r.Context(), archiveEnabledSetting); v == "true" {
+	if archiveEnabled(r.Context(), d.pg) {
 		api.WriteError(w, http.StatusConflict, "Disable archiving before clearing the spool.")
 		return
 	}
@@ -509,6 +506,10 @@ type createRestoreRequest struct {
 }
 
 func (d routerDeps) handleCreateRestore(w http.ResponseWriter, r *http.Request) {
+	if archiveCHReadBlocked != "" {
+		api.WriteError(w, http.StatusConflict, "Restore unavailable: "+archiveCHReadBlocked)
+		return
+	}
 	u, _ := r.Context().Value("user").(*storage.User)
 	var body createRestoreRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -756,10 +757,7 @@ func (d routerDeps) handleRecallAvailable(w http.ResponseWriter, r *http.Request
 		api.WriteError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
-	enabled := false
-	if v, _ := d.pg.GetSetting(r.Context(), "archive_enabled"); v == "true" {
-		enabled = true
-	}
+	enabled := archiveEnabled(r.Context(), d.pg)
 	// Provisioned in-process (full server) or in the split ingest tier.
 	provisioned := d.ingestQueue.SpoolProvisioned() || d.pg.ReadSpoolStatus(r.Context()).Provisioned
 	resp := map[string]interface{}{
@@ -824,6 +822,10 @@ type createRecallRequest struct {
 }
 
 func (d routerDeps) handleCreateRecall(w http.ResponseWriter, r *http.Request) {
+	if archiveCHReadBlocked != "" {
+		api.WriteError(w, http.StatusConflict, "Recall unavailable: "+archiveCHReadBlocked)
+		return
+	}
 	fractalID := chi.URLParam(r, "fractalID")
 	u, ok := d.recallAnalystOK(w, r, fractalID)
 	if !ok {
