@@ -122,10 +122,18 @@ func TestTranslateModifiers(t *testing.T) {
 		{"regex all", fc("CommandLine", []string{"re", "all"}, "a.", "b+"), `(CommandLine=/a./ AND CommandLine=/b+/)`, nil},
 		{"all with one value is just the value", fc("CommandLine", []string{"contains", "all"}, "x"), `CommandLine=~x`, nil},
 
-		// Keywords (no field): case-insensitive substring over the whole event.
-		{"keyword", fc("", nil, "mimikatz"), `/.*mimikatz.*/i`, []string{"norm_log"}},
-		{"keyword is regex-escaped", fc("", nil, "a.b/c(d)"), `/.*a\.b\/c\(d\).*/i`, []string{"norm_log"}},
-		{"keyword list", fc("", nil, "a+b", "c"), `/.*(?:a\+b|c).*/i`, nil},
+		// Keywords (no field): case-insensitive substring over norm_log, the event as
+		// JSON. The SQL needle is the value as serialized there: '/' as \/, '\' as \\.
+		{"keyword", fc("", nil, "mimikatz"), `norm_log=~mimikatz`,
+			[]string{"multiSearchAnyCaseInsensitive(norm_log, ['mimikatz'])"}},
+		{"keyword is serialization-escaped", fc("", nil, "a.b/c(d)"), `norm_log=~"a.b/c(d)"`,
+			[]string{`multiSearchAnyCaseInsensitive(norm_log, ['a.b\\/c(d)'])`}},
+		{"keyword with backslash and double quote", fc("", nil, `C:\Temp "x"`), `norm_log=~"C:\\Temp \"x\""`,
+			[]string{`multiSearchAnyCaseInsensitive(norm_log, ['C:\\\\Temp \\"x\\"'])`}},
+		{"keyword list", fc("", nil, "a+b", "c"), `norm_log=~"a+b",c`, nil},
+		{"keyword with comma is a regex", fc("", nil, "a,b/c", "d"), `(norm_log=~d OR norm_log=/a,b\\?\/c/i)`, nil},
+		{"keyword with a cased non-ASCII letter is a regex", fc("", nil, "Ärger"), `norm_log=/Ärger/i`, nil},
+		{"empty keyword matches everything", fc("", nil, ""), `*`, nil},
 
 		// null: the field must be absent or empty.
 		{"null", FieldCondition{Field: "ParentImage"}, `NOT ParentImage=*`, nil},
@@ -309,8 +317,8 @@ detection:
 	cases := map[string]string{
 		"alts":     `(Image=$"\\a.exe" OR Image=$"\\b.exe")`,
 		"one_alt":  `in(lower(User), values=["root"])`,
-		"keywords": `/.*(?:mimikatz|sekurlsa).*/i`,
-		"keyword":  `/.*lsass.*/i`,
+		"keywords": `norm_log=~mimikatz,sekurlsa`,
+		"keyword":  `norm_log=~lsass`,
 	}
 	for name, want := range cases {
 		got, err := translateSelection(rule.Detection.Selections[name], func(s string) string { return s })
@@ -525,7 +533,7 @@ func TestTranslateMapsFieldsThroughNormalizer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `bifract_category=process_creation AND ((((process_path=$"\\rundll32.exe" AND command_line=~"javascript:") AND NOT (NOT parent_image=*)) AND /.*RunHTMLApplication.*/i))`
+	want := `bifract_category=process_creation AND ((((process_path=$"\\rundll32.exe" AND command_line=~"javascript:") AND NOT (NOT parent_image=*)) AND norm_log=~RunHTMLApplication))`
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
@@ -906,7 +914,11 @@ func TestTranslateWildcardForms(t *testing.T) {
 			`(Image=$"\\a.exe","\\c.exe" OR Image=/(?s)\\b.\.exe$|\\d.*\.exe$/i)`, ""},
 		{"exact list mixes equality, lowercase equality and native", fc("Image", nil, "1", `*\a.exe`, "B.exe"),
 			`(Image="1" OR in(lower(Image), values=["b.exe"]) OR Image=$"\\a.exe")`, ""},
-		{"keyword wildcard", fc("", nil, "mimi*katz"), `/.*mimi.*katz.*/i`, "match(lower(norm_log), '.*mimi.*katz.*')"},
+		{"keyword wildcard", fc("", nil, "mimi*katz"), `norm_log=/mimi.*katz/i`, "match(lower(norm_log), 'mimi.*katz')"},
+		// '/' is stored as \/ in the hot store and raw in the archive; the pattern takes both.
+		{"keyword wildcard with slash and backslash", fc("", nil, `/dev/*\tcp`), `norm_log=/\\?\/dev\\?\/.*\\\\tcp/i`,
+			`match(lower(norm_log), '\\\\?\\/dev\\\\?\\/.*\\\\\\\\tcp')`},
+		{"keyword ? spans one serialized character", fc("", nil, `a?b`), `norm_log=/a(?:\\.|.)b/i`, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1184,7 +1196,7 @@ func TestTranslateWindash(t *testing.T) {
 		{"a value without a flag dash is unchanged", fc("CommandLine", contains, "a-b"), `CommandLine=~a-b`, ""},
 		{"all keeps each value's variants together", fc("CommandLine", []string{"windash", "contains", "all"}, " -a", " -b"),
 			`(CommandLine=~" -a"," /a"," {en}a"," {em}a"," {bar}a" AND CommandLine=~" -b"," /b"," {en}b"," {em}b"," {bar}b")`, ""},
-		{"keyword", fc("", []string{"windash"}, "-enc"), `/.*(?:-enc|\/enc|{en}enc|{em}enc|{bar}enc).*/i`, ""},
+		{"keyword", fc("", []string{"windash"}, "-enc"), `norm_log=~"-enc","/enc","{en}enc","{em}enc","{bar}enc"`, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

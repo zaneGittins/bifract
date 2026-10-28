@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -164,4 +165,28 @@ func TestStaticAssetsStampsRealIndex(t *testing.T) {
 		t.Errorf("%d local asset references left unstamped", n)
 	}
 	t.Logf("stamped %d local assets in web/index.html", before)
+}
+
+// TestPagesLoadNoExternalCode keeps third-party scripts and styles vendored:
+// a CDN URL breaks offline installs and serves whatever version it resolves to.
+func TestPagesLoadNoExternalCode(t *testing.T) {
+	external := regexp.MustCompile(`<(?:script|link)\b[^>]*(?:src|href)="(?:https?:)?//[^"]*"`)
+	pages, _ := filepath.Glob("../../web/*.html")
+	if len(pages) == 0 {
+		t.Fatal("no pages found in web/")
+	}
+	for _, p := range pages {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range external.FindAllString(string(raw), -1) {
+			t.Errorf("%s loads external code: %s", filepath.Base(p), m)
+		}
+		for _, m := range localAssetRef.FindAllStringSubmatch(string(raw), -1) {
+			if _, err := os.Stat(filepath.Join("../../web", m[2])); err != nil {
+				t.Errorf("%s references missing asset %s", filepath.Base(p), m[2])
+			}
+		}
+	}
 }

@@ -72,4 +72,9 @@ fi
 
 echo "Running: sudo ${BINARY} $*"
 echo ""
-sudo "${INSTALL_DIR}/${BINARY}" "$@"
+# Under `curl | sh` stdin is this script, so hand the wizard the terminal when there is one.
+if [ ! -t 0 ] && (: < /dev/tty) 2>/dev/null; then
+    sudo "${INSTALL_DIR}/${BINARY}" "$@" < /dev/tty
+else
+    sudo "${INSTALL_DIR}/${BINARY}" "$@"
+fi

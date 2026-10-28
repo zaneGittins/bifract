@@ -80,7 +80,9 @@ func TestRunUpgradePreservesInstall(t *testing.T) {
 		"BIFRACT_ARCHIVE_ENABLED":   "true",
 		"MAXMIND_LICENSE_KEY":       "mm-key",
 		"BIFRACT_DASHBOARD_WORKERS": "6",
-		"SOME_UNMANAGED_KEY":        "dropped",
+		"BIFRACT_INGEST_WORKERS":    "12",
+		"BIFRACT_INGEST_MEM_LIMIT":  "4g",
+		"LITELLM_MASTER_KEY":        "retired",
 	})
 	dir := cfg.InstallDir
 	fake := newFakeExec(t, composeUpFails)
@@ -109,13 +111,15 @@ func TestRunUpgradePreservesInstall(t *testing.T) {
 		"BIFRACT_ARCHIVE_ENABLED":       "true",
 		"MAXMIND_LICENSE_KEY":           "mm-key",
 		"BIFRACT_DASHBOARD_WORKERS":     "6",
+		"BIFRACT_INGEST_WORKERS":        "12",
+		"BIFRACT_INGEST_MEM_LIMIT":      "4g",
 	} {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q", k, env[k], want)
 		}
 	}
-	if _, ok := env["SOME_UNMANAGED_KEY"]; ok {
-		t.Error("an unlisted key survived; the preserve list is the contract")
+	if _, ok := env["LITELLM_MASTER_KEY"]; ok {
+		t.Error("retired LiteLLM key survived the upgrade")
 	}
 	if got := TargetFromEnv(env); got != cfg.CH {
 		t.Errorf("external ClickHouse became %+v", got)
@@ -378,5 +382,23 @@ func TestRunUpgradeMigratesLiteLLM(t *testing.T) {
 	}
 	if compose := readFile(t, dir, "docker-compose.yml"); strings.Contains(strings.ToLower(compose), "litellm") {
 		t.Error("compose still references LiteLLM")
+	}
+}
+
+// A rewrite keeps keys the installer does not render, but not the external
+// ClickHouse keys of an install the installer now treats as bundled.
+func TestWithCarriedEnv(t *testing.T) {
+	got := withCarriedEnv("A=new\nB=rendered\n", map[string]string{
+		"A":               "old",
+		"OPERATOR_TUNING": "7",
+		"CLICKHOUSE_HOST": "stale.example.com",
+	})
+	env, err := parseEnv(strings.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"A": "new", "B": "rendered", "OPERATOR_TUNING": "7"}
+	if fmt.Sprint(env) != fmt.Sprint(want) {
+		t.Errorf("env = %v, want %v", env, want)
 	}
 }

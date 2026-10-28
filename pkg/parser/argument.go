@@ -45,6 +45,9 @@ type Argument struct {
 	Text string
 	Agg  *AggSpec   // ArgAggSpec
 	List []Argument // ArgList
+	// Bracketed records that a list was written in [ ], which makes each element
+	// one value even when it contains a comma.
+	Bracketed bool
 	// Binding is the result-set binding this argument names. ArgBinding only.
 	Binding *BindingNode
 	// Quoted records that the text was written in quotes. Structural, so a value
@@ -328,15 +331,29 @@ func (b *Bound) Strings(name string) []string {
 	return out
 }
 
-// CSV returns a parameter's values with each one further split on commas, for a
-// list parameter whose legacy spelling packs the values into a single quoted
-// string (hash="a,b").
+// CSV returns a parameter's values, splitting on commas only a value given as a
+// single string, the legacy spelling that packs a list into one (hash="a,b"). An
+// element of a bracketed list is one value, so ["LogMeIn, Inc."] keeps its comma.
 func (b *Bound) CSV(name string) []string {
 	var out []string
-	for _, v := range b.Strings(name) {
-		for _, part := range strings.Split(v, ",") {
-			if part = strings.TrimSpace(part); part != "" {
-				out = append(out, part)
+	for _, a := range b.All(name) {
+		if a.Kind == ArgList && a.Bracketed {
+			for _, e := range a.List {
+				if v := e.Value(); v != "" {
+					out = append(out, v)
+				}
+			}
+			continue
+		}
+		elems := []Argument{a}
+		if a.Kind == ArgList {
+			elems = a.List
+		}
+		for _, e := range elems {
+			for _, part := range strings.Split(e.Value(), ",") {
+				if part = strings.TrimSpace(part); part != "" {
+					out = append(out, part)
+				}
 			}
 		}
 	}

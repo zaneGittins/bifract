@@ -408,6 +408,7 @@ window.BifractCharts = {
                     row = data[idx];
                 }
                 if (!row) row = { [timeField]: label };
+                if (series != null && !(groupFields[0] in row)) row[groupFields[0]] = series;
                 const ctx = { row, field: timeField, value: label, series };
                 const t0 = parse(label);
                 if (!isNaN(t0.getTime())) {
@@ -686,19 +687,23 @@ window.BifractCharts = {
         let groups = null; // populated when grouped; reused by the pivot click handler
 
         if (groupFields.length > 0) {
+            // Rows arrive ordered by count and a series can skip buckets, so the
+            // axis is the sorted union of buckets and each series is indexed by it.
             const groupField = groupFields[0];
+            labels = [...new Set(data.map(r => String(r[timeField] || '')))].sort();
+            const slot = new Map(labels.map((l, i) => [l, i]));
             groups = {};
             data.forEach(row => {
                 const key = String(row[groupField] || 'Unknown');
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(row);
+                if (!groups[key]) groups[key] = new Array(labels.length).fill(null);
+                groups[key][slot.get(String(row[timeField] || ''))] = row;
             });
 
             datasets = Object.entries(groups).map(([key, rows], idx) => {
                 const color = this._override(cfg, key, idx) || pal[idx % pal.length];
                 return {
                     label: key,
-                    data: rows.map(r => parseFloat(r[valueField]) || 0),
+                    data: rows.map(r => (r && parseFloat(r[valueField])) || 0),
                     borderColor: color,
                     backgroundColor: color + '20',
                     fill: true,
@@ -708,8 +713,6 @@ window.BifractCharts = {
                     borderWidth: 2
                 };
             });
-
-            labels = Object.values(groups)[0].map(r => String(r[timeField] || ''));
         } else {
             // One overlaid area per value field. A single value field keeps the
             // accent colour; multiple (e.g. percent() series) get palette colours

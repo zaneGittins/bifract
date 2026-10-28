@@ -1,6 +1,8 @@
 package sigma
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -32,7 +34,9 @@ import (
 //	v7: compare cased exact values as lower(field) IN (...) instead of a regex.
 //	v8: match an escaped lone '*' as a literal, not as field presence.
 //	v9: support |windash.
-const TranslatorVersion = "v9"
+//	v10: search keywords in norm_log as JSON serialized them ('/', '\' and '"'
+//	     escaped), so keywords holding those characters match.
+const TranslatorVersion = "v10"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -568,22 +572,70 @@ func buildNativeOpExpr(field, op string, values []string) string {
 	return field + op + strings.Join(parts, ",")
 }
 
-// buildKeywordExpr ORs keyword values (no field) as one case-insensitive regex over
-// the whole event. Keywords are substring matches, so their wildcards apply inside.
+// buildKeywordExpr ORs keyword values (no field) as a case-insensitive substring
+// search over norm_log, the event serialized as JSON. A literal takes norm_log's =~,
+// which BQL escapes the way each store serialized the event; anything =~ cannot
+// carry (a wildcard, a comma, a non-ASCII letter) is a regex over that serialization.
 func buildKeywordExpr(values []string) string {
-	pieces := make([]string, 0, len(values))
+	var lits, pieces []string
 	for _, v := range values {
-		toks, lead, trail := trimStars(parseSigmaValue(v))
-		if len(toks) == 0 && (lead || trail) {
+		toks, _, _ := trimStars(parseSigmaValue(v))
+		if len(toks) == 0 {
 			return "*"
 		}
-		p, _ := globRegex(toks)
-		pieces = append(pieces, p)
+		if len(toks) == 1 && toks[0].wild == 0 && !strings.Contains(toks[0].lit, ",") && lowerFolds(toks[0].lit) {
+			lits = append(lits, toks[0].lit)
+			continue
+		}
+		pieces = append(pieces, serializedGlobRegex(toks))
 	}
-	if len(pieces) == 1 {
-		return "/.*" + pieces[0] + ".*/i"
+	var parts []string
+	if len(lits) > 0 {
+		parts = append(parts, buildNativeOpExpr(normLogField, "=~", lits))
 	}
-	return "/.*(?:" + strings.Join(pieces, "|") + ").*/i"
+	if len(pieces) > 0 {
+		parts = append(parts, normLogField+"=/"+strings.Join(pieces, "|")+"/i")
+	}
+	return joinExprs(parts, " OR ")
+}
+
+// normLogField is the column holding each event serialized as JSON.
+const normLogField = "norm_log"
+
+// serializedGlobRegex renders glob tokens as an RE2 fragment matching their text as
+// norm_log stores it: JSON-escaped, with '/' escaped in the hot store but not the
+// archive, so either spelling matches. '?' takes one character, escaped or not.
+func serializedGlobRegex(toks []globToken) string {
+	var b strings.Builder
+	for _, t := range toks {
+		switch t.wild {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(`(?:\\.|.)`)
+		default:
+			parts := strings.Split(jsonEscape(t.lit), "/")
+			for i, p := range parts {
+				if i > 0 {
+					b.WriteString(`\\?\/`)
+				}
+				b.WriteString(escapeRegex(p))
+			}
+		}
+	}
+	return b.String()
+}
+
+// jsonEscape returns s as it appears inside a JSON string, quotes stripped.
+func jsonEscape(s string) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return s
+	}
+	out := strings.TrimSuffix(buf.String(), "\n")
+	return out[1 : len(out)-1]
 }
 
 func joinExprs(parts []string, op string) string {
