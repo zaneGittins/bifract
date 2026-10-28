@@ -101,7 +101,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest, createdBy strin
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, name, description, transforms, field_mappings, value_mappings, timestamp_fields,
 		           is_default, COALESCE(created_by, ''), created_at, updated_at, version`,
-		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(valueMappingsJSON), string(tsFieldsJSON), createdBy)
+		req.Name, req.Description, string(transformsJSON), string(mappingsJSON), string(valueMappingsJSON), string(tsFieldsJSON), storage.NullableUser(createdBy))
 
 	n, err := scanNormalizerRow(row)
 	if err != nil {

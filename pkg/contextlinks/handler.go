@@ -53,7 +53,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	username := h.getCurrentUser(r)
+	username := storage.AttributionUser(r.Context())
 
 	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -116,13 +116,6 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.respondSuccess(w, map[string]string{"message": "Context link deleted"})
-}
-
-func (h *Handler) getCurrentUser(r *http.Request) string {
-	if user, ok := r.Context().Value("user").(*storage.User); ok {
-		return user.Username
-	}
-	return ""
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {

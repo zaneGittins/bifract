@@ -103,7 +103,7 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, err := h.manager.Create(r.Context(), req, h.getCurrentUser(r))
+	f, err := h.manager.Create(r.Context(), req, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -153,7 +153,7 @@ func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 // HandleIgnore dismisses a suggested field.
 func (h *Handler) HandleIgnore(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	if err := h.manager.Ignore(r.Context(), name, h.getCurrentUser(r)); err != nil {
+	if err := h.manager.Ignore(r.Context(), name, storage.AttributionUser(r.Context())); err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -359,7 +359,7 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		reqs = append(reqs, CreateRequest{FieldName: f.FieldName, IndexType: IndexType(f.IndexType)})
 	}
 
-	fields, err := h.manager.ReplaceAll(r.Context(), reqs, h.getCurrentUser(r))
+	fields, err := h.manager.ReplaceAll(r.Context(), reqs, storage.AttributionUser(r.Context()))
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -384,13 +384,6 @@ func (h *Handler) notifyFieldChange(custom []SchemaField) {
 		m[f.FieldName] = true
 	}
 	h.onFieldChange(m)
-}
-
-func (h *Handler) getCurrentUser(r *http.Request) string {
-	if user, ok := r.Context().Value("user").(*storage.User); ok {
-		return user.Username
-	}
-	return ""
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {

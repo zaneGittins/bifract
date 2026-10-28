@@ -129,10 +129,12 @@ func (h *Handler) HandleCreatePrism(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-grant the creator admin role on the new prism
-	username := user.Username
-	if _, err := h.pg.GrantPrismPermission(r.Context(), prism.ID, &username, nil, "admin", user.Username); err != nil {
-		log.Printf("[Prisms] Failed to auto-grant admin permission on prism %s: %v", prism.ID, err)
+	// Auto-grant the creator admin role on the new prism. An API key's
+	// principal is not the user it credits, and has no users row to grant to.
+	if username := user.Username; username == storage.AttributionUser(r.Context()) {
+		if _, err := h.pg.GrantPrismPermission(r.Context(), prism.ID, &username, nil, "admin", username); err != nil {
+			log.Printf("[Prisms] Failed to auto-grant admin permission on prism %s: %v", prism.ID, err)
+		}
 	}
 
 	respondSuccess(w, prism)
@@ -356,7 +358,7 @@ func (h *Handler) HandleGrantPrismPermission(w http.ResponseWriter, r *http.Requ
 		groupID = req.GroupID
 	}
 
-	perm, err := h.pg.GrantPrismPermission(r.Context(), prismID, username, groupID, req.Role, user.Username)
+	perm, err := h.pg.GrantPrismPermission(r.Context(), prismID, username, groupID, req.Role, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Prisms] Failed to grant permission on %s: %v", prismID, err)
 		respondError(w, http.StatusBadRequest, "Failed to grant permission")

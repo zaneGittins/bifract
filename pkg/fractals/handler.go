@@ -575,7 +575,7 @@ func (h *Handler) HandleGrantPermission(w http.ResponseWriter, r *http.Request) 
 		groupID = req.GroupID
 	}
 
-	perm, err := h.pg.GrantFractalPermission(r.Context(), fractalID, username, groupID, req.Role, user.Username)
+	perm, err := h.pg.GrantFractalPermission(r.Context(), fractalID, username, groupID, req.Role, storage.AttributionUser(r.Context()))
 	if err != nil {
 		log.Printf("[Fractals] Failed to grant permission on %s: %v", fractalID, err)
 		h.sendError(w, http.StatusBadRequest, "Failed to grant permission")

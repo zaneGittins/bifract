@@ -253,8 +253,8 @@ func TestHandleCreateWithoutUserRecordsNoCreator(t *testing.T) {
 	if code, _ := serve(t, h.HandleCreate, r); code != http.StatusOK {
 		t.Fatalf("code = %d", code)
 	}
-	if got := fake.Matching("INSERT")[0].Args[6]; got != "" {
-		t.Fatalf("created_by = %v, want empty", got)
+	if got := fake.Matching("INSERT")[0].Args[6]; got != nil {
+		t.Fatalf("created_by = %v, want NULL", got)
 	}
 }
 
