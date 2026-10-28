@@ -53,3 +53,102 @@ func TestInitPostgresHasNoForwardReferences(t *testing.T) {
 			len(problems), strings.Join(problems, "\n  "))
 	}
 }
+
+var (
+	colTableRe   = regexp.MustCompile(`(?i)^\s*CREATE TABLE IF NOT EXISTS (\w+)\s*\(`)
+	colLineRe    = regexp.MustCompile(`^\s*"?(\w+)"?\s+\w`)
+	colAlterRe   = regexp.MustCompile(`(?i)^\s*ALTER TABLE (?:IF EXISTS )?(?:ONLY )?(\w+)`)
+	colAddRe     = regexp.MustCompile(`(?i)ADD COLUMN (?:IF NOT EXISTS )?"?(\w+)"?`)
+	colRenameRe  = regexp.MustCompile(`(?i)RENAME COLUMN \w+ TO "?(\w+)"?`)
+	indexRe      = regexp.MustCompile(`(?is)^\s*CREATE (?:UNIQUE )?INDEX (?:CONCURRENTLY )?(?:IF NOT EXISTS )?\w+\s+ON (?:ONLY )?(\w+)\s*(?:USING \w+\s*)?(\(.*)$`)
+	identRe      = regexp.MustCompile(`[A-Za-z_]\w*`)
+	quotedRe     = regexp.MustCompile(`'[^']*'`)
+	castRe       = regexp.MustCompile(`::\s*\w+(\s*\[\])?`)
+	funcCallRe   = regexp.MustCompile(`[A-Za-z_]\w*\s*\(`)
+	notColumnRe  = regexp.MustCompile(`(?i)^(where|and|or|not|is|null|true|false|in|asc|desc|nulls|first|last|like|between|any|all|some|exists|case|when|then|else|end|collate|[a-z_]+_ops)$`)
+	constraintRe = regexp.MustCompile(`(?i)^(constraint|primary|unique|foreign|check|exclude)$`)
+)
+
+// A fresh install applies init-postgres.sql top to bottom in one transaction, so an
+// index naming a column that a later ALTER TABLE adds fails the whole schema, while
+// existing installs, which already have the column, never notice.
+func TestInitPostgresIndexesNameDefinedColumns(t *testing.T) {
+	lines := strings.Split(PostgresSQL, "\n")
+	// columns[table][column] is the line that first defines it.
+	columns := map[string]map[string]int{}
+	define := func(table, col string, line int) {
+		table, col = strings.ToLower(table), strings.ToLower(col)
+		if columns[table] == nil {
+			columns[table] = map[string]int{}
+		}
+		if _, ok := columns[table][col]; !ok {
+			columns[table][col] = line
+		}
+	}
+
+	var inTable, inAlter string
+	for i, l := range lines {
+		code := strings.SplitN(l, "--", 2)[0]
+		switch {
+		case colTableRe.MatchString(code):
+			inTable = colTableRe.FindStringSubmatch(code)[1]
+			if columns[strings.ToLower(inTable)] == nil {
+				columns[strings.ToLower(inTable)] = map[string]int{}
+			}
+			continue
+		case inTable != "":
+			if strings.HasPrefix(strings.TrimSpace(code), ")") {
+				inTable = ""
+			} else if m := colLineRe.FindStringSubmatch(code); m != nil && !constraintRe.MatchString(m[1]) {
+				define(inTable, m[1], i+1)
+			}
+			continue
+		}
+		if m := colAlterRe.FindStringSubmatch(code); m != nil {
+			inAlter = m[1]
+		}
+		if inAlter != "" {
+			for _, m := range colAddRe.FindAllStringSubmatch(code, -1) {
+				define(inAlter, m[1], i+1)
+			}
+			for _, m := range colRenameRe.FindAllStringSubmatch(code, -1) {
+				define(inAlter, m[1], i+1)
+			}
+			if strings.Contains(code, ";") {
+				inAlter = ""
+			}
+		}
+	}
+
+	var problems []string
+	for i, l := range lines {
+		code := strings.SplitN(l, "--", 2)[0]
+		m := indexRe.FindStringSubmatch(code)
+		if m == nil {
+			continue
+		}
+		table := strings.ToLower(m[1])
+		known, ok := columns[table]
+		if !ok {
+			continue
+		}
+		body := funcCallRe.ReplaceAllString(castRe.ReplaceAllString(quotedRe.ReplaceAllString(m[2], ""), ""), "(")
+		for _, id := range identRe.FindAllString(body, -1) {
+			if notColumnRe.MatchString(id) {
+				continue
+			}
+			def, ok := known[strings.ToLower(id)]
+			if !ok || def > i+1 {
+				where := "is never defined"
+				if ok {
+					where = fmt.Sprintf("is not added until line %d", def)
+				}
+				problems = append(problems, fmt.Sprintf("line %d indexes %s.%s, which %s", i+1, table, id, where))
+			}
+		}
+	}
+	if len(problems) > 0 {
+		t.Errorf("init-postgres.sql indexes columns before defining them; a fresh install would fail:\n  %s",
+			strings.Join(problems, "\n  "))
+	}
+}
