@@ -2271,9 +2271,10 @@
             <!-- Exchange Tab Content -->
             <div id="fractalExchangeTabContent" style="display: none;">
                 <div id="exchangeView" class="auth-required" style="display: none;">
-                    <section class="dashboards-view-section">
-                        <div id="exchangeListing" class="dashboards-listing">
-                            <div class="admin-toolbar">
+                    <div id="exchangeShell" class="exchange-shell">
+                        <main id="exchangeMain" class="exchange-main" aria-live="polite"></main>
+                        <aside class="exchange-side" aria-label="Exchange items">
+                            <div class="exchange-side-tools">
                                 <input type="text" id="exchangeSearchInput" class="admin-search" placeholder="Search the Exchange" aria-label="Search the Exchange">
                                 <select id="exchangeKindFilter" class="exchange-kind-filter" aria-label="Kind">
                                     <option value="">All kinds</option>
@@ -2287,14 +2288,10 @@
                                     <option value="policy">Policies</option>
                                 </select>
                             </div>
-                            <div id="exchangeStatus" class="admin-empty" role="status" aria-live="polite" hidden><p></p></div>
-                            <div id="exchangeEmpty" class="admin-empty" hidden><p>No items match your search</p></div>
-                            <div id="exchangeGrid" class="exchange-grid" hidden></div>
-                            <div id="exchangeResults" class="exchange-results" hidden></div>
+                            <nav id="exchangeList" class="exchange-list"></nav>
                             <p id="exchangeMirror" class="exchange-mirror" hidden></p>
-                        </div>
-                        <div id="exchangeDetail" class="exchange-detail" hidden></div>
-                    </section>
+                        </aside>
+                    </div>
                 </div>
             </div>
 

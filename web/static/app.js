@@ -880,7 +880,7 @@ const App = {
     },
 
     // Views sized to the viewport with internal scrolling; the rest scroll the page.
-    _fillViews: new Set(['search', 'recall', 'chat', 'library', 'fractalListing', 'api']),
+    _fillViews: new Set(['search', 'recall', 'chat', 'library', 'exchange', 'fractalListing', 'api']),
 
     // Alerts sub-tabs with their own route; the Rules list is the default.
     _alertsSubTabs: ['feeds', 'actions', 'coverage', 'policies', 'changes'],
@@ -1161,8 +1161,8 @@ const App = {
                 if (window.IngestTokens) IngestTokens.show();
                 break;
             case 'exchange':
-                if (exchangeContent) exchangeContent.style.display = 'block';
-                if (exchangeView) exchangeView.style.display = 'block';
+                if (exchangeContent) exchangeContent.style.display = 'flex';
+                if (exchangeView) exchangeView.style.display = 'flex';
                 if (window.Exchange) Exchange.show(subPath);
                 break;
             case 'recall':

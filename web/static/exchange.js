@@ -1,6 +1,6 @@
 // Exchange: browse shared content and add it through each kind's own import
-// endpoint. The grid shows bundles and the items in none; searching or filtering
-// lists items one by one; each entry opens a detail view with its definition.
+// endpoint. The list on the right holds bundles, their items and the items in no
+// bundle; searching flattens it. The selection fills the main pane on the left.
 // Adding an item adds its requirements first; a bundle adds its members.
 const Exchange = {
     KINDS: {
@@ -19,7 +19,6 @@ const Exchange = {
     _loaded: false,
     _detail: null,
     _confirm: null,
-    _viewing: new Set(),
     _busy: new Map(),
     _files: {},
     _loading: {},
@@ -80,7 +79,6 @@ const Exchange = {
             const mirror = document.getElementById('exchangeMirror');
             mirror.hidden = !listing.source;
             mirror.textContent = listing.source ? `Read from a mirror: ${listing.source}` : '';
-            document.getElementById('exchangeStatus').hidden = true;
             this.render();
         } catch (e) {
             if (this.isStale(token)) return;
@@ -91,14 +89,8 @@ const Exchange = {
     },
 
     setStatus(text) {
-        const status = document.getElementById('exchangeStatus');
-        if (!status) return;
-        status.hidden = false;
-        status.querySelector('p').textContent = text;
-        for (const id of ['exchangeGrid', 'exchangeResults', 'exchangeEmpty', 'exchangeDetail']) {
-            document.getElementById(id).hidden = true;
-        }
-        document.getElementById('exchangeListing').hidden = false;
+        document.getElementById('exchangeMain').innerHTML = `<div class="admin-empty"><p>${Utils.escapeHtml(text)}</p></div>`;
+        document.getElementById('exchangeList').innerHTML = '';
     },
 
     // What is already present in this scope, keyed as installedKey() keys an item.
@@ -176,43 +168,78 @@ const Exchange = {
 
     // ---- Views ----
 
+    // The entry the main pane shows: the one picked, else the first bundle. Narrow
+    // screens show one pane at a time, so there the default leaves the list showing.
+    selected() {
+        return (this._detail && this.find(this._detail))
+            || this.items.find(it => it.kind === 'bundle') || this.items[0] || null;
+    },
+
     render() {
         if (!this._loaded) return;
-        // Rebuilt views carry keyboard focus over to the same control.
+        // Rebuilt panes carry keyboard focus over to the same control.
         const focused = document.activeElement?.closest?.('#exchangeView [data-action]');
-        const detail = this._detail && this.find(this._detail);
-        document.getElementById('exchangeListing').hidden = !!detail;
-        document.getElementById('exchangeDetail').hidden = !detail;
-        if (detail) this.renderDetail(detail);
-        else this.renderListing();
+        const sel = this.selected();
+        document.getElementById('exchangeShell').classList.toggle('exchange-picked', !!this._detail);
+        this.renderList(sel);
+        document.getElementById('exchangeMain').innerHTML = sel ? this.mainHtml(sel) : '';
         if (focused) {
-            const sel = `[data-action="${focused.dataset.action}"]` + (focused.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : '');
-            document.querySelector(`#exchangeView ${sel}`)?.focus();
+            const q = `[data-action="${focused.dataset.action}"]` + (focused.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : '');
+            const where = focused.closest('#exchangeList') ? '#exchangeList' : '#exchangeMain';
+            document.querySelector(`${where} ${q}`)?.focus();
         }
     },
 
-    renderListing() {
+    matches(it, terms, kind) {
+        if (kind && it.kind !== kind) return false;
+        return terms.every(t => [it.name, it.description, it.author, this.KINDS[it.kind].label, ...(it.tags || [])]
+            .some(v => (v || '').toLowerCase().includes(t)));
+    },
+
+    // Browsing shows each bundle with its items under it, then the items in none.
+    // A search or kind filter looks for items, so it lists every match once.
+    renderList(sel) {
         const q = (document.getElementById('exchangeSearchInput')?.value || '').toLowerCase().trim();
         const kind = document.getElementById('exchangeKindFilter')?.value || '';
-        const grid = document.getElementById('exchangeGrid');
-        const results = document.getElementById('exchangeResults');
-        const empty = document.getElementById('exchangeEmpty');
-        const browsing = !q && !kind;
-
-        // Browsing shows each bundle once and the items in none; members are inside
-        // their bundle. A search or kind filter looks for items, so it lists them all.
         const terms = q.split(/\s+/).filter(Boolean);
-        const shown = browsing
-            ? [...this.items.filter(it => it.kind === 'bundle'), ...this.items.filter(it => it.kind !== 'bundle' && !this.bundlesOf(it).length)]
-            : this.items.filter(it => (!kind || it.kind === kind) && terms.every(t =>
-                [it.name, it.description, it.author, this.KINDS[it.kind].label, ...(it.tags || [])]
-                    .some(v => (v || '').toLowerCase().includes(t))));
+        const row = (it, nested) => this.listRowHtml(it, sel, nested);
+        let html;
+        if (!terms.length && !kind) {
+            const bundles = this.items.filter(it => it.kind === 'bundle');
+            const loose = this.items.filter(it => it.kind !== 'bundle' && !this.bundlesOf(it).length);
+            html = `<div class="exchange-list-label">Bundles</div>`
+                + bundles.map(b => row(b, false) + this.members(b).map(m => row(m, true)).join('')).join('')
+                + (loose.length ? `<div class="exchange-list-label">Other items</div>` + loose.map(it => row(it, false)).join('') : '');
+        } else {
+            const found = this.items.filter(it => this.matches(it, terms, kind));
+            html = found.length
+                ? `<div class="exchange-list-label">${found.length} match${found.length === 1 ? '' : 'es'}</div>` + found.map(it => row(it, false)).join('')
+                : '<p class="exchange-list-empty">No items match.</p>';
+        }
+        document.getElementById('exchangeList').innerHTML = html;
+    },
 
-        grid.hidden = !browsing || !shown.length;
-        results.hidden = browsing || !shown.length;
-        empty.hidden = shown.length > 0;
-        if (browsing) grid.innerHTML = shown.map(it => this.cardHtml(it)).join('');
-        else results.innerHTML = shown.map(it => this.resultHtml(it)).join('');
+    listRowHtml(it, sel, nested) {
+        const esc = Utils.escapeHtml;
+        const current = sel && sel.id === it.id;
+        return `
+<button type="button" class="exchange-row${nested ? ' nested' : ''}${it.kind === 'bundle' ? ' bundle' : ''}" data-action="select" data-id="${Utils.escapeAttr(it.id)}"${current ? ' aria-current="true"' : ''}>
+    <span class="exchange-row-kind">${esc(this.KINDS[it.kind].label)}</span>
+    <span class="exchange-row-name">${esc(it.name)}</span>
+    ${this.statusMark(it)}
+</button>`;
+    },
+
+    // A compact status for the list: a tick when present, a count for a bundle.
+    statusMark(it) {
+        if (it.kind === 'bundle') {
+            const members = this.members(it);
+            const done = members.filter(m => this.isInstalled(m)).length;
+            if (!done) return '';
+            const all = done === members.length;
+            return `<span class="exchange-row-status${all ? ' done' : ''}" title="${done} of ${members.length} added">${all ? '&#10003;' : `${done}/${members.length}`}</span>`;
+        }
+        return this.isInstalled(it) ? '<span class="exchange-row-status done" title="Installed">&#10003;</span>' : '';
     },
 
     statusHtml(it) {
@@ -234,54 +261,27 @@ const Exchange = {
         return (it.tags || []).map(t => `<span class="exchange-tag">${Utils.escapeHtml(t)}</span>`).join('');
     },
 
-    cardHtml(it) {
-        const esc = Utils.escapeHtml;
-        const count = it.kind === 'bundle' ? `<span>${it.items.length} items</span>` : '';
-        return `
-<button type="button" class="exchange-card${it.kind === 'bundle' ? ' exchange-card-bundle' : ''}" data-action="open" data-id="${Utils.escapeAttr(it.id)}">
-    <span class="exchange-card-head">${this.kindHtml(it)}${this.statusHtml(it)}</span>
-    <span class="exchange-card-name">${esc(it.name)}</span>
-    <span class="exchange-card-desc">${esc(it.description || '')}</span>
-    <span class="exchange-card-meta"><span>${esc(it.author || 'Bifract')}</span>${count}${this.tagsHtml(it)}</span>
-</button>`;
-    },
-
-    resultHtml(it) {
-        const esc = Utils.escapeHtml;
-        const bundles = this.bundlesOf(it).map(b => `<span class="exchange-bundle-chip">In: ${esc(b.name)}</span>`).join('');
-        return `
-<button type="button" class="exchange-result" data-action="open" data-id="${Utils.escapeAttr(it.id)}">
-    ${this.kindHtml(it)}
-    <span class="exchange-result-main">
-        <span class="exchange-card-name">${esc(it.name)}</span>
-        <span class="exchange-card-desc">${esc(it.description || '')}</span>
-    </span>
-    <span class="exchange-result-side">${bundles}${this.statusHtml(it)}</span>
-</button>`;
-    },
-
-    renderDetail(it) {
+    mainHtml(it) {
         const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
         const author = esc(it.author || 'Bifract');
         const by = /^https?:\/\//i.test(it.homepage || '')
             ? `<a href="${attr(it.homepage)}" target="_blank" rel="noopener noreferrer">${author}</a>`
             : author;
         const links = (ids) => ids.map(id => this.find(id)).filter(Boolean)
-            .map(r => `<button type="button" class="exchange-link" data-action="open" data-id="${attr(r.id)}">${esc(r.name)}</button>`).join(', ');
+            .map(r => `<button type="button" class="exchange-link" data-action="select" data-id="${attr(r.id)}">${esc(r.name)}</button>`).join(', ');
         const facts = [];
         const bundles = this.bundlesOf(it).map(b => b.id);
         if (bundles.length) facts.push(`<dt>Part of</dt><dd>${links(bundles)}</dd>`);
         if (it.requires?.length) facts.push(`<dt>Requires</dt><dd>${links(it.requires)}</dd>`);
-
-        document.getElementById('exchangeDetail').innerHTML = `
-<button type="button" class="exchange-back" data-action="back">&larr; Exchange</button>
+        return `
+<button type="button" class="exchange-back" data-action="back">&larr; All items</button>
 <div class="exchange-detail-head">
     <div class="exchange-detail-title">
         <div class="exchange-card-head">${this.kindHtml(it)}${this.statusHtml(it)}</div>
         <h2>${esc(it.name)}</h2>
         <div class="exchange-card-meta"><span>${by}</span>${this.tagsHtml(it)}</div>
     </div>
-    <div class="exchange-detail-action">${this._confirm === it.id ? '' : this.actionHtml(it, true)}</div>
+    <div class="exchange-detail-action">${this._confirm === it.id ? '' : this.actionHtml(it)}</div>
 </div>
 ${this.confirmHtml(it)}
 <p class="exchange-detail-desc">${esc(it.description || '')}</p>
@@ -290,15 +290,15 @@ ${facts.length ? `<dl class="exchange-facts">${facts.join('')}</dl>` : ''}
 ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">Definition</h3>${this.definitionHtml(it)}`}`;
     },
 
-    // The primary button for an item: Add, Add all, or its progress.
-    actionHtml(it, primary) {
+    // The header's button: Add, Add all, or its progress.
+    actionHtml(it) {
         const busy = this._busy.get(it.id);
-        if (busy) return `<button type="button" class="btn-primary${primary ? '' : ' btn-sm'}" disabled>${Utils.escapeHtml(busy)}</button>`;
-        if (this.isInstalled(it)) return primary ? '' : '<span class="exchange-installed">Installed</span>';
+        if (busy) return `<button type="button" class="btn-primary" disabled>${Utils.escapeHtml(busy)}</button>`;
+        if (this.isInstalled(it)) return '';
         const steps = this.pending(it);
         let label = 'Add';
         if (it.kind === 'bundle') label = steps.length === this.order(it).length ? `Add all (${steps.length})` : `Add ${steps.length} more`;
-        return `<button type="button" class="btn-primary${primary ? '' : ' btn-sm'}" data-action="install" data-id="${Utils.escapeAttr(it.id)}">${label}</button>`;
+        return `<button type="button" class="btn-primary" data-action="install" data-id="${Utils.escapeAttr(it.id)}">${label}</button>`;
     },
 
     // Adding more than one thing says what it adds and skips before doing it.
@@ -320,27 +320,30 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
 </div>`;
     },
 
+    // A bundle's items, each with its status and a menu to view or add it alone.
     contentsHtml(bundle) {
         const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
         const rows = this.members(bundle).map(m => {
-            const open = this._viewing.has(m.id);
-            const extra = this.pending(m).length > 1 && !this.isInstalled(m)
-                ? `<span class="exchange-hint">adds ${this.pending(m).filter(s => s.id !== m.id).map(s => esc(s.name)).join(', ')} first</span>` : '';
+            const first = this.pending(m).filter(s => s.id !== m.id);
+            const busy = this._busy.get(m.id);
+            const add = this.isInstalled(m) ? ''
+                : `<button type="button" class="kebab-item" data-action="install" data-id="${attr(m.id)}">${first.length ? `Add with ${esc(first.map(s => s.name).join(', '))}` : 'Add'}</button>`;
             return `
-<li class="exchange-member${open ? ' open' : ''}">
-    <div class="exchange-member-row">
-        ${this.kindHtml(m)}
-        <button type="button" class="exchange-link exchange-member-name" data-action="open" data-id="${attr(m.id)}">${esc(m.name)}</button>
-        ${extra}
-        <span class="exchange-member-actions">
-            <button type="button" class="btn-secondary btn-sm" data-action="view" data-id="${attr(m.id)}" aria-expanded="${open}">${open ? 'Hide' : 'View'}</button>
-            ${this.actionHtml(m, false)}
-        </span>
-    </div>
-    ${open ? `<div class="exchange-member-body">${this.definitionHtml(m)}</div>` : ''}
-</li>`;
+<tr>
+    <td class="exchange-cell-kind">${this.kindHtml(m)}</td>
+    <td><button type="button" class="exchange-link exchange-member-name" data-action="select" data-id="${attr(m.id)}">${esc(m.name)}</button>
+        <div class="exchange-member-desc">${esc(m.description || '')}</div></td>
+    <td class="exchange-cell-status">${busy ? `<span class="exchange-partial">${esc(busy)}</span>` : this.statusHtml(m)}</td>
+    <td class="kebab-cell"><div class="kebab-wrapper">
+        <button type="button" class="kebab-btn" data-action="kebab" aria-label="Actions for ${attr(m.name)}">&#8942;</button>
+        <div class="kebab-menu">
+            <button type="button" class="kebab-item" data-action="select" data-id="${attr(m.id)}">View definition</button>
+            ${add}
+        </div>
+    </div></td>
+</tr>`;
         }).join('');
-        return `<h3 class="exchange-section">Contents</h3><ul class="exchange-members">${rows}</ul>`;
+        return `<h3 class="exchange-section">Contents</h3><table class="exchange-contents"><tbody>${rows}</tbody></table>`;
     },
 
     // What an item adds: a lookup's source settings, or the file it imports.
@@ -389,14 +392,9 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
         if (!el || !document.getElementById('exchangeView').contains(el)) return;
         const item = el.dataset.id ? this.find(el.dataset.id) : null;
         switch (el.dataset.action) {
-            case 'open': if (item) this.open(item); break;
+            case 'kebab': KebabMenu.toggle(e, el); break;
+            case 'select': if (item) this.select(item); break;
             case 'back': this.back(); break;
-            case 'view':
-                if (!item) break;
-                if (this._viewing.has(item.id)) this._viewing.delete(item.id);
-                else this._viewing.add(item.id);
-                this.render();
-                break;
             case 'retry':
                 if (!item) break;
                 delete this._errors[item.id];
@@ -405,9 +403,11 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
             case 'install':
                 if (!item) break;
                 if (this.pending(item).length > 1) {
+                    // A multi-step add from a row's menu confirms on that item's own view.
+                    if (this.selected()?.id !== item.id) this.select(item);
                     this._confirm = item.id;
                     this.render();
-                    document.querySelector('#exchangeView [data-action="confirm"]')?.focus();
+                    document.querySelector('#exchangeMain [data-action="confirm"]')?.focus();
                 } else {
                     this.install(item);
                 }
@@ -423,15 +423,15 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
         }
     },
 
-    open(item) {
+    select(item) {
         this._detail = item.id;
         this._confirm = null;
         window.App?.pushSubPath(item.id);
         this.render();
-        document.querySelector('#exchangeDetail .exchange-back')?.focus();
-        document.getElementById('exchangeView')?.scrollIntoView?.({ block: 'start' });
+        document.getElementById('exchangeMain')?.scrollTo?.(0, 0);
     },
 
+    // Narrow screens only: back from the main pane to the list.
     back() {
         this._detail = null;
         this._confirm = null;
