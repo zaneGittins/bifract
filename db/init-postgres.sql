@@ -192,6 +192,8 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS disabled_reason TEXT;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS labels TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS "references" TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity VARCHAR(20) NOT NULL DEFAULT 'medium';
+-- The alert editor used to save 'info', which nothing ranks or filters on.
+UPDATE alerts SET severity = 'informational' WHERE severity = 'info';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_execution_time_ms INTEGER;
 -- Ignore matches whose event time trails their arrival by more than this many
 -- seconds (0 = off), so a backlog flush from a reconnected agent does not alert

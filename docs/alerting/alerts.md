@@ -33,7 +33,7 @@ The editor sets the type from the query: an aggregation switches it to Compound.
 
 | Field | Description |
 |-------|-------------|
-| Severity | Critical, High, Medium, Low or Info. Carried into action payloads. |
+| Severity | Critical, High, Medium, Low or Informational. Carried into action payloads. |
 | Labels | Tags for filtering, e.g. `attack.t1059.001`. ATT&CK tags feed [ATT&CK Coverage](attack-coverage.md). |
 | Throttle | **Suppress repeats for** a number of seconds, optionally **Per** field value (see [Throttling](#throttling)). |
 | Late logs | **Ignore matches delayed by** more than this many seconds; 0 turns it off (see [Late logs](#late-logs)). |

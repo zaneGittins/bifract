@@ -55,7 +55,6 @@ const AlertDetail = {
         const statusClass = isAutoDisabled ? 'auto-disabled' : (alert.enabled ? 'enabled' : 'disabled');
         const statusText = isAutoDisabled ? 'Auto-disabled' : (alert.enabled ? 'Enabled' : 'Disabled');
         const sev = (alert.severity || 'medium').toLowerCase();
-        const sevClass = sev === 'info' ? 'informational' : sev;
         const highlighted = window.SyntaxHighlight
             ? SyntaxHighlight.highlight(alert.query_string || '')
             : Utils.escapeHtml(alert.query_string || '');
@@ -110,7 +109,7 @@ const AlertDetail = {
                 </div>
                 <div class="alert-meta-cell">
                     <span class="alert-detail-label">Severity</span>
-                    <span class="severity-pill severity-${sevClass}" style="cursor:default">${Utils.escapeHtml(sev.charAt(0).toUpperCase() + sev.slice(1))}</span>
+                    <span class="severity-pill severity-${sev}" style="cursor:default">${Utils.escapeHtml(sev.charAt(0).toUpperCase() + sev.slice(1))}</span>
                 </div>
                 <div class="alert-meta-cell">
                     <span class="alert-detail-label">Type</span>

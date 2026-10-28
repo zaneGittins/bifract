@@ -605,7 +605,7 @@ button.atk-chip-btn:hover {
 .atk-cell[data-sev="high"]     { --atk-sev: #f97316; }
 .atk-cell[data-sev="medium"]   { --atk-sev: #eab308; }
 .atk-cell[data-sev="low"]      { --atk-sev: #3b82f6; }
-.atk-cell[data-sev="info"]     { --atk-sev: #6b7280; }
+.atk-cell[data-sev="informational"] { --atk-sev: #6b7280; }
 
 .atk-cell-top {
     display: flex;
