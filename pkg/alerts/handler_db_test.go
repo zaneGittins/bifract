@@ -107,7 +107,7 @@ func TestCreateAlertHandler(t *testing.T) {
 
 	h, pg = newDBHandler(t)
 	pg.answer(sqlInsertAlert, fakedb.PGResult{Err: errors.New(`pq: duplicate key value violates unique constraint "idx_alerts_manual_name"`)})
-	expect(t, serve(h, create, hcall{as: analyst, method: "POST", body: body}), 409, "Alert name already exists")
+	expect(t, serve(h, create, hcall{as: analyst, method: "POST", body: body}), 409, "An alert with this name already exists in this fractal or prism")
 
 	h, pg = newDBHandler(t)
 	pg.answer(sqlGateConfig, gateRow(true, 1, true))
@@ -201,10 +201,6 @@ func TestListAlertsHandlerFiltersAndPages(t *testing.T) {
 func TestImportYAMLHandlerOutcomes(t *testing.T) {
 	imp := func(h *Handler) http.HandlerFunc { return h.HandleImportYAML }
 	h, pg := newDBHandler(t)
-	pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a9", "f-other", ""))
-	expect(t, serve(h, imp, hcall{as: analyst, method: "POST", body: "name: Rule\nqueryString: a=1\n"}), 409, "another fractal or prism")
-
-	h, pg = newDBHandler(t)
 	pg.answer(sqlInsertAlert, fakedb.Row("new"))
 	pg.answer(sqlGetAlert, fakedb.RowsOf(alertSpec{ID: "new", Name: "Rule", FractalID: "f1"}.getRow()))
 	expect(t, serve(h, imp, hcall{as: analyst, method: "POST", body: "name: Rule\nqueryString: a=1\n"}), 200, "imported")

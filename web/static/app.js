@@ -1163,7 +1163,7 @@ const App = {
             case 'exchange':
                 if (exchangeContent) exchangeContent.style.display = 'block';
                 if (exchangeView) exchangeView.style.display = 'block';
-                if (window.Exchange) Exchange.show();
+                if (window.Exchange) Exchange.show(subPath);
                 break;
             case 'recall':
                 if (recallContent) recallContent.style.display = 'flex';

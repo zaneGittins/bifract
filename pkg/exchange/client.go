@@ -71,8 +71,14 @@ func NewClient(indexURL string, allowPrivate bool) *Client {
 // Enabled reports whether an index URL is configured.
 func (c *Client) Enabled() bool { return c.indexURL != "" }
 
-// Source is the index URL as shown to users, without any query or credentials.
-func (c *Client) Source() string { return redact(c.indexURL) }
+// Source is a mirror's index URL as shown to users, without any query or
+// credentials. The default index needs no mention, so it is empty for that.
+func (c *Client) Source() string {
+	if c.indexURL == DefaultIndexURL {
+		return ""
+	}
+	return redact(c.indexURL)
+}
 
 // Index returns the index. A stale copy is served at once while one shared fetch
 // refreshes it; without a copy, callers wait on that fetch.

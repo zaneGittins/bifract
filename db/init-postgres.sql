@@ -1545,7 +1545,6 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS feed_rule_path TEXT DEFAULT '';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS feed_rule_hash TEXT DEFAULT '';
 
 ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_name_key;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_name_manual ON alerts(name) WHERE feed_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_feed_rule ON alerts(feed_id, feed_rule_path) WHERE feed_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_alerts_feed_id ON alerts(feed_id) WHERE feed_id IS NOT NULL;
 
@@ -1780,6 +1779,11 @@ ALTER TABLE chat_conversations  ALTER COLUMN fractal_id DROP NOT NULL;
 ALTER TABLE alert_executions    ALTER COLUMN fractal_id DROP NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_alerts_prism_id              ON alerts(prism_id)              WHERE prism_id IS NOT NULL;
+
+-- Manual alert names are unique per fractal or prism, as feed names are. Created once prism_id
+-- exists, which a fresh install adds above.
+DROP INDEX IF EXISTS idx_alerts_name_manual;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_name_manual_scope ON alerts (name, COALESCE(fractal_id, prism_id)) WHERE feed_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_notebooks_prism_id           ON notebooks(prism_id)           WHERE prism_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_dashboards_prism_id          ON dashboards(prism_id)          WHERE prism_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_dictionaries_prism_id        ON dictionaries(prism_id)        WHERE prism_id IS NOT NULL;

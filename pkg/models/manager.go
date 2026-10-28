@@ -441,11 +441,11 @@ func (m *Manager) syncLinkedAlert(ctx context.Context, model *Model) {
 	}
 }
 
-// linkedAlertName derives the backing alert's display name. Manual alert names
-// are globally unique (idx_alerts_name_manual) while model names are not, so a
-// short, stable fragment of the model UUID is appended to guarantee uniqueness
-// (across same-named models and across fractals) and to let operators correlate
-// the alert back to its model on the Alerts page.
+// linkedAlertName derives the backing alert's display name. Manual alert names are
+// unique per fractal or prism (idx_alerts_name_manual_scope), so a short, stable
+// fragment of the model UUID is appended to keep it clear of a hand-written alert
+// of the model's name and to let operators correlate the alert back to its model on
+// the Alerts page.
 func linkedAlertName(modelName, modelID string) string {
 	frag := strings.ReplaceAll(modelID, "-", "")
 	if len(frag) > 8 {

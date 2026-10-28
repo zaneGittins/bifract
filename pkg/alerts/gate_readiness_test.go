@@ -96,7 +96,6 @@ func TestChangeRequestErrorStatuses(t *testing.T) {
 		errors.New("a proposal cannot be approved by its author"):         403,
 		errors.New("self approval is turned off for this scope"):          403,
 		ErrDraftExists:                                        409,
-		ErrAlertNameTaken:                                     409,
 		errors.New("this proposal is merged"):                 409,
 		errors.New("this proposal is discarded"):              409,
 		errors.New("kind must be create, update or delete"):   400,

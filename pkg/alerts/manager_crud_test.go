@@ -478,7 +478,7 @@ func TestImportFromYAMLResolvesActionsAndReplaces(t *testing.T) {
 		head := RevisionContent{Name: "Brute force", QueryString: `status=500`, AlertType: "event", Severity: "medium"}
 		head.canonicalize()
 		m, pg := updateFixture(t, head, false)
-		pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a1", "f1", ""))
+		pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a1"))
 		if _, err := m.ImportFromYAML(context.Background(), "name: Brute force\nqueryString: status=500\nseverity: high\n", "alice", "f1", "", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -486,12 +486,20 @@ func TestImportFromYAMLResolvesActionsAndReplaces(t *testing.T) {
 			t.Error("a same-named alert in scope is updated, not duplicated")
 		}
 	})
-	t.Run("refuses a name held in another scope", func(t *testing.T) {
+	// Names are unique per fractal or prism, so the same rule can live in several.
+	t.Run("looks the name up in its own scope only", func(t *testing.T) {
 		m, pg := newTestManager(t)
-		pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a9", "f-other", ""))
-		_, err := m.ImportFromYAML(context.Background(), "name: Brute force\nqueryString: status=500\n", "alice", "f1", "", "")
-		if !errors.Is(err, ErrAlertNameTaken) {
-			t.Fatalf("err = %v", err)
+		pg.answer(sqlInsertAlert, fakedb.Row("new-id"))
+		pg.answer(sqlGetAlert, fakedb.RowsOf(alertSpec{ID: "new-id", Name: "Brute force", FractalID: "f1"}.getRow()))
+		if _, err := m.ImportFromYAML(context.Background(), "name: Brute force\nqueryString: status=500\n", "alice", "f1", "", ""); err != nil {
+			t.Fatal(err)
+		}
+		lookup := pg.args("FROM alerts WHERE name = $1 AND feed_id IS NULL")
+		if len(lookup) != 1 || lookup[0][0] != "Brute force" || lookup[0][1] != "f1" || lookup[0][2] != "" {
+			t.Errorf("name lookup args = %v, want the name and this scope", lookup)
+		}
+		if len(pg.Matching(sqlInsertAlert)) != 1 {
+			t.Error("with no same-named alert in scope, the import creates one")
 		}
 	})
 	t.Run("unreadable documents", func(t *testing.T) {

@@ -144,7 +144,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrInvalidAlert) || strings.Contains(err.Error(), "invalid query syntax") {
 			h.respondError(w, http.StatusBadRequest, err.Error())
 		} else if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "already exists") {
-			h.respondError(w, http.StatusConflict, "Alert name already exists")
+			h.respondError(w, http.StatusConflict, "An alert with this name already exists in this fractal or prism")
 		} else {
 			log.Printf("[Alerts] Failed to create alert: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to create alert")
@@ -374,8 +374,6 @@ func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
 		}
 		if importRefusal(err) {
 			h.respondError(w, http.StatusBadRequest, err.Error())
-		} else if errors.Is(err, ErrAlertNameTaken) {
-			h.respondError(w, http.StatusConflict, err.Error())
 		} else {
 			log.Printf("[Alerts] Failed to import alert: %v", err)
 			h.respondError(w, http.StatusInternalServerError, "Failed to import alert")

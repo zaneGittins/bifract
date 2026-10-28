@@ -25,9 +25,6 @@ import (
 // handlers answer 404 rather than 500 for an id that simply does not exist.
 var ErrAlertNotFound = errors.New("alert not found")
 
-// ErrAlertNameTaken is an import whose name belongs to a manual alert it may not replace.
-var ErrAlertNameTaken = errors.New("alert name already exists")
-
 // Manager handles CRUD operations and YAML import/export for alerts and webhooks
 type Manager struct {
 	pg                *storage.PostgresClient
@@ -253,11 +250,7 @@ func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID,
 	req.DictionaryActionIDs = actions.Dictionary
 	req.EmailActionIDs = actions.Email
 
-	holder, err := m.manualAlertNamed(ctx, req.Name)
-	if err != nil {
-		return yamlImport{}, err
-	}
-	existingID, err := importReplaces(holder, req.Name, fractalID, prismID)
+	existingID, err := m.alertNamedHere(ctx, req.Name, fractalID, prismID)
 	if err != nil {
 		return yamlImport{}, err
 	}
@@ -981,39 +974,25 @@ func (m *Manager) GetAlert(ctx context.Context, alertID string) (*Alert, error) 
 	return &alert, nil
 }
 
-// namedAlert is the manual alert holding a name, and the scope it lives in.
-type namedAlert struct {
-	ID, FractalID, PrismID string
-}
-
-// manualAlertNamed returns the manual alert holding name, or nil. Feed alerts never
-// match: their names sit outside the manual uniqueness index.
-func (m *Manager) manualAlertNamed(ctx context.Context, name string) (*namedAlert, error) {
-	var a namedAlert
+// alertNamedHere returns the id of the manual alert with this name in the given
+// fractal or prism, or "". Names are unique per scope (idx_alerts_name_manual_scope),
+// so an import replaces only an alert of its own scope. Feed alerts never match:
+// their names sit outside that index.
+func (m *Manager) alertNamedHere(ctx context.Context, name, fractalID, prismID string) (string, error) {
+	var id string
 	err := m.pg.QueryRow(ctx, `
-		SELECT id::text, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, '')
-		  FROM alerts WHERE name = $1 AND feed_id IS NULL`, name,
-	).Scan(&a.ID, &a.FractalID, &a.PrismID)
+		SELECT id::text
+		  FROM alerts WHERE name = $1 AND feed_id IS NULL
+		   AND COALESCE(fractal_id::text, '') = $2 AND COALESCE(prism_id::text, '') = $3`,
+		name, fractalID, prismID,
+	).Scan(&id)
 	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("look up alert by name: %w", err)
-	}
-	return &a, nil
-}
-
-// importReplaces decides which alert an import of a given name replaces: one in the
-// importing scope, or none. Manual names are unique instance-wide, so a holder in
-// another scope is refused rather than overwritten from here.
-func importReplaces(holder *namedAlert, name, fractalID, prismID string) (string, error) {
-	if holder == nil {
 		return "", nil
 	}
-	if holder.FractalID != fractalID || holder.PrismID != prismID {
-		return "", fmt.Errorf("%w: an alert named %q exists in another fractal or prism", ErrAlertNameTaken, name)
+	if err != nil {
+		return "", fmt.Errorf("look up alert by name: %w", err)
 	}
-	return holder.ID, nil
+	return id, nil
 }
 
 // ListAlerts retrieves all alerts with optional filtering.

@@ -295,7 +295,7 @@ func (h *Handler) changeRequestError(w http.ResponseWriter, err error) {
 		strings.Contains(err.Error(), "cannot be approved by its author"),
 		strings.Contains(err.Error(), "self approval is turned off"):
 		h.respondError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, ErrDraftExists), errors.Is(err, ErrAlertNameTaken),
+	case errors.Is(err, ErrDraftExists),
 		strings.Contains(err.Error(), "is merged"), strings.Contains(err.Error(), "is discarded"),
 		strings.Contains(err.Error(), "is draft"), strings.Contains(err.Error(), "no longer"):
 		h.respondError(w, http.StatusConflict, err.Error())
