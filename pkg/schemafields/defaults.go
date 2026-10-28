@@ -38,7 +38,7 @@ var ProjectDefaultFields = []SchemaField{
 	// cardinality (~15 values), so a skip index would never prune: type hint only.
 	{FieldName: "bifract_category", IndexType: IndexTypeNone, IsDefault: true},
 	// Process provenance fields (Sysmon EID 1 etc). process_guid gets a bloom for
-	// the process-tree leaf-fetch (pgr) that filters logs by it; parent_process_guid
+	// searches for one process (e.g. the pgr drawer's Search process pivot); parent_process_guid
 	// is type-hint only (nothing filters logs by it -- proc_lineage carries its own
 	// parent_guid bloom), so a bloom here would only tax the ingest path.
 	{FieldName: "process_guid", IndexType: IndexTypeBloomFilter, IsDefault: true},

@@ -548,7 +548,7 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	}
 	logs := opts.EffectiveTableName()
 
-	// pm reads process_creation logs by process_guid over the user's query window.
+	// pm reads the tree's process_creation logs over the user's query window.
 	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'",
 		chTimeLiteral(opts.StartTime), chTimeLiteral(opts.EndTime))
 	fractal := procLineageFractalCond(opts, "")
@@ -674,11 +674,11 @@ func BuildProvenanceScoringSQL(guids []string, threshold float64, edgeTypes map[
 	}
 	b.WriteString(fmt.Sprintf("sx AS (SELECT %[1]s AS node, length(groupUniqArray((computer_name, toDate(ingest_timestamp)))) AS self_exec FROM %[2]s FINAL WHERE process_guid IN (%[3]s)%[4]s AND parent_image != '' AND image != '' GROUP BY node), ",
 		abstractExpr("image", AbstractPath), procLineage, inList, frac()))
-	// pm = per-process command line + user, read query-only from the process_creation logs of
-	// the tree's guids (the same bounded keyhole: guid IN + time window + category). Command
-	// lines can be enormous, so truncate to 300 chars in SQL -- never pull the full string.
-	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(fields.commandline::String, 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s AND fields.process_guid::String IN (%[4]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
-		logs, timeWin, frac(), inList))
+	// pm = per-process command line + user, looked up by the logs primary key proc_lineage holds;
+	// a guid filter defeats the bloom on large trees. Truncated: command lines can be enormous.
+	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(fields.commandline::String, 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s "+
+		"AND (timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM %[4]s WHERE process_guid IN (%[5]s)%[3]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
+		logs, timeWin, frac(), procLineage, inList))
 
 	// joined: one row per edge with its baseline, plus the edge's OWN share of that baseline. The
 	// baseline includes the activity being scored, so each count is taken leave-one-out: the
