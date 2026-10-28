@@ -58,7 +58,7 @@ func (h *Handler) HandleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
-	username := h.getCurrentUser(r)
+	username := storage.AttributionUser(r.Context())
 
 	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -290,7 +290,7 @@ func (h *Handler) HandleTokenUsage(w http.ResponseWriter, r *http.Request) {
 // HandleDuplicate creates a copy of an existing normalizer with a new name.
 func (h *Handler) HandleDuplicate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	username := h.getCurrentUser(r)
+	username := storage.AttributionUser(r.Context())
 
 	n, err := h.manager.Duplicate(r.Context(), id, username)
 	if err != nil {
@@ -332,7 +332,7 @@ func (h *Handler) HandleExportYAML(w http.ResponseWriter, r *http.Request) {
 
 // HandleImportYAML imports a normalizer from YAML.
 func (h *Handler) HandleImportYAML(w http.ResponseWriter, r *http.Request) {
-	username := h.getCurrentUser(r)
+	username := storage.AttributionUser(r.Context())
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
 	if err != nil {
@@ -378,13 +378,6 @@ func sanitizeFilename(s string) string {
 		return '_'
 	}, s)
 	return s
-}
-
-func (h *Handler) getCurrentUser(r *http.Request) string {
-	if user, ok := r.Context().Value("user").(*storage.User); ok {
-		return user.Username
-	}
-	return ""
 }
 
 func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {

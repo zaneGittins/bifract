@@ -2903,7 +2903,7 @@ func (c *PostgresClient) AddGroupMember(ctx context.Context, groupID, username, 
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO group_members (group_id, username, added_by)
 		VALUES ($1, $2, $3)
-	`, groupID, username, addedBy)
+	`, groupID, username, NullableUser(addedBy))
 	if err != nil {
 		return fmt.Errorf("failed to add group member: %w", err)
 	}
@@ -2974,7 +2974,7 @@ func (c *PostgresClient) GrantFractalPermission(ctx context.Context, fractalID s
 		ON CONFLICT (fractal_id, username) WHERE username IS NOT NULL
 			DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
 		RETURNING id, fractal_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
-	`, fractalID, username, groupID, role, grantedBy).Scan(
+	`, fractalID, username, groupID, role, NullableUser(grantedBy)).Scan(
 		&fp.ID, &fp.FractalID, &fp.Username, &fp.GroupID, &fp.Role, &fp.GrantedBy, &fp.CreatedAt, &fp.UpdatedAt,
 	)
 	if err != nil {
@@ -2986,7 +2986,7 @@ func (c *PostgresClient) GrantFractalPermission(ctx context.Context, fractalID s
 				ON CONFLICT (fractal_id, group_id) WHERE group_id IS NOT NULL
 					DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
 				RETURNING id, fractal_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
-			`, fractalID, username, groupID, role, grantedBy).Scan(
+			`, fractalID, username, groupID, role, NullableUser(grantedBy)).Scan(
 				&fp.ID, &fp.FractalID, &fp.Username, &fp.GroupID, &fp.Role, &fp.GrantedBy, &fp.CreatedAt, &fp.UpdatedAt,
 			)
 			if err2 != nil {
@@ -3098,7 +3098,7 @@ func (c *PostgresClient) GrantPrismPermission(ctx context.Context, prismID strin
 		ON CONFLICT (prism_id, username) WHERE username IS NOT NULL
 			DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
 		RETURNING id, prism_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
-	`, prismID, username, groupID, role, grantedBy).Scan(
+	`, prismID, username, groupID, role, NullableUser(grantedBy)).Scan(
 		&pp.ID, &pp.PrismID, &pp.Username, &pp.GroupID, &pp.Role, &pp.GrantedBy, &pp.CreatedAt, &pp.UpdatedAt,
 	)
 	if err != nil {
@@ -3109,7 +3109,7 @@ func (c *PostgresClient) GrantPrismPermission(ctx context.Context, prismID strin
 				ON CONFLICT (prism_id, group_id) WHERE group_id IS NOT NULL
 					DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by, updated_at = NOW()
 				RETURNING id, prism_id, username, group_id, role, COALESCE(granted_by, ''), created_at, updated_at
-			`, prismID, username, groupID, role, grantedBy).Scan(
+			`, prismID, username, groupID, role, NullableUser(grantedBy)).Scan(
 				&pp.ID, &pp.PrismID, &pp.Username, &pp.GroupID, &pp.Role, &pp.GrantedBy, &pp.CreatedAt, &pp.UpdatedAt,
 			)
 			if err2 != nil {

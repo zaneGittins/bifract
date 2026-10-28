@@ -21,13 +21,6 @@ func NewHandler(pg *storage.PostgresClient) *Handler {
 // name while there is one type, and one schema, behind it.
 type apiResponse = api.Response[any]
 
-func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
-	if user, ok := r.Context().Value("user").(*storage.User); ok {
-		return user
-	}
-	return nil
-}
-
 func (h *Handler) sendJSON(w http.ResponseWriter, status int, resp apiResponse) {
 	api.WriteJSON(w, status, resp)
 }
@@ -135,7 +128,6 @@ type AddMemberRequest struct {
 
 // HandleAddMember adds a user to a group (tenant admin only).
 func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
-	user := h.getCurrentUser(r)
 	groupID := chi.URLParam(r, "id")
 
 	var req AddMemberRequest
@@ -154,7 +146,7 @@ func (h *Handler) HandleAddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.pg.AddGroupMember(r.Context(), groupID, req.Username, user.Username); err != nil {
+	if err := h.pg.AddGroupMember(r.Context(), groupID, req.Username, storage.AttributionUser(r.Context())); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, apiResponse{Error: "Failed to add member"})
 		return
 	}

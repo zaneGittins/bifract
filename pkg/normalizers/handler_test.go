@@ -37,6 +37,7 @@ func newTestHandler(ch *storage.ClickHouseClient) (*Handler, *fakedb.PG) {
 func request(method, target, body, id string) *http.Request {
 	r := httptest.NewRequest(method, target, strings.NewReader(body))
 	ctx := context.WithValue(r.Context(), "user", &storage.User{Username: "alice"})
+	ctx = context.WithValue(ctx, storage.AttributionUserKey, "alice")
 	if id != "" {
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("id", id)
@@ -88,6 +89,22 @@ func TestHandleGet(t *testing.T) {
 	h, _ = newTestHandler(nil)
 	if code, _ := serve(t, h.HandleGet, request("GET", "/normalizers/x", "", "x")); code != http.StatusNotFound {
 		t.Fatalf("missing: code = %d", code)
+	}
+}
+
+// An API key authenticates as a synthetic apikey_<id> user with no users row,
+// so created_by must be the key's creator or the foreign key rejects the insert.
+func TestHandleCreateWithAPIKeyCreditsKeyCreator(t *testing.T) {
+	h, fake := newTestHandler(nil)
+	fake.On("INSERT INTO normalizers", fakedb.Row(sysmonRow()...))
+	r := request("POST", "/normalizers", `{"name":"x"}`, "")
+	ctx := context.WithValue(t.Context(), "user", &storage.User{Username: "apikey_k1"})
+	ctx = context.WithValue(ctx, storage.AttributionUserKey, "bob")
+	if code, _ := serve(t, h.HandleCreate, r.WithContext(ctx)); code != http.StatusOK {
+		t.Fatalf("code = %d", code)
+	}
+	if got := fake.Matching("INSERT")[0].Args[6]; got != "bob" {
+		t.Fatalf("created_by = %v, want the key's creator", got)
 	}
 }
 
