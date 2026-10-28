@@ -99,16 +99,16 @@ func TestTranslateModifiers(t *testing.T) {
 		{"endswith", fc("Image", ends, `\CMD.exe`), `Image=$"\\CMD.exe"`,
 			[]string{"endsWith(lower(" + imgRef + `), '\\cmd.exe')`}},
 
-		// A literal comma would split the native list, so that value alone falls back
-		// to a regex with the value escaped; the rest keep the native operator.
-		{"contains with comma", fc("CommandLine", contains, "a,b.c"), `CommandLine=/a,b\.c/i`,
-			[]string{"match(" + cmdRef + ", '(?i)a,b\\\\.c')"}},
-		{"startswith with comma", fc("CommandLine", starts, "a,b"), `CommandLine=/^a,b/i`, nil},
-		{"endswith with comma", fc("CommandLine", ends, "a,b"), `CommandLine=/a,b$/i`, nil},
-		{"contains list with a comma value", fc("CommandLine", contains, "a,b", "c(d)"), `(CommandLine=~"c(d)" OR CommandLine=/a,b/i)`, nil},
-		{"startswith list with a comma value", fc("CommandLine", starts, "a,b", "c"), `(CommandLine=^c OR CommandLine=/^a,b/i)`, nil},
-		{"endswith list with a comma value", fc("CommandLine", ends, "a,b", "c"), `(CommandLine=$c OR CommandLine=/a,b$/i)`, nil},
-		{"slash in a fallback value is escaped", fc("CommandLine", contains, "/tmp/x,y"), `CommandLine=/\/tmp\/x,y/i`, nil},
+		// A quoted value keeps its comma, so it stays in the native list.
+		{"contains with comma", fc("CommandLine", contains, "a,b.c"), `CommandLine=~"a,b.c"`,
+			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['a,b.c'])"}},
+		{"startswith with comma", fc("CommandLine", starts, "a,b"), `CommandLine=^"a,b"`,
+			[]string{"startsWith(lower(" + cmdRef + "), 'a,b')"}},
+		{"endswith with comma", fc("CommandLine", ends, "a,b"), `CommandLine=$"a,b"`, nil},
+		{"contains list with a comma value", fc("CommandLine", contains, "a,b", "c(d)"), `CommandLine=~"a,b","c(d)"`,
+			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['a,b', 'c(d)'])"}},
+		{"startswith list with a comma value", fc("CommandLine", starts, "a,b", "c"), `CommandLine=^"a,b",c`, nil},
+		{"endswith list with a comma value", fc("CommandLine", ends, "a,b", "c"), `CommandLine=$"a,b",c`, nil},
 
 		// re: the user's pattern, case-sensitive as Sigma specifies (no /i).
 		{"regex", fc("CommandLine", re, `foo.*bar`), `CommandLine=/foo.*bar/`,
@@ -117,7 +117,7 @@ func TestTranslateModifiers(t *testing.T) {
 		// |all: every value must match, one predicate each.
 		{"contains all", fc("CommandLine", []string{"contains", "all"}, "-nop", "-w hidden"), `(CommandLine=~"-nop" AND CommandLine=~"-w hidden")`,
 			[]string{"multiSearchAnyCaseInsensitive(" + cmdRef + ", ['-nop'])", "multiSearchAnyCaseInsensitive(" + cmdRef + ", ['-w hidden'])"}},
-		{"contains all with a comma value", fc("CommandLine", []string{"contains", "all"}, "a,b", "c"), `(CommandLine=/a,b/i AND CommandLine=~c)`, nil},
+		{"contains all with a comma value", fc("CommandLine", []string{"contains", "all"}, "a,b", "c"), `(CommandLine=~"a,b" AND CommandLine=~c)`, nil},
 		{"startswith all", fc("Image", []string{"startswith", "all"}, "a", "b"), `(Image=^a AND Image=^b)`, nil},
 		{"regex all", fc("CommandLine", []string{"re", "all"}, "a.", "b+"), `(CommandLine=/a./ AND CommandLine=/b+/)`, nil},
 		{"all with one value is just the value", fc("CommandLine", []string{"contains", "all"}, "x"), `CommandLine=~x`, nil},
@@ -131,7 +131,8 @@ func TestTranslateModifiers(t *testing.T) {
 		{"keyword with backslash and double quote", fc("", nil, `C:\Temp "x"`), `norm_log=~"C:\\Temp \"x\""`,
 			[]string{`multiSearchAnyCaseInsensitive(norm_log, ['C:\\\\Temp \\"x\\"'])`}},
 		{"keyword list", fc("", nil, "a+b", "c"), `norm_log=~"a+b",c`, nil},
-		{"keyword with comma is a regex", fc("", nil, "a,b/c", "d"), `(norm_log=~d OR norm_log=/a,b\\?\/c/i)`, nil},
+		{"keyword with comma stays native", fc("", nil, "a,b/c", "d"), `norm_log=~"a,b/c",d`,
+			[]string{`multiSearchAnyCaseInsensitive(norm_log, ['a,b\\/c', 'd'])`}},
 		{"keyword with a cased non-ASCII letter is a regex", fc("", nil, "Ärger"), `norm_log=/Ärger/i`, nil},
 		{"empty keyword matches everything", fc("", nil, ""), `*`, nil},
 
@@ -172,25 +173,10 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 		mods []string
 		want string
 	}{
-		{[]string{"base64"}, "base64"},
-		{[]string{"base64offset", "contains"}, "base64"},
-		{[]string{"wide", "base64offset", "contains"}, "base64"},
-		{[]string{"cidr"}, "cidr"},
 		// Every modifier the translator does not implement is refused by name, never
 		// dropped: each of these used to translate as if the modifier were absent.
 		{[]string{"windash", "re"}, "'windash'"},
-		{[]string{"exists"}, "'exists'"},
-		{[]string{"gt"}, "'gt'"},
-		{[]string{"gte"}, "'gte'"},
-		{[]string{"lt"}, "'lt'"},
-		{[]string{"lte"}, "'lte'"},
-		{[]string{"fieldref"}, "'fieldref'"},
 		{[]string{"expand"}, "'expand'"},
-		{[]string{"utf16le", "base64"}, "'utf16le', 'base64'"},
-		{[]string{"utf16be", "base64"}, "'utf16be'"},
-		{[]string{"utf16", "base64"}, "'utf16'"},
-		{[]string{"wide", "base64"}, "'wide'"},
-		{[]string{"cased"}, "'cased'"},
 		// i, m and s are |re sub-modifiers and mean nothing elsewhere.
 		{[]string{"contains", "i"}, "'i'"},
 		{[]string{"m"}, "'m'"},
@@ -199,6 +185,24 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 		// Two comparison modifiers have no Sigma meaning; the last one used to win.
 		{[]string{"contains", "endswith"}, "'contains', 'endswith' cannot be combined"},
 		{[]string{"re", "contains"}, "cannot be combined"},
+		// These replace the comparison outright, so nothing can modify them.
+		{[]string{"cidr", "contains"}, "'cidr' cannot be combined"},
+		{[]string{"exists", "all"}, "'exists' cannot be combined"},
+		{[]string{"gt", "contains"}, "'gt' cannot be combined"},
+		{[]string{"fieldref", "endswith"}, "'fieldref' cannot be combined"},
+		// A regex is already case-sensitive, and its own pattern is never encoded.
+		{[]string{"re", "cased"}, "'cased' cannot be combined with 're'"},
+		{[]string{"re", "base64"}, "'base64' cannot be combined with 're'"},
+		{[]string{"windash", "base64", "contains"}, "'base64' cannot be combined with 'windash'"},
+		// base64offset yields fragments of the encoding, which only a substring match can use.
+		{[]string{"base64offset"}, "'base64offset' needs 'contains'"},
+		{[]string{"base64offset", "startswith"}, "'base64offset' needs 'contains'"},
+		{[]string{"base64", "endswith"}, "'base64' matches whole values or with 'contains'"},
+		// A UTF-16 encoding only feeds base64; on its own it would search for NUL bytes.
+		{[]string{"utf16le", "contains"}, "'utf16le' needs 'base64' or 'base64offset' after it"},
+		{[]string{"base64", "wide"}, "'wide' needs 'base64' or 'base64offset' after it"},
+		{[]string{"wide", "utf16be", "base64"}, "one UTF-16 encoding"},
+		{[]string{"base64", "base64offset", "contains"}, "one of 'base64' and 'base64offset'"},
 	}
 	for _, c := range cases {
 		rule := singleSelection(fc("DestinationIp", c.mods, "10.0.0.0/8"))
@@ -215,7 +219,168 @@ func TestTranslateUnsupportedModifiersFail(t *testing.T) {
 	}
 }
 
-// The refusal reaches a parsed rule too, so a feed rule using cidr is reported as
+// A value a modifier cannot use fails the rule rather than matching something else.
+func TestTranslateModifierValuesAreChecked(t *testing.T) {
+	cases := []struct {
+		name string
+		cond FieldCondition
+		want string
+	}{
+		{"cidr without a prefix length", fc("DestinationIp", []string{"cidr"}, "10.0.0.1"), "not a CIDR range"},
+		{"comparison with text", fc("Size", []string{"gt"}, "big"), "not a number"},
+		{"exists with neither true nor false", fc("User", []string{"exists"}, "maybe"), "true or false"},
+		{"exists with two values", fc("User", []string{"exists"}, "true", "false"), "true or false"},
+		{"encoded wildcard", fc("CommandLine", []string{"base64offset", "contains"}, "IEX*"), "wildcard"},
+		{"encoded empty value", fc("CommandLine", []string{"base64offset", "contains"}, ""), "empty value"},
+		{"encoded empty value, base64", fc("CommandLine", []string{"base64", "contains"}, ""), "empty value"},
+		// One byte leaves an offset with no whole base64 character, which would match anything.
+		{"too short for base64offset", fc("CommandLine", []string{"base64offset", "contains"}, "a"), "too short"},
+		{"comparison with spaces", fc("Size", []string{"gt"}, " 5"), "not a number"},
+		{"comparison with underscores", fc("Size", []string{"gt"}, "1_000"), "not a number"},
+		{"comparison with a hex float", fc("Size", []string{"gt"}, "0x1p4"), "not a number"},
+		{"comparison overflow", fc("Size", []string{"gt"}, "1e400"), "out of range"},
+		{"comparison underflow", fc("Size", []string{"gt"}, "1e-400"), "out of range"},
+		{"keyword cidr", fc("", []string{"cidr"}, "10.0.0.0/8"), "needs a field"},
+		{"keyword fieldref", fc("", []string{"fieldref"}, "User"), "needs a field"},
+		{"keyword comparison", fc("", []string{"lt"}, "5"), "needs a field"},
+		{"keyword exists", fc("", []string{"exists"}, "true"), "needs a field"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(c.cond), nil)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got (%q, %v), want an error mentioning %q", got, err, c.want)
+			}
+		})
+	}
+}
+
+// The Sigma v2 modifiers, end to end through the parser and SQL translator.
+func TestTranslateV2Modifiers(t *testing.T) {
+	const num = `/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/`
+	sizeRef := "toFloat64OrZero(fields.`Size`::String)"
+	cases := []struct {
+		name string
+		cond FieldCondition
+		bql  string
+		sql  []string
+	}{
+		{"cidr", fc("DestinationIp", []string{"cidr"}, "10.0.0.0/8"), `cidr(DestinationIp, "10.0.0.0/8")`,
+			[]string{"isIPAddressInRange(", "'10.0.0.0/8')"}},
+		{"cidr list is any range", fc("DestinationIp", []string{"cidr"}, "10.0.0.0/8", "fe80::/10"),
+			`(cidr(DestinationIp, "10.0.0.0/8") OR cidr(DestinationIp, "fe80::/10"))`, []string{"'fe80::/10')"}},
+
+		{"exists true", fc("User", []string{"exists"}, "true"), `User=*`, []string{"fields.`User`::String != ''"}},
+		{"exists false", fc("User", []string{"exists"}, "False"), `NOT User=*`, nil},
+		// YAML 1.1, which pySigma reads rules with, spells booleans yes and no too.
+		{"exists yes", fc("User", []string{"exists"}, "yes"), `User=*`, nil},
+		{"exists no", fc("User", []string{"exists"}, "NO"), `NOT User=*`, nil},
+
+		// A missing field reads as '', so two absent fields would compare equal; the
+		// presence check keeps "same user" from holding for events with neither.
+		{"fieldref", fc("TargetUserName", []string{"fieldref"}, "SubjectUserName"), `(TargetUserName=* AND TargetUserName=field(SubjectUserName))`,
+			[]string{"fields.`TargetUserName`::String = fields.`SubjectUserName`::String", "fields.`TargetUserName`::String != ''"}},
+		{"fieldref list is any field", fc("TargetUserName", []string{"fieldref"}, "SubjectUserName", "User"),
+			`(TargetUserName=* AND (TargetUserName=field(SubjectUserName) OR TargetUserName=field(User)))`, nil},
+
+		// BQL compares text through toFloat64OrZero, so a missing or non-numeric value
+		// would compare as 0. The guard keeps |lt 5 from matching every event without one.
+		{"gt", fc("Size", []string{"gt"}, "5"), `(Size=` + num + ` AND Size>5)`, []string{sizeRef + " > 5", "match(fields.`Size`::String"}},
+		{"gte decimal", fc("Size", []string{"gte"}, "1.5"), `(Size=` + num + ` AND Size>=1.5)`, []string{sizeRef + " >= 1.5"}},
+		{"lt negative", fc("Size", []string{"lt"}, "-1"), `(Size=` + num + ` AND Size<-1)`, []string{sizeRef + " < -1"}},
+		{"lte exponent is written out", fc("Size", []string{"lte"}, "1e3"), `(Size=` + num + ` AND Size<=1000)`, []string{sizeRef + " <= 1000"}},
+		{"comparison list is any value", fc("Size", []string{"gt"}, "5", "7"), `(Size=` + num + ` AND (Size>5 OR Size>7))`, nil},
+		{"comparison sign and leading zeros", fc("Size", []string{"gte"}, "+007"), `(Size=` + num + ` AND Size>=7)`, nil},
+		{"comparison keeps a large exponent short", fc("Size", []string{"gt"}, "1e300"), `(Size=` + num + ` AND Size>1e300)`, []string{sizeRef + " > 1e300"}},
+
+		// cased: the same wildcard and escape rules, compared case-sensitively.
+		{"cased exact", fc("Image", []string{"cased"}, "Cmd.exe"), `Image="Cmd.exe"`, []string{imgRef + " = 'Cmd.exe'"}},
+		{"cased contains", fc("CommandLine", []string{"contains", "cased"}, "IEX", "Invoke-Expression"), `CommandLine=/IEX|Invoke-Expression/`,
+			[]string{"match(" + cmdRef + ", 'IEX|Invoke-Expression')"}},
+		{"cased startswith", fc("Image", []string{"startswith", "cased"}, `C:\Win`), `Image=/^C:\\Win/`, nil},
+		{"cased endswith", fc("Image", []string{"endswith", "cased"}, ".EXE"), `Image=/\.EXE$/`, nil},
+		{"cased wildcard", fc("Image", []string{"cased"}, "a*B"), `Image=/(?s)^a.*B$/`, nil},
+		{"cased escaped lone star", fc("Image", []string{"cased"}, `\*`), `Image=/^\*$/`, nil},
+		{"cased lone star is existence", fc("Image", []string{"cased"}, "*"), `Image=*`, nil},
+		// An empty substring is in every value, so contains '' means the field is present.
+		{"cased contains empty", fc("Image", []string{"contains", "cased"}, ""), `Image=*`, nil},
+		{"cased startswith empty", fc("Image", []string{"startswith", "cased"}, ""), `Image=*`, nil},
+		{"cased exact empty", fc("Image", []string{"cased"}, ""), `Image=""`, nil},
+		{"cased keyword", fc("", []string{"cased"}, "Mimikatz"), `norm_log=/Mimikatz/`, []string{"match(norm_log, 'Mimikatz')"}},
+
+		// base64 and base64offset, checked against pySigma's own encodings. Encoded
+		// text is case-significant, so it matches case-sensitively.
+		{"base64", fc("CommandLine", []string{"base64"}, "test"), `CommandLine="dGVzdA=="`, []string{cmdRef + " = 'dGVzdA=='"}},
+		{"base64 contains", fc("CommandLine", []string{"base64", "contains"}, "test"), `CommandLine=/dGVzdA==/`, nil},
+		{"base64offset", fc("CommandLine", []string{"base64offset", "contains"}, "IEX"), `CommandLine=/SUVY|lFW|JRV/`,
+			[]string{"match(" + cmdRef + ", 'SUVY|lFW|JRV')"}},
+		{"base64offset longer value", fc("CommandLine", []string{"base64offset", "contains"}, "Invoke-Mimikatz"),
+			`CommandLine=/SW52b2tlLU1pbWlrYXR6|ludm9rZS1NaW1pa2F0e|JbnZva2UtTWltaWthdH/`, nil},
+		{"wide", fc("CommandLine", []string{"wide", "base64offset", "contains"}, "IEX"), `CommandLine=/SQBFAFgA|kARQBYA|JAEUAWA/`, nil},
+		{"wide one character", fc("CommandLine", []string{"wide", "base64offset", "contains"}, "a"), `CommandLine=/YQ|EA|hA/`, nil},
+		{"utf16le", fc("CommandLine", []string{"utf16le", "base64offset", "contains"}, "IEX"), `CommandLine=/SQBFAFgA|kARQBYA|JAEUAWA/`, nil},
+		{"utf16be", fc("CommandLine", []string{"utf16be", "base64offset", "contains"}, "IEX"), `CommandLine=/AEkARQBY|BJAEUAW|ASQBFAF/`, nil},
+		// utf16 adds a byte-order mark, whose encoding holds '/' and '+'.
+		{"utf16 with BOM", fc("CommandLine", []string{"utf16", "base64offset", "contains"}, "IEX"),
+			`CommandLine=/\/\/5JAEUAWA|\/\+SQBFAFgA|\/\/kkARQBYA/`, nil},
+		{"base64offset all", fc("CommandLine", []string{"base64offset", "contains", "all"}, "IEX", "Invoke-Mimikatz"),
+			`(CommandLine=/SUVY|lFW|JRV/ AND CommandLine=/SW52b2tlLU1pbWlrYXR6|ludm9rZS1NaW1pa2F0e|JbnZva2UtTWltaWthdH/)`, nil},
+		{"base64offset keyword", fc("", []string{"base64offset", "contains"}, "IEX"), `norm_log=/SUVY|lFW|JRV/`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(tc.cond), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.bql {
+				t.Fatalf("BQL\n got  %s\n want %s", got, tc.bql)
+			}
+			sql := toSQL(t, got)
+			for _, frag := range tc.sql {
+				if !strings.Contains(sql, frag) {
+					t.Errorf("SQL is missing %s\n%s", frag, sql)
+				}
+			}
+		})
+	}
+}
+
+// Field names reach BQL unquoted, so one that is not a plain name could rewrite the
+// query; a feed rule from any repository must not be able to.
+func TestTranslateRejectsUnsafeFieldNames(t *testing.T) {
+	cases := []struct {
+		name   string
+		cond   FieldCondition
+		mapper func(string) string
+	}{
+		{"operator in a field name", fc("EventID=* OR EventID", nil, "1"), nil},
+		{"keyword as a field name", fc("NOT", nil, "1"), nil},
+		{"space in a field name", fc("Some Field", nil, "x"), nil},
+		{"fieldref closing the expression", fc("User", []string{"fieldref"}, "x) OR (y=*"), nil},
+		{"fieldref adding a pipeline", fc("User", []string{"fieldref"}, "x)) | head(1) | ((a=*"), nil},
+		{"empty fieldref", fc("User", []string{"fieldref"}, ""), nil},
+		{"mapper output is checked too", fc("Image", nil, "x"), func(string) string { return "a b" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Translate(singleSelection(c.cond), c.mapper)
+			if err == nil || !strings.Contains(err.Error(), "not a valid field name") {
+				t.Fatalf("got (%q, %v), want a field name error", got, err)
+			}
+		})
+	}
+}
+
+// A fieldref value names a field, so it goes through the normalizer like the field.
+func TestTranslateFieldrefMapsBothFields(t *testing.T) {
+	got, err := Translate(singleSelection(fc("TargetUserName", []string{"fieldref"}, "SubjectUserName")), strings.ToLower)
+	if err != nil || got != "(targetusername=* AND targetusername=field(subjectusername))" {
+		t.Fatalf("got (%q, %v)", got, err)
+	}
+}
+
+// The refusal reaches a parsed rule too, so a feed rule using expand is reported as
 // untranslatable rather than deployed as a string match.
 func TestParsedRuleWithUnsupportedModifierFails(t *testing.T) {
 	rule, err := ParseSigmaRule(`
@@ -223,7 +388,7 @@ title: Encoded command
 detection:
   selection:
     Image|endswith: \powershell.exe
-    DestinationIp|cidr: 10.0.0.0/8
+    DestinationIp|expand: '%local_ranges%'
   condition: selection
 `)
 	if err != nil {
@@ -233,7 +398,7 @@ detection:
 	if err == nil {
 		t.Fatalf("translated to %q, want an error", got)
 	}
-	for _, frag := range []string{"selection 'selection'", "field 'DestinationIp'", "'cidr'"} {
+	for _, frag := range []string{"selection 'selection'", "field 'DestinationIp'", "'expand'"} {
 		if !strings.Contains(err.Error(), frag) {
 			t.Errorf("error %q should mention %s", err, frag)
 		}
@@ -502,7 +667,7 @@ func TestTranslateFailsOnAnyBadSelection(t *testing.T) {
 		Condition: "good",
 		Selections: map[string]SelectionGroup{
 			"good": {FieldConditions: []FieldCondition{fc("Image", nil, "a")}},
-			"bad":  {Alternatives: [][]FieldCondition{{fc("Ip", []string{"cidr"}, "10.0.0.0/8")}}},
+			"bad":  {Alternatives: [][]FieldCondition{{fc("Ip", []string{"expand"}, "%ranges%")}}},
 		},
 	}}
 	if got, err := Translate(rule, nil); err == nil || !strings.Contains(err.Error(), "selection 'bad'") {
@@ -918,7 +1083,11 @@ func TestTranslateWildcardForms(t *testing.T) {
 		// '/' is stored as \/ in the hot store and raw in the archive; the pattern takes both.
 		{"keyword wildcard with slash and backslash", fc("", nil, `/dev/*\tcp`), `norm_log=/\\?\/dev\\?\/.*\\\\tcp/i`,
 			`match(lower(norm_log), '\\\\?\\/dev\\\\?\\/.*\\\\\\\\tcp')`},
-		{"keyword ? spans one serialized character", fc("", nil, `a?b`), `norm_log=/a(?:\\.|.)b/i`, ""},
+		// '?' is one serialized character: a \uXXXX escape, a two-character escape, or
+		// any character but the quote that closes the value. A capture group, not (?:,
+		// keeps the pattern on the lower(norm_log) path the n-gram index serves.
+		{"keyword ? spans one serialized character", fc("", nil, `a?b`), `norm_log=/a(\\u[0-9a-fA-F]{4}|\\.|[^"\\])b/i`,
+			`match(lower(norm_log), 'a(\\\\u[0-9a-fa-f]{4}|\\\\.|[^"\\\\])b')`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

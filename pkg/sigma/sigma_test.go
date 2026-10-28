@@ -625,18 +625,19 @@ func TestTranslate_SpecialCharsInValues(t *testing.T) {
 	assertValidBQL(t, result)
 }
 
-func TestTranslate_UnsupportedBase64(t *testing.T) {
+func TestTranslate_Base64(t *testing.T) {
 	rule := makeRule("selection", map[string]interface{}{
 		"CommandLine|base64": "test",
 	}, "selection")
 
-	_, err := Translate(rule, nil)
-	if err == nil {
-		t.Error("expected error for base64 modifier")
+	result, err := Translate(rule, nil)
+	if err != nil {
+		t.Fatalf("translate error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "base64") {
-		t.Errorf("expected base64 error, got: %v", err)
+	if result != `CommandLine="dGVzdA=="` {
+		t.Errorf("got %s", result)
 	}
+	assertValidBQL(t, result)
 }
 
 func TestTranslate_AggregationConditionUnsupported(t *testing.T) {
