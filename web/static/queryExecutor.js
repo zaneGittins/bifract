@@ -2790,27 +2790,7 @@ const QueryExecutor = {
             ? specifiedLabels
             : fields.filter(f => f !== childField && f !== parentField);
         const limitedResults = results.slice(0, limit);
-        const nodeDetails = new Map();
-
-        // First pass: collect unique nodes and their details
-        limitedResults.forEach((result) => {
-            const childId = result[childField];
-            const parentId = result[parentField];
-
-            if (childId && !nodeDetails.has(childId)) {
-                const details = {};
-                labelFields.forEach(f => {
-                    if (result[f] !== undefined && result[f] !== null && result[f] !== '') {
-                        details[f] = result[f];
-                    }
-                });
-                nodeDetails.set(childId, details);
-            }
-
-            if (parentId && parentId !== '' && parentId !== 'null' && !nodeDetails.has(parentId)) {
-                nodeDetails.set(parentId, {});
-            }
-        });
+        const nodeDetails = BifractCharts.graphNodeDetails(limitedResults, childField, parentField, labelFields);
 
         // Child -> parent map for ancestry walks, and the set of nodes that have
         // an incoming edge (everything that is NOT a root of the forest).
