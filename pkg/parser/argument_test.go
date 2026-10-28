@@ -116,6 +116,10 @@ func TestListAndFilterValuesSurvive(t *testing.T) {
 		{`* | concat("a,b")`, "concat(fields.`a`::String, fields.`b`::String)"},
 		{`* | chain([user,host], within=5m) { a="x"; b="y" }`, "[fields.`user`::String, fields.`host`::String]"},
 		{`* | chain("user,host", within=5m) { a="x"; b="y" }`, "[fields.`user`::String, fields.`host`::String]"},
+		{`* | in(company, values="a,b")`, "fields.`company`::String IN ('a', 'b')"},
+		// An element of a bracketed list is one value, commas and all.
+		{`* | in(company, values=["LogMeIn, Inc.", "x"])`, "fields.`company`::String IN ('LogMeIn, Inc.', 'x')"},
+		{`* | in(lower(company), values=["logmein, inc."])`, "lower(fields.`company`::String) IN ('logmein, inc.')"},
 	}
 	for _, c := range cases {
 		pipeline, err := ParseQuery(c.query)
