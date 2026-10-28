@@ -58,6 +58,9 @@ Set these in `.env` to write backups to S3-compatible storage (AWS S3, MinIO, Di
 
 ## Iceberg archive
 
+!!! warning "Experimental"
+    The archive, restore from the archive and Recall are new and have had little production use. Keep PostgreSQL backups and ClickHouse retention as your primary safety net, and test a restore before you rely on one.
+
 The archive is off by default. When on, every ingested log is written to a durable spool on local disk before ingest is acknowledged, and the `bifract-archiver` sidecar copies it into one Iceberg table per fractal, partitioned by ingest date. If the spool cannot accept a batch, ingest returns `429` rather than lose it.
 
 `bifract --upgrade` (or `--upgrade-k8s`) provisions the archiver and spool. Nothing is archived until you turn it on.
