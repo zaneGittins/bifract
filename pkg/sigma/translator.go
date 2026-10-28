@@ -2,12 +2,19 @@ package sigma
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"net"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
+
+	"bifract/pkg/parser"
 )
 
 // TranslatorVersion identifies the Sigma->BQL translation behavior. It is mixed
@@ -36,7 +43,12 @@ import (
 //	v9: support |windash.
 //	v10: search keywords in norm_log as JSON serialized them ('/', '\' and '"'
 //	     escaped), so keywords holding those characters match.
-const TranslatorVersion = "v10"
+//	v11: support cidr, exists, fieldref, gt/gte/lt/lte, cased, base64, base64offset
+//	     and the UTF-16 encodings. Keep a value with a comma in the native list;
+//	     match non-ASCII substrings and keywords with a Unicode-aware regex; make
+//	     '?' in a keyword one serialized character; read an empty non-exact value
+//	     as field presence; refuse field names that are not plain identifiers.
+const TranslatorVersion = "v11"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -158,12 +170,22 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 	field := fc.Field
 	if field != "" {
 		field = fieldMapper(field)
+		if !validFieldName(field) {
+			return "", fmt.Errorf("field '%s': %q is not a valid field name", fc.Field, field)
+		}
 	}
 
 	if err := checkModifiers(fc); err != nil {
 		return "", err
 	}
+	if expr, ok, err := translateStandalone(fc, field, fieldMapper); ok {
+		if err != nil {
+			return "", fmt.Errorf("field '%s': %w", fc.Field, err)
+		}
+		return expr, nil
+	}
 	hasAll := containsModifier(fc.Modifiers, "all")
+	cased := containsModifier(fc.Modifiers, "cased")
 
 	// Handle null values (field should be empty/absent)
 	if fc.Values == nil {
@@ -206,30 +228,41 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 		return buildCombinedRegexExpr(field, fc.Values, inline, suffix), nil
 	}
 
-	// Each value with its |windash variants, any of which matches for it.
+	// Each value with its |windash variants or base64 encodings, any of which
+	// matches for it.
+	windash := containsModifier(fc.Modifiers, "windash")
+	encoded := containsModifier(fc.Modifiers, "base64") || containsModifier(fc.Modifiers, "base64offset")
 	groups := make([][]string, len(fc.Values))
 	var all []string
 	for i, v := range fc.Values {
 		groups[i] = []string{v}
-		if containsModifier(fc.Modifiers, "windash") {
+		switch {
+		case windash:
 			variants, err := expandWindash(v)
 			if err != nil {
 				return "", fmt.Errorf("field '%s': %w", fc.Field, err)
 			}
 			groups[i] = variants
+		case encoded:
+			variants, err := encodeValue(v, fc.Modifiers)
+			if err != nil {
+				return "", fmt.Errorf("field '%s': %w", fc.Field, err)
+			}
+			// Encoded text is case-significant.
+			groups[i], cased = variants, true
 		}
 		all = append(all, groups[i]...)
 	}
 
-	// Keywords (no field): a case-insensitive substring search over the whole event.
+	// Keywords (no field): a substring search over the whole event.
 	if field == "" {
-		return buildKeywordExpr(all), nil
+		return buildKeywordExpr(all, cased), nil
 	}
 
 	classify := func(values []string) []valueMatch {
 		matches := make([]valueMatch, len(values))
 		for i, v := range values {
-			matches[i] = classifyValue(v, matchType)
+			matches[i] = classifyValue(v, matchType, cased)
 		}
 		return matches
 	}
@@ -315,29 +348,228 @@ func regexFlags(mods []string) (inline, suffix string) {
 	return inline, suffix
 }
 
-// checkModifiers refuses any modifier the translator does not implement. A modifier
-// silently dropped would deploy a different rule than the one written (base64, a
-// value transform, or gt/lt, a different comparison, would match something else
-// entirely), so the rule fails instead, naming what it could not express.
+// standaloneModifiers each replace the value comparison outright, so they take no
+// other modifier.
+var standaloneModifiers = map[string]bool{"exists": true, "fieldref": true, "cidr": true, "gt": true, "gte": true, "lt": true, "lte": true}
+
+// utf16Modifiers encode a value as UTF-16 bytes for base64 or base64offset to encode.
+var utf16Modifiers = map[string]bool{"wide": true, "utf16le": true, "utf16be": true, "utf16": true}
+
+// checkModifiers refuses any modifier the translator does not implement, and any
+// combination Sigma gives no meaning. A modifier silently dropped would deploy a
+// different rule than the one written, so the rule fails instead, naming what it
+// could not express.
 func checkModifiers(fc FieldCondition) error {
 	var unsupported, match []string
-	isRegex := containsModifier(fc.Modifiers, "re")
-	for _, mod := range fc.Modifiers {
+	mods := fc.Modifiers
+	isRegex := containsModifier(mods, "re")
+	for _, mod := range mods {
 		switch {
 		case matchModifiers[mod]:
 			match = append(match, mod)
-		case mod == "all", mod == "windash" && !isRegex, isRegex && regexFlagModifiers[mod]:
+		case mod == "all", mod == "cased", mod == "base64", mod == "base64offset", standaloneModifiers[mod], utf16Modifiers[mod]:
+		case mod == "windash" && !isRegex, isRegex && regexFlagModifiers[mod]:
 		default:
 			unsupported = append(unsupported, "'"+mod+"'")
 		}
 	}
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("field '%s': "+format, append([]any{fc.Field}, args...)...)
+	}
 	if len(unsupported) > 0 {
-		return fmt.Errorf("field '%s': unsupported modifier %s", fc.Field, strings.Join(unsupported, ", "))
+		return fail("unsupported modifier %s", strings.Join(unsupported, ", "))
 	}
 	if len(match) > 1 {
-		return fmt.Errorf("field '%s': modifiers '%s' cannot be combined", fc.Field, strings.Join(match, "', '"))
+		return fail("modifiers '%s' cannot be combined", strings.Join(match, "', '"))
+	}
+	for _, mod := range mods {
+		if standaloneModifiers[mod] && len(mods) > 1 {
+			return fail("'%s' cannot be combined with other modifiers", mod)
+		}
+	}
+	if isRegex && containsModifier(mods, "cased") {
+		return fail("'cased' cannot be combined with 're', which is already case-sensitive")
+	}
+	return checkEncoding(fc, fail)
+}
+
+// checkEncoding enforces how Sigma chains value encodings: at most one UTF-16
+// encoding, then one of base64 and base64offset, matched as a literal.
+func checkEncoding(fc FieldCondition, fail func(string, ...any) error) error {
+	enc, b64 := -1, -1
+	for i, mod := range fc.Modifiers {
+		switch {
+		case utf16Modifiers[mod]:
+			if enc >= 0 {
+				return fail("use one UTF-16 encoding, not '%s' and '%s'", fc.Modifiers[enc], mod)
+			}
+			enc = i
+		case mod == "base64" || mod == "base64offset":
+			if b64 >= 0 {
+				return fail("use one of 'base64' and 'base64offset'")
+			}
+			b64 = i
+		}
+	}
+	if enc >= 0 && (b64 < 0 || enc > b64) {
+		return fail("'%s' needs 'base64' or 'base64offset' after it", fc.Modifiers[enc])
+	}
+	if b64 < 0 {
+		return nil
+	}
+	b64mod := fc.Modifiers[b64]
+	for _, other := range []string{"re", "windash"} {
+		if containsModifier(fc.Modifiers, other) {
+			return fail("'%s' cannot be combined with '%s'", b64mod, other)
+		}
+	}
+	contains := containsModifier(fc.Modifiers, "contains")
+	if b64mod == "base64offset" && !contains {
+		return fail("'base64offset' needs 'contains': it yields fragments of the encoding")
+	}
+	if containsModifier(fc.Modifiers, "startswith") || containsModifier(fc.Modifiers, "endswith") {
+		return fail("'base64' matches whole values or with 'contains'")
 	}
 	return nil
+}
+
+// numericPattern accepts the decimal forms ClickHouse toFloat64OrZero reads as a
+// number, and none it reads as 0 (padded text, hex, inf, nan). It checks both a
+// comparison's field, in the guard, and its Sigma value.
+const numericPattern = `^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$`
+
+var numericRe = regexp.MustCompile(numericPattern)
+
+var comparisonOps = map[string]string{"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+// translateStandalone translates the modifiers that replace the value comparison:
+// exists, fieldref, cidr and the numeric comparisons. ok is false for any other.
+func translateStandalone(fc FieldCondition, field string, fieldMapper func(string) string) (expr string, ok bool, err error) {
+	if len(fc.Modifiers) != 1 || !standaloneModifiers[fc.Modifiers[0]] {
+		return "", false, nil
+	}
+	mod := fc.Modifiers[0]
+	if field == "" {
+		return "", true, fmt.Errorf("'%s' needs a field", mod)
+	}
+	if len(fc.Values) == 0 {
+		return "", true, fmt.Errorf("'%s' needs a value", mod)
+	}
+	var parts []string
+	switch mod {
+	case "exists":
+		if len(fc.Values) == 1 {
+			// pySigma reads rules as YAML 1.1, where yes and no are booleans too.
+			switch strings.ToLower(fc.Values[0]) {
+			case "true", "yes":
+				return field + "=*", true, nil
+			case "false", "no":
+				return "NOT " + field + "=*", true, nil
+			}
+		}
+		return "", true, fmt.Errorf("'exists' takes true or false")
+	case "cidr":
+		for _, v := range fc.Values {
+			if _, _, err := net.ParseCIDR(v); err != nil {
+				return "", true, fmt.Errorf("%q is not a CIDR range", v)
+			}
+			parts = append(parts, fmt.Sprintf(`cidr(%s, "%s")`, field, escapeBQLString(v)))
+		}
+		return joinExprs(parts, " OR "), true, nil
+	case "fieldref":
+		for _, v := range fc.Values {
+			ref := fieldMapper(v)
+			if !validFieldName(ref) {
+				return "", true, fmt.Errorf("%q is not a valid field name", ref)
+			}
+			parts = append(parts, fmt.Sprintf("%s=field(%s)", field, ref))
+		}
+		// A missing field reads as '', which would equal another missing field.
+		return fmt.Sprintf("(%s=* AND %s)", field, joinExprs(parts, " OR ")), true, nil
+	}
+	for _, v := range fc.Values {
+		if !numericRe.MatchString(v) {
+			return "", true, fmt.Errorf("%q is not a number", v)
+		}
+		n, err := strconv.ParseFloat(v, 64)
+		mantissa, _, _ := strings.Cut(strings.ToLower(v), "e")
+		if err != nil || (n == 0 && strings.ContainsAny(mantissa, "123456789")) {
+			return "", true, fmt.Errorf("%q is out of range", v)
+		}
+		// BQL reads 1e300 but not 1e+300.
+		parts = append(parts, field+comparisonOps[mod]+strings.Replace(strconv.FormatFloat(n, 'g', -1, 64), "e+", "e", 1))
+	}
+	// BQL compares text through toFloat64OrZero, which reads a missing or
+	// non-numeric value as 0; the guard keeps |lt 5 from matching those.
+	return fmt.Sprintf("(%s=/%s/ AND %s)", field, numericPattern, joinExprs(parts, " OR ")), true, nil
+}
+
+// encodeValue returns a value's base64 encoding, or under base64offset its three
+// encodings at each byte offset, after any UTF-16 encoding. It is pySigma's
+// algorithm, so a rule matches the same text in every backend.
+func encodeValue(v string, mods []string) ([]string, error) {
+	lit, ok := soleLiteral(parseSigmaValue(v))
+	if !ok {
+		return nil, fmt.Errorf("a wildcard cannot be base64-encoded: %q", v)
+	}
+	if lit == "" {
+		return nil, fmt.Errorf("an empty value has nothing to base64-encode")
+	}
+	b := []byte(lit)
+	for _, mod := range mods {
+		switch mod {
+		case "wide", "utf16le":
+			b = utf16Bytes(lit, binary.LittleEndian, false)
+		case "utf16be":
+			b = utf16Bytes(lit, binary.BigEndian, false)
+		case "utf16":
+			b = utf16Bytes(lit, binary.LittleEndian, true)
+		}
+	}
+	if !containsModifier(mods, "base64offset") {
+		return []string{base64.StdEncoding.EncodeToString(b)}, nil
+	}
+	starts, ends := [3]int{0, 2, 3}, [3]int{0, 3, 2}
+	out := make([]string, 3)
+	for i := range 3 {
+		enc := base64.StdEncoding.EncodeToString(append(bytes.Repeat([]byte(" "), i), b...))
+		// An empty fragment would match every value.
+		if starts[i] >= len(enc)-ends[(len(b)+i)%3] {
+			return nil, fmt.Errorf("%q is too short for base64offset: an offset encodes no whole character", v)
+		}
+		out[i] = enc[starts[i] : len(enc)-ends[(len(b)+i)%3]]
+	}
+	return out, nil
+}
+
+// soleLiteral returns the text of a value without wildcards: no tokens, or one literal.
+func soleLiteral(toks []globToken) (string, bool) {
+	switch {
+	case len(toks) == 0:
+		return "", true
+	case len(toks) == 1 && toks[0].wild == 0:
+		return toks[0].lit, true
+	}
+	return "", false
+}
+
+// validFieldName reports whether name can be written into BQL unquoted. Field names
+// come from rule files and fieldref values, so anything else could rewrite the query.
+func validFieldName(name string) bool {
+	return parser.IsPlainFieldName(name) && !isBQLKeyword(name)
+}
+
+// utf16Bytes encodes s as UTF-16 in the given byte order, with a byte-order mark if bom.
+func utf16Bytes(s string, order binary.ByteOrder, bom bool) []byte {
+	units := utf16.Encode([]rune(s))
+	if bom {
+		units = append([]uint16{0xFEFF}, units...)
+	}
+	b := make([]byte, 2*len(units))
+	for i, u := range units {
+		order.PutUint16(b[2*i:], u)
+	}
+	return b
 }
 
 // Sigma string values are glob patterns matched case-insensitively against the whole
@@ -441,10 +673,10 @@ type matchKind int
 
 const (
 	matchAny    matchKind = iota // the value matches every present value
-	matchEqual                   // equality; only for values with no case variants
+	matchEqual                   // equality: a value without case variants, or any literal under cased
 	matchLower                   // lower(field) equality; ASCII values only
 	matchNative                  // =~ / =^ / =$, case-insensitive literal operators
-	matchRegex                   // case-insensitive RE2
+	matchRegex                   // RE2, case-insensitive unless cased
 )
 
 // valueMatch is how one Sigma value is expressed in BQL.
@@ -454,10 +686,11 @@ type valueMatch struct {
 	value   string // matchEqual, matchNative: the literal; matchLower: lowercased
 	pattern string // matchRegex: anchored RE2
 	wild    bool   // matchRegex: pattern holds a wildcard
+	cased   bool   // matchRegex: case-sensitive
 }
 
 // classifyValue picks the cheapest BQL form that matches a Sigma value exactly as
-// Sigma does: wildcards honored, case ignored.
+// Sigma does: wildcards honored, case ignored unless cased.
 //
 //   - A value without case variants under an exact match is an equality. It is the
 //     only form the field's skip index can prune with, and is exact for digits and
@@ -468,10 +701,12 @@ type valueMatch struct {
 //   - An exact value whose cased letters are all ASCII compares lower(field), about
 //     four times cheaper than an anchored regex. It cannot use the skip index, which
 //     is over the value as stored. ClickHouse lower() folds ASCII only, so a value
-//     with other cased letters stays a regex.
-//   - Everything else is a case-insensitive regex: a wildcard in the middle, '?',
-//     or a literal comma (which would split the native list).
-func classifyValue(v string, matchType string) valueMatch {
+//     with other cased letters stays a regex, under any match type.
+//   - Everything else is a case-insensitive regex: a wildcard in the middle or '?'.
+//
+// Under cased, an exact literal is an equality and everything else a regex without /i.
+// An empty value that is not exact is in every value, so it matches field presence.
+func classifyValue(v string, matchType string, cased bool) valueMatch {
 	anchorStart := matchType == "exact" || matchType == "startswith"
 	anchorEnd := matchType == "exact" || matchType == "endswith"
 	toks, lead, trail := trimStars(parseSigmaValue(v))
@@ -481,33 +716,33 @@ func classifyValue(v string, matchType string) valueMatch {
 	if trail {
 		anchorEnd = false
 	}
-	if len(toks) == 0 && (lead || trail) {
+	if len(toks) == 0 && !(anchorStart && anchorEnd) {
 		return valueMatch{kind: matchAny}
 	}
 
-	if len(toks) <= 1 && (len(toks) == 0 || toks[0].wild == 0) {
-		lit := ""
-		if len(toks) == 1 {
-			lit = toks[0].lit
+	lit, literal := soleLiteral(toks)
+	switch {
+	case cased:
+		// BQL reads ="*" as presence, so a literal * takes the regex.
+		if literal && anchorStart && anchorEnd && lit != "*" {
+			return valueMatch{kind: matchEqual, value: lit}
 		}
-		switch {
-		case anchorStart && anchorEnd:
-			// BQL reads ="*" as presence, so a literal * takes the in() form.
-			if !hasCaseVariants(lit) && lit != "*" {
-				return valueMatch{kind: matchEqual, value: lit}
-			}
-			if lowerFolds(lit) {
-				return valueMatch{kind: matchLower, value: strings.ToLower(lit)}
-			}
-		case !strings.Contains(lit, ","):
-			op := "=~"
-			if anchorStart {
-				op = "=^"
-			} else if anchorEnd {
-				op = "=$"
-			}
-			return valueMatch{kind: matchNative, op: op, value: lit}
+	case literal && anchorStart && anchorEnd:
+		// BQL reads ="*" as presence, so a literal * takes the in() form.
+		if !hasCaseVariants(lit) && lit != "*" {
+			return valueMatch{kind: matchEqual, value: lit}
 		}
+		if lowerFolds(lit) {
+			return valueMatch{kind: matchLower, value: strings.ToLower(lit)}
+		}
+	case literal && lowerFolds(lit):
+		op := "=~"
+		if anchorStart {
+			op = "=^"
+		} else if anchorEnd {
+			op = "=$"
+		}
+		return valueMatch{kind: matchNative, op: op, value: lit}
 	}
 
 	pattern, wild := globRegex(toks)
@@ -517,7 +752,7 @@ func classifyValue(v string, matchType string) valueMatch {
 	if anchorEnd {
 		pattern += "$"
 	}
-	return valueMatch{kind: matchRegex, pattern: pattern, wild: wild}
+	return valueMatch{kind: matchRegex, pattern: pattern, wild: wild, cased: cased}
 }
 
 // renderMatches ORs the values of one field. Each form is consolidated: equalities
@@ -527,9 +762,10 @@ func classifyValue(v string, matchType string) valueMatch {
 // one per value. The set is written as in() because lower(f)="v" does not parse
 // before a =~ leaf.
 func renderMatches(field string, matches []valueMatch) string {
-	var parts, lowers, patterns []string
+	var parts, lowers []string
+	var patterns, casedPatterns []string
 	native := map[string][]string{}
-	wild := false
+	wild, casedWild := false, false
 	for _, m := range matches {
 		switch m.kind {
 		case matchAny:
@@ -541,8 +777,13 @@ func renderMatches(field string, matches []valueMatch) string {
 		case matchNative:
 			native[m.op] = append(native[m.op], m.value)
 		case matchRegex:
-			patterns = append(patterns, m.pattern)
-			wild = wild || m.wild
+			if m.cased {
+				casedPatterns = append(casedPatterns, m.pattern)
+				casedWild = casedWild || m.wild
+			} else {
+				patterns = append(patterns, m.pattern)
+				wild = wild || m.wild
+			}
 		}
 	}
 	if len(lowers) > 0 {
@@ -553,17 +794,23 @@ func renderMatches(field string, matches []valueMatch) string {
 			parts = append(parts, buildNativeOpExpr(field, op, vals))
 		}
 	}
-	if len(patterns) > 0 {
+	regex := func(pats []string, wild bool, suffix string) {
+		if len(pats) == 0 {
+			return
+		}
 		flags := ""
 		if wild {
 			flags = "(?s)"
 		}
-		parts = append(parts, fmt.Sprintf("%s=/%s%s/i", field, flags, strings.Join(patterns, "|")))
+		parts = append(parts, fmt.Sprintf("%s=/%s%s/%s", field, flags, strings.Join(pats, "|"), suffix))
 	}
+	regex(patterns, wild, "i")
+	regex(casedPatterns, casedWild, "")
 	return joinExprs(parts, " OR ")
 }
 
-// buildNativeOpExpr emits a =~/=^/=$ expression. Values must not contain commas.
+// buildNativeOpExpr emits a =~/=^/=$ expression. encodeBQLNativeValue quotes any
+// value holding a comma, which keeps it one value.
 func buildNativeOpExpr(field, op string, values []string) string {
 	parts := make([]string, len(values))
 	for i, v := range values {
@@ -572,19 +819,20 @@ func buildNativeOpExpr(field, op string, values []string) string {
 	return field + op + strings.Join(parts, ",")
 }
 
-// buildKeywordExpr ORs keyword values (no field) as a case-insensitive substring
-// search over norm_log, the event serialized as JSON. A literal takes norm_log's =~,
-// which BQL escapes the way each store serialized the event; anything =~ cannot
-// carry (a wildcard, a comma, a non-ASCII letter) is a regex over that serialization.
-func buildKeywordExpr(values []string) string {
+// buildKeywordExpr ORs keyword values (no field) as a substring search over
+// norm_log, the event serialized as JSON. A literal takes norm_log's =~, which BQL
+// escapes the way each store serialized the event and matches case-insensitively;
+// anything =~ cannot carry (a wildcard, a cased non-ASCII letter) is a regex over
+// that serialization. Under cased every value is that regex, without /i.
+func buildKeywordExpr(values []string, cased bool) string {
 	var lits, pieces []string
 	for _, v := range values {
 		toks, _, _ := trimStars(parseSigmaValue(v))
 		if len(toks) == 0 {
 			return "*"
 		}
-		if len(toks) == 1 && toks[0].wild == 0 && !strings.Contains(toks[0].lit, ",") && lowerFolds(toks[0].lit) {
-			lits = append(lits, toks[0].lit)
+		if lit, ok := soleLiteral(toks); ok && !cased && lowerFolds(lit) {
+			lits = append(lits, lit)
 			continue
 		}
 		pieces = append(pieces, serializedGlobRegex(toks))
@@ -594,7 +842,11 @@ func buildKeywordExpr(values []string) string {
 		parts = append(parts, buildNativeOpExpr(normLogField, "=~", lits))
 	}
 	if len(pieces) > 0 {
-		parts = append(parts, normLogField+"=/"+strings.Join(pieces, "|")+"/i")
+		suffix := "i"
+		if cased {
+			suffix = ""
+		}
+		parts = append(parts, normLogField+"=/"+strings.Join(pieces, "|")+"/"+suffix)
 	}
 	return joinExprs(parts, " OR ")
 }
@@ -604,7 +856,10 @@ const normLogField = "norm_log"
 
 // serializedGlobRegex renders glob tokens as an RE2 fragment matching their text as
 // norm_log stores it: JSON-escaped, with '/' escaped in the hot store but not the
-// archive, so either spelling matches. '?' takes one character, escaped or not.
+// archive, so either spelling matches. '?' takes one serialized character: a \uXXXX
+// or two-character escape, or anything but the quote that ends the value. Its group
+// captures because lowerRegexForLowercasedColumn refuses "(?", which would cost the
+// n-gram index.
 func serializedGlobRegex(toks []globToken) string {
 	var b strings.Builder
 	for _, t := range toks {
@@ -612,9 +867,9 @@ func serializedGlobRegex(toks []globToken) string {
 		case '*':
 			b.WriteString(".*")
 		case '?':
-			b.WriteString(`(?:\\.|.)`)
+			b.WriteString(`(\\u[0-9a-fA-F]{4}|\\.|[^"\\])`)
 		default:
-			parts := strings.Split(jsonEscape(t.lit), "/")
+			parts := strings.Split(parser.NormLogJSON(t.lit), "/")
 			for i, p := range parts {
 				if i > 0 {
 					b.WriteString(`\\?\/`)
@@ -624,18 +879,6 @@ func serializedGlobRegex(toks []globToken) string {
 		}
 	}
 	return b.String()
-}
-
-// jsonEscape returns s as it appears inside a JSON string, quotes stripped.
-func jsonEscape(s string) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(s); err != nil {
-		return s
-	}
-	out := strings.TrimSuffix(buf.String(), "\n")
-	return out[1 : len(out)-1]
 }
 
 func joinExprs(parts []string, op string) string {

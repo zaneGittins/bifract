@@ -81,7 +81,7 @@ Rules with no `logsource.category` (for example Windows Security log rules) are 
 
 Bifract follows the Sigma specification:
 
-- **Case is ignored.** `OriginalFileName: Cmd.Exe` matches `cmd.exe`.
+- **Case is ignored** unless the field uses `cased`. `OriginalFileName: Cmd.Exe` matches `cmd.exe`.
 - **`*` matches any run of characters, `?` exactly one**, in plain values and in `contains`, `startswith` and `endswith`.
 - **A backslash escapes `*`, `?` or another backslash.** Before any other character it is literal, so Windows paths need no escaping. A separator followed by a wildcard must be doubled: `C:\Windows\\*` matches everything under `C:\Windows\`, while `C:\Windows\*` matches only the literal text `C:\Windows*`.
 - **`Field: null`** matches an absent or empty field; `'*'` matches any non-empty value.
@@ -95,5 +95,12 @@ Bifract follows the Sigma specification:
 | `windash` | A `-` or `/` starting a word also matches `/`, `-`, en dash, em dash and horizontal bar |
 | `re` | Regular expression, case-sensitive |
 | `re\|i`, `re\|m`, `re\|s` | Regex flags: case-insensitive, multiline, dot matches newline |
+| `cased` | Match case-sensitively |
+| `cidr` | Field is an IPv4 or IPv6 address in the range; not an address never matches |
+| `exists` | `true`: field is present and non-empty; `false`: absent or empty |
+| `gt`, `gte`, `lt`, `lte` | Numeric comparison; a missing or non-numeric field never matches |
+| `fieldref` | Field equals another field's value; both must be present |
+| `base64`, `base64offset` | Value base64-encoded, matched case-sensitively. `base64offset` needs `contains` and matches the value at any byte offset |
+| `wide`, `utf16le`, `utf16be`, `utf16` | Encode the value as UTF-16 before `base64` or `base64offset` |
 
-A rule using any other modifier (for example `base64`, `cidr`, `exists`, `gt`, `fieldref`, `utf16le`, `cased`), an aggregation condition (`| count() by ...`) or a modifier combination such as `contains|endswith` is not imported. It shows in [ATT&CK Coverage](attack-coverage.md#close-a-gap) as `cannot be translated to BQL`.
+A rule using any other modifier (`expand`), `fieldref` with `contains`, `startswith` or `endswith`, an aggregation condition (`| count() by ...`) or a modifier combination such as `contains|endswith` is not imported. It shows in [ATT&CK Coverage](attack-coverage.md#close-a-gap) as `cannot be translated to BQL`.

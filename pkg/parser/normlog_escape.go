@@ -39,6 +39,11 @@ func escapeLiteralForNormLog(literal string, mode SourceMode) string {
 	return s
 }
 
+// NormLogJSON returns a literal as it appears inside a norm_log JSON string with '/'
+// left raw, as the archive stores it. The hot store also escapes '/' as '\/', so a
+// pattern meant for both must accept either spelling.
+func NormLogJSON(literal string) string { return escapeLiteralForNormLog(literal, SourceIceberg) }
+
 // normLogLiteralPattern builds the case-insensitive RE2 pattern for a bare-term
 // search against norm_log. The literal is serialization-escaped first, then
 // QuoteMeta'd: the escaping introduces backslashes that must themselves be
