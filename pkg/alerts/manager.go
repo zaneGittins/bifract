@@ -233,60 +233,25 @@ type yamlImport struct {
 // Import and propose need the same answer and must not drift: one writes it, the other
 // puts it in the review queue.
 func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID, prismID, normalizerID string) (yamlImport, error) {
-	var req AlertUpdateRequest
-
-	if sigma.IsSigmaRule(yamlContent) {
-		var fieldMapper func(string) string
-		if normalizerID != "" && m.normalizerManager != nil {
-			fieldMapper = sigma.BuildFieldMapper(m.normalizerManager.CompileByID(ctx, normalizerID))
-		}
-		var err error
-		if req, err = sigmaImportRequest(yamlContent, fieldMapper); err != nil {
-			return yamlImport{}, err
-		}
-	} else {
-		var yamlAlert YAMLAlert
-		if err := yaml.Unmarshal([]byte(yamlContent), &yamlAlert); err != nil {
-			return yamlImport{}, fmt.Errorf("failed to parse YAML: %w", err)
-		}
-		if strings.TrimSpace(yamlAlert.Name) == "" {
-			return yamlImport{}, fmt.Errorf("alert name is required")
-		}
-		if strings.TrimSpace(yamlAlert.QueryString) == "" {
-			return yamlImport{}, fmt.Errorf("query string is required")
-		}
-		if _, err := parser.ParseQuery(yamlAlert.QueryString); err != nil {
-			return yamlImport{}, fmt.Errorf("invalid query syntax: %w", err)
-		}
-
-		// Resolved before any write, so a bad action name fails the import rather than
-		// leaving the alert half-wired.
-		actions, err := m.resolveActionNames(ctx, yamlAlert.ActionNames, fractalID, prismID)
-		if err != nil {
-			return yamlImport{}, err
-		}
-
-		req = AlertUpdateRequest{
-			Name:                yamlAlert.Name,
-			Description:         yamlAlert.Description,
-			QueryString:         yamlAlert.QueryString,
-			AlertType:           AlertType(yamlAlert.AlertType),
-			Severity:            Severity(yamlAlert.Severity),
-			WebhookActionIDs:    actions.Webhook,
-			FractalActionIDs:    actions.Fractal,
-			DictionaryActionIDs: actions.Dictionary,
-			EmailActionIDs:      actions.Email,
-			Labels:              yamlAlert.Labels,
-			References:          yamlAlert.References,
-			Enabled:             yamlAlert.Enabled,
-			ThrottleTimeSeconds: yamlAlert.ThrottleTimeSeconds,
-			MaxEventLagSeconds:  yamlAlert.MaxEventLagSeconds,
-			ThrottleField:       yamlAlert.ThrottleField,
-			WindowDuration:      yamlAlert.WindowDuration,
-			ScheduleCron:        yamlAlert.ScheduleCron,
-			QueryWindowSeconds:  yamlAlert.QueryWindowSeconds,
-		}
+	var fieldMapper func(string) string
+	if normalizerID != "" && m.normalizerManager != nil && sigma.IsSigmaRule(yamlContent) {
+		fieldMapper = sigma.BuildFieldMapper(m.normalizerManager.CompileByID(ctx, normalizerID))
 	}
+	req, actionNames, err := yamlImportRequest(yamlContent, fieldMapper)
+	if err != nil {
+		return yamlImport{}, err
+	}
+
+	// Resolved before any write, so a bad action name fails the import rather than
+	// leaving the alert half-wired.
+	actions, err := m.resolveActionNames(ctx, actionNames, fractalID, prismID)
+	if err != nil {
+		return yamlImport{}, err
+	}
+	req.WebhookActionIDs = actions.Webhook
+	req.FractalActionIDs = actions.Fractal
+	req.DictionaryActionIDs = actions.Dictionary
+	req.EmailActionIDs = actions.Email
 
 	holder, err := m.manualAlertNamed(ctx, req.Name)
 	if err != nil {
@@ -297,6 +262,56 @@ func (m *Manager) resolveYAMLImport(ctx context.Context, yamlContent, fractalID,
 		return yamlImport{}, err
 	}
 	return yamlImport{Request: req, ExistingID: existingID}, nil
+}
+
+// yamlImportRequest reads an alert or Sigma document into a definition. Action
+// names come back unresolved, since resolving them needs the scope's actions.
+func yamlImportRequest(yamlContent string, fieldMapper func(string) string) (AlertUpdateRequest, []string, error) {
+	if sigma.IsSigmaRule(yamlContent) {
+		req, err := sigmaImportRequest(yamlContent, fieldMapper)
+		return req, nil, err
+	}
+	var yamlAlert YAMLAlert
+	if err := yaml.Unmarshal([]byte(yamlContent), &yamlAlert); err != nil {
+		return AlertUpdateRequest{}, nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+	if strings.TrimSpace(yamlAlert.Name) == "" {
+		return AlertUpdateRequest{}, nil, fmt.Errorf("alert name is required")
+	}
+	if strings.TrimSpace(yamlAlert.QueryString) == "" {
+		return AlertUpdateRequest{}, nil, fmt.Errorf("query string is required")
+	}
+	if _, err := parser.ParseQuery(yamlAlert.QueryString); err != nil {
+		return AlertUpdateRequest{}, nil, fmt.Errorf("invalid query syntax: %w", err)
+	}
+	return AlertUpdateRequest{
+		Name:                yamlAlert.Name,
+		Description:         yamlAlert.Description,
+		QueryString:         yamlAlert.QueryString,
+		AlertType:           AlertType(yamlAlert.AlertType),
+		Severity:            Severity(yamlAlert.Severity),
+		Labels:              yamlAlert.Labels,
+		References:          yamlAlert.References,
+		Enabled:             yamlAlert.Enabled,
+		ThrottleTimeSeconds: yamlAlert.ThrottleTimeSeconds,
+		MaxEventLagSeconds:  yamlAlert.MaxEventLagSeconds,
+		ThrottleField:       yamlAlert.ThrottleField,
+		WindowDuration:      yamlAlert.WindowDuration,
+		ScheduleCron:        yamlAlert.ScheduleCron,
+		QueryWindowSeconds:  yamlAlert.QueryWindowSeconds,
+	}, yamlAlert.ActionNames, nil
+}
+
+// ValidateRuleDocument checks an alert or Sigma document as an import would,
+// short of anything that needs a database, so a rule file the server would refuse
+// fails in lint and CI instead.
+func ValidateRuleDocument(yamlContent string, fieldMapper func(string) string) error {
+	req, _, err := yamlImportRequest(yamlContent, fieldMapper)
+	if err != nil {
+		return err
+	}
+	_, err = validateDefinition(revisionContentFromRequest(req, string(req.AlertType), string(req.Severity)))
+	return err
 }
 
 // sigmaImportRequest translates a Sigma rule into an alert definition, disabled so it

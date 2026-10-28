@@ -62,7 +62,7 @@ detections/
 
 - `--test <dir>` walks the tree and runs every file ending in `.test.yaml` or `.test.yml`.
 - Paths inside a test file are relative to that file, so a folder can be moved without edits.
-- `example-detections/` in the Bifract repository uses this layout and is a working starting point.
+- `exchange/detections/` in the Bifract repository uses this layout and is a working starting point.
 
 Event files hold only raw events, with nothing test-specific in them. The format is detected from the contents, so `.json` works for all three:
 

@@ -1,4 +1,4 @@
-# Example alert policies
+# Alert policies
 
 Policy rules assert things about an alert's definition: that it carries an ATT&CK label,
 that its description is long enough to act on, that it has a test proving what it should
@@ -15,7 +15,7 @@ attack.t1059") rather than what failed.
 
 ## Using one
 
-Alerts -> Policies -> Import, then pick a file here. Check the compliance view before
+Add it from **Exchange** in the UI, or use Alerts -> Policies -> Import and pick a file here. Check the compliance view before
 promoting anything to `block`: existing alerts keep running whatever the rules say, but
 the next person to edit one has to satisfy them first.
 

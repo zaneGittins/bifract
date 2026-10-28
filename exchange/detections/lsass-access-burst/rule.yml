@@ -5,10 +5,12 @@ name: Repeated LSASS Process Access
 description: >-
   One process opening a handle to lsass.exe three or more times in the alert window.
   Single accesses are routine; a burst from one image suggests credential dumping.
-alertType: event
+alertType: compound
+windowDuration: 900
 severity: high
 labels:
   - credential-access
+  - attack.t1003.001
 references:
   - https://attack.mitre.org/techniques/T1003/001/
 queryString: 'bifract_category="process_access" AND target_image=~lsass.exe | groupBy(image, function=count()) | _count >= 3'

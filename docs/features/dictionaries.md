@@ -91,6 +91,8 @@ A glob matches ignoring case. `*` matches any run of characters and `?` any one,
 
 Example: flag processes running from a known remote-management tool's path using the [LOLRMM](https://lolrmm.io) list.
 
+The [Exchange](exchange.md) adds this lookup in one click. To set it up by hand:
+
 1. Create a **Patterns** lookup named `lolrmm`, fetched from `https://raw.githubusercontent.com/magicsword-io/LOLRMM/main/website/public/api/rmm_tools.csv`.
 2. Set **Key column** to `InstallationPaths`, **Other columns to keep** to `Name,Description`, **Split key cells on** to `,`, and check **Keys are globs**.
 3. Query:

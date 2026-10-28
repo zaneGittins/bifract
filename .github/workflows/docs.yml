@@ -8,6 +8,8 @@ on:
       - "mkdocs.yml"
       - "openapi.json"
       - "scripts/install.sh"
+      - "scripts/mkdocs_exchange.py"
+      - "exchange/**"
       - ".github/workflows/docs.yml"
   # Build on the PR too, so a bad dependency pin or a broken link fails review
   # rather than the deploy after merge. Only the build runs; deploy is gated below.
@@ -19,6 +21,8 @@ on:
       - "mkdocs.yml"
       - "openapi.json"
       - "scripts/install.sh"
+      - "scripts/mkdocs_exchange.py"
+      - "exchange/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 

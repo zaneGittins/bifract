@@ -183,6 +183,10 @@ const App = {
             InstructionLibraries.init();
         }
 
+        if (window.Exchange) {
+            Exchange.init();
+        }
+
         // Initialize Recall (archive search) module
         if (window.Recall) {
             Recall.init();
@@ -250,7 +254,7 @@ const App = {
 
     // Route names the hash router accepts.
     _mainTabs: new Set(['fractalListing', 'performance', 'settings', 'normalizers', 'schema', 'api']),
-    _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'recall', 'manage']),
+    _fractalTabs: new Set(['search', 'comments', 'notebooks', 'dashboards', 'dictionaries', 'models', 'chat', 'library', 'alerts', 'ingest', 'exchange', 'recall', 'manage']),
 
     // Build the full hash string for the current navigation state.
     // Fractal-view tabs: f/{id}/{tab}/{subPath} or p/{id}/{tab}/{subPath}
@@ -1019,10 +1023,11 @@ const App = {
         const libraryContent = document.getElementById('fractalLibraryTabContent');
         const alertsContent = document.getElementById('fractalAlertsTabContent');
         const ingestContent = document.getElementById('fractalIngestTabContent');
+        const exchangeContent = document.getElementById('fractalExchangeTabContent');
         const recallContent = document.getElementById('fractalRecallTabContent');
         const manageContent = document.getElementById('fractalManageTabContent');
 
-        [searchContent, commentsContent, notebooksContent, dashboardsContent, dictionariesContent, modelsContent, chatContent, libraryContent, alertsContent, ingestContent, recallContent, manageContent].forEach(content => {
+        [searchContent, commentsContent, notebooksContent, dashboardsContent, dictionariesContent, modelsContent, chatContent, libraryContent, alertsContent, ingestContent, exchangeContent, recallContent, manageContent].forEach(content => {
             if (content) content.style.display = 'none';
         });
 
@@ -1041,8 +1046,9 @@ const App = {
         const alertsView = document.getElementById('alertsView');
         const feedAlertsView = document.getElementById('feedAlertsView');
         const ingestView = document.getElementById('ingestView');
+        const exchangeView = document.getElementById('exchangeView');
         const recallView = document.getElementById('recallView');
-        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, librariesView, alertsView, feedAlertsView, ingestView, recallView].forEach(view => {
+        [searchView, commentedView, notebooksView, dashboardsView, dictionariesView, modelsView, chatView, librariesView, alertsView, feedAlertsView, ingestView, exchangeView, recallView].forEach(view => {
             if (view) view.style.display = 'none';
         });
 
@@ -1153,6 +1159,11 @@ const App = {
                 if (ingestContent) ingestContent.style.display = 'block';
                 if (ingestView) ingestView.style.display = 'block';
                 if (window.IngestTokens) IngestTokens.show();
+                break;
+            case 'exchange':
+                if (exchangeContent) exchangeContent.style.display = 'block';
+                if (exchangeView) exchangeView.style.display = 'block';
+                if (window.Exchange) Exchange.show();
                 break;
             case 'recall':
                 if (recallContent) recallContent.style.display = 'flex';

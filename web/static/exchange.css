@@ -1,0 +1,143 @@
+/* Exchange: browse and add shared content. */
+
+.exchange-kind-filter {
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 0.88rem;
+}
+
+.exchange-source-url {
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.exchange-table td {
+    vertical-align: top;
+}
+
+.exchange-name {
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.exchange-name:hover,
+.exchange-col-meta a:hover {
+    color: var(--accent-primary);
+    text-decoration: underline;
+}
+
+.exchange-col-meta a {
+    color: var(--text-secondary);
+    text-decoration: none;
+}
+
+.exchange-desc {
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+.exchange-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.exchange-tag {
+    padding: 1px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+}
+
+.exchange-table .exchange-col-meta {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    white-space: nowrap;
+    width: 1%;
+}
+
+.exchange-table .exchange-col-action {
+    text-align: right;
+    white-space: nowrap;
+    width: 1%;
+}
+
+.exchange-installed {
+    color: var(--success);
+    font-size: 0.85rem;
+}
+
+.exchange-row.open td {
+    border-bottom: none;
+}
+
+.exchange-preview-row td {
+    padding-top: 0;
+}
+
+.exchange-preview-hint {
+    margin: 0 0 8px;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.exchange-content {
+    max-height: 360px;
+    margin: 0;
+    padding: 10px 12px;
+    overflow: auto;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    white-space: pre;
+}
+
+.exchange-source {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 16px;
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+.exchange-source dt {
+    color: var(--text-muted);
+}
+
+.exchange-source dd {
+    margin: 0;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    word-break: break-all;
+}
+
+.exchange-error {
+    margin: 0;
+    color: var(--error);
+    font-size: 0.85rem;
+}

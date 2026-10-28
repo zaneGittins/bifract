@@ -493,3 +493,23 @@ func joinForDetail(values []string) string {
 	}
 	return strings.Join(shown, ", ") + suffix
 }
+
+// mergePolicies appends the imported rules not already in the set, so importing a
+// document twice leaves one copy of each. A rule is identified by the check it
+// makes, so an existing rule keeps any local change to its severity or message.
+func mergePolicies(existing, imported []Policy) []Policy {
+	type check struct{ field, operator, value string }
+	seen := make(map[check]bool, len(existing)+len(imported))
+	merged := make([]Policy, 0, len(existing)+len(imported))
+	for _, p := range existing {
+		seen[check{p.Field, p.Operator, p.Value}] = true
+		merged = append(merged, p)
+	}
+	for _, p := range imported {
+		if k := (check{p.Field, p.Operator, p.Value}); !seen[k] {
+			seen[k] = true
+			merged = append(merged, p)
+		}
+	}
+	return merged
+}

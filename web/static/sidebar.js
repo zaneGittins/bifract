@@ -11,6 +11,7 @@ const SB_ICONS = {
     dashboard: '<rect x="1.5" y="1.5" width="5" height="7" rx="1"/><rect x="9.5" y="1.5" width="5" height="4" rx="1"/><rect x="9.5" y="8.5" width="5" height="6" rx="1"/><rect x="1.5" y="11.5" width="5" height="3" rx="1"/>',
     shield: '<path d="M8 14.5s5.5-2.5 5.5-7V3.5L8 1.5 2.5 3.5v4c0 4.5 5.5 7 5.5 7z"/>',
     chat: '<path d="M2.5 2.5h11a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7.5l-3 2.5v-2.5h-2a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"/>',
+    exchange: '<path d="M1.5 5.5h11M10 3l2.5 2.5L10 8M14.5 10.5h-11M6 8l-2.5 2.5L6 13"/>',
     library: '<path d="M3.5 1.5h6l3 3v10h-9z"/><path d="M9.5 1.5v3h3"/>',
     table: '<rect x="1.5" y="2.5" width="13" height="11" rx="1"/><path d="M1.5 6.5h13M5.5 6.5v7"/>',
     chart: '<path d="M1.5 1.5v13h13"/><path d="M4.5 10.5l3-3 2 2 4-4.5"/>',
@@ -48,6 +49,7 @@ const Sidebar = {
             { key: 'dictionaries', label: 'Lookups', icon: 'table' },
             { key: 'models', label: 'Analytics', icon: 'chart' },
             { key: 'ingest', label: 'Ingest', icon: 'ingest' },
+            { key: 'exchange', label: 'Exchange', icon: 'exchange' },
         ] },
     ],
 
