@@ -239,7 +239,7 @@ func (p *argParser) parseList(elem ParamKind) (Argument, error) {
 	if bracketed {
 		p.advance()
 	}
-	list := Argument{Kind: ArgList, Pos: start.Pos}
+	list := Argument{Kind: ArgList, Bracketed: bracketed, Pos: start.Pos}
 	for !p.done() && p.current().Type != TokenRBracket {
 		before := p.pos
 		element, err := p.parseValue(elem)

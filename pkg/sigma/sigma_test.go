@@ -427,7 +427,7 @@ detection:
 		t.Fatalf("translate error: %v", err)
 	}
 
-	expected := `/.*(?:foo|bar).*/i`
+	expected := `norm_log=~foo,bar`
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
 	}
