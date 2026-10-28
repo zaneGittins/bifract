@@ -126,8 +126,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 			w.Header().Set("Content-Security-Policy",
 				"default-src 'self'; "+
-					"script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "+
-					"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "+
+					"script-src 'self' 'unsafe-inline'; "+
+					"style-src 'self' 'unsafe-inline'; "+
 					"font-src 'self'; "+
 					"img-src 'self' data: https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "+
 					"connect-src 'self'")
