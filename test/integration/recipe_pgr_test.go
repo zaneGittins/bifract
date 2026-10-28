@@ -67,11 +67,13 @@ func TestProvenanceScoring(t *testing.T) {
 		fields["suite_marker"] = marker
 		logs = append(logs, fields)
 	}
+	// Unique per process, so a command line joined to the wrong process shows.
+	cmdline := func(host, n int, image string) string { return image + " /id " + guid(host, n) }
 	spawn := func(host, parent, child int, parentImage, image string) {
 		event(map[string]any{
 			"bifract_category": "process_creation", "computer_name": fmt.Sprintf("WS%02d", host),
 			"process_guid": guid(host, child), "parent_process_guid": guid(host, parent),
-			"image": image, "parent_image": parentImage, "commandline": image, "user": "CORP\\analyst",
+			"image": image, "parent_image": parentImage, "commandline": cmdline(host, child, image), "user": "CORP\\analyst",
 		})
 	}
 	connect := func(host, proc int, image, ip string) {
@@ -173,6 +175,11 @@ func TestProvenanceScoring(t *testing.T) {
 	if num(common, "edge_host_days") != 3 || num(common, "source_host_days") != 3 || common["score_basis"] != "transition" {
 		t.Errorf("explorer.exe -> cmd.exe explanation = %v of %v other host-days (%v); want 3 of 3 (transition)",
 			common["edge_host_days"], common["source_host_days"], common["score_basis"])
+	}
+	// Each spawn carries its process's own command line and user from the creation log.
+	if want := cmdline(1, 3, cmd); common["command_line"] != want || common["proc_user"] != `CORP\analyst` {
+		t.Errorf("explorer.exe -> cmd.exe details = %q as %q; want %q as %q",
+			common["command_line"], common["proc_user"], want, `CORP\analyst`)
 	}
 
 	// cmd.exe is an established binary that never started this one anywhere else.

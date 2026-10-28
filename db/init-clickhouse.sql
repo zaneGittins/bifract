@@ -93,8 +93,8 @@ CREATE TABLE IF NOT EXISTS logs (
     INDEX idx_dst_port           fields.dst_port           TYPE set(4096)          GRANULARITY 1,
     INDEX idx_proto              fields.proto              TYPE set(16)            GRANULARITY 1,
     INDEX idx_conn_state         fields.conn_state         TYPE set(64)            GRANULARITY 1,
-    -- process_guid bloom accelerates the process-tree leaf-fetch (pgr) that filters
-    -- logs by GUID. parent_process_guid is type-hint only (no index): nothing filters
+    -- process_guid bloom accelerates searches for one process (e.g. the pgr drawer's
+    -- Search process pivot). parent_process_guid is type-hint only (no index): nothing filters
     -- logs by it; proc_lineage carries its own parent_guid bloom.
     INDEX idx_process_guid       fields.process_guid       TYPE bloom_filter(0.001) GRANULARITY 1
 ) ENGINE = MergeTree()

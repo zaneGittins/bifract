@@ -323,6 +323,43 @@ func scoringSQL(t *testing.T, edgeTypes map[string]bool, bl ProvenanceBaseline) 
 	return sql
 }
 
+// logs is ordered by (timestamp, log_id), so pm must find the tree's process_creation rows by the
+// keys proc_lineage already holds. Filtering by guid leaves only the bloom index, which a large
+// tree defeats, and the read then grows with the time window instead of the tree.
+// Both sides carry the same fractal scope, so a prism never pairs one fractal's keys with another's logs.
+func TestScoringSQLReadsCommandLinesByLogKey(t *testing.T) {
+	prism := reconOpts()
+	prism.FractalID, prism.FractalIDs, prism.IncludeEmptyFractalID = "", []string{"f1", "f2"}, true
+	for _, c := range []struct {
+		name  string
+		opts  QueryOptions
+		scope string
+	}{
+		{"fractal", reconOpts(), "fractal_id = 'f1'"},
+		{"prism", prism, "fractal_id IN ('f1', 'f2', '')"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			c.opts.MaxRows = 100
+			sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, c.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pm := cteBody(t, sql, "pm")
+			for _, want := range []string{
+				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE process_guid IN ('g1') AND " + c.scope + ")",
+				"' AND " + c.scope + " AND (timestamp, log_id)",
+			} {
+				if !strings.Contains(pm, want) {
+					t.Errorf("want %q in:\n%s", want, pm)
+				}
+			}
+			if strings.Contains(pm, "fields.process_guid::String IN") {
+				t.Errorf("pm must not filter logs by guid:\n%s", pm)
+			}
+		})
+	}
+}
+
 // A ghost root (proc_lineage row with no parent_image) yields an empty fkey_src, which can never
 // match a proc_freq row because every proc_freq_* MV requires a parent_image. Without the guard
 // it scores max-anomalous, painting the root of most trees red.
