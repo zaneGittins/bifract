@@ -343,7 +343,6 @@ type k8sStep int
 const (
 	k8sStepWelcome k8sStep = iota
 	k8sStepDomain
-	k8sStepSSL
 	k8sStepIPAccess
 	k8sStepAllowedIPs
 	k8sStepSizeProfile
@@ -375,7 +374,6 @@ var k8sStepLabels = []struct {
 }{
 	{k8sStepWelcome, "Welcome"},
 	{k8sStepDomain, "Domain"},
-	{k8sStepSSL, "SSL"},
 	{k8sStepIPAccess, "IP Access"},
 	{k8sStepSizeProfile, "Resources"},
 	{k8sStepClickHouse, "ClickHouse"},
@@ -395,8 +393,6 @@ type k8sWizardModel struct {
 	storageInput    textinput.Model
 	outputDirInput  textinput.Model
 
-	sslChoices      []string
-	sslCursor       int
 	ipChoices       []string
 	ipCursor        int
 	ipValidationErr string
@@ -468,13 +464,11 @@ func newK8sWizardModel() k8sWizardModel {
 		shardsInput:     shards,
 		storageInput:    storage,
 		outputDirInput:  outputDir,
-		sslChoices:      []string{"Let's Encrypt (automatic)", "Custom certificate"},
 		chChoices:       []string{"Bundled (recommended)", "External ClickHouse", "ClickHouse Cloud"},
 		chCursor:        0,
 		chHostInput:     k8sCHHostInput(),
 		chUserInput:     k8sCHUserInput(),
 		chPassInput:     k8sCHPassInput(),
-		sslCursor:       0,
 		ipChoices:       []string{"Allow all traffic", "Restrict UI only (allow ingest)", "Restrict all traffic", "mTLS (mutual TLS for UI)"},
 		ipCursor:        0,
 	}
@@ -546,10 +540,6 @@ func (m k8sWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *k8sWizardModel) handleUp() {
 	switch m.step {
-	case k8sStepSSL:
-		if m.sslCursor > 0 {
-			m.sslCursor--
-		}
 	case k8sStepIPAccess:
 		if m.ipCursor > 0 {
 			m.ipCursor--
@@ -567,10 +557,6 @@ func (m *k8sWizardModel) handleUp() {
 
 func (m *k8sWizardModel) handleDown() {
 	switch m.step {
-	case k8sStepSSL:
-		if m.sslCursor < len(m.sslChoices)-1 {
-			m.sslCursor++
-		}
 	case k8sStepIPAccess:
 		if m.ipCursor < len(m.ipChoices)-1 {
 			m.ipCursor++
@@ -601,16 +587,6 @@ func (m k8sWizardModel) handleEnter() (tea.Model, tea.Cmd) {
 		}
 		m.inputErr = ""
 		m.config.ApplyDomain(domain)
-		m.step = k8sStepSSL
-		return m, nil
-
-	case k8sStepSSL:
-		switch m.sslCursor {
-		case 0:
-			m.config.SSLMode = SSLLetsEncrypt
-		case 1:
-			m.config.SSLMode = SSLCustom
-		}
 		m.step = k8sStepIPAccess
 		return m, nil
 
@@ -851,19 +827,6 @@ func (m k8sWizardModel) View() string {
 		content = b.String()
 		hint = "Enter to confirm  |  Esc to go back"
 
-	case k8sStepSSL:
-		var b strings.Builder
-		b.WriteString(TitleStyle.Render("SSL/TLS Configuration"))
-		b.WriteString("\n\n")
-		b.WriteString("How should Bifract handle HTTPS?\n\n")
-		sslDescriptions := []string{
-			"Caddy obtains a trusted certificate from Let's Encrypt. Requires a public domain.",
-			"Provide your own certificate and key files.",
-		}
-		b.WriteString(RenderOptionList(m.sslChoices, sslDescriptions, m.sslCursor))
-		content = b.String()
-		hint = "Up/Down to select  |  Enter to confirm  |  Esc to go back"
-
 	case k8sStepIPAccess:
 		var b strings.Builder
 		b.WriteString(TitleStyle.Render("IP Access Control"))
@@ -1009,7 +972,6 @@ func (m k8sWizardModel) View() string {
 			return fmt.Sprintf("  %s  %s\n", PromptStyle.Render(label), ValueStyle.Render(value))
 		}
 		b.WriteString(row("Domain:           ", m.config.Domain))
-		b.WriteString(row("SSL:              ", string(m.config.SSLMode)))
 		b.WriteString(row("IP Access:        ", string(m.config.IPAccess)))
 		b.WriteString(row("Resource Profile: ", m.config.SizeProfile.Name))
 		b.WriteString(row("CH Shards:        ", fmt.Sprintf("%d", m.config.CHShards)))

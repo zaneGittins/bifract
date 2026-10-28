@@ -144,31 +144,7 @@ func RunReconfigure(dir string) error {
 		return fmt.Errorf("write docker-compose: %w", err)
 	}
 
-	envContent := RenderEnvFile(cfg)
-	// Preserve manually-configured keys not managed by the setup wizard.
-	preserveKeys := []string{
-		"BIFRACT_LLM_PROVIDER", "BIFRACT_LLM_API_KEY", "BIFRACT_LLM_MODEL", "BIFRACT_LLM_BASE_URL",
-		"MAXMIND_LICENSE_KEY", "MAXMIND_ACCOUNT_ID", "MAXMIND_EDITION_IDS",
-		"BIFRACT_BASE_URL",
-		"BIFRACT_OIDC_ISSUER_URL", "BIFRACT_OIDC_CLIENT_ID", "BIFRACT_OIDC_CLIENT_SECRET",
-		"BIFRACT_OIDC_REDIRECT_URL", "BIFRACT_OIDC_SCOPES", "BIFRACT_OIDC_DEFAULT_ROLE",
-		"BIFRACT_OIDC_ALLOWED_DOMAINS", "BIFRACT_OIDC_BUTTON_TEXT",
-		// Archive (set => preserved; unset => not added / app defaults apply)
-		"BIFRACT_ARCHIVE_ENABLED", "BIFRACT_ARCHIVE_BACKEND", "BIFRACT_ARCHIVE_PREFIX",
-		"BIFRACT_ARCHIVE_DISK_PATH", "BIFRACT_ARCHIVE_SPOOL_MAX_BYTES", "BIFRACT_ARCHIVE_ROLL_BYTES",
-		"BIFRACT_ARCHIVE_ROLL_INTERVAL", "BIFRACT_ARCHIVE_MAX_PENDING_BYTES",
-		"BIFRACT_ARCHIVE_S3_ENDPOINT", "BIFRACT_ARCHIVE_S3_BUCKET", "BIFRACT_ARCHIVE_S3_REGION",
-		"BIFRACT_ARCHIVE_S3_ACCESS_KEY", "BIFRACT_ARCHIVE_S3_SECRET_KEY",
-		"BIFRACT_ARCHIVE_AZURE_ACCOUNT", "BIFRACT_ARCHIVE_AZURE_KEY", "BIFRACT_ARCHIVE_AZURE_CONTAINER",
-		"BIFRACT_ARCHIVE_AZURE_ENDPOINT",
-		// Dashboard executor tuning (set => preserved; unset => app defaults apply)
-		"BIFRACT_DASHBOARD_WORKERS", "BIFRACT_DASHBOARD_MIN_REFRESH", "BIFRACT_DASHBOARD_TICK",
-	}
-	for _, key := range preserveKeys {
-		if v, ok := existingEnv[key]; ok && v != "" {
-			envContent += fmt.Sprintf("%s=%s\n", key, v)
-		}
-	}
+	envContent := withCarriedEnv(RenderEnvFile(cfg), existingEnv)
 	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
 		return fmt.Errorf("write .env: %w", err)
 	}

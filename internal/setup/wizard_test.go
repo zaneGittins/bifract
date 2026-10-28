@@ -377,13 +377,9 @@ func TestK8sWizardBundledFlow(t *testing.T) {
 	}
 	m.domainInput.SetValue("aq.example.com")
 	m, _ = k8sPress(t, m, keyEnter)
-	if m.step != k8sStepSSL || m.config.Domain != "aq.example.com" || m.inputErr != "" {
+	// No TLS step: the k8s manifests only support Caddy's automatic certificates.
+	if m.step != k8sStepIPAccess || m.config.Domain != "aq.example.com" || m.inputErr != "" {
 		t.Fatalf("step %v domain %q", m.step, m.config.Domain)
-	}
-
-	m, _ = k8sPress(t, m, keyDown, keyDown, keyEnter)
-	if m.config.SSLMode != SSLCustom || m.step != k8sStepIPAccess {
-		t.Fatalf("ssl: %q step %v", m.config.SSLMode, m.step)
 	}
 
 	m, _ = k8sPress(t, m, keyDown, keyEnter)
@@ -517,7 +513,7 @@ func TestK8sWizardExternalSkipsSizing(t *testing.T) {
 }
 
 func TestK8sWizardQuit(t *testing.T) {
-	for _, step := range []k8sStep{k8sStepWelcome, k8sStepSSL, k8sStepIPAccess, k8sStepSizeProfile, k8sStepClickHouse, k8sStepConfirm} {
+	for _, step := range []k8sStep{k8sStepWelcome, k8sStepIPAccess, k8sStepSizeProfile, k8sStepClickHouse, k8sStepConfirm} {
 		m := newK8sWizardModel()
 		m.step = step
 		m, cmd := k8sPress(t, m, typed("q"))

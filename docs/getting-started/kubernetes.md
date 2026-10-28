@@ -74,7 +74,6 @@ ClickHouse is sharded for throughput but not replicated: each shard is one repli
     | Step | Options |
     |---|---|
     | Domain | For example `bifract.example.com` |
-    | SSL | **Let's Encrypt (automatic)** or **Custom certificate** |
     | IP access | **Allow all traffic**, **Restrict UI only (allow ingest)**, **Restrict all traffic** or **mTLS (mutual TLS for UI)** |
     | Resources | Size profile, **Dev** to **X-Large**. See the [Sizing Guide](sizing.md). |
     | ClickHouse | **Bundled (recommended)**, **External ClickHouse** or **ClickHouse Cloud** |

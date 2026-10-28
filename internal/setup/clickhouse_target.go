@@ -259,6 +259,17 @@ const (
 	envCHCACert     = "CLICKHOUSE_CA_CERT"
 )
 
+// isCHTargetKey reports whether PersistEnv owns k, so a rewrite never carries
+// over keys it chose to omit.
+func isCHTargetKey(k string) bool {
+	switch k {
+	case envCHBackend, envCHDeployment, envCHHost, envCHHosts, envCHPort, envCHDatabase,
+		envCHUser, envCHCluster, envCHFanout, envCHSecure, envCHCACert:
+		return true
+	}
+	return false
+}
+
 // PersistEnv renders the target as .env lines. Empty for a bundled target: its
 // shape lives in the compose file, and writing it twice invites drift.
 func (t ClickHouseTarget) PersistEnv() []EnvVar {

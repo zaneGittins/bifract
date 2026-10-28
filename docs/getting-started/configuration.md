@@ -9,8 +9,8 @@ Bifract is configured with environment variables. The installer generates them, 
     - Domain, TLS or IP access: `sudo bifract --reconfigure` (regenerates the Caddyfile and Compose file, then restarts what changed).
     - Anything else: `cd /opt/bifract && sudo docker compose up -d`.
 
-!!! warning
-    `--reconfigure` and `--upgrade` rewrite `.env`. They keep the installer's own keys plus `BIFRACT_LLM_*`, `MAXMIND_*`, `BIFRACT_BASE_URL`, `BIFRACT_OIDC_*`, `BIFRACT_ARCHIVE_*` (except `*_MAINTAIN_*`) and `BIFRACT_DASHBOARD_*`, and drop anything else, such as `BIFRACT_INGEST_*` tuning and the `*_MEM_LIMIT` values. Re-add those afterwards.
+!!! note
+    `--reconfigure` and `--upgrade` rewrite `.env`. Keys you added yourself are kept at the end of the file; comments are not.
 
 ## Variables
 

@@ -20,7 +20,11 @@ func TestRunReconfigureAppliesEditedEnv(t *testing.T) {
 	cfg := installedConfig(t)
 	cfg.CH = ClickHouseTarget{Backend: CHBackendExternal, Host: "ch.internal", Port: 9000}
 	cfg.CH.Normalize()
-	writeComposeInstall(t, cfg, "v1.1.0", map[string]string{"BIFRACT_OIDC_ISSUER_URL": "https://sso.example.com"})
+	writeComposeInstall(t, cfg, "v1.1.0", map[string]string{
+		"BIFRACT_OIDC_ISSUER_URL":            "https://sso.example.com",
+		"BIFRACT_ARCHIVE_MAINTAIN_MEM_LIMIT": "2g",
+		"BIFRACT_INGEST_QUEUE_SIZE":          "50000",
+	})
 	dir := cfg.InstallDir
 
 	env := readFile(t, dir, ".env")
@@ -40,6 +44,9 @@ func TestRunReconfigureAppliesEditedEnv(t *testing.T) {
 		"BIFRACT_PASSWORD_PEPPER": "pepper-value",
 		"BIFRACT_OIDC_ISSUER_URL": "https://sso.example.com",
 		"POSTGRES_PASSWORD":       "pg-pass",
+		// Operator tuning the installer does not manage survives the rewrite.
+		"BIFRACT_ARCHIVE_MAINTAIN_MEM_LIMIT": "2g",
+		"BIFRACT_INGEST_QUEUE_SIZE":          "50000",
 	} {
 		if got[k] != want {
 			t.Errorf("%s = %q, want %q", k, got[k], want)
