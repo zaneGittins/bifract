@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // buildAnalyzeFieldsSQL generates a query that computes per-field statistics.
@@ -982,6 +983,14 @@ func lowerRegexForLowercasedColumn(pattern string) (string, bool) {
 			return "", false
 		case c >= 'A' && c <= 'Z':
 			b.WriteByte(c + ('a' - 'A'))
+		case c >= utf8.RuneSelf:
+			// lower() folds ASCII only, so a letter with other cases must stay (?i).
+			r, size := utf8.DecodeRuneInString(pattern[i:])
+			if unicode.SimpleFold(r) != r {
+				return "", false
+			}
+			b.WriteString(pattern[i : i+size])
+			i += size - 1
 		default:
 			b.WriteByte(c)
 		}

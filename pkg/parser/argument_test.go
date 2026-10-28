@@ -97,6 +97,12 @@ func TestUnusableArgumentsAreReported(t *testing.T) {
 		`* | timechart(span=1h, groupby("user, 1 AS y"))`,
 		`* | join(user, max=) { event_id="1" | groupby(user) }`,
 		`* | groupby(user) | count() | dedup(lower(user))`,
+		// in() with no value used to add no condition at all, matching every event.
+		`* | in(company, values=[])`,
+		`in(company, values=[])`,
+		`!in(company, values=[])`,
+		`* | in(company, values=[["a,b"]])`,
+		`in(company, values=[["a,b"]])`,
 	} {
 		pipeline, err := ParseQuery(q)
 		if err != nil {
@@ -116,6 +122,9 @@ func TestListAndFilterValuesSurvive(t *testing.T) {
 		{`* | concat("a,b")`, "concat(fields.`a`::String, fields.`b`::String)"},
 		{`* | chain([user,host], within=5m) { a="x"; b="y" }`, "[fields.`user`::String, fields.`host`::String]"},
 		{`* | chain("user,host", within=5m) { a="x"; b="y" }`, "[fields.`user`::String, fields.`host`::String]"},
+		// An explicit empty string in a bracketed list is a value, not nothing.
+		{`* | in(company, values=[""])`, "fields.`company`::String IN ('')"},
+		{`in(company, values=["a", ""])`, "fields.`company`::String IN ('a', '')"},
 		{`* | in(company, values="a,b")`, "fields.`company`::String IN ('a', 'b')"},
 		// An element of a bracketed list is one value, commas and all.
 		{`* | in(company, values=["LogMeIn, Inc.", "x"])`, "fields.`company`::String IN ('LogMeIn, Inc.', 'x')"},
