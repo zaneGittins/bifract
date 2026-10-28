@@ -9,7 +9,7 @@ Every page is in the left sidebar. The selector at its top shows the fractal or 
 | Section | Pages |
 |---------|-------|
 | Top | **Fractals**: every fractal and prism you can open |
-| Investigate | **Query**, **Recall** (only when the archive is enabled), **Notebooks**, **Dashboards** |
+| Investigate | **Query**, **Recall** (experimental, only when the archive is enabled), **Notebooks**, **Dashboards** |
 | Detect | **Alerts** |
 | AI | **Chat**, **Instructions** |
 | Data | **Lookups**, **Analytics**, **Ingest** |
