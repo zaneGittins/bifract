@@ -2,6 +2,7 @@ package models
 
 import (
 	"bifract/pkg/api"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
+	"bifract/pkg/parser"
 	"bifract/pkg/rbac"
 	"bifract/pkg/storage"
 	"github.com/go-chi/chi/v5"
@@ -25,6 +27,31 @@ type modelExport struct {
 	Description string          `yaml:"description,omitempty"`
 	ModelType   ModelType       `yaml:"model_type"`
 	Definition  ModelDefinition `yaml:"definition"`
+}
+
+// ValidateImport checks a model file as an import would, short of compiling its
+// source query against a fractal's lookups, and returns the model's name.
+func ValidateImport(data []byte) (string, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var exp modelExport
+	if err := dec.Decode(&exp); err != nil {
+		return "", fmt.Errorf("parse model: %w", err)
+	}
+	req := CreateRequest{Name: exp.Name, ModelType: exp.ModelType, Definition: exp.Definition, AlertMode: "none"}
+	if err := validateCreateRequest(req); err != nil {
+		return "", err
+	}
+	if src := exp.Definition.SourceBQL; src != "" {
+		pipeline, err := parser.ParseQuery(src)
+		if err != nil {
+			return "", fmt.Errorf("source_bql: %w", err)
+		}
+		if err := validateSourcePipeline(pipeline); err != nil {
+			return "", err
+		}
+	}
+	return exp.Name, nil
 }
 
 // Handler provides HTTP endpoints for analytics model management.

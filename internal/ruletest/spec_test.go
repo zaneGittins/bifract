@@ -315,3 +315,30 @@ func TestBuildUnitsGrouping(t *testing.T) {
 		}
 	}
 }
+
+// The example specs are the layout the docs point people at, so they must load
+// and stay testable without a database.
+func TestExampleSpecsLoad(t *testing.T) {
+	paths, err := DiscoverSpecs([]string{"testdata/detections"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) < 2 {
+		t.Fatalf("found %d example specs, want at least 2", len(paths))
+	}
+	for _, p := range paths {
+		spec, err := LoadSpec(p)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			continue
+		}
+		norm, err := LoadNormalizer(spec.Normalizer)
+		if err != nil {
+			t.Errorf("%s: %v", p, err)
+			continue
+		}
+		if _, err := LoadTestableRule(spec.Rule, norm); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+}

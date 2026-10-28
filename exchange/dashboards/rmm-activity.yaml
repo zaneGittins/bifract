@@ -1,0 +1,97 @@
+kind: Dashboard
+grid_columns: 24
+name: Remote Management Tools
+description: >-
+  Remote monitoring and management tools from the LOLRMM list running in this fractal:
+  which tools, where, by whom, and which are rare for the user running them.
+time_range_type: last7d
+widgets:
+  - title: RMM executions
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | count()
+      | singleval(title="RMM executions")
+    pos_x: 0
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Tools seen
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | count(Name, distinct=true)
+      | singleval(title="Distinct tools")
+    pos_x: 6
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Hosts
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | count(computer_name, distinct=true)
+      | singleval(title="Hosts running RMM")
+    pos_x: 12
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Users
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | count(user, distinct=true)
+      | singleval(title="Users running RMM")
+    pos_x: 18
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: RMM executions by tool
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | timechart(span=6h, groupby(Name))
+    pos_x: 0
+    pos_y: 5
+    width: 16
+    height: 12
+  - title: Share by tool
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | groupby(Name)
+      | piechart()
+    pos_x: 16
+    pos_y: 5
+    width: 8
+    height: 12
+  - title: Hosts with the most RMM runs
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | groupby(computer_name)
+      | barchart()
+    pos_x: 0
+    pos_y: 17
+    width: 12
+    height: 12
+  - title: Tools rare for their user
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | modelLookup(model=rmm_users, key=[user, Name])
+      | model_count = 1 OR (coverage > 0.8 AND percent < 5)
+      | table(timestamp, computer_name, user, Name, model_count, percent)
+    pos_x: 12
+    pos_y: 17
+    width: 12
+    height: 12
+  - title: Latest RMM executions
+    query: |-
+      event_id=1
+      | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+      | table(timestamp, computer_name, user, Name, image, commandline)
+    pos_x: 0
+    pos_y: 29
+    width: 24
+    height: 14

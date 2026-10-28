@@ -1,5 +1,5 @@
 # The Bifract Exchange: content any install can browse and add from the UI.
-# Paths are relative to this file. See exchange/README.md to add an item.
+# Paths are relative to this file. `requires` lists items added first. See exchange/README.md to add an item.
 items:
   # Lookups. Only the source settings are installed; rows refresh from upstream.
   - id: lolrmm
@@ -82,19 +82,69 @@ items:
     path: normalizers/limacharlie/limacharlie-wel-sysmon-normalizer.yaml
 
   # Detections. Each folder also holds tests that CI runs.
-  - id: certutil-download
+
+  # Analytics models. Fractal-scoped; installing one needs an analyst.
+  - id: rmm_users
+    kind: model
+    name: RMM tools by user
+    description: >-
+      Rarity model of which LOLRMM tools each user runs, so a tool new to a user stands out.
+      Needs Sysmon process events with a user field.
+    tags: [rmm]
+    path: models/rmm_users.yaml
+    requires: [lolrmm]
+  - id: tlsh_index
+    kind: model
+    name: TLSH index
+    description: >-
+      Indexes the distinct digests in the tlsh field, which tlsh() needs. Run a backfill
+      after adding it to cover logs already stored.
+    tags: [tlsh]
+    path: models/tlsh_index.yaml
+
+  # Detections.
+  - id: rare-rmm-for-user
     kind: detection
-    name: Certutil Download From URL
-    description: Sigma rule for certutil.exe downloading a remote file to stage a payload.
-    tags: [windows, attack.t1105]
-    path: detections/certutil-download/rule.yml
-    normalizer: sysmon
-  - id: lsass-access-burst
+    name: Remote Management Tool Rare for the User
+    description: A user ran a LOLRMM tool that is new to them or a small share of their RMM use.
+    tags: [windows, rmm, attack.t1219]
+    path: detections/rare-rmm-for-user.yml
+    requires: [rmm_users]
+  - id: untrusted-binary-like-attack-tool
     kind: detection
-    name: Repeated LSASS Process Access
-    description: One process opening lsass.exe three or more times in the alert window.
-    tags: [windows, attack.t1003.001]
-    path: detections/lsass-access-burst/rule.yml
+    name: Untrusted Binary Similar to an Attack Tool
+    description: >-
+      An untrusted process within TLSH distance 50 of a public attack tool. Needs Sysmon
+      process events enriched with tlsh and authenticode_trusted, such as Velociraptor's
+      Windows.EventLogs.SysmonProcessEnriched produces.
+    tags: [windows, tlsh, attack.t1588.002]
+    path: detections/untrusted-binary-like-attack-tool.yml
+    requires: [celes_tlsh, tlsh_index]
+
+  # Saved searches. Shared with everyone in the scope.
+  - id: lolrmm-executions
+    kind: search
+    name: LOLRMM tool executions
+    description: Process starts whose image matches a LOLRMM install path, with the tool's name.
+    tags: [rmm]
+    path: searches/lolrmm-executions.yaml
+    requires: [lolrmm]
+
+  # Dashboards.
+  - id: rmm-activity
+    kind: dashboard
+    name: Remote Management Tools
+    description: Which RMM tools run, where, by whom, and which are rare for their user.
+    tags: [rmm]
+    path: dashboards/rmm-activity.yaml
+    requires: [lolrmm, rmm_users]
+  - id: celes-tlsh-dashboard
+    kind: dashboard
+    name: TLSH Similarity to Attack Tools
+    description: Executables close to public attack tools by TLSH distance, by family, host and time.
+    tags: [tlsh]
+    path: dashboards/celes-tlsh.yaml
+    requires: [celes_tlsh, tlsh_index]
 
   # Alert policies. Installing appends the rules to the scope's rule set.
   - id: soc-baseline
@@ -102,3 +152,39 @@ items:
     name: SOC baseline
     description: Conservative alert policy rules. ATT&CK labels and no wildcard queries block; the rest advise.
     path: policies/soc-baseline.yaml
+
+  # Bundles. Adding one adds each member not already present, requirements first.
+  - id: rmm-hunting
+    kind: bundle
+    name: Remote management tool hunting
+    description: >-
+      Find remote monitoring and management tools from Magic Sword's LOLRMM list: the
+      lookup, a per-user rarity model, an alert for tools rare for their user, a saved
+      search and a dashboard.
+    author: Magic Sword
+    homepage: https://lolrmm.io
+    tags: [rmm, windows]
+    items: [lolrmm, rmm_users, rare-rmm-for-user, lolrmm-executions, rmm-activity]
+  - id: celes-tlsh-hunting
+    kind: bundle
+    name: CelesTLSH fuzzy hash hunting
+    description: >-
+      Find variants of public attack tools by TLSH similarity: Magonia Research's CelesTLSH
+      lookup, the TLSH index, an alert for untrusted binaries close to a tool, and a
+      dashboard. Needs process events with a tlsh field.
+    author: Magonia Research
+    homepage: https://github.com/Magonia-Research/CelesTLSH-Hashes
+    tags: [tlsh, malware]
+    items: [celes_tlsh, tlsh_index, untrusted-binary-like-attack-tool, celes-tlsh-dashboard]
+  - id: limacharlie
+    kind: bundle
+    name: LimaCharlie normalizers
+    description: Every LimaCharlie normalizer, covering EDR process, network, activity and injection events, detections, and Sysmon over WEL.
+    tags: [limacharlie, edr]
+    items:
+      - limacharlie-process
+      - limacharlie-network
+      - limacharlie-activity
+      - limacharlie-injection
+      - limacharlie-detections
+      - limacharlie-wel-sysmon

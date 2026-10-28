@@ -1,0 +1,89 @@
+kind: Dashboard
+grid_columns: 24
+name: TLSH Similarity to Attack Tools
+description: >-
+  Executables whose TLSH digest is close to a public attack tool or C2 framework in the
+  CelesTLSH list. A lower distance is a closer match; 0 is the same file.
+time_range_type: last7d
+widgets:
+  - title: Hashed executions
+    query: |-
+      event_id=1 tlsh=*
+      | count()
+      | singleval(title="Hashed executions")
+    pos_x: 0
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Close matches
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | count()
+      | singleval(title="Within distance 50")
+    pos_x: 6
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Tool families
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | match(dict="celes_tlsh", field=tlsh_match, column=TLSH_Hash, include=[Repo_Name])
+      | count(Repo_Name, distinct=true)
+      | singleval(title="Tool families matched")
+    pos_x: 12
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Hosts
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | count(computer_name, distinct=true)
+      | singleval(title="Hosts with a match")
+    pos_x: 18
+    pos_y: 0
+    width: 6
+    height: 5
+  - title: Matched tool families
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | match(dict="celes_tlsh", field=tlsh_match, column=TLSH_Hash, include=[Repo_Name])
+      | groupby(Repo_Name)
+      | barchart()
+    pos_x: 0
+    pos_y: 5
+    width: 12
+    height: 12
+  - title: Distance to the closest attack tool
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | histogram(tlsh_distance, buckets=25)
+    pos_x: 12
+    pos_y: 5
+    width: 12
+    height: 12
+  - title: Matches over time
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | match(dict="celes_tlsh", field=tlsh_match, column=TLSH_Hash, include=[Repo_Name])
+      | timechart(span=6h, groupby(Repo_Name))
+    pos_x: 0
+    pos_y: 17
+    width: 24
+    height: 10
+  - title: Closest matches
+    query: |-
+      event_id=1 tlsh=*
+      | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+      | match(dict="celes_tlsh", field=tlsh_match, column=TLSH_Hash, include=[Repo_Name, File_Name])
+      | sort(tlsh_distance)
+      | table(timestamp, computer_name, user, image, authenticode_trusted, tlsh_distance, Repo_Name, File_Name)
+    pos_x: 0
+    pos_y: 27
+    width: 24
+    height: 14

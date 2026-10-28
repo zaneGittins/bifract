@@ -50,7 +50,7 @@ func envOr(key, def string) string {
 func TestExampleDetectionsPass(t *testing.T) {
 	b := backendForTest(t)
 
-	paths, err := DiscoverSpecs([]string{"../../exchange/detections"})
+	paths, err := DiscoverSpecs([]string{"testdata/detections"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestWrongExpectationFails(t *testing.T) {
 	b := backendForTest(t)
 
 	spec := &Spec{
-		Rule: "../../exchange/detections/certutil-download/rule.yml",
+		Rule: "testdata/detections/certutil-download/rule.yml",
 		Path: "synthetic",
 		Cases: []Case{{
 			Name:        "benign certutil must not match, but we assert it does",

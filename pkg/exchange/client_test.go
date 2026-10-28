@@ -21,6 +21,10 @@ items:
     kind: policy
     name: Big
     path: policies/big.yaml
+  - id: rmm-search
+    kind: search
+    name: RMM tools run
+    path: searches/rmm.yaml
 `
 
 type fakeExchange struct {
@@ -51,6 +55,9 @@ func exchangeServer(t *testing.T) *fakeExchange {
 	mux.HandleFunc("/repo/exchange/normalizers/sysmon.yaml", func(w http.ResponseWriter, r *http.Request) {
 		f.fileHits.Add(1)
 		w.Write([]byte("name: Sysmon\n"))
+	})
+	mux.HandleFunc("/repo/exchange/searches/rmm.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("name: RMM tools run\nquery: event_id=1\n"))
 	})
 	mux.HandleFunc("/repo/exchange/policies/big.yaml", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(strings.Repeat("x", maxFileBytes+1)))
@@ -90,7 +97,7 @@ func TestClientCachesIndex(t *testing.T) {
 
 	for range 3 {
 		idx, err := c.Index(context.Background())
-		if err != nil || len(idx.Items) != 2 {
+		if err != nil || len(idx.Items) != 3 {
 			t.Fatalf("Index: %v, %v", idx, err)
 		}
 	}
@@ -124,7 +131,7 @@ func TestClientServesStaleCopyDuringRefresh(t *testing.T) {
 	go func() {
 		defer close(done)
 		for range 5 {
-			if idx, err := c.Index(context.Background()); err != nil || len(idx.Items) != 2 {
+			if idx, err := c.Index(context.Background()); err != nil || len(idx.Items) != 3 {
 				t.Errorf("Index during refresh: %v, %v", idx, err)
 			}
 		}
@@ -180,7 +187,7 @@ func TestClientRefreshOutlivesCaller(t *testing.T) {
 	}
 	close(f.gate)
 	c.waitRefresh()
-	if idx, err := c.Index(context.Background()); err != nil || len(idx.Items) != 2 {
+	if idx, err := c.Index(context.Background()); err != nil || len(idx.Items) != 3 {
 		t.Fatalf("the fetch should have finished for the next caller: %v, %v", idx, err)
 	}
 	if f.indexHits.Load() != 1 {
@@ -202,7 +209,7 @@ func TestClientKeepsLastCopyAndBacksOff(t *testing.T) {
 	c.waitRefresh()
 	for range 3 {
 		idx, err := c.Index(context.Background())
-		if err != nil || len(idx.Items) != 2 {
+		if err != nil || len(idx.Items) != 3 {
 			t.Fatalf("expected the last good index, got %v, %v", idx, err)
 		}
 	}

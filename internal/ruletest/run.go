@@ -111,7 +111,7 @@ func Run(ctx context.Context, b *Backend, loads []SpecLoad, opts Options) (*Summ
 			continue
 		}
 
-		rule, err := LoadRule(spec.Rule, norm)
+		rule, err := LoadTestableRule(spec.Rule, norm)
 		if err != nil {
 			sr.Error = err.Error()
 			summary.Specs = append(summary.Specs, sr)

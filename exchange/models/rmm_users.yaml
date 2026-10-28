@@ -1,0 +1,18 @@
+name: rmm_users
+description: >-
+  How often each user runs each remote monitoring and management tool from the LOLRMM
+  list, so a tool new to a user, or rare for them, stands out.
+model_type: rarity
+definition:
+  partition_key: user
+  value_key: Name
+  min_sample: 1
+  alert:
+    severity: medium
+    coverage_threshold: 0.8
+    percent_threshold: 5
+    alert_on_new: true
+    z_threshold: 3.5
+  source_bql: |-
+    event_id=1
+    | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)

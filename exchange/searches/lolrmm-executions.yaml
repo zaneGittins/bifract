@@ -1,0 +1,8 @@
+name: LOLRMM tool executions
+description: Process starts whose image matches a LOLRMM install path, with the tool's name.
+query: |-
+  event_id=1
+  | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+  | table(timestamp, computer_name, user, Name, image, commandline)
+tags: [rmm]
+time_range: 24h

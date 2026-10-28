@@ -32,6 +32,10 @@ theme:
 hooks:
   - scripts/mkdocs_exchange.py
 
+# Each Exchange item gets a page, reached from the catalog rather than the nav.
+not_in_nav: |
+  /exchange/*.md
+
 # The hook renders exchange/, so serve rebuilds when it changes.
 watch:
   - exchange
@@ -51,9 +55,11 @@ plugins:
 
 extra_css:
   - assets/api-search.css
+  - assets/exchange-catalog.css
 
 extra_javascript:
   - assets/api-search.js
+  - assets/exchange-catalog.js
 
 markdown_extensions:
   - admonition
@@ -116,6 +122,9 @@ nav:
     - Alert Feeds: alerting/alert-feeds.md
     - ATT&CK Coverage: alerting/attack-coverage.md
     - Testing Rules: alerting/testing-rules.md
+  - Exchange:
+    - Catalog: exchange/index.md
+    - Using the Exchange: exchange/using.md
   - Features:
     - Analytics Models: features/models.md
     - Provenance Graph: features/provenance-graph.md
@@ -123,7 +132,6 @@ nav:
     - Deep Links: features/deep-links.md
     - Live Search: features/live-search.md
     - Lookups: features/dictionaries.md
-    - Exchange: features/exchange.md
     - Normalizers: features/normalizers.md
     - AI Chat: features/ai-chat.md
     - MCP Server: features/mcp-server.md

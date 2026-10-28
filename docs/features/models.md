@@ -67,7 +67,8 @@ Templates:
 ### TLSH Index
 
 1. Set **Digest Field** to the field holding TLSH digests.
-2. Save, then run a backfill to index existing history.
+2. Leave the source query empty. `tlsh()` only uses an index of the whole fractal, so a filtered one is refused on save; logs without a well-formed digest are skipped anyway.
+3. Save, then run a backfill to index existing history.
 
 ### Beacon and Long Connection
 

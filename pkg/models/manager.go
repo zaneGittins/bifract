@@ -1697,6 +1697,12 @@ func validateDefinitionShape(mt ModelType, def ModelDefinition) error {
 		if len(def.Extractions) > 0 {
 			return fmt.Errorf("tlsh models cannot use extractions: the indexed digest must be the value stored in the log field, so tlsh() can filter on it")
 		}
+		// tlsh() only probes an index of the whole fractal, so a filtered one would
+		// be stored and never used. A filter buys nothing: only well-formed digests
+		// are indexed, so logs without one never enter it.
+		if def.SelectsSubset() {
+			return fmt.Errorf("tlsh models index every log in the fractal, so they take no filter or source query: tlsh() cannot use a partial index, and logs without a well-formed digest are skipped anyway")
+		}
 	case ModelTypeVolumeBaseline:
 		if len(def.KeyFields) == 0 {
 			return fmt.Errorf("key_fields is required for volume_baseline models")

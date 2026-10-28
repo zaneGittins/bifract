@@ -1,0 +1,22 @@
+# Native Bifract alert. modelLookup() reads the rmm_users model, so this rule is
+# validated by lint but cannot be tested offline.
+name: Remote Management Tool Rare for the User
+description: >-
+  A user ran a remote monitoring and management tool from the LOLRMM list that they have
+  run only once, or that is a small share of their RMM use. Attackers install RMM tools
+  for persistence and hands-on access. Confirm the user meant to run it before trusting it.
+alertType: event
+severity: medium
+labels:
+  - attack.t1219
+  - rmm
+references:
+  - https://lolrmm.io
+  - https://attack.mitre.org/techniques/T1219/
+queryString: |-
+  event_id=1
+  | match(dict=lolrmm, field=image, column=InstallationPaths, include=[Name], require=true)
+  | modelLookup(model=rmm_users, key=[user, Name])
+  | model_count = 1 OR (coverage > 0.8 AND percent < 5)
+  | table(timestamp, computer_name, user, Name, image, model_count, percent, confidence)
+enabled: true

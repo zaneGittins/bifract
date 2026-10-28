@@ -141,3 +141,47 @@
     color: var(--error);
     font-size: 0.85rem;
 }
+
+.exchange-bundle-row .exchange-name::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 8px;
+    vertical-align: middle;
+    background: var(--accent-primary);
+    border-radius: 50%;
+}
+
+.exchange-bundle-chip {
+    padding: 1px 6px;
+    border: 1px solid var(--accent-primary);
+    border-radius: 4px;
+    color: var(--accent-primary);
+    font-size: 0.68rem;
+}
+
+.exchange-members {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.85rem;
+}
+
+.exchange-members li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.exchange-member-kind {
+    min-width: 96px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.exchange-member-name {
+    color: var(--text-primary);
+}

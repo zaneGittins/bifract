@@ -1,0 +1,146 @@
+/* The Exchange catalog and item pages. Styled from the theme's own variables so
+   they follow the palette toggle. */
+
+.exchange-catalog__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 1.2rem 0 0.4rem;
+}
+
+.exchange-catalog__search {
+  flex: 1 1 16rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color);
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  outline: none;
+  transition: border-color 125ms;
+}
+
+.exchange-catalog__search:focus {
+  border-color: var(--md-accent-fg-color);
+}
+
+.exchange-catalog__kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.exchange-catalog__kind {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.64rem;
+  color: var(--md-default-fg-color--light);
+  background: transparent;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 1rem;
+  cursor: pointer;
+}
+
+.exchange-catalog__kind:hover {
+  color: var(--md-default-fg-color);
+}
+
+.exchange-catalog__kind[aria-pressed="true"] {
+  color: var(--md-primary-bg-color);
+  background: var(--md-primary-fg-color);
+  border-color: var(--md-primary-fg-color);
+}
+
+.exchange-catalog__count,
+.exchange-catalog__empty {
+  margin: 0 0 0.6rem;
+  font-size: 0.64rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.exchange-catalog__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.6rem;
+}
+
+.md-typeset a.exchange-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.75rem 0.85rem;
+  color: var(--md-default-fg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.3rem;
+  transition: border-color 125ms, box-shadow 125ms;
+}
+
+.md-typeset a.exchange-card:hover,
+.md-typeset a.exchange-card:focus-visible {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: var(--md-shadow-z1);
+}
+
+.md-typeset a.exchange-card[hidden] {
+  display: none;
+}
+
+.md-typeset .exchange-card--bundle {
+  border-left: 3px solid var(--md-primary-fg-color);
+}
+
+.exchange-card__name {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.exchange-card__desc {
+  font-size: 0.66rem;
+  line-height: 1.45;
+  color: var(--md-default-fg-color--light);
+}
+
+.exchange-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 0.2rem;
+  font-size: 0.6rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.md-typeset .exchange-kind {
+  align-self: flex-start;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--md-primary-fg-color);
+  border: 1px solid currentColor;
+  border-radius: 0.2rem;
+}
+
+.md-typeset .exchange-kind--bundle {
+  color: var(--md-primary-bg-color);
+  background: var(--md-primary-fg-color);
+  border-color: var(--md-primary-fg-color);
+}
+
+.md-typeset .exchange-tag {
+  padding: 0 0.35rem;
+  font-family: var(--md-code-font-family);
+  font-size: 0.58rem;
+  color: var(--md-default-fg-color--light);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+}
+
+.md-typeset .exchange-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}

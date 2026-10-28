@@ -1,0 +1,9 @@
+name: tlsh_index
+description: >-
+  The distinct TLSH digests in the tlsh field. tlsh() compares a lookup's digests against
+  this index. It has no filter: tlsh() only uses an index of the whole fractal, and logs
+  without a digest are skipped anyway. Run a backfill after adding it to index logs
+  already stored.
+model_type: tlsh
+definition:
+  key_fields: [tlsh]
