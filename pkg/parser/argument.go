@@ -333,15 +333,14 @@ func (b *Bound) Strings(name string) []string {
 
 // CSV returns a parameter's values, splitting on commas only a value given as a
 // single string, the legacy spelling that packs a list into one (hash="a,b"). An
-// element of a bracketed list is one value, so ["LogMeIn, Inc."] keeps its comma.
+// element of a bracketed list is one value, so ["LogMeIn, Inc."] keeps its comma
+// and [""] is the empty string.
 func (b *Bound) CSV(name string) []string {
 	var out []string
 	for _, a := range b.All(name) {
 		if a.Kind == ArgList && a.Bracketed {
 			for _, e := range a.List {
-				if v := e.Value(); v != "" {
-					out = append(out, v)
-				}
+				out = append(out, e.Value())
 			}
 			continue
 		}
@@ -350,11 +349,18 @@ func (b *Bound) CSV(name string) []string {
 			elems = a.List
 		}
 		for _, e := range elems {
-			for _, part := range strings.Split(e.Value(), ",") {
-				if part = strings.TrimSpace(part); part != "" {
-					out = append(out, part)
-				}
-			}
+			out = append(out, splitLegacyList(e.Value())...)
+		}
+	}
+	return out
+}
+
+// splitLegacyList splits a value packed as "a, b" into its trimmed, non-empty parts.
+func splitLegacyList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
 		}
 	}
 	return out

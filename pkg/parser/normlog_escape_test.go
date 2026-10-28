@@ -207,3 +207,30 @@ func TestUserRegexLiteralsUnchanged(t *testing.T) {
 		t.Errorf("user regex was rewritten, got: %s", sql)
 	}
 }
+
+// ClickHouse lower() folds ASCII only, so a case-insensitive norm_log search for a
+// non-ASCII letter must stay a (?i) regex, which RE2 folds in full. Lowering it would
+// search lower(norm_log) for 'Ärger', which never holds an 'ärger' event.
+func TestNonASCIICaseInsensitiveSearchKeepsRegexFolding(t *testing.T) {
+	cases := []struct{ query, want string }{
+		{`norm_log=/Ärger/i`, "match(norm_log, '(?i)Ärger')"},
+		{`"Ärger"`, "match(norm_log, '(?i)Ärger')"},
+		{`/Ωmega.*x/i`, "match(norm_log, '(?i)Ωmega.*x')"},
+		// Caseless non-ASCII text and ASCII letters keep the indexed lower() path.
+		{`/日本 ABC/i`, "match(lower(norm_log), '日本 abc')"},
+		{`/Error/i`, "match(lower(norm_log), 'error')"},
+	}
+	for _, c := range cases {
+		p, err := ParseQuery(c.query)
+		if err != nil {
+			t.Fatalf("parse %q: %v", c.query, err)
+		}
+		sql, err := TranslateToSQL(p, QueryOptions{TableName: "logs", MaxRows: 10})
+		if err != nil {
+			t.Fatalf("translate %q: %v", c.query, err)
+		}
+		if !strings.Contains(sql, c.want) {
+			t.Errorf("%s\n  want %s in: %s", c.query, c.want, sql)
+		}
+	}
+}

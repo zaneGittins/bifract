@@ -486,10 +486,8 @@ func csvArguments(args []Argument) []Argument {
 			out = append(out, a)
 			continue
 		}
-		for _, part := range strings.Split(a.Text, ",") {
-			if part = strings.TrimSpace(part); part != "" {
-				out = append(out, Argument{Kind: ArgLiteral, Text: part, Quoted: true, Pos: a.Pos})
-			}
+		for _, part := range splitLegacyList(a.Text) {
+			out = append(out, Argument{Kind: ArgLiteral, Text: part, Quoted: true, Pos: a.Pos})
 		}
 	}
 	return out
