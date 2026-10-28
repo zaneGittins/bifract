@@ -1765,6 +1765,26 @@ window.BifractCharts = {
 
     // ---- Graph (simple - for notebooks/dashboards) ----
 
+    // Map of node ID to its label fields, taken from the node's own row wherever
+    // that row falls; a node only ever named as a parent gets an empty entry.
+    graphNodeDetails(rows, childField, parentField, labelFields) {
+        const isId = v => v != null && v !== '' && v !== 'null';
+        const nodes = new Map();
+        const seen = new Set();
+        rows.forEach(row => {
+            const childId = row[childField];
+            const parentId = row[parentField];
+            if (isId(childId) && !seen.has(childId)) {
+                seen.add(childId);
+                const details = {};
+                labelFields.forEach(f => { if (row[f] != null && row[f] !== '') details[f] = row[f]; });
+                nodes.set(childId, details);
+            }
+            if (isId(parentId) && !nodes.has(parentId)) nodes.set(parentId, {});
+        });
+        return nodes;
+    },
+
     renderGraphSimple(container, opts) {
         if (!container || !window.vis) return null;
 
@@ -1785,20 +1805,7 @@ window.BifractCharts = {
         const cv = this._cv();
         const nodes = new vis.DataSet();
         const edges = new vis.DataSet();
-        const nodeDetails = new Map();
-
-        limitedResults.forEach((result) => {
-            const childId = result[childField];
-            const parentId = result[parentField];
-            if (childId && !nodeDetails.has(childId)) {
-                const details = {};
-                labelFields.forEach(f => { if (result[f] != null && result[f] !== '') details[f] = result[f]; });
-                nodeDetails.set(childId, details);
-            }
-            if (parentId && !nodeDetails.has(parentId)) {
-                nodeDetails.set(parentId, {});
-            }
-        });
+        const nodeDetails = this.graphNodeDetails(limitedResults, childField, parentField, labelFields);
 
         const parentIds = new Set(limitedResults.map(r => r[parentField]).filter(Boolean));
         nodeDetails.forEach((details, id) => {
