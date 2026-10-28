@@ -243,7 +243,7 @@ func (h *Handler) policyBlockedResponse(w http.ResponseWriter, err error) bool {
 type ImportPoliciesRequest struct {
 	Content string `json:"content"`
 	// Replace discards the existing rule set. Without it the imported rules are
-	// appended, which is what merging two baselines needs.
+	// appended, skipping any already present, which is what merging two baselines needs.
 	Replace bool `json:"replace"`
 }
 
@@ -274,7 +274,7 @@ func (h *Handler) HandleImportPolicies(w http.ResponseWriter, r *http.Request) {
 			h.respondError(w, http.StatusInternalServerError, "Failed to load policies")
 			return
 		}
-		combined = append(existing, imported...)
+		combined = mergePolicies(existing, imported)
 	}
 
 	saved, err := h.manager.ReplacePolicies(r.Context(), fractalID, prismID, combined, h.attributionUser(r))

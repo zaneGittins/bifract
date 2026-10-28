@@ -32,6 +32,8 @@ import (
 	"bifract/pkg/dashboards"
 	"bifract/pkg/deeplink"
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/egress"
+	"bifract/pkg/exchange"
 	"bifract/pkg/feeds"
 	"bifract/pkg/fractals"
 	"bifract/pkg/groups"
@@ -803,6 +805,7 @@ func main() {
 	queryHistoryHandler.SetRBACFull(authHandler.RBACResolver())
 	contextLinkManager := contextlinks.NewManager(pg)
 	contextLinkHandler := contextlinks.NewHandler(contextLinkManager)
+	exchangeHandler := exchange.NewHandler(newExchangeClient())
 
 	// Initialize feed system
 	feedManager := feeds.NewManager(pg)
@@ -846,6 +849,7 @@ func main() {
 		deepLinkHandler:       deepLinkHandler,
 		dictionaryHandler:     dictionaryHandler,
 		elasticHandler:        elasticHandler,
+		exchangeHandler:       exchangeHandler,
 		feedHandler:           feedHandler,
 		fractalHandler:        fractalHandler,
 		groupHandler:          groupHandler,
@@ -1067,6 +1071,25 @@ func loadConfig() Config {
 	}
 
 	return config
+}
+
+// newExchangeClient reads the Exchange index from BIFRACT_EXCHANGE_URL, or the
+// Bifract repository when unset; "off" turns the Exchange off. Only an operator's
+// own URL may reach addresses inside the network, for a mirror.
+func newExchangeClient() *exchange.Client {
+	v := strings.TrimSpace(os.Getenv("BIFRACT_EXCHANGE_URL"))
+	switch {
+	case strings.EqualFold(v, "off"):
+		log.Println("Exchange turned off (BIFRACT_EXCHANGE_URL=off)")
+		return exchange.NewClient("", false)
+	case v == "":
+		return exchange.NewClient(exchange.DefaultIndexURL, false)
+	}
+	if err := egress.ValidateURL(v); err != nil {
+		log.Printf("WARNING: BIFRACT_EXCHANGE_URL is not usable (%v); the Exchange is off", err)
+		return exchange.NewClient("", false)
+	}
+	return exchange.NewClient(v, true)
 }
 
 func getEnv(key, defaultValue string) string {

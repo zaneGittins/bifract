@@ -1,0 +1,104 @@
+# The Bifract Exchange: content any install can browse and add from the UI.
+# Paths are relative to this file. See exchange/README.md to add an item.
+items:
+  # Lookups. Only the source settings are installed; rows refresh from upstream.
+  - id: lolrmm
+    kind: lookup
+    name: LOLRMM tools
+    description: >-
+      Remote monitoring and management tools attackers abuse, keyed on their install
+      paths as globs. Use with match() on a process image to flag RMM tools.
+    author: Magic Sword
+    homepage: https://lolrmm.io
+    tags: [rmm, windows]
+    lookup:
+      list_kind: pattern
+      source:
+        url: https://raw.githubusercontent.com/magicsword-io/LOLRMM/main/website/public/api/rmm_tools.csv
+        key_field: InstallationPaths
+        columns: [Name, Description]
+        split_key: ","
+        key_format: glob
+        refresh_minutes: 1440
+  - id: celes_tlsh
+    kind: lookup
+    name: CelesTLSH attack tool hashes
+    description: >-
+      TLSH digests of public attack tools and C2 frameworks, keyed on TLSH_Hash. Use with
+      tlsh(dict="celes_tlsh"), then match() on tlsh_match to bring in Repo_Name and File_Name.
+    author: Magonia Research
+    homepage: https://github.com/Magonia-Research/CelesTLSH-Hashes
+    tags: [tlsh, malware]
+    lookup:
+      source:
+        url: https://raw.githubusercontent.com/Magonia-Research/CelesTLSH-Hashes/refs/heads/main/all_attack_tools_hashes.csv
+        format: csv
+        key_field: TLSH Hash
+        columns: [Repo Name, File Name, Release Version]
+        refresh_minutes: 1440
+
+  # Normalizers. Instance-wide; installing one needs a tenant admin.
+  - id: sysmon
+    kind: normalizer
+    name: Sysmon
+    description: Maps Windows Sysmon events onto Bifract's normalized fields, including bifract_category.
+    tags: [windows, sysmon]
+    path: normalizers/sysmon/sysmon-normalizer.yaml
+  - id: limacharlie-process
+    kind: normalizer
+    name: LimaCharlie EDR - Process
+    description: Maps LimaCharlie NEW_PROCESS and EXISTING_PROCESS events.
+    tags: [limacharlie, edr]
+    path: normalizers/limacharlie/limacharlie-process-normalizer.yaml
+  - id: limacharlie-network
+    kind: normalizer
+    name: LimaCharlie EDR - Network
+    description: Maps LimaCharlie NETWORK_CONNECTIONS, NEW_TCP4_CONNECTION and CODE_IDENTITY events.
+    tags: [limacharlie, edr]
+    path: normalizers/limacharlie/limacharlie-network-normalizer.yaml
+  - id: limacharlie-activity
+    kind: normalizer
+    name: LimaCharlie EDR - Activity
+    description: Maps LimaCharlie NEW_DOCUMENT, DNS_REQUEST and TERMINATE_PROCESS events.
+    tags: [limacharlie, edr]
+    path: normalizers/limacharlie/limacharlie-activity-normalizer.yaml
+  - id: limacharlie-injection
+    kind: normalizer
+    name: LimaCharlie EDR - Injection
+    description: Maps LimaCharlie REMOTE_PROCESS_HANDLE and NEW_REMOTE_THREAD events.
+    tags: [limacharlie, edr]
+    path: normalizers/limacharlie/limacharlie-injection-normalizer.yaml
+  - id: limacharlie-detections
+    kind: normalizer
+    name: LimaCharlie - Detections
+    description: Maps LimaCharlie D&R detections (output --type detect).
+    tags: [limacharlie, edr]
+    path: normalizers/limacharlie/limacharlie-detections-normalizer.yaml
+  - id: limacharlie-wel-sysmon
+    kind: normalizer
+    name: LimaCharlie WEL - Sysmon
+    description: Maps Sysmon events delivered through LimaCharlie's Windows Event Log stream.
+    tags: [limacharlie, sysmon, windows]
+    path: normalizers/limacharlie/limacharlie-wel-sysmon-normalizer.yaml
+
+  # Detections. Each folder also holds tests that CI runs.
+  - id: certutil-download
+    kind: detection
+    name: Certutil Download From URL
+    description: Sigma rule for certutil.exe downloading a remote file to stage a payload.
+    tags: [windows, attack.t1105]
+    path: detections/certutil-download/rule.yml
+    normalizer: sysmon
+  - id: lsass-access-burst
+    kind: detection
+    name: Repeated LSASS Process Access
+    description: One process opening lsass.exe three or more times in the alert window.
+    tags: [windows, attack.t1003.001]
+    path: detections/lsass-access-burst/rule.yml
+
+  # Alert policies. Installing appends the rules to the scope's rule set.
+  - id: soc-baseline
+    kind: policy
+    name: SOC baseline
+    description: Conservative alert policy rules. ATT&CK labels and no wildcard queries block; the rest advise.
+    path: policies/soc-baseline.yaml

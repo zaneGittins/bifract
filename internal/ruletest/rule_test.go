@@ -75,7 +75,8 @@ func TestLoadRuleNativeAlert(t *testing.T) {
 	rule := writeFile(t, dir, "a.yml", `
 name: Threshold
 queryString: 'event_id="10" | groupBy(image, function=count()) | _count >= 3'
-alertType: event
+alertType: compound
+windowDuration: 900
 `)
 	r, err := LoadRule(rule, nil)
 	if err != nil {
@@ -111,6 +112,15 @@ func TestLoadRuleRejectsInvalidAndUnsupported(t *testing.T) {
 		"model_lookup": {
 			body:    "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
 			wantErr: "cannot be tested offline",
+		},
+		// A rule the server would refuse on import must not pass lint and CI.
+		"aggregating event alert": {
+			body:    "name: x\nalertType: event\nqueryString: 'image=* | groupBy(image, function=count())'\n",
+			wantErr: "use a compound alert",
+		},
+		"compound alert without a window": {
+			body:    "name: x\nalertType: compound\nqueryString: 'image=* | groupBy(image, function=count())'\n",
+			wantErr: "window_duration",
 		},
 	}
 

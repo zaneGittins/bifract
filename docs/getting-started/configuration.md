@@ -32,6 +32,7 @@ Bifract is configured with environment variables. The installer generates them, 
 | Variable | Default | Description |
 |---|---|---|
 | `BIFRACT_BASE_URL` | `https://<domain>` | Base URL used in alert links and as the OIDC redirect base |
+| `BIFRACT_EXCHANGE_URL` | Bifract repository on GitHub | Index the [Exchange](../features/exchange.md) reads, for example a mirror for an offline install. `off` removes it |
 | `BIFRACT_MEM_LIMIT` | `4g` | Memory limit of the app container |
 | `BIFRACT_INGEST_MEM_LIMIT` | `4g` | Memory limit of the ingest container |
 | `BIFRACT_LLM_PROVIDER`, `BIFRACT_LLM_API_KEY`, `BIFRACT_LLM_MODEL`, `BIFRACT_LLM_BASE_URL` | `anthropic`, empty | Model provider for [AI Chat](../features/ai-chat.md) |

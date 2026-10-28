@@ -29,6 +29,14 @@ theme:
     - search.highlight
     - content.code.copy
 
+hooks:
+  - scripts/mkdocs_exchange.py
+
+# The hook renders exchange/, so serve rebuilds when it changes.
+watch:
+  - exchange
+  - scripts/mkdocs_exchange.py
+
 plugins:
   - search
   - swagger-ui-tag:
@@ -49,6 +57,9 @@ extra_javascript:
 
 markdown_extensions:
   - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
   - pymdownx.details
   - pymdownx.superfences:
       custom_fences:
@@ -112,6 +123,7 @@ nav:
     - Deep Links: features/deep-links.md
     - Live Search: features/live-search.md
     - Lookups: features/dictionaries.md
+    - Exchange: features/exchange.md
     - Normalizers: features/normalizers.md
     - AI Chat: features/ai-chat.md
     - MCP Server: features/mcp-server.md

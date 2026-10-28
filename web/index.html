@@ -46,6 +46,7 @@
     <link rel="stylesheet" href="/static/chat.css">
     <link rel="stylesheet" href="/static/ingestTokens.css">
     <link rel="stylesheet" href="/static/instructionLibraries.css">
+    <link rel="stylesheet" href="/static/exchange.css">
     <link rel="stylesheet" href="/static/schemaFields.css">
     <link rel="stylesheet" href="/static/attackCoverage.css">
     <link rel="stylesheet" href="/static/sidebar.css">
@@ -2267,6 +2268,43 @@
                 </div>
             </div>
 
+            <!-- Exchange Tab Content -->
+            <div id="fractalExchangeTabContent" style="display: none;">
+                <div id="exchangeView" class="auth-required" style="display: none;">
+                    <section class="dashboards-view-section">
+                        <div class="dashboards-listing">
+                            <div class="admin-toolbar">
+                                <input type="text" id="exchangeSearchInput" class="admin-search" placeholder="Search the Exchange" aria-label="Search the Exchange">
+                                <select id="exchangeKindFilter" class="exchange-kind-filter" aria-label="Kind">
+                                    <option value="">All kinds</option>
+                                    <option value="lookup">Lookups</option>
+                                    <option value="detection">Detections</option>
+                                    <option value="normalizer">Normalizers</option>
+                                    <option value="policy">Policies</option>
+                                </select>
+                                <span class="admin-toolbar-spacer"></span>
+                                <span id="exchangeSource" class="exchange-source-url"></span>
+                            </div>
+                            <div id="exchangeStatus" class="admin-empty" role="status" aria-live="polite" hidden><p></p></div>
+                            <div id="exchangeEmpty" class="admin-empty" hidden><p>No items match your search</p></div>
+                            <div id="exchangeTableContainer" class="dashboards-table-container admin-list" hidden>
+                                <table class="dashboards-table list-table exchange-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Kind</th>
+                                            <th>From</th>
+                                            <th class="exchange-col-action"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="exchangeTableBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
             <!-- Models Tab Content -->
             <div id="fractalModelsTabContent" style="display: none;">
                 <div id="modelsView" class="auth-required" style="display: none;"></div>
@@ -4317,6 +4355,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/apiExplorer.js"></script>
     <script src="/static/ingestTokens.js"></script>
     <script src="/static/instructionLibraries.js"></script>
+    <script src="/static/exchange.js"></script>
     <script src="/static/notifications.js"></script>
     <script src="/static/recall.js"></script>
     <script src="/static/app.js"></script>

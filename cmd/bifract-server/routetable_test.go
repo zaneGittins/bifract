@@ -200,6 +200,8 @@ var routeTable = []string{
 	"GET /api/v1/email-actions/{id} 8 auth resp tenant_admin",
 	"PUT /api/v1/email-actions/{id} 8 auth body resp tenant_admin",
 	"POST /api/v1/email-actions/{id}/test 8 auth resp tenant_admin",
+	"GET /api/v1/exchange 8 auth resp viewer",
+	"GET /api/v1/exchange/items/{id} 8 auth resp viewer",
 	"GET /api/v1/feeds 8 auth resp viewer",
 	"POST /api/v1/feeds 8 auth body resp tenant_admin",
 	"DELETE /api/v1/feeds/{id} 8 auth tenant_admin",

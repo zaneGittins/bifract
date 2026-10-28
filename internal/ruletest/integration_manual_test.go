@@ -50,7 +50,7 @@ func envOr(key, def string) string {
 func TestExampleDetectionsPass(t *testing.T) {
 	b := backendForTest(t)
 
-	paths, err := DiscoverSpecs([]string{"../../example-detections"})
+	paths, err := DiscoverSpecs([]string{"../../exchange/detections"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestWrongExpectationFails(t *testing.T) {
 	b := backendForTest(t)
 
 	spec := &Spec{
-		Rule: "../../example-detections/certutil-download/rule.yml",
+		Rule: "../../exchange/detections/certutil-download/rule.yml",
 		Path: "synthetic",
 		Cases: []Case{{
 			Name:        "benign certutil must not match, but we assert it does",
@@ -107,7 +107,7 @@ func TestWrongExpectationFails(t *testing.T) {
 		}},
 	}
 
-	opts := Options{NormalizerPath: "../../example-normalizers/sysmon/sysmon-normalizer.yaml"}
+	opts := Options{NormalizerPath: "../../exchange/normalizers/sysmon/sysmon-normalizer.yaml"}
 	summary, err := Run(context.Background(), b, []SpecLoad{{Path: spec.Path, Spec: spec}}, opts)
 	if err != nil {
 		t.Fatal(err)

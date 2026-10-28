@@ -9,7 +9,7 @@ import (
 // The shipped example is the first thing a team imports, so a rule that no longer
 // validates has to fail here rather than in someone's fractal.
 func TestExamplePolicyParses(t *testing.T) {
-	path := filepath.Join("..", "..", "example-policies", "soc-baseline.yaml")
+	path := filepath.Join("..", "..", "exchange", "policies", "soc-baseline.yaml")
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
@@ -78,5 +78,35 @@ rules:
 `
 	if _, err := ParsePolicyDocument(doc); err == nil {
 		t.Error("one bad rule must reject the whole document rather than half-importing it")
+	}
+}
+
+// Importing the same document twice must not double the rule set. A rule is the
+// check it makes, so local changes to its severity or wording are kept.
+func TestMergePoliciesSkipsRulesAlreadyPresent(t *testing.T) {
+	existing := []Policy{
+		{ID: "1", Field: "labels", Operator: "not_empty", Message: "Label it.", Severity: PolicyWarn, Enabled: false},
+	}
+	imported := []Policy{
+		{Field: "labels", Operator: "not_empty", Message: "Add a label.", Severity: PolicyBlock, Enabled: true},
+		{Field: "description", Operator: "min_length", Value: "40", Message: "Describe it.", Severity: PolicyWarn, Enabled: true},
+		{Field: "description", Operator: "min_length", Value: "40", Message: "Describe it.", Severity: PolicyWarn, Enabled: true},
+		{Field: "description", Operator: "min_length", Value: "80", Message: "Describe it.", Severity: PolicyWarn, Enabled: true},
+	}
+
+	got := mergePolicies(existing, imported)
+	if len(got) != 3 {
+		t.Fatalf("got %d rules, want 3: %+v", len(got), got)
+	}
+	if got[0] != existing[0] {
+		t.Errorf("the existing rule must be kept as it was: %+v", got[0])
+	}
+	if got[1].Value != "40" || got[2].Value != "80" {
+		t.Errorf("unexpected merge: %+v", got)
+	}
+
+	got[0].Message = "changed"
+	if existing[0].Message != "Label it." {
+		t.Error("the merge must not write through to the existing slice")
 	}
 }

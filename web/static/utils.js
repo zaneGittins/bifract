@@ -207,29 +207,84 @@ const Utils = {
         }, 4000);
     },
 
-    // Simple YAML syntax highlighter
+    // Highlights YAML line by line. Text inside a block scalar (| or >) stays text, and
+    // a # starts a comment only outside quotes and after whitespace, as in YAML itself.
     highlightYAML(yamlText) {
         if (typeof yamlText !== 'string') return yamlText;
+        const span = (cls, text) => text ? `<span class="yaml-${cls}">${this.escapeHtml(text)}</span>` : '';
+        const value = (text) => {
+            const t = text.trim();
+            if (!t) return this.escapeHtml(text);
+            const lead = text.slice(0, text.indexOf(t));
+            const trail = text.slice(lead.length + t.length);
+            let cls = 'string';
+            if (/^[|>][-+]?\d*$/.test(t) || /^(true|false|null|~)$/i.test(t)) cls = 'keyword';
+            else if (/^-?\d+(\.\d+)?$/.test(t)) cls = 'number';
+            return lead + span(cls, t) + trail;
+        };
+        // Splits a value from a trailing comment.
+        const splitComment = (text) => {
+            let i = text.length - text.trimStart().length;
+            const quote = text[i] === '"' || text[i] === "'" ? text[i] : null;
+            if (quote) {
+                for (i++; i < text.length; i++) {
+                    if (quote === '"' && text[i] === '\\') { i++; continue; }
+                    if (text[i] === quote) {
+                        if (quote === "'" && text[i + 1] === "'") { i++; continue; }
+                        break;
+                    }
+                }
+            }
+            for (; i < text.length; i++) {
+                if (text[i] === '#' && (i === 0 || /\s/.test(text[i - 1]))) return [text.slice(0, i), text.slice(i)];
+            }
+            return [text, ''];
+        };
 
-        // Escape HTML first to prevent XSS, then apply highlighting
-        const escaped = this.escapeHtml(yamlText);
+        // Finds a mapping key: quoted, or plain up to the first colon followed by
+        // whitespace, without a comment before it. Returns [whole, key, gap].
+        const keyOf = (text) => {
+            let end;
+            if (text[0] === '"' || text[0] === "'") {
+                const q = text.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')/);
+                if (!q) return null;
+                end = q[1].length;
+                while (text[end] === ' ') end++;
+                if (text[end] !== ':') return null;
+            } else {
+                if (!text || /^[\s#]/.test(text)) return null;
+                end = text.search(/:(?=\s|$)/);
+                if (end <= 0 || /\s#/.test(text.slice(0, end))) return null;
+            }
+            if (!/^(\s|$)/.test(text.slice(end + 1))) return null;
+            const key = text.slice(0, end).trimEnd();
+            return [text.slice(0, end + 1), key, text.slice(key.length, end)];
+        };
 
-        return escaped
-            // Keys (word followed by colon)
-            .replace(/^(\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/gm, '$1<span class="yaml-key">$2</span>:')
-            // String values (quoted strings - use HTML-escaped quotes)
-            .replace(/:\s*&quot;([^&]*)&quot;/g, ': <span class="yaml-string">&quot;$1&quot;</span>')
-            .replace(/:\s*&#039;([^&]*)&#039;/g, ': <span class="yaml-string">&#039;$1&#039;</span>')
-            // Boolean values
-            .replace(/:\s*(true|false)\b/g, ': <span class="yaml-boolean">$1</span>')
-            // Numbers
-            .replace(/:\s*(\d+(?:\.\d+)?)\b/g, ': <span class="yaml-number">$1</span>')
-            // Comments
-            .replace(/(#.*$)/gm, '<span class="yaml-comment">$1</span>')
-            // List items
-            .replace(/^(\s*)-\s*/gm, '$1<span class="yaml-list">-</span> ')
-            // Multi-line strings (|- or |)
-            .replace(/:\s*(\|[-]?)\s*$/gm, ': <span class="yaml-multiline">$1</span>');
+        let block = null; // column of the key that opened a block scalar
+        return yamlText.split('\n').map(line => {
+            const indent = line.length - line.trimStart().length;
+            if (block !== null) {
+                if (line.trim() === '' || indent > block) return span('string', line);
+                block = null;
+            }
+            let out = this.escapeHtml(line.slice(0, indent));
+            let rest = line.slice(indent);
+            let m;
+            while ((m = rest.match(/^-( +|$)/))) {
+                out += span('list', '-') + m[1];
+                rest = rest.slice(m[0].length);
+            }
+            const keyColumn = line.length - rest.length;
+            m = keyOf(rest);
+            if (m) {
+                out += span('key', m[1]) + m[2] + ':';
+                rest = rest.slice(m[0].length);
+            }
+            const [val, comment] = splitComment(rest);
+            if (/^\s*[|>][-+]?\d*\s*$/.test(val)) block = m ? keyColumn : indent;
+            return out + value(val) + span('comment', comment);
+        }).join('\n');
     },
 
     // Setup YAML syntax highlighting on an element

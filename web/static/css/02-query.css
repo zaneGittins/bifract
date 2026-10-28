@@ -2688,3 +2688,12 @@ body {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
 }
+
+/* YAML, from Utils.highlightYAML. Scoped to read-only views: the alert import
+   overlay renders the same spans transparent beneath its textarea. */
+.yaml-code .yaml-key      { color: var(--syntax-key); }
+.yaml-code .yaml-string   { color: var(--syntax-string); }
+.yaml-code .yaml-number   { color: var(--syntax-number); }
+.yaml-code .yaml-keyword  { color: var(--syntax-keyword); }
+.yaml-code .yaml-list     { color: var(--syntax-operator); }
+.yaml-code .yaml-comment  { color: var(--syntax-comment); font-style: italic; }

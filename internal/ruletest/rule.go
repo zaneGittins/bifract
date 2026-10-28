@@ -58,9 +58,6 @@ func LoadRule(path string, norm *normalizers.CompiledNormalizer) (*Rule, error) 
 			return nil, fmt.Errorf("not a Sigma rule (no detection.condition) and no queryString")
 		}
 		r.Name = ya.Name
-		if r.Name == "" {
-			r.Name = path
-		}
 		r.Kind = "bifract"
 		r.BQL = ya.QueryString
 	}
@@ -72,6 +69,9 @@ func LoadRule(path string, norm *normalizers.CompiledNormalizer) (*Rule, error) 
 	r.Pipeline = pipeline
 
 	if err := checkSupported(pipeline); err != nil {
+		return nil, err
+	}
+	if err := alerts.ValidateRuleDocument(content, sigma.BuildFieldMapper(norm)); err != nil {
 		return nil, err
 	}
 

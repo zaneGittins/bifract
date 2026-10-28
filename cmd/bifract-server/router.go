@@ -18,6 +18,7 @@ import (
 	"bifract/pkg/dashboards"
 	"bifract/pkg/deeplink"
 	"bifract/pkg/dictionaries"
+	"bifract/pkg/exchange"
 	"bifract/pkg/feeds"
 	"bifract/pkg/fractals"
 	"bifract/pkg/groups"
@@ -72,6 +73,7 @@ type routerDeps struct {
 	deepLinkHandler       *deeplink.Handler
 	dictionaryHandler     *dictionaries.Handler
 	elasticHandler        *ingest.ElasticBulkHandler
+	exchangeHandler       *exchange.Handler
 	feedHandler           *feeds.Handler
 	fractalHandler        *fractals.Handler
 	groupHandler          *groups.Handler
@@ -2531,6 +2533,24 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: api.Response[map[string]interface{}]{},
 				Summary:  "Activate or deactivate an ingest token.",
 				Handler:  d.ingestTokenHandler.HandleToggleToken,
+			})
+
+			// Exchange
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/exchange",
+				Access:   api.AccessViewer,
+				Response: api.Response[exchange.Listing]{},
+				Summary:  "List the content the Exchange offers.",
+				Handler:  d.exchangeHandler.HandleList,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/exchange/items/{id}",
+				Access:   api.AccessViewer,
+				Response: api.Response[exchange.ItemContent]{},
+				Summary:  "Read one Exchange item and its file.",
+				Handler:  d.exchangeHandler.HandleItem,
 			})
 
 			// Dictionaries

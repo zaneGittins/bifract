@@ -14174,6 +14174,158 @@
         "x-bifract-access": "tenant_admin"
       }
     },
+    "/api/v1/exchange": {
+      "get": {
+        "operationId": "get_api_v1_exchange",
+        "summary": "List the content the Exchange offers.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "exchange"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/exchange.Listing"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/exchange/items/{id}": {
+      "get": {
+        "operationId": "get_api_v1_exchange_items_byId",
+        "summary": "Read one Exchange item and its file.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "exchange"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/exchange.ItemContent"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/feeds": {
       "get": {
         "operationId": "get_api_v1_feeds",
@@ -34787,6 +34939,133 @@
         },
         "required": [
           "rows"
+        ]
+      },
+      "exchange.Item": {
+        "type": "object",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "lookup": {
+            "$ref": "#/components/schemas/exchange.Lookup"
+          },
+          "name": {
+            "type": "string"
+          },
+          "normalizer": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "description"
+        ]
+      },
+      "exchange.ItemContent": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "item": {
+            "$ref": "#/components/schemas/exchange.Item"
+          }
+        },
+        "required": [
+          "item",
+          "content"
+        ]
+      },
+      "exchange.Listing": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/exchange.Item"
+            }
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "items"
+        ]
+      },
+      "exchange.Lookup": {
+        "type": "object",
+        "properties": {
+          "list_kind": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/exchange.Source"
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "exchange.Source": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "format": {
+            "type": "string"
+          },
+          "key_field": {
+            "type": "string"
+          },
+          "key_format": {
+            "type": "string"
+          },
+          "refresh_minutes": {
+            "type": "integer"
+          },
+          "split_key": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "key_field"
         ]
       },
       "feeds.CreateRequest": {
