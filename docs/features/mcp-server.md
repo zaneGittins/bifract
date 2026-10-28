@@ -184,7 +184,7 @@ This tool exists only in the MCP server, not in [AI Chat](ai-chat.md).
 
 ### Recall
 
-[Recall](../administration/backup-restore.md) searches the object-storage archive beyond hot retention. Searches run as jobs because a scan can take minutes.
+[Recall](../administration/backup-restore.md) (experimental) searches the object-storage archive beyond hot retention. Searches run as jobs because a scan can take minutes.
 
 | Tool | Description |
 |------|-------------|

@@ -537,10 +537,10 @@
                             <div class="perf-section archive-restore-section">
                                 <div class="perf-section-header restore-header">
                                     <div class="restore-header-text">
-                                        <h3>Restore from archive</h3>
-                                        <span class="perf-section-hint">Replay archived logs from Iceberg back into the hot store</span>
+                                        <h3>Restore from archive <span class="experimental-badge">Experimental</span></h3>
+                                        <span class="perf-section-hint" id="restoreHint">Replay archived logs from Iceberg back into the hot store</span>
                                     </div>
-                                    <button type="button" class="btn-primary btn-sm" onclick="Performance.openRestoreForm()">New restore</button>
+                                    <button type="button" class="btn-primary btn-sm" id="restoreNewBtn" onclick="Performance.openRestoreForm()">New restore</button>
                                 </div>
 
                                 <div class="restore-table-controls">
@@ -1013,7 +1013,7 @@
                             <div class="sp-card">
                                 <div class="sp-row">
                                     <div class="sp-row-info">
-                                        <label for="archiveEnabledToggle" class="sp-row-label">Iceberg archive</label>
+                                        <label for="archiveEnabledToggle" class="sp-row-label">Iceberg archive <span class="experimental-badge">Experimental</span></label>
                                         <p class="sp-row-desc">Writes every log to S3, Azure, MinIO, or disk as Apache Iceberg tables backed by Parquet files.</p>
                                         <p class="sp-row-blocked" id="archiveToggleHint" style="display:none;"></p>
                                     </div>
@@ -2822,7 +2822,7 @@
                                             <path d="M32 8L8 20V44L32 56L56 44V20L32 8Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" opacity="0.3"/>
                                             <path d="M32 56V32M32 32L8 20M32 32L56 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>
                                         </svg>
-                                        <p>Search the archive for older, cold-tiered logs</p>
+                                        <p>Search the archive for older, cold-tiered logs <span class="experimental-badge">Experimental</span></p>
                                     </div>
                                 </div>
                                 <div id="recallPaginationBar" class="pagination-bar" style="display: none;">

@@ -446,9 +446,17 @@ const Performance = {
         const banner = document.getElementById('archiveSpoolBanner');
         if (banner) banner.style.display = spool.pressure ? '' : 'none';
 
-        this.setText('archiveFractals', String(d.fractal_count || 0));
-        this.setText('archiveSize', this.formatBytes(d.total_bytes || 0));
-        this.setText('archiveRecords', d.total_records ? `${Number(d.total_records).toLocaleString()} records` : '');
+        // Footprint is measured by the maintenance pass, so it is unknown until one has run.
+        const measured = !!(d.maintain && d.maintain.last_run_at);
+        this.setText('archiveFractals', measured ? String(d.fractal_count || 0) : '\u2014');
+        this.setText('archiveSize', measured ? this.formatBytes(d.total_bytes || 0) : '\u2014');
+        this.setText('archiveRecords', !measured ? 'Measured by maintenance'
+            : d.total_records ? `${Number(d.total_records).toLocaleString()} records` : '');
+
+        const blocked = d.read_blocked ? `Unavailable: ${d.read_blocked}` : '';
+        const restoreBtn = document.getElementById('restoreNewBtn');
+        if (restoreBtn) { restoreBtn.disabled = !!blocked; restoreBtn.title = blocked; }
+        this.setText('restoreHint', blocked || 'Replay archived logs from Iceberg back into the hot store');
         this.setText('archiveLastCommit', d.last_commit_at ? this.timeAgo(d.last_commit_at) : 'Never');
 
         // Maintenance (compaction + snapshot expiry) -- a periodic batch job's

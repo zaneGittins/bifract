@@ -1130,8 +1130,40 @@ func getEnvBool(key string, defaultValue bool) bool {
 // runtime. Shared by the server tee and the archiver sidecar so they agree.
 const archiveEnabledSetting = "archive_enabled"
 
+// archiveEnabled reports the runtime archive flag. Every server-side reader goes
+// through here so the UI, the guards and the ingest tee agree.
+func archiveEnabled(ctx context.Context, pg *storage.PostgresClient) bool {
+	v, _ := pg.GetSetting(ctx, archiveEnabledSetting)
+	return resolveArchiveEnabled(v, getEnvBool("BIFRACT_ARCHIVE_ENABLED", false))
+}
+
+// resolveArchiveEnabled prefers a saved admin setting over the env seed.
+func resolveArchiveEnabled(setting string, envSeed bool) bool {
+	if setting != "" {
+		return setting == "true"
+	}
+	return envSeed
+}
+
 // recallBytesHuman renders a byte count for the recall scan-limit rejection
 // message (binary units, one decimal above KB).
+
+// archiveCHReadBlocked explains why ClickHouse cannot read the archive, or is
+// empty when it can. Set once during startup, read by the recall endpoint.
+var archiveCHReadBlocked string
+
+// archiveReadBlockedReason says why ClickHouse cannot read the archive back, or
+// returns "" when it can. Restore and recall are read by ClickHouse, not by us;
+// archive writing goes through the Go SDK from this pod and is unaffected.
+func archiveReadBlockedReason(obj objstore.Config, managedCH bool) string {
+	switch {
+	case obj.Backend == objstore.BackendDisk || obj.Backend == "":
+		return "the disk backend is local to one machine and ClickHouse cannot read it; archiving continues, restore and recall need s3, minio or azure"
+	case obj.RequiresCustomEndpoint() && managedCH:
+		return fmt.Sprintf("the archive uses a self-hosted object endpoint that a managed ClickHouse cannot reach (backend %q); archiving continues, restore and recall are unavailable", obj.Backend)
+	}
+	return ""
+}
 
 // startArchiveJobWorkers runs the recall and restore queues. Both are dispatchers
 // (resolve Iceberg metadata, issue an icebergS3()/icebergAzure() query, wait), so
@@ -1146,28 +1178,16 @@ const archiveEnabledSetting = "archive_enabled"
 // cancelled job is left 'running' and picked up by the stale reaper, exactly as
 // after a pod kill) plus a scan Estimator for the Recall pre-flight endpoint,
 // nil when no object-storage backend is configured.
-// archiveCHReadBlocked explains why ClickHouse cannot read the archive, or is
-// empty when it can. Set once during startup, read by the recall endpoint.
-var archiveCHReadBlocked string
-
 func startArchiveJobWorkers(topo storage.Topology) (func(), *archive.Estimator) {
 	cfg, err := archive.ConfigFromEnv()
 	if err != nil {
 		log.Printf("Warning: archive job workers disabled, bad config: %v", err)
 		return func() {}, nil
 	}
-	if cfg.Obj.Backend == objstore.BackendDisk || cfg.Obj.Backend == "" {
-		return func() {}, nil
-	}
-	// Restore and recall are read by ClickHouse, not by us. A managed ClickHouse
-	// has no route to a self-hosted object store, so those queues would claim jobs
-	// and fail every one. Archive writing is unaffected: that goes through the Go
-	// SDK from this pod, so a MinIO-backed install keeps archiving either way.
-	if cfg.Obj.RequiresCustomEndpoint() && topo.ManagedStorage {
-		archiveCHReadBlocked = fmt.Sprintf(
-			"the archive uses a self-hosted object endpoint that a managed ClickHouse cannot reach (backend %q); archiving continues, restore and recall are unavailable",
-			cfg.Obj.Backend)
-		log.Printf("Warning: archive restore/recall disabled: %s", archiveCHReadBlocked)
+	if archiveCHReadBlocked = archiveReadBlockedReason(cfg.Obj, topo.ManagedStorage); archiveCHReadBlocked != "" {
+		if cfg.Obj.Backend != objstore.BackendDisk && cfg.Obj.Backend != "" {
+			log.Printf("Warning: archive restore/recall disabled: %s", archiveCHReadBlocked)
+		}
 		return func() {}, nil
 	}
 	db, err := sql.Open("postgres", cfg.PGDSN)
@@ -1216,12 +1236,8 @@ func startArchiveSpool(q *ingest.IngestQueue, pg *storage.PostgresClient) {
 	}
 	q.SetSpool(w, maxBytes)
 
-	envSeed := getEnvBool("BIFRACT_ARCHIVE_ENABLED", false)
 	refresh := func() {
-		enabled := envSeed
-		if v, err := pg.GetSetting(context.Background(), archiveEnabledSetting); err == nil && v != "" {
-			enabled = v == "true"
-		}
+		enabled := archiveEnabled(context.Background(), pg)
 		q.SetArchiveEnabled(enabled)
 		// Apply an admin "clear archive spool" request. Only while archiving is
 		// disabled (so nothing is spooling) and only when the global clear
