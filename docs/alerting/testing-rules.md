@@ -140,7 +140,7 @@ For each failing case, `--explain` prints the generated BQL, the SQL, and the fi
 
 ## Unsupported rules
 
-Tests of rules using `pgr()`, `modelLookup()`, `join()` or `tlsh()` fail with an error instead of reporting `no_match`. They read tables that only a live deployment populates, so the tester cannot judge them. `--lint` still validates such rules.
+Tests of rules using `pgr()`, `ptg()`, `modelLookup()`, `join()` or `tlsh()` fail with an error instead of reporting `no_match`. They read tables that only a live deployment populates, so the tester cannot judge them. `--lint` still validates such rules.
 
 ## Flags
 

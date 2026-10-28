@@ -106,7 +106,7 @@ type Coverage struct {
 	Summary    Summary                       `json:"summary"`
 }
 
-var severityRank = map[string]int{"info": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}
+var severityRank = map[string]int{"informational": 1, "low": 2, "medium": 3, "high": 4, "critical": 5}
 
 // Compute tallies rule coverage across the matrix. It is a pure function so the
 // semantics (sub-technique rollup, tactic-only tags, retired IDs) are testable

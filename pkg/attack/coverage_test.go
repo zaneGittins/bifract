@@ -281,3 +281,12 @@ func TestRulesFor(t *testing.T) {
 		t.Errorf("first rule = %s, want b (critical)", withSubs[0].ID)
 	}
 }
+
+// Informational is the stored severity value (alerts.SeverityInformational), so a
+// technique covered only by informational rules must still report it.
+func TestComputeRanksInformational(t *testing.T) {
+	cov := MustGet().Compute([]RuleRow{rule("a", "informational", true, "attack.t1543.003")}, Filter{})
+	if got := cov.Techniques["T1543.003"].MaxSeverity; got != "informational" {
+		t.Errorf("max severity = %q, want informational", got)
+	}
+}

@@ -164,6 +164,7 @@ func TestUnsupportedCommandsCatchEverySpelling(t *testing.T) {
 func TestLoadTestableRuleRejectsWhatCannotRunOffline(t *testing.T) {
 	tests := map[string]string{
 		"source command": "name: x\nqueryString: 'pgr(start=\"abc\")'\n",
+		"ptg":            "name: x\nqueryString: 'ptg(start=\"abc\")'\n",
 		"model_lookup":   "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
 		"modelLookup":    "name: x\nqueryString: '* | modelLookup(model=\"m\", key=[image])'\n",
 		"tlsh":           "name: x\nqueryString: 'tlsh=* | tlsh(field=tlsh, dict=\"bad\")'\n",

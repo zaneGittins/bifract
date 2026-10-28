@@ -166,7 +166,7 @@ const AttackCoverage = {
                                     <option value="high">High</option>
                                     <option value="medium">Medium</option>
                                     <option value="low">Low</option>
-                                    <option value="info">Info</option>
+                                    <option value="informational">Informational</option>
                                 </select>
                             </label>
                             <label class="atk-field">Platform
@@ -243,7 +243,7 @@ const AttackCoverage = {
         if (this.filters.colorBy === 'severity') {
             const levels = [
                 ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'],
-                ['low', 'Low'], ['info', 'Info'],
+                ['low', 'Low'], ['informational', 'Informational'],
             ];
             el.innerHTML = '<span>highest severity</span><div class="atk-legend-swatches">' +
                 levels.map(([key, label]) =>

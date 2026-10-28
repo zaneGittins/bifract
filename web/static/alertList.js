@@ -61,9 +61,8 @@ const AlertList = {
 
     severityCell(alert, onFilter) {
         const sev = (alert.severity || 'medium').toLowerCase();
-        const cls = sev === 'info' ? 'informational' : sev;
-        const label = cls.charAt(0).toUpperCase() + cls.slice(1);
-        return `<td class="alert-severity-cell"><span class="severity-pill severity-${cls}" onclick="event.stopPropagation(); ${onFilter}('${sev}')" title="Filter by ${sev}">${label}</span></td>`;
+        const label = sev.charAt(0).toUpperCase() + sev.slice(1);
+        return `<td class="alert-severity-cell"><span class="severity-pill severity-${sev}" onclick="event.stopPropagation(); ${onFilter}('${sev}')" title="Filter by ${sev}">${label}</span></td>`;
     },
 
     // Three pills then an overflow count, so a rule with a long ATT&CK tag list

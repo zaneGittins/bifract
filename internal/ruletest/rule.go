@@ -99,6 +99,7 @@ var unsupportedCommands = map[string]string{
 	"model_lookup": "reads analytics model tables that only exist in a live deployment",
 	"modellookup":  "reads analytics model tables that only exist in a live deployment",
 	"join":         "reads a second table the tester does not populate",
+	"ptg":          "reads the proc_lineage table, built by a materialized view on the live logs table,",
 	"tlsh":         "reads a TLSH index model that only exists in a live deployment",
 }
 

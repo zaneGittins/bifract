@@ -171,9 +171,14 @@ Draws a top-down hierarchy from a child field and a parent field.
 
 ```
 bifract_category="process_creation" computer_name="WKSTN-00042.corp.example.com"
-| table(process_guid, parent_process_guid, image)
-| graph(child=process_guid, parent=parent_process_guid, labels=[image])
+| regex(/(?<process>[^\\]+)$/, field=image)
+| table(process_guid, parent_process_guid, process)
+| graph(child=process_guid, parent=parent_process_guid, labels=[process])
 ```
+
+![Process tree labelled by process name](../images/bql/graph.png)
+
+For process lineage, `ptg() | pgraph()` builds the whole tree from one process; see [Graph Traversal](graph-traversal.md).
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
