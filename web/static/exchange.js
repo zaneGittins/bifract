@@ -1,18 +1,22 @@
-// Exchange: browse shared lookups, detections, normalizers and policies, and add
-// them through each kind's own import endpoint.
+// Exchange: browse shared content and add it through each kind's own import
+// endpoint. Adding an item adds its requirements first; a bundle adds its members.
 const Exchange = {
     KINDS: {
+        bundle: { label: 'Bundle', hint: 'Adds each item below that is not here yet, requirements first.' },
         lookup: { label: 'Lookup', hint: 'Added to this fractal. Rows refresh from the upstream URL. Needs a tenant admin.' },
+        model: { label: 'Model', hint: 'Added to this fractal. It builds from new logs; run a backfill under Analytics for stored ones. Needs an analyst.' },
         detection: { label: 'Detection', hint: 'Added as an alert in this fractal, or as a draft when changes are reviewed.' },
+        search: { label: 'Saved search', hint: 'Saved for everyone in this fractal.' },
+        dashboard: { label: 'Dashboard', hint: 'Added to this fractal. Needs an analyst.' },
         normalizer: { label: 'Normalizer', hint: 'Added instance-wide. Needs a tenant admin.' },
         policy: { label: 'Policy', hint: 'Appends its rules to this fractal\'s alert policies, skipping any already there. Needs a fractal admin.' },
     },
 
     items: [],
     installed: new Set(),
-    _busy: new Set(),
+    _busy: new Map(),
     _open: null,
-    _content: {},
+    _files: {},
     _errors: {},
     _normalizers: null,
     _bound: false,
@@ -59,9 +63,10 @@ const Exchange = {
                 this.setStatus('The Exchange is turned off on this server.');
                 return;
             }
-            const installed = await this.loadInstalled();
+            const items = listing.items || [];
+            const installed = await this.loadInstalled(items);
             if (this.isStale(token)) return;
-            this.items = listing.items || [];
+            this.items = items;
             this.installed = installed;
             this.setSource(listing.source);
             document.getElementById('exchangeStatus').hidden = true;
@@ -90,41 +95,82 @@ const Exchange = {
         el.title = url || '';
     },
 
-    // Names already present in this scope, keyed "kind:name". Each list is read with
-    // the caller's own access, so one the caller cannot read just shows nothing.
-    // Policies have no names, so they are never shown as installed; adding one again
-    // skips the rules already present.
-    async loadInstalled() {
-        const names = new Set();
-        const read = async (url, kind, key) => {
+    // What is already present in this scope, keyed as installedKey() keys an item.
+    // Each list is read with the caller's own access, so one the caller cannot read
+    // just shows nothing. Dashboards are paged, so each is looked up by name.
+    async loadInstalled(items) {
+        const keys = new Set();
+        const read = async (url, kind, match) => {
             try {
                 const data = await HttpUtils.safeFetch(url);
-                for (const row of data.data || []) names.add(`${kind}:${row[key]}`);
+                for (const row of data.data || []) {
+                    if (!match || row.name === match) keys.add(`${kind}:${row.name}`);
+                }
             } catch (_) { /* not readable at this access level */ }
         };
+        const dashboards = items.filter(it => it.kind === 'dashboard')
+            .map(it => read(`/api/v1/dashboards?limit=100&search=${encodeURIComponent(it.name)}`, 'dashboard', it.name));
         await Promise.all([
-            read('/api/v1/dictionaries', 'lookup', 'name'),
-            read('/api/v1/normalizers', 'normalizer', 'name'),
-            read('/api/v1/alerts?limit=2000', 'detection', 'name'),
+            read('/api/v1/dictionaries', 'lookup'),
+            read('/api/v1/normalizers', 'normalizer'),
+            read('/api/v1/alerts?limit=2000', 'detection'),
+            read('/api/v1/models', 'model'),
+            read('/api/v1/saved-queries', 'search'),
+            ...dashboards,
         ]);
         this._normalizers = null;
-        return names;
+        return keys;
     },
 
-    // The name an item is installed under: a lookup by its id, the rest by name.
+    // The name an item is installed under: lookups and models by id, the rest by
+    // name. Policies have no name, so they are never shown as installed; adding one
+    // again skips the rules already present.
     installedKey(item) {
-        return `${item.kind}:${item.kind === 'lookup' ? item.id : item.name}`;
+        if (item.kind === 'policy' || item.kind === 'bundle') return null;
+        return `${item.kind}:${item.kind === 'lookup' || item.kind === 'model' ? item.id : item.name}`;
+    },
+
+    find(id) {
+        return this.items.find(it => it.id === id);
+    },
+
+    isInstalled(item) {
+        if (item.kind === 'bundle') return item.items.every(id => this.isInstalled(this.find(id)));
+        const key = this.installedKey(item);
+        return !!key && this.installed.has(key);
+    },
+
+    // What adding an item adds, in order: requirements first, each once, skipping
+    // what is already here. A bundle adds its members that way.
+    pending(item) {
+        const order = [];
+        const seen = new Set();
+        const visit = (it) => {
+            if (!it || seen.has(it.id)) return;
+            seen.add(it.id);
+            (it.requires || []).forEach(id => visit(this.find(id)));
+            if (it.kind === 'bundle') it.items.forEach(id => visit(this.find(id)));
+            else if (!this.isInstalled(it)) order.push(it);
+        };
+        visit(item);
+        return order;
+    },
+
+    bundlesOf(item) {
+        return this.items.filter(b => b.kind === 'bundle' && b.items.includes(item.id));
     },
 
     filtered() {
         const q = (document.getElementById('exchangeSearchInput')?.value || '').toLowerCase().trim();
         const kind = document.getElementById('exchangeKindFilter')?.value || '';
-        return this.items.filter(it => {
+        const matches = this.items.filter(it => {
             if (kind && it.kind !== kind) return false;
             if (!q) return true;
             return [it.name, it.description, it.author, ...(it.tags || [])]
                 .some(v => (v || '').toLowerCase().includes(q));
         });
+        // Bundles lead: they are the quickest way to a working setup.
+        return [...matches.filter(it => it.kind === 'bundle'), ...matches.filter(it => it.kind !== 'bundle')];
     },
 
     render() {
@@ -144,27 +190,23 @@ const Exchange = {
     rowHtml(it) {
         const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
         const kind = this.KINDS[it.kind];
-        const installed = this.installed.has(this.installedKey(it));
-        const busy = this._busy.has(it.id);
         const open = this._open === it.id;
         const tags = (it.tags || []).map(t => `<span class="exchange-tag">${esc(t)}</span>`).join('');
+        const bundles = this.bundlesOf(it).map(b => `<span class="exchange-bundle-chip">${esc(b.name)}</span>`).join('');
         const author = esc(it.author || 'Bifract');
         const by = /^https?:\/\//i.test(it.homepage || '')
             ? `<a href="${attr(it.homepage)}" target="_blank" rel="noopener noreferrer">${author}</a>`
             : author;
-        const action = installed
-            ? '<span class="exchange-installed">Installed</span>'
-            : `<button type="button" class="btn-primary btn-sm" data-action="install" data-id="${attr(it.id)}"${busy ? ' disabled' : ''}>${busy ? 'Adding...' : 'Add'}</button>`;
         let row = `
-<tr class="exchange-row${open ? ' open' : ''}">
+<tr class="exchange-row${open ? ' open' : ''}${it.kind === 'bundle' ? ' exchange-bundle-row' : ''}">
     <td class="exchange-col-name">
         <button type="button" class="exchange-name" data-action="toggle" data-id="${attr(it.id)}" aria-expanded="${open}"${open ? ` aria-controls="exchange-preview-${attr(it.id)}"` : ''}>${esc(it.name)}</button>
         <div class="exchange-desc">${esc(it.description || '')}</div>
-        ${tags ? `<div class="exchange-tags">${tags}</div>` : ''}
+        ${tags || bundles ? `<div class="exchange-tags">${bundles}${tags}</div>` : ''}
     </td>
     <td class="exchange-col-meta" title="${attr(kind.hint)}">${esc(kind.label)}</td>
     <td class="exchange-col-meta">${by}</td>
-    <td class="exchange-col-action">${action}</td>
+    <td class="exchange-col-action">${this.actionHtml(it)}</td>
 </tr>`;
         if (open) {
             row += `<tr class="exchange-preview-row" id="exchange-preview-${attr(it.id)}"><td colspan="4">${this.previewHtml(it)}</td></tr>`;
@@ -172,9 +214,33 @@ const Exchange = {
         return row;
     },
 
+    actionHtml(it) {
+        const attr = Utils.escapeAttr;
+        const busy = this._busy.get(it.id);
+        if (busy) return `<button type="button" class="btn-primary btn-sm" disabled>${Utils.escapeHtml(busy)}</button>`;
+        if (this.isInstalled(it)) return '<span class="exchange-installed">Installed</span>';
+        const steps = this.pending(it);
+        let label = 'Add';
+        if (it.kind === 'bundle') label = steps.length === it.items.length ? 'Add all' : `Add ${steps.length} more`;
+        else if (steps.length > 1) label = `Add with ${steps.length - 1} more`;
+        const title = steps.length > 1 ? ` title="${attr('Adds ' + steps.map(s => s.name).join(', '))}"` : '';
+        return `<button type="button" class="btn-primary btn-sm" data-action="install" data-id="${attr(it.id)}"${title}>${Utils.escapeHtml(label)}</button>`;
+    },
+
     previewHtml(it) {
         const esc = Utils.escapeHtml;
         const hint = `<p class="exchange-preview-hint">${esc(this.KINDS[it.kind].hint)}</p>`;
+        if (it.kind === 'bundle') {
+            const rows = it.items.map(id => this.find(id)).filter(Boolean).map(m => `
+                <li><span class="exchange-member-kind">${esc(this.KINDS[m.kind].label)}</span>
+                    <span class="exchange-member-name">${esc(m.name)}</span>
+                    ${this.isInstalled(m) ? '<span class="exchange-installed">Installed</span>' : ''}</li>`).join('');
+            return hint + `<ul class="exchange-members">${rows}</ul>`;
+        }
+        const steps = this.pending(it).filter(s => s.id !== it.id);
+        const first = steps.length
+            ? `<p class="exchange-preview-hint">Adds first: ${steps.map(s => esc(s.name)).join(', ')}.</p>`
+            : '';
         if (it.kind === 'lookup') {
             const s = it.lookup.source;
             const rows = [
@@ -187,12 +253,12 @@ const Exchange = {
                 ['Keys are globs', s.key_format === 'glob' ? 'yes' : ''],
                 ['Refresh every', this.every(s.refresh_minutes || 60)],
             ].filter(([, v]) => v);
-            return hint + `<dl class="exchange-source">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
+            return hint + first + `<dl class="exchange-source">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
         }
-        if (this._errors[it.id]) return hint + `<p class="exchange-error">${esc(this._errors[it.id])}</p>`;
-        const content = this._content[it.id];
-        if (content === undefined) return hint + '<p class="exchange-preview-hint">Loading...</p>';
-        return hint + `<pre class="exchange-content yaml-code">${Utils.highlightYAML(content)}</pre>`;
+        if (this._errors[it.id]) return hint + first + `<p class="exchange-error">${esc(this._errors[it.id])}</p>`;
+        const file = this._files[it.id];
+        if (!file) return hint + first + '<p class="exchange-preview-hint">Loading...</p>';
+        return hint + first + `<pre class="exchange-content yaml-code">${Utils.highlightYAML(file.content)}</pre>`;
     },
 
     every(minutes) {
@@ -207,7 +273,7 @@ const Exchange = {
     onTableClick(e) {
         const el = e.target.closest('[data-action]');
         if (!el) return;
-        const item = this.items.find(it => it.id === el.dataset.id);
+        const item = this.find(el.dataset.id);
         if (!item) return;
         if (el.dataset.action === 'toggle') this.toggle(item);
         else if (el.dataset.action === 'install') this.install(item);
@@ -218,37 +284,48 @@ const Exchange = {
         // A failed preview is tried again each time it is opened.
         delete this._errors[item.id];
         this.render();
-        if (this._open !== item.id || item.kind === 'lookup' || this._content[item.id] !== undefined) return;
+        if (this._open !== item.id || item.kind === 'lookup' || item.kind === 'bundle' || this._files[item.id]) return;
         try {
-            await this.fetchContent(item);
+            await this.fetchFile(item);
         } catch (err) {
             this._errors[item.id] = err.message;
         }
         this.render();
     },
 
-    async fetchContent(item) {
-        if (this._content[item.id] === undefined) {
-            const data = await HttpUtils.safeFetch(`/api/v1/exchange/items/${encodeURIComponent(item.id)}`);
-            this._content[item.id] = data.data?.content ?? '';
+    // An item's file, and for a search the parsed search the server sends with it.
+    async fetchFile(item) {
+        if (!this._files[item.id]) {
+            const data = (await HttpUtils.safeFetch(`/api/v1/exchange/items/${encodeURIComponent(item.id)}`)).data || {};
+            this._files[item.id] = { content: data.content ?? '', search: data.search };
         }
-        return this._content[item.id];
+        return this._files[item.id];
     },
 
-    // Installs act on the fractal the session has selected, so one started in another
-    // fractal stops before writing anything and is never marked installed here.
+    // Adds an item's pending steps in order and stops at the first failure, since
+    // what follows may need it. Every step acts on the fractal the session has
+    // selected, so a switch part way stops before writing to the new one.
     async install(item) {
         if (this._busy.has(item.id)) return;
         const token = this.scopeToken();
-        this._busy.add(item.id);
-        this.render();
+        const steps = this.pending(item);
+        const added = [];
+        let message = '';
         try {
-            const { message, installed } = await this.installers[item.kind].call(this, item, token);
-            if (item.kind === 'normalizer') this._normalizers = null;
-            if (installed && !this.isStale(token)) this.installed.add(this.installedKey(item));
-            Toast.success(`Added ${item.name}`, message);
+            for (const [i, step] of steps.entries()) {
+                this._busy.set(item.id, steps.length > 1 ? `Adding ${i + 1} of ${steps.length}...` : 'Adding...');
+                this.render();
+                const result = await this.installers[step.kind].call(this, step, token);
+                if (step.kind === 'normalizer') this._normalizers = null;
+                if (result.installed && !this.isStale(token)) this.installed.add(this.installedKey(step));
+                added.push(step.name);
+                message = result.message;
+            }
+            Toast.success(`Added ${item.name}`, added.length > 1 ? `Added ${added.join(', ')}.` : message);
         } catch (err) {
-            Toast.error(`Could not add ${item.name}`, err.message);
+            const failed = steps[added.length];
+            const done = added.length ? ` Added before it: ${added.join(', ')}.` : '';
+            Toast.error(`Could not add ${failed ? failed.name : item.name}`, err.message + done);
         } finally {
             this._busy.delete(item.id);
             this.render();
@@ -256,7 +333,7 @@ const Exchange = {
     },
 
     async post(token, url, body, contentType = 'application/json') {
-        if (this.isStale(token)) throw new Error('The fractal changed before this was added. Nothing was added.');
+        if (this.isStale(token)) throw new Error('The fractal changed before this was added. Nothing more was added.');
         const resp = await fetch(url, {
             method: 'POST',
             credentials: 'include',
@@ -273,6 +350,11 @@ const Exchange = {
         return data;
     },
 
+    async postYAML(token, url, item) {
+        const { content } = await this.fetchFile(item);
+        return this.expectOK(this.post(token, url, content, 'application/yaml'));
+    },
+
     installers: {
         async lookup(item, token) {
             await this.expectOK(this.post(token, '/api/v1/dictionaries', {
@@ -285,19 +367,34 @@ const Exchange = {
         },
 
         async normalizer(item, token) {
-            const content = await this.fetchContent(item);
-            await this.expectOK(this.post(token, '/api/v1/normalizers/import', content, 'application/yaml'));
+            await this.postYAML(token, '/api/v1/normalizers/import', item);
             return { installed: true, message: 'Assign it to a fractal or ingest token to use it.' };
         },
 
+        async model(item, token) {
+            await this.postYAML(token, '/api/v1/models/import', item);
+            return { installed: true, message: 'It builds from new logs. Run a backfill under Analytics for stored ones.' };
+        },
+
+        async dashboard(item, token) {
+            await this.postYAML(token, '/api/v1/dashboards/import', item);
+            return { installed: true, message: 'Find it under Dashboards.' };
+        },
+
+        async search(item, token) {
+            const { search } = await this.fetchFile(item);
+            await this.expectOK(this.post(token, '/api/v1/saved-queries', search));
+            return { installed: true, message: 'Find it under Saved queries on the Query page.' };
+        },
+
         async policy(item, token) {
-            const content = await this.fetchContent(item);
+            const { content } = await this.fetchFile(item);
             const data = await this.expectOK(this.post(token, '/api/v1/alert-policies/import', { content, replace: false }));
             return { installed: false, message: `${(data.data || []).length} policy rules in this scope now.` };
         },
 
         async detection(item, token) {
-            const content = await this.fetchContent(item);
+            const { content } = await this.fetchFile(item);
             const normalizerID = await this.normalizerFor(item);
             const { resp, data } = await this.post(token, '/api/v1/alerts/import', { yaml_content: content, normalizer_id: normalizerID });
             // A scope that reviews changes takes the rule as the caller's draft instead.
@@ -313,17 +410,17 @@ const Exchange = {
         },
     },
 
-    // A Sigma detection names the Exchange normalizer its fields map through; it must
-    // be installed first. Otherwise the instance default applies, as in a manual import.
+    // A Sigma detection maps its fields through the normalizer it requires, which is
+    // added before it. Without one the instance default applies, as in a manual import.
     async normalizerFor(item) {
         if (!this._normalizers) {
             const data = await HttpUtils.safeFetch('/api/v1/normalizers');
             this._normalizers = data.data || [];
         }
-        if (!item.normalizer) return this._normalizers.find(n => n.is_default)?.id || '';
-        const wanted = this.items.find(it => it.id === item.normalizer);
-        const match = this._normalizers.find(n => n.name === wanted?.name);
-        if (!match) throw new Error(`Add the ${wanted?.name || item.normalizer} normalizer first.`);
+        const wanted = (item.requires || []).map(id => this.find(id)).find(it => it?.kind === 'normalizer');
+        if (!wanted) return this._normalizers.find(n => n.is_default)?.id || '';
+        const match = this._normalizers.find(n => n.name === wanted.name);
+        if (!match) throw new Error(`Add the ${wanted.name} normalizer first.`);
         return match.id;
     },
 };

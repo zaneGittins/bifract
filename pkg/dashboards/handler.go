@@ -2,6 +2,7 @@ package dashboards
 
 import (
 	"bifract/pkg/api"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
+	"bifract/pkg/parser"
 	"bifract/pkg/rbac"
 	"bifract/pkg/sse"
 	"bifract/pkg/storage"
@@ -873,6 +875,45 @@ type widgetYAML struct {
 	PosY        int         `yaml:"pos_y"`
 	Width       int         `yaml:"width"`
 	Height      int         `yaml:"height"`
+}
+
+// ValidateImport checks a dashboard file as the Exchange ships it: every widget
+// query parses and every widget sits on the 24-column grid without overlapping
+// another. It returns the dashboard's name.
+func ValidateImport(data []byte) (string, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var d dashboardYAML
+	if err := dec.Decode(&d); err != nil {
+		return "", fmt.Errorf("parse dashboard: %w", err)
+	}
+	if strings.TrimSpace(d.Name) == "" {
+		return "", fmt.Errorf("dashboard name is required")
+	}
+	if d.TimeRange != "" && !validTimeRangeType(d.TimeRange) {
+		return "", fmt.Errorf("%s", timeRangeTypeHelp)
+	}
+	if d.GridColumns != 0 && d.GridColumns != storage.DashboardGridColumns {
+		return "", fmt.Errorf("grid_columns must be %d", storage.DashboardGridColumns)
+	}
+	if len(d.Widgets) == 0 {
+		return "", fmt.Errorf("a dashboard needs widgets")
+	}
+	cols := storage.DashboardGridColumns
+	for i, w := range d.Widgets {
+		if _, err := parser.ParseQuery(w.Query); err != nil {
+			return "", fmt.Errorf("widget %d (%s): %w", i, w.Title, err)
+		}
+		if w.PosX < 0 || w.PosY < 0 || w.Width < 1 || w.Height < 1 || w.PosX+w.Width > cols {
+			return "", fmt.Errorf("widget %d (%s) is off the %d-column grid", i, w.Title, cols)
+		}
+		for j, o := range d.Widgets[:i] {
+			if w.PosX < o.PosX+o.Width && o.PosX < w.PosX+w.Width && w.PosY < o.PosY+o.Height && o.PosY < w.PosY+w.Height {
+				return "", fmt.Errorf("widget %d (%s) overlaps widget %d (%s)", i, w.Title, j, o.Title)
+			}
+		}
+	}
+	return d.Name, nil
 }
 
 // HandleExportDashboard exports a dashboard as YAML

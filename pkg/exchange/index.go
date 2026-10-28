@@ -1,5 +1,6 @@
-// Package exchange lists shareable content (lookups, detections, normalizers and
-// policies) from an index file, so an install can browse and add it from the UI.
+// Package exchange lists shareable content (lookups, detections, normalizers,
+// policies, models, saved searches, dashboards and bundles of them) from an index
+// file, so an install can browse and add it from the UI.
 package exchange
 
 import (
@@ -13,29 +14,39 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"bifract/pkg/egress"
+	"bifract/pkg/parser"
 )
 
-// Item kinds. Each maps onto an import the server already has.
+// Item kinds. Each but a bundle maps onto an import the server already has.
 const (
 	KindLookup     = "lookup"
 	KindDetection  = "detection"
 	KindNormalizer = "normalizer"
 	KindPolicy     = "policy"
+	KindModel      = "model"
+	KindSearch     = "search"
+	KindDashboard  = "dashboard"
+	// KindBundle groups other items so they can be added together.
+	KindBundle = "bundle"
 )
 
-var kinds = map[string]bool{KindLookup: true, KindDetection: true, KindNormalizer: true, KindPolicy: true}
+var kinds = map[string]bool{
+	KindLookup: true, KindDetection: true, KindNormalizer: true, KindPolicy: true,
+	KindModel: true, KindSearch: true, KindDashboard: true, KindBundle: true,
+}
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// A lookup is installed under its id, which BQL names bare in dict=.
-var lookupIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// Lookups and models are installed under their id, which BQL names bare in dict=
+// and model=.
+var nameIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 // Index is the list of items an exchange offers.
 type Index struct {
 	Items []Item `yaml:"items" json:"items"`
 }
 
-// Item is one installable piece of content.
+// Item is one installable piece of content, or a bundle of them.
 type Item struct {
 	ID          string   `yaml:"id" json:"id"`
 	Kind        string   `yaml:"kind" json:"kind"`
@@ -46,9 +57,12 @@ type Item struct {
 	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
 	// Path is the item's file, relative to the index.
 	Path string `yaml:"path,omitempty" json:"path,omitempty"`
-	// Normalizer is the id of the normalizer item a Sigma detection's fields map through.
-	Normalizer string  `yaml:"normalizer,omitempty" json:"normalizer,omitempty"`
-	Lookup     *Lookup `yaml:"lookup,omitempty" json:"lookup,omitempty"`
+	// Requires lists the items this one needs present first. A Sigma detection's
+	// fields map through the normalizer it requires.
+	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// Items are a bundle's members.
+	Items  []string `yaml:"items,omitempty" json:"items,omitempty"`
+	Lookup *Lookup  `yaml:"lookup,omitempty" json:"lookup,omitempty"`
 }
 
 // Lookup is a URL-filled lookup. The data stays upstream; only this is installed.
@@ -67,6 +81,33 @@ type Source struct {
 	SplitKey       string   `yaml:"split_key,omitempty" json:"split_key,omitempty"`
 	KeyFormat      string   `yaml:"key_format,omitempty" json:"key_format,omitempty"`
 	RefreshMinutes int      `yaml:"refresh_minutes,omitempty" json:"refresh_minutes,omitempty"`
+}
+
+// SavedSearch is a search item's file, in the shape a saved query is created with.
+type SavedSearch struct {
+	Name        string   `yaml:"name" json:"name"`
+	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
+	Query       string   `yaml:"query" json:"query_text"`
+	Tags        []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	TimeRange   string   `yaml:"time_range,omitempty" json:"time_range,omitempty"`
+}
+
+// ParseSearch reads a search item's file.
+func ParseSearch(data []byte) (*SavedSearch, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var s SavedSearch
+	if err := dec.Decode(&s); err != nil {
+		return nil, fmt.Errorf("parse search: %w", err)
+	}
+	s.Query = strings.TrimSpace(s.Query)
+	if strings.TrimSpace(s.Name) == "" || s.Query == "" {
+		return nil, fmt.Errorf("a search needs a name and a query")
+	}
+	if _, err := parser.ParseQuery(s.Query); err != nil {
+		return nil, fmt.Errorf("search query: %w", err)
+	}
+	return &s, nil
 }
 
 // ParseIndex reads an index strictly: an unknown field or an invalid item fails
@@ -108,11 +149,48 @@ func (idx *Index) Find(id string) *Item {
 	return nil
 }
 
-// check drops every item that is invalid, repeats an earlier id or names a
-// normalizer the index does not keep, and returns why each was dropped.
+// Normalizer returns the normalizer item a detection requires, or nil.
+func (idx *Index) Normalizer(it Item) *Item {
+	for _, r := range it.Requires {
+		if req := idx.Find(r); req != nil && req.Kind == KindNormalizer {
+			return req
+		}
+	}
+	return nil
+}
+
+// InstallOrder lists what adding an item adds: its requirements first, each once,
+// then the item. A bundle adds each member that way.
+func (idx *Index) InstallOrder(id string) []Item {
+	var order []Item
+	seen := map[string]bool{}
+	var visit func(id string)
+	visit = func(id string) {
+		it := idx.Find(id)
+		if it == nil || seen[id] {
+			return
+		}
+		seen[id] = true
+		for _, r := range it.Requires {
+			visit(r)
+		}
+		if it.Kind == KindBundle {
+			for _, m := range it.Items {
+				visit(m)
+			}
+			return
+		}
+		order = append(order, *it)
+	}
+	visit(id)
+	return order
+}
+
+// check drops every item that is invalid, repeats an earlier id, or refers to an
+// item the index does not keep, and returns why each was dropped.
 func (idx *Index) check() []error {
 	var errs []error
-	kept := idx.Items[:0]
+	kept := make([]Item, 0, len(idx.Items))
 	seen := make(map[string]bool, len(idx.Items))
 	for _, it := range idx.Items {
 		var err error
@@ -135,23 +213,100 @@ func (idx *Index) check() []error {
 	}
 	idx.Items = kept
 
-	kept = idx.Items[:0]
-	for _, it := range idx.Items {
-		if it.Normalizer != "" {
-			if n := idx.Find(it.Normalizer); n == nil || n.Kind != KindNormalizer {
-				errs = append(errs, fmt.Errorf("item %q: normalizer %q is not a normalizer in this index", it.ID, it.Normalizer))
+	// Dropping an item can strand what refers to it, so repeat until stable.
+	for {
+		dropped := false
+		kept = make([]Item, 0, len(idx.Items))
+		for _, it := range idx.Items {
+			if err := idx.checkRefs(&it); err != nil {
+				errs = append(errs, fmt.Errorf("item %q: %w", it.ID, err))
+				dropped = true
 				continue
 			}
+			kept = append(kept, it)
 		}
-		kept = append(kept, it)
+		idx.Items = kept
+		if !dropped {
+			break
+		}
 	}
-	idx.Items = kept
+	for _, it := range idx.Items {
+		if idx.cycles(it.ID, map[string]bool{}) {
+			errs = append(errs, fmt.Errorf("item %q: its requirements form a cycle", it.ID))
+			idx.Items = nil
+			break
+		}
+	}
 	return errs
+}
+
+// checkRefs checks what an item refers to. A bundle keeps the members still listed
+// and fails only when none are left; anything else fails on a missing requirement.
+func (idx *Index) checkRefs(it *Item) error {
+	normalizers := 0
+	for _, r := range it.Requires {
+		req := idx.Find(r)
+		switch {
+		case r == it.ID:
+			return fmt.Errorf("requires itself")
+		case req == nil:
+			return fmt.Errorf("requires %q, which is not in this index", r)
+		case req.Kind == KindBundle:
+			return fmt.Errorf("requires the bundle %q; require its items instead", r)
+		case req.Kind == KindNormalizer:
+			normalizers++
+		}
+	}
+	if it.Kind == KindDetection && normalizers > 1 {
+		return fmt.Errorf("a detection maps its fields through one normalizer; it requires %d", normalizers)
+	}
+	if it.Kind != KindBundle {
+		return nil
+	}
+	var members []string
+	var missing error
+	for _, m := range it.Items {
+		switch mem := idx.Find(m); {
+		case mem == nil:
+			missing = fmt.Errorf("bundle member %q is not in this index", m)
+		case mem.Kind == KindBundle:
+			return fmt.Errorf("bundle member %q is a bundle; list its items instead", m)
+		default:
+			members = append(members, m)
+		}
+	}
+	if len(members) == 0 {
+		return missing
+	}
+	if missing != nil {
+		log.Printf("[Exchange] Bundle %q: %v", it.ID, missing)
+	}
+	it.Items = members
+	return nil
+}
+
+// cycles reports whether following an item's requirements leads back to it.
+func (idx *Index) cycles(id string, path map[string]bool) bool {
+	if path[id] {
+		return true
+	}
+	it := idx.Find(id)
+	if it == nil {
+		return false
+	}
+	path[id] = true
+	defer delete(path, id)
+	for _, r := range it.Requires {
+		if idx.cycles(r, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (it Item) validate() error {
 	if !kinds[it.Kind] {
-		return fmt.Errorf("unknown kind %q; expected lookup, detection, normalizer or policy", it.Kind)
+		return fmt.Errorf("unknown kind %q", it.Kind)
 	}
 	if strings.TrimSpace(it.Name) == "" {
 		return fmt.Errorf("name is required")
@@ -162,13 +317,25 @@ func (it Item) validate() error {
 			return fmt.Errorf("homepage: %w", err)
 		}
 	}
-	if it.Normalizer != "" && it.Kind != KindDetection {
-		return fmt.Errorf("only a detection takes a normalizer")
+	if (it.Kind == KindLookup || it.Kind == KindModel) && !nameIDPattern.MatchString(it.ID) {
+		return fmt.Errorf("a %s is installed under its id, so %q must start with a letter and use only letters, digits and _", it.Kind, it.ID)
 	}
-	if it.Kind == KindLookup {
-		if !lookupIDPattern.MatchString(it.ID) {
-			return fmt.Errorf("lookup id %q must start with a letter and use only letters, digits and _", it.ID)
+	if len(it.Items) > 0 && it.Kind != KindBundle {
+		return fmt.Errorf("only a bundle lists items")
+	}
+	if it.Lookup != nil && it.Kind != KindLookup {
+		return fmt.Errorf("only a lookup takes a lookup section")
+	}
+	switch it.Kind {
+	case KindBundle:
+		if it.Path != "" || len(it.Requires) > 0 {
+			return fmt.Errorf("a bundle has no path or requirements; its items carry them")
 		}
+		if len(it.Items) == 0 {
+			return fmt.Errorf("a bundle needs items")
+		}
+		return nil
+	case KindLookup:
 		if it.Path != "" {
 			return fmt.Errorf("a lookup has no path; its data comes from lookup.source.url")
 		}
@@ -182,9 +349,6 @@ func (it Item) validate() error {
 			return fmt.Errorf("lookup source needs a key_field")
 		}
 		return nil
-	}
-	if it.Lookup != nil {
-		return fmt.Errorf("only a lookup takes a lookup section")
 	}
 	return validPath(it.Path)
 }

@@ -26,10 +26,12 @@ type Listing struct {
 	Items   []Item `json:"items"`
 }
 
-// ItemContent is an item with its file.
+// ItemContent is an item with its file. A search also arrives parsed, in the
+// shape a saved query is created with.
 type ItemContent struct {
-	Item    Item   `json:"item"`
-	Content string `json:"content"`
+	Item    Item         `json:"item"`
+	Content string       `json:"content"`
+	Search  *SavedSearch `json:"search,omitempty"`
 }
 
 func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +65,17 @@ func (h *Handler) HandleItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := ItemContent{Item: *it}
-	if it.Kind != KindLookup {
-		if out.Content, err = h.client.Content(r.Context(), it); err != nil {
-			log.Printf("[Exchange] Failed to fetch %s: %v", it.ID, err)
+	if it.Kind == KindLookup || it.Kind == KindBundle {
+		api.WriteSuccess(w, out)
+		return
+	}
+	if out.Content, err = h.client.Content(r.Context(), it); err != nil {
+		log.Printf("[Exchange] Failed to fetch %s: %v", it.ID, err)
+		api.WriteError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if it.Kind == KindSearch {
+		if out.Search, err = ParseSearch([]byte(out.Content)); err != nil {
 			api.WriteError(w, http.StatusBadGateway, err.Error())
 			return
 		}

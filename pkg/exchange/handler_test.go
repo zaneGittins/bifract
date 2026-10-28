@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -30,7 +31,7 @@ func TestHandleList(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Data.Enabled || len(resp.Data.Items) != 2 || resp.Data.Source == "" {
+	if !resp.Data.Enabled || len(resp.Data.Items) != 3 || resp.Data.Source == "" {
 		t.Errorf("unexpected listing: %+v", resp.Data)
 	}
 }
@@ -72,6 +73,18 @@ func TestHandleItem(t *testing.T) {
 
 	if rec := serve(h.HandleItem, "/exchange/items/nope", "/exchange/items/{id}"); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown id: status %d, want 404", rec.Code)
+	}
+}
+
+// A search arrives parsed, in the shape a saved query is created with.
+func TestHandleItemSearch(t *testing.T) {
+	h := NewHandler(exchangeServer(t).client())
+	rec := serve(h.HandleItem, "/exchange/items/rmm-search", "/exchange/items/{id}")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"search":{"name":"RMM tools run","query_text":"event_id=1"}`) {
+		t.Errorf("unexpected body: %s", rec.Body)
 	}
 }
 

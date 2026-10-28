@@ -68,9 +68,6 @@ func LoadRule(path string, norm *normalizers.CompiledNormalizer) (*Rule, error) 
 	}
 	r.Pipeline = pipeline
 
-	if err := checkSupported(pipeline); err != nil {
-		return nil, err
-	}
 	if err := alerts.ValidateRuleDocument(content, sigma.BuildFieldMapper(norm)); err != nil {
 		return nil, err
 	}
@@ -78,9 +75,22 @@ func LoadRule(path string, norm *normalizers.CompiledNormalizer) (*Rule, error) 
 	return r, nil
 }
 
+// LoadTestableRule loads a rule for the tester, which also refuses rules it cannot
+// run against a scratch table. Lint uses LoadRule: such a rule is still valid.
+func LoadTestableRule(path string, norm *normalizers.CompiledNormalizer) (*Rule, error) {
+	r, err := LoadRule(path, norm)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSupported(r.Pipeline); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // unsupportedCommands are commands whose data lives outside the scratch table: the
 // provenance tables are fed by materialized views on the real `logs` table, and
-// model_lookup/join read tables the tester does not populate. Against a scratch
+// model_lookup/join/tlsh read tables the tester does not populate. Against a scratch
 // table they would return no rows, which a caller would read as "rule did not
 // fire". Failing loudly is the only safe behavior.
 // Keyed by the lower-cased name, because a command has more than one spelling and
@@ -90,6 +100,7 @@ var unsupportedCommands = map[string]string{
 	"modellookup":  "reads analytics model tables that only exist in a live deployment",
 	"join":         "reads a second table the tester does not populate",
 	"ptg":          "reads the proc_lineage table, built by a materialized view on the live logs table,",
+	"tlsh":         "reads a TLSH index model that only exists in a live deployment",
 }
 
 func checkSupported(pipeline *parser.PipelineNode) error {

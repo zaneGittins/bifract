@@ -1,0 +1,24 @@
+# Native Bifract alert. tlsh() reads the tlsh_index model, so this rule is validated
+# by lint but cannot be tested offline.
+name: Untrusted Binary Similar to an Attack Tool
+description: >-
+  An untrusted process whose TLSH digest is within 50 of a public attack tool or C2
+  framework in the CelesTLSH list. TLSH alone is too noisy to alert on; the signing filter
+  is what makes it worth an analyst's time. Check Repo_Name for the family, then the
+  image's path, parent and how it arrived.
+alertType: event
+severity: medium
+labels:
+  - attack.t1588.002
+  - tlsh
+references:
+  - https://github.com/Magonia-Research/CelesTLSH-Hashes
+  - https://attack.mitre.org/techniques/T1588/002/
+queryString: |-
+  event_id=1
+  | tlsh=* authenticode_trusted=~"untrusted" user!="NT AUTHORITY\\SYSTEM"
+  | NOT image=~"\\WindowsApps\\"
+  | tlsh(field=tlsh, dict="celes_tlsh", threshold=50)
+  | match(dict="celes_tlsh", field=tlsh_match, column=TLSH_Hash, include=[Repo_Name, File_Name])
+  | table(timestamp, computer_name, user, image, tlsh_distance, Repo_Name, File_Name)
+enabled: true

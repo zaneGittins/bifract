@@ -34956,6 +34956,12 @@
           "id": {
             "type": "string"
           },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "kind": {
             "type": "string"
           },
@@ -34965,11 +34971,14 @@
           "name": {
             "type": "string"
           },
-          "normalizer": {
-            "type": "string"
-          },
           "path": {
             "type": "string"
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "tags": {
             "type": "array",
@@ -34993,6 +35002,9 @@
           },
           "item": {
             "$ref": "#/components/schemas/exchange.Item"
+          },
+          "search": {
+            "$ref": "#/components/schemas/exchange.SavedSearch"
           }
         },
         "required": [
@@ -35033,6 +35045,33 @@
         },
         "required": [
           "source"
+        ]
+      },
+      "exchange.SavedSearch": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "query_text": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "time_range": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "query_text"
         ]
       },
       "exchange.Source": {

@@ -103,20 +103,6 @@ func TestLoadRuleRejectsInvalidAndUnsupported(t *testing.T) {
 			body:    "name: x\nqueryString: '| | |'\n",
 			wantErr: "invalid",
 		},
-		// These read tables the scratch clone does not have. Reporting "no match"
-		// for them would be a silent false negative, so they must be rejected.
-		"source command": {
-			body:    "name: x\nqueryString: 'pgr(start=\"abc\")'\n",
-			wantErr: "cannot be tested offline",
-		},
-		"ptg": {
-			body:    "name: x\nqueryString: 'ptg(start=\"abc\")'\n",
-			wantErr: "cannot be tested offline",
-		},
-		"model_lookup": {
-			body:    "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
-			wantErr: "cannot be tested offline",
-		},
 		// A rule the server would refuse on import must not pass lint and CI.
 		"aggregating event alert": {
 			body:    "name: x\nalertType: event\nqueryString: 'image=* | groupBy(image, function=count())'\n",
@@ -169,5 +155,30 @@ func TestUnsupportedCommandsCatchEverySpelling(t *testing.T) {
 		if err := checkSupported(pipeline); err == nil {
 			t.Errorf("%s: must be refused as untestable offline", q)
 		}
+	}
+}
+
+// Commands that read tables the scratch clone does not have. Reporting "no match"
+// for them would be a silent false negative, so the tester refuses them; lint only
+// validates, so it accepts them.
+func TestLoadTestableRuleRejectsWhatCannotRunOffline(t *testing.T) {
+	tests := map[string]string{
+		"source command": "name: x\nqueryString: 'pgr(start=\"abc\")'\n",
+		"ptg":            "name: x\nqueryString: 'ptg(start=\"abc\")'\n",
+		"model_lookup":   "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
+		"modelLookup":    "name: x\nqueryString: '* | modelLookup(model=\"m\", key=[image])'\n",
+		"tlsh":           "name: x\nqueryString: 'tlsh=* | tlsh(field=tlsh, dict=\"bad\")'\n",
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			p := writeFile(t, t.TempDir(), "r.yml", body)
+			if _, err := LoadRule(p, nil); err != nil {
+				t.Fatalf("lint should accept a valid rule it cannot test: %v", err)
+			}
+			_, err := LoadTestableRule(p, nil)
+			if err == nil || !strings.Contains(err.Error(), "cannot be tested offline") {
+				t.Errorf("LoadTestableRule error = %v, want it refused as untestable", err)
+			}
+		})
 	}
 }

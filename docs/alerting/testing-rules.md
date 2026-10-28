@@ -62,7 +62,7 @@ detections/
 
 - `--test <dir>` walks the tree and runs every file ending in `.test.yaml` or `.test.yml`.
 - Paths inside a test file are relative to that file, so a folder can be moved without edits.
-- `exchange/detections/` in the Bifract repository uses this layout and is a working starting point.
+- `internal/ruletest/testdata/detections/` in the Bifract repository uses this layout and is a working starting point.
 
 Event files hold only raw events, with nothing test-specific in them. The format is detected from the contents, so `.json` works for all three:
 
@@ -140,7 +140,7 @@ For each failing case, `--explain` prints the generated BQL, the SQL, and the fi
 
 ## Unsupported rules
 
-Rules using `pgr()`, `ptg()`, `modelLookup()` or `join()` fail with an error instead of reporting `no_match`. They read tables that only a live deployment populates, so the tester cannot judge them.
+Tests of rules using `pgr()`, `ptg()`, `modelLookup()`, `join()` or `tlsh()` fail with an error instead of reporting `no_match`. They read tables that only a live deployment populates, so the tester cannot judge them. `--lint` still validates such rules.
 
 ## Flags
 
