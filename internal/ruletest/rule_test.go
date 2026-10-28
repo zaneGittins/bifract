@@ -109,6 +109,10 @@ func TestLoadRuleRejectsInvalidAndUnsupported(t *testing.T) {
 			body:    "name: x\nqueryString: 'pgr(start=\"abc\")'\n",
 			wantErr: "cannot be tested offline",
 		},
+		"ptg": {
+			body:    "name: x\nqueryString: 'ptg(start=\"abc\")'\n",
+			wantErr: "cannot be tested offline",
+		},
 		"model_lookup": {
 			body:    "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
 			wantErr: "cannot be tested offline",

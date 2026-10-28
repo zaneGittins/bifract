@@ -280,13 +280,11 @@ func (ec *EmailClient) defaultBody(alert *Alert, resolvedName string, results []
 	alertLink := buildShareLink(ec.baseURL, alert, triggeredAt)
 
 	severityColor := map[string]string{
-		"critical": "#ef4444",
-		"high":     "#f97316",
-		"medium":   "#eab308",
-		"low":      "#3b82f6",
-		// informational is the Severity value; info is what older rows hold.
+		"critical":      "#ef4444",
+		"high":          "#f97316",
+		"medium":        "#eab308",
+		"low":           "#3b82f6",
 		"informational": "#6b7280",
-		"info":          "#6b7280",
 	}
 	color := severityColor[alert.Severity]
 	if color == "" {

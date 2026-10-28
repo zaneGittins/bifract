@@ -140,7 +140,7 @@ For each failing case, `--explain` prints the generated BQL, the SQL, and the fi
 
 ## Unsupported rules
 
-Rules using `pgr()`, `modelLookup()` or `join()` fail with an error instead of reporting `no_match`. They read tables that only a live deployment populates, so the tester cannot judge them.
+Rules using `pgr()`, `ptg()`, `modelLookup()` or `join()` fail with an error instead of reporting `no_match`. They read tables that only a live deployment populates, so the tester cannot judge them.
 
 ## Flags
 

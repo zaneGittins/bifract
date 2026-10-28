@@ -1300,7 +1300,7 @@
 .severity-dot-high { background: #f97316; }
 .severity-dot-medium { background: #eab308; }
 .severity-dot-low { background: #3b82f6; }
-.severity-dot-info { background: #6b7280; }
+.severity-dot-informational { background: #6b7280; }
 
 /* Label Chips */
 .alert-labels-chips {
