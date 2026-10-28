@@ -17,7 +17,7 @@ An alert is a BQL query that Bifract runs on a schedule, sending matches to one 
 
 To change an alert, click its row in the list, then **Edit**. The editor's **Tests** tab holds sample events the rule should or should not match; for testing rules from a repository or CI, see [Testing Rules](testing-rules.md).
 
-To bring in existing rules, use **Import and export > Import YAML or Sigma**, or sync them from Git with [Alert Feeds](alert-feeds.md).
+To bring in existing rules, use **Import and export > Import YAML or Sigma**, or sync them from Git with [Alert Feeds](alert-feeds.md). An alert name is unique within its fractal or prism, so the same rule can be added to several. Importing a rule whose name is already taken here updates that alert.
 
 ## Alert types
 

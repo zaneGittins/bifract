@@ -1,4 +1,5 @@
-/* Exchange: browse and add shared content. */
+/* Exchange: a grid of bundles and standalone items, a flat list while searching,
+   and a detail view per entry. */
 
 .exchange-kind-filter {
     padding: 6px 8px;
@@ -9,55 +10,131 @@
     font-size: 0.88rem;
 }
 
-.exchange-source-url {
-    max-width: 420px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
+.exchange-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
 }
 
-.exchange-table td {
-    vertical-align: top;
-}
-
-.exchange-name {
-    padding: 0;
-    background: none;
-    border: none;
+.exchange-card,
+.exchange-result {
+    display: flex;
+    width: 100%;
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.9rem;
-    font-weight: 600;
     text-align: left;
     cursor: pointer;
+    transition: border-color var(--transition), background var(--transition);
 }
 
-.exchange-name:hover,
-.exchange-col-meta a:hover {
-    color: var(--accent-primary);
-    text-decoration: underline;
+.exchange-card {
+    flex-direction: column;
+    gap: 6px;
 }
 
-.exchange-col-meta a {
+.exchange-card:hover,
+.exchange-result:hover,
+.exchange-card:focus-visible,
+.exchange-result:focus-visible {
+    border-color: var(--accent-primary);
+    background: var(--bg-hover);
+}
+
+.exchange-card-bundle {
+    border-left: 3px solid var(--accent-primary);
+}
+
+.exchange-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.exchange-card-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.exchange-card-desc {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
     color: var(--text-secondary);
-    text-decoration: none;
+    font-size: 0.84rem;
+    line-height: 1.45;
 }
 
-.exchange-desc {
-    margin-top: 2px;
-    color: var(--text-secondary);
-    font-size: 0.85rem;
-    line-height: 1.4;
-}
-
-.exchange-tags {
+.exchange-card-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 6px;
+    align-items: center;
+    gap: 6px;
+    margin-top: auto;
+    padding-top: 4px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.exchange-card-meta a {
+    color: var(--text-secondary);
+}
+
+.exchange-results {
+    display: grid;
+    gap: 6px;
+}
+
+.exchange-result {
+    align-items: center;
+    gap: 14px;
+}
+
+.exchange-result-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.exchange-result > .exchange-kind {
+    min-width: 96px;
+    text-align: center;
+}
+
+.exchange-result .exchange-card-desc {
+    -webkit-line-clamp: 1;
+}
+
+.exchange-result-side {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+}
+
+.exchange-kind {
+    flex-shrink: 0;
+    padding: 1px 7px;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.exchange-kind-bundle {
+    border-color: var(--accent-primary);
+    background: var(--accent-primary);
+    color: white;
 }
 
 .exchange-tag {
@@ -69,40 +146,199 @@
     font-size: 0.68rem;
 }
 
-.exchange-table .exchange-col-meta {
-    color: var(--text-secondary);
-    font-size: 0.88rem;
+.exchange-bundle-chip {
+    padding: 1px 6px;
+    border: 1px solid var(--accent-primary);
+    border-radius: 4px;
+    color: var(--accent-primary);
+    font-size: 0.72rem;
     white-space: nowrap;
-    width: 1%;
-}
-
-.exchange-table .exchange-col-action {
-    text-align: right;
-    white-space: nowrap;
-    width: 1%;
 }
 
 .exchange-installed {
     color: var(--success);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.exchange-partial {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.exchange-mirror {
+    margin: 16px 0 0;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    word-break: break-all;
+}
+
+/* Detail view */
+
+.exchange-detail {
+    max-width: 1100px;
+}
+
+.exchange-back,
+.exchange-link {
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--accent-primary);
+    font: inherit;
+    cursor: pointer;
+}
+
+.exchange-back {
+    margin-bottom: 14px;
     font-size: 0.85rem;
 }
 
-.exchange-row.open td {
-    border-bottom: none;
+.exchange-back:hover,
+.exchange-link:hover {
+    text-decoration: underline;
 }
 
-.exchange-preview-row td {
-    padding-top: 0;
+.exchange-detail-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
 }
 
-.exchange-preview-hint {
-    margin: 0 0 8px;
+.exchange-detail-title {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.exchange-detail-title .exchange-card-head {
+    justify-content: flex-start;
+}
+
+.exchange-detail-title h2 {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: 600;
+}
+
+.exchange-detail-action {
+    flex-shrink: 0;
+}
+
+.exchange-detail-desc {
+    margin: 16px 0 4px;
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+
+.exchange-hint {
+    margin: 0;
     color: var(--text-muted);
     font-size: 0.82rem;
 }
 
+.exchange-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 16px;
+    margin: 14px 0 0;
+    font-size: 0.85rem;
+}
+
+.exchange-facts dt {
+    color: var(--text-muted);
+}
+
+.exchange-facts dd {
+    margin: 0;
+}
+
+.exchange-section {
+    margin: 24px 0 10px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.exchange-confirm {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border: 1px solid var(--accent-primary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    font-size: 0.88rem;
+}
+
+.exchange-confirm p {
+    margin: 0 0 8px;
+}
+
+.exchange-confirm-list {
+    display: grid;
+    gap: 6px;
+    margin: 0 0 10px;
+    padding-left: 20px;
+}
+
+.exchange-confirm-list li > span {
+    margin-left: 8px;
+}
+
+.exchange-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.exchange-members {
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    list-style: none;
+}
+
+.exchange-member + .exchange-member {
+    border-top: 1px solid var(--border-color);
+}
+
+.exchange-member-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+}
+
+.exchange-member-row .exchange-kind {
+    min-width: 96px;
+    text-align: center;
+}
+
+.exchange-member-name {
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    text-align: left;
+}
+
+.exchange-member-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.exchange-member-body {
+    padding: 0 14px 14px;
+}
+
 .exchange-content {
-    max-height: 360px;
+    max-height: 420px;
     margin: 0;
     padding: 10px 12px;
     overflow: auto;
@@ -140,48 +376,4 @@
     margin: 0;
     color: var(--error);
     font-size: 0.85rem;
-}
-
-.exchange-bundle-row .exchange-name::before {
-    content: "";
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    margin-right: 8px;
-    vertical-align: middle;
-    background: var(--accent-primary);
-    border-radius: 50%;
-}
-
-.exchange-bundle-chip {
-    padding: 1px 6px;
-    border: 1px solid var(--accent-primary);
-    border-radius: 4px;
-    color: var(--accent-primary);
-    font-size: 0.68rem;
-}
-
-.exchange-members {
-    display: grid;
-    gap: 6px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    font-size: 0.85rem;
-}
-
-.exchange-members li {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-}
-
-.exchange-member-kind {
-    min-width: 96px;
-    color: var(--text-muted);
-    font-size: 0.78rem;
-}
-
-.exchange-member-name {
-    color: var(--text-primary);
 }

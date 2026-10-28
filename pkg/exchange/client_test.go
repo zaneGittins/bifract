@@ -292,3 +292,13 @@ func TestClientDisabled(t *testing.T) {
 		t.Error("Index on a disabled exchange should fail")
 	}
 }
+
+// The default index needs no mention; a mirror is worth naming.
+func TestClientSourceOnlyForMirror(t *testing.T) {
+	if s := NewClient(DefaultIndexURL, false).Source(); s != "" {
+		t.Errorf("default index Source() = %q, want empty", s)
+	}
+	if s := NewClient("https://mirror.example/exchange/index.yaml?t=x", true).Source(); s != "https://mirror.example/exchange/index.yaml" {
+		t.Errorf("mirror Source() = %q", s)
+	}
+}

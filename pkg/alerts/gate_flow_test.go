@@ -772,7 +772,7 @@ func TestProposeAndDraftFromYAML(t *testing.T) {
 
 	m, pg := newTestManager(t)
 	store := newCRStore(t, pg)
-	pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a1", "f1", ""))
+	pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a1"))
 	pg.answer("COALESCE(prism_id::text, '') FROM alerts WHERE id", fakedb.Row("f1", ""))
 	pg.handle("INSERT INTO alert_change_requests", func([]driver.Value) fakedb.PGResult {
 		store.add(crSpec{ID: "cr1", AlertID: "a1", Kind: ChangeUpdate, Status: ChangeOpen, Content: eventContent("Brute force"), Author: "alice"}, "f1", "")

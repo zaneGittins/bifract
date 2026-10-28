@@ -1,5 +1,7 @@
 // Exchange: browse shared content and add it through each kind's own import
-// endpoint. Adding an item adds its requirements first; a bundle adds its members.
+// endpoint. The grid shows bundles and the items in none; searching or filtering
+// lists items one by one; each entry opens a detail view with its definition.
+// Adding an item adds its requirements first; a bundle adds its members.
 const Exchange = {
     KINDS: {
         bundle: { label: 'Bundle', hint: 'Adds each item below that is not here yet, requirements first.' },
@@ -14,9 +16,13 @@ const Exchange = {
 
     items: [],
     installed: new Set(),
+    _loaded: false,
+    _detail: null,
+    _confirm: null,
+    _viewing: new Set(),
     _busy: new Map(),
-    _open: null,
     _files: {},
+    _loading: {},
     _errors: {},
     _normalizers: null,
     _bound: false,
@@ -24,15 +30,17 @@ const Exchange = {
     init() {
         if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
             FractalContext.subscribe('Exchange', () => {
-                this._open = null;
+                this._confirm = null;
                 this.installed = new Set();
                 if (FractalContext.shouldReload('exchangeView')) this.load();
             });
         }
     },
 
-    show() {
+    show(subPath = '') {
         this.bindEvents();
+        this._detail = subPath || null;
+        this._confirm = null;
         this.load();
     },
 
@@ -41,7 +49,7 @@ const Exchange = {
         this._bound = true;
         document.getElementById('exchangeSearchInput')?.addEventListener('input', () => this.render());
         document.getElementById('exchangeKindFilter')?.addEventListener('change', () => this.render());
-        document.getElementById('exchangeTableBody')?.addEventListener('click', (e) => this.onTableClick(e));
+        document.getElementById('exchangeView')?.addEventListener('click', (e) => this.onClick(e));
     },
 
     scopeToken() {
@@ -54,7 +62,7 @@ const Exchange = {
 
     async load() {
         const token = this.scopeToken();
-        this.setStatus('Loading the Exchange...');
+        if (!this._loaded) this.setStatus('Loading the Exchange...');
         try {
             const listing = (await HttpUtils.safeFetch('/api/v1/exchange')).data || {};
             if (this.isStale(token)) return;
@@ -68,7 +76,10 @@ const Exchange = {
             if (this.isStale(token)) return;
             this.items = items;
             this.installed = installed;
-            this.setSource(listing.source);
+            this._loaded = true;
+            const mirror = document.getElementById('exchangeMirror');
+            mirror.hidden = !listing.source;
+            mirror.textContent = listing.source ? `Read from a mirror: ${listing.source}` : '';
             document.getElementById('exchangeStatus').hidden = true;
             this.render();
         } catch (e) {
@@ -84,15 +95,10 @@ const Exchange = {
         if (!status) return;
         status.hidden = false;
         status.querySelector('p').textContent = text;
-        document.getElementById('exchangeTableContainer').hidden = true;
-        document.getElementById('exchangeEmpty').hidden = true;
-    },
-
-    setSource(url) {
-        const el = document.getElementById('exchangeSource');
-        if (!el) return;
-        el.textContent = url ? `Source: ${url}` : '';
-        el.title = url || '';
+        for (const id of ['exchangeGrid', 'exchangeResults', 'exchangeEmpty', 'exchangeDetail']) {
+            document.getElementById(id).hidden = true;
+        }
+        document.getElementById('exchangeListing').hidden = false;
     },
 
     // What is already present in this scope, keyed as installedKey() keys an item.
@@ -134,15 +140,19 @@ const Exchange = {
         return this.items.find(it => it.id === id);
     },
 
+    members(bundle) {
+        return bundle.items.map(id => this.find(id)).filter(Boolean);
+    },
+
     isInstalled(item) {
-        if (item.kind === 'bundle') return item.items.every(id => this.isInstalled(this.find(id)));
+        if (item.kind === 'bundle') return this.members(item).every(m => this.isInstalled(m));
         const key = this.installedKey(item);
         return !!key && this.installed.has(key);
     },
 
-    // What adding an item adds, in order: requirements first, each once, skipping
-    // what is already here. A bundle adds its members that way.
-    pending(item) {
+    // Everything adding an item involves, in order: requirements first, each once.
+    // A bundle covers its members that way.
+    order(item) {
         const order = [];
         const seen = new Set();
         const visit = (it) => {
@@ -150,97 +160,192 @@ const Exchange = {
             seen.add(it.id);
             (it.requires || []).forEach(id => visit(this.find(id)));
             if (it.kind === 'bundle') it.items.forEach(id => visit(this.find(id)));
-            else if (!this.isInstalled(it)) order.push(it);
+            else order.push(it);
         };
         visit(item);
         return order;
+    },
+
+    pending(item) {
+        return this.order(item).filter(it => !this.isInstalled(it));
     },
 
     bundlesOf(item) {
         return this.items.filter(b => b.kind === 'bundle' && b.items.includes(item.id));
     },
 
-    filtered() {
-        const q = (document.getElementById('exchangeSearchInput')?.value || '').toLowerCase().trim();
-        const kind = document.getElementById('exchangeKindFilter')?.value || '';
-        const matches = this.items.filter(it => {
-            if (kind && it.kind !== kind) return false;
-            if (!q) return true;
-            return [it.name, it.description, it.author, ...(it.tags || [])]
-                .some(v => (v || '').toLowerCase().includes(q));
-        });
-        // Bundles lead: they are the quickest way to a working setup.
-        return [...matches.filter(it => it.kind === 'bundle'), ...matches.filter(it => it.kind !== 'bundle')];
-    },
+    // ---- Views ----
 
     render() {
-        const tbody = document.getElementById('exchangeTableBody');
-        if (!tbody) return;
-        // The rows are rebuilt, so keyboard focus is carried over to the same control.
-        const focused = document.activeElement?.closest?.('#exchangeTableBody [data-action]');
-        const items = this.filtered();
-        document.getElementById('exchangeTableContainer').hidden = items.length === 0;
-        document.getElementById('exchangeEmpty').hidden = items.length > 0 || this.items.length === 0;
-        tbody.innerHTML = items.map(it => this.rowHtml(it)).join('');
+        if (!this._loaded) return;
+        // Rebuilt views carry keyboard focus over to the same control.
+        const focused = document.activeElement?.closest?.('#exchangeView [data-action]');
+        const detail = this._detail && this.find(this._detail);
+        document.getElementById('exchangeListing').hidden = !!detail;
+        document.getElementById('exchangeDetail').hidden = !detail;
+        if (detail) this.renderDetail(detail);
+        else this.renderListing();
         if (focused) {
-            tbody.querySelector(`[data-action="${focused.dataset.action}"][data-id="${CSS.escape(focused.dataset.id)}"]`)?.focus();
+            const sel = `[data-action="${focused.dataset.action}"]` + (focused.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : '');
+            document.querySelector(`#exchangeView ${sel}`)?.focus();
         }
     },
 
-    rowHtml(it) {
+    renderListing() {
+        const q = (document.getElementById('exchangeSearchInput')?.value || '').toLowerCase().trim();
+        const kind = document.getElementById('exchangeKindFilter')?.value || '';
+        const grid = document.getElementById('exchangeGrid');
+        const results = document.getElementById('exchangeResults');
+        const empty = document.getElementById('exchangeEmpty');
+        const browsing = !q && !kind;
+
+        // Browsing shows each bundle once and the items in none; members are inside
+        // their bundle. A search or kind filter looks for items, so it lists them all.
+        const terms = q.split(/\s+/).filter(Boolean);
+        const shown = browsing
+            ? [...this.items.filter(it => it.kind === 'bundle'), ...this.items.filter(it => it.kind !== 'bundle' && !this.bundlesOf(it).length)]
+            : this.items.filter(it => (!kind || it.kind === kind) && terms.every(t =>
+                [it.name, it.description, it.author, this.KINDS[it.kind].label, ...(it.tags || [])]
+                    .some(v => (v || '').toLowerCase().includes(t))));
+
+        grid.hidden = !browsing || !shown.length;
+        results.hidden = browsing || !shown.length;
+        empty.hidden = shown.length > 0;
+        if (browsing) grid.innerHTML = shown.map(it => this.cardHtml(it)).join('');
+        else results.innerHTML = shown.map(it => this.resultHtml(it)).join('');
+    },
+
+    statusHtml(it) {
+        if (it.kind === 'bundle') {
+            const members = this.members(it);
+            const done = members.filter(m => this.isInstalled(m)).length;
+            if (done === members.length) return '<span class="exchange-installed">Installed</span>';
+            if (done) return `<span class="exchange-partial">${done} of ${members.length} added</span>`;
+            return '';
+        }
+        return this.isInstalled(it) ? '<span class="exchange-installed">Installed</span>' : '';
+    },
+
+    kindHtml(it) {
+        return `<span class="exchange-kind exchange-kind-${it.kind}">${Utils.escapeHtml(this.KINDS[it.kind].label)}</span>`;
+    },
+
+    tagsHtml(it) {
+        return (it.tags || []).map(t => `<span class="exchange-tag">${Utils.escapeHtml(t)}</span>`).join('');
+    },
+
+    cardHtml(it) {
+        const esc = Utils.escapeHtml;
+        const count = it.kind === 'bundle' ? `<span>${it.items.length} items</span>` : '';
+        return `
+<button type="button" class="exchange-card${it.kind === 'bundle' ? ' exchange-card-bundle' : ''}" data-action="open" data-id="${Utils.escapeAttr(it.id)}">
+    <span class="exchange-card-head">${this.kindHtml(it)}${this.statusHtml(it)}</span>
+    <span class="exchange-card-name">${esc(it.name)}</span>
+    <span class="exchange-card-desc">${esc(it.description || '')}</span>
+    <span class="exchange-card-meta"><span>${esc(it.author || 'Bifract')}</span>${count}${this.tagsHtml(it)}</span>
+</button>`;
+    },
+
+    resultHtml(it) {
+        const esc = Utils.escapeHtml;
+        const bundles = this.bundlesOf(it).map(b => `<span class="exchange-bundle-chip">In: ${esc(b.name)}</span>`).join('');
+        return `
+<button type="button" class="exchange-result" data-action="open" data-id="${Utils.escapeAttr(it.id)}">
+    ${this.kindHtml(it)}
+    <span class="exchange-result-main">
+        <span class="exchange-card-name">${esc(it.name)}</span>
+        <span class="exchange-card-desc">${esc(it.description || '')}</span>
+    </span>
+    <span class="exchange-result-side">${bundles}${this.statusHtml(it)}</span>
+</button>`;
+    },
+
+    renderDetail(it) {
         const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
-        const kind = this.KINDS[it.kind];
-        const open = this._open === it.id;
-        const tags = (it.tags || []).map(t => `<span class="exchange-tag">${esc(t)}</span>`).join('');
-        const bundles = this.bundlesOf(it).map(b => `<span class="exchange-bundle-chip">${esc(b.name)}</span>`).join('');
         const author = esc(it.author || 'Bifract');
         const by = /^https?:\/\//i.test(it.homepage || '')
             ? `<a href="${attr(it.homepage)}" target="_blank" rel="noopener noreferrer">${author}</a>`
             : author;
-        let row = `
-<tr class="exchange-row${open ? ' open' : ''}${it.kind === 'bundle' ? ' exchange-bundle-row' : ''}">
-    <td class="exchange-col-name">
-        <button type="button" class="exchange-name" data-action="toggle" data-id="${attr(it.id)}" aria-expanded="${open}"${open ? ` aria-controls="exchange-preview-${attr(it.id)}"` : ''}>${esc(it.name)}</button>
-        <div class="exchange-desc">${esc(it.description || '')}</div>
-        ${tags || bundles ? `<div class="exchange-tags">${bundles}${tags}</div>` : ''}
-    </td>
-    <td class="exchange-col-meta" title="${attr(kind.hint)}">${esc(kind.label)}</td>
-    <td class="exchange-col-meta">${by}</td>
-    <td class="exchange-col-action">${this.actionHtml(it)}</td>
-</tr>`;
-        if (open) {
-            row += `<tr class="exchange-preview-row" id="exchange-preview-${attr(it.id)}"><td colspan="4">${this.previewHtml(it)}</td></tr>`;
-        }
-        return row;
+        const links = (ids) => ids.map(id => this.find(id)).filter(Boolean)
+            .map(r => `<button type="button" class="exchange-link" data-action="open" data-id="${attr(r.id)}">${esc(r.name)}</button>`).join(', ');
+        const facts = [];
+        const bundles = this.bundlesOf(it).map(b => b.id);
+        if (bundles.length) facts.push(`<dt>Part of</dt><dd>${links(bundles)}</dd>`);
+        if (it.requires?.length) facts.push(`<dt>Requires</dt><dd>${links(it.requires)}</dd>`);
+
+        document.getElementById('exchangeDetail').innerHTML = `
+<button type="button" class="exchange-back" data-action="back">&larr; Exchange</button>
+<div class="exchange-detail-head">
+    <div class="exchange-detail-title">
+        <div class="exchange-card-head">${this.kindHtml(it)}${this.statusHtml(it)}</div>
+        <h2>${esc(it.name)}</h2>
+        <div class="exchange-card-meta"><span>${by}</span>${this.tagsHtml(it)}</div>
+    </div>
+    <div class="exchange-detail-action">${this._confirm === it.id ? '' : this.actionHtml(it, true)}</div>
+</div>
+${this.confirmHtml(it)}
+<p class="exchange-detail-desc">${esc(it.description || '')}</p>
+<p class="exchange-hint">${esc(this.KINDS[it.kind].hint)}</p>
+${facts.length ? `<dl class="exchange-facts">${facts.join('')}</dl>` : ''}
+${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">Definition</h3>${this.definitionHtml(it)}`}`;
     },
 
-    actionHtml(it) {
-        const attr = Utils.escapeAttr;
+    // The primary button for an item: Add, Add all, or its progress.
+    actionHtml(it, primary) {
         const busy = this._busy.get(it.id);
-        if (busy) return `<button type="button" class="btn-primary btn-sm" disabled>${Utils.escapeHtml(busy)}</button>`;
-        if (this.isInstalled(it)) return '<span class="exchange-installed">Installed</span>';
+        if (busy) return `<button type="button" class="btn-primary${primary ? '' : ' btn-sm'}" disabled>${Utils.escapeHtml(busy)}</button>`;
+        if (this.isInstalled(it)) return primary ? '' : '<span class="exchange-installed">Installed</span>';
         const steps = this.pending(it);
         let label = 'Add';
-        if (it.kind === 'bundle') label = steps.length === it.items.length ? 'Add all' : `Add ${steps.length} more`;
-        else if (steps.length > 1) label = `Add with ${steps.length - 1} more`;
-        const title = steps.length > 1 ? ` title="${attr('Adds ' + steps.map(s => s.name).join(', '))}"` : '';
-        return `<button type="button" class="btn-primary btn-sm" data-action="install" data-id="${attr(it.id)}"${title}>${Utils.escapeHtml(label)}</button>`;
+        if (it.kind === 'bundle') label = steps.length === this.order(it).length ? `Add all (${steps.length})` : `Add ${steps.length} more`;
+        return `<button type="button" class="btn-primary${primary ? '' : ' btn-sm'}" data-action="install" data-id="${Utils.escapeAttr(it.id)}">${label}</button>`;
     },
 
-    previewHtml(it) {
+    // Adding more than one thing says what it adds and skips before doing it.
+    confirmHtml(it) {
+        if (this._confirm !== it.id) return '';
         const esc = Utils.escapeHtml;
-        const hint = `<p class="exchange-preview-hint">${esc(this.KINDS[it.kind].hint)}</p>`;
-        if (it.kind === 'bundle') {
-            const rows = it.items.map(id => this.find(id)).filter(Boolean).map(m => `
-                <li><span class="exchange-member-kind">${esc(this.KINDS[m.kind].label)}</span>
-                    <span class="exchange-member-name">${esc(m.name)}</span>
-                    ${this.isInstalled(m) ? '<span class="exchange-installed">Installed</span>' : ''}</li>`).join('');
-            return hint + `<ul class="exchange-members">${rows}</ul>`;
-        }
-        const steps = this.pending(it).filter(s => s.id !== it.id);
-        const first = steps.length
-            ? `<p class="exchange-preview-hint">Adds first: ${steps.map(s => esc(s.name)).join(', ')}.</p>`
-            : '';
+        const steps = this.pending(it);
+        const skipped = this.order(it).filter(s => this.isInstalled(s));
+        const list = (items) => items.map(s => `<li>${this.kindHtml(s)}<span>${esc(s.name)}</span></li>`).join('');
+        return `
+<div class="exchange-confirm" role="region" aria-label="Confirm adding">
+    <p>Adds ${steps.length} item${steps.length === 1 ? '' : 's'} to this fractal, in this order:</p>
+    <ol class="exchange-confirm-list">${list(steps)}</ol>
+    ${skipped.length ? `<p class="exchange-hint">Already here, so skipped: ${skipped.map(s => esc(s.name)).join(', ')}.</p>` : ''}
+    <div class="exchange-confirm-actions">
+        <button type="button" class="btn-secondary btn-sm" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary btn-sm" data-action="confirm" data-id="${Utils.escapeAttr(it.id)}">Add ${steps.length} item${steps.length === 1 ? '' : 's'}</button>
+    </div>
+</div>`;
+    },
+
+    contentsHtml(bundle) {
+        const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
+        const rows = this.members(bundle).map(m => {
+            const open = this._viewing.has(m.id);
+            const extra = this.pending(m).length > 1 && !this.isInstalled(m)
+                ? `<span class="exchange-hint">adds ${this.pending(m).filter(s => s.id !== m.id).map(s => esc(s.name)).join(', ')} first</span>` : '';
+            return `
+<li class="exchange-member${open ? ' open' : ''}">
+    <div class="exchange-member-row">
+        ${this.kindHtml(m)}
+        <button type="button" class="exchange-link exchange-member-name" data-action="open" data-id="${attr(m.id)}">${esc(m.name)}</button>
+        ${extra}
+        <span class="exchange-member-actions">
+            <button type="button" class="btn-secondary btn-sm" data-action="view" data-id="${attr(m.id)}" aria-expanded="${open}">${open ? 'Hide' : 'View'}</button>
+            ${this.actionHtml(m, false)}
+        </span>
+    </div>
+    ${open ? `<div class="exchange-member-body">${this.definitionHtml(m)}</div>` : ''}
+</li>`;
+        }).join('');
+        return `<h3 class="exchange-section">Contents</h3><ul class="exchange-members">${rows}</ul>`;
+    },
+
+    // What an item adds: a lookup's source settings, or the file it imports.
+    definitionHtml(it) {
+        const esc = Utils.escapeHtml;
         if (it.kind === 'lookup') {
             const s = it.lookup.source;
             const rows = [
@@ -253,12 +358,19 @@ const Exchange = {
                 ['Keys are globs', s.key_format === 'glob' ? 'yes' : ''],
                 ['Refresh every', this.every(s.refresh_minutes || 60)],
             ].filter(([, v]) => v);
-            return hint + first + `<dl class="exchange-source">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
+            return `<dl class="exchange-source">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
         }
-        if (this._errors[it.id]) return hint + first + `<p class="exchange-error">${esc(this._errors[it.id])}</p>`;
+        if (this._errors[it.id]) {
+            return `<p class="exchange-error">${esc(this._errors[it.id])} <button type="button" class="exchange-link" data-action="retry" data-id="${Utils.escapeAttr(it.id)}">Try again</button></p>`;
+        }
         const file = this._files[it.id];
-        if (!file) return hint + first + '<p class="exchange-preview-hint">Loading...</p>';
-        return hint + first + `<pre class="exchange-content yaml-code">${Utils.highlightYAML(file.content)}</pre>`;
+        if (!file) {
+            if (!this._loading[it.id]) {
+                this.fetchFile(it).then(() => this.render(), err => { this._errors[it.id] = err.message; this.render(); });
+            }
+            return '<p class="exchange-hint">Loading...</p>';
+        }
+        return `<pre class="exchange-content yaml-code">${Utils.highlightYAML(file.content)}</pre>`;
     },
 
     every(minutes) {
@@ -270,66 +382,112 @@ const Exchange = {
         }
     },
 
-    onTableClick(e) {
+    // ---- Actions ----
+
+    onClick(e) {
         const el = e.target.closest('[data-action]');
-        if (!el) return;
-        const item = this.find(el.dataset.id);
-        if (!item) return;
-        if (el.dataset.action === 'toggle') this.toggle(item);
-        else if (el.dataset.action === 'install') this.install(item);
+        if (!el || !document.getElementById('exchangeView').contains(el)) return;
+        const item = el.dataset.id ? this.find(el.dataset.id) : null;
+        switch (el.dataset.action) {
+            case 'open': if (item) this.open(item); break;
+            case 'back': this.back(); break;
+            case 'view':
+                if (!item) break;
+                if (this._viewing.has(item.id)) this._viewing.delete(item.id);
+                else this._viewing.add(item.id);
+                this.render();
+                break;
+            case 'retry':
+                if (!item) break;
+                delete this._errors[item.id];
+                this.render();
+                break;
+            case 'install':
+                if (!item) break;
+                if (this.pending(item).length > 1) {
+                    this._confirm = item.id;
+                    this.render();
+                    document.querySelector('#exchangeView [data-action="confirm"]')?.focus();
+                } else {
+                    this.install(item);
+                }
+                break;
+            case 'confirm':
+                this._confirm = null;
+                if (item) this.install(item);
+                break;
+            case 'cancel':
+                this._confirm = null;
+                this.render();
+                break;
+        }
     },
 
-    async toggle(item) {
-        this._open = this._open === item.id ? null : item.id;
-        // A failed preview is tried again each time it is opened.
-        delete this._errors[item.id];
+    open(item) {
+        this._detail = item.id;
+        this._confirm = null;
+        window.App?.pushSubPath(item.id);
         this.render();
-        if (this._open !== item.id || item.kind === 'lookup' || item.kind === 'bundle' || this._files[item.id]) return;
-        try {
-            await this.fetchFile(item);
-        } catch (err) {
-            this._errors[item.id] = err.message;
-        }
+        document.querySelector('#exchangeDetail .exchange-back')?.focus();
+        document.getElementById('exchangeView')?.scrollIntoView?.({ block: 'start' });
+    },
+
+    back() {
+        this._detail = null;
+        this._confirm = null;
+        window.App?.pushSubPath('');
         this.render();
     },
 
     // An item's file, and for a search the parsed search the server sends with it.
-    async fetchFile(item) {
-        if (!this._files[item.id]) {
-            const data = (await HttpUtils.safeFetch(`/api/v1/exchange/items/${encodeURIComponent(item.id)}`)).data || {};
-            this._files[item.id] = { content: data.content ?? '', search: data.search };
-        }
-        return this._files[item.id];
+    // Concurrent callers share one request.
+    fetchFile(item) {
+        if (this._files[item.id]) return Promise.resolve(this._files[item.id]);
+        this._loading[item.id] ??= HttpUtils.safeFetch(`/api/v1/exchange/items/${encodeURIComponent(item.id)}`)
+            .then(resp => (this._files[item.id] = { content: resp.data?.content ?? '', search: resp.data?.search }))
+            .finally(() => delete this._loading[item.id]);
+        return this._loading[item.id];
     },
 
-    // Adds an item's pending steps in order and stops at the first failure, since
-    // what follows may need it. Every step acts on the fractal the session has
-    // selected, so a switch part way stops before writing to the new one.
+    // Adds an item's pending steps in order. A step that fails is reported, and so
+    // is anything after it that requires it, which is skipped; the rest still go
+    // ahead. Every step acts on the fractal the session has selected, so a switch
+    // part way stops before writing to the new one.
     async install(item) {
         if (this._busy.has(item.id)) return;
         const token = this.scopeToken();
         const steps = this.pending(item);
-        const added = [];
+        const added = [], failed = new Map(), skipped = [];
         let message = '';
-        try {
-            for (const [i, step] of steps.entries()) {
-                this._busy.set(item.id, steps.length > 1 ? `Adding ${i + 1} of ${steps.length}...` : 'Adding...');
-                this.render();
+        for (const [i, step] of steps.entries()) {
+            const blocker = this.order(step).find(r => r.id !== step.id && failed.has(r.id));
+            if (blocker) {
+                skipped.push(`${step.name} (needs ${blocker.name})`);
+                continue;
+            }
+            this._busy.set(item.id, steps.length > 1 ? `Adding ${i + 1} of ${steps.length}...` : 'Adding...');
+            this.render();
+            try {
                 const result = await this.installers[step.kind].call(this, step, token);
                 if (step.kind === 'normalizer') this._normalizers = null;
                 if (result.installed && !this.isStale(token)) this.installed.add(this.installedKey(step));
                 added.push(step.name);
                 message = result.message;
+            } catch (err) {
+                failed.set(step.id, `${step.name}: ${err.message.replace(/[.\s]*$/, '.')}`);
+                if (this.isStale(token)) break;
             }
-            Toast.success(`Added ${item.name}`, added.length > 1 ? `Added ${added.join(', ')}.` : message);
-        } catch (err) {
-            const failed = steps[added.length];
-            const done = added.length ? ` Added before it: ${added.join(', ')}.` : '';
-            Toast.error(`Could not add ${failed ? failed.name : item.name}`, err.message + done);
-        } finally {
-            this._busy.delete(item.id);
-            this.render();
         }
+        this._busy.delete(item.id);
+        this.render();
+        if (!failed.size) {
+            Toast.success(`Added ${item.name}`, added.length > 1 ? `Added ${added.join(', ')}.` : message);
+            return;
+        }
+        const parts = [...failed.values()];
+        if (skipped.length) parts.push(`Skipped: ${skipped.join(', ')}.`);
+        if (added.length) parts.push(`Added: ${added.join(', ')}.`);
+        Toast.error(failed.size === steps.length ? `Could not add ${item.name}` : `Added ${added.length} of ${steps.length} for ${item.name}`, parts.join(' '));
     },
 
     async post(token, url, body, contentType = 'application/json') {

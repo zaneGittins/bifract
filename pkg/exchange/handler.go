@@ -21,9 +21,10 @@ func NewHandler(client *Client) *Handler {
 
 // Listing is what the exchange offers.
 type Listing struct {
-	Enabled bool   `json:"enabled"`
-	Source  string `json:"source,omitempty"`
-	Items   []Item `json:"items"`
+	Enabled bool `json:"enabled"`
+	// Source is set only for a mirror, an index other than the default.
+	Source string `json:"source,omitempty"`
+	Items  []Item `json:"items"`
 }
 
 // ItemContent is an item with its file. A search also arrives parsed, in the

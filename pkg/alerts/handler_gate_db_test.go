@@ -127,8 +127,6 @@ func TestProposeAndDraftFromYAMLHandlers(t *testing.T) {
 		return fakedb.Row("d1")
 	})
 	expect(t, serve(h, draft, hcall{as: analyst, method: "POST", body: `{"content":"name: Rule\nqueryString: a=1\n"}`}), 200, `"id":"d1"`)
-	pg.answer("FROM alerts WHERE name = $1 AND feed_id IS NULL", fakedb.Row("a9", "f2", ""))
-	expect(t, serve(h, draft, hcall{as: analyst, method: "POST", body: `{"content":"name: Rule\nqueryString: a=1\n"}`}), 409, "another fractal or prism")
 }
 
 func TestDraftHandlers(t *testing.T) {

@@ -105,30 +105,6 @@ func TestWithdrawPermissions(t *testing.T) {
 	}
 }
 
-// The import used to look the name up across every fractal and every feed, so a Sigma
-// rule sharing a title with a feed alert, or with an alert elsewhere, was written over
-// that alert instead of landing here.
-func TestImportReplacesOnlyAnAlertInScope(t *testing.T) {
-	const fractal, other, prism = "f-1", "f-2", "p-1"
-
-	if id, err := importReplaces(nil, "n", fractal, ""); err != nil || id != "" {
-		t.Errorf("no holder: got (%q, %v), want a create", id, err)
-	}
-
-	here := &namedAlert{ID: "a-1", FractalID: fractal}
-	if id, err := importReplaces(here, "n", fractal, ""); err != nil || id != "a-1" {
-		t.Errorf("holder in scope: got (%q, %v), want it replaced", id, err)
-	}
-
-	elsewhere := &namedAlert{ID: "a-2", FractalID: other}
-	if _, err := importReplaces(elsewhere, "n", fractal, ""); !errors.Is(err, ErrAlertNameTaken) {
-		t.Errorf("holder in another fractal: got %v, want ErrAlertNameTaken", err)
-	}
-	if _, err := importReplaces(here, "n", "", prism); !errors.Is(err, ErrAlertNameTaken) {
-		t.Errorf("fractal holder seen from a prism: got %v, want ErrAlertNameTaken", err)
-	}
-}
-
 func TestSigmaImportBecomesADraftOfANewAlert(t *testing.T) {
 	req, err := sigmaImportRequest(sigmaFixture, nil)
 	if err != nil {
@@ -198,10 +174,8 @@ func TestImportRefusalsAreTheCallersToFix(t *testing.T) {
 
 func TestDraftConflictsAnswer409(t *testing.T) {
 	h := &Handler{}
-	_, taken := importReplaces(&namedAlert{ID: "x", FractalID: "elsewhere"}, "n", "here", "")
 	for _, err := range []error{
 		ErrDraftExists,
-		taken,
 		errors.New("this proposal is draft"),
 		errors.New("this proposal is no longer open"),
 	} {
