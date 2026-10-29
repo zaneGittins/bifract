@@ -14,6 +14,8 @@ Authorization: Bearer bifract_<key>
 
 A key belongs to one fractal or prism and carries one role: **Viewer** (read only), **Analyst** (read and write) or **Admin** (manage that scope). Its prefix names the scope, e.g. `bifract_default_...` for the fractal `default`. A tenant admin key (`bifract_admin_...`) administers the whole instance, has no scope, and must expire.
 
+A key stops working when the person who created it is disabled or deleted. A tenant admin key also stops when its creator is no longer a tenant admin. A key that creates or updates keys cannot give any of them, itself included, an expiry later than its own. This bounds the key routes only: a tenant admin key can do anything a tenant admin can while it is valid, including managing users, so issue it with the shortest expiry that works.
+
 ### Create a key for a fractal
 
 1. Open the fractal and click **Fractal settings** in the sidebar (fractal admins only).

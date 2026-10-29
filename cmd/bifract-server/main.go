@@ -1314,6 +1314,7 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 		CreatedBy:   keyData.CreatedBy,
 		Role:        keyData.Role,
 		TenantAdmin: keyData.TenantAdmin,
+		ExpiresAt:   keyData.ExpiresAt,
 	}, nil
 }
 

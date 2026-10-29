@@ -1804,6 +1804,8 @@ type ValidatedAPIKey struct {
 	// instance-wide administration.
 	Role        string `json:"role"`
 	TenantAdmin bool   `json:"tenant_admin"`
+	// ExpiresAt bounds the expiry of any key this key issues or updates.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // apiKeyLimiter throttles each key separately, so one runaway integration
