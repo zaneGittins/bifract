@@ -115,3 +115,27 @@ func TestBroadcastWithoutRelay(t *testing.T) {
 		t.Fatal("local client received no data")
 	}
 }
+
+func TestBroadcastDuringUnregisterDoesNotPanic(t *testing.T) {
+	h := NewHub()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				h.deliverLocal("room", []byte("x"), "")
+			}
+		}
+	}()
+
+	for i := 0; i < 20000; i++ {
+		h.Unregister(h.Register("room", ClientInfo{}))
+	}
+	close(stop)
+	wg.Wait()
+}

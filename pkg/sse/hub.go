@@ -115,22 +115,14 @@ func (h *Hub) Broadcast(room string, event Event, excludeClientID string) {
 // by Broadcast and by the relay when replaying an event from another replica,
 // which must not be re-published.
 func (h *Hub) deliverLocal(room string, data []byte, excludeClientID string) {
+	// Sends stay under the read lock so Unregister cannot close a channel
+	// mid-send; they never block, so holding the lock is cheap.
 	h.mu.RLock()
-	clients := h.rooms[room]
-	if clients == nil {
-		h.mu.RUnlock()
-		return
-	}
-	// Snapshot client list under read lock.
-	targets := make([]*Client, 0, len(clients))
-	for _, c := range clients {
-		if c.ID != excludeClientID {
-			targets = append(targets, c)
+	defer h.mu.RUnlock()
+	for _, c := range h.rooms[room] {
+		if c.ID == excludeClientID {
+			continue
 		}
-	}
-	h.mu.RUnlock()
-
-	for _, c := range targets {
 		select {
 		case c.Send <- data:
 		default:

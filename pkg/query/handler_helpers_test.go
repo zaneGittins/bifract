@@ -442,3 +442,41 @@ func TestLogQueryAuditWithoutAuditFractal(t *testing.T) {
 	}
 	h.abandonSearch("bif-search-x") // nil client: must be a no-op too
 }
+
+// Ranges wider than time.Duration (about 292 years) used to overflow the chunk
+// arithmetic: streamChunks never terminated and histogramChunks ran backwards.
+func TestChunkingSurvivesExtremeRanges(t *testing.T) {
+	var h QueryHandler
+	start, end, err := h.parseTimeRange("0001-01-01T00:00:00Z", "9999-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan []streamChunk, 1)
+	go func() { done <- streamChunks(start, end) }()
+	var chunks []streamChunk
+	select {
+	case chunks = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("streamChunks did not terminate")
+	}
+	if len(chunks) == 0 || !chunks[0].end.Equal(end) || !chunks[len(chunks)-1].start.Equal(start) {
+		t.Fatalf("chunks do not span the range: %d chunks", len(chunks))
+	}
+	for i := 1; i < len(chunks); i++ {
+		if !chunks[i].end.Equal(chunks[i-1].start) || !chunks[i].start.Before(chunks[i].end) {
+			t.Fatalf("chunk %d does not abut the previous one", i)
+		}
+	}
+
+	bucketSec, bucketCount, snapStart, snapEnd := histogramWindow(start, end)
+	hc := histogramChunks(snapStart, bucketSec, bucketCount)
+	if len(hc) == 0 || !hc[0].end.Equal(snapEnd) || !hc[len(hc)-1].start.Equal(snapStart) {
+		t.Fatalf("histogram chunks do not span %v..%v", snapStart, snapEnd)
+	}
+	for i, c := range hc {
+		if !c.start.Before(c.end) {
+			t.Fatalf("histogram chunk %d runs backwards: %v..%v", i, c.start, c.end)
+		}
+	}
+}
