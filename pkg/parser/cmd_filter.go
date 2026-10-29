@@ -59,18 +59,28 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return nil
 	}
 
+	for _, a := range b.All("values") {
+		for _, e := range a.List {
+			if e.Kind == ArgList {
+				return fmt.Errorf("in(): values cannot be nested lists")
+			}
+		}
+	}
 	var values []string
 	for _, v := range b.CSV("values") {
 		values = append(values, fmt.Sprintf("'%s'", escapeString(v)))
 	}
-
-	if len(values) > 0 {
-		inExpr := fmt.Sprintf("%s IN (%s)", fieldRef, strings.Join(values, ", "))
-		if cmd.Negate {
-			inExpr = fmt.Sprintf("%s NOT IN (%s)", fieldRef, strings.Join(values, ", "))
-		}
-		ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, inExpr)
+	// No values would add no condition, so the filter would match every event.
+	if len(values) == 0 {
+		return fmt.Errorf("in() needs at least one value")
 	}
+
+	op := "IN"
+	if cmd.Negate {
+		op = "NOT IN"
+	}
+	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where,
+		fmt.Sprintf("%s %s (%s)", fieldRef, op, strings.Join(values, ", ")))
 	return nil
 }
 
