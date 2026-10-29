@@ -481,6 +481,35 @@ const QueryExecutor = {
         if (chartContainer) chartContainer.style.display = 'none';
     },
 
+    // clearResults drops the results on screen, and anything still loading them,
+    // when they no longer belong to the scope.
+    clearResults() {
+        if (window.LiveSearch && LiveSearch.active) LiveSearch.stop();
+        if (window.LogDetail) LogDetail.close();
+        this._abortQuietly();
+        if (this.currentHistRequest) this.currentHistRequest.abort();
+        this.currentHistRequest = null;
+        this.currentResults = [];
+        this.currentTimeRange = null;
+        this.currentCursor = null;
+        this.currentFractalId = null;
+        this.sortColumn = null;
+        this.sortDirection = null;
+        this.isAggregated = false;
+        this.chartType = '';
+
+        const elements = this.getElements();
+        if (elements.resultsTable) elements.resultsTable.innerHTML = '';
+        if (elements.resultsCount) elements.resultsCount.textContent = '';
+        if (elements.executionTime) elements.executionTime.textContent = '';
+        if (elements.pageInfo) elements.pageInfo.textContent = '';
+        if (elements.paginationControls) elements.paginationControls.style.display = 'none';
+        this._resetResultChrome(elements);
+        this._updateLoadMoreButton(false);
+        if (window.Timeline) Timeline.hide();
+        this.syncResultControls();
+    },
+
     // _startLive hands the main search to LiveSearch, leaving the same state a
     // finished run would: no request or loading chrome in flight, and the current
     // range, scope and cursor describing this search for field stats and links.
@@ -2268,7 +2297,7 @@ const QueryExecutor = {
 
     // Re-execute current query when fractal context changes
     onFractalChange(retryCount = 0) {
-        // Add small delay to ensure fractal context is fully updated
+        // Deferred a turn so the switching caller can show the search view first.
         setTimeout(() => {
             // Nothing to restore or re-run without a scope (listing level).
             if (!FractalContext.hasScope()) return;
@@ -2278,11 +2307,16 @@ const QueryExecutor = {
 
             const elements = this.getElements();
 
-            // If we have pending share data from fractal switch, process it now
+            // A share link waiting on a switch runs only in the scope it named; a
+            // switch that landed anywhere else abandons it.
             if (this.pendingShareData) {
-                this.loadShareDataIntoUI(this.pendingShareData);
+                const share = this.pendingShareData;
                 this.pendingShareData = null;
-                return;
+                if (share.contextId === FractalContext.currentFractal.id) {
+                    this.loadShareDataIntoUI(share);
+                    return;
+                }
+                this.isProcessingSharedQuery = false;
             }
 
             // Check for deferred share links now that data may be loaded
@@ -2322,7 +2356,12 @@ const QueryExecutor = {
                 // If no query is present and no shared query is loading, load recent logs sample
                 this.loadRecentLogsSample();
             }
-        }, 100);
+        }, 0);
+    },
+
+    // Hides the results and fields rail while a scope switch is pending.
+    setResultsHidden(hidden) {
+        document.getElementById('searchView')?.classList.toggle('scope-switching', hidden);
     },
 
     // Get current fractal context information for display
