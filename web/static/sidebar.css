@@ -61,9 +61,34 @@ body.results-fullscreen .sidebar {
     border-radius: 4px;
 }
 
-.sb-logo img {
+.sb-logo svg {
     display: block;
-    border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .sb-logo-spokes,
+    .sb-logo-accent {
+        transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    .sb-logo-spokes {
+        transform-origin: 32px 31.4px;
+    }
+
+    .sb-logo:hover .sb-logo-spokes,
+    .sb-logo:focus-visible .sb-logo-spokes {
+        transform: rotate(180deg);
+    }
+
+    .sb-logo:hover .sb-logo-accent-tl,
+    .sb-logo:focus-visible .sb-logo-accent-tl {
+        transform: translate(-1.2px, -1.2px);
+    }
+
+    .sb-logo:hover .sb-logo-accent-br,
+    .sb-logo:focus-visible .sb-logo-accent-br {
+        transform: translate(1.2px, 1.2px);
+    }
 }
 
 .sb-scope {
