@@ -306,6 +306,7 @@ var presetFor = map[time.Duration]string{
 	12 * time.Hour:      "12h",
 	24 * time.Hour:      "24h",
 	7 * 24 * time.Hour:  "7d",
+	14 * 24 * time.Hour: "14d",
 	30 * 24 * time.Hour: "30d",
 }
 

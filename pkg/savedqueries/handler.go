@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -88,8 +89,10 @@ func normalizeVisibility(v string) string {
 
 var validRangeTypes = map[string]bool{
 	"5m": true, "15m": true, "30m": true, "1h": true, "2h": true, "4h": true,
-	"6h": true, "12h": true, "24h": true, "7d": true, "30d": true,
+	"6h": true, "12h": true, "24h": true, "7d": true, "14d": true, "30d": true,
 	"relative": true, "custom": true, "all": true, "live": true,
+	"today": true, "yesterday": true, "this_week": true, "last_week": true,
+	"this_month": true, "last_month": true,
 }
 
 var validRelativeUnits = map[string]bool{
@@ -111,7 +114,7 @@ func rangeArgs(timeRange, customStart, customEnd, relativeUnit string, relativeN
 		ce = parseTime(customEnd)
 	case "relative":
 		unit := strings.ToLower(strings.TrimSpace(relativeUnit))
-		if relativeN != nil && *relativeN > 0 && validRelativeUnits[unit] {
+		if relativeN != nil && *relativeN > 0 && *relativeN <= math.MaxInt32 && validRelativeUnits[unit] {
 			rn = *relativeN
 			ru = unit
 		}

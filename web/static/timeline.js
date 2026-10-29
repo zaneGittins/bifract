@@ -642,10 +642,6 @@ const Timeline = {
         const customEnd   = endTime.toISOString();
 
         if (window.TimePicker) {
-            const absStart = document.getElementById('tpAbsStart');
-            const absEnd   = document.getElementById('tpAbsEnd');
-            if (absStart) absStart.value = TimePicker._toDatetimeLocal(customStart);
-            if (absEnd)   absEnd.value   = TimePicker._toDatetimeLocal(customEnd);
             TimePicker._applyAndExecute({ type: 'custom', customStart, customEnd });
         }
 
