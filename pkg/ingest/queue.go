@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -48,10 +49,23 @@ const (
 	// accumTick is how often the accumulator evaluates age and cap triggers.
 	accumTick = time.Second
 
-	// Retry settings for failed batch inserts.
-	maxInsertRetries  = 3
-	initialRetryDelay = 500 * time.Millisecond
-	maxRetryDelay     = 5 * time.Second
+	// Retry settings for failed batch inserts. The window rides out a
+	// ClickHouse restart. Shutdown sets one deadline for the whole drain, so it
+	// fits the container grace period however many buckets are buffered.
+	initialRetryDelay   = 500 * time.Millisecond
+	maxRetryDelay       = 5 * time.Second
+	insertRetryWindow   = 2 * time.Minute
+	shutdownRetryWindow = 15 * time.Second
+	// insertTimeout bounds one attempt; minAttemptTimeout keeps an attempt near a
+	// deadline from being cut off before a healthy insert can finish.
+	// maxRejectedAttempts limits retries of a ClickHouse error a restart will not
+	// fix, so one bad batch cannot hold a worker and the health gate.
+	maxRejectedAttempts = 3
+	// insertErrorNotifyAfter keeps a blip the retries ride out from raising a
+	// critical notification; a dropped batch notifies at once.
+	insertErrorNotifyAfter = 30 * time.Second
+	insertTimeout          = 60 * time.Second
+	minAttemptTimeout      = 5 * time.Second
 
 	// consecutiveFailures above this threshold signal the queue is unhealthy.
 	unhealthyThreshold = 3
@@ -231,6 +245,23 @@ type IngestQueue struct {
 	lastInsertErrNotify atomic.Int64
 
 	notifWriter notifWriterIface
+
+	retry retryPolicy
+	// retrying counts workers inside a failing retry loop; while any is, the
+	// health gate stays shut even if one hung attempt outlasts the cooldown.
+	retrying atomic.Int64
+	// drainDeadline (unix nanos, 0 until Shutdown) ends retries for every bucket.
+	drainDeadline atomic.Int64
+	// failingSince (unix seconds, 0 when healthy) starts the current failure streak.
+	failingSince atomic.Int64
+
+	// closeMu orders Enqueue's sends before Shutdown closes q.ch.
+	closeMu sync.RWMutex
+	closed  bool
+}
+
+type retryPolicy struct {
+	initialDelay, maxDelay, window, shutdownWindow time.Duration
 }
 
 type notifWriterIface interface {
@@ -401,6 +432,7 @@ func NewIngestQueue(db *storage.ClickHouseClient, bufferSize, workers int) *Inge
 		flushInterval: time.Duration(envInt("BIFRACT_INGEST_FLUSH_SECONDS", int(defaultFlushInterval/time.Second))) * time.Second,
 		bufferBytes:   int64(envInt("BIFRACT_INGEST_BUFFER_BYTES", defaultBufferBytes)),
 		maxKeys:       envInt("BIFRACT_INGEST_MAX_KEYS", defaultMaxKeys),
+		retry:         retryPolicy{initialRetryDelay, maxRetryDelay, insertRetryWindow, shutdownRetryWindow},
 	}
 	q.cpuState = pressureState{label: "CPU", reason: "cpu_pressure",
 		notif: "ingest.cpu_pressure", title: "Ingest CPU Backpressure Active"}
@@ -441,14 +473,13 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 	// stuck when ClickHouse comes back but no worker has had a chance to
 	// succeed (because this gate was blocking all new batches).
 	if q.consecutiveFailures.Load() >= unhealthyThreshold {
-		if time.Now().Unix()-q.lastFailureUnix.Load() > int64(unhealthyCooldown.Seconds()) {
-			q.consecutiveFailures.Store(0)
-		} else {
+		if q.insertsFailing() {
 			n := int64(len(logs))
 			q.Metrics.QueueDrops.Add(n)
 			q.pendingDropsQueue.Add(n)
 			return false
 		}
+		q.consecutiveFailures.Store(0)
 	}
 
 	// CPU backpressure: reject when ClickHouse CPU is saturated.
@@ -506,6 +537,13 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 	// it at parse time, so this is the fallback for one that does not.
 	for i := range logs {
 		logs[i].IngestTimestamp = logs[i].IngestTime()
+	}
+
+	q.closeMu.RLock()
+	defer q.closeMu.RUnlock()
+	if q.closed {
+		q.Metrics.QueueDrops.Add(int64(len(logs)))
+		return false
 	}
 
 	// Archive tee (fail-closed, spool-before-ack): when archiving is enabled,
@@ -568,10 +606,17 @@ func (q *IngestQueue) Healthy() bool {
 	if q.cpuState.Active() || q.memState.Active() || q.diskState.Active() || q.spoolState.Active() {
 		return false
 	}
+	return !q.insertsFailing()
+}
+
+// insertsFailing reports whether recent inserts failed enough to shed load: a
+// worker is still retrying, or the last failure is within the cooldown.
+func (q *IngestQueue) insertsFailing() bool {
 	if q.consecutiveFailures.Load() < unhealthyThreshold {
-		return true
+		return false
 	}
-	return time.Now().Unix()-q.lastFailureUnix.Load() > int64(unhealthyCooldown.Seconds())
+	return q.retrying.Load() > 0 ||
+		time.Now().Unix()-q.lastFailureUnix.Load() <= int64(unhealthyCooldown.Seconds())
 }
 
 // monitorCPU runs the backpressure monitors on a fixed interval until Shutdown.
@@ -1019,8 +1064,12 @@ func (q *IngestQueue) flushDropEvents() {
 // draining remaining batches.
 func (q *IngestQueue) Shutdown() {
 	log.Println("[Ingest Queue] Shutting down, draining remaining batches...")
+	q.beginDrain()
 	close(q.stop)
+	q.closeMu.Lock()
+	q.closed = true
 	close(q.ch)
+	q.closeMu.Unlock()
 	q.wg.Wait()
 	log.Printf("[Ingest Queue] Shutdown complete. Inserted: %d, Errors: %d, Drops: %d, Retries: %d",
 		q.Metrics.Inserted.Load(), q.Metrics.InsertErrors.Load(),
@@ -1063,7 +1112,7 @@ func (q *IngestQueue) ConsecutiveFailures() int64 { return q.consecutiveFailures
 // worker inserts ready partition buckets produced by the accumulator. Each
 // bucket holds entries for exactly one (fractal_id, day) partition, so each
 // insert lands in one partition and creates one part.
-// Failed inserts are retried with exponential backoff before being dropped.
+// Failed inserts are retried (see insertWithRetry) before being dropped.
 func (q *IngestQueue) worker(id int) {
 	defer q.wg.Done()
 
@@ -1073,72 +1122,147 @@ func (q *IngestQueue) worker(id int) {
 			continue
 		}
 
-		inserted := false
-		delay := initialRetryDelay
-
-		for attempt := 0; attempt < maxInsertRetries; attempt++ {
-			if attempt > 0 {
-				q.Metrics.Retries.Add(1)
-				log.Printf("[Ingest Queue] Worker %d: retrying %d logs (attempt %d/%d) after %v",
-					id, len(buf), attempt+1, maxInsertRetries, delay)
-				time.Sleep(delay)
-				delay *= 2
-				if delay > maxRetryDelay {
-					delay = maxRetryDelay
-				}
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			err := q.db.InsertLogs(ctx, buf)
-			cancel()
-
-			if err == nil {
-				q.Metrics.Inserted.Add(int64(len(buf)))
-				q.consecutiveFailures.Store(0)
-				inserted = true
-
-				// A bucket is single-fractal by construction, so quota and
-				// last-ingested bookkeeping need no per-entry grouping.
-				fid := bucket.key.fractalID
-				if q.quotaManager != nil {
-					var rawBytes int64
-					for i := range buf {
-						rawBytes += int64(len(buf[i].RawLog))
-					}
-					q.quotaManager.RecordInsert(fid, rawBytes, int64(len(buf)))
-				}
-
-				break
-			}
-
-			log.Printf("[Ingest Queue] Worker %d: failed to insert %d logs (attempt %d/%d): %v",
-				id, len(buf), attempt+1, maxInsertRetries, err)
-		}
-
-		if !inserted {
+		if !q.insertWithRetry(id, bucket) {
 			q.Metrics.InsertErrors.Add(int64(len(buf)))
-			failures := q.consecutiveFailures.Add(1)
-			q.lastFailureUnix.Store(time.Now().Unix())
+			q.notifyInsertErrors(fmt.Sprintf("Dropped %d logs that could not be inserted into ClickHouse", len(buf)))
 			q.writeSystemEvent("ingest.insert_error", map[string]string{
 				"worker":     fmt.Sprintf("%d", id),
 				"batch_size": fmt.Sprintf("%d", len(buf)),
 			})
-			// Reassert while inserts keep failing so the notification cannot age
-			// out mid-outage, rate-limited so a failing ClickHouse does not cost
-			// one Postgres write per failed batch.
-			if failures >= unhealthyThreshold && q.notifWriter != nil {
-				now := time.Now().Unix()
-				if last := q.lastInsertErrNotify.Load(); now-last >= 60 &&
-					q.lastInsertErrNotify.CompareAndSwap(last, now) {
-					go q.notifWriter.WriteSustained("ingest.insert_errors", "critical",
-						"Ingest Insert Errors",
-						fmt.Sprintf("%d consecutive insert failures; ingestion is returning 429 and logs are being rejected", failures),
-						criticalReassert)
-				}
-			}
 		}
 
 		// Release the bucket's backing array before waiting on the next one.
 		bucket.entries = nil
+	}
+}
+
+// insertWithRetry inserts a bucket, retrying with backoff until the retry window
+// closes. Every failed attempt counts toward the health gate, so Enqueue sheds
+// load while ClickHouse is down instead of acking logs it cannot write.
+func (q *IngestQueue) insertWithRetry(id int, bucket *partBucket) bool {
+	p := q.retry
+	buf := bucket.entries
+	window := time.Now().Add(p.window)
+	delay := p.initialDelay
+	stop := q.stop
+	failing := false
+	defer func() {
+		if failing {
+			q.retrying.Add(-1)
+		}
+	}()
+
+	for attempt := 1; ; attempt++ {
+		// Past the shutdown deadline with ClickHouse failing, an attempt would
+		// only spend grace period that later shutdown steps need.
+		if q.drainExpired() && q.consecutiveFailures.Load() > 0 {
+			log.Printf("[Ingest Queue] Worker %d: dropping %d logs at shutdown, ClickHouse inserts are failing", id, len(buf))
+			return false
+		}
+
+		ctx, cancel := q.attemptContext(window)
+		err := q.db.InsertLogs(ctx, buf)
+		cancel()
+
+		if err == nil {
+			q.Metrics.Inserted.Add(int64(len(buf)))
+			q.consecutiveFailures.Store(0)
+			q.failingSince.Store(0)
+			// A bucket is single-fractal by construction, so quota and
+			// last-ingested bookkeeping need no per-entry grouping.
+			if q.quotaManager != nil {
+				var rawBytes int64
+				for i := range buf {
+					rawBytes += int64(len(buf[i].RawLog))
+				}
+				q.quotaManager.RecordInsert(bucket.key.fractalID, rawBytes, int64(len(buf)))
+			}
+			return true
+		}
+
+		if errors.Is(err, storage.ErrInvalidBatch) {
+			log.Printf("[Ingest Queue] Worker %d: dropping %d logs that cannot be inserted: %v", id, len(buf), err)
+			return false
+		}
+
+		if !failing {
+			failing = true
+			q.retrying.Add(1)
+		}
+		q.consecutiveFailures.Add(1)
+		now := time.Now().Unix()
+		q.lastFailureUnix.Store(now)
+		q.failingSince.CompareAndSwap(0, now)
+		if now-q.failingSince.Load() >= int64(insertErrorNotifyAfter.Seconds()) {
+			q.notifyInsertErrors(fmt.Sprintf("ClickHouse inserts have been failing for over %v; ingestion is returning 429 while retries continue", insertErrorNotifyAfter))
+		}
+		if !storage.IsTransientInsertError(err) && attempt >= maxRejectedAttempts {
+			log.Printf("[Ingest Queue] Worker %d: dropping %d logs rejected by ClickHouse: %v", id, len(buf), err)
+			return false
+		}
+		if !time.Now().Before(q.retryDeadline(window)) {
+			log.Printf("[Ingest Queue] Worker %d: dropping %d logs after %d failed attempts: %v", id, len(buf), attempt, err)
+			return false
+		}
+		log.Printf("[Ingest Queue] Worker %d: failed to insert %d logs (attempt %d), retrying in %v: %v",
+			id, len(buf), attempt, delay, err)
+		q.Metrics.Retries.Add(1)
+
+		select {
+		case <-time.After(delay):
+		case <-stop:
+			// Shutting down: wake now and retry against the drain deadline.
+			stop = nil
+		}
+		delay = min(delay*2, p.maxDelay)
+	}
+}
+
+// beginDrain starts the shared shutdown deadline for all retries.
+func (q *IngestQueue) beginDrain() {
+	q.drainDeadline.Store(time.Now().Add(q.retry.shutdownWindow).UnixNano())
+}
+
+func (q *IngestQueue) drainExpired() bool {
+	d := q.drainDeadline.Load()
+	return d != 0 && time.Now().UnixNano() >= d
+}
+
+// retryDeadline is the bucket's own window, cut short by the drain deadline.
+func (q *IngestQueue) retryDeadline(window time.Time) time.Time {
+	if d := q.drainDeadline.Load(); d != 0 {
+		if drain := time.Unix(0, d); drain.Before(window) {
+			return drain
+		}
+	}
+	return window
+}
+
+// attemptContext bounds one insert by insertTimeout and the retry deadline, but
+// never below minAttemptTimeout.
+func (q *IngestQueue) attemptContext(window time.Time) (context.Context, context.CancelFunc) {
+	now := time.Now()
+	end := q.retryDeadline(window)
+	if limit := now.Add(insertTimeout); end.After(limit) {
+		end = limit
+	}
+	if floor := now.Add(minAttemptTimeout); end.Before(floor) {
+		end = floor
+	}
+	return context.WithDeadline(context.Background(), end)
+}
+
+// notifyInsertErrors reasserts the insert-failure notification while inserts keep
+// failing so it cannot age out mid-outage, rate-limited so a failing ClickHouse
+// does not cost one Postgres write per failed attempt.
+func (q *IngestQueue) notifyInsertErrors(message string) {
+	if q.notifWriter == nil {
+		return
+	}
+	now := time.Now().Unix()
+	if last := q.lastInsertErrNotify.Load(); now-last >= 60 &&
+		q.lastInsertErrNotify.CompareAndSwap(last, now) {
+		go q.notifWriter.WriteSustained("ingest.insert_errors", "critical",
+			"Ingest Insert Errors", message, criticalReassert)
 	}
 }
