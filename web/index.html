@@ -57,7 +57,19 @@
     <aside id="sidebar" class="sidebar" aria-label="Sidebar">
         <div class="sb-top">
             <a class="sb-logo" href="#fractalListing" data-home data-tip="Home" aria-label="Home">
-                <img src="/static/logo.png" alt="" width="32" height="32">
+                <svg width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                    <mask id="sbLogoMask">
+                        <rect width="64" height="64" fill="#fff"/>
+                        <g stroke="#000" stroke-linecap="round">
+                            <g class="sb-logo-spokes" stroke-width="2.4">
+                                <path d="M32 17.8V45.1M20.75 22.9L43.25 39.8M43.25 22.9L20.75 39.8"/>
+                            </g>
+                            <path class="sb-logo-accent sb-logo-accent-tl" stroke-width="2" d="M14.5 19.8L19.7 14.6"/>
+                            <path class="sb-logo-accent sb-logo-accent-br" stroke-width="2" d="M44.3 47.9L49.6 42.7"/>
+                        </g>
+                    </mask>
+                    <rect x="7.9" y="7.8" width="48.2" height="48" rx="11" fill="#836bff" mask="url(#sbLogoMask)"/>
+                </svg>
             </a>
             <div id="sidebarScope" class="sb-scope"></div>
         </div>
