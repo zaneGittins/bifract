@@ -117,12 +117,68 @@ test.describe('command palette', () => {
     await expect(page.locator('.pal-group', { hasText: 'Actions' })).toHaveCount(1);
   });
 
-  test('the Queries button opens the palette on queries', async ({ page }) => {
+  test('the Queries button opens a saved-first browse view', async ({ page }) => {
     await openQuery(page);
+    const name = `palette browse ${Date.now()}`;
+    const res = await page.request.post('/api/v1/saved-queries', {
+      headers: await scopeHeader(page),
+      data: { name, query_text: 'source=palette-browse', description: 'browse description', tags: ['browse-tag'], visibility: 'personal' },
+    });
+    const saved = (await res.json()).data;
+    try {
+      await page.locator('#queriesMenuBtn').click();
+      await expect(page.locator('#palette')).toBeVisible();
+      await expect(page.locator('#paletteInput')).toBeFocused();
+      await expect(page.locator('#paletteTabs [role="tab"][aria-selected="true"]')).toContainText('Saved');
+      // Browsing has no side preview: rows carry the detail themselves.
+      await expect(page.locator('#palettePreview')).toBeHidden();
+
+      await page.locator('#paletteInput').fill(name);
+      const row = page.locator('.pal-item.active');
+      await expect(row).toContainText(name);
+      await expect(row).toContainText('browse description');
+      await expect(row).toContainText('source=palette-browse');
+      await expect(row).toContainText('browse-tag');
+      await expect(row.locator('button', { hasText: 'Edit' })).toBeVisible();
+    } finally {
+      await page.request.delete(`/api/v1/saved-queries/${saved.id}`, { headers: await scopeHeader(page) });
+    }
+  });
+
+  test('Tab switches browse tabs and Backspace leaves browsing', async ({ page }) => {
+    await openQuery(page);
+    await recordHistory(page, `source=palette-tabs-${Date.now()}`);
     await page.locator('#queriesMenuBtn').click();
-    await expect(page.locator('#palette')).toBeVisible();
-    await expect(page.locator('#paletteScope')).toContainText('Queries');
-    await expect(page.locator('#paletteInput')).toBeFocused();
+    await expect(page.locator('#paletteTabs [aria-selected="true"]')).toContainText('Saved');
+
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#paletteTabs [aria-selected="true"]')).toContainText('Recent');
+    await expect(page.locator('.pal-item').first()).toContainText('source=palette-');
+    await page.keyboard.press('Shift+Tab');
+    await expect(page.locator('#paletteTabs [aria-selected="true"]')).toContainText('Saved');
+
+    await page.keyboard.press('Backspace');
+    await expect(page.locator('#paletteTabs')).toBeHidden();
+    await expect(page.locator('#palettePreview')).toBeVisible();
+  });
+
+  test('a row button acts on its own row', async ({ page }) => {
+    await openQuery(page);
+    const text = `source=palette-rowbtn-${Date.now()}`;
+    await recordHistory(page, text);
+    await page.locator('#queriesMenuBtn').click();
+    await page.keyboard.press('Tab');
+    const row = page.locator('.pal-item', { hasText: text });
+    await row.hover();
+    await row.locator('button', { hasText: 'Save as' }).click();
+    const form = page.locator('#palettePreview .pal-panel');
+    await expect(form).toBeVisible();
+    await expect(form.locator('.pal-code')).toContainText(text);
+  });
+
+  test('the Queries button no longer advertises the palette shortcut', async ({ page }) => {
+    await openQuery(page);
+    await expect(page.locator('#queriesMenuBtn kbd, #queriesMenuBtn .toolbar-menu-kbd')).toHaveCount(0);
   });
 
   test('Cmd/Ctrl+S saves the editor query from the palette', async ({ page }) => {
