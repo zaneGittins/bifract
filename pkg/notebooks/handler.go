@@ -3,6 +3,7 @@ package notebooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -60,8 +61,7 @@ func (h *NotebookHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, nb) {
 		return
 	}
 
@@ -109,44 +109,20 @@ func forbidden(w http.ResponseWriter) {
 	api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
 }
 
-// requireRoleOnFractal checks the user has the required role on a specific fractal.
-func (h *NotebookHandler) requireRoleOnFractal(r *http.Request, fractalID string, required rbac.Role) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil {
-		return false
-	}
-	if user.IsAdmin {
-		return true
-	}
-	// API key users have their role pre-resolved by the auth middleware;
-	// querying fractal_permissions would fail because the synthetic
-	// "apikey_<id>" username has no DB entries.
-	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-		fractalRole := rbac.RoleFromContext(r.Context())
-		return rbac.HasAccess(user, fractalRole, required)
-	}
-	if h.rbacResolver == nil {
-		fractalRole := rbac.RoleFromContext(r.Context())
-		return rbac.HasAccess(user, fractalRole, required)
-	}
-	role := h.rbacResolver.ResolveRole(r.Context(), user, fractalID)
-	return rbac.HasAccess(user, role, required)
+// hasObjectRole checks the user has the required role on a fractal or prism
+// that owns an object, which need not be the request's scope.
+func (h *NotebookHandler) hasObjectRole(r *http.Request, fractalID, prismID string, required rbac.Role) bool {
+	user, _ := r.Context().Value("user").(*storage.User)
+	return rbac.HasAccess(user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required)
 }
 
-// requireRoleOnPrism checks the user has the required role on a specific prism.
-func (h *NotebookHandler) requireRoleOnPrism(r *http.Request, prismID string, required rbac.Role) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil {
+// requireReadable gates a read of a notebook on viewer for its scope.
+func (h *NotebookHandler) requireReadable(w http.ResponseWriter, r *http.Request, nb *storage.Notebook) bool {
+	if !h.hasObjectRole(r, nb.FractalID, nb.PrismID, rbac.RoleViewer) {
+		forbidden(w)
 		return false
 	}
-	if user.IsAdmin {
-		return true
-	}
-	if h.rbacResolver == nil {
-		prismRole := rbac.PrismRoleFromContext(r.Context())
-		return rbac.HasAccess(user, prismRole, required)
-	}
-	return rbac.HasAccess(user, h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID), required)
+	return true
 }
 
 // requireEditable gates a write on a notebook: analyst on its scope, and not
@@ -168,13 +144,7 @@ func (h *NotebookHandler) requireEditable(w http.ResponseWriter, r *http.Request
 // canWrite is the role half of requireEditable, for the few callers that report
 // editability rather than enforce it.
 func (h *NotebookHandler) canWrite(r *http.Request, nb *storage.Notebook) bool {
-	if nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleAnalyst) {
-		return false
-	}
-	if nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleAnalyst) {
-		return false
-	}
-	return true
+	return h.hasObjectRole(r, nb.FractalID, nb.PrismID, rbac.RoleAnalyst)
 }
 
 // Response is the shared API envelope. The alias keeps the package-local
@@ -208,23 +178,17 @@ func (h *NotebookHandler) HandleListNotebooks(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Re-check access on the scope every request. The scope was authorized when
-	// it was selected, but permissions can be revoked while the session lives on.
-	if selectedPrism != "" {
-		if !h.requireRoleOnPrism(r, selectedPrism, rbac.RoleViewer) {
-			forbidden(w)
-			return
-		}
-	} else if selectedFractal != "" {
-		if !h.requireRoleOnFractal(r, selectedFractal, rbac.RoleViewer) {
-			forbidden(w)
-			return
-		}
-	} else {
+	if selectedFractal == "" && selectedPrism == "" {
 		// Neither scope is selected, so there is nothing to authorize and
 		// nothing to list. Reported as a bad request, matching the other
 		// handlers here, rather than as a scope lookup that fails downstream.
 		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return
+	}
+	// Re-check access on the scope every request. The scope was authorized when
+	// it was selected, but permissions can be revoked while the session lives on.
+	if !h.hasObjectRole(r, selectedFractal, selectedPrism, rbac.RoleViewer) {
+		forbidden(w)
 		return
 	}
 
@@ -382,8 +346,7 @@ func (h *NotebookHandler) HandleGetNotebook(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Verify user has access to the notebook's fractal
-	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, notebook) {
 		return
 	}
 
@@ -416,8 +379,7 @@ func (h *NotebookHandler) HandleGetNotebookSummary(w http.ResponseWriter, r *htt
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, notebook) {
 		return
 	}
 
@@ -712,7 +674,7 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 	// silently dropping what someone typed.
 	if req.Content != nil {
 		existing, err := h.pg.GetNotebookSection(r.Context(), sectionID)
-		if err != nil {
+		if err != nil || existing.NotebookID != notebookID {
 			api.WriteError(w, http.StatusNotFound, "Section not found")
 			return
 		}
@@ -732,7 +694,7 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 			chartConfigJSON = &s
 		}
 	}
-	err = h.pg.UpdateNotebookSection(r.Context(), sectionID, storage.NotebookSectionUpdate{
+	err = h.pg.UpdateNotebookSection(r.Context(), notebookID, sectionID, storage.NotebookSectionUpdate{
 		Title:           clampSectionTitle(req.Title),
 		Content:         req.Content,
 		RenderedContent: renderedContent,
@@ -741,6 +703,10 @@ func (h *NotebookHandler) HandleUpdateSection(w http.ResponseWriter, r *http.Req
 		EventTime:       normalizeEventTime(req.EventTime),
 		ClearEventTime:  req.ClearEventTime,
 	})
+	if errors.Is(err, storage.ErrNotebookSectionNotFound) {
+		api.WriteError(w, http.StatusNotFound, "Section not found")
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to update section")
 		return
@@ -929,8 +895,7 @@ func (h *NotebookHandler) HandleUpdatePresence(w http.ResponseWriter, r *http.Re
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, nb) {
 		return
 	}
 
@@ -954,8 +919,7 @@ func (h *NotebookHandler) HandleGetPresence(w http.ResponseWriter, r *http.Reque
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, nb) {
 		return
 	}
 
@@ -1131,7 +1095,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			return
 		}
 
-		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, storage.NotebookSectionUpdate{Title: section.Title, Content: &result})
+		err = h.pg.UpdateNotebookSection(r.Context(), notebookID, sectionID, storage.NotebookSectionUpdate{Title: section.Title, Content: &result})
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "Failed to save attack chain summary")
 			return
@@ -1150,7 +1114,7 @@ func (h *NotebookHandler) HandleGenerateAISummary(w http.ResponseWriter, r *http
 			return
 		}
 
-		err = h.pg.UpdateNotebookSection(r.Context(), sectionID, storage.NotebookSectionUpdate{Title: section.Title, Content: &summary})
+		err = h.pg.UpdateNotebookSection(r.Context(), notebookID, sectionID, storage.NotebookSectionUpdate{Title: section.Title, Content: &summary})
 		if err != nil {
 			api.WriteError(w, http.StatusInternalServerError, "Failed to save summary")
 			return
@@ -1331,8 +1295,7 @@ func (h *NotebookHandler) HandleGetNotebookTags(w http.ResponseWriter, r *http.R
 		api.WriteError(w, http.StatusNotFound, "Notebook not found")
 		return
 	}
-	if (nb.FractalID != "" && !h.requireRoleOnFractal(r, nb.FractalID, rbac.RoleViewer)) || (nb.PrismID != "" && !h.requireRoleOnPrism(r, nb.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, nb) {
 		return
 	}
 
@@ -1355,8 +1318,7 @@ func (h *NotebookHandler) HandleExportNotebook(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if (notebook.FractalID != "" && !h.requireRoleOnFractal(r, notebook.FractalID, rbac.RoleViewer)) || (notebook.PrismID != "" && !h.requireRoleOnPrism(r, notebook.PrismID, rbac.RoleViewer)) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !h.requireReadable(w, r, notebook) {
 		return
 	}
 
@@ -1797,7 +1759,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					return
 				}
 				aiTitle := "AI Attack Chain Summary"
-				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, storage.NotebookSectionUpdate{Title: &aiTitle, Content: &result}); err != nil {
+				if err := h.pg.UpdateNotebookSection(context.Background(), notebookID, aiSectionID, storage.NotebookSectionUpdate{Title: &aiTitle, Content: &result}); err != nil {
 					log.Printf("[Notebooks] Failed to save AI attack chain: %v", err)
 				}
 			} else {
@@ -1807,7 +1769,7 @@ func (h *NotebookHandler) HandleGenerateFromComments(w http.ResponseWriter, r *h
 					return
 				}
 				aiTitle := "AI Summary"
-				if err := h.pg.UpdateNotebookSection(context.Background(), aiSectionID, storage.NotebookSectionUpdate{Title: &aiTitle, Content: &summary}); err != nil {
+				if err := h.pg.UpdateNotebookSection(context.Background(), notebookID, aiSectionID, storage.NotebookSectionUpdate{Title: &aiTitle, Content: &summary}); err != nil {
 					log.Printf("[Notebooks] Failed to save AI summary: %v", err)
 				}
 			}

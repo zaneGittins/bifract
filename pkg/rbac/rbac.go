@@ -186,6 +186,35 @@ func (r *Resolver) ResolveRole(ctx context.Context, user *storage.User, fractalI
 	return role
 }
 
+// ObjectRole returns the user's role on the fractal or prism that owns an
+// object, which need not be the request's scope. An API key holds a role only
+// on the scope it was issued for.
+func (r *Resolver) ObjectRole(ctx context.Context, user *storage.User, fractalID, prismID string) Role {
+	switch {
+	case r == nil:
+		return selectedScopeRole(ctx, user, fractalID, prismID)
+	case prismID != "":
+		return r.ResolvePrismRoleWithAdmin(ctx, user, prismID)
+	}
+	return r.ResolveRole(ctx, user, fractalID)
+}
+
+// selectedScopeRole is ObjectRole without a database: the request's role counts
+// only when the object is in the scope that role was resolved for.
+func selectedScopeRole(ctx context.Context, user *storage.User, fractalID, prismID string) Role {
+	switch {
+	case user == nil:
+		return RoleNone
+	case user.IsAdmin:
+		return RoleAdmin
+	case prismID != "" && ctx.Value("selected_prism") == prismID:
+		return PrismRoleFromContext(ctx)
+	case fractalID != "" && ctx.Value("selected_fractal") == fractalID:
+		return RoleFromContext(ctx)
+	}
+	return RoleNone
+}
+
 // apiKeyPrismRole mirrors apiKeyRole for prism scope. A machine principal has no
 // prism_permissions row, so without this every prism-scoped key resolves to RoleNone and
 // is refused on endpoints that check a prism role.

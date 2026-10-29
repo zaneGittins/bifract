@@ -730,8 +730,8 @@ func (c *PostgresClient) UpdateComment(ctx context.Context, id string, authorUse
 	result, err := c.db.ExecContext(ctx, `
 		UPDATE comments
 		SET text = COALESCE($1, text), tags = $2
-		WHERE id = $3 AND author = $4
-	`, text, tagsVal, id, authorUsername)
+		WHERE id = $3 AND author = $4 AND NOT `+inLockedNotebook,
+		text, tagsVal, id, authorUsername)
 
 	if err != nil {
 		return fmt.Errorf("failed to update comment: %w", err)
@@ -743,7 +743,7 @@ func (c *PostgresClient) UpdateComment(ctx context.Context, id string, authorUse
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("comment not found or user not authorized")
+		return c.commentWriteRefused(ctx, id, authorUsername)
 	}
 
 	return nil
@@ -752,8 +752,8 @@ func (c *PostgresClient) UpdateComment(ctx context.Context, id string, authorUse
 func (c *PostgresClient) DeleteComment(ctx context.Context, id string, authorUsername string) error {
 	result, err := c.db.ExecContext(ctx, `
 		DELETE FROM comments
-		WHERE id = $1 AND author = $2
-	`, id, authorUsername)
+		WHERE id = $1 AND author = $2 AND NOT `+inLockedNotebook,
+		id, authorUsername)
 
 	if err != nil {
 		return fmt.Errorf("failed to delete comment: %w", err)
@@ -765,18 +765,42 @@ func (c *PostgresClient) DeleteComment(ctx context.Context, id string, authorUse
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("comment not found or user not authorized")
+		return c.commentWriteRefused(ctx, id, authorUsername)
 	}
 
 	return nil
 }
 
-// DeleteCommentsByLogID deletes all comments associated with a specific log_id
-func (c *PostgresClient) DeleteCommentsByLogID(ctx context.Context, logID string) error {
+// inLockedNotebook matches a comment filed as evidence in a locked notebook,
+// which no write may change: deleting it would cascade to the notebook's section.
+const inLockedNotebook = `EXISTS (SELECT 1 FROM notebook_sections s JOIN notebooks n ON n.id = s.notebook_id
+	WHERE s.comment_id = comments.id AND n.locked_at IS NOT NULL)`
+
+// ErrCommentInLockedNotebook refuses a change to a comment filed as evidence in a locked notebook.
+var ErrCommentInLockedNotebook = errors.New("comment is evidence in a locked notebook")
+
+// commentWriteRefused says why a single-comment write matched no row. The lock
+// is named only to someone the write was otherwise open to: the author, or
+// anyone when author is empty.
+func (c *PostgresClient) commentWriteRefused(ctx context.Context, id, author string) error {
+	var locked bool
+	err := c.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM comments
+		WHERE id = $1 AND ($2 = '' OR author = $2) AND `+inLockedNotebook+`)`, id, author).Scan(&locked)
+	if err == nil && locked {
+		return ErrCommentInLockedNotebook
+	}
+	return fmt.Errorf("comment not found or user not authorized")
+}
+
+// DeleteCommentsByLogID deletes the comments on a log in one fractal or prism,
+// sparing evidence in locked notebooks.
+func (c *PostgresClient) DeleteCommentsByLogID(ctx context.Context, logID, fractalID, prismID string) error {
 	result, err := c.db.ExecContext(ctx, `
 		DELETE FROM comments
 		WHERE log_id = $1
-	`, logID)
+		  AND (($2 != '' AND fractal_id = $2::uuid) OR ($3 != '' AND prism_id = $3::uuid))
+		  AND NOT `+inLockedNotebook,
+		logID, fractalID, prismID)
 
 	if err != nil {
 		return fmt.Errorf("failed to delete comments for log_id %s: %w", logID, err)
@@ -1167,14 +1191,16 @@ func (c *PostgresClient) BulkAddTagToComments(ctx context.Context, commentIDs []
 			SET tags = array_append(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2) AND NOT ($1 = ANY(COALESCE(tags, '{}')))
 			  AND (($3 != '' AND fractal_id = $3::uuid) OR ($4 != '' AND prism_id = $4::uuid))
-		`, tag, pq.Array(commentIDs), fractalID, prismID)
+			  AND NOT `+inLockedNotebook,
+			tag, pq.Array(commentIDs), fractalID, prismID)
 	} else {
 		result, err = c.db.ExecContext(ctx, `
 			UPDATE comments
 			SET tags = array_append(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2) AND author = $3 AND NOT ($1 = ANY(COALESCE(tags, '{}')))
 			  AND (($4 != '' AND fractal_id = $4::uuid) OR ($5 != '' AND prism_id = $5::uuid))
-		`, tag, pq.Array(commentIDs), authorUsername, fractalID, prismID)
+			  AND NOT `+inLockedNotebook,
+			tag, pq.Array(commentIDs), authorUsername, fractalID, prismID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to bulk add tag: %w", err)
@@ -1194,14 +1220,16 @@ func (c *PostgresClient) BulkRemoveTagFromComments(ctx context.Context, commentI
 			SET tags = array_remove(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2)
 			  AND (($3 != '' AND fractal_id = $3::uuid) OR ($4 != '' AND prism_id = $4::uuid))
-		`, tag, pq.Array(commentIDs), fractalID, prismID)
+			  AND NOT `+inLockedNotebook,
+			tag, pq.Array(commentIDs), fractalID, prismID)
 	} else {
 		result, err = c.db.ExecContext(ctx, `
 			UPDATE comments
 			SET tags = array_remove(tags, $1), updated_at = NOW()
 			WHERE id = ANY($2) AND author = $3
 			  AND (($4 != '' AND fractal_id = $4::uuid) OR ($5 != '' AND prism_id = $5::uuid))
-		`, tag, pq.Array(commentIDs), authorUsername, fractalID, prismID)
+			  AND NOT `+inLockedNotebook,
+			tag, pq.Array(commentIDs), authorUsername, fractalID, prismID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to bulk remove tag: %w", err)
@@ -1219,12 +1247,14 @@ func (c *PostgresClient) BulkDeleteComments(ctx context.Context, commentIDs []st
 		result, err = c.db.ExecContext(ctx, `
 			DELETE FROM comments WHERE id = ANY($1)
 			  AND (($2 != '' AND fractal_id = $2::uuid) OR ($3 != '' AND prism_id = $3::uuid))
-		`, pq.Array(commentIDs), fractalID, prismID)
+			  AND NOT `+inLockedNotebook,
+			pq.Array(commentIDs), fractalID, prismID)
 	} else {
 		result, err = c.db.ExecContext(ctx, `
 			DELETE FROM comments WHERE id = ANY($1) AND author = $2
 			  AND (($3 != '' AND fractal_id = $3::uuid) OR ($4 != '' AND prism_id = $4::uuid))
-		`, pq.Array(commentIDs), authorUsername, fractalID, prismID)
+			  AND NOT `+inLockedNotebook,
+			pq.Array(commentIDs), authorUsername, fractalID, prismID)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to bulk delete comments: %w", err)
@@ -2137,8 +2167,12 @@ type NotebookSectionUpdate struct {
 	ClearEventTime  bool
 }
 
-// UpdateNotebookSection updates a notebook section
-func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID string, upd NotebookSectionUpdate) error {
+// ErrNotebookSectionNotFound means no section with that ID exists in the given notebook.
+var ErrNotebookSectionNotFound = errors.New("notebook section not found")
+
+// UpdateNotebookSection updates a section of notebookID; a section of any other
+// notebook is reported as not found.
+func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, notebookID, sectionID string, upd NotebookSectionUpdate) error {
 	setParts := []string{}
 	args := []interface{}{}
 	argIndex := 1
@@ -2180,12 +2214,12 @@ func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID st
 		return fmt.Errorf("no fields to update")
 	}
 
-	args = append(args, sectionID)
+	args = append(args, sectionID, notebookID)
 	query := fmt.Sprintf(`
 		UPDATE notebook_sections
 		SET %s, updated_at = NOW()
-		WHERE id = $%d
-	`, strings.Join(setParts, ", "), argIndex)
+		WHERE id = $%d AND notebook_id = $%d
+	`, strings.Join(setParts, ", "), argIndex, argIndex+1)
 
 	result, err := c.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -2198,7 +2232,7 @@ func (c *PostgresClient) UpdateNotebookSection(ctx context.Context, sectionID st
 	}
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("notebook section not found")
+		return ErrNotebookSectionNotFound
 	}
 
 	return nil

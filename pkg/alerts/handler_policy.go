@@ -86,16 +86,10 @@ func (h *Handler) policyScopeAccess(w http.ResponseWriter, r *http.Request, requ
 		return "", "", false
 	}
 
-	if prismID != "" {
-		if !h.requireRoleOnPrism(w, r, prismID, required) {
-			return "", "", false
-		}
-		return "", prismID, true
-	}
-	if !h.requireRoleOnFractal(w, r, fractalID, required) {
+	if !h.requireObjectRole(w, r, fractalID, prismID, required) {
 		return "", "", false
 	}
-	return fractalID, "", true
+	return fractalID, prismID, true
 }
 
 // HandlePolicyCatalog returns the fields and operators a rule can be built from.

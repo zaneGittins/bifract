@@ -62,11 +62,7 @@ func (h *Handler) changeRequestAccess(w http.ResponseWriter, r *http.Request, re
 		return nil, false
 	}
 
-	if prismID != "" {
-		if !h.requireRoleOnPrism(w, r, prismID, required) {
-			return nil, false
-		}
-	} else if !h.requireRoleOnFractal(w, r, fractalID, required) {
+	if !h.requireObjectRole(w, r, fractalID, prismID, required) {
 		return nil, false
 	}
 

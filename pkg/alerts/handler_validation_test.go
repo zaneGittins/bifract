@@ -326,7 +326,7 @@ func TestRequireRoleOnScope(t *testing.T) {
 	h := newTestHandler()
 	check := func(c caller, fractal string) int {
 		rec := httptest.NewRecorder()
-		if h.requireRoleOnFractal(rec, c.request(http.MethodGet, "", nil), fractal, "analyst") {
+		if h.requireObjectRole(rec, c.request(http.MethodGet, "", nil), fractal, "", "analyst") {
 			return 200
 		}
 		return rec.Code
@@ -362,15 +362,18 @@ func TestRequireRoleOnScope(t *testing.T) {
 
 	prismCheck := func(c caller) int {
 		rec := httptest.NewRecorder()
-		if h.requireRoleOnPrism(rec, c.request(http.MethodGet, "", nil), "p1", "analyst") {
+		if h.requireObjectRole(rec, c.request(http.MethodGet, "", nil), "", "p1", "analyst") {
 			return 200
 		}
 		return rec.Code
 	}
-	if got := prismCheck(caller{user: &storage.User{Username: "p"}, prismRole: "analyst"}); got != 200 {
+	if got := prismCheck(caller{user: &storage.User{Username: "p"}, prismRole: "analyst", prism: "p1"}); got != 200 {
 		t.Errorf("prism analyst: %d", got)
 	}
-	if got := prismCheck(caller{user: &storage.User{Username: "p"}, prismRole: "viewer"}); got != 403 {
+	if got := prismCheck(caller{user: &storage.User{Username: "p"}, prismRole: "analyst", prism: "p2"}); got != 403 {
+		t.Errorf("an analyst of another prism: %d", got)
+	}
+	if got := prismCheck(caller{user: &storage.User{Username: "p"}, prismRole: "viewer", prism: "p1"}); got != 403 {
 		t.Errorf("prism viewer: %d", got)
 	}
 	if got := prismCheck(nobody); got != 403 {

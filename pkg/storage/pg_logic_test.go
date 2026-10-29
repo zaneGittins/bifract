@@ -566,17 +566,19 @@ func TestUpdateNotebookSection(t *testing.T) {
 	p.On("UPDATE notebook_sections", fakedb.Affected(1))
 	content, tags := "body", []string{"a"}
 	at := pgTS
-	if err := c.UpdateNotebookSection(context.Background(), "S1", NotebookSectionUpdate{Content: &content, Tags: &tags, EventTime: &at, ClearEventTime: true}); err != nil {
+	if err := c.UpdateNotebookSection(context.Background(), "N1", "S1", NotebookSectionUpdate{Content: &content, Tags: &tags, EventTime: &at, ClearEventTime: true}); err != nil {
 		t.Fatal(err)
 	}
 	call := p.Calls()[0]
-	if !strings.Contains(call.Query, "SET content = $1, tags = $2, event_time = NULL, updated_at = NOW()") || !strings.Contains(call.Query, "WHERE id = $3") {
+	if !strings.Contains(call.Query, "SET content = $1, tags = $2, event_time = NULL, updated_at = NOW()") {
 		t.Errorf("query = %q: ClearEventTime wins over EventTime", call.Query)
 	}
-	if len(call.Args) != 3 {
-		t.Errorf("args = %v", call.Args)
+	// The section is matched within its notebook, so access checked on one
+	// notebook cannot be spent editing a section of another.
+	if !strings.Contains(call.Query, "WHERE id = $3 AND notebook_id = $4") || !reflect.DeepEqual(call.Args[2:], []driver.Value{"S1", "N1"}) {
+		t.Errorf("query = %q args = %v", call.Query, call.Args)
 	}
-	if err := c.UpdateNotebookSection(context.Background(), "S1", NotebookSectionUpdate{}); err == nil {
+	if err := c.UpdateNotebookSection(context.Background(), "N1", "S1", NotebookSectionUpdate{}); err == nil {
 		t.Error("an empty update must be refused")
 	}
 }
@@ -892,5 +894,93 @@ func TestGrantPermissionUpsertFallback(t *testing.T) {
 		if err == nil || err.Error() != "permission not found" {
 			t.Errorf("%s = %v", name, err)
 		}
+	}
+}
+
+// A comment filed as evidence is part of its notebook, and deleting it cascades
+// to the section. Once the notebook is locked, no write may change or remove it,
+// whoever asks.
+func TestCommentWritesSpareLockedEvidence(t *testing.T) {
+	ctx := context.Background()
+	text := "edited"
+	ids := []string{"C1"}
+	writes := map[string]func(c *PostgresClient) error{
+		"update": func(c *PostgresClient) error { return c.UpdateComment(ctx, "C1", "bob", &text, nil) },
+		"delete": func(c *PostgresClient) error { return c.DeleteComment(ctx, "C1", "bob") },
+		"tags":   func(c *PostgresClient) error { return c.UpdateCommentTags(ctx, "C1", []string{"t"}) },
+		"bulk delete": func(c *PostgresClient) error {
+			_, err := c.BulkDeleteComments(ctx, ids, "bob", true, "F1", "")
+			return err
+		},
+		"bulk add tag": func(c *PostgresClient) error {
+			_, err := c.BulkAddTagToComments(ctx, ids, "t", "bob", false, "F1", "")
+			return err
+		},
+		"bulk remove tag": func(c *PostgresClient) error {
+			_, err := c.BulkRemoveTagFromComments(ctx, ids, "t", "bob", true, "F1", "")
+			return err
+		},
+		"delete by log": func(c *PostgresClient) error { return c.DeleteCommentsByLogID(ctx, "L1", "F1", "") },
+	}
+	for name, write := range writes {
+		c, p := newFakePostgres()
+		p.On("comments", fakedb.Affected(1))
+		if err := write(c); err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if q := p.Calls()[0].Query; !strings.Contains(q, "AND NOT "+inLockedNotebook) {
+			t.Errorf("%s: %q changes evidence in a locked notebook", name, q)
+		}
+	}
+}
+
+func TestDeleteCommentsByLogIDIsScoped(t *testing.T) {
+	c, p := newFakePostgres()
+	p.On("DELETE FROM comments", fakedb.Affected(0))
+	if err := c.DeleteCommentsByLogID(context.Background(), "L1", "", "P1"); err != nil {
+		t.Fatal(err)
+	}
+	call := p.Calls()[0]
+	if !strings.Contains(call.Query, "fractal_id = $") || !strings.Contains(call.Query, "prism_id = $") ||
+		!reflect.DeepEqual(call.Args, []driver.Value{"L1", "", "P1"}) {
+		t.Errorf("delete by log is not scoped: %q %v", call.Query, call.Args)
+	}
+}
+
+// A refused edit of locked evidence says why, rather than claiming the comment
+// is not there. Only its author learns that: anyone else gets the plain refusal.
+func TestCommentWriteRefusalNamesTheLock(t *testing.T) {
+	ctx := context.Background()
+	text := "edited"
+	writes := map[string]func(c *PostgresClient) error{
+		"update": func(c *PostgresClient) error { return c.UpdateComment(ctx, "C1", "bob", &text, nil) },
+		"delete": func(c *PostgresClient) error { return c.DeleteComment(ctx, "C1", "bob") },
+	}
+	for name, write := range writes {
+		c, p := newFakePostgres()
+		p.On("SELECT EXISTS", fakedb.Row(true))
+		p.On("comments", fakedb.Affected(0))
+		if err := write(c); !errors.Is(err, ErrCommentInLockedNotebook) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		check := p.Calls()[1]
+		if !strings.Contains(check.Query, "author = $2") || !reflect.DeepEqual(check.Args, []driver.Value{"C1", "bob"}) {
+			t.Errorf("%s: lock check %q %v is not confined to the author", name, check.Query, check.Args)
+		}
+
+		c, p = newFakePostgres()
+		p.On("SELECT EXISTS", fakedb.Row(false))
+		p.On("comments", fakedb.Affected(0))
+		if err := write(c); err == nil || errors.Is(err, ErrCommentInLockedNotebook) {
+			t.Errorf("%s: a comment that is not locked evidence: err = %v", name, err)
+		}
+	}
+
+	c, p := newFakePostgres()
+	p.On("UPDATE comments", fakedb.Affected(0))
+	p.On("SELECT EXISTS", fakedb.Row(true))
+	if err := c.UpdateCommentTags(ctx, "C1", []string{"t"}); !errors.Is(err, ErrCommentInLockedNotebook) {
+		t.Errorf("tags on locked evidence: err = %v", err)
 	}
 }
