@@ -432,7 +432,7 @@ func histogramChunks(snapStart time.Time, bucketSec, bucketCount int) []histogra
 	if step*2 > bucketCount {
 		return []histogramChunk{{
 			start: snapStart,
-			end:   snapStart.Add(time.Duration(bucketCount*bucketSec) * time.Second),
+			end:   addSeconds(snapStart, bucketCount*bucketSec),
 			loIdx: 0,
 			hiIdx: bucketCount,
 		}}
@@ -449,8 +449,8 @@ func histogramChunks(snapStart time.Time, bucketSec, bucketCount int) []histogra
 		}
 		lo := hi - n
 		chunks = append(chunks, histogramChunk{
-			start: snapStart.Add(time.Duration(lo*bucketSec) * time.Second),
-			end:   snapStart.Add(time.Duration(hi*bucketSec) * time.Second),
+			start: addSeconds(snapStart, lo*bucketSec),
+			end:   addSeconds(snapStart, hi*bucketSec),
 			loIdx: lo,
 			hiIdx: hi,
 		})
@@ -458,6 +458,12 @@ func histogramChunks(snapStart time.Time, bucketSec, bucketCount int) []histogra
 		step *= 2
 	}
 	return chunks
+}
+
+// addSeconds offsets t by whole seconds without passing through time.Duration,
+// which overflows past about 292 years.
+func addSeconds(t time.Time, sec int) time.Time {
+	return time.Unix(t.Unix()+int64(sec), int64(t.Nanosecond())).In(t.Location())
 }
 
 func NewQueryHandlerFull(db *storage.ClickHouseClient, maxRows int, fractalManager *fractals.Manager, dictManager *dictionaries.Manager, prismManager *prisms.Manager) *QueryHandler {
@@ -639,16 +645,20 @@ func streamChunks(start, end time.Time) []streamChunk {
 	hi := end
 	exclusive := false
 	for hi.After(start) {
-		lo := hi.Add(-step)
 		// Absorb a remainder smaller than half a step rather than trailing a
-		// sliver chunk behind the last full one.
-		if lo.Sub(start) < step/2 {
-			lo = start
+		// sliver chunk behind the last full one. Comparing against the
+		// remaining span stays correct where a range beyond time.Duration
+		// saturates the subtraction.
+		lo := start
+		if hi.Sub(start)-step >= step/2 {
+			lo = hi.Add(-step)
 		}
 		chunks = append(chunks, streamChunk{start: lo, end: hi, endExclusive: exclusive})
 		hi = lo
 		exclusive = true
-		step *= 2
+		if step <= math.MaxInt64/2 {
+			step *= 2
+		}
 	}
 	return chunks
 }

@@ -962,6 +962,14 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// selection rather than presentation, so a caller reading only the scan
 		// predicates would read past it.
 		plan.rowLimitByCommand = true
+		// The command may narrow the caller's cap but not lift it: the caller
+		// buffers every returned row, so head(999999999) would load them all.
+		if opts.MaxRows > 0 && !plan.ChartReadsAllRows && len(plan.outerAggregations) == 0 {
+			var n int
+			if _, err := fmt.Sscanf(activeStage.Layer.Limit, "LIMIT %d", &n); err == nil && n > opts.MaxRows {
+				activeStage.Layer.Limit = fmt.Sprintf("LIMIT %d", opts.MaxRows)
+			}
+		}
 	}
 
 	// --- Defer out-of-scope ORDER BY (window fields, join/model_lookup outputs) ---
