@@ -45,7 +45,7 @@ status_code>=400 | groupBy(status_code) | barchart()
 ## Process ancestry graph
 
 ```
-event_id=1 | table(process_guid, parent_process_guid) | graph(child=process_guid, parent=parent_process_guid)
+event_id=1 | graph(child=process_guid, parent=parent_process_guid)
 ```
 
 ## Process tree from one process

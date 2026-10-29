@@ -4,6 +4,9 @@ import (
 	"fmt"
 )
 
+// windowValueColumn holds the value modifiedzscore()/madoutlier() measure.
+const windowValueColumn = "_mz_val"
+
 // modifiedZScoreHandler handles modifiedzscore/modifiedz/mzscore(field)
 type modifiedZScoreHandler struct{}
 
@@ -88,8 +91,8 @@ func setWindowValue(arg Argument, ctx *CommandContext, name string) error {
 		return err
 	}
 	ctx.Plan.CurrentStage().Layer.Selects = append(ctx.Plan.CurrentStage().Layer.Selects,
-		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS _mz_val", fieldRef)})
-	ctx.Plan.ModifiedZScoreExpr = "_mz_val"
+		SelectExpr{Expr: fmt.Sprintf("toFloat64OrNull(%s) AS %s", fieldRef, windowValueColumn)})
+	ctx.Plan.ModifiedZScoreExpr = windowValueColumn
 	return nil
 }
 

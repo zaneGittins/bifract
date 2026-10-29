@@ -167,12 +167,11 @@ Colors each pair of `x` and `y` values by an aggregate.
 
 ## graph()
 
-Draws a top-down hierarchy from a child field and a parent field.
+Draws a top-down hierarchy from a child field and a parent field. It selects the `child`, `parent` and `labels` fields itself, so no `table()` is needed first.
 
 ```
 bifract_category="process_creation" computer_name="WKSTN-00042.corp.example.com"
 | regex(/(?<process>[^\\]+)$/, field=image)
-| table(process_guid, parent_process_guid, process)
 | graph(child=process_guid, parent=parent_process_guid, labels=[process])
 ```
 

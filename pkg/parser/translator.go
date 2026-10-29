@@ -1017,10 +1017,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 			plan.FormatterLimit = activeStage.Layer.Limit
 		}
 		// table(...) shows the columns it names. Every row still carries the ones
-		// projected for its identity and content, which are only displayed if named.
+		// projected for its identity, content and window value, which are only
+		// displayed if named.
 		if plan.TableHasExplicitColumns {
 			fieldOrder = slices.DeleteFunc(fieldOrder, func(f string) bool {
-				return rowIdentityColumns[f] && !slices.Contains(plan.TableColumns, f)
+				return (rowIdentityColumns[f] || f == windowValueColumn) && !slices.Contains(plan.TableColumns, f)
 			})
 		}
 	}
