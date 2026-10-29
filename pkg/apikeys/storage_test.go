@@ -3,6 +3,7 @@ package apikeys
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -223,7 +224,14 @@ func TestValidateAPIKey(t *testing.T) {
 	db.add(keyRow{id: "k1", keyID: "aaaa1111", keyHash: s.HashKey("bifract_alpha_good"), fractalID: fractalA, role: "analyst", createdBy: "alice", active: true, expires: &future})
 	db.add(keyRow{id: "k2", keyID: "bbbb2222", keyHash: s.HashKey("bifract_alpha_expired"), fractalID: fractalA, role: "admin", active: true, expires: &past})
 	db.add(keyRow{id: "k3", keyID: "cccc3333", keyHash: s.HashKey("bifract_alpha_disabled"), fractalID: fractalA, role: "admin", active: false})
-	db.add(keyRow{id: "k4", keyID: "dddd4444", keyHash: s.HashKey("bifract_prism_a_key"), prismID: prismA, role: "viewer", active: true})
+	db.add(keyRow{id: "k4", keyID: "dddd4444", keyHash: s.HashKey("bifract_prism_a_key"), prismID: prismA, role: "viewer", createdBy: "alice", active: true})
+	db.add(keyRow{id: "k5", keyHash: s.HashKey("bifract_alpha_bob"), fractalID: fractalA, role: "viewer", createdBy: "bob", active: true})
+	db.add(keyRow{id: "k6", keyHash: s.HashKey("bifract_alpha_orphan"), fractalID: fractalA, role: "viewer", active: true})
+	db.add(keyRow{id: "k7", keyHash: s.HashKey("bifract_admin_root"), tenant: true, createdBy: "root", active: true, expires: &future})
+	db.add(keyRow{id: "k8", keyHash: s.HashKey("bifract_admin_demoted"), tenant: true, createdBy: "alice", active: true, expires: &future})
+	db.users["alice"] = userRow{enabled: true}
+	db.users["bob"] = userRow{enabled: false}
+	db.users["root"] = userRow{enabled: true, admin: true}
 	st := NewStorage(db.client)
 
 	t.Run("valid key carries its scope and role", func(t *testing.T) {
@@ -243,6 +251,11 @@ func TestValidateAPIKey(t *testing.T) {
 			t.Error("lookup does not exclude deactivated keys")
 		}
 	})
+	t.Run("tenant key of a tenant admin", func(t *testing.T) {
+		if v, err := st.ValidateAPIKey(context.Background(), "bifract_admin_root"); err != nil || v.ID != "k7" {
+			t.Fatalf("ValidateAPIKey = (%v, %v)", v, err)
+		}
+	})
 	t.Run("prism key", func(t *testing.T) {
 		v, err := st.ValidateAPIKey(context.Background(), "bifract_prism_a_key")
 		if err != nil {
@@ -257,6 +270,11 @@ func TestValidateAPIKey(t *testing.T) {
 		{"expired key", "bifract_alpha_expired"},
 		{"deactivated key", "bifract_alpha_disabled"},
 		{"empty key", ""},
+		// A key acts for the person who issued it, so it stops when they
+		// are disabled or deleted, or for a tenant key, lose tenant admin.
+		{"creator disabled", "bifract_alpha_bob"},
+		{"creator deleted", "bifract_alpha_orphan"},
+		{"tenant key of a demoted creator", "bifract_admin_demoted"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			v, err := st.ValidateAPIKey(context.Background(), tt.key)
@@ -405,6 +423,35 @@ func TestUpdateBindsInOrder(t *testing.T) {
 	if fmt.Sprint(c.Args) != fmt.Sprint(want) {
 		t.Errorf("args = %v, want %v", c.Args, want)
 	}
+}
+
+// expires_at is a TIMESTAMP without time zone, which keeps the wall clock of
+// whatever it is given and drops the offset. An expiry sent with an offset
+// must be stored as the same instant in UTC, or it lands hours off and slips
+// past the bound a calling key's own expiry sets.
+func TestExpiryIsStoredInUTC(t *testing.T) {
+	offset, _ := time.Parse(time.RFC3339, "2027-01-01T11:30:00+02:00")
+	want := time.Date(2027, 1, 1, 9, 30, 0, 0, time.UTC)
+	stored := func(v driver.Value) {
+		t.Helper()
+		got, ok := v.(time.Time)
+		if !ok || got.Location() != time.UTC || !got.Equal(want) {
+			t.Errorf("expires_at bound as %v, want %v", v, want)
+		}
+	}
+
+	db := newKeyDB()
+	s := NewStorage(db.client)
+	if _, err := s.CreateTenantAPIKey(context.Background(), CreateAPIKeyRequest{Name: "ops", TenantAdmin: true, ExpiresAt: &offset}, "alice", "bifract_admin_x", "x"); err != nil {
+		t.Fatal(err)
+	}
+	stored(db.pg.Matching("INSERT INTO api_keys")[0].Args[7])
+
+	db.add(keyRow{id: "fk", fractalID: fractalA, active: true})
+	if _, err := s.UpdateFractalAPIKey(context.Background(), "fk", fractalA, UpdateAPIKeyRequest{ExpiresAt: &offset}); err != nil {
+		t.Fatal(err)
+	}
+	stored(db.pg.Matching("UPDATE api_keys")[0].Args[0])
 }
 
 func TestUpdateWithNoFields(t *testing.T) {

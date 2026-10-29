@@ -72,9 +72,13 @@ type keyDB struct {
 	// fractalRoles and prismRoles hold permission rows: scope id -> username -> role.
 	fractalRoles map[string]map[string]string
 	prismRoles   map[string]map[string]string
+	// users holds the users rows a key's creator is checked against.
+	users map[string]userRow
 	// failAll fails every api_keys statement.
 	failAll error
 }
+
+type userRow struct{ enabled, admin bool }
 
 func newKeyDB() *keyDB {
 	client, pg := storagetest.Postgres()
@@ -86,6 +90,7 @@ func newKeyDB() *keyDB {
 		prismNames:   map[string]string{prismA: "Prism A", prismB: "Prism B"},
 		fractalRoles: map[string]map[string]string{},
 		prismRoles:   map[string]map[string]string{},
+		users:        map[string]userRow{},
 	}
 	pg.Respond(db.respond)
 	return db
@@ -182,7 +187,7 @@ func (db *keyDB) respond(query string, args []driver.Value) (fakedb.PGResult, bo
 		return fakedb.Row(k.id), true
 	case strings.Contains(query, "ak.key_hash = $1"):
 		for _, k := range db.keys {
-			if k.keyHash == args[0] && k.active {
+			if k.keyHash == args[0] && k.active && db.creatorHolds(query, k) {
 				return fakedb.Row(k.values(db.fractalNames, db.prismNames)...), true
 			}
 		}
@@ -215,6 +220,26 @@ func (db *keyDB) respond(query string, args []driver.Value) (fakedb.PGResult, bo
 		return fakedb.Affected(0), true
 	}
 	return fakedb.PGResult{}, false
+}
+
+// creatorHolds applies the conditions query places on the key's creator: an
+// inner join on users (a LEFT JOIN would keep keys of deleted creators), its
+// enabled flag, and admin for a tenant key.
+func (db *keyDB) creatorHolds(query string, k *keyRow) bool {
+	if !regexp.MustCompile(`(^|[^T])\s+JOIN users u ON u\.username = ak\.created_by`).MatchString(query) {
+		return true
+	}
+	u, ok := db.users[k.createdBy]
+	if !ok {
+		return false
+	}
+	if strings.Contains(query, "AND u.enabled") && !u.enabled {
+		return false
+	}
+	if strings.Contains(query, "NOT ak.tenant_admin OR u.is_admin IS TRUE") && k.tenant && !u.admin {
+		return false
+	}
+	return true
 }
 
 func sortedIDs(m map[string]*keyRow) []string {

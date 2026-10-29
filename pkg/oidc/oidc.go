@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"bifract/pkg/clientip"
@@ -94,10 +94,16 @@ func LoadConfigFromEnv() *Config {
 	}
 }
 
-type stateEntry struct {
-	nonce     string
-	expiresAt time.Time
-}
+// The state cookie carries the login attempt's state and nonce. Checking the
+// callback against it binds the attempt to the browser that started it, so a
+// callback URL from someone else's login is refused (login CSRF), and nothing is
+// kept server side. Over HTTPS the __Host- prefix stops a sibling subdomain
+// from planting its own.
+const (
+	stateCookie       = "bifract_oidc"
+	secureStateCookie = "__Host-" + stateCookie
+	stateTTL          = 10 * time.Minute
+)
 
 // Handler manages OIDC authentication flow.
 type Handler struct {
@@ -109,9 +115,6 @@ type Handler struct {
 	createSess    func(username string) (string, error)
 	logAuthEvent  func(event, user, ip, detail string)
 	secureCookies bool
-
-	states   map[string]stateEntry
-	statesMu sync.Mutex
 }
 
 // NewHandler initializes the OIDC handler by performing provider discovery.
@@ -143,63 +146,52 @@ func NewHandler(cfg *Config, pg *storage.PostgresClient, createSession func(stri
 		createSess:    createSession,
 		logAuthEvent:  logEvent,
 		secureCookies: secureCookies,
-		states:        make(map[string]stateEntry),
 	}
-
-	go h.cleanupStates()
-
 	return h, nil
 }
 
-func (h *Handler) generateState() (state, nonce string, err error) {
-	stateBytes := make([]byte, 32)
-	if _, err = rand.Read(stateBytes); err != nil {
-		return "", "", err
+func randomHex() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
 	}
-	state = hex.EncodeToString(stateBytes)
-
-	nonceBytes := make([]byte, 32)
-	if _, err = rand.Read(nonceBytes); err != nil {
-		return "", "", err
-	}
-	nonce = hex.EncodeToString(nonceBytes)
-
-	h.statesMu.Lock()
-	h.states[state] = stateEntry{
-		nonce:     nonce,
-		expiresAt: time.Now().Add(10 * time.Minute),
-	}
-	h.statesMu.Unlock()
-
-	return state, nonce, nil
+	return hex.EncodeToString(b), nil
 }
 
-func (h *Handler) consumeState(state string) (nonce string, valid bool) {
-	h.statesMu.Lock()
-	defer h.statesMu.Unlock()
+func (h *Handler) stateCookieName() string {
+	if h.secureCookies {
+		return secureStateCookie
+	}
+	return stateCookie
+}
 
-	entry, ok := h.states[state]
-	if !ok || time.Now().After(entry.expiresAt) {
-		delete(h.states, state)
+func (h *Handler) setStateCookie(w http.ResponseWriter, value string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     h.stateCookieName(),
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	})
+}
+
+// consumeState clears the state cookie and returns its nonce if the callback's
+// state matches it.
+func (h *Handler) consumeState(w http.ResponseWriter, r *http.Request) (nonce string, valid bool) {
+	c, err := r.Cookie(h.stateCookieName())
+	if err != nil {
+		log.Printf("[OIDC] No state cookie: login not started in this browser, expired, or started on a host other than the redirect URL's")
 		return "", false
 	}
-	delete(h.states, state)
-	return entry.nonce, true
-}
-
-func (h *Handler) cleanupStates() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		h.statesMu.Lock()
-		now := time.Now()
-		for k, v := range h.states {
-			if now.After(v.expiresAt) {
-				delete(h.states, k)
-			}
-		}
-		h.statesMu.Unlock()
+	h.setStateCookie(w, "", -1)
+	state, nonce, ok := strings.Cut(c.Value, ".")
+	got := r.URL.Query().Get("state")
+	if !ok || state == "" || nonce == "" || subtle.ConstantTimeCompare([]byte(state), []byte(got)) != 1 {
+		return "", false
 	}
+	return nonce, true
 }
 
 // HandleConfig returns OIDC availability for the login page.
@@ -213,22 +205,24 @@ func (h *Handler) HandleConfig(w http.ResponseWriter, r *http.Request) {
 
 // HandleLogin initiates the OIDC authorization code flow.
 func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	state, nonce, err := h.generateState()
+	state, err := randomHex()
+	var nonce string
+	if err == nil {
+		nonce, err = randomHex()
+	}
 	if err != nil {
 		log.Printf("[OIDC] Failed to generate state: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	url := h.oauth2Config.AuthCodeURL(state, gooidc.Nonce(nonce))
-	http.Redirect(w, r, url, http.StatusFound)
+	h.setStateCookie(w, state+"."+nonce, int(stateTTL.Seconds()))
+	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state, gooidc.Nonce(nonce)), http.StatusFound)
 }
 
 // HandleCallback processes the OIDC provider callback after user authentication.
 func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
-	// Validate state
-	state := r.URL.Query().Get("state")
-	nonce, valid := h.consumeState(state)
+	nonce, valid := h.consumeState(w, r)
 	if !valid {
 		log.Printf("[OIDC] Invalid or expired state parameter")
 		http.Redirect(w, r, "/login.html?error=oidc_failed", http.StatusFound)

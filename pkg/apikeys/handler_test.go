@@ -220,6 +220,62 @@ func TestCreateFractalKeyFallsBackToID(t *testing.T) {
 	}
 }
 
+// A key-authenticated caller cannot give any key, itself included, an expiry
+// later than its own, so a tenant key cannot outlive the expiry its issuer
+// chose by renewing itself or minting a successor. People are not bounded.
+func TestKeyCannotOutliveCallingKey(t *testing.T) {
+	callerExpiry := time.Now().Add(time.Hour)
+	within := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	beyond := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	tenantKey := apiKeyPrincipal(&auth.ValidatedAPIKey{KeyID: "tk000001", TenantAdmin: true, CreatedBy: "root", ExpiresAt: &callerExpiry})
+
+	create := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleCreateAPIKey }, method: http.MethodPost}
+	createPrism := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleCreatePrismAPIKey }, method: http.MethodPost}
+	createTenant := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleCreateTenantAPIKey }, method: http.MethodPost}
+	update := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleUpdateAPIKey }, method: http.MethodPut}
+	updatePrism := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleUpdatePrismAPIKey }, method: http.MethodPut}
+	updateTenant := route{fn: func(h *Handler) http.HandlerFunc { return h.HandleUpdateTenantAPIKey }, method: http.MethodPut}
+	fractalIDs := []string{"id", fractalA}
+	prismIDs := []string{"id", prismA}
+
+	tests := []struct {
+		name  string
+		route route
+		body  string
+		ids   []string
+		who   principal
+		want  int
+	}{
+		{"tenant key minted beyond caller", createTenant, `{"name":"x","expires_at":"` + beyond + `"}`, nil, tenantKey, http.StatusBadRequest},
+		{"tenant key minted within caller", createTenant, `{"name":"x","expires_at":"` + within + `"}`, nil, tenantKey, http.StatusOK},
+		{"fractal key that never expires", create, `{"name":"x"}`, fractalIDs, tenantKey, http.StatusBadRequest},
+		{"fractal key beyond caller", create, `{"name":"x","expires_at":"` + beyond + `"}`, fractalIDs, tenantKey, http.StatusBadRequest},
+		{"fractal key within caller", create, `{"name":"x","expires_at":"` + within + `"}`, fractalIDs, tenantKey, http.StatusOK},
+		{"prism key that never expires", createPrism, `{"name":"x"}`, prismIDs, tenantKey, http.StatusBadRequest},
+		{"caller extends itself", updateTenant, `{"expires_at":"` + beyond + `"}`, []string{"keyId", "tk"}, tenantKey, http.StatusBadRequest},
+		{"caller shortens itself", updateTenant, `{"expires_at":"` + within + `"}`, []string{"keyId", "tk"}, tenantKey, http.StatusOK},
+		{"fractal key extended beyond caller", update, `{"expires_at":"` + beyond + `"}`, []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusBadRequest},
+		{"prism key extended beyond caller", updatePrism, `{"expires_at":"` + beyond + `"}`, []string{"id", prismA, "keyId", "pk"}, tenantKey, http.StatusBadRequest},
+		{"rename leaves expiry alone", update, `{"name":"renamed"}`, []string{"id", fractalA, "keyId", "fk"}, tenantKey, http.StatusOK},
+		{"person sets any expiry", createTenant, `{"name":"x","expires_at":"` + beyond + `"}`, nil, sessionUser(tenantAdmin), http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newKeyDB()
+			db.add(keyRow{id: "fk", fractalID: fractalA, role: "viewer", active: true})
+			db.add(keyRow{id: "pk", prismID: prismA, role: "viewer", active: true})
+			db.add(keyRow{id: "tk", tenant: true, active: true, expires: &callerExpiry})
+			rec := call(tt.route.fn(newTestHandler(db)), tt.route.method, tt.body, tt.who, tt.ids...)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body.String())
+			}
+			if tt.want != http.StatusOK && len(db.writes()) != 0 {
+				t.Fatal("refused request wrote")
+			}
+		})
+	}
+}
+
 // Writes made with an API key are credited to the person who issued the key,
 // never to the synthetic apikey_ principal, which has no users row.
 func TestCreateAttributesAPIKeyCallsToIssuer(t *testing.T) {

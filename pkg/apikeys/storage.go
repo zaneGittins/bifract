@@ -151,7 +151,7 @@ func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, use
 		INSERT INTO api_keys (name, description, key_id, key_hash, fractal_id, prism_id, created_by, expires_at, role, tenant_admin)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, storage.NullableUser(username), req.ExpiresAt, req.Role, req.TenantAdmin)
+	`, req.Name, req.Description, keyID, keyHash, fractalArg, prismArg, storage.NullableUser(username), utc(req.ExpiresAt), req.Role, req.TenantAdmin)
 
 	var id string
 	if err := row.Scan(&id); err != nil {
@@ -161,14 +161,28 @@ func (s *Storage) createAPIKey(ctx context.Context, req CreateAPIKeyRequest, use
 	return s.getAPIKeyByID(ctx, id)
 }
 
-// ValidateAPIKey checks if an API key is valid and returns associated data
+// utc converts an expiry for the TIMESTAMP column, which drops the offset of
+// whatever it is given.
+func utc(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+// ValidateAPIKey checks if an API key is valid and returns associated data. It
+// is refused once its creator is disabled or deleted, and a tenant key once its
+// creator is no longer a tenant admin.
 func (s *Storage) ValidateAPIKey(ctx context.Context, key string) (*ValidatedAPIKey, error) {
 	keyHash := s.HashKey(key)
 
 	row := s.pg.DB().QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT %s
 		%s
+		JOIN users u ON u.username = ak.created_by
 		WHERE ak.key_hash = $1 AND ak.is_active = true
+			AND u.enabled AND (NOT ak.tenant_admin OR u.is_admin IS TRUE)
 	`, selectColumns, fromClause), keyHash)
 
 	apiKey, err := scanAPIKey(row)
@@ -319,7 +333,7 @@ func (s *Storage) updateAPIKey(ctx context.Context, keyID string, scope scopeFil
 
 	if req.ExpiresAt != nil {
 		setParts = append(setParts, fmt.Sprintf("expires_at = $%d", argIndex))
-		args = append(args, *req.ExpiresAt)
+		args = append(args, *utc(req.ExpiresAt))
 		argIndex++
 	}
 

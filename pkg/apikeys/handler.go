@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -157,6 +158,10 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// The instance-wide grant belongs to no scope, so it is never issued here.
 	if req.TenantAdmin {
@@ -261,6 +266,12 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if err := req.Validate(current); err != nil {
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.ExpiresAt != nil {
+		if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	apiKey, err := h.storage.UpdateFractalAPIKey(r.Context(), keyID, fractalID, req)
@@ -425,6 +436,10 @@ func (h *Handler) HandleCreatePrismAPIKey(w http.ResponseWriter, r *http.Request
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// The instance-wide grant belongs to no scope, so it is never issued here.
 	if req.TenantAdmin {
@@ -522,6 +537,12 @@ func (h *Handler) HandleUpdatePrismAPIKey(w http.ResponseWriter, r *http.Request
 	if err := req.Validate(current); err != nil {
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.ExpiresAt != nil {
+		if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	apiKey, err := h.storage.UpdatePrismAPIKey(r.Context(), keyID, prismID, req)
@@ -635,6 +656,10 @@ func (h *Handler) HandleCreateTenantAPIKey(w http.ResponseWriter, r *http.Reques
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	fullKey, keyID, err := h.storage.GenerateAPIKey(r.Context(), TenantKeyPrefix)
 	if err != nil {
@@ -697,6 +722,12 @@ func (h *Handler) HandleUpdateTenantAPIKey(w http.ResponseWriter, r *http.Reques
 		h.sendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.ExpiresAt != nil {
+		if err := withinCallerExpiry(r, req.ExpiresAt); err != nil {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	apiKey, err := h.storage.UpdateTenantAPIKey(r.Context(), keyID, req)
 	if err != nil {
@@ -755,6 +786,20 @@ func (h *Handler) HandleToggleTenantAPIKey(w http.ResponseWriter, r *http.Reques
 }
 
 // ---- Helpers ----
+
+// withinCallerExpiry refuses an expiry later than the calling key's own, or
+// none at all, so a key cannot outlive the expiry its issuer chose by extending
+// itself or issuing a successor. People are not bounded.
+func withinCallerExpiry(r *http.Request, expires *time.Time) error {
+	caller, ok := r.Context().Value("api_key").(*auth.ValidatedAPIKey)
+	if !ok || caller.ExpiresAt == nil {
+		return nil
+	}
+	if expires == nil || expires.After(*caller.ExpiresAt) {
+		return fmt.Errorf("an API key cannot set an expiry later than its own (%s)", caller.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
 
 // getCurrentUser extracts the current user from the request context
 func (h *Handler) getCurrentUser(r *http.Request) *storage.User {
