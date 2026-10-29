@@ -265,6 +265,7 @@ type QueryPlan struct {
 	// Table command tracking
 	HasTableCmd             bool
 	TableHasExplicitColumns bool
+	TableColumns            []string // the columns table() names, as written
 	TableJoinedFields       []string // join() outputs named in table(), in the order given
 
 	// Pending conditions: classified by kind after Declare, materialized after Execute
@@ -649,9 +650,24 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 			// to the INNER JOIN, which applies exactly the same key set.
 			pf := p.modelPrefilter()
 			joinedWhere = append(slices.DeleteFunc(slices.Clone(source.Layer.Where), func(w string) bool { return w == pf }), picked)
+			// The join hashes the few picked rows and streams the model past them,
+			// rather than hashing every scored key. They carry their filters with them,
+			// so a GLOBAL join on a cluster ships only those rows.
+			star := "*"
+			if opts.IncludeShardNum {
+				star = "*, _shard_num"
+			}
+			kind := " INNER JOIN "
+			if !p.ModelLookupStrict {
+				kind = " RIGHT JOIN "
+			}
+			rowSource = "(" + p.modelJoinSource() + ") AS _mlookup" + p.globalJoin() + kind +
+				"(SELECT " + star + " FROM " + rowSource + whereClause(joinedWhere) + ") AS _outer ON " + p.modelJoinKeys(p.ModelLookupKeyExprs)
+			pending = nil
+		} else {
+			rowSource = p.joinModelAtScan(rowSource)
+			pending = append(slices.Clone(joinedWhere), p.postJoinSQL(-1, -1)...)
 		}
-		rowSource = p.joinModelAtScan(rowSource)
-		pending = append(slices.Clone(joinedWhere), p.postJoinSQL(-1, -1)...)
 	}
 
 	var sql strings.Builder
@@ -1010,35 +1026,37 @@ func (p *QueryPlan) keysLostToAggregation(source *QueryStage, keyExprs, keyField
 // Several keys against a single model column (first_seen and volume_baseline
 // encode a composite entity that way) use the model's own char(30) encoding.
 func (p *QueryPlan) modelJoinOn(left []string) string {
-	var b strings.Builder
+	kind := " INNER JOIN ("
+	if !p.ModelLookupStrict {
+		kind = " LEFT JOIN ("
+	}
+	return p.globalJoin() + kind + p.modelJoinSource() + ") AS _mlookup ON " + p.modelJoinKeys(left)
+}
+
+// globalJoin is " GLOBAL" when the model table is Distributed. Without it ClickHouse
+// refuses the double-distributed subquery outright (distributed_product_mode='deny',
+// code 288); with it the initiator reads the model across every shard once.
+func (p *QueryPlan) globalJoin() string {
 	if p.modelKeys.global {
-		// The model table is Distributed and so is the left side. Without GLOBAL,
-		// ClickHouse refuses the double-distributed subquery outright
-		// (distributed_product_mode='deny', code 288); with it the initiator reads
-		// the model across every shard once and ships that result to the shards.
-		b.WriteString(" GLOBAL")
+		return " GLOBAL"
 	}
-	if p.ModelLookupStrict {
-		b.WriteString(" INNER JOIN (")
-	} else {
-		b.WriteString(" LEFT JOIN (")
-	}
-	b.WriteString(p.modelJoinSource())
-	b.WriteString(") AS _mlookup ON ")
+	return ""
+}
+
+// modelJoinKeys is the ON condition matching key columns left to the model's.
+func (p *QueryPlan) modelJoinKeys(left []string) string {
 	right := make([]string, len(p.modelKeys.rightCols))
 	for i, c := range p.modelKeys.rightCols {
 		right[i] = "_mlookup." + c
 	}
-	if modelKeysAligned(left, right) {
-		eq := make([]string, len(right))
-		for i := range right {
-			eq[i] = left[i] + " = " + right[i]
-		}
-		b.WriteString(strings.Join(eq, " AND "))
-	} else {
-		b.WriteString(concatModelKeys(left) + " = " + concatModelKeys(right))
+	if !modelKeysAligned(left, right) {
+		return concatModelKeys(left) + " = " + concatModelKeys(right)
 	}
-	return b.String()
+	eq := make([]string, len(right))
+	for i := range right {
+		eq[i] = left[i] + " = " + right[i]
+	}
+	return strings.Join(eq, " AND ")
 }
 
 // modelJoinLayer joins the model onto the rows of a finished stage, for the stage

@@ -42,11 +42,11 @@ func translateML(t *testing.T, query string) string {
 func TestModelLookup_BareEnrichmentJoinsOnKeyExpressions(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port])`)
 
-	const on = "AS _mlookup ON fields.`src_ip`::String = _mlookup.src_ip AND fields.`dst_ip`::String = _mlookup.dst_ip AND fields.`dst_port`::String = _mlookup.dst_port"
+	const on = "ON fields.`src_ip`::String = _mlookup.src_ip AND fields.`dst_ip`::String = _mlookup.dst_ip AND fields.`dst_port`::String = _mlookup.dst_port"
 	if !strings.Contains(sql, on) {
 		t.Errorf("expected ON %s, got:\n%s", on, sql)
 	}
-	if !strings.Contains(sql, " FROM logs INNER JOIN (") {
+	if !strings.Contains(sql, "INNER JOIN (SELECT * FROM logs WHERE ") {
 		t.Errorf("expected the join to read the logs table itself, got:\n%s", sql)
 	}
 	if strings.Contains(sql, "_mlk_k") || strings.Contains(sql, "EXCEPT") {
@@ -66,7 +66,7 @@ func TestModelLookup_ThresholdReadsTheOutputColumn(t *testing.T) {
 		t.Errorf("strict: expected the threshold on the model side, got:\n%s", sql)
 	}
 	sql = translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port], require=false) | beacon_score > 0.8`)
-	if strings.Contains(sql, "beacon_score > 0.8) AS _mlookup") || mustLastIndex(t, sql, "beacon_score > 0.8") < mustIndex(t, sql, "_mlookup ON") {
+	if strings.Contains(sql, "beacon_score > 0.8) AS _mlookup") || mustLastIndex(t, sql, "beacon_score > 0.8") < joinIndex(t, sql) {
 		t.Errorf("require=false: expected the threshold on the joined rows, got:\n%s", sql)
 	}
 	if strings.Contains(sql, "fields.`beacon_score`") {
@@ -145,7 +145,7 @@ func TestModelLookup_SortOnModelFieldDefers(t *testing.T) {
 	if scanCap(sql) != "" {
 		t.Errorf("a sort on a model output must not cap the scan, got:\n%s", sql)
 	}
-	if mustLastIndex(t, sql, "ORDER BY beacon_score DESC") < mustIndex(t, sql, "_mlookup ON") {
+	if mustLastIndex(t, sql, "ORDER BY beacon_score DESC") < joinIndex(t, sql) {
 		t.Errorf("expected ORDER BY beacon_score DESC on the joined rows, got:\n%s", sql)
 	}
 }
@@ -466,7 +466,7 @@ func TestModelLookup_StrictIsDefault(t *testing.T) {
 		t.Errorf("expected the semi-join prefilter %s, got:\n%s", want, sql)
 	}
 	// It must filter the scan that picks the rows, as well as the rows joined.
-	if !strings.Contains(scanCap(sql), want) || mustLastIndex(t, sql, want) < mustIndex(t, sql, "_mlookup ON") {
+	if !strings.Contains(scanCap(sql), want) {
 		t.Errorf("prefilter must be in the source scan WHERE, got:\n%s", sql)
 	}
 }
@@ -475,8 +475,10 @@ func TestModelLookup_StrictIsDefault(t *testing.T) {
 func TestModelLookup_StrictFalseKeepsUnscoredRows(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port], strict=false)`)
 
-	if !strings.Contains(sql, "LEFT JOIN") || strings.Contains(sql, "INNER JOIN") {
-		t.Errorf("expected a LEFT JOIN for strict=false, got:\n%s", sql)
+	// The logs rows are kept whichever side they are on: the right of a RIGHT JOIN
+	// when the scan picks them.
+	if !strings.Contains(sql, ") AS _mlookup RIGHT JOIN (SELECT * FROM logs") || strings.Contains(sql, "INNER JOIN") {
+		t.Errorf("expected the logs rows kept by an outer join for strict=false, got:\n%s", sql)
 	}
 	if strings.Contains(sql, "IN (SELECT src_ip, dst_ip, dst_port FROM") {
 		t.Errorf("strict=false must not prefilter the scan (it would drop unscored rows), got:\n%s", sql)
@@ -549,7 +551,7 @@ func TestModelLookup_ScoredSetPrefilterKeepsScanLimit(t *testing.T) {
 // same threshold narrows the scan's prefilter and the scan keeps its LIMIT.
 func TestModelLookup_ThresholdAndTheScanLimit(t *testing.T) {
 	sql := translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port], strict=false) | beacon_score > 0.8`)
-	if mustIndex(t, sql, "LIMIT 1000") < mustIndex(t, sql, "_mlookup ON") {
+	if mustIndex(t, sql, "LIMIT 1000") < joinIndex(t, sql) {
 		t.Errorf("expected no LIMIT below the LEFT JOIN, got:\n%s", sql)
 	}
 	sql = translateML(t, `* | model_lookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.8`)
@@ -722,7 +724,7 @@ func TestModelLookup_ModelFilterAppliesBeforeAggregation(t *testing.T) {
 	}
 	// require=false cannot narrow the model side: the filter reads the joined rows.
 	sql = translateML(t, `* | model_lookup(model="rare", key=[user, image], require=false) | percent < 1 | groupby(user)`)
-	if i := mustIndex(t, sql, "percent < 1"); i < mustIndex(t, sql, "_mlookup ON") || i > mustLastIndex(t, sql, "GROUP BY") {
+	if i := mustIndex(t, sql, "percent < 1"); i < joinIndex(t, sql) || i > mustLastIndex(t, sql, "GROUP BY") {
 		t.Errorf("percent filter must sit between the join and GROUP BY, got:\n%s", sql)
 	}
 }
@@ -1011,6 +1013,19 @@ func mustLastIndex(t *testing.T, s, sub string) int {
 	return i
 }
 
+// joinIndex is the position of the model join's ON in either orientation: the scan
+// joined to the model, or the model joined to the rows the scan picked.
+func joinIndex(t *testing.T, sql string) int {
+	t.Helper()
+	for _, on := range []string{"AS _mlookup ON", ") AS _outer ON"} {
+		if i := strings.Index(sql, on); i >= 0 {
+			return i
+		}
+	}
+	t.Fatalf("no model join in:\n%s", sql)
+	return -1
+}
+
 // mlResult translates a model_lookup query, failing the test on any error.
 func mlResult(t *testing.T, query string, opts QueryOptions) *TranslationResult {
 	t.Helper()
@@ -1056,7 +1071,7 @@ func balanced(sql string, open int) string {
 // selection and any subquery the join reads on its left.
 func belowJoin(t *testing.T, sql string) string {
 	t.Helper()
-	mustIndex(t, sql, "_mlookup ON")
+	joinIndex(t, sql)
 	out := scanCap(sql)
 	if end := strings.Index(sql, ") AS _outer"); end >= 0 {
 		depth := 0
@@ -1110,7 +1125,7 @@ func TestModelLookup_FilterOnDerivedColumnIsPostJoin(t *testing.T) {
 	if b := belowJoin(t, r.SQL); strings.Contains(b, "is_new") {
 		t.Errorf("derived filter read below the join:\n%s", r.SQL)
 	}
-	if mustLastIndex(t, r.SQL, "= 'bob1'") < mustIndex(t, r.SQL, "_mlookup ON") {
+	if mustLastIndex(t, r.SQL, "= 'bob1'") < joinIndex(t, r.SQL) {
 		t.Errorf("derived filter must follow the join:\n%s", r.SQL)
 	}
 
@@ -1135,7 +1150,7 @@ func TestModelLookup_PlainLookupJoinsCappedScan(t *testing.T) {
 		if !strings.Contains(c, "ORDER BY timestamp DESC, log_id DESC LIMIT 1000") && !strings.Contains(c, "ORDER BY timestamp DESC LIMIT 1000") {
 			t.Errorf("%s: expected a capped scan below the join, got:\n%s", q, r.SQL)
 		}
-		if mustLastIndex(t, r.SQL, "LIMIT 1000") < mustIndex(t, r.SQL, "_mlookup ON") {
+		if mustLastIndex(t, r.SQL, "LIMIT 1000") < joinIndex(t, r.SQL) {
 			t.Errorf("%s: the joined rows must keep their own LIMIT, got:\n%s", q, r.SQL)
 		}
 	}
@@ -1170,7 +1185,7 @@ func TestModelLookup_RequireFalseFilterStaysAfterJoin(t *testing.T) {
 	if strings.Contains(r.SQL, "WHERE percent < 0.1) AS _mlookup") {
 		t.Errorf("filter moved into the model side of a LEFT JOIN:\n%s", r.SQL)
 	}
-	if mustLastIndex(t, r.SQL, "percent < 0.1") < mustIndex(t, r.SQL, "_mlookup ON") {
+	if mustLastIndex(t, r.SQL, "percent < 0.1") < joinIndex(t, r.SQL) {
 		t.Errorf("filter must follow the join:\n%s", r.SQL)
 	}
 }
@@ -1257,7 +1272,7 @@ func TestModelLookup_NotRejectsWhatItCannotHonour(t *testing.T) {
 // A negated lookup and a positive one can share a query: only the positive one joins.
 func TestModelLookup_NotBesideAPositiveLookup(t *testing.T) {
 	r := mlResult(t, `* | NOT modelLookup(model="fs", key=[user]) | modelLookup(model="rare", key=[user, image])`, mlookupOpts())
-	if strings.Count(r.SQL, "_mlookup ON") != 1 || !strings.Contains(r.SQL, "NOT (fields.`user`::String IN (SELECT _mlk_src.entity_key FROM `model_fs`") {
+	if strings.Count(r.SQL, " JOIN ") != 1 || !strings.Contains(r.SQL, "NOT (fields.`user`::String IN (SELECT _mlk_src.entity_key FROM `model_fs`") {
 		t.Errorf("expected one join and one anti-join, got:\n%s", r.SQL)
 	}
 }
@@ -1457,7 +1472,7 @@ func TestModelLookup_RowPickOnACluster(t *testing.T) {
 	sql := translateMLWith(t, `* | modelLookup(model="beacon", key=[src_ip, dst_ip, dst_port])`, opts)
 	for _, want := range []string{
 		"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM logs_distributed",
-		"FROM logs_distributed GLOBAL INNER JOIN",
+		") AS _mlookup GLOBAL INNER JOIN (SELECT *, _shard_num FROM logs_distributed WHERE ",
 		"toString(_shard_num) AS _shard_num",
 	} {
 		if !strings.Contains(sql, want) {
@@ -1507,7 +1522,7 @@ func TestModelLookup_FilterAfterCapStaysOffTheModelSide(t *testing.T) {
 // joined rows, where both resolve; nothing needs exporting.
 func TestModelLookup_MixedOrFiltersJoinedRows(t *testing.T) {
 	sql := translateML(t, `* | modelLookup(model="beacon", key=[src_ip, dst_ip, dst_port]) | beacon_score > 0.5 OR image=~zerotier`)
-	if strings.Contains(sql, "_dfr_") || mustLastIndex(t, sql, "beacon_score > 0.5 OR") < mustIndex(t, sql, "_mlookup ON") {
+	if strings.Contains(sql, "_dfr_") || mustLastIndex(t, sql, "beacon_score > 0.5 OR") < joinIndex(t, sql) {
 		t.Errorf("expected the OR on the joined rows:\n%s", sql)
 	}
 	if b := belowJoin(t, sql); strings.Contains(b, "beacon_score") {
@@ -1534,5 +1549,45 @@ func TestModelLookup_NullKeyIsUnscored(t *testing.T) {
 	sql := translateML(t, `* | x := tonumber(user) | NOT modelLookup(model="fs", key=[x])`)
 	if !strings.Contains(sql, "NOT (ifNull(toString(") {
 		t.Errorf("expected a NULL key read as '':\n%s", sql)
+	}
+}
+
+// table() shows exactly the columns it names: the row-identity columns every row
+// carries (fractal_id, log_id) and norm_log stay out of the display unless named.
+func TestTableShowsExactlyItsColumns(t *testing.T) {
+	for q, want := range map[string][]string{
+		`* | modelLookup(model="rare", key=[user, image]) | table(timestamp, computer_name, user, image, model_count, percent)`: {"timestamp", "computer_name", "user", "image", "model_count", "percent"},
+		`* | table(timestamp, user)`:                     {"timestamp", "user"},
+		`* | table(timestamp, fractal_id, log_id, user)`: {"timestamp", "fractal_id", "log_id", "user"},
+		`* | len(user) | table(user, _len)`:              {"user", "_len"},
+	} {
+		if got := mlResult(t, q, mlookupOpts()).FieldOrder; !slices.Equal(got, want) {
+			t.Errorf("%s: field order %v, want %v", q, got, want)
+		}
+	}
+}
+
+// When the scan picks the rows, the join hashes those few rows and streams the model
+// past them, instead of hashing every scored key to match a page of logs. The logs
+// side carries its own filters, so a GLOBAL join on a cluster ships only those rows.
+func TestModelLookup_PickedRowsAreTheJoinsBuildSide(t *testing.T) {
+	for q, join := range map[string]string{
+		`* | modelLookup(model="fs", key=[user])`:                ") AS _mlookup INNER JOIN (SELECT * FROM logs WHERE ",
+		`* | modelLookup(model="fs", key=[user], require=false)`: ") AS _mlookup RIGHT JOIN (SELECT * FROM logs WHERE ",
+	} {
+		sql := translateML(t, q)
+		if !strings.Contains(sql, "FROM (SELECT entity_key,") || !strings.Contains(sql, join) || !strings.Contains(sql, ") AS _outer ON fields.`user`::String = _mlookup.entity_key") {
+			t.Errorf("%s: expected the model side first and the picked logs joined to it, got:\n%s", q, sql)
+		}
+	}
+	// Without a row pick the logs scan stays the probe side.
+	if sql := translateML(t, `* | modelLookup(model="fs", key=[user]) | groupby(is_new)`); !strings.Contains(sql, "FROM logs INNER JOIN (") {
+		t.Errorf("an aggregation reads every row, so the model side is hashed:\n%s", sql)
+	}
+	opts := mlookupOpts()
+	opts.TableName, opts.IncludeShardNum = "logs_distributed", true
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs", ModelType: "first_seen", FractalID: "f1", Distributed: true}
+	if sql := translateMLWith(t, `* | modelLookup(model="fs", key=[user])`, opts); !strings.Contains(sql, ") AS _mlookup GLOBAL INNER JOIN (SELECT *, _shard_num FROM logs_distributed WHERE ") {
+		t.Errorf("cluster: expected a GLOBAL join shipping the picked rows with their shard, got:\n%s", sql)
 	}
 }
