@@ -284,7 +284,7 @@ const InstructionLibraries = {
                 <span class="kebab-wrapper" onclick="event.stopPropagation()">
                     <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">&#8942;</button>
                     <div class="kebab-menu">
-                        <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${page.id}', '${this.escAttr(page.name)}')">Delete</button>
+                        <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${page.id}', '${Utils.escapeJs(page.name)}')">Delete</button>
                     </div>
                 </span>
             </div>
@@ -305,8 +305,8 @@ const InstructionLibraries = {
                     <span class="kebab-wrapper">
                         <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">&#8942;</button>
                         <div class="kebab-menu">
-                            <button class="kebab-item" onclick="InstructionLibraries.renameFolder('${folder.id}', '${this.escAttr(folder.name)}')">Rename</button>
-                            <button class="kebab-item danger" onclick="InstructionLibraries.deleteFolder('${folder.id}', '${this.escAttr(folder.name)}')">Delete folder</button>
+                            <button class="kebab-item" onclick="InstructionLibraries.renameFolder('${folder.id}', '${Utils.escapeJs(folder.name)}')">Rename</button>
+                            <button class="kebab-item danger" onclick="InstructionLibraries.deleteFolder('${folder.id}', '${Utils.escapeJs(folder.name)}')">Delete folder</button>
                         </div>
                     </span>
                 </span>
@@ -411,7 +411,7 @@ const InstructionLibraries = {
         const kebab = `<span class="kebab-wrapper">
                             <button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">&#8942;</button>
                             <div class="kebab-menu">
-                                <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${this.editingPage.id}', '${this.escAttr(this.editingPage.name)}')">Delete page</button>
+                                <button class="kebab-item danger" onclick="InstructionLibraries.deletePage('${this.editingPage.id}', '${Utils.escapeJs(this.editingPage.name)}')">Delete page</button>
                             </div>
                         </span>`;
         return toggle + kebab;
@@ -505,7 +505,7 @@ const InstructionLibraries = {
         if (!items.length) return '<div class="il-context-empty">No links.</div>';
         return items.map(it => it.id
             ? `<div class="il-backlink" onclick="InstructionLibraries.openPage('${it.id}')">${this._linkIcon()}<span>${this.esc(it.name)}</span></div>`
-            : `<div class="il-backlink il-link-missing" title="Page not found - click to create" onclick="InstructionLibraries.openWikilink('${this.escAttr(it.name)}')">${this._linkIcon()}<span>${this.esc(it.name)}</span></div>`
+            : `<div class="il-backlink il-link-missing" title="Page not found - click to create" onclick="InstructionLibraries.openWikilink('${Utils.escapeJs(it.name)}')">${this._linkIcon()}<span>${this.esc(it.name)}</span></div>`
         ).join('');
     },
 

@@ -1836,7 +1836,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                               placeholder="Why should it go?"></textarea>
                     <div class="ac-compose-actions">
                         <button class="btn-secondary btn-sm" onclick="document.getElementById('alertDeleteProposal').remove()">Cancel</button>
-                        <button class="btn-primary btn-sm" onclick="Alerts.submitDeleteProposal('${Utils.escapeAttr(alertId)}')">Propose deletion</button>
+                        <button class="btn-primary btn-sm" onclick="Alerts.submitDeleteProposal('${Utils.escapeJs(alertId)}')">Propose deletion</button>
                     </div>
                 </div>
             </div>
@@ -3977,7 +3977,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 <span class="ae-notice-dot"></span>
                 <span>${asked ? `${Utils.escapeHtml(who)} asked for changes` : 'Revising a proposal under review'}</span>
                 ${detail}
-                <button type="button" class="ae-notice-btn" onclick="Alerts.showProposal('${Utils.escapeAttr(cr.id)}')">View proposal</button>
+                <button type="button" class="ae-notice-btn" onclick="Alerts.showProposal('${Utils.escapeJs(cr.id)}')">View proposal</button>
             </div>
         `);
     },

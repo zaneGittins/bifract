@@ -103,7 +103,7 @@ window.BifractFormat = {
         let list;
         if (labels.length) {
             list = `<div class="fmt-series-list">` + labels.map((label, i) => {
-                const eff = overrides[label] || palArr[i % palArr.length];
+                const eff = Utils.safeColor(overrides[label], palArr[i % palArr.length]);
                 return `<div class="fmt-series-row">
                     <span class="fmt-series-name" title="${esc(label)}">${esc(label)}</span>
                     <div class="rule-color-swatches">
@@ -156,7 +156,7 @@ window.BifractFormat = {
                 ${this.UNIT_OPTIONS.map(([v, l]) => `<option value="${v}" ${type === v ? 'selected' : ''}>${l}</option>`).join('')}
             </select>
             <label class="fmt-label">Decimals</label>
-            <input type="number" min="0" max="6" class="fmt-input" placeholder="auto" value="${dec}" oninput="BifractFormat.setUnitDecimals(this.value)">
+            <input type="number" min="0" max="6" class="fmt-input" placeholder="auto" value="${Utils.escapeHtml(dec)}" oninput="BifractFormat.setUnitDecimals(this.value)">
         `);
     },
 
@@ -186,7 +186,7 @@ window.BifractFormat = {
                 </div>
                 <div class="rule-color-swatches">
                     ${this.SWATCHES.map(c => `<button type="button" class="rule-swatch${t.color === c ? ' active' : ''}" style="background:${c};" onclick="BifractFormat._swatchClick(this,'thr:${i}','${c}')"></button>`).join('')}
-                    <input type="color" class="rule-color-custom" value="${t.color || '#8b5cf6'}" oninput="BifractFormat._colorInput(this,'thr:${i}')">
+                    <input type="color" class="rule-color-custom" value="${Utils.safeColor(t.color)}" oninput="BifractFormat._colorInput(this,'thr:${i}')">
                 </div>
             </div>
         `).join('');
@@ -264,7 +264,7 @@ window.BifractFormat = {
                 </div>
                 <div class="rule-color-swatches">
                     ${this.SWATCHES.map(c => `<button type="button" class="rule-swatch${r.color === c ? ' active' : ''}" style="background:${c};" onclick="BifractFormat._swatchClick(this,'rule:${i}','${c}')"></button>`).join('')}
-                    <input type="color" class="rule-color-custom" value="${r.color || '#8b5cf6'}" oninput="BifractFormat._colorInput(this,'rule:${i}')">
+                    <input type="color" class="rule-color-custom" value="${Utils.safeColor(r.color)}" oninput="BifractFormat._colorInput(this,'rule:${i}')">
                 </div>
             </div>
         </div>`;

@@ -611,7 +611,7 @@ const AlertFeeds = {
                 html: `<span class="feed-badge-sm">${Utils.escapeHtml(feedName)}</span>`
             }],
             labels: this.getDisplayLabels(alert),
-            renderLabel: l => `<span class="label-pill label-pill-detail" style="--chip-color:${Utils.tagColorFor(l)}" onclick="AlertFeeds.closeDetailsPanel(); AlertFeeds.setLabelFilter('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="Filter by this label">${Utils.escapeHtml(l)}</span>`,
+            renderLabel: l => `<span class="label-pill label-pill-detail" style="--chip-color:${Utils.tagColorFor(l)}" onclick="AlertFeeds.closeDetailsPanel(); AlertFeeds.setLabelFilter('${Utils.escapeJs(l)}')" title="Filter by this label">${Utils.escapeHtml(l)}</span>`,
             blocks: alert.feed_rule_path ? [{
                 label: 'Rule Path',
                 html: `<div class="feed-rule-path">${Utils.escapeHtml(alert.feed_rule_path)}</div>`

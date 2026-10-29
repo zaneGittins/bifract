@@ -119,7 +119,7 @@ const Normalizers = {
                         <div class="kebab-menu">
                             <button class="kebab-item" onclick="Normalizers.openEditForm('${n.id}')">Edit</button>
                             <button class="kebab-item" onclick="Normalizers.duplicateNormalizer('${n.id}')">Duplicate</button>
-                            <button class="kebab-item" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeHtml(n.name)}')">Export</button>
+                            <button class="kebab-item" onclick="Normalizers.exportNormalizer('${n.id}', '${Utils.escapeJs(n.name)}')">Export</button>
                             ${!n.is_default ? `<button class="kebab-item" onclick="Normalizers.setDefault('${n.id}')">Set Default</button>` : ''}
                             ${!n.is_default ? `<button class="kebab-item danger" onclick="Normalizers.deleteNormalizer('${n.id}')">Delete</button>` : ''}
                         </div>

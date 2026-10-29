@@ -1404,6 +1404,8 @@ const Notebooks = {
             }
         }
 
+        // The model, or an imported notebook, can name a section that is not here.
+        const sectionIds = new Set((this.currentNotebook?.sections || []).map(s => s.id));
         let tacticsHtml = '';
         for (const tactic of allTactics) {
             const findings = tacticFindings[tactic] || [];
@@ -1418,7 +1420,7 @@ const Notebooks = {
                 findingsHtml = '<ul class="attack-chain-findings">';
                 for (const f of findings) {
                     const desc = Utils.escapeHtml(f.description || '');
-                    if (f.section_id) {
+                    if (f.section_id && sectionIds.has(f.section_id)) {
                         findingsHtml += `<li class="attack-chain-finding"><a class="attack-chain-link" onclick="Notebooks.scrollToSection('${Utils.escapeJs(f.section_id)}')">${desc}</a></li>`;
                     } else {
                         findingsHtml += `<li class="attack-chain-finding">${desc}</li>`;
@@ -1917,8 +1919,8 @@ const Notebooks = {
             return `<div class="query-error">Query Error: ${Utils.escapeHtml(results.error)}</div>`;
         }
 
-        const resultCount = results.count || results.results.length;
-        const executionTime = results.execution_ms || 0;
+        const resultCount = Utils.escapeHtml(results.count || results.results.length);
+        const executionTime = Utils.escapeHtml(results.execution_ms || 0);
         const chartType = results.chart_type || 'table';
 
         // Get section chart_config for row coloring
@@ -1938,7 +1940,7 @@ const Notebooks = {
             return `
                 <div class="query-results">
                     <div class="query-meta-compact" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; margin-bottom: 10px; font-size: 0.85rem; color: var(--text-secondary);">
-                        <span>${resultCount} rows in ${executionTime}ms • Chart: ${chartType}</span>
+                        <span>${resultCount} rows in ${executionTime}ms • Chart: ${Utils.escapeHtml(chartType)}</span>
                     </div>
                     <div class="query-results-container" style="padding: 0;">
                         ${resultsContent}
@@ -2214,7 +2216,7 @@ const Notebooks = {
             if ((rule.target || 'row') !== 'row') continue;
             const cellVal = row[rule.column];
             if (this.evaluateRule(cellVal, rule)) {
-                const color = rule.color || '#8b5cf6';
+                const color = Utils.safeColor(rule.color);
                 return `background-color: ${color}26;`;
             }
         }
@@ -2228,7 +2230,7 @@ const Notebooks = {
             if ((rule.target || 'row') !== 'cell') continue;
             const cellVal = row[rule.column];
             if (this.evaluateRule(cellVal, rule)) {
-                const color = rule.color || '#8b5cf6';
+                const color = Utils.safeColor(rule.color);
                 return `background-color: ${color}26;`;
             }
         }

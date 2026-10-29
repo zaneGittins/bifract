@@ -62,7 +62,8 @@ const AlertList = {
     severityCell(alert, onFilter) {
         const sev = (alert.severity || 'medium').toLowerCase();
         const label = sev.charAt(0).toUpperCase() + sev.slice(1);
-        return `<td class="alert-severity-cell"><span class="severity-pill severity-${sev}" onclick="event.stopPropagation(); ${onFilter}('${sev}')" title="Filter by ${sev}">${label}</span></td>`;
+        const attr = Utils.escapeHtml(sev);
+        return `<td class="alert-severity-cell"><span class="severity-pill severity-${attr}" onclick="event.stopPropagation(); ${onFilter}('${Utils.escapeJs(sev)}')" title="Filter by ${attr}">${Utils.escapeHtml(label)}</span></td>`;
     },
 
     // Three pills then an overflow count, so a rule with a long ATT&CK tag list
@@ -74,7 +75,7 @@ const AlertList = {
         const max = 3;
         const short = l => l.length > truncate ? l.substring(0, truncate - 2) + '..' : l;
         let html = labels.slice(0, max).map(l =>
-            `<span class="label-pill" style="--chip-color:${Utils.tagColorFor(l)}" onclick="event.stopPropagation(); ${onFilter}('${Utils.escapeHtml(l).replace(/'/g, "\\'")}')" title="${Utils.escapeHtml(l)}">${Utils.escapeHtml(short(l))}</span>`
+            `<span class="label-pill" style="--chip-color:${Utils.tagColorFor(l)}" onclick="event.stopPropagation(); ${onFilter}('${Utils.escapeJs(l)}')" title="${Utils.escapeHtml(l)}">${Utils.escapeHtml(short(l))}</span>`
         ).join('');
         if (labels.length > max) {
             html += `<span class="label-pill label-pill-more" title="${Utils.escapeHtml(labels.slice(max).join(', '))}">+${labels.length - max}</span>`;
