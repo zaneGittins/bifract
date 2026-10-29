@@ -9,15 +9,19 @@
    collide with the legacy .setting-item styles used elsewhere.
    ============================ */
 
-/* Content column */
-/* Tables and the tab bar take the full width like every other page. Setting
-   rows do not: on a wide screen a full-width row puts the control far from its
-   label, so forms keep one readable column on the shared left edge. */
+/* Settings pages: the tab bar and every tab share one centered frame, so a
+   wide screen keeps controls near their labels without a blank strip on one side. */
+.page-frame {
+    width: 100%;
+    max-width: 1200px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
 .sp-content {
     display: flex;
     flex-direction: column;
     gap: 2rem;
-    max-width: 960px;
     padding-bottom: 3rem;
 }
 
@@ -192,19 +196,21 @@
     cursor: not-allowed;
 }
 
-/* Key/value row: label left, value right, on one line. */
+/* Key/value row: the value follows its label on the same line. */
 .sp-row-kv {
     align-items: center;
+    justify-content: flex-start;
     padding-top: 0.75rem;
     padding-bottom: 0.75rem;
 }
 
 .sp-row-kv .sp-row-label {
+    flex: 0 0 160px;
     margin: 0;
 }
 
 .sp-row-kv .detail-value {
-    text-align: right;
+    text-align: left;
     min-width: 0;
     overflow-wrap: anywhere;
 }
