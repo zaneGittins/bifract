@@ -1677,6 +1677,12 @@ body.view-fill {
     min-height: 0;
 }
 
+/* The results belong to the scope being left until the switch lands. */
+#searchView.scope-switching .results-section > *,
+#searchView.scope-switching .fields-rail > * {
+    visibility: hidden;
+}
+
 /* Results Section */
 .results-section {
     background: var(--bg-secondary);
