@@ -1,4 +1,4 @@
-// Sidebar navigation and the Go to palette.
+// Sidebar navigation and the command palette's Go to rows.
 //
 // The sidebar replaced two header tab rows, so these pin what the rows used to
 // guarantee (every page reachable, the URL names where you are, a new tab opens
@@ -99,13 +99,13 @@ test.describe('go to palette', () => {
   test('opens with the shortcut and jumps to a sub-page', async ({ page }) => {
     const fractal = await openPage(page, 'dashboards');
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
-    await expect(page.locator('#goToPalette')).toBeVisible();
+    await expect(page.locator('#palette')).toBeVisible();
 
-    await page.locator('#goToInput').fill('coverage');
-    await expect(page.locator('.goto-item.active')).toContainText('Alerts > Coverage');
+    await page.locator('#paletteInput').fill('coverage');
+    await expect(page.locator('.pal-item.active')).toContainText('Alerts > Coverage');
     await page.keyboard.press('Enter');
 
-    await expect(page.locator('#goToPalette')).toBeHidden();
+    await expect(page.locator('#palette')).toBeHidden();
     await expect(page).toHaveURL(new RegExp(`#f/${fractal.id}/alerts/coverage$`));
     await expect(page.locator('#alertsSubTabs .alerts-sub-tab.active')).toHaveText('Coverage');
   });
@@ -124,18 +124,18 @@ test.describe('go to palette', () => {
 
     // The shortcut, not a click: a click elsewhere closes the dropdown by itself.
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
-    await expect(page.locator('#goToInput')).toBeFocused();
+    await expect(page.locator('#paletteInput')).toBeFocused();
     await page.keyboard.press('Escape');
 
-    await expect(page.locator('#goToPalette')).toBeHidden();
+    await expect(page.locator('#palette')).toBeHidden();
     await expect(page.locator('#notificationDropdown')).toBeVisible();
   });
 
-  test('the shortcut opens the query palette on Query', async ({ page }) => {
+  test('the shortcut opens the same palette on Query', async ({ page }) => {
     await openPage(page, 'search');
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
-    await expect(page.locator('#queryPalette')).toBeVisible();
-    await expect(page.locator('#goToPalette')).toBeHidden();
+    await expect(page.locator('#palette')).toBeVisible();
+    await expect(page.locator('#paletteInput')).toBeFocused();
   });
 });
 

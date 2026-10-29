@@ -26910,6 +26910,63 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/query/assist/stream": {
+      "post": {
+        "operationId": "post_api_v1_query_assist_stream",
+        "summary": "Write a BQL query from a description, streaming the steps taken. The query is proposed, never run.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "query"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/chat.QueryAssistRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An open server-sent event stream; the response does not complete.",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
     "/api/v1/query/fields": {
       "get": {
         "operationId": "get_api_v1_query_fields",
@@ -34044,6 +34101,23 @@
           "tool_name",
           "arguments",
           "status"
+        ]
+      },
+      "chat.QueryAssistRequest": {
+        "type": "object",
+        "properties": {
+          "current_query": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "time_range": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
         ]
       },
       "chat.RenameConversationRequest": {

@@ -56,6 +56,9 @@ func NewManager(
 	// A name in the allowlist that no tool answers to would quietly narrow the
 	// surface, so it stops the server rather than the conversation.
 	tools, err := newToolset()
+	if err == nil {
+		err = checkAssistTools(tools)
+	}
 	if err != nil {
 		panic("chat: " + err.Error())
 	}
@@ -614,13 +617,8 @@ func (m *Manager) recordToolResult(ctx context.Context, w io.Writer, flusher htt
 		ToolCallID: tc.ID,
 	})
 
+	m.answerTool(messages, tc, result)
 	resultJSON, _ := json.Marshal(result)
-	*messages = append(*messages, llmMessage{
-		Role:       "tool",
-		Content:    capToolResultForContext(resultJSON),
-		ToolCallID: tc.ID,
-		Name:       tc.Function.Name,
-	})
 
 	toolResults, _ := json.Marshal([]interface{}{map[string]interface{}{
 		"tool_call_id": tc.ID,

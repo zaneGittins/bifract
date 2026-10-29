@@ -4,7 +4,7 @@
    rely on later parts overriding earlier ones. Do not reorder the <link>
    tags and do not load a subset. */
 /* ============================
-   Query Palette (History + Saved)
+   Query toolbar
    ============================ */
 
 .toolbar-menu-kbd {
@@ -17,303 +17,6 @@
     border: 1px solid var(--border-color);
     border-radius: 3px;
     line-height: 1.4;
-}
-
-/* Subtle dim so the palette reads as focused without hiding the results. */
-.palette-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.35);
-    z-index: 99;
-}
-
-.query-palette {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    margin-top: 0.5rem;
-    width: 560px;
-    max-width: calc(100vw - 2rem);
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--accent-primary);
-    border-radius: 6px;
-    box-shadow: var(--shadow-lg);
-    z-index: 100;
-    overflow: hidden;
-}
-
-.palette-search-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.625rem 0.75rem;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.palette-search-icon { color: var(--text-muted); flex-shrink: 0; }
-
-.palette-search {
-    flex: 1;
-    background: transparent;
-    border: none;
-    padding: 0.125rem 0;
-    font-size: 0.875rem;
-    font-family: var(--font-mono);
-    color: var(--text-primary);
-}
-.palette-search:focus { outline: none; }
-.palette-search::placeholder { color: var(--text-muted); }
-
-.palette-tabs {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.375rem 0.5rem;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.palette-tab {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 0.75rem;
-    font-weight: 500;
-    padding: 0.3rem 0.6rem;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: var(--transition);
-}
-.palette-tab:hover { color: var(--text-primary); background: var(--bg-hover); }
-.palette-tab.active { color: var(--accent-primary); background: rgba(156, 106, 222, 0.15); }
-
-.palette-tabs-spacer { flex: 1; }
-
-.palette-tab-action {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    background: none;
-    border: 1px solid var(--border-color);
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    padding: 0.25rem 0.55rem;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: var(--transition);
-}
-.palette-tab-action:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
-
-.palette-list {
-    max-height: 380px;
-    overflow-y: auto;
-}
-
-.palette-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.55rem 0.75rem;
-    border-bottom: 1px solid var(--border-color);
-    cursor: pointer;
-    transition: var(--transition);
-}
-.palette-row:last-child { border-bottom: none; }
-.palette-row:hover,
-.palette-row.is-active { background: var(--bg-hover); }
-.palette-row.is-active { box-shadow: inset 2px 0 0 var(--accent-primary); }
-
-.palette-row-main { flex: 1; min-width: 0; }
-
-.palette-query {
-    font-family: var(--font-mono);
-    font-size: 0.8125rem;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.palette-saved-head {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.15rem;
-}
-.palette-name { font-weight: 500; font-size: 0.8125rem; color: var(--text-primary); }
-
-.palette-desc {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    margin-bottom: 0.2rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.palette-meta {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-top: 0.25rem;
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-}
-
-.palette-badge {
-    font-size: 0.625rem;
-    padding: 0.05rem 0.35rem;
-    border-radius: 3px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-}
-.palette-badge.err { color: var(--error); border-color: var(--error); }
-
-.palette-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
-.palette-tag {
-    font-size: 0.625rem;
-    padding: 0.0625rem 0.375rem;
-    border-radius: 3px;
-    background: rgba(156, 106, 222, 0.2);
-    color: var(--accent-secondary);
-}
-
-.palette-row-actions {
-    display: none;
-    gap: 0.25rem;
-    flex-shrink: 0;
-    align-items: center;
-}
-.palette-row:hover .palette-row-actions,
-.palette-row.is-active .palette-row-actions { display: flex; }
-
-.palette-icon-btn {
-    width: 22px;
-    height: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: var(--transition);
-}
-.palette-icon-btn:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
-
-.palette-fav {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0.1rem;
-    flex-shrink: 0;
-    line-height: 1;
-    transition: var(--transition);
-}
-.palette-fav:hover { color: var(--accent-secondary); }
-.palette-fav.on { color: #e0b341; }
-
-.palette-empty {
-    padding: 2.5rem 1rem;
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 0.8125rem;
-}
-.palette-empty kbd { font-family: var(--font-mono); }
-
-.palette-dim { color: var(--text-muted); }
-
-.palette-footer {
-    display: flex;
-    align-items: center;
-    gap: 0.85rem;
-    padding: 0.45rem 0.75rem;
-    border-top: 1px solid var(--border-color);
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-}
-.palette-footer kbd {
-    display: inline-block;
-    min-width: 1rem;
-    padding: 0.05rem 0.25rem;
-    margin-right: 0.15rem;
-    text-align: center;
-    font-family: var(--font-mono);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-}
-.palette-footer-clear {
-    margin-left: auto;
-    cursor: pointer;
-    color: var(--text-muted);
-    transition: var(--transition);
-}
-.palette-footer-clear:hover { color: var(--error); }
-
-/* Inline save / edit form inside the palette. */
-.palette-form {
-    padding: 0.75rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    border-bottom: 1px solid var(--border-color);
-}
-.palette-form-preview {
-    padding: 0.45rem 0.55rem;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.palette-input {
-    width: 100%;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    color: var(--text-primary);
-    padding: 0.4rem 0.55rem;
-    font-size: 0.8125rem;
-    font-family: var(--font-mono);
-    box-sizing: border-box;
-}
-.palette-input:focus { outline: none; border-color: var(--accent-primary); }
-.palette-input::placeholder { color: var(--text-muted); }
-.palette-textarea { resize: vertical; min-height: 4.5rem; max-height: 12rem; line-height: 1.45; }
-.palette-check {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    cursor: pointer;
-    white-space: nowrap;
-}
-/* Pair short fields side by side so the form fills the palette width. */
-.palette-form-row { display: flex; gap: 0.5rem; }
-.palette-form-row > .palette-input { flex: 1 1 0; min-width: 0; }
-.palette-form-row > .palette-input.grow { flex: 2 1 0; }
-.palette-form-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-top: 0.125rem;
-}
-.palette-form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-.palette-row.editing {
-    display: block;
-    padding: 0;
-    background: var(--bg-secondary);
-    cursor: default;
 }
 
 /* Shared search input used by the Send-to-notebook picker. */
@@ -785,32 +488,6 @@
     margin-top: 10px;
 }
 
-/* The Recall trigger sits at the toolbar's left, so open the palette rightward. */
-
-/* Recall command palette rows: center the chip / query / time on one line. */
-#recallPaletteList .palette-row { align-items: center; }
-
-/* Pinned admin Restore action at the top of the palette. */
-.recall-palette-action .palette-query { color: var(--accent-primary); }
-.recall-palette-action-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--accent-primary);
-    flex-shrink: 0;
-}
-
-/* Subtle marker for the recall currently attached in the results pane. */
-.palette-row.recall-palette-current { box-shadow: inset 2px 0 0 var(--accent-secondary); }
-.palette-row.recall-palette-current.is-active { box-shadow: inset 2px 0 0 var(--accent-primary); }
-
-.recall-recent-time {
-    font-size: 0.68rem;
-    color: var(--text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-
 .recall-results-split {
     flex: 1;
     min-height: 0;
@@ -936,25 +613,7 @@
     border-color: var(--accent-primary);
 }
 
-/* Per-job Cancel in the palette rows (in-flight jobs). */
-.recall-cancel-btn {
-    flex-shrink: 0;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: all 0.15s ease;
-}
-
-.recall-cancel-btn:hover {
-    color: var(--error);
-    border-color: var(--error);
-}
-
-/* Small spinner shown inside a running/pending chip in the palette. */
+/* Small spinner shown inside a running/pending chip. */
 .recall-chip-spinner {
     width: 8px;
     height: 8px;
@@ -2052,56 +1711,56 @@
     font-style: italic;
 }
 
-/* BQL highlighting inside static previews (query palette, alert detail). */
-.palette-query .hl-default,
+/* BQL highlighting inside static previews (command palette, alert detail). */
+.pal-hl .hl-default,
 .ahd-code .hl-default,
 .alert-query-highlight .hl-default   { color: var(--text-primary); }
-.palette-query .hl-function,
+.pal-hl .hl-function,
 .ahd-code .hl-function,
 .alert-query-highlight .hl-function  { color: var(--syntax-function); font-weight: 500; }
-.palette-query .hl-operator,
+.pal-hl .hl-operator,
 .ahd-code .hl-operator,
 .alert-query-highlight .hl-operator  { color: var(--syntax-operator); }
-.palette-query .hl-keyword,
+.pal-hl .hl-keyword,
 .ahd-code .hl-keyword,
 .alert-query-highlight .hl-keyword   { color: var(--syntax-keyword); font-weight: 500; }
-.palette-query .hl-string,
+.pal-hl .hl-string,
 .ahd-code .hl-string,
 .alert-query-highlight .hl-string    { color: var(--syntax-string); }
-.palette-query .hl-pipe,
+.pal-hl .hl-pipe,
 .ahd-code .hl-pipe,
 .alert-query-highlight .hl-pipe      { color: var(--syntax-operator); font-weight: 600; }
-.palette-query .hl-field,
+.pal-hl .hl-field,
 .ahd-code .hl-field,
 .alert-query-highlight .hl-field     { color: var(--info); }
-.palette-query .hl-value,
+.pal-hl .hl-value,
 .ahd-code .hl-value,
 .alert-query-highlight .hl-value     { color: var(--syntax-string); }
-.palette-query .hl-regex,
+.pal-hl .hl-regex,
 .ahd-code .hl-regex,
 .alert-query-highlight .hl-regex     { color: var(--syntax-regex); font-weight: 500; }
-.palette-query .hl-assignment,
+.pal-hl .hl-assignment,
 .ahd-code .hl-assignment,
 .alert-query-highlight .hl-assignment{ color: var(--syntax-operator); font-weight: 600; }
-.palette-query .hl-number,
+.pal-hl .hl-number,
 .ahd-code .hl-number,
 .alert-query-highlight .hl-number    { color: var(--syntax-number); }
-.palette-query .hl-bracket,
+.pal-hl .hl-bracket,
 .ahd-code .hl-bracket,
 .alert-query-highlight .hl-bracket   { color: var(--text-secondary); font-weight: 500; }
-.palette-query .hl-boolean,
+.pal-hl .hl-boolean,
 .ahd-code .hl-boolean,
 .alert-query-highlight .hl-boolean   { color: var(--syntax-keyword); font-weight: 500; }
-.palette-query .hl-wildcard,
+.pal-hl .hl-wildcard,
 .ahd-code .hl-wildcard,
 .alert-query-highlight .hl-wildcard  { color: var(--warning); font-weight: 600; }
-.palette-query .hl-binding,
+.pal-hl .hl-binding,
 .ahd-code .hl-binding,
 .alert-query-highlight .hl-binding   { color: var(--syntax-binding); font-weight: 600; }
-.palette-query .hl-variable,
+.pal-hl .hl-variable,
 .ahd-code .hl-variable,
 .alert-query-highlight .hl-variable  { color: var(--syntax-variable); font-weight: 600; }
-.palette-query .hl-comment,
+.pal-hl .hl-comment,
 .ahd-code .hl-comment,
 .alert-query-highlight .hl-comment   { color: var(--syntax-comment); font-style: italic; }
 

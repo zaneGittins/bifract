@@ -449,7 +449,6 @@ const FractalContext = {
             'InstructionLibraries',
             'Notebooks',
             'QueryExecutor',
-            'QueryPalette',
             'RealTimeComments'
         ];
 

@@ -4,6 +4,7 @@ import (
 	"bifract/pkg/api"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -482,24 +483,13 @@ func (h *Handler) openStream(w http.ResponseWriter, r *http.Request, id string) 
 		}
 	}
 
-	var fractal *fractals.Fractal
-	switch {
-	case conv.FractalID != "":
-		var err error
-		fractal, err = h.fractalManager.GetFractal(r.Context(), conv.FractalID)
-		if err != nil {
-			h.respondError(w, http.StatusInternalServerError, "failed to get fractal info")
-			return nil, nil, nil
-		}
-	case conv.PrismID != "" && h.prismResolver != nil:
-		prismID, name, desc, err := h.prismResolver.GetPrismInfo(r.Context(), conv.PrismID)
-		if err != nil {
-			h.respondError(w, http.StatusInternalServerError, "failed to get prism info")
-			return nil, nil, nil
-		}
-		fractal = &fractals.Fractal{ID: prismID, Name: name, Description: desc}
-	default:
+	fractal, err := h.scopeFractal(r.Context(), conv.FractalID, conv.PrismID)
+	if errors.Is(err, errNoScope) {
 		h.respondError(w, http.StatusBadRequest, "conversation has no scope")
+		return nil, nil, nil
+	}
+	if err != nil {
+		h.respondError(w, http.StatusInternalServerError, err.Error())
 		return nil, nil, nil
 	}
 
@@ -508,12 +498,45 @@ func (h *Handler) openStream(w http.ResponseWriter, r *http.Request, id string) 
 		api.WriteError(w, http.StatusInternalServerError, "streaming not supported")
 		return nil, nil, nil
 	}
+	setSSEHeaders(w)
+	return conv, fractal, flusher
+}
 
+// scopeFractal describes the fractal or prism a request acts in, for prompts.
+// A prism is presented as a fractal carrying the prism's own name and ID.
+func (h *Handler) scopeFractal(ctx context.Context, fractalID, prismID string) (*fractals.Fractal, error) {
+	if fractalID != "" {
+		fractal, err := h.fractalManager.GetFractal(ctx, fractalID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get fractal info")
+		}
+		return fractal, nil
+	}
+	if prismID == "" || h.prismResolver == nil {
+		return nil, errNoScope
+	}
+	id, name, desc, err := h.prismResolver.GetPrismInfo(ctx, prismID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get prism info")
+	}
+	return &fractals.Fractal{ID: id, Name: name, Description: desc}, nil
+}
+
+// errNoScope means the request names no scope this server can describe.
+var errNoScope = errors.New("no fractal or prism selected")
+
+func scopeErrorStatus(err error) int {
+	if errors.Is(err, errNoScope) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+func setSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	return conv, fractal, flusher
 }
 
 // ResolveToolCallRequest answers a tool call the assistant proposed. Only the

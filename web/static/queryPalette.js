@@ -1,234 +1,164 @@
-// Unified query command palette: merges Recent (history) and Saved queries into
-// one keyboard-driven surface. Opens via the Queries button or Ctrl/Cmd-K on Query.
+// Query rows for the command palette: Recent (history), Saved queries, and the
+// Query page's actions. Opens via Cmd/Ctrl+K or the Queries button.
 //
 // History is sourced from the backend (/api/v1/query-history) so it follows the
 // user across devices, with a localStorage cache for instant render. Saved
 // queries come from /api/v1/saved-queries and support descriptions, personal/
 // shared visibility, favorites, and usage stats.
 
-const PLAY_ICON  = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M4 3l9 5-9 5V3z" fill="currentColor"/></svg>';
-const SAVE_ICON  = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M4 1h8a1 1 0 0 1 1 1v12l-5-3-5 3V2a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
-const EDIT_ICON  = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
-const TRASH_ICON = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M6 4V2.5h4V4M5 4l.5 9h5L11 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-const X_ICON     = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
-const STAR_OUTLINE = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1.5l1.9 4 4.4.5-3.3 3 .9 4.3L8 11.1 4.1 13.3l.9-4.3-3.3-3 4.4-.5L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
-const STAR_FILLED  = '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5l1.9 4 4.4.5-3.3 3 .9 4.3L8 11.1 4.1 13.3l.9-4.3-3.3-3 4.4-.5L8 1.5z"/></svg>';
-
 const QueryPalette = {
-    isOpen: false,
-    activeTab: 'history',   // 'history' | 'saved'
-    searchTerm: '',
-    activeIndex: 0,
-    history: [],
-    saved: [],
-    filtered: [],
-    debounceTimer: null,
-    editingId: null,
-    saveFormOpen: false,
-    promoteText: null,      // query text being promoted from history into Saved
-    promoteRange: null,     // time range carried from the promoted history row
-    _pendingHistory: null,  // run metadata captured by the executor
+    // Rows shown before anything is typed, on the Query page, sized so Actions
+    // and Ask AI stay in view.
+    IDLE_RECENT: 4,
+    IDLE_SAVED: 3,
 
     init() {
         const btn = document.getElementById('queriesMenuBtn');
-        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); this.toggle(); });
-
-        const search = document.getElementById('paletteSearch');
-        if (search) {
-            search.addEventListener('input', (e) => this.handleSearch(e.target.value));
-            search.addEventListener('keydown', (e) => this.onSearchKeydown(e));
-        }
-
-        document.querySelectorAll('.palette-tab').forEach(tab => {
-            tab.addEventListener('click', (e) => { e.stopPropagation(); this.switchTab(tab.dataset.tab); });
-        });
-
-        const saveBtn = document.getElementById('paletteSaveBtn');
-        if (saveBtn) saveBtn.addEventListener('click', (e) => { e.stopPropagation(); this.toggleSaveForm(); });
-
-        const clearBtn = document.getElementById('paletteClearBtn');
-        if (clearBtn) clearBtn.addEventListener('click', (e) => { e.stopPropagation(); this.clearHistory(); });
-
-        const palette = document.getElementById('queryPalette');
-        if (palette) palette.addEventListener('click', (e) => e.stopPropagation());
-        const backdrop = document.getElementById('paletteBackdrop');
-        if (backdrop) backdrop.addEventListener('click', () => this.close());
-
-        // Ctrl/Cmd-K on the Query page is routed here by GoTo. The Queries button is
-        // the fallback if an extension grabs the shortcut.
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this.isOpen) this.close();
-        });
-
-        document.addEventListener('click', (e) => {
-            if (this.isOpen && palette && !palette.contains(e.target) && e.target.id !== 'queriesMenuBtn') {
-                this.close();
-            }
-        });
-
+        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ scope: 'queries' }); });
+        this.register();
         this.migrateLegacyRecent();
     },
 
-    onFractalChange() {
-        this.history = [];
-        this.saved = [];
-        this.editingId = null;
-        this.saveFormOpen = false;
-        if (this.isOpen && FractalContext.hasScope()) this.reload();
+    register() {
+        const onQuery = ctx => ctx.view === 'search';
+        const hl = text => (window.SyntaxHighlight ? SyntaxHighlight.highlight(text) : Utils.escapeHtml(text));
+        const loadRun = (vars) => [
+            { label: 'Load into editor', run: it => this.activate(it.row, vars(it), false) },
+            { label: 'Run', run: it => this.activate(it.row, vars(it), true) },
+        ];
+
+        Palette.register({
+            id: 'recent', group: 'Recent queries', hint: 'this fractal', order: 100, scope: 'queries',
+            icon: Palette.ICONS.clock, fresh: true, search: true,
+            when: ctx => ctx.hasScope,
+            idle: ctx => (onQuery(ctx) ? this.IDLE_RECENT : 0),
+            cached: () => this.readCache().map(r => this.historyItem(r, hl)),
+            fetch: q => this.loadHistory(q).then(rows => rows.map(r => this.historyItem(r, hl))),
+            preview: it => this.historyPreview(it.row, hl),
+            actions: () => [
+                ...loadRun(() => null),
+                { label: 'Save as...', keepOpen: true, run: it => this.openSaveForm(it.row) },
+                { label: 'Remove', keepOpen: true, danger: true, run: it => this.deleteHistory(it.row.id) },
+            ],
+        });
+
+        Palette.register({
+            id: 'saved', group: 'Saved', order: 110, scope: 'queries', fresh: true, search: true,
+            when: ctx => ctx.hasScope,
+            idle: ctx => (onQuery(ctx) ? this.IDLE_SAVED : 0),
+            fetch: q => this.loadSaved(q).then(rows => rows.map(r => ({
+                key: r.id,
+                label: r.name,
+                search: `${r.query_text} ${(r.tags || []).join(' ')} ${r.description || ''}`,
+                icon: r.favorited ? Palette.ICONS.star : Palette.ICONS.bookmark,
+                hint: r.visibility === 'personal' ? 'personal' : 'shared',
+                row: r,
+            }))),
+            preview: it => this.savedPreview(it.row, hl),
+            actions: it => [
+                ...loadRun(i => i.row.variables),
+                { label: 'Edit', keepOpen: true, run: i => this.openEditForm(i.row) },
+                { label: it.row.favorited ? 'Unfavorite' : 'Favorite', keepOpen: true, run: i => this.toggleFavorite(i.row) },
+                { label: 'Delete', keepOpen: true, danger: true, run: i => this.deleteSaved(i.row.id) },
+            ],
+        });
+
+        const mod = Utils.isMac ? '⌘' : 'Ctrl';
+        const actions = [
+            { key: 'save', label: 'Save current query', hintHtml: `<kbd>${mod}</kbd><kbd>S</kbd>`, shortcut: 's', keepOpen: true, run: () => this.openSaveForm(null) },
+            { key: 'share', label: 'Copy share link', run: () => window.QueryExecutor && QueryExecutor.generateAndCopyShareLink() },
+            { key: 'notebook', label: 'Send query to notebook', run: () => window.NotebookRail && NotebookRail.captureCurrentQuery() },
+            { key: 'clear', label: 'Clear query history', keepOpen: true, run: () => this.clearHistory() },
+        ];
+        Palette.register({
+            id: 'query-actions', group: 'Actions', order: 120, scope: 'actions', icon: Palette.ICONS.bolt,
+            when: onQuery,
+            idle: () => 2,
+            items: () => actions.map(a => ({ key: a.key, label: a.label, hintHtml: a.hintHtml, shortcut: a.shortcut, kind: 'Action', act: a })),
+            actions: it => [{ label: 'Run action', keepOpen: it.act.keepOpen, run: () => it.act.run() }],
+        });
     },
 
-    toggle() { this.isOpen ? this.close() : this.open(); },
-
-    open() {
-        const palette = document.getElementById('queryPalette');
-        const backdrop = document.getElementById('paletteBackdrop');
-        if (!palette) return;
-        if (backdrop) backdrop.style.display = 'block';
-        palette.style.display = 'flex';
-        this.isOpen = true;
-        this.activeIndex = 0;
-        this.saveFormOpen = false;
-        this.editingId = null;
-        this.promoteText = null;
-        this.promoteRange = null;
-        // Show cached history immediately, then refresh from the server.
-        if (this.activeTab === 'history') this.history = this.readCache();
-        this.render();
-        this.reload();
-        const search = document.getElementById('paletteSearch');
-        if (search) { search.value = ''; this.searchTerm = ''; setTimeout(() => search.focus(), 30); }
-        const btn = document.getElementById('queriesMenuBtn');
-        if (btn) btn.classList.add('active');
+    historyItem(r, hl) {
+        return {
+            key: r.query_text,
+            label: r.query_text,
+            labelHtml: hl(r.query_text),
+            mono: true,
+            hint: this.relTime(r.last_run_at),
+            row: r,
+        };
     },
 
-    close() {
-        const palette = document.getElementById('queryPalette');
-        const backdrop = document.getElementById('paletteBackdrop');
-        if (palette) palette.style.display = 'none';
-        if (backdrop) backdrop.style.display = 'none';
-        this.isOpen = false;
-        this.saveFormOpen = false;
-        this.editingId = null;
-        const btn = document.getElementById('queriesMenuBtn');
-        if (btn) btn.classList.remove('active');
+    historyPreview(r, hl) {
+        const meta = [];
+        if (r.last_run_at) meta.push(['Ran', this.relTime(r.last_run_at) + (r.run_count > 1 ? `, ${r.run_count} times` : '')]);
+        if (r.time_range) meta.push(['Time range', this.rangeLabel(r)]);
+        if (r.result_count != null) {
+            meta.push(['Results', `${Number(r.result_count).toLocaleString()} rows${r.duration_ms != null ? ` in ${Number(r.duration_ms).toLocaleString()} ms` : ''}`]);
+        }
+        if (r.status === 'error') meta.push(['Status', 'Failed']);
+        return `<div class="pal-pv-kind">Recent query</div>
+            <pre class="pal-code pal-hl">${hl(r.query_text)}</pre>
+            ${this.metaList(meta)}`;
     },
 
-    switchTab(tab) {
-        if (tab === this.activeTab) return;
-        this.activeTab = tab;
-        this.activeIndex = 0;
-        this.saveFormOpen = false;
-        this.editingId = null;
-        this.promoteText = null;
-        this.promoteRange = null;
-        document.querySelectorAll('.palette-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-        this.render();
-        this.reload();
-        const search = document.getElementById('paletteSearch');
-        if (search) search.focus();
+    savedPreview(r, hl) {
+        const meta = [['Visibility', r.visibility === 'personal' ? 'Personal' : 'Shared']];
+        if (r.created_by) meta.push(['Created by', r.created_by]);
+        if (r.use_count) meta.push(['Used', `${r.use_count} time${r.use_count === 1 ? '' : 's'}${r.last_used_at ? `, last ${this.relTime(r.last_used_at)}` : ''}`]);
+        if (r.time_range) meta.push(['Time range', this.rangeLabel(r)]);
+        const tags = (r.tags || []).map(t => `<span class="pal-tag">${Utils.escapeHtml(t)}</span>`).join('');
+        return `<div class="pal-pv-kind">Saved query</div>
+            <div class="pal-pv-title">${Utils.escapeHtml(r.name)}</div>
+            ${r.description ? `<div class="pal-pv-note">${Utils.escapeHtml(r.description)}</div>` : ''}
+            <pre class="pal-code pal-hl">${hl(r.query_text)}</pre>
+            ${tags ? `<div class="pal-tags">${tags}</div>` : ''}
+            ${this.metaList(meta)}`;
     },
 
-    reload() {
-        if (this.activeTab === 'history') this.loadHistory(this.searchTerm);
-        else this.loadSaved(this.searchTerm);
+    metaList(rows) {
+        if (!rows.length) return '';
+        return `<dl class="pal-meta">${rows.map(([k, v]) => `<dt>${Utils.escapeHtml(k)}</dt><dd>${Utils.escapeHtml(v)}</dd>`).join('')}</dl>`;
     },
 
     async loadHistory(search) {
         let url = '/api/v1/query-history';
         if (search) url += '?search=' + encodeURIComponent(search);
-        try {
-            const resp = await fetch(url, { credentials: 'include' });
-            const data = await resp.json();
-            this.history = (data.success && data.data) || [];
-            this.writeCache(this.history);
-        } catch (err) {
-            console.error('[QueryPalette] history load failed:', err);
-        }
-        if (this.activeTab === 'history') this.render();
+        const resp = await fetch(url, { credentials: 'include' });
+        const data = await resp.json();
+        const rows = (data.success && data.data) || [];
+        if (!search) this.writeCache(rows);
+        return rows;
     },
 
     async loadSaved(search) {
         let url = '/api/v1/saved-queries';
         if (search) url += '?search=' + encodeURIComponent(search);
-        try {
-            const resp = await fetch(url, { credentials: 'include' });
-            const data = await resp.json();
-            this.saved = (data.success && data.data) || [];
-        } catch (err) {
-            console.error('[QueryPalette] saved load failed:', err);
-        }
-        if (this.activeTab === 'saved') this.render();
+        const resp = await fetch(url, { credentials: 'include' });
+        const data = await resp.json();
+        return (data.success && data.data) || [];
     },
 
-    handleSearch(value) {
-        this.searchTerm = value;
-        this.activeIndex = 0;
-        // Instant client-side fuzzy filter, plus a debounced server search that
-        // widens the candidate set (server matches query text too).
-        this.render();
-        clearTimeout(this.debounceTimer);
-        this.debounceTimer = setTimeout(() => this.reload(), 250);
-    },
-
-    onSearchKeydown(e) {
-        if (e.key === 'ArrowDown') { e.preventDefault(); this.move(1); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); this.move(-1); }
-        else if (e.key === 'Enter') {
-            e.preventDefault();
-            const item = this.filtered[this.activeIndex];
-            if (item) this.activate(item, !(e.metaKey || e.ctrlKey)); // plain Enter runs, Cmd/Ctrl+Enter loads
-        }
-        else if (e.key === 'Tab') {
-            e.preventDefault();
-            this.switchTab(this.activeTab === 'history' ? 'saved' : 'history');
-        }
-        else if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
-            e.preventDefault();
-            this.toggleSaveForm();
-        }
-    },
-
-    move(delta) {
-        const n = this.filtered.length;
-        if (!n) return;
-        this.activeIndex = (this.activeIndex + delta + n) % n;
-        const list = document.getElementById('paletteList');
-        if (!list) return;
-        list.querySelectorAll('.palette-row').forEach((el, i) => {
-            el.classList.toggle('is-active', i === this.activeIndex);
-            if (i === this.activeIndex) el.scrollIntoView({ block: 'nearest' });
-        });
+    reloadSource(id) {
+        Palette.invalidate(id);
     },
 
     // run=true executes immediately; run=false loads into the editor for review.
-    activate(item, run) {
-        if (!item) return;
+    activate(row, variables, run) {
         // Both saved queries and history rows carry the time range they were run
         // with; restore it so the query executes against its own range.
-        this.applyTimeRange(item);
-        // Saved queries carry remembered @variable values; history rows do not.
-        const vars = this.activeTab === 'saved' ? item.variables : null;
-        if (run) {
-            this.runQuery(item.query_text, vars);
-            if (this.activeTab === 'saved') this.markUsed(item.id);
-        } else {
-            this.loadQuery(item.query_text, vars);
+        this.applyTimeRange(row);
+        this.loadIntoInput(row.query_text, variables, run);
+        if (run && row.use_count !== undefined) this.markUsed(row.id);
+    },
+
+    // Puts a query in the editor, moving to Query first when the palette was
+    // opened on another page.
+    loadIntoInput(text, variables, run) {
+        if (window.App && !(App.currentViewLevel === 'fractal' && App.currentView === 'search')) {
+            App.showFractalView('search');
         }
-    },
-
-    clickRow(i) { const it = this.filtered[i]; if (it) { this.activeIndex = i; this.activate(it, false); } },
-    runIdx(i)   { const it = this.filtered[i]; if (it) { this.activeIndex = i; this.activate(it, true); } },
-
-    runQuery(text, variables) {
-        this.loadIntoInput(text, variables);
-        this.close();
-        const btn = document.getElementById('executeBtn');
-        if (btn) setTimeout(() => btn.click(), 0);
-    },
-
-    loadQuery(text, variables) { this.loadIntoInput(text, variables); this.close(); },
-
-    loadIntoInput(text, variables) {
         const qi = document.getElementById('queryInput');
         if (!qi) return;
         qi.value = text;
@@ -240,6 +170,7 @@ const QueryPalette = {
         setTimeout(() => {
             qi.dispatchEvent(new Event('input', { bubbles: true }));
             qi.focus();
+            if (run) document.getElementById('executeBtn')?.click();
         }, 0);
     },
 
@@ -266,316 +197,129 @@ const QueryPalette = {
         });
     },
 
-    // ----- Rendering -----
+    // ----- Saved query forms -----
 
-    currentList() {
-        const items = this.activeTab === 'history' ? this.history : this.saved;
-        const term = this.searchTerm.trim();
-        if (!term) return items;
-        const scored = [];
-        items.forEach(it => {
-            const hay = this.activeTab === 'saved'
-                ? `${it.name} ${it.query_text} ${(it.tags || []).join(' ')} ${it.description || ''}`
-                : it.query_text;
-            const s = this.fuzzyScore(term, hay);
-            if (s >= 0) scored.push({ it, s });
-        });
-        scored.sort((a, b) => b.s - a.s);
-        return scored.map(x => x.it);
-    },
-
-    render() {
-        const list = document.getElementById('paletteList');
-        if (!list) return;
-
-        const clearBtn = document.getElementById('paletteClearBtn');
-        if (clearBtn) clearBtn.style.display = this.activeTab === 'history' ? '' : 'none';
-
-        this.filtered = this.currentList();
-        if (this.activeIndex >= this.filtered.length) this.activeIndex = Math.max(0, this.filtered.length - 1);
-
-        const formHtml = this.saveFormOpen ? this.renderSaveForm() : '';
-
-        if (this.filtered.length === 0 && !this.saveFormOpen) {
-            list.innerHTML = this.emptyState();
-            return;
-        }
-
-        const rows = this.filtered.map((it, i) =>
-            this.activeTab === 'history' ? this.renderHistoryRow(it, i) : this.renderSavedRow(it, i)
-        ).join('');
-
-        list.innerHTML = formHtml + rows;
-    },
-
-    renderHistoryRow(it, i) {
-        const active = i === this.activeIndex ? ' is-active' : '';
-        const hl = window.SyntaxHighlight ? SyntaxHighlight.highlight(it.query_text) : this.escapeHtml(it.query_text);
-        const meta = [];
-        if (it.run_count > 1) meta.push(`${it.run_count}×`);
-        if (it.last_run_at) meta.push(this.relTime(it.last_run_at));
-        if (it.result_count != null) meta.push(`${Number(it.result_count).toLocaleString()} results`);
-        const tr = it.time_range ? `<span class="palette-badge">${this.escapeHtml(this.rangeLabel(it))}</span>` : '';
-        const err = it.status === 'error' ? '<span class="palette-badge err">error</span>' : '';
+    formFields(v = {}) {
+        const esc = s => Utils.escapeHtml(s || '');
         return `
-          <div class="palette-row${active}" data-idx="${i}">
-            <div class="palette-row-main" onclick="QueryPalette.clickRow(${i})">
-              <div class="palette-query">${hl}</div>
-              <div class="palette-meta">${tr}${err}<span>${meta.join(' · ')}</span></div>
+            <div class="pal-form-row">
+                <input name="name" class="pal-input grow" placeholder="Name" maxlength="255" value="${esc(v.name)}" />
+                <input name="tags" class="pal-input" placeholder="Tags, comma-separated" value="${esc((v.tags || []).join(', '))}" />
             </div>
-            <div class="palette-row-actions">
-              <button class="palette-icon-btn" title="Run" onclick="event.stopPropagation();QueryPalette.runIdx(${i})">${PLAY_ICON}</button>
-              <button class="palette-icon-btn" title="Save as..." onclick="event.stopPropagation();QueryPalette.promote(${i})">${SAVE_ICON}</button>
-              <button class="palette-icon-btn" title="Remove" onclick="event.stopPropagation();QueryPalette.deleteHistory('${Utils.escapeJs(it.id)}')">${X_ICON}</button>
-            </div>
-          </div>`;
+            <input name="description" class="pal-input" placeholder="Description (optional)" value="${esc(v.description)}" />
+            ${v.editQuery ? `<textarea name="query" class="pal-input pal-textarea" placeholder="Query">${esc(v.query_text)}</textarea>` : ''}
+            <label class="pal-check"><input type="checkbox" name="personal" ${v.visibility === 'personal' ? 'checked' : ''}/> Personal (only visible to you)</label>`;
     },
 
-    renderSavedRow(it, i) {
-        if (this.editingId === it.id) return this.renderEditForm(it);
-        const active = i === this.activeIndex ? ' is-active' : '';
-        const hl = window.SyntaxHighlight ? SyntaxHighlight.highlight(it.query_text) : this.escapeHtml(it.query_text);
-        const vis = it.visibility === 'personal' ? '<span class="palette-badge">personal</span>' : '';
-        const tags = (it.tags || []).map(t => `<span class="palette-tag">${this.escapeHtml(t)}</span>`).join('');
-        const desc = it.description ? `<div class="palette-desc">${this.escapeHtml(it.description)}</div>` : '';
-        const meta = [];
-        if (it.use_count) meta.push(`used ${it.use_count}×`);
-        if (it.last_used_at) meta.push(this.relTime(it.last_used_at));
-        const tr = it.time_range ? `<span class="palette-badge">${this.escapeHtml(this.rangeLabel(it))}</span>` : '';
-        return `
-          <div class="palette-row${active}" data-idx="${i}">
-            <button class="palette-fav${it.favorited ? ' on' : ''}" title="Favorite" onclick="event.stopPropagation();QueryPalette.toggleFavorite('${Utils.escapeJs(it.id)}')">${it.favorited ? STAR_FILLED : STAR_OUTLINE}</button>
-            <div class="palette-row-main" onclick="QueryPalette.clickRow(${i})">
-              <div class="palette-saved-head"><span class="palette-name">${this.escapeHtml(it.name)}</span>${vis}</div>
-              ${desc}
-              <div class="palette-query">${hl}</div>
-              ${tags ? `<div class="palette-tags">${tags}</div>` : ''}
-              ${(tr || meta.length) ? `<div class="palette-meta">${tr}<span>${meta.join(' · ')}</span></div>` : ''}
-            </div>
-            <div class="palette-row-actions">
-              <button class="palette-icon-btn" title="Run" onclick="event.stopPropagation();QueryPalette.runIdx(${i})">${PLAY_ICON}</button>
-              <button class="palette-icon-btn" title="Edit" onclick="event.stopPropagation();QueryPalette.startEdit('${Utils.escapeJs(it.id)}')">${EDIT_ICON}</button>
-              <button class="palette-icon-btn" title="Delete" onclick="event.stopPropagation();QueryPalette.deleteSaved('${Utils.escapeJs(it.id)}')">${TRASH_ICON}</button>
-            </div>
-          </div>`;
+    readForm(form) {
+        const f = name => form.elements[name];
+        return {
+            name: (f('name')?.value || '').trim(),
+            description: (f('description')?.value || '').trim(),
+            tags: (f('tags')?.value || '').split(',').map(t => t.trim()).filter(Boolean),
+            visibility: f('personal')?.checked ? 'personal' : 'shared',
+            query: f('query') ? f('query').value.trim() : null,
+        };
     },
 
-    renderSaveForm() {
-        const q = (this.promoteText || document.getElementById('queryInput')?.value || '').trim();
-        const preview = q ? (window.SyntaxHighlight ? SyntaxHighlight.highlight(q) : this.escapeHtml(q)) : '<span class="palette-dim">No query in the editor</span>';
-        // Show which time range will be saved with the query.
-        const rangeSrc = this.promoteText ? this.promoteRange : (window.TimePicker ? TimePicker.serializeRange() : null);
-        const rangeText = rangeSrc ? this.rangeLabel(rangeSrc) : '';
-        const rangeRow = rangeText ? `<div class="palette-meta"><span class="palette-dim">Time range</span><span class="palette-badge">${this.escapeHtml(rangeText)}</span></div>` : '';
-        return `
-          <div class="palette-form">
-            <div class="palette-form-preview">${preview}</div>
-            ${rangeRow}
-            <div class="palette-form-row">
-              <input id="paletteFormName" class="palette-input grow" placeholder="Name" maxlength="255" />
-              <input id="paletteFormTags" class="palette-input" placeholder="Tags (comma-separated)" />
-            </div>
-            <input id="paletteFormDesc" class="palette-input" placeholder="Description (optional)" />
-            <div class="palette-form-foot">
-              <label class="palette-check"><input type="checkbox" id="paletteFormPersonal" /> Personal (only visible to you)</label>
-              <div class="palette-form-actions">
-                <button class="btn-secondary btn-sm" onclick="QueryPalette.toggleSaveForm()">Cancel</button>
-                <button class="btn-primary btn-sm" onclick="QueryPalette.submitSave()">Save query</button>
-              </div>
-            </div>
-          </div>`;
-    },
-
-    renderEditForm(it) {
-        const tags = (it.tags || []).join(', ');
-        const personal = it.visibility === 'personal' ? 'checked' : '';
-        return `
-          <div class="palette-row editing">
-            <div class="palette-form">
-              <div class="palette-form-row">
-                <input id="peName" class="palette-input grow" value="${this.escapeHtml(it.name)}" maxlength="255" placeholder="Name" />
-                <input id="peTags" class="palette-input" value="${this.escapeHtml(tags)}" placeholder="Tags (comma-separated)" />
-              </div>
-              <input id="peDesc" class="palette-input" value="${this.escapeHtml(it.description || '')}" placeholder="Description (optional)" />
-              <textarea id="peQuery" class="palette-input palette-textarea" placeholder="Query">${this.escapeHtml(it.query_text)}</textarea>
-              <div class="palette-form-foot">
-                <label class="palette-check"><input type="checkbox" id="pePersonal" ${personal}/> Personal (only visible to you)</label>
-                <div class="palette-form-actions">
-                  <button class="btn-secondary btn-sm" onclick="QueryPalette.cancelEdit()">Cancel</button>
-                  <button class="btn-primary btn-sm" onclick="QueryPalette.submitEdit('${Utils.escapeJs(it.id)}')">Update</button>
-                </div>
-              </div>
-            </div>
-          </div>`;
-    },
-
-    emptyState() {
-        if (this.activeTab === 'history') {
-            return this.searchTerm
-                ? '<div class="palette-empty">No matching history</div>'
-                : '<div class="palette-empty">No query history yet. Run a query to see it here.</div>';
-        }
-        return this.searchTerm
-            ? '<div class="palette-empty">No matching saved queries</div>'
-            : '<div class="palette-empty">No saved queries. Run a query and press <kbd>⌘S</kbd> to save it.</div>';
-    },
-
-    // ----- Saved query actions -----
-
-    toggleSaveForm() {
-        const q = (this.promoteText || document.getElementById('queryInput')?.value || '').trim();
-        if (!this.saveFormOpen && !q) {
+    // Saves the editor's query, or a history row's when promoting one.
+    openSaveForm(historyRow) {
+        const text = (historyRow ? historyRow.query_text : document.getElementById('queryInput')?.value || '').trim();
+        if (!text) {
             if (window.Toast) Toast.show('No query to save', 'warning');
             return;
         }
-        // Saving always lives under the Saved tab.
-        if (!this.saveFormOpen && this.activeTab !== 'saved') {
-            this.switchTab('saved');
-        }
-        this.saveFormOpen = !this.saveFormOpen;
-        if (!this.saveFormOpen) { this.promoteText = null; this.promoteRange = null; }
-        this.render();
-        if (this.saveFormOpen) {
-            const n = document.getElementById('paletteFormName');
-            if (n) setTimeout(() => n.focus(), 30);
-        }
+        // Promoting carries the row's range; a normal save snapshots the picker.
+        const range = historyRow ? this._rangeFields(historyRow) : (window.TimePicker ? TimePicker.serializeRange() : {});
+        const hl = window.SyntaxHighlight ? SyntaxHighlight.highlight(text) : Utils.escapeHtml(text);
+        const rangeText = this.rangeLabel(range);
+        Palette.showPanel({
+            title: 'Save query',
+            submitLabel: 'Save',
+            html: `<pre class="pal-code pal-hl">${hl}</pre>
+                ${rangeText ? this.metaList([['Time range', rangeText]]) : ''}
+                ${this.formFields()}`,
+            onSubmit: form => this.submitSave(form, text, range, !!historyRow),
+        });
     },
 
-    promote(i) {
-        const it = this.filtered[i];
-        if (!it) return;
-        const text = it.query_text;
-        this.switchTab('saved');
-        this.promoteText = text;
-        // Carry the history row's time range into the save form so the saved
-        // query keeps the range it was originally run with.
-        this.promoteRange = this._rangeFields(it);
-        this.saveFormOpen = true;
-        this.render();
-        const n = document.getElementById('paletteFormName');
-        if (n) setTimeout(() => n.focus(), 30);
-    },
-
-    async submitSave() {
-        const name = this.val('paletteFormName').trim();
-        const description = this.val('paletteFormDesc').trim();
-        const tagsStr = this.val('paletteFormTags');
-        const visibility = document.getElementById('paletteFormPersonal')?.checked ? 'personal' : 'shared';
-        const queryText = (this.promoteText || document.getElementById('queryInput')?.value || '').trim();
-
-        if (!name) { if (window.Toast) Toast.show('Name is required', 'warning'); return; }
-        if (!queryText) { if (window.Toast) Toast.show('No query to save', 'warning'); return; }
-
-        const tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
-        // When promoting a history row, its @vars are unrelated to the live editor,
-        // so default them to "*"; for a normal save, reuse the editor's values.
-        const prevVals = this.promoteText
+    async submitSave(form, queryText, range, promoted) {
+        const v = this.readForm(form);
+        if (!v.name) { if (window.Toast) Toast.show('Name is required', 'warning'); return false; }
+        // A promoted history row's @vars are unrelated to the live editor, so
+        // they default to "*"; a normal save reuses the editor's values.
+        const prevVals = promoted
             ? []
             : ((window.QueryExecutor && QueryExecutor.varManager) ? QueryExecutor.varManager.serialize() : []);
         const variables = this._variablesForQuery(queryText, prevVals);
-        // Promoting from history carries that row's range; a normal save snapshots
-        // the live time picker so the saved query runs against the same window.
-        const range = this.promoteText
-            ? (this.promoteRange || {})
-            : (window.TimePicker ? TimePicker.serializeRange() : {});
-        try {
-            const resp = await fetch('/api/v1/saved-queries', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables, ...range })
-            });
-            const data = await resp.json();
-            if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to save', 'error'); return; }
-            if (window.Toast) Toast.show('Query saved', 'success');
-            this.saveFormOpen = false;
-            this.promoteText = null;
-            this.promoteRange = null;
-            this.loadSaved(this.searchTerm);
-        } catch (err) {
-            console.error('[QueryPalette] save failed:', err);
-            if (window.Toast) Toast.show('Failed to save query', 'error');
-        }
+        const ok = await this.send('/api/v1/saved-queries', 'POST',
+            { name: v.name, query_text: queryText, description: v.description, tags: v.tags, visibility: v.visibility, variables, ...(range || {}) },
+            'Query saved', 'Failed to save query');
+        if (ok) this.reloadSource('saved');
+        return ok;
     },
 
-    startEdit(id) {
-        this.editingId = id;
-        this.render();
-        const n = document.getElementById('peName');
-        if (n) setTimeout(() => n.focus(), 30);
+    openEditForm(row) {
+        Palette.showPanel({
+            title: 'Edit saved query',
+            submitLabel: 'Update',
+            html: this.formFields({ ...row, editQuery: true }),
+            onSubmit: form => this.submitEdit(form, row),
+        });
     },
 
-    cancelEdit() { this.editingId = null; this.render(); },
+    async submitEdit(form, row) {
+        const v = this.readForm(form);
+        if (!v.name) { if (window.Toast) Toast.show('Name is required', 'warning'); return false; }
+        if (!v.query) { if (window.Toast) Toast.show('Query text is required', 'warning'); return false; }
+        const variables = this._variablesForQuery(v.query, row.variables);
+        // Editing does not expose the time range, so the stored one is kept.
+        const ok = await this.send(`/api/v1/saved-queries/${encodeURIComponent(row.id)}`, 'PUT',
+            { name: v.name, query_text: v.query, description: v.description, tags: v.tags, visibility: v.visibility, variables, ...this._rangeFields(row) },
+            'Query updated', 'Failed to update query');
+        if (ok) this.reloadSource('saved');
+        return ok;
+    },
 
-    async submitEdit(id) {
-        const name = this.val('peName').trim();
-        const description = this.val('peDesc').trim();
-        const queryText = this.val('peQuery').trim();
-        const tagsStr = this.val('peTags');
-        const visibility = document.getElementById('pePersonal')?.checked ? 'personal' : 'shared';
-
-        if (!name) { if (window.Toast) Toast.show('Name is required', 'warning'); return; }
-        if (!queryText) { if (window.Toast) Toast.show('Query text is required', 'warning'); return; }
-
-        const tags = tagsStr.split(',').map(t => t.trim()).filter(Boolean);
-        const existing = this.saved.find(s => s.id === id);
-        const variables = this._variablesForQuery(queryText, existing && existing.variables);
-        // Editing does not expose the time range, so preserve the stored one.
-        const range = existing ? this._rangeFields(existing) : {};
+    async send(url, method, body, okMsg, failMsg) {
         try {
-            const resp = await fetch(`/api/v1/saved-queries/${id}`, {
-                method: 'PUT',
+            const resp = await fetch(url, {
+                method,
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ name, query_text: queryText, description, tags, visibility, variables, ...range })
+                body: body ? JSON.stringify(body) : undefined,
             });
             const data = await resp.json();
-            if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to update', 'error'); return; }
-            if (window.Toast) Toast.show('Query updated', 'success');
-            this.editingId = null;
-            this.loadSaved(this.searchTerm);
+            if (!data.success) { if (window.Toast) Toast.show(data.error || failMsg, 'error'); return false; }
+            if (okMsg && window.Toast) Toast.show(okMsg, 'success');
+            return true;
         } catch (err) {
-            console.error('[QueryPalette] update failed:', err);
-            if (window.Toast) Toast.show('Failed to update query', 'error');
+            console.error('[QueryPalette]', failMsg, err);
+            if (window.Toast) Toast.show(failMsg, 'error');
+            return false;
         }
     },
 
     async deleteSaved(id) {
         if (!confirm('Delete this saved query?')) return;
-        try {
-            const resp = await fetch(`/api/v1/saved-queries/${id}`, { method: 'DELETE', credentials: 'include' });
-            const data = await resp.json();
-            if (!data.success) { if (window.Toast) Toast.show(data.error || 'Failed to delete', 'error'); return; }
-            if (window.Toast) Toast.show('Query deleted', 'success');
-            this.loadSaved(this.searchTerm);
-        } catch (err) {
-            console.error('[QueryPalette] delete failed:', err);
-            if (window.Toast) Toast.show('Failed to delete query', 'error');
+        if (await this.send(`/api/v1/saved-queries/${encodeURIComponent(id)}`, 'DELETE', null, 'Query deleted', 'Failed to delete query')) {
+            this.reloadSource('saved');
         }
     },
 
-    async toggleFavorite(id) {
-        const sq = this.saved.find(s => s.id === id);
-        if (!sq) return;
-        const wasFav = sq.favorited;
-        sq.favorited = !wasFav; // optimistic
-        this.render();
+    async toggleFavorite(row) {
         try {
-            await fetch(`/api/v1/saved-queries/${id}/favorite`, {
-                method: wasFav ? 'DELETE' : 'POST',
+            await fetch(`/api/v1/saved-queries/${encodeURIComponent(row.id)}/favorite`, {
+                method: row.favorited ? 'DELETE' : 'POST',
                 credentials: 'include'
             });
-        } catch (err) {
-            sq.favorited = wasFav; // revert on failure
-            this.render();
-            return;
-        }
+        } catch (err) { /* the reload shows the real state */ }
         // Reload so favorites sort to the top.
-        this.loadSaved(this.searchTerm);
+        this.reloadSource('saved');
     },
 
     async markUsed(id) {
-        try { await fetch(`/api/v1/saved-queries/${id}/use`, { method: 'POST', credentials: 'include' }); } catch (err) { /* best-effort */ }
+        try { await fetch(`/api/v1/saved-queries/${encodeURIComponent(id)}/use`, { method: 'POST', credentials: 'include' }); } catch (err) { /* best-effort */ }
     },
 
     // ----- History actions / recording -----
@@ -586,61 +330,45 @@ const QueryPalette = {
         if (!meta || !meta.query) return;
         const q = meta.query.trim();
         if (!q || q === '*') return;
-        try {
-            await fetch('/api/v1/query-history', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify({
-                    query_text: meta.query,
-                    time_range: meta.timeRange || '',
-                    custom_start: meta.customStart || '',
-                    custom_end: meta.customEnd || '',
-                    relative_n: meta.relativeN != null ? meta.relativeN : null,
-                    relative_unit: meta.relativeUnit || '',
-                    result_count: meta.resultCount != null ? meta.resultCount : null,
-                    duration_ms: meta.durationMs != null ? meta.durationMs : null,
-                    status: meta.status || 'ok'
-                })
-            });
-        } catch (err) { /* best-effort; cache still updated below */ }
-
-        let list = this.readCache().filter(h => h.query_text !== meta.query);
-        list.unshift({
-            id: 'local-' + new Date().getTime(),
+        const row = {
             query_text: meta.query,
             time_range: meta.timeRange || '',
             custom_start: meta.customStart || '',
             custom_end: meta.customEnd || '',
             relative_n: meta.relativeN != null ? meta.relativeN : null,
             relative_unit: meta.relativeUnit || '',
-            result_count: meta.resultCount,
-            duration_ms: meta.durationMs,
-            status: meta.status || 'ok',
-            run_count: 1,
-            last_run_at: new Date().toISOString()
-        });
-        list = list.slice(0, 50);
-        this.writeCache(list);
-        this.history = list;
-        if (this.isOpen && this.activeTab === 'history') this.render();
+            result_count: meta.resultCount != null ? meta.resultCount : null,
+            duration_ms: meta.durationMs != null ? meta.durationMs : null,
+            status: meta.status || 'ok'
+        };
+        try {
+            await fetch('/api/v1/query-history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(row)
+            });
+        } catch (err) { /* best-effort; cache still updated below */ }
+
+        const list = this.readCache().filter(h => h.query_text !== meta.query);
+        list.unshift({ ...row, id: 'local-' + Date.now(), run_count: 1, last_run_at: new Date().toISOString() });
+        this.writeCache(list.slice(0, 50));
+        Palette.invalidate('recent');
     },
 
     async deleteHistory(id) {
         if (!String(id).startsWith('local-')) {
-            try { await fetch('/api/v1/query-history/' + id, { method: 'DELETE', credentials: 'include' }); } catch (err) { /* ignore */ }
+            try { await fetch('/api/v1/query-history/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'include' }); } catch (err) { /* ignore */ }
         }
-        this.history = this.history.filter(h => h.id !== id);
-        this.writeCache(this.history);
-        this.render();
+        this.writeCache(this.readCache().filter(h => h.id !== id));
+        this.reloadSource('recent');
     },
 
     async clearHistory() {
         if (!confirm('Clear all query history for this fractal?')) return;
         try { await fetch('/api/v1/query-history', { method: 'DELETE', credentials: 'include' }); } catch (err) { /* ignore */ }
-        this.history = [];
         this.writeCache([]);
-        this.render();
+        this.reloadSource('recent');
     },
 
     // One-time import of the old localStorage recent queries into server history.
@@ -680,18 +408,6 @@ const QueryPalette = {
         try { localStorage.setItem(this.historyCacheKey(), JSON.stringify(list)); } catch (e) { /* quota */ }
     },
 
-    fuzzyScore(needle, hay) {
-        needle = needle.toLowerCase();
-        hay = hay.toLowerCase();
-        if (!needle) return 0;
-        let n = 0, score = 0, streak = 0;
-        for (let h = 0; h < hay.length && n < needle.length; h++) {
-            if (hay[h] === needle[n]) { n++; streak++; score += streak; }
-            else streak = 0;
-        }
-        return n === needle.length ? score : -1;
-    },
-
     relTime(iso) {
         const d = new Date(iso);
         if (isNaN(d.getTime())) return '';
@@ -728,7 +444,7 @@ const QueryPalette = {
         }
         if (t === 'custom') {
             const fmt = d => { const p = TZ.parts(d); return p ? `${TZ.MONTHS[p.month - 1]} ${p.day}` : ''; };
-            if (it.custom_start && it.custom_end) return `${fmt(it.custom_start)} – ${fmt(it.custom_end)}`;
+            if (it.custom_start && it.custom_end) return `${fmt(it.custom_start)} to ${fmt(it.custom_end)}`;
             return 'Custom';
         }
         if (t === 'all') return 'All time';
@@ -741,13 +457,6 @@ const QueryPalette = {
         };
         return map[t] || t;
     },
-
-    val(id) { return document.getElementById(id)?.value || ''; },
-
-    escapeHtml(str) {
-        if (!str) return '';
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
 };
 
 window.QueryPalette = QueryPalette;

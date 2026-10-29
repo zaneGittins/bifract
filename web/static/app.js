@@ -39,7 +39,11 @@ const App = {
         if (this.resumePendingLink()) return;
 
         if (window.Sidebar) Sidebar.init();
-        if (window.GoTo) GoTo.init();
+        if (window.Palette) {
+            Palette.init();
+            GoTo.register();
+            QueryAssist.init();
+        }
 
         // Initialize all modules
         if (window.TimeBar) {
@@ -1404,7 +1408,7 @@ const App = {
     },
 
     initToolbarMenus() {
-        // Queries is handled by QueryPalette (it owns its own button + popover).
+        // Queries opens the command palette (QueryPalette wires the button).
         const defs = [
             { btnId: 'shareMenuBtn',   menuId: 'shareMenu',   wrapId: 'shareMenuWrap'   },
             { btnId: 'exportMenuBtn',  menuId: 'exportMenu',  wrapId: 'exportMenuWrap'  },

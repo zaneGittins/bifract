@@ -19,18 +19,35 @@ Every page is in the left sidebar. The selector at its top shows the fractal or 
 - **Collapse**: **Collapse** at the bottom folds the sidebar to icons; hover an icon for its name. Query and Recall start collapsed and other pages expanded, and each remembers your choice. Windows narrower than 900px show icons only; on a phone, open the sidebar from the menu button.
 - **Open in a new tab**: every page and sub-page has its own URL. Ctrl-click, Cmd-click or middle-click a sidebar item.
 
-## Jump to a page with Go to
+## Command palette
 
-![Go to palette](../images/getting-started/goto-palette.png)
+![Command palette on Query](../images/getting-started/goto-palette.png)
 
-1. Click **Go to...** at the top of the sidebar, or press Cmd+K (macOS) or Ctrl+K.
-2. Type part of a name.
-3. Press Enter, or click a result.
+Press Cmd+K (macOS) or Ctrl+K on any page, or click **Go to...** at the top of the sidebar. Type part of a name, then press Enter or click a result. The right side previews the highlighted result and its actions.
 
 It finds:
 
 - any page or sub-page, such as **Alerts > Coverage** or **Settings > Users**
 - another fractal or prism
 - a dashboard, notebook, alert rule, lookup or analytics model in the current scope
+- your recent queries in this fractal, and its saved queries
 
-On Query and Recall, Cmd/Ctrl+K opens their recent and saved queries instead; use the **Go to...** button there.
+The page you are on leads. On Query, your recent and saved queries come first, then actions such as **Save current query**. On Recall, **New search**, **Restore this window** and your recent recalls come first.
+
+| Key | Does |
+|-----|------|
+| Enter | Open the result. On a query, load it into the editor |
+| Cmd/Ctrl+Enter | Run a query |
+| Tab | Show only the highlighted result's section, then move to the preview's buttons |
+| `#`, `>`, `?` typed first | Show only queries, actions, or Ask AI |
+| Backspace in an empty box | Show every section again |
+| Cmd/Ctrl+S | On Query, save the query in the editor |
+| Esc | Close a form, then the palette |
+
+The **Queries** button on Query and the **Recent** button on Recall open the palette on those rows.
+
+## Ask AI
+
+When AI is configured, type `?` in the palette, or pick **Ask AI**, and describe what you want to find, for example `failed logins by source IP`. The AI reads the fractal's fields, writes a BQL query, and the server checks it before you see it.
+
+The query is shown as a diff against the one in your editor, so you can ask for a change ("only the last hour", "add a count by host") and see exactly what moved. Enter loads it into the editor and Cmd/Ctrl+Enter runs it. Type a new request and press Enter to refine the answer. Nothing runs until you choose to.
