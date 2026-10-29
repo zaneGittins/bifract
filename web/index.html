@@ -50,6 +50,7 @@
     <link rel="stylesheet" href="/static/schemaFields.css">
     <link rel="stylesheet" href="/static/attackCoverage.css">
     <link rel="stylesheet" href="/static/sidebar.css">
+    <link rel="stylesheet" href="/static/palette.css">
     <link rel="stylesheet" href="/static/fonts/fonts.css">
 </head>
 <body>
@@ -77,7 +78,7 @@
             <button id="sidebarGoTo" type="button" class="sb-item sb-goto" data-tip="Go to" aria-haspopup="dialog" aria-keyshortcuts="Control+K Meta+K">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M10.5 5.5L9 9l-3.5 1.5L7 7z"/></svg>
                 <span class="sb-label">Go to...</span>
-                <kbd class="sb-kbd" aria-hidden="true">⌘K</kbd>
+                <kbd class="sb-kbd" aria-hidden="true" data-palette-kbd>⌘K</kbd>
             </button>
         </div>
         <nav id="sidebarNav" class="sb-nav" aria-label="Main navigation"></nav>
@@ -1657,37 +1658,12 @@
 
                 <div class="toolbar-spacer"></div>
 
-                <!-- Queries palette (History + Saved) -->
+                <!-- Opens the command palette on its query rows -->
                 <div class="toolbar-menu-wrap" id="queriesMenuWrap">
-                    <button id="queriesMenuBtn" class="toolbar-menu-btn">
+                    <button id="queriesMenuBtn" class="toolbar-menu-btn" type="button" title="Recent and saved queries" aria-haspopup="dialog">
                         Queries
-                        <span class="toolbar-menu-kbd">⌘K</span>
+                        <span class="toolbar-menu-kbd" data-palette-kbd>⌘K</span>
                     </button>
-                    <div id="paletteBackdrop" class="palette-backdrop" style="display:none"></div>
-                    <div id="queryPalette" class="query-palette" style="display:none">
-                        <div class="palette-search-row">
-                            <svg class="palette-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                            <input type="text" id="paletteSearch" class="palette-search" placeholder="Search queries..." autocomplete="off" spellcheck="false" />
-                        </div>
-                        <div class="palette-tabs">
-                            <button class="palette-tab active" data-tab="history">History</button>
-                            <button class="palette-tab" data-tab="saved">Saved</button>
-                            <div class="palette-tabs-spacer"></div>
-                            <button id="paletteSaveBtn" class="palette-tab-action" title="Save current query">
-                                <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                                Save
-                            </button>
-                        </div>
-                        <div id="paletteList" class="palette-list"></div>
-                        <div class="palette-footer">
-                            <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
-                            <span><kbd>⇥</kbd> switch</span>
-                            <span><kbd>↵</kbd> run</span>
-                            <span><kbd>⌘↵</kbd> load</span>
-                            <span><kbd>⌘S</kbd> save</span>
-                            <span id="paletteClearBtn" class="palette-footer-clear">Clear history</span>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Share menu -->
@@ -2779,25 +2755,12 @@
 
                             <div class="toolbar-spacer"></div>
 
-                            <!-- Recent recalls command palette (sits just left of Recall, like Queries⌘K left of Run) -->
+                            <!-- Opens the command palette on its Recall rows -->
                             <div class="toolbar-menu-wrap" id="recallPaletteWrap">
-                                <button id="recallPaletteBtn" class="toolbar-menu-btn" type="button" title="Recent recalls and restore (Ctrl/Cmd+K)">
+                                <button id="recallPaletteBtn" class="toolbar-menu-btn" type="button" title="Recent recalls and restore" aria-haspopup="dialog">
                                     Recent
-                                    <span class="toolbar-menu-kbd">⌘K</span>
+                                    <span class="toolbar-menu-kbd" data-palette-kbd>⌘K</span>
                                 </button>
-                                <div id="recallPaletteBackdrop" class="palette-backdrop" style="display:none"></div>
-                                <div id="recallPalette" class="query-palette" style="display:none">
-                                    <div class="palette-search-row">
-                                        <svg class="palette-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                                        <input type="text" id="recallPaletteSearch" class="palette-search" placeholder="Search recent recalls..." autocomplete="off" spellcheck="false" />
-                                    </div>
-                                    <div id="recallPaletteList" class="palette-list"></div>
-                                    <div class="palette-footer">
-                                        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
-                                        <span><kbd>↵</kbd> open</span>
-                                        <span><kbd>esc</kbd> close</span>
-                                    </div>
-                                </div>
                             </div>
 
                             <button id="recallRunBtn" class="search-btn">
@@ -3535,15 +3498,20 @@
     </div><!-- End container -->
     </div><!-- End app-shell -->
 
-    <div id="goToPalette" class="goto-overlay" hidden>
-        <div class="goto-dialog" role="dialog" aria-modal="true" aria-label="Go to">
-            <div class="goto-input-row">
+    <div id="palette" class="pal-overlay" hidden>
+        <div class="pal-dialog" role="dialog" aria-modal="true" aria-label="Command palette">
+            <div class="pal-input-row">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-                <input id="goToInput" type="text" role="combobox" aria-expanded="false" aria-controls="goToList" aria-autocomplete="list" aria-label="Go to" placeholder="Go to a page, fractal, dashboard, notebook, rule..." autocomplete="off" spellcheck="false">
+                <button id="paletteScope" type="button" class="pal-chip" title="Show all results" hidden></button>
+                <input id="paletteInput" type="text" role="combobox" aria-expanded="false" aria-controls="paletteList" aria-autocomplete="list" aria-label="Search" autocomplete="off" spellcheck="false">
+                <span id="paletteContext" class="pal-context" hidden></span>
             </div>
-            <div id="goToList" class="goto-list" role="listbox" aria-label="Results"></div>
-            <div id="goToStatus" class="goto-status" role="status" aria-live="polite"></div>
-            <div class="goto-foot" aria-hidden="true"><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div>
+            <div class="pal-body">
+                <div id="paletteList" class="pal-list" role="listbox" aria-label="Results"></div>
+                <div id="palettePreview" class="pal-preview"></div>
+                <div id="paletteStatus" class="pal-status" role="status" aria-live="polite"></div>
+            </div>
+            <div id="paletteFoot" class="pal-foot" aria-hidden="true"></div>
         </div>
     </div>
 
@@ -4299,6 +4267,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/factChips.js"></script>
     <script src="/static/pgraphView.js"></script>
     <script src="/static/sidebar.js"></script>
+    <script src="/static/palette.js"></script>
     <script src="/static/goTo.js"></script>
     <script src="/static/syntaxHighlight.js"></script>
     <script src="/static/variables.js"></script>
@@ -4309,6 +4278,7 @@ throttleTimeSeconds: 3600"></textarea>
     <script src="/static/httpUtils.js"></script>
     <script src="/static/pagination.js"></script>
     <script src="/static/queryPalette.js"></script>
+    <script src="/static/queryAssist.js"></script>
     <script src="/static/timeBar.js"></script>
     <script src="/static/timePicker.js"></script>
     <script src="/static/autocomplete.js"></script>

@@ -3076,6 +3076,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 					Handler:  d.chatHandler.HandleSuggestLabels,
 				})
 				r.Register(api.Route{
+					Method:   http.MethodPost,
+					Path:     "/query/assist/stream",
+					Produces: "text/event-stream",
+					Access:   api.AccessViewer,
+					Request:  chat.QueryAssistRequest{},
+					Summary:  "Write a BQL query from a description, streaming the steps taken. The query is proposed, never run.",
+					Handler:  d.chatHandler.HandleQueryAssist,
+				})
+				r.Register(api.Route{
 					Method:   http.MethodGet,
 					Path:     "/chat/conversations",
 					Access:   api.AccessViewer,

@@ -234,8 +234,6 @@ const Sidebar = {
             else a.removeAttribute('aria-current');
         });
         if (level === 'main' && this.ADMIN.some(i => i.key === key)) this._applyAdminOpen(true);
-        // Query and Recall keep Ctrl/Cmd+K for their own palettes.
-        document.getElementById('sidebarGoTo').classList.toggle('no-kbd', this._pageClass() === 'workspace');
         const active = document.querySelector(`#sidebar a[data-nav][aria-current="page"]`);
         document.getElementById('sidebarMobileTitle').textContent = active ? active.dataset.tip : '';
         this.closeDrawer();
