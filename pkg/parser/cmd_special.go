@@ -50,6 +50,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 
 	for _, arg := range b.Flat("fields") {
 		ctx.Plan.TableHasExplicitColumns = true
+		ctx.Plan.TableColumns = append(ctx.Plan.TableColumns, strings.Trim(arg.Value(), "`"))
 		field := arg.FieldName()
 
 		if selects, ok, err := tableAggregateSelects(arg, ctx); err != nil {
@@ -174,6 +175,7 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 	}
 	for _, arg := range b.Flat("fields") {
 		ctx.Plan.TableHasExplicitColumns = true
+		ctx.Plan.TableColumns = append(ctx.Plan.TableColumns, strings.Trim(arg.Value(), "`"))
 
 		// The bare count keyword maps to the prior stage's default _count output.
 		name := strings.Trim(arg.Value(), "`")

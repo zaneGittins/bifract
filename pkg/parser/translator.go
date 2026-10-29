@@ -1016,16 +1016,12 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 			plan.FormatterOrderBy = activeStage.Layer.OrderBy
 			plan.FormatterLimit = activeStage.Layer.Limit
 		}
-		// norm_log is the default content column (normalized fields). Strip it from the
-		// display order when the user has explicitly chosen columns via | table(...).
+		// table(...) shows the columns it names. Every row still carries the ones
+		// projected for its identity and content, which are only displayed if named.
 		if plan.TableHasExplicitColumns {
-			filtered := fieldOrder[:0]
-			for _, f := range fieldOrder {
-				if f != "norm_log" && f != "log_id" {
-					filtered = append(filtered, f)
-				}
-			}
-			fieldOrder = filtered
+			fieldOrder = slices.DeleteFunc(fieldOrder, func(f string) bool {
+				return rowIdentityColumns[f] && !slices.Contains(plan.TableColumns, f)
+			})
 		}
 	}
 
@@ -1577,6 +1573,10 @@ func dropHiddenDeferredFields(fieldOrder []string, plan *QueryPlan) []string {
 	}
 	return out
 }
+
+// rowIdentityColumns are projected on every non-aggregated row, named or not, so a
+// result row can be opened and located.
+var rowIdentityColumns = map[string]bool{"timestamp": true, "log_id": true, "fractal_id": true, normLogColumn: true}
 
 // dropField removes one column from the display order, leaving it in the result set.
 func dropField(fieldOrder []string, name string) []string {
