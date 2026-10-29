@@ -33,16 +33,28 @@ test.describe('Fractal settings layout', () => {
     }
   });
 
-  test('on a wide screen the tab bar spans the page and forms keep a readable column', async ({ page }) => {
+  test('on a wide screen the tab bar and every tab share one centered frame', async ({ page }) => {
     await openManage(page);
     await page.setViewportSize({ width: 2560, height: 1080 });
-    const section = await page.locator('#fractalOnlyManageSection').boundingBox();
+    const view = await page.locator('#fractalManageTabContent').boundingBox();
     const bar = await page.locator('#manageSubTabs').boundingBox();
-    expect(Math.abs(bar.x + bar.width - (section.x + section.width)), 'tab bar stops short of the page').toBeLessThanOrEqual(1);
-    for (const tab of ['overview', 'lifecycle']) {
-      const form = await (await openTab(page, tab)).locator('.sp-content').boundingBox();
-      expect(form.width, `${tab} form stretches across the screen`).toBeLessThanOrEqual(961);
+    expect(bar.width, 'tab bar spans the whole screen').toBeLessThanOrEqual(1201);
+    const leftGap = bar.x - view.x, rightGap = view.x + view.width - (bar.x + bar.width);
+    expect(Math.abs(leftGap - rightGap), 'frame is not centered').toBeLessThanOrEqual(1);
+    for (const tab of TABS) {
+      const edges = await firstBlockEdges(await openTab(page, tab));
+      expect(Math.abs(edges.left - bar.x), `${tab} left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} right edge`).toBeLessThanOrEqual(1);
     }
+  });
+
+  // A value flush right sat a screen away from its label.
+  test('overview values sit beside their labels', async ({ page }) => {
+    await openManage(page);
+    const row = page.locator('#manageSubTabOverview .sp-row-kv').first();
+    const label = await row.locator('.sp-row-label').boundingBox();
+    const value = await row.locator('.detail-value').boundingBox();
+    expect(value.x - label.x, 'value is far from its label').toBeLessThanOrEqual(200);
   });
 
   test('Danger zone sits apart on the right, in red', async ({ page }) => {

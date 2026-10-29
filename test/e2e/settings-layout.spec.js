@@ -9,8 +9,6 @@ const { expectNoPageTitle, expectActionFlushRight, firstBlockEdges } = require('
 
 const TABS = ['users', 'groups', 'apikeys', 'context', 'platform', 'security', 'danger'];
 const WITH_ACTION = ['users', 'groups', 'apikeys', 'context'];
-const TABLE_TABS = WITH_ACTION;
-const FORM_TABS = ['platform', 'security', 'danger'];
 
 async function openSettings(page) {
   await login(page);
@@ -49,24 +47,21 @@ test.describe('Settings layout', () => {
     }
   });
 
-  // Lists use the whole width like every other page; forms keep a readable
-  // column so a control stays near its label. The tab bar spans the page either way.
-  test('on a wide screen, tables fill the width and forms keep a readable column', async ({ page }) => {
+  // On a wide screen the tab bar and every tab sit in one centered frame, so
+  // nothing shifts between tabs and the page does not end in a blank strip.
+  test('on a wide screen, the tab bar and every tab share one centered frame', async ({ page }) => {
     await page.setViewportSize({ width: 2560, height: 1080 });
     await openSettings(page);
     const view = await page.locator('#settingsView').boundingBox();
     const bar = await page.locator('#settingsSubTabs').boundingBox();
-    expect(Math.abs(bar.x + bar.width - (view.x + view.width)), 'tab bar stops short of the page').toBeLessThanOrEqual(1);
+    expect(bar.width, 'tab bar spans the whole screen').toBeLessThanOrEqual(1201);
+    const leftGap = bar.x - view.x, rightGap = view.x + view.width - (bar.x + bar.width);
+    expect(Math.abs(leftGap - rightGap), 'frame is not centered').toBeLessThanOrEqual(1);
 
-    for (const tab of TABLE_TABS) {
+    for (const tab of TABS) {
       const edges = await firstBlockEdges(await openTab(page, tab));
-      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} stops short of the tab bar`).toBeLessThanOrEqual(1);
-    }
-    for (const tab of FORM_TABS) {
-      const panel = await openTab(page, tab);
-      const form = await panel.locator('.sp-content').boundingBox();
-      expect(Math.abs(form.x - bar.x), `${tab} form left edge`).toBeLessThanOrEqual(1);
-      expect(form.width, `${tab} form stretches across the screen`).toBeLessThanOrEqual(961);
+      expect(Math.abs(edges.left - bar.x), `${tab} left edge`).toBeLessThanOrEqual(1);
+      expect(Math.abs(edges.right - (bar.x + bar.width)), `${tab} right edge`).toBeLessThanOrEqual(1);
     }
   });
 

@@ -80,6 +80,17 @@ test.describe('Alerts layout', () => {
     }
   });
 
+  // Policies sits among full-width tabs, so its settings span the tab too
+  // rather than stopping short of the toolbar above them.
+  test('Policies settings reach the toolbar edge on a wide screen', async ({ page }) => {
+    await openAlerts(page);
+    await page.setViewportSize({ width: 2560, height: 1080 });
+    const view = await openTab(page, TABS.find(x => x.tab === 'policies'));
+    const bar = await page.locator('#alertsSubTabs').boundingBox();
+    const form = await view.locator('.sp-content').boundingBox();
+    expect(Math.abs(form.x + form.width - (bar.x + bar.width)), 'settings stop short of the toolbar').toBeLessThanOrEqual(1);
+  });
+
   test('Manage feeds opens the feed sources panel with no forced case', async ({ page }) => {
     await openAlerts(page);
     const view = await openTab(page, TABS.find(x => x.tab === 'feeds'));
