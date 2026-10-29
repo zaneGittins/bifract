@@ -17,8 +17,10 @@ import (
 //
 // It exists because the measurements are expensive and the page is not: field
 // distributions move over hours, so recomputing them per page load bought
-// nothing and cost a scan whose size grew with retention. Everything here is
-// bounded by an explicit sample size, a memory ceiling, and an execution ceiling.
+// nothing and cost a scan whose size grew with retention. Presence is read from
+// the logs_field_paths rollup; values come from a bounded sample. Everything here
+// is bounded by a sample size or the rollup's path cap, a memory ceiling, and an
+// execution ceiling.
 
 // sweepLockID elects a single replica. The queries are read-only, so concurrent
 // runs would be correct, just wasteful.
@@ -54,9 +56,10 @@ const sweepQueryBudgetSeconds = 120
 const sweptAtKey = "schema_swept_at"
 
 // Sweeper measures the schema in the background: what each field costs and how
-// much of the column budget is used (part metadata), how the fields are
-// distributed (a bounded sample per fractal), how often each is queried (saved
-// BQL), and which have spilled out of their own column.
+// much of the column budget is used (part metadata), how many rows carry each
+// field (the path rollup, which it also repairs), what values they hold (a
+// bounded sample per fractal), how often each is queried (saved BQL), and which
+// have spilled out of their own column.
 type Sweeper struct {
 	ch      *storage.ClickHouseClient
 	pg      *storage.PostgresClient
@@ -76,6 +79,7 @@ func (s *Sweeper) Start(ctx context.Context) {
 	if s.ch == nil || s.pg == nil {
 		return
 	}
+	go s.reconcileLoop(ctx)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -135,13 +139,53 @@ func (s *Sweeper) runOnce(parent context.Context) {
 	}
 }
 
-// sweepStats measures storage and distribution: Tier A from part metadata, then
-// one bounded sample per fractal.
+// reconcileLoop repairs the path rollup on its own schedule and lock, so a long
+// backfill (an upgrade's history, a firehose day recounted in slices) never holds
+// up the measurements, and runs to completion rather than restarting each pass.
+func (s *Sweeper) reconcileLoop(ctx context.Context) {
+	wait := sweepStartupDelay
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		s.reconcilePaths(ctx)
+		wait = sweepInterval()
+	}
+}
+
+// reconcilePaths repairs closed days of the path rollup that disagree with logs.
+func (s *Sweeper) reconcilePaths(ctx context.Context) {
+	unlock, ok := s.pg.TryAdvisoryLock(ctx, storage.LockFieldPathReconcile)
+	if !ok {
+		return
+	}
+	defer unlock()
+	if err := s.ch.ReconcileFieldPaths(ctx, sweepMaxMemoryBytes()); err != nil {
+		log.Printf("[SchemaSweep] reconcile field paths: %v", err)
+	}
+}
+
+// sweepStats measures storage and distribution: Tier A from part metadata, exact
+// presence from the path rollup, then one bounded sample per fractal for values.
 func (s *Sweeper) sweepStats(ctx context.Context) {
 	bytes, fractals, err := s.readInventory(ctx)
 	if err != nil {
 		log.Printf("[SchemaSweep] inventory: %v", err)
 		return
+	}
+	paths, err := s.readPathCounts(ctx)
+	if err != nil {
+		// The sample alone still describes the schema, just less exactly.
+		log.Printf("[SchemaSweep] %v", err)
+	}
+	for id := range paths {
+		// The inventory reads only the newest parts, so a fractal with nothing
+		// recent is known only from its counts.
+		if fractals[id] == nil {
+			fractals[id] = &fractalMeta{ID: id}
+		}
 	}
 	if len(fractals) == 0 {
 		return // no data yet; leave whatever was measured before
@@ -170,7 +214,7 @@ func (s *Sweeper) sweepStats(ctx context.Context) {
 				res.SampledAt = now // never measured
 			}
 		}
-		res.Meta, res.Bytes = meta, bytes[id]
+		res.Meta, res.Bytes, res.Paths = meta, bytes[id], paths[id]
 		results = append(results, res)
 	}
 	if len(results) == 0 {

@@ -193,3 +193,77 @@ func TestClusterInitStampsUnrecordedShard(t *testing.T) {
 	initialize(t)
 	requireHealthy(t, "stamped")
 }
+
+func shardUint(t *testing.T, addr, query string) uint64 {
+	t.Helper()
+	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "logs", User: "default", Password: "bifract", Pool: chTestPool()})
+	if err != nil {
+		t.Fatalf("open %s: %v", addr, err)
+	}
+	defer conn.Close()
+	var n uint64
+	if err := conn.QueryRow(context.Background(), query).Scan(&n); err != nil {
+		t.Fatalf("%s on %s: %v", query, addr, err)
+	}
+	return n
+}
+
+// The field path rollup on a cluster: created on every shard by the 018 migration
+// on upgrade, replicated, read across shards through its distributed twin, and
+// reconciled per shard against that shard's own logs.
+func TestClusterFieldPaths(t *testing.T) {
+	dropEverything(t)
+	initialize(t)
+	// An install from before 018: no rollup, migration not recorded.
+	for _, addr := range chTestHosts {
+		for _, q := range []string{
+			"DROP VIEW IF EXISTS logs.logs_field_paths_mv SYNC",
+			"DROP TABLE IF EXISTS logs.logs_field_paths_distributed SYNC",
+			"DROP TABLE IF EXISTS logs.logs_field_paths SYNC",
+			"DELETE FROM logs._bifract_migrations WHERE number = 18",
+		} {
+			execOnShard(t, addr, q)
+		}
+	}
+	// History the view never saw: 30 rows on shard 0, 20 on shard 1, three days ago.
+	old := "today() - 3"
+	for i, addr := range chTestHosts {
+		execOnShard(t, addr, fmt.Sprintf(`INSERT INTO logs.logs (timestamp, log_id, fields, fractal_id, ingest_timestamp)
+			SELECT now64(3), toString(number), '{"src":"a"}', 'f', toDateTime64(%s, 3, 'UTC') FROM numbers(%d)`, old, 30-10*i))
+	}
+	initialize(t)
+	for _, addr := range chTestHosts {
+		if n := shardUint(t, addr, "SELECT count() FROM system.tables WHERE database = 'logs' AND name = 'logs_field_paths' AND engine LIKE 'Replicated%'"); n != 1 {
+			t.Fatalf("%s: logs_field_paths missing or not replicated after upgrade", addr)
+		}
+	}
+
+	// New rows are counted by each shard's view.
+	for _, addr := range chTestHosts {
+		execOnShard(t, addr, `INSERT INTO logs.logs (timestamp, log_id, fields, fractal_id) SELECT now64(3), toString(number), '{"src":"a","dst":"b"}', 'f' FROM numbers(5)`)
+	}
+
+	c := newTestClusterClient(t)
+	defer c.Close()
+	if err := c.ReconcileFieldPaths(context.Background(), 1<<30); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	for i, addr := range chTestHosts {
+		got := shardUint(t, addr, "SELECT sum(cnt) FROM logs.logs_field_paths WHERE path = 'src' AND ingest_day = "+old)
+		if want := uint64(30 - 10*i); got != want {
+			t.Errorf("%s: backfilled src = %d, want %d", addr, got, want)
+		}
+	}
+	rows, err := c.QueryLowPriorityBounded(context.Background(),
+		"SELECT path, sum(cnt) AS n FROM "+c.FieldPathsReadTable()+" GROUP BY path ORDER BY path", 1<<30)
+	if err != nil {
+		t.Fatalf("distributed read: %v", err)
+	}
+	want := map[string]uint64{"": 60, "src": 60, "dst": 10}
+	for _, r := range rows {
+		p, _ := r["path"].(string)
+		if n, _ := r["n"].(uint64); n != want[p] {
+			t.Errorf("distributed %q = %d, want %d", p, n, want[p])
+		}
+	}
+}

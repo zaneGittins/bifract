@@ -197,6 +197,7 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 		for _, pair := range [][2]string{
 			{"logs_distributed", "logs"},
 			{"logs_histogram_distributed", "logs_histogram"},
+			{"logs_field_paths_distributed", "logs_field_paths"},
 			{"logs_hot_distributed", "logs_hot"},
 			{"proc_lineage_distributed", "proc_lineage"},
 			{"proc_freq_distributed", "proc_freq"},
@@ -228,7 +229,7 @@ func (c *ClickHouseClient) syncShardSchemas(ctx context.Context, states []shardS
 // run directly on each host. These cannot live in the init SQL because they need the
 // cluster name, which is only known to the running server.
 func (c *ClickHouseClient) distributedTableDDL() []string {
-	locals := []string{"logs", "logs_histogram", "logs_hot", "proc_lineage", "proc_freq", "process_edges", "logs_raw"}
+	locals := []string{"logs", "logs_histogram", "logs_field_paths", "logs_hot", "proc_lineage", "proc_freq", "process_edges", "logs_raw"}
 	stmts := make([]string, 0, len(locals))
 	for _, t := range locals {
 		stmts = append(stmts, fmt.Sprintf(

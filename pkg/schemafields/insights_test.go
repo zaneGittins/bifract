@@ -152,9 +152,9 @@ func TestRecommendIndexMatchesDefaultsReasoning(t *testing.T) {
 // configured and unconfigured fields share one list, every row carries a
 // verdict, and the worklist sorts to the top.
 func TestBuildFieldsUnifiesAndRanks(t *testing.T) {
-	// Coverage is derived from present over the sampled-row count, so the
+	// Coverage is derived from present over the total-row count, so the
 	// fixture supplies the same denominator the sweep would have recorded.
-	const sampledRows = 1000
+	const totalRows = 1000
 	measured := map[string]*Field{
 		"src_ip":    {FieldInsight: FieldInsight{Present: 990, Cardinality: 1000}},
 		"noise":     {FieldInsight: FieldInsight{Present: 990, Cardinality: 90000}},
@@ -176,7 +176,7 @@ func TestBuildFieldsUnifiesAndRanks(t *testing.T) {
 		"queried":   {Weight: 40},
 	}
 
-	got := buildFields(measured, sampledRows, usage, configured, custom, ignored, overflowed)
+	got := buildFields(measured, totalRows, usage, configured, custom, ignored, overflowed)
 
 	by := map[string]Field{}
 	for _, f := range got {

@@ -14,6 +14,7 @@ const SchemaFields = {
     fields: [],
     capacity: null,
     sampleSize: 0,
+    totalRows: 0,
     totalBytes: 0,
     fractals: 0,
     computedAt: null,
@@ -81,6 +82,7 @@ const SchemaFields = {
             this.fields = d.fields || [];
             this.capacity = d.capacity || null;
             this.sampleSize = d.sample_size || 0;
+            this.totalRows = d.total_rows || 0;
             this.totalBytes = d.total_bytes || 0;
             this.fractals = d.fractals || 0;
             this.computedAt = d.computed_at || null;
@@ -267,8 +269,11 @@ const SchemaFields = {
         }
 
         const parts = [`Measured ${this._ago(this.computedAt)}`];
-        if (this.sampleSize) {
-            parts.push(`${this.sampleSize.toLocaleString()} logs sampled`
+        // Presence is counted over every log unless the counts were unavailable,
+        // in which case the total is the sample's own size.
+        const rows = this.totalRows || this.sampleSize;
+        if (rows) {
+            parts.push(`${rows.toLocaleString()} logs${rows > this.sampleSize ? '' : ' sampled'}`
                 + (this.fractals > 1 ? ` across ${this.fractals} fractals` : ''));
         }
         if (this.totalBytes) parts.push(`${this._bytes(this.totalBytes)} of fields on disk`);
@@ -482,7 +487,7 @@ const SchemaFields = {
             ? `<h4>Most common values</h4><div class="schema-topvals">${f.top.map(t =>
                 `<span class="schema-tv"><span class="val">${this.escHtml(t.value)}</span>
                  <span class="tvbar"><i style="width:${Math.round(t.count / maxTop * 100)}%"></i></span>
-                 <span class="pc">${t.approx ? '~' : ''}${this._pct(f.present ? t.count / f.present : 0)}</span></span>`).join('')}</div>`
+                 <span class="pc">${t.approx ? '~' : ''}${this._pct(f.sample_present ? t.count / f.sample_present : 0)}</span></span>`).join('')}</div>`
             : '';
 
         const canReserve = this.isSelectable(f);
@@ -497,7 +502,7 @@ const SchemaFields = {
             <p class="schema-why ${WHY[0]}">${WHY[1]}</p>
             <h4>In your logs</h4>
             <dl class="schema-kv">
-                <dt>Present in</dt><dd>${f.coverage ? this._pct(f.coverage) + ' of sampled logs' : 'not seen'}</dd>
+                <dt>Present in</dt><dd>${f.coverage ? this._pct(f.coverage) + ' of logs' : 'not seen'}</dd>
                 <dt>Distinct values</dt><dd>${f.cardinality ? f.cardinality.toLocaleString() : '—'}</dd>
                 <dt>Storage</dt><dd>${f.bytes_on_disk
                     ? `${this._bytes(f.bytes_on_disk)}${this.totalBytes ? ` · ${this._pct(f.bytes_on_disk / this.totalBytes)} of fields` : ''}`

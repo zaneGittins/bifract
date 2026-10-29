@@ -13,11 +13,11 @@ func TestResetLogDataStatementsScope(t *testing.T) {
 	all := strings.Join(stmts, "\n")
 
 	for _, want := range []string{
-		"`logs`", "`logs_raw`", "`logs_hot`", "`logs_histogram`",
+		"`logs`", "`logs_raw`", "`logs_hot`", "`logs_histogram`", "`logs_field_paths`", "`logs_field_paths__rebuild`",
 		"`proc_lineage`", "`proc_freq`", "`process_edges`",
 		"`logs_distributed`", "`logs_raw_distributed`",
 		"`_bifract_migrations`", "`_bifract_migration_steps`",
-		"`logs_histogram_mv`", "`logs_hot_mv`", "`process_edges_mv`",
+		"`logs_histogram_mv`", "`logs_field_paths_mv`", "`logs_hot_mv`", "`process_edges_mv`",
 		// Every shape a model owns, including the two Postgres never records.
 		"`model_11111111_2222_3333_4444_555555555555`",
 		"`model_mv_11111111_2222_3333_4444_555555555555`",

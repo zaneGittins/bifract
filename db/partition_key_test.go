@@ -118,3 +118,11 @@ func TestHistogramRollupCarriesIngestDay(t *testing.T) {
 		t.Error("logs_histogram_mv must populate ingest_day from ingest_timestamp")
 	}
 }
+
+// Retention and fractal deletion drop field path counts by the logs partition key, so
+// the rollup must partition the same way or counts outlive the rows they describe.
+func TestFieldPathsRollupPartitionsLikeLogs(t *testing.T) {
+	if got := partitionOf(t, tableClauses(t, "logs_field_paths"), "logs_field_paths"); got != "(fractal_id, ingest_day)" {
+		t.Errorf("logs_field_paths PARTITION BY = %q, want (fractal_id, ingest_day)", got)
+	}
+}

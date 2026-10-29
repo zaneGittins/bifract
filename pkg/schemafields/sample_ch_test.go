@@ -173,7 +173,7 @@ func TestSampleSpansTheWindow(t *testing.T) {
 		t.Logf("single LIMIT now reaches the later source; the bias this guards against may be gone")
 	}
 
-	// The probe is the coverage denominator, so it must count what the strata read.
+	// The probe is the sample's denominator, so it must count what the strata read.
 	var n uint64
 	if err := conn.QueryRow(context.Background(), probeSQL(sampleTestTable, "f", anchor, window, sampleTestWant)).Scan(&n); err != nil {
 		t.Fatalf("probe: %v", err)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/storage"
 	"bifract/pkg/storage/storagetest"
 )
 
@@ -142,7 +143,7 @@ func TestSweepFailedSampleWithoutHistory(t *testing.T) {
 	}
 }
 
-// The probe's count is the coverage denominator, so it must count the stratified
+// The probe's count is the sample's denominator, so it must count the stratified
 // scan the sample reads rather than a single LIMIT over the window.
 func TestProbeCountsTheStratifiedScan(t *testing.T) {
 	ch, chf := storagetest.ClickHouse()
@@ -291,5 +292,210 @@ func TestSliceQueriesListBeyondWhatIsShown(t *testing.T) {
 		if !strings.Contains(q, fmt.Sprintf("approx_top_k(%d,", sampleSliceTopN)) {
 			t.Fatalf("slice query does not list %d values:\n%s", sampleSliceTopN, q)
 		}
+	}
+}
+
+// pathRollup scripts the rollup read, one query per fractal: per fractal, the empty
+// path is the row count.
+func pathRollup(chf *fakedb.CH, rows ...[]any) {
+	byFractal := map[string][][]any{}
+	var ids []any
+	for _, r := range rows {
+		id := r[0].(string)
+		if byFractal[id] == nil {
+			ids = append(ids, []any{id})
+		}
+		byFractal[id] = append(byFractal[id], []any{r[1], r[2]})
+	}
+	discovered := make([][]any, len(ids))
+	for i, id := range ids {
+		discovered[i] = id.([]any)
+	}
+	chf.On("table = 'logs_field_paths'", fakedb.CHResult{Cols: cols("fractal", "String"), Rows: discovered})
+	for id, rs := range byFractal {
+		chf.On("FROM logs_field_paths WHERE fractal_id = '"+id+"'", fakedb.CHResult{Cols: cols("path", "String", "n", "UInt64"), Rows: rs})
+	}
+}
+
+func fieldRow(pgf *fakedb.PG, fractal, field string) []driver.Value {
+	for _, r := range insertsFor(pgf, "schema_field_stats", fractal) {
+		if r[1] == field {
+			return r
+		}
+	}
+	return nil
+}
+
+// Presence comes from the rollup, exact over all retention, while the sample still
+// supplies values and keeps its own count as the denominator for their shares. A
+// field too rare for any sample, and a fractal with no recent parts, still appear.
+func TestSweepUsesExactPathCounts(t *testing.T) {
+	s, pgf, chf := sweepFakes(t)
+	pathRollup(chf,
+		[]any{"a", "", uint64(1_000_000)},
+		[]any{"a", "user", uint64(750_000)},
+		[]any{"a", "rare_field", uint64(3)},
+		[]any{"c", "", uint64(10)},
+		[]any{"c", "x", uint64(10)},
+	)
+	s.sweepStats(context.Background())
+
+	fa := insertsFor(pgf, "schema_fractal_stats", "a")
+	if len(fa) != 1 || fa[0][5] != int64(1_000_000) {
+		t.Fatalf("a fractal row = %v, want total_rows 1000000", fa)
+	}
+	if r := fieldRow(pgf, "a", "user"); r == nil || r[2] != int64(750_000) || r[6] != int64(90*sampleStrata) {
+		t.Errorf("a user = %v, want present 750000 and sample_present %d", r, 90*sampleStrata)
+	}
+	if r := fieldRow(pgf, "a", "rare_field"); r == nil || r[2] != int64(3) || r[6] != int64(0) {
+		t.Errorf("a rare_field = %v, want present 3 and no sample", r)
+	}
+	if fc := insertsFor(pgf, "schema_fractal_stats", "c"); len(fc) != 1 || fc[0][5] != int64(10) {
+		t.Errorf("c fractal row = %v, want total_rows 10", fc)
+	}
+	if r := fieldRow(pgf, "c", "x"); r == nil || r[2] != int64(10) {
+		t.Errorf("c x = %v, want present 10", r)
+	}
+	// No counts for b: its denominator stays its sample's.
+	if fb := insertsFor(pgf, "schema_fractal_stats", "b"); len(fb) != 1 || fb[0][5] != fb[0][1] {
+		t.Errorf("b fractal row = %v, want total_rows equal to sampled_rows", fb)
+	}
+}
+
+// Without the rollup the tab still renders from the sample alone.
+func TestSweepFallsBackToSampleWithoutRollup(t *testing.T) {
+	s, pgf, chf := sweepFakes(t)
+	chf.On("table = 'logs_field_paths'", fakedb.CHResult{Err: errors.New("table does not exist")})
+	s.sweepStats(context.Background())
+
+	fa := insertsFor(pgf, "schema_fractal_stats", "a")
+	if len(fa) != 1 || fa[0][5] != fa[0][1] {
+		t.Fatalf("a fractal row = %v, want total_rows equal to sampled_rows", fa)
+	}
+	if r := fieldRow(pgf, "a", "user"); r == nil || r[2] != int64(90*sampleStrata) || r[6] != int64(90*sampleStrata) {
+		t.Errorf("a user = %v, want the sample's count for both", r)
+	}
+}
+
+// Repair runs on the one replica holding its lock, and nowhere else.
+func TestReconcilePathsTakesItsLock(t *testing.T) {
+	ch, chf := storagetest.ClickHouse()
+	pg, pgf := storagetest.Postgres()
+	s := NewSweeper(ch, pg, nil, nil)
+
+	pgf.On("pg_try_advisory_lock", fakedb.Row(false))
+	s.reconcilePaths(context.Background())
+	if n := len(chf.QueriedMatching("FROM logs_field_paths")); n != 0 {
+		t.Errorf("reconciled %d times without the lock", n)
+	}
+
+	pgf.ClearRules()
+	pgf.On("pg_try_advisory_lock", fakedb.Row(true))
+	s.reconcilePaths(context.Background())
+	if len(chf.QueriedMatching("FROM logs_field_paths")) == 0 {
+		t.Error("reconcile did not run with the lock")
+	}
+	if c := pgf.Matching("pg_try_advisory_lock"); len(c) == 0 || c[len(c)-1].Args[0] != storage.LockFieldPathReconcile {
+		t.Errorf("took the wrong lock: %v", c)
+	}
+}
+
+// One fractal whose counts cannot be read falls back to its sample; the others
+// keep their exact counts.
+func TestSweepIsolatesAFailedRollupRead(t *testing.T) {
+	s, pgf, chf := sweepFakes(t)
+	chf.On("FROM logs_field_paths WHERE fractal_id = 'a'", fakedb.CHResult{Err: errors.New("memory limit exceeded")})
+	pathRollup(chf, []any{"a", "", uint64(1)}, []any{"c", "", uint64(10)}, []any{"c", "x", uint64(10)})
+	s.sweepStats(context.Background())
+
+	if fa := insertsFor(pgf, "schema_fractal_stats", "a"); len(fa) != 1 || fa[0][5] != fa[0][1] {
+		t.Errorf("a = %v, want its sample's denominator", fa)
+	}
+	if fc := insertsFor(pgf, "schema_fractal_stats", "c"); len(fc) != 1 || fc[0][5] != int64(10) {
+		t.Errorf("c = %v, want its exact total", fc)
+	}
+}
+
+// Coverage divides by the rows the counts cover, and a top value's share divides by
+// its own sample's count of the field, never by the exact presence.
+func TestLoadStatsSeparatesExactAndSampled(t *testing.T) {
+	pg, pgf := storagetest.Postgres()
+	pgf.On("GROUP BY field_name", fakedb.RowsOf(
+		[]driver.Value{"user", int64(750_000), int64(4), int64(0), `[{"value":"bob","count":360}]`, int64(720)},
+	))
+	pgf.On("FROM schema_fractal_stats", fakedb.Row(int64(100), int64(3), int64(0), int64(2), int64(1_000_000)))
+
+	stats, err := loadStats(context.Background(), pg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalRows != 1_000_000 || stats.SampledRows != 100 {
+		t.Errorf("total/sampled = %d/%d, want 1000000/100", stats.TotalRows, stats.SampledRows)
+	}
+	f := stats.Fields["user"]
+	if f == nil || f.Present != 750_000 || f.SamplePresent != 720 {
+		t.Fatalf("user = %+v, want present 750000 and sample_present 720", f)
+	}
+}
+
+// Field names are sender controlled and field_name is VARCHAR(255). One over-long
+// key must not fail the transaction and discard every fractal's measurement.
+func TestSweepSkipsNamesPostgresCannotHold(t *testing.T) {
+	s, pgf, chf := sweepFakes(t)
+	long := strings.Repeat("é", 256)
+	bad := []string{long, "nul\x00key", "bad\xffutf8"}
+	pathRollup(chf,
+		[]any{"a", "", uint64(10)},
+		[]any{"a", bad[0], uint64(1)},
+		[]any{"a", bad[1], uint64(1)},
+		[]any{"a", bad[2], uint64(1)},
+		[]any{"a", "user", uint64(9)},
+	)
+	s.sweepStats(context.Background())
+	for _, name := range bad {
+		if r := fieldRow(pgf, "a", name); r != nil {
+			t.Errorf("wrote %q, which Postgres rejects", name)
+		}
+	}
+	if r := fieldRow(pgf, "a", "user"); r == nil {
+		t.Error("the rest of the fractal must still be written")
+	}
+}
+
+// Rows with an empty fractal id are skipped like the part inventory skips them.
+func TestSweepIgnoresUnscopedRollup(t *testing.T) {
+	s, pgf, chf := sweepFakes(t)
+	pathRollup(chf, []any{"", "", uint64(10)}, []any{"", "x", uint64(10)})
+	s.sweepStats(context.Background())
+	if rows := insertsFor(pgf, "schema_fractal_stats", ""); len(rows) != 0 {
+		t.Errorf("unscoped rows measured as a fractal: %v", rows)
+	}
+}
+
+// A NUL in a top value would fail the jsonb insert for every fractal.
+func TestSaveableTopValuesDropNUL(t *testing.T) {
+	got := saveableTop([]TopValue{tv("ok", 3), tv("a\x00b", 2)})
+	if len(got) != 1 || got[0].Value != "ok" {
+		t.Errorf("got %+v, want only the clean value", got)
+	}
+}
+
+// A field the rollup did not list is estimated from its share of the sample, and
+// without counts the sample's own figures are used as they are.
+func TestPresentFallsBackToSampleShare(t *testing.T) {
+	r := fractalResult{
+		SampledRows: 100,
+		Fields:      map[string]*fieldSample{"listed": {Present: 50}, "tail": {Present: 10}},
+		Paths:       &pathCounts{Rows: 10_000, Present: map[string]uint64{"listed": 4_000}},
+	}
+	if got := r.present("listed"); got != 4_000 {
+		t.Errorf("listed = %d, want the exact 4000", got)
+	}
+	if got := r.present("tail"); got != 1_000 {
+		t.Errorf("tail = %d, want 10%% of 10000", got)
+	}
+	r.Paths = nil
+	if got, total := r.present("tail"), r.totalRows(); got != 10 || total != 100 {
+		t.Errorf("without counts = %d of %d, want the sample's 10 of 100", got, total)
 	}
 }

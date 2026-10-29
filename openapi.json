@@ -39362,6 +39362,9 @@
               "$ref": "#/components/schemas/schemafields.FieldRef"
             }
           },
+          "sample_present": {
+            "type": "integer"
+          },
           "status": {
             "type": "string"
           },
@@ -39384,6 +39387,7 @@
         "required": [
           "name",
           "present",
+          "sample_present",
           "cardinality",
           "coverage",
           "status",
@@ -39464,10 +39468,14 @@
           },
           "total_bytes": {
             "type": "integer"
+          },
+          "total_rows": {
+            "type": "integer"
           }
         },
         "required": [
           "sample_size",
+          "total_rows",
           "capacity",
           "fields",
           "total_bytes",

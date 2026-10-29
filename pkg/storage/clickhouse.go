@@ -1486,7 +1486,11 @@ func (c *ClickHouseClient) Exec(ctx context.Context, query string) error {
 
 // fractalPartitionedTables are partitioned by (fractal_id, ingest day), so a fractal's
 // rows leave with its partitions.
-var fractalPartitionedTables = []string{"logs", "logs_raw"}
+var fractalPartitionedTables = []string{"logs", "logs_raw", "logs_field_paths"}
+
+// logsRollupTables are fed from logs by a materialized view and partitioned like it,
+// so dropping a logs partition drops the same partition here.
+var logsRollupTables = []string{"logs_histogram", "logs_field_paths"}
 
 // dropPartitionSettings lifts max_partition_size_to_drop (50GB by default), which
 // otherwise refuses any partition from a fractal ingesting more than that in a day.
@@ -2942,17 +2946,11 @@ func (c *ClickHouseClient) DropLogPartition(ctx context.Context, partition strin
 	if err := c.execOnEveryShard(ctx, "ALTER TABLE logs DROP PARTITION "+partition+dropPartitionSettings, "drop partition "+partition); err != nil {
 		return err
 	}
-	// The rollup is fed by a materialized view and partitioned like logs, so the same
-	// (fractal, ingest day) partition holds the counts for the rows just dropped.
-	return c.onEveryShard(ctx, "drop histogram partition "+partition, func(conn driver.Conn) error {
-		ids, err := stringColumn(ctx, conn,
-			"SELECT DISTINCT partition_id FROM system.parts WHERE database = currentDatabase() AND table = 'logs_histogram' AND active AND partition = ?",
-			partition)
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			if err := conn.Exec(ctx, "ALTER TABLE logs_histogram DROP PARTITION ID '"+id+"'"+dropPartitionSettings); err != nil {
+	// The same (fractal, ingest day) partition of each rollup holds the counts for the
+	// rows just dropped.
+	return c.onEveryShard(ctx, "drop rollup partitions "+partition, func(conn driver.Conn) error {
+		for _, table := range logsRollupTables {
+			if err := dropPartitionsOf(ctx, conn, table, partition); err != nil {
 				return err
 			}
 		}

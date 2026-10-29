@@ -71,8 +71,8 @@ func sliceShare(want int) int { return (want + sampleStrata - 1) / sampleStrata 
 const maxWidenRounds = 3
 
 // sampleFractal measures one fractal's field distribution. It returns the
-// per-field rows and the exact number of rows sampled, which is the coverage
-// denominator.
+// per-field rows and the exact number of rows sampled, which is the denominator
+// for the sampled counts (and for coverage when the rollup has no counts).
 func (s *Sweeper) sampleFractal(ctx context.Context, fm *fractalMeta) (map[string]*fieldSample, uint64, int, error) {
 	anchor := fm.MaxTime
 	if anchor.IsZero() || anchor.After(time.Now()) {
