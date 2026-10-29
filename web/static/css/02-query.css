@@ -7,18 +7,6 @@
    Query toolbar
    ============================ */
 
-.toolbar-menu-kbd {
-    margin-left: 0.4rem;
-    padding: 0.05rem 0.3rem;
-    font-size: 0.625rem;
-    font-family: var(--font-mono);
-    color: var(--text-muted);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 3px;
-    line-height: 1.4;
-}
-
 /* Shared search input used by the Send-to-notebook picker. */
 .dropdown-search {
     background: var(--bg-secondary);

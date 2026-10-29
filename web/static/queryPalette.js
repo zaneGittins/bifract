@@ -1,5 +1,6 @@
 // Query rows for the command palette: Recent (history), Saved queries, and the
-// Query page's actions. Opens via Cmd/Ctrl+K or the Queries button.
+// Query page's actions. Cmd/Ctrl+K searches them alongside everything else; the
+// Queries button opens them to browse, one list per tab in full rows.
 //
 // History is sourced from the backend (/api/v1/query-history) so it follows the
 // user across devices, with a localStorage cache for instant render. Saved
@@ -11,10 +12,12 @@ const QueryPalette = {
     // and Ask AI stay in view.
     IDLE_RECENT: 4,
     IDLE_SAVED: 3,
+    // Saved leads: the button is for the queries kept on purpose.
+    BROWSE_TABS: [{ id: 'saved', label: 'Saved' }, { id: 'recent', label: 'Recent' }],
 
     init() {
         const btn = document.getElementById('queriesMenuBtn');
-        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ scope: 'queries' }); });
+        if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); Palette.toggle({ scope: 'queries', browse: { tabs: this.BROWSE_TABS } }); });
         this.register();
         this.migrateLegacyRecent();
     },
@@ -23,7 +26,7 @@ const QueryPalette = {
         const onQuery = ctx => ctx.view === 'search';
         const hl = text => (window.SyntaxHighlight ? SyntaxHighlight.highlight(text) : Utils.escapeHtml(text));
         const loadRun = (vars) => [
-            { label: 'Load into editor', run: it => this.activate(it.row, vars(it), false) },
+            { label: 'Load into editor', short: 'Load', run: it => this.activate(it.row, vars(it), false) },
             { label: 'Run', run: it => this.activate(it.row, vars(it), true) },
         ];
 
@@ -35,6 +38,7 @@ const QueryPalette = {
             cached: () => this.readCache().map(r => this.historyItem(r, hl)),
             fetch: q => this.loadHistory(q).then(rows => rows.map(r => this.historyItem(r, hl))),
             preview: it => this.historyPreview(it.row, hl),
+            row: it => this.historyRow(it.row, hl),
             actions: () => [
                 ...loadRun(() => null),
                 { label: 'Save as...', keepOpen: true, run: it => this.openSaveForm(it.row) },
@@ -55,6 +59,7 @@ const QueryPalette = {
                 row: r,
             }))),
             preview: it => this.savedPreview(it.row, hl),
+            row: (it, q) => this.savedRow(it.row, hl, q),
             actions: it => [
                 ...loadRun(i => i.row.variables),
                 { label: 'Edit', keepOpen: true, run: i => this.openEditForm(i.row) },
@@ -115,6 +120,28 @@ const QueryPalette = {
             <pre class="pal-code pal-hl">${hl(r.query_text)}</pre>
             ${tags ? `<div class="pal-tags">${tags}</div>` : ''}
             ${this.metaList(meta)}`;
+    },
+
+    // Browse rows carry what the preview would: the query in full, wrapped, and
+    // its facts on one line.
+    historyRow(r, hl) {
+        const facts = [this.rangeLabel(r),
+            r.result_count != null ? `${Number(r.result_count).toLocaleString()} rows` : '',
+            r.run_count > 1 ? `${r.run_count} runs` : '',
+            this.relTime(r.last_run_at)].filter(Boolean);
+        return `<div class="pal-rich-query pal-hl">${hl(r.query_text)}</div>
+            <div class="pal-rich-facts">${r.status === 'error' ? '<span class="pal-bad">Failed</span>' : ''}${Utils.escapeHtml(facts.join(' · '))}</div>`;
+    },
+
+    savedRow(r, hl, q) {
+        const facts = [r.visibility === 'personal' ? 'personal' : 'shared', this.rangeLabel(r),
+            r.use_count ? `used ${r.use_count}x` : ''].filter(Boolean);
+        const tags = (r.tags || []).map(t => `<span class="pal-tag">${Utils.escapeHtml(t)}</span>`).join('');
+        return `<div class="pal-rich-head"><span class="pal-rich-name">${Palette._highlight(r.name, q)}</span>
+                <span class="pal-rich-facts">${Utils.escapeHtml(facts.join(' · '))}</span></div>
+            ${r.description ? `<div class="pal-rich-desc">${Utils.escapeHtml(r.description)}</div>` : ''}
+            <div class="pal-rich-query pal-hl">${hl(r.query_text)}</div>
+            ${tags ? `<div class="pal-tags">${tags}</div>` : ''}`;
     },
 
     metaList(rows) {
