@@ -123,7 +123,7 @@ func (h *Handler) HandleSetSource(w http.ResponseWriter, r *http.Request) {
 	if !h.requireSourceAdmin(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -141,7 +141,7 @@ func (h *Handler) HandleDetachSource(w http.ResponseWriter, r *http.Request) {
 	if !h.requireSourceAdmin(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -163,7 +163,7 @@ func (h *Handler) HandleSyncSource(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -213,7 +213,7 @@ func (h *Handler) HandleUpdateDictionary(w http.ResponseWriter, r *http.Request)
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -238,7 +238,7 @@ func (h *Handler) HandleDeleteDictionary(w http.ResponseWriter, r *http.Request)
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -275,7 +275,7 @@ func (h *Handler) HandleAddColumn(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -304,7 +304,7 @@ func (h *Handler) HandleRemoveColumn(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -324,7 +324,7 @@ func (h *Handler) HandleSetColumnKey(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -344,7 +344,7 @@ func (h *Handler) HandleUnsetColumnKey(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -373,7 +373,7 @@ func (h *Handler) HandleSetCaseInsensitiveKeys(w http.ResponseWriter, r *http.Re
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -452,7 +452,7 @@ func (h *Handler) HandleUpsertRows(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -476,7 +476,7 @@ func (h *Handler) HandleDeleteRow(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -507,7 +507,7 @@ func (h *Handler) HandleImportCSV(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -605,7 +605,7 @@ func (h *Handler) HandleReloadDictionary(w http.ResponseWriter, r *http.Request)
 	if !h.requireAnalyst(w, r) {
 		return
 	}
-	existing := h.getDictionaryScoped(w, r)
+	existing := h.getDictionaryForWrite(w, r)
 	if existing == nil {
 		return
 	}
@@ -765,31 +765,44 @@ func (h *Handler) requireDictionaryActionInScope(w http.ResponseWriter, r *http.
 
 // ---- Helpers ----
 
-// getDictionaryScoped fetches a dictionary by ID and verifies it belongs to the
-// caller's current scope (fractal or prism). Returns nil and writes an error
-// response if the dictionary is not found or not in scope. Global dictionaries
-// are accessible from any scope.
+// getDictionaryScoped fetches the {id} dictionary for reading. It must belong
+// to the caller's scope or be global; otherwise it answers 404 and returns nil.
 func (h *Handler) getDictionaryScoped(w http.ResponseWriter, r *http.Request) *Dictionary {
-	id := chi.URLParam(r, "id")
-	dict, err := h.manager.GetDictionary(r.Context(), id)
+	return h.dictionaryInScope(w, r, false)
+}
+
+// getDictionaryForWrite is getDictionaryScoped for a change. A global list is
+// changed only from its own scope or by a tenant admin, answering 403 otherwise.
+func (h *Handler) getDictionaryForWrite(w http.ResponseWriter, r *http.Request) *Dictionary {
+	return h.dictionaryInScope(w, r, true)
+}
+
+func (h *Handler) dictionaryInScope(w http.ResponseWriter, r *http.Request, write bool) *Dictionary {
+	dict, err := h.manager.GetDictionary(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		h.respondError(w, http.StatusNotFound, "Dictionary not found")
 		return nil
-	}
-	if dict.IsGlobal {
-		return dict
 	}
 	fractalID, prismID, err := h.getScope(r)
 	if err != nil {
 		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
 		return nil
 	}
-	if (dict.FractalID != "" && dict.FractalID == fractalID) ||
-		(dict.PrismID != "" && dict.PrismID == prismID) {
+	switch {
+	case dict.ownedBy(fractalID, prismID):
 		return dict
+	case !dict.IsGlobal:
+		h.respondError(w, http.StatusNotFound, "Dictionary not found")
+	case !write || api.Granted(r, api.AccessTenantAdmin):
+		return dict
+	default:
+		h.respondError(w, http.StatusForbidden, "A global lookup can only be changed from the fractal or prism it was created in")
 	}
-	h.respondError(w, http.StatusNotFound, "Dictionary not found")
 	return nil
+}
+
+func (d *Dictionary) ownedBy(fractalID, prismID string) bool {
+	return (d.FractalID != "" && d.FractalID == fractalID) || (d.PrismID != "" && d.PrismID == prismID)
 }
 
 func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err error) {

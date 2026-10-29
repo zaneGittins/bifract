@@ -113,46 +113,6 @@ func (h *DashboardHandler) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}, client.ID)
 }
 
-// requireRoleOnFractal checks the user has the required role on a specific fractal.
-func (h *DashboardHandler) requireRoleOnFractal(r *http.Request, fractalID string, required rbac.Role) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil {
-		return false
-	}
-	if user.IsAdmin {
-		return true
-	}
-	// API key users have their role pre-resolved by the auth middleware;
-	// querying fractal_permissions would fail because the synthetic
-	// "apikey_<id>" username has no DB entries.
-	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-		fractalRole := rbac.RoleFromContext(r.Context())
-		return rbac.HasAccess(user, fractalRole, required)
-	}
-	if h.rbacResolver == nil {
-		fractalRole := rbac.RoleFromContext(r.Context())
-		return rbac.HasAccess(user, fractalRole, required)
-	}
-	role := h.rbacResolver.ResolveRole(r.Context(), user, fractalID)
-	return rbac.HasAccess(user, role, required)
-}
-
-// requireRoleOnPrism checks the user has the required role on a specific prism.
-func (h *DashboardHandler) requireRoleOnPrism(r *http.Request, prismID string, required rbac.Role) bool {
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil {
-		return false
-	}
-	if user.IsAdmin {
-		return true
-	}
-	if h.rbacResolver == nil {
-		prismRole := rbac.PrismRoleFromContext(r.Context())
-		return rbac.HasAccess(user, prismRole, required)
-	}
-	return rbac.HasAccess(user, h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID), required)
-}
-
 // getDashboardScope fetches a dashboard and returns its fractal ID and prism ID.
 func (h *DashboardHandler) getDashboardScope(ctx context.Context, dashboardID string) (fractalID, prismID string, err error) {
 	d, err := h.pg.GetDashboard(ctx, dashboardID)
@@ -162,18 +122,13 @@ func (h *DashboardHandler) getDashboardScope(ctx context.Context, dashboardID st
 	return d.FractalID, d.PrismID, nil
 }
 
-// requireDashboardRole checks the user has the required role on the dashboard's scope (fractal or prism).
+// requireDashboardRole checks the user has the required role on the dashboard's
+// own fractal or prism, answering 403 otherwise.
 func (h *DashboardHandler) requireDashboardRole(w http.ResponseWriter, r *http.Request, fractalID, prismID string, required rbac.Role) bool {
-	if fractalID != "" {
-		if !h.requireRoleOnFractal(r, fractalID, required) {
-			jsonForbidden(w)
-			return false
-		}
-	} else if prismID != "" {
-		if !h.requireRoleOnPrism(r, prismID, required) {
-			jsonForbidden(w)
-			return false
-		}
+	user, _ := r.Context().Value("user").(*storage.User)
+	if !rbac.HasAccess(user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required) {
+		jsonForbidden(w)
+		return false
 	}
 	return true
 }
@@ -193,20 +148,13 @@ func (h *DashboardHandler) HandleListDashboards(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	if selectedFractal == "" && selectedPrism == "" {
+		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+		return
+	}
 	// Re-check access on the scope every request. The scope was authorized when
 	// it was selected, but permissions can be revoked while the session lives on.
-	if selectedPrism != "" {
-		if !h.requireRoleOnPrism(r, selectedPrism, rbac.RoleViewer) {
-			jsonForbidden(w)
-			return
-		}
-	} else if selectedFractal != "" {
-		if !h.requireRoleOnFractal(r, selectedFractal, rbac.RoleViewer) {
-			jsonForbidden(w)
-			return
-		}
-	} else {
-		api.WriteError(w, http.StatusBadRequest, "No fractal or prism selected")
+	if !h.requireDashboardRole(w, r, selectedFractal, selectedPrism, rbac.RoleViewer) {
 		return
 	}
 
@@ -318,8 +266,7 @@ func (h *DashboardHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if (dashboard.FractalID != "" && !h.requireRoleOnFractal(r, dashboard.FractalID, rbac.RoleViewer)) || (dashboard.PrismID != "" && !h.requireRoleOnPrism(r, dashboard.PrismID, rbac.RoleViewer)) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, dashboard.FractalID, dashboard.PrismID, rbac.RoleViewer) {
 		return
 	}
 
@@ -925,8 +872,7 @@ func (h *DashboardHandler) HandleExportDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if (dashboard.FractalID != "" && !h.requireRoleOnFractal(r, dashboard.FractalID, rbac.RoleViewer)) || (dashboard.PrismID != "" && !h.requireRoleOnPrism(r, dashboard.PrismID, rbac.RoleViewer)) {
-		jsonForbidden(w)
+	if !h.requireDashboardRole(w, r, dashboard.FractalID, dashboard.PrismID, rbac.RoleViewer) {
 		return
 	}
 

@@ -31,7 +31,7 @@ func TestApplyAuth(t *testing.T) {
 		{name: "basic without a password", webhook: WebhookAction{AuthType: "basic", AuthConfig: map[string]string{"username": "u"}}, wantErr: "username/password not configured"},
 		{name: "unknown scheme", webhook: WebhookAction{AuthType: "hmac"}, wantErr: "unsupported auth type: hmac"},
 	}
-	wc := NewWebhookClient("")
+	wc := NewWebhookClient("", allowPrivate)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "https://example.test/hook", nil)
@@ -62,22 +62,6 @@ func TestApplyAuth(t *testing.T) {
 	}
 }
 
-func TestValidateURL(t *testing.T) {
-	wc := NewWebhookClient("")
-	for raw, ok := range map[string]bool{
-		"https://hooks.example.test/x": true,
-		"http://10.0.0.1:8080/x":       true,
-		"ftp://example.test/x":         false,
-		"file:///etc/passwd":           false,
-		"https://":                     false,
-		"://nope":                      false,
-	} {
-		if err := wc.validateURL(raw); (err == nil) != ok {
-			t.Errorf("%q: err = %v, want ok=%v", raw, err, ok)
-		}
-	}
-}
-
 // A link is only built when the action asks for one and there is a base URL and a
 // scope to point it at; otherwise the envelope carries none.
 func TestBuildPayloadAlertLink(t *testing.T) {
@@ -85,7 +69,7 @@ func TestBuildPayloadAlertLink(t *testing.T) {
 	alert := &Alert{ID: "a1", Name: "Login {{user}}", QueryString: `user="x"`, FractalID: "f1", Severity: "high", Labels: []string{"l"}}
 	results := []map[string]interface{}{{"user": "x"}, {"user": "y"}}
 
-	wc := NewWebhookClient("https://bifract.example.test/")
+	wc := NewWebhookClient("https://bifract.example.test/", allowPrivate)
 	payload := wc.BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "Login x", results, triggered)
 
 	if payload.AlertName != "Login x" || payload.OriginalName != "Login {{user}}" {
@@ -114,7 +98,7 @@ func TestBuildPayloadAlertLink(t *testing.T) {
 	if p := wc.BuildPayload(WebhookAction{IncludeAlertLink: true}, &unscoped, "n", nil, triggered); p.AlertLink != "" {
 		t.Errorf("an unscoped alert has nowhere to link: %q", p.AlertLink)
 	}
-	if p := NewWebhookClient("").BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "n", nil, triggered); p.AlertLink != "" {
+	if p := NewWebhookClient("", allowPrivate).BuildPayload(WebhookAction{IncludeAlertLink: true}, alert, "n", nil, triggered); p.AlertLink != "" {
 		t.Errorf("no base URL, no link: %q", p.AlertLink)
 	}
 	if got := wc.buildAlertLink(alert, triggered); got != payload.AlertLink {
@@ -141,7 +125,7 @@ func TestSendAttemptRequestShape(t *testing.T) {
 		AuthType:   "bearer",
 		AuthConfig: map[string]string{"token": "real"},
 	}
-	result := NewWebhookClient("").SendRendered(context.Background(), webhook, []byte(`{"a":1}`), "application/x-ndjson")
+	result := NewWebhookClient("", allowPrivate).SendRendered(context.Background(), webhook, []byte(`{"a":1}`), "application/x-ndjson")
 
 	if !result.Success || result.StatusCode != http.StatusAccepted || result.AttemptCount != 1 {
 		t.Fatalf("result: %+v", result)
@@ -167,7 +151,7 @@ func TestSendFailsFastOnConfigurationErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
 	defer srv.Close()
 
-	wc := NewWebhookClient("")
+	wc := NewWebhookClient("", allowPrivate)
 	bad := wc.Send(context.Background(), WebhookAction{URL: "gopher://x", RetryCount: 3}, &Alert{}, "n", nil)
 	if bad.Success || !strings.Contains(bad.Error, "invalid webhook URL") || bad.AttemptCount != 0 {
 		t.Errorf("an invalid URL is reported without an attempt: %+v", bad)
@@ -197,7 +181,7 @@ func TestDeliverRetryOutcome(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result := NewWebhookClient("").SendRendered(context.Background(), WebhookAction{URL: srv.URL, RetryCount: 2}, []byte("{}"), "application/json")
+	result := NewWebhookClient("", allowPrivate).SendRendered(context.Background(), WebhookAction{URL: srv.URL, RetryCount: 2}, []byte("{}"), "application/json")
 	if !result.Success || result.Error != "" || result.AttemptCount != 2 {
 		t.Errorf("recovered delivery: %+v", result)
 	}
@@ -209,7 +193,7 @@ func TestDeliverRetryOutcome(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	result = NewWebhookClient("").SendRendered(ctx, WebhookAction{URL: failing.URL, RetryCount: 5}, []byte("{}"), "application/json")
+	result = NewWebhookClient("", allowPrivate).SendRendered(ctx, WebhookAction{URL: failing.URL, RetryCount: 5}, []byte("{}"), "application/json")
 	if result.Success || time.Since(start) > 500*time.Millisecond {
 		t.Errorf("a cancelled delivery must stop promptly: %+v after %v", result, time.Since(start))
 	}
@@ -227,7 +211,7 @@ func TestSendAttemptHonoursCustomTimeout(t *testing.T) {
 	defer close(release)
 
 	start := time.Now()
-	result := NewWebhookClient("").SendRendered(context.Background(), WebhookAction{URL: srv.URL, TimeoutSecs: 1, RetryCount: 1}, []byte("{}"), "application/json")
+	result := NewWebhookClient("", allowPrivate).SendRendered(context.Background(), WebhookAction{URL: srv.URL, TimeoutSecs: 1, RetryCount: 1}, []byte("{}"), "application/json")
 	if result.Success || !strings.Contains(result.Error, "request failed") {
 		t.Errorf("a hung destination must time out: %+v", result)
 	}
@@ -283,7 +267,8 @@ func TestTestWebhookConfigSendsOnce(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := (&Manager{}).TestWebhookConfig(context.Background(), WebhookAction{URL: srv.URL, RetryCount: 5, TimeoutSecs: 10_000}, true)
+	m := &Manager{engine: &Engine{webhookClient: NewWebhookClient("", allowPrivate)}}
+	out := m.TestWebhookConfig(context.Background(), WebhookAction{URL: srv.URL, RetryCount: 5, TimeoutSecs: 10_000}, true)
 	if !out.Sent || out.Result == nil || out.Result.Success {
 		t.Fatalf("result: %+v", out)
 	}

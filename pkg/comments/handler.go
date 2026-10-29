@@ -98,12 +98,7 @@ func (h *CommentHandler) answerScopeError(w http.ResponseWriter, err error) bool
 
 // HandleCreateComment creates a new comment (analyst+)
 func (h *CommentHandler) HandleCreateComment(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value("user").(*storage.User)
-
-	fractalRole := rbac.RoleFromContext(r.Context())
-	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !requireAnalyst(w, r) {
 		return
 	}
 
@@ -296,23 +291,8 @@ func (h *CommentHandler) resolveEvidenceNotebook(w http.ResponseWriter, r *http.
 
 // HandleGetComment gets a single comment by ID
 func (h *CommentHandler) HandleGetComment(w http.ResponseWriter, r *http.Request) {
-	commentID := chi.URLParam(r, "id")
-
-	comment, err := h.pg.GetComment(r.Context(), commentID)
-	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "Comment not found")
-		return
-	}
-
-	// Verify the caller's scope matches the comment's scope
-	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	comment, ok := h.commentInScope(w, r)
 	if !ok {
-		return
-	}
-	scopeMatch := (comment.FractalID != "" && comment.FractalID == scopeFractal) ||
-		(comment.PrismID != "" && comment.PrismID == scopePrism)
-	if !scopeMatch {
-		api.WriteError(w, http.StatusForbidden, "Comment not found")
 		return
 	}
 
@@ -338,15 +318,9 @@ const (
 // one person's words and only they may change, tags are how a team organises
 // shared evidence, so any analyst in the comment's scope may set them.
 func (h *CommentHandler) HandleUpdateCommentTags(w http.ResponseWriter, r *http.Request) {
-	user := r.Context().Value("user").(*storage.User)
-	fractalRole := rbac.RoleFromContext(r.Context())
-	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		api.WriteError(w, http.StatusForbidden, "Insufficient permissions")
+	if !requireAnalyst(w, r) {
 		return
 	}
-
-	commentID := chi.URLParam(r, "id")
 
 	var req UpdateCommentTagsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -372,21 +346,16 @@ func (h *CommentHandler) HandleUpdateCommentTags(w http.ResponseWriter, r *http.
 		tags = append(tags, tag)
 	}
 
-	comment, err := h.pg.GetComment(r.Context(), commentID)
-	if err != nil {
-		api.WriteError(w, http.StatusNotFound, "Comment not found")
-		return
-	}
-	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	comment, ok := h.commentInScope(w, r)
 	if !ok {
 		return
 	}
-	if comment.FractalID != scopeFractal || comment.PrismID != scopePrism {
-		api.WriteError(w, http.StatusForbidden, "Comment is not in the current scope")
-		return
-	}
+	commentID := comment.ID
 
-	if err := h.pg.UpdateCommentTags(r.Context(), commentID, tags); err != nil {
+	if err := h.pg.UpdateCommentTags(r.Context(), commentID, tags); errors.Is(err, storage.ErrCommentInLockedNotebook) {
+		api.WriteError(w, http.StatusConflict, lockedEvidenceMessage)
+		return
+	} else if err != nil {
 		log.Printf("[Comments] Failed to update tags: %v", err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to update tags")
 		return
@@ -400,9 +369,18 @@ func (h *CommentHandler) HandleUpdateCommentTags(w http.ResponseWriter, r *http.
 	api.WriteJSON(w, http.StatusOK, Response{Success: true, Message: "Tags updated", Data: updated})
 }
 
+const lockedEvidenceMessage = "This comment is evidence in a locked notebook. Unlock it to make changes."
+
 // HandleUpdateComment updates a comment (author only)
 func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Request) {
-	commentID := chi.URLParam(r, "id")
+	if !requireAnalyst(w, r) {
+		return
+	}
+	comment, ok := h.commentInScope(w, r)
+	if !ok {
+		return
+	}
+	commentID := comment.ID
 
 	var req UpdateCommentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -420,6 +398,10 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 	// the person who created it, not the synthetic apikey_<id> principal. Matching
 	// on the principal meant a key could not edit or delete its own comments.
 	err := h.pg.UpdateComment(r.Context(), commentID, auth.AttributionUsername(r.Context()), req.Text, req.Tags)
+	if errors.Is(err, storage.ErrCommentInLockedNotebook) {
+		api.WriteError(w, http.StatusConflict, lockedEvidenceMessage)
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusNotFound, "Failed to update comment (not found or unauthorized)")
 		return
@@ -441,9 +423,20 @@ func (h *CommentHandler) HandleUpdateComment(w http.ResponseWriter, r *http.Requ
 
 // HandleDeleteComment deletes a comment (author only)
 func (h *CommentHandler) HandleDeleteComment(w http.ResponseWriter, r *http.Request) {
-	commentID := chi.URLParam(r, "id")
+	if !requireAnalyst(w, r) {
+		return
+	}
+	comment, ok := h.commentInScope(w, r)
+	if !ok {
+		return
+	}
+	commentID := comment.ID
 
 	err := h.pg.DeleteComment(r.Context(), commentID, auth.AttributionUsername(r.Context()))
+	if errors.Is(err, storage.ErrCommentInLockedNotebook) {
+		api.WriteError(w, http.StatusConflict, lockedEvidenceMessage)
+		return
+	}
 	if err != nil {
 		api.WriteError(w, http.StatusNotFound, "Failed to delete comment (not found or unauthorized)")
 		return
@@ -595,10 +588,7 @@ func (h *CommentHandler) HandleBulkAddTag(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	fractalRole := rbac.RoleFromContext(r.Context())
-	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		api.WriteError(w, http.StatusForbidden, "Analyst access required")
+	if !requireAnalyst(w, r) {
 		return
 	}
 
@@ -644,10 +634,7 @@ func (h *CommentHandler) HandleBulkRemoveTag(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	fractalRole := rbac.RoleFromContext(r.Context())
-	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		api.WriteError(w, http.StatusForbidden, "Analyst access required")
+	if !requireAnalyst(w, r) {
 		return
 	}
 
@@ -699,10 +686,7 @@ func (h *CommentHandler) HandleBulkDeleteComments(w http.ResponseWriter, r *http
 		return
 	}
 
-	fractalRole := rbac.RoleFromContext(r.Context())
-	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, rbac.RoleAnalyst) && !rbac.HasAccess(user, prismRole, rbac.RoleAnalyst) {
-		api.WriteError(w, http.StatusForbidden, "Analyst access required")
+	if !requireAnalyst(w, r) {
 		return
 	}
 
@@ -788,7 +772,11 @@ func (h *CommentHandler) HandleDeleteCommentsByLogID(w http.ResponseWriter, r *h
 		return
 	}
 
-	err := h.pg.DeleteCommentsByLogID(r.Context(), logID)
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return
+	}
+	err := h.pg.DeleteCommentsByLogID(r.Context(), logID, scopeFractal, scopePrism)
 	if err != nil {
 		log.Printf("[Comments] Failed to delete comments for log %s: %v", logID, err)
 		api.WriteError(w, http.StatusInternalServerError, "Failed to delete comments")
@@ -797,8 +785,35 @@ func (h *CommentHandler) HandleDeleteCommentsByLogID(w http.ResponseWriter, r *h
 
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,
-		Message: fmt.Sprintf("All comments for log_id %s deleted successfully", logID),
+		Message: fmt.Sprintf("Comments for log_id %s deleted; evidence in locked notebooks is kept", logID),
 	})
+}
+
+// commentInScope loads the {id} comment, answering 404 unless it belongs to the
+// request's fractal or prism.
+func (h *CommentHandler) commentInScope(w http.ResponseWriter, r *http.Request) (*storage.Comment, bool) {
+	scopeFractal, scopePrism, ok := h.requireScope(w, r)
+	if !ok {
+		return nil, false
+	}
+	comment, err := h.pg.GetComment(r.Context(), chi.URLParam(r, "id"))
+	if err != nil || comment.FractalID != scopeFractal || comment.PrismID != scopePrism {
+		api.WriteError(w, http.StatusNotFound, "Comment not found")
+		return nil, false
+	}
+	return comment, true
+}
+
+// requireAnalyst requires analyst on the request's fractal or prism, the role
+// that writing a comment takes.
+func requireAnalyst(w http.ResponseWriter, r *http.Request) bool {
+	user, _ := r.Context().Value("user").(*storage.User)
+	if !rbac.HasAccess(user, rbac.RoleFromContext(r.Context()), rbac.RoleAnalyst) &&
+		!rbac.HasAccess(user, rbac.PrismRoleFromContext(r.Context()), rbac.RoleAnalyst) {
+		api.WriteError(w, http.StatusForbidden, "Analyst access required")
+		return false
+	}
+	return true
 }
 
 // requireScope resolves the request scope and answers the request itself when

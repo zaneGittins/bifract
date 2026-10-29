@@ -177,14 +177,8 @@ func (h *Handler) HandleGetAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Verify user has access to the alert's fractal
-	if alert.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleViewer) {
-			return
-		}
-	} else if alert.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleViewer) {
-			return
-		}
+	if !h.requireObjectRole(w, r, alert.FractalID, alert.PrismID, rbac.RoleViewer) {
+		return
 	}
 
 	h.respondSuccess(w, alert)
@@ -210,15 +204,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if existing.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, existing.FractalID, rbac.RoleAnalyst) {
-			return
-		}
-	} else if existing.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, existing.PrismID, rbac.RoleAnalyst) {
-			return
-		}
-	} else if !h.requireRole(w, r, rbac.RoleAnalyst) {
+	if !h.requireObjectRole(w, r, existing.FractalID, existing.PrismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -279,15 +265,7 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if existing.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, existing.FractalID, rbac.RoleAnalyst) {
-			return
-		}
-	} else if existing.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, existing.PrismID, rbac.RoleAnalyst) {
-			return
-		}
-	} else if !h.requireRole(w, r, rbac.RoleAnalyst) {
+	if !h.requireObjectRole(w, r, existing.FractalID, existing.PrismID, rbac.RoleAnalyst) {
 		return
 	}
 
@@ -423,14 +401,8 @@ func (h *Handler) HandleGetExecutions(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if alert.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleViewer) {
-			return
-		}
-	} else if alert.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleViewer) {
-			return
-		}
+	if !h.requireObjectRole(w, r, alert.FractalID, alert.PrismID, rbac.RoleViewer) {
+		return
 	}
 
 	// Parse pagination parameters
@@ -561,8 +533,8 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "Webhook name is required")
 		return
 	}
-	if strings.TrimSpace(req.URL) == "" {
-		h.respondError(w, http.StatusBadRequest, "Webhook URL is required")
+	if err := validateWebhookURL(req.URL); err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -637,6 +609,10 @@ func (h *Handler) HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	var req WebhookUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateWebhookURL(req.URL); err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -988,67 +964,11 @@ func (h *Handler) getUserObj(r *http.Request) *storage.User {
 	return nil
 }
 
-// requireRoleOnFractal checks the user has the required role on a specific fractal (used for resource-by-ID operations).
-func (h *Handler) requireRoleOnFractal(w http.ResponseWriter, r *http.Request, fractalID string, required rbac.Role) bool {
+// requireObjectRole checks the user has the required role on the fractal or
+// prism that owns an alert, which need not be the request's scope.
+func (h *Handler) requireObjectRole(w http.ResponseWriter, r *http.Request, fractalID, prismID string, required rbac.Role) bool {
 	user := h.getUserObj(r)
-	if user == nil {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return false
-	}
-	if user.IsAdmin {
-		return true
-	}
-	// API key users have their role pre-resolved by the auth middleware, because the
-	// synthetic "apikey_<id>" username has no fractal_permissions rows to query.
-	//
-	// That pre-resolved role is a role on the key's *own* scope, so it may only be
-	// applied to a resource in that scope. Handlers here pass the fractal of the
-	// resource being touched, and without this check a key scoped to one fractal would
-	// satisfy the role check for an alert in every other one.
-	if authType, _ := r.Context().Value("auth_type").(string); authType == "api_key" {
-		scoped, _ := r.Context().Value("selected_fractal").(string)
-		if fractalID != "" && scoped != fractalID {
-			h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-			return false
-		}
-		fractalRole := rbac.RoleFromContext(r.Context())
-		if !rbac.HasAccess(user, fractalRole, required) {
-			h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-			return false
-		}
-		return true
-	}
-	if h.rbacResolver == nil {
-		return h.requireRole(w, r, required)
-	}
-	role := h.rbacResolver.ResolveRole(r.Context(), user, fractalID)
-	if !rbac.HasAccess(user, role, required) {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return false
-	}
-	return true
-}
-
-// requireRoleOnPrism checks the user has the required role on a specific prism.
-func (h *Handler) requireRoleOnPrism(w http.ResponseWriter, r *http.Request, prismID string, required rbac.Role) bool {
-	user := h.getUserObj(r)
-	if user == nil {
-		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-		return false
-	}
-	if user.IsAdmin {
-		return true
-	}
-	if h.rbacResolver == nil {
-		prismRole := rbac.PrismRoleFromContext(r.Context())
-		if !rbac.HasAccess(user, prismRole, required) {
-			h.respondError(w, http.StatusForbidden, "Insufficient permissions")
-			return false
-		}
-		return true
-	}
-	role := h.rbacResolver.ResolvePrismRoleWithAdmin(r.Context(), user, prismID)
-	if !rbac.HasAccess(user, role, required) {
+	if !rbac.HasAccess(user, h.rbacResolver.ObjectRole(r.Context(), user, fractalID, prismID), required) {
 		h.respondError(w, http.StatusForbidden, "Insufficient permissions")
 		return false
 	}
@@ -1148,14 +1068,8 @@ func (h *Handler) HandleDuplicateAlert(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusNotFound, "Alert not found")
 		return
 	}
-	if existing.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, existing.FractalID, rbac.RoleAnalyst) {
-			return
-		}
-	} else if existing.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, existing.PrismID, rbac.RoleAnalyst) {
-			return
-		}
+	if !h.requireObjectRole(w, r, existing.FractalID, existing.PrismID, rbac.RoleAnalyst) {
+		return
 	}
 
 	alert, err := h.manager.DuplicateAlert(r.Context(), alertID, h.attributionUser(r))
@@ -1302,14 +1216,8 @@ func (h *Handler) HandleToggleFeedAlert(w http.ResponseWriter, r *http.Request) 
 		h.respondError(w, http.StatusNotFound, "Alert not found")
 		return
 	}
-	if alert.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleAnalyst) {
-			return
-		}
-	} else if alert.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleAnalyst) {
-			return
-		}
+	if !h.requireObjectRole(w, r, alert.FractalID, alert.PrismID, rbac.RoleAnalyst) {
+		return
 	}
 
 	var req ToggleFeedAlertRequest

@@ -1532,9 +1532,9 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 		req.AuthConfig = make(map[string]string)
 	}
 
-	// Validate URL format (basic validation)
-	if strings.TrimSpace(req.URL) == "" {
-		return nil, fmt.Errorf("webhook URL is required")
+	req.URL = strings.TrimSpace(req.URL)
+	if err := validateWebhookURL(req.URL); err != nil {
+		return nil, err
 	}
 
 	includeAlertLink := true
@@ -1572,6 +1572,10 @@ func (m *Manager) CreateWebhookAction(ctx context.Context, req WebhookCreateRequ
 
 // UpdateWebhookAction updates an existing webhook action
 func (m *Manager) UpdateWebhookAction(ctx context.Context, webhookID string, req WebhookUpdateRequest) (*WebhookAction, error) {
+	req.URL = strings.TrimSpace(req.URL)
+	if err := validateWebhookURL(req.URL); err != nil {
+		return nil, err
+	}
 	// Set defaults
 	if req.Method == "" {
 		req.Method = "POST"
@@ -1831,7 +1835,7 @@ func (m *Manager) TestWebhookConfig(ctx context.Context, webhook WebhookAction, 
 
 	// Reuse the engine's client so a previewed alert link matches what delivery
 	// would actually build.
-	client := NewWebhookClient("")
+	client := NewWebhookClient("", outboundPolicy(m.pg))
 	if m.engine != nil && m.engine.webhookClient != nil {
 		client = m.engine.webhookClient
 	}

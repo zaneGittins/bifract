@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -70,6 +72,15 @@ func TestValidateURL(t *testing.T) {
 	}
 	if err := ValidateURL("https://raw.githubusercontent.com/a/b.csv"); err != nil {
 		t.Errorf("rejected a plain https URL: %v", err)
+	}
+}
+
+// A refusal is shown wherever the URL is, so it must not quote the URL back.
+func TestValidateURLDoesNotEchoInput(t *testing.T) {
+	const secret = "s3cretPassw0rd"
+	err := ValidateURL("http://user:" + secret + "@[::1/x")
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Errorf("ValidateURL = %v, want a refusal without the input", err)
 	}
 }
 
@@ -154,5 +165,45 @@ func TestDowngradeRedirectIsRefused(t *testing.T) {
 	client.Transport.(*http.Transport).TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
 	if _, err := Get(context.Background(), client, srv.URL); !errors.Is(err, ErrRedirect) {
 		t.Fatalf("https to http redirect: got %v, want ErrRedirect", err)
+	}
+}
+
+// A caller with a long overall timeout must be able to wait as long for headers.
+func TestResponseHeaderTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	short := NewClient(Options{AllowPrivate: true, Timeout: 5 * time.Second, ResponseHeaderTimeout: 20 * time.Millisecond})
+	if _, err := Get(ctx, short, srv.URL); err == nil || Describe(err) != "the server did not answer in time" {
+		t.Errorf("short header timeout: %v", err)
+	}
+	long := NewClient(Options{AllowPrivate: true, Timeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second})
+	resp, err := Get(ctx, long, srv.URL)
+	if err != nil {
+		t.Fatalf("long header timeout: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func TestNoRedirects(t *testing.T) {
+	var reached atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached.Store(true) }))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	client := NewClient(Options{AllowPrivate: true, Timeout: 5 * time.Second, NoRedirects: true})
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if reached.Load() || resp.StatusCode != http.StatusFound {
+		t.Errorf("redirect followed: status %d, reached %v", resp.StatusCode, reached.Load())
 	}
 }

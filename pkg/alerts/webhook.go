@@ -4,18 +4,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"bifract/pkg/egress"
+	"bifract/pkg/settings"
+	"bifract/pkg/storage"
 )
 
 // WebhookClient handles HTTP webhook delivery with retry logic and authentication
 type WebhookClient struct {
-	client  *http.Client
 	baseURL string
+	// allowPrivate reports whether delivery may reach private addresses; nil refuses.
+	allowPrivate func(context.Context) bool
 }
 
 // WebhookAction represents a webhook endpoint configuration
@@ -72,14 +79,52 @@ type WebhookResult struct {
 // maxResponseBodyCapture bounds how much of a destination's reply is retained.
 const maxResponseBodyCapture = 2 << 10
 
-// NewWebhookClient creates a new webhook client with default settings
-func NewWebhookClient(baseURL string) *WebhookClient {
+// defaultWebhookTimeout bounds a delivery attempt whose action sets none.
+const defaultWebhookTimeout = 30 * time.Second
+
+// NewWebhookClient creates a webhook client. allowPrivate is consulted on every
+// attempt; nil keeps delivery to public addresses.
+func NewWebhookClient(baseURL string, allowPrivate func(context.Context) bool) *WebhookClient {
 	return &WebhookClient{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		allowPrivate: allowPrivate,
 	}
+}
+
+// validateWebhookURL checks a URL's shape; where it resolves is checked when connecting.
+func validateWebhookURL(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("webhook URL is required")
+	}
+	if err := egress.ValidateURL(raw); err != nil {
+		return fmt.Errorf("invalid webhook URL: %w", err)
+	}
+	return nil
+}
+
+// errRedirected marks a redirect answer, which webhooks do not follow.
+var errRedirected = errors.New("redirected")
+
+// outboundPolicy reads the instance's egress setting for each delivery.
+func outboundPolicy(pg *storage.PostgresClient) func(context.Context) bool {
+	return func(ctx context.Context) bool {
+		return settings.AllowPrivate(ctx, pg, settings.OutboundAllowPrivateKey)
+	}
+}
+
+// httpClient returns an egress-checked client for one attempt. Redirects are
+// not followed: they would replay the action's custom headers to another host.
+func (wc *WebhookClient) httpClient(ctx context.Context, webhook WebhookAction) *http.Client {
+	timeout := defaultWebhookTimeout
+	if webhook.TimeoutSecs > 0 {
+		timeout = time.Duration(webhook.TimeoutSecs) * time.Second
+	}
+	return egress.NewClient(egress.Options{
+		AllowPrivate:          wc.allowPrivate != nil && wc.allowPrivate(ctx),
+		Timeout:               timeout,
+		ResponseHeaderTimeout: timeout,
+		NoRedirects:           true,
+	})
 }
 
 // encodeQueryForShareLink mirrors JavaScript encodeURIComponent then base64-encodes
@@ -179,8 +224,9 @@ func (wc *WebhookClient) Send(ctx context.Context, webhook WebhookAction, alert 
 	// URL validation and body rendering are deterministic, so a failure in either
 	// will fail identically on every attempt. Resolve them once, ahead of the
 	// retry loop, and report without burning the backoff schedule.
-	if err := wc.validateURL(webhook.URL); err != nil {
-		result.Error = fmt.Sprintf("invalid webhook URL: %v", err)
+	webhook.URL = strings.TrimSpace(webhook.URL)
+	if err := validateWebhookURL(webhook.URL); err != nil {
+		result.Error = err.Error()
 		return result
 	}
 	body, contentType, err := RenderWebhookBody(webhook, payload)
@@ -207,8 +253,9 @@ func (wc *WebhookClient) SendRendered(ctx context.Context, webhook WebhookAction
 		result.Duration = time.Since(start)
 	}()
 
-	if err := wc.validateURL(webhook.URL); err != nil {
-		result.Error = fmt.Sprintf("invalid webhook URL: %v", err)
+	webhook.URL = strings.TrimSpace(webhook.URL)
+	if err := validateWebhookURL(webhook.URL); err != nil {
+		result.Error = err.Error()
 		return result
 	}
 
@@ -226,10 +273,15 @@ func (wc *WebhookClient) deliver(ctx context.Context, webhook WebhookAction, bod
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		result.AttemptCount = attempt
 
-		if err := wc.sendAttempt(ctx, webhook, body, contentType, result); err == nil {
+		err := wc.sendAttempt(ctx, webhook, body, contentType, result)
+		if err == nil {
 			result.Success = true
 			// An earlier attempt's failure is not this delivery's outcome.
 			result.Error = ""
+			return
+		}
+		// A refused address or a redirect answers the same on every attempt.
+		if errors.Is(err, egress.ErrBlocked) || errors.Is(err, errRedirected) {
 			return
 		}
 
@@ -278,18 +330,10 @@ func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction,
 		return fmt.Errorf("auth error: %w", err)
 	}
 
-	// Set custom timeout if specified
-	client := wc.client
-	if webhook.TimeoutSecs > 0 && webhook.TimeoutSecs != 30 {
-		client = &http.Client{
-			Timeout: time.Duration(webhook.TimeoutSecs) * time.Second,
-		}
-	}
-
-	// Execute request
-	resp, err := client.Do(req)
+	resp, err := wc.httpClient(ctx, webhook).Do(req)
 	if err != nil {
-		result.Error = fmt.Sprintf("request failed: %v", err)
+		log.Printf("[Webhook] %s delivery failed: %v", webhook.Name, err)
+		result.Error = "request failed: " + egress.Describe(err)
 		result.StatusCode = 0
 		return fmt.Errorf("request execution error: %w", err)
 	}
@@ -307,25 +351,10 @@ func (wc *WebhookClient) sendAttempt(ctx context.Context, webhook WebhookAction,
 
 	// Non-2xx status code is considered an error
 	result.Error = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return fmt.Errorf("%w: %s", errRedirected, resp.Status)
+	}
 	return fmt.Errorf("HTTP error: %s", resp.Status)
-}
-
-// validateURL performs basic validation on webhook URLs.
-func (wc *WebhookClient) validateURL(webhookURL string) error {
-	parsedURL, err := url.Parse(webhookURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL format: %w", err)
-	}
-
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme: %s (only http/https allowed)", parsedURL.Scheme)
-	}
-
-	if parsedURL.Host == "" {
-		return fmt.Errorf("URL must have a host")
-	}
-
-	return nil
 }
 
 // applyAuth applies the configured authentication method to the HTTP request

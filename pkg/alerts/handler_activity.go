@@ -47,14 +47,8 @@ func (h *Handler) HandleGetActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if alert.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, alert.FractalID, rbac.RoleViewer) {
-			return
-		}
-	} else if alert.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, alert.PrismID, rbac.RoleViewer) {
-			return
-		}
+	if !h.requireObjectRole(w, r, alert.FractalID, alert.PrismID, rbac.RoleViewer) {
+		return
 	}
 
 	days := retentionDays

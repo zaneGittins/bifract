@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"bifract/pkg/settings"
 )
 
 // feed serves a source file the test can change between refreshes.
@@ -53,7 +55,7 @@ func sourcedWorld(t *testing.T, cluster bool) *world {
 	if cluster {
 		w = newClusterWorld(t)
 	}
-	w.settings[allowPrivateSetting] = "true"
+	w.settings[settings.DictionarySourcesAllowPrivateKey] = "true"
 	return w
 }
 
@@ -121,7 +123,7 @@ func TestCreateWithSourceLoadsTheFile(t *testing.T) {
 // without the setting the loopback source is refused.
 func TestFirstLoadFailureRemovesTheList(t *testing.T) {
 	for name, setup := range map[string]func(*world, *feed){
-		"egress refused": func(w *world, _ *feed) { delete(w.settings, allowPrivateSetting) },
+		"egress refused": func(w *world, _ *feed) { delete(w.settings, settings.DictionarySourcesAllowPrivateKey) },
 		"http error":     func(_ *world, f *feed) { f.set(http.StatusInternalServerError, "") },
 		"no usable rows": func(_ *world, f *feed) { f.set(http.StatusOK, "host,owner\n,ops\n") },
 		"missing column": func(_ *world, f *feed) { f.set(http.StatusOK, "name,owner\na,b\n") },

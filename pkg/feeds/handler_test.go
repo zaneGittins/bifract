@@ -319,6 +319,7 @@ func TestHandleUpdateAndDeleteFeed(t *testing.T) {
 		t.Fatalf("rejected updates wrote %q", w)
 	}
 
+	env.pg.On("SELECT repo_url FROM alert_feeds", fakedb.Row("https://h/x"))
 	env.pg.On("UPDATE alert_feeds", fakedb.Affected(1))
 	if code, body := env.serve(t, update, inF1.request("PUT", "/", `{"name":"x","repo_url":"https://h/x","sync_schedule":"weekly"}`, params)); code != 200 {
 		t.Errorf("update: %d %+v", code, body)
@@ -342,6 +343,7 @@ func TestHandleSyncFeed(t *testing.T) {
 
 	env := newHandlerEnv(t, row)
 	env.pg.On("SELECT COALESCE(auth_token, '')", fakedb.Row(""))
+	env.pg.On("SELECT value FROM settings WHERE key", fakedb.Row("true"))
 	sync := func(h *Handler) http.HandlerFunc { return h.HandleSyncFeed }
 	params := map[string]string{"id": "feed-1"}
 

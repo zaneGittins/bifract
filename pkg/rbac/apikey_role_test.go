@@ -3,6 +3,8 @@ package rbac
 import (
 	"context"
 	"testing"
+
+	"bifract/pkg/storage"
 )
 
 // An API key authenticates as a principal with no fractal_permissions row, so a
@@ -59,5 +61,63 @@ func TestAPIKeyPrismRole(t *testing.T) {
 	}
 	if got := apiKeyPrismRole(ctx(prism, "api_key", "superuser"), prism); got != RoleNone {
 		t.Errorf("an unknown role must not resolve, got %q", got)
+	}
+}
+
+// ObjectRole answers for the scope that owns an object, not the request's. A key
+// scoped to one fractal holds no role on an object in another, whatever its own
+// role, so guessing an id cannot reach across fractals.
+func TestObjectRoleConfinesAPIKeysToTheirScope(t *testing.T) {
+	key := func(fractal, prism string) context.Context {
+		ctx := context.WithValue(context.Background(), "auth_type", "api_key")
+		ctx = context.WithValue(ctx, "selected_fractal", fractal)
+		ctx = context.WithValue(ctx, "selected_prism", prism)
+		ctx = context.WithValue(ctx, "fractal_role", "admin")
+		return context.WithValue(ctx, "prism_role", "admin")
+	}
+	keyUser := &storage.User{Username: "apikey_1"}
+
+	tests := []struct {
+		name           string
+		ctx            context.Context
+		user           *storage.User
+		fractal, prism string
+		want           Role
+	}{
+		{"key on its own fractal", key("f1", ""), keyUser, "f1", "", RoleAdmin},
+		{"key on another fractal", key("f1", ""), keyUser, "f2", "", RoleNone},
+		{"key on its own prism", key("", "p1"), keyUser, "", "p1", RoleAdmin},
+		{"key on another prism", key("", "p1"), keyUser, "", "p2", RoleNone},
+		{"fractal key on a prism object", key("f1", ""), keyUser, "", "p1", RoleNone},
+		{"object with no scope", key("f1", ""), keyUser, "", "", RoleNone},
+		{"tenant admin anywhere", key("f1", ""), &storage.User{IsAdmin: true}, "f2", "", RoleAdmin},
+		{"no user", key("f1", ""), nil, "f1", "", RoleNone},
+	}
+	var resolver *Resolver
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolver.ObjectRole(tt.ctx, tt.user, tt.fractal, tt.prism); got != tt.want {
+				t.Errorf("ObjectRole = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Without a resolver only the request's own role is known, and it is a role on
+// the selected scope. It must not stand in for a role on any other.
+func TestObjectRoleWithoutResolverStaysOnTheSelectedScope(t *testing.T) {
+	ctx := context.WithValue(context.Background(), "selected_fractal", "f1")
+	ctx = context.WithValue(ctx, "fractal_role", "analyst")
+	user := &storage.User{Username: "alice"}
+	var resolver *Resolver
+
+	if got := resolver.ObjectRole(ctx, user, "f1", ""); got != RoleAnalyst {
+		t.Errorf("selected fractal: %q", got)
+	}
+	if got := resolver.ObjectRole(ctx, user, "f2", ""); got != RoleNone {
+		t.Errorf("another fractal: %q, want none", got)
+	}
+	if got := resolver.ObjectRole(ctx, user, "", ""); got != RoleNone {
+		t.Errorf("an object with no scope: %q, want none", got)
 	}
 }

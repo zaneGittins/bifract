@@ -398,8 +398,8 @@ func (c *PostgresClient) UpdateCommentTags(ctx context.Context, id string, tags 
 		arr = pq.Array(tags)
 	}
 	result, err := c.db.ExecContext(ctx, `
-		UPDATE comments SET tags = $2, updated_at = NOW() WHERE id = $1
-	`, id, arr)
+		UPDATE comments SET tags = $2, updated_at = NOW() WHERE id = $1 AND NOT `+inLockedNotebook,
+		id, arr)
 	if err != nil {
 		return fmt.Errorf("failed to update comment tags: %w", err)
 	}
@@ -408,7 +408,7 @@ func (c *PostgresClient) UpdateCommentTags(ctx context.Context, id string, tags 
 		return fmt.Errorf("failed to update comment tags: %w", err)
 	}
 	if affected == 0 {
-		return errors.New("comment not found")
+		return c.commentWriteRefused(ctx, id, "")
 	}
 	return nil
 }

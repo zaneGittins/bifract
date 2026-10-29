@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,36 +12,18 @@ import (
 	git "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	githttp "github.com/go-git/go-git/v6/plumbing/transport/http"
+
+	"bifract/pkg/egress"
 )
 
-// validateRepoURL checks that the URL uses an allowed scheme and has a hostname.
-func validateRepoURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		// url.Error quotes the whole input, credentials included, and this
-		// error ends up in the feed's sync status. Keep only the reason.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			err = urlErr.Err
-		}
-		return fmt.Errorf("invalid URL: %w", err)
-	}
-	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme %q: only http and https are allowed", scheme)
-	}
-	if u.Hostname() == "" {
-		return fmt.Errorf("URL must include a hostname")
-	}
-	return nil
-}
-
 // CloneRepo performs a shallow clone (depth=1) of the given repo into a temp directory.
-// Uses go-git (pure Go, no external git binary required).
+// Uses go-git (pure Go, no external git binary required). Every connection goes
+// through pkg/egress; allowPrivate admits addresses inside the network.
 // Returns the path to the cloned directory. Caller must call CleanupRepo when done.
-func CloneRepo(ctx context.Context, repoURL, branch, authToken string) (string, error) {
-	if err := validateRepoURL(repoURL); err != nil {
+func CloneRepo(ctx context.Context, repoURL, branch, authToken string, allowPrivate bool) (string, error) {
+	if err := egress.ValidateURL(repoURL); err != nil {
 		return "", fmt.Errorf("repo URL validation failed: %w", err)
 	}
 
@@ -56,24 +38,47 @@ func CloneRepo(ctx context.Context, repoURL, branch, authToken string) (string, 
 		SingleBranch:  true,
 		Depth:         1,
 		Tags:          plumbing.NoTags,
+		ClientOptions: []client.Option{
+			client.WithHTTPClient(egress.NewClient(egress.Options{AllowPrivate: allowPrivate})),
+		},
 	}
 
 	if authToken != "" {
-		opts.ClientOptions = []client.Option{
-			client.WithHTTPAuth(&githttp.BasicAuth{
-				Username: "x-token-auth",
-				Password: authToken,
-			}),
-		}
+		opts.ClientOptions = append(opts.ClientOptions, client.WithHTTPAuth(&githttp.BasicAuth{
+			Username: "x-token-auth",
+			Password: authToken,
+		}))
 	}
 
 	_, err = git.PlainCloneContext(ctx, tmpDir, opts)
 	if err != nil {
 		os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("clone repo: %w", err)
+		log.Printf("[Feeds] clone of %s failed: %v", repoURL, err)
+		return "", fmt.Errorf("clone repo: %s", describeCloneError(err))
 	}
 
 	return tmpDir, nil
+}
+
+// describeCloneError reduces a clone failure to a category. The result is
+// stored as a sync status that every viewer of the scope can read, so it never
+// carries text from the far end or the address a name resolved to.
+func describeCloneError(err error) string {
+	var status interface{ StatusCode() int }
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "the sync was cancelled"
+	case errors.Is(err, transport.ErrAuthenticationRequired), errors.Is(err, transport.ErrAuthorizationFailed):
+		return "the repository refused authentication"
+	case errors.Is(err, transport.ErrRepositoryNotFound):
+		return "the repository was not found"
+	// A single-branch clone of a missing branch reports an empty repository.
+	case errors.Is(err, transport.ErrEmptyRemoteRepository), errors.Is(err, git.ErrBranchNotFound), errors.Is(err, git.ErrRemoteRefNotFound):
+		return "the branch was not found or the repository is empty"
+	case errors.As(err, &status) && status.StatusCode() > 0:
+		return fmt.Sprintf("the server answered HTTP %d", status.StatusCode())
+	}
+	return egress.Describe(err)
 }
 
 // ListYAMLFiles recursively finds all .yml and .yaml files under the given
