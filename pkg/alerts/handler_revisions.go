@@ -41,15 +41,7 @@ func (h *Handler) alertForRevisionAccess(w http.ResponseWriter, r *http.Request,
 		return nil, "", false
 	}
 
-	if alert.FractalID != "" {
-		if !h.requireRoleOnFractal(w, r, alert.FractalID, required) {
-			return nil, "", false
-		}
-	} else if alert.PrismID != "" {
-		if !h.requireRoleOnPrism(w, r, alert.PrismID, required) {
-			return nil, "", false
-		}
-	} else if !h.requireRole(w, r, required) {
+	if !h.requireObjectRole(w, r, alert.FractalID, alert.PrismID, required) {
 		return nil, "", false
 	}
 

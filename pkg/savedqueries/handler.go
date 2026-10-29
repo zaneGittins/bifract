@@ -240,8 +240,7 @@ func (h *Handler) HandleList(w http.ResponseWriter, r *http.Request) {
 			COALESCE(sq.created_by, ''), sq.created_at, sq.updated_at
 		FROM saved_queries sq
 		LEFT JOIN saved_query_favorites f ON f.saved_query_id = sq.id AND f.username = $1
-		WHERE %s = $2
-		  AND (COALESCE(sq.visibility, 'shared') = 'shared' OR sq.created_by = $1)`, scopeCol)
+		WHERE %s = $2 AND %s`, scopeCol, visibleTo(1))
 	args := []interface{}{username, scopeArg}
 	argIdx := 3
 
@@ -339,6 +338,9 @@ func (h *Handler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	req.QueryText = strings.TrimSpace(req.QueryText)
 	req.Description = strings.TrimSpace(req.Description)
 	visibility := normalizeVisibility(req.Visibility)
+	if h.personalByAPIKey(w, r, visibility) {
+		return
+	}
 	variables := normalizeVariables(req.Variables)
 	trArg, csArg, ceArg, rnArg, ruArg := rangeArgs(req.TimeRange, req.CustomStart, req.CustomEnd, req.RelativeUnit, req.RelativeN)
 
@@ -436,6 +438,9 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	req.QueryText = strings.TrimSpace(req.QueryText)
 	req.Description = strings.TrimSpace(req.Description)
 	visibility := normalizeVisibility(req.Visibility)
+	if h.personalByAPIKey(w, r, visibility) {
+		return
+	}
 	variables := normalizeVariables(req.Variables)
 	trArg, csArg, ceArg, rnArg, ruArg := rangeArgs(req.TimeRange, req.CustomStart, req.CustomEnd, req.RelativeUnit, req.RelativeN)
 
@@ -479,12 +484,12 @@ func (h *Handler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 	err = h.pg.QueryRow(r.Context(), fmt.Sprintf(`
 		UPDATE saved_queries SET name = $1, query_text = $2, description = $3, tags = $4, visibility = $5, variables = $9::jsonb,
 			time_range = $10, custom_start = $11, custom_end = $12, relative_n = $13, relative_unit = $14
-		WHERE id = $7 AND %s
+		WHERE id = $7 AND %s AND %s
 		RETURNING id, name, query_text, COALESCE(description, ''), tags, COALESCE(variables, '[]'), COALESCE(visibility, 'shared'),
 			COALESCE(use_count, 0), last_used_at,
 			EXISTS (SELECT 1 FROM saved_query_favorites f WHERE f.saved_query_id = saved_queries.id AND f.username = $8),
 			COALESCE(time_range, ''), custom_start, custom_end, relative_n, COALESCE(relative_unit, ''),
-			COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`, whereScope),
+			COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), COALESCE(created_by, ''), created_at, updated_at`, whereScope, visibleTo(8)),
 		req.Name, req.QueryText, req.Description, pq.Array(cleanTags), visibility, scopeArg, id, username, variables, trArg, csArg, ceArg, rnArg, ruArg,
 	).Scan(&sq.ID, &sq.Name, &sq.QueryText, &sq.Description, pq.Array(&sq.Tags), &sq.Variables, &sq.Visibility,
 		&sq.UseCount, &lastUsed, &sq.Favorited,
@@ -538,17 +543,11 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var query string
-	var scopeArg interface{}
-	if prismID != "" {
-		query = "DELETE FROM saved_queries WHERE id = $1 AND prism_id = $2"
-		scopeArg = prismID
-	} else {
-		query = "DELETE FROM saved_queries WHERE id = $1 AND fractal_id = $2"
-		scopeArg = fractalID
-	}
-
-	result, err := h.pg.Exec(r.Context(), query, id, scopeArg)
+	// A personal query is only its author's to delete, as only they can list it.
+	col, scopeArg := scopePredicate(fractalID, prismID)
+	result, err := h.pg.Exec(r.Context(), fmt.Sprintf(
+		"DELETE FROM saved_queries WHERE id = $1 AND %s = $2 AND %s", col, visibleTo(3)),
+		id, scopeArg, h.getCurrentUser(r))
 	if err != nil {
 		log.Printf("[SavedQueries] Failed to delete saved query: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to delete saved query")
@@ -561,6 +560,22 @@ func (h *Handler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondSuccess(w, map[string]bool{"deleted": true})
+}
+
+// visibleTo limits saved queries to shared ones and the personal ones of the
+// user bound at placeholder n.
+func visibleTo(n int) string {
+	return fmt.Sprintf("(COALESCE(visibility, 'shared') = 'shared' OR created_by = $%d)", n)
+}
+
+// personalByAPIKey refuses a personal query from an API key: it belongs to a
+// person, and the key could never list it again.
+func (h *Handler) personalByAPIKey(w http.ResponseWriter, r *http.Request, visibility string) bool {
+	if visibility == "personal" && auth.IsAPIKey(r.Context()) {
+		h.respondError(w, http.StatusForbidden, "personal queries are per-user and not available for API key authentication")
+		return true
+	}
+	return false
 }
 
 // scopePredicate returns the scope column and arg for the active session scope.
@@ -585,8 +600,8 @@ func (h *Handler) HandleMarkUsed(w http.ResponseWriter, r *http.Request) {
 	}
 	col, arg := scopePredicate(fractalID, prismID)
 	_, err = h.pg.Exec(r.Context(),
-		fmt.Sprintf("UPDATE saved_queries SET use_count = COALESCE(use_count, 0) + 1, last_used_at = NOW() WHERE id = $1 AND %s = $2", col),
-		id, arg)
+		fmt.Sprintf("UPDATE saved_queries SET use_count = COALESCE(use_count, 0) + 1, last_used_at = NOW() WHERE id = $1 AND %s = $2 AND %s", col, visibleTo(3)),
+		id, arg, h.getCurrentUser(r))
 	if err != nil {
 		log.Printf("[SavedQueries] Failed to mark used: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to record usage")
@@ -621,7 +636,7 @@ func (h *Handler) HandleFavorite(w http.ResponseWriter, r *http.Request) {
 	col, arg := scopePredicate(fractalID, prismID)
 	var exists bool
 	err = h.pg.QueryRow(r.Context(),
-		fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM saved_queries WHERE id = $1 AND %s = $2 AND (COALESCE(visibility, 'shared') = 'shared' OR created_by = $3))", col),
+		fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM saved_queries WHERE id = $1 AND %s = $2 AND %s)", col, visibleTo(3)),
 		id, arg, username).Scan(&exists)
 	if err != nil {
 		log.Printf("[SavedQueries] Failed to check favorite target: %v", err)

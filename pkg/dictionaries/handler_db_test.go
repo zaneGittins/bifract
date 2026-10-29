@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/api"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -95,6 +96,49 @@ func TestHandlerScopesListsByID(t *testing.T) {
 	}
 	if rec.Code != 200 || !slices.Equal(names, []string{"other", "shared"}) {
 		t.Errorf("list from fractal B: %d %v", rec.Code, names)
+	}
+}
+
+// A global list is readable from every scope but belongs to the one it was
+// created in. Writing it from any other would let an analyst of one fractal
+// change what every fractal's queries and alerts match against.
+func TestHandlerGlobalListsAreWrittenFromHome(t *testing.T) {
+	w := newWorld(t)
+	h := NewHandler(w.m, nil)
+	shared := mustCreate(t, w, CreateOptions{FractalID: fractalB, Name: "shared", IsGlobal: true, Columns: cols("k")})
+
+	writes := []struct {
+		name string
+		fn   http.HandlerFunc
+		body string
+	}{
+		{"update", h.HandleUpdateDictionary, `{"name":"shared","is_global":false}`},
+		{"add column", h.HandleAddColumn, `{"name":"c"}`},
+		{"upsert rows", h.HandleUpsertRows, `{"rows":[{"k":"x"}]}`},
+		{"delete row", h.HandleDeleteRow, `{"key":"x"}`},
+		{"reload", h.HandleReloadDictionary, ""},
+		{"delete", h.HandleDeleteDictionary, ""},
+	}
+	for _, wr := range writes {
+		if got := call(t, wr.fn, "POST", "/", body(wr.body), analyst, nil, "id", shared.ID).Code; got != 403 {
+			t.Errorf("%s from another fractal: %d, want 403", wr.name, got)
+		}
+	}
+	if got := call(t, h.HandleGetDictionary, "GET", "/", nil, viewer, nil, "id", shared.ID).Code; got != 200 {
+		t.Errorf("read from another fractal: %d, want 200", got)
+	}
+	upd := `{"name":"shared","description":"d","is_global":true}`
+	if got := call(t, h.HandleUpdateDictionary, "PUT", "/", body(upd), analyst, inFractal(fractalB), "id", shared.ID).Code; got != 200 {
+		t.Errorf("update from home: %d, want 200", got)
+	}
+	if got := call(t, h.HandleUpdateDictionary, "PUT", "/", body(upd), admin, nil, "id", shared.ID).Code; got != 200 {
+		t.Errorf("update by a tenant admin: %d, want 200", got)
+	}
+	// An admin's request held below tenant admin, as an unconfirmed AI tool is,
+	// gets no more than an analyst would.
+	capped := api.WithCeiling(inFractal(fractalA), api.AccessAnalyst)
+	if got := call(t, h.HandleUpdateDictionary, "PUT", "/", body(upd), admin, capped, "id", shared.ID).Code; got != 403 {
+		t.Errorf("update by a capped admin: %d, want 403", got)
 	}
 }
 
