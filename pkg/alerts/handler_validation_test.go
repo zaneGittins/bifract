@@ -176,6 +176,8 @@ func TestActionHandlersRejectBadRequests(t *testing.T) {
 		{"create webhook needs JSON", func(h *Handler) http.HandlerFunc { return h.HandleCreateWebhook }, admin, `{`, nil, 400, ""},
 		{"create webhook needs a name", func(h *Handler) http.HandlerFunc { return h.HandleCreateWebhook }, admin, `{"url":"https://x"}`, nil, 400, "name is required"},
 		{"create webhook needs a URL", func(h *Handler) http.HandlerFunc { return h.HandleCreateWebhook }, admin, `{"name":"n"}`, nil, 400, "URL is required"},
+		{"create webhook refuses credentials in the URL", func(h *Handler) http.HandlerFunc { return h.HandleCreateWebhook }, admin, `{"name":"n","url":"https://u:p@x"}`, nil, 400, "username or password"},
+		{"create webhook refuses other schemes", func(h *Handler) http.HandlerFunc { return h.HandleCreateWebhook }, admin, `{"name":"n","url":"ftp://x"}`, nil, 400, "only http and https"},
 		{"create webhook needs a scope", func(h *Handler) http.HandlerFunc { return h.HandleCreateWebhook }, unscoped, `{"name":"n","url":"https://x"}`, nil, 400, "No fractal or prism selected"},
 		{"get webhook needs an id", func(h *Handler) http.HandlerFunc { return h.HandleGetWebhook }, admin, "", noID, 400, "Webhook ID is required"},
 		{"update webhook needs an id", func(h *Handler) http.HandlerFunc { return h.HandleUpdateWebhook }, admin, "", noID, 400, "Webhook ID is required"},

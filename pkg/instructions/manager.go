@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 
+	"bifract/pkg/egress"
 	"bifract/pkg/feeds"
 	"bifract/pkg/storage"
 )
@@ -202,8 +202,9 @@ func (m *Manager) CreateLibrary(ctx context.Context, req CreateLibraryRequest, f
 	if !ValidSources[source] {
 		return nil, fmt.Errorf("invalid source: %s", source)
 	}
-	if source == SourceRepo && strings.TrimSpace(req.RepoURL) == "" {
-		return nil, fmt.Errorf("repo_url is required for repo source")
+	repoURL, err := checkRepoURL(source, req.RepoURL)
+	if err != nil {
+		return nil, err
 	}
 
 	schedule := req.SyncSchedule
@@ -228,15 +229,9 @@ func (m *Manager) CreateLibrary(ctx context.Context, req CreateLibraryRequest, f
 		}
 	}
 
-	var authToken string
-	if req.AuthToken != "" {
-		encrypted, err := encryptToken(req.AuthToken)
-		if err != nil {
-			log.Printf("[Instructions] Failed to encrypt auth token: %v", err)
-			authToken = req.AuthToken
-		} else {
-			authToken = encrypted
-		}
+	authToken, err := encryptToken(req.AuthToken)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt token: %w", err)
 	}
 
 	var fID, pID interface{}
@@ -248,13 +243,13 @@ func (m *Manager) CreateLibrary(ctx context.Context, req CreateLibraryRequest, f
 	}
 
 	var id string
-	err := m.pg.QueryRow(ctx, `
+	err = m.pg.QueryRow(ctx, `
 		INSERT INTO instruction_libraries (name, description, is_default, fractal_id, prism_id,
 		       source, repo_url, branch, path, auth_token, sync_schedule, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id
 	`, name, req.Description, req.IsDefault, fID, pID,
-		source, req.RepoURL, branch, req.Path, authToken, schedule, storage.NullableUser(createdBy)).Scan(&id)
+		source, repoURL, branch, req.Path, authToken, schedule, storage.NullableUser(createdBy)).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_il_name_scope") {
 			return nil, fmt.Errorf("a library named %q already exists in this scope", name)
@@ -262,6 +257,22 @@ func (m *Manager) CreateLibrary(ctx context.Context, req CreateLibraryRequest, f
 		return nil, fmt.Errorf("create library: %w", err)
 	}
 	return m.GetLibrary(ctx, id)
+}
+
+// checkRepoURL trims a library's repository URL and refuses one a clone would
+// refuse, so it fails on save rather than on every sync.
+func checkRepoURL(source, raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if u == "" {
+		if source == SourceRepo {
+			return "", fmt.Errorf("repo_url is required for repo source")
+		}
+		return "", nil
+	}
+	if err := egress.ValidateURL(u); err != nil {
+		return "", fmt.Errorf("invalid repo_url: %w", err)
+	}
+	return u, nil
 }
 
 // UpdateLibrary updates an existing library.
@@ -283,6 +294,19 @@ func (m *Manager) UpdateLibrary(ctx context.Context, id string, req UpdateLibrar
 	if source == "" {
 		source = existing.Source
 	}
+
+	// An update without a URL, such as a rename, keeps the stored one.
+	repoURL := strings.TrimSpace(req.RepoURL)
+	if repoURL == "" {
+		repoURL = existing.RepoURL
+	}
+	if repoURL, err = checkRepoURL(source, repoURL); err != nil {
+		return nil, err
+	}
+	// The stored token was given for the stored host; it does not follow the
+	// URL to another one unless a new token comes with it.
+	clearToken := req.ClearToken ||
+		(req.AuthToken == "" && feeds.RepoOrigin(existing.RepoURL) != feeds.RepoOrigin(repoURL))
 
 	schedule := req.SyncSchedule
 	if schedule == "" {
@@ -306,36 +330,23 @@ func (m *Manager) UpdateLibrary(ctx context.Context, id string, req UpdateLibrar
 		}
 	}
 
-	// Handle token updates
-	authTokenSQL := "auth_token"
-	var authTokenArg interface{}
-	if req.ClearToken {
-		authTokenSQL = "$10"
-		authTokenArg = ""
-	} else if req.AuthToken != "" {
-		encrypted, encErr := encryptToken(req.AuthToken)
-		if encErr != nil {
-			log.Printf("[Instructions] Failed to encrypt auth token: %v", encErr)
-			encrypted = req.AuthToken
+	if clearToken || req.AuthToken != "" {
+		token := ""
+		if !req.ClearToken {
+			if token, err = encryptToken(req.AuthToken); err != nil {
+				return nil, fmt.Errorf("encrypt token: %w", err)
+			}
 		}
-		authTokenSQL = "$10"
-		authTokenArg = encrypted
-	} else {
-		authTokenSQL = "$10"
-		authTokenArg = nil // placeholder, won't be used
-	}
-
-	if req.ClearToken || req.AuthToken != "" {
-		_, err = m.pg.Exec(ctx, fmt.Sprintf(`
+		_, err = m.pg.Exec(ctx, `
 			UPDATE instruction_libraries
 			SET name = $1, description = $2, is_default = $3,
 			    source = $4, repo_url = $5, branch = $6, path = $7,
 			    sync_schedule = $8, updated_at = NOW(),
-			    auth_token = %s
+			    auth_token = $10
 			WHERE id = $9
-		`, authTokenSQL), name, req.Description, req.IsDefault,
-			source, req.RepoURL, branch, req.Path,
-			schedule, id, authTokenArg)
+		`, name, req.Description, req.IsDefault,
+			source, repoURL, branch, req.Path,
+			schedule, id, token)
 	} else {
 		_, err = m.pg.Exec(ctx, `
 			UPDATE instruction_libraries
@@ -344,7 +355,7 @@ func (m *Manager) UpdateLibrary(ctx context.Context, id string, req UpdateLibrar
 			    sync_schedule = $8, updated_at = NOW()
 			WHERE id = $9
 		`, name, req.Description, req.IsDefault,
-			source, req.RepoURL, branch, req.Path,
+			source, repoURL, branch, req.Path,
 			schedule, id)
 	}
 	if err != nil {
@@ -872,32 +883,19 @@ type scannable interface {
 }
 
 func scanLibrary(s scannable) (*Library, error) {
+	lib, err := scanLibraryRow(s)
+	if err != nil {
+		return nil, fmt.Errorf("scan library: %w", err)
+	}
+	return lib, nil
+}
+
+// scanLibraryRow returns the scan error as is, so callers can match sql.ErrNoRows.
+func scanLibraryRow(s scannable) (*Library, error) {
 	var lib Library
 	var lastSyncedAt sql.NullTime
 	var authToken string
 	err := s.Scan(
-		&lib.ID, &lib.Name, &lib.Description, &lib.IsDefault,
-		&lib.FractalID, &lib.PrismID,
-		&lib.Source, &lib.RepoURL, &lib.Branch, &lib.Path, &authToken,
-		&lib.SyncSchedule, &lastSyncedAt, &lib.LastSyncStatus, &lib.LastSyncPageCount,
-		&lib.CreatedBy, &lib.CreatedAt, &lib.UpdatedAt,
-		&lib.PageCount,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("scan library: %w", err)
-	}
-	if lastSyncedAt.Valid {
-		lib.LastSyncedAt = &lastSyncedAt.Time
-	}
-	lib.HasAuthToken = authToken != ""
-	return &lib, nil
-}
-
-func scanLibraryRow(row *sql.Row) (*Library, error) {
-	var lib Library
-	var lastSyncedAt sql.NullTime
-	var authToken string
-	err := row.Scan(
 		&lib.ID, &lib.Name, &lib.Description, &lib.IsDefault,
 		&lib.FractalID, &lib.PrismID,
 		&lib.Source, &lib.RepoURL, &lib.Branch, &lib.Path, &authToken,
@@ -911,6 +909,7 @@ func scanLibraryRow(row *sql.Row) (*Library, error) {
 	if lastSyncedAt.Valid {
 		lib.LastSyncedAt = &lastSyncedAt.Time
 	}
+	lib.RepoURL = feeds.WithoutUserinfo(lib.RepoURL)
 	lib.HasAuthToken = authToken != ""
 	return &lib, nil
 }

@@ -20,6 +20,7 @@ import (
 
 	"bifract/pkg/egress"
 	"bifract/pkg/rowfile"
+	"bifract/pkg/settings"
 )
 
 // keyFormatGlob marks source keys written as globs, converted to expressions for
@@ -57,9 +58,6 @@ const (
 	// sourceCheckInterval is how often the scheduler looks for a list that is due.
 	sourceCheckInterval = time.Minute
 	sourceStartupDelay  = time.Minute
-	// allowPrivateSetting is read from Postgres on every fetch rather than from
-	// the in-memory settings, so a change reaches every replica at once.
-	allowPrivateSetting = "dictionary_sources_allow_private"
 )
 
 // sourceLoads bounds how many sources one process holds in memory at once.
@@ -673,8 +671,7 @@ func (m *Manager) hasRows(ctx context.Context, dict *Dictionary) bool {
 // fetchSource downloads a source body under the deployment's current egress
 // policy, read per fetch so a change reaches every replica at once.
 func (m *Manager) fetchSource(ctx context.Context, url string) ([]byte, error) {
-	allowPrivate, _ := m.pg.GetSetting(ctx, allowPrivateSetting)
-	return downloadSource(ctx, url, allowPrivate == "true")
+	return downloadSource(ctx, url, settings.AllowPrivate(ctx, m.pg, settings.DictionarySourcesAllowPrivateKey))
 }
 
 // downloadSource fetches url through the egress guard, refusing anything past

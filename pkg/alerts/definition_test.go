@@ -332,7 +332,15 @@ func TestActionWritesValidateBeforeTheDatabase(t *testing.T) {
 	if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{Name: "n", URL: "https://x", BodyMode: "template"}, "u", "f1", ""); err == nil {
 		t.Error("template mode needs a template")
 	}
-	if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{BodyMode: "template", BodyTemplate: "{{ .Bad"}); err == nil ||
+	for _, u := range []string{"ftp://x/hook", "https://user:pw@x/hook"} {
+		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{Name: "n", URL: u}, "u", "f1", ""); err == nil {
+			t.Errorf("create accepted webhook URL %q", u)
+		}
+		if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{Name: "n", URL: u}); err == nil {
+			t.Errorf("update accepted webhook URL %q", u)
+		}
+	}
+	if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{URL: "https://x", BodyMode: "template", BodyTemplate: "{{ .Bad"}); err == nil ||
 		!strings.Contains(err.Error(), "template syntax error") {
 		t.Errorf("a broken template must be refused on update, got %v", err)
 	}

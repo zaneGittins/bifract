@@ -311,11 +311,12 @@ func TestWebhookHandlersOverStorage(t *testing.T) {
 	expect(t, serve(h, test, hcall{as: analyst, method: "POST", params: id("w1")}), 200, `"sent":true`)
 
 	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{`}), 400, "")
-	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"u"}`}), 404, "")
+	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"https://u:p@x"}`}), 400, "username or password")
+	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"https://hooks.example/u"}`}), 404, "")
 	pg.answer("UPDATE webhook_actions", fakedb.Affected(1))
-	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"u"}`}), 200, "")
+	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"https://hooks.example/u"}`}), 200, "")
 	pg.answer("UPDATE webhook_actions", fakedb.PGResult{Err: errors.New("down")})
-	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"u"}`}), 500, "")
+	expect(t, serve(h, upd, hcall{as: analyst, method: "PUT", params: id("w1"), body: `{"url":"https://hooks.example/u"}`}), 500, "")
 
 	pg.answer("SELECT COUNT(*) FROM alert_webhook_actions", fakedb.Row(int64(3)))
 	expect(t, serve(h, del, hcall{as: analyst, method: "DELETE", params: id("w1")}), 409, "associated with 3 alert(s)")

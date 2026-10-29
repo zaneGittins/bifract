@@ -22,13 +22,13 @@ Imported rules appear in the **Feeds** tab. Click one to **Edit**, **Disable** o
 |-------|-------------|
 | Name | Display name. |
 | Sync schedule | `Never`, `Hourly`, `Daily` (default), `Weekly` or `Monthly`. |
-| Repository URL | HTTP or HTTPS Git URL, e.g. `https://github.com/SigmaHQ/sigma`. |
+| Repository URL | HTTP or HTTPS Git URL, e.g. `https://github.com/SigmaHQ/sigma`. Put credentials in **Auth Token**, not the URL. |
 | Branch | Default `main`. |
 | Path (optional) | Subdirectory holding the rules, e.g. `rules/windows`. Empty means the whole repository. |
 | Normalizer | Maps Sigma field names onto your log schema. `Default` uses the default normalizer. |
 | Minimum severity | Skip rules whose Sigma `level` is lower. Order: informational, low, medium, high, critical. |
 | Minimum status | Skip rules whose Sigma `status` is lower. Order: unsupported, deprecated, experimental, test, stable. |
-| Auth Token (PAT) | Personal access token for private repositories. Encrypted at rest. |
+| Auth Token (PAT) | Personal access token for private repositories. Encrypted at rest. Moving the URL to another host, port or scheme clears it unless a new token is entered. |
 | Enabled | Whether the feed syncs. |
 
 ## What a sync does
@@ -39,6 +39,8 @@ Imported rules appear in the **Feeds** tab. Click one to **Edit**, **Disable** o
 
 !!! note
     If the path lists no rule files, or none of the files could be used, nothing is deleted and the sync reports an error. A wrong path or branch cannot wipe the feed's alerts.
+
+Repositories are cloned from public addresses only by default. For a Git server inside your network, turn on **Settings** > **Security** > **Webhooks and Git repositories on the internal network**. Cloud metadata addresses are always refused, and HTTP proxy settings are not used.
 
 ## Recommended community feeds
 

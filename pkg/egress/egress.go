@@ -23,7 +23,14 @@ type Options struct {
 	AllowPrivate bool
 	// Timeout bounds a whole request, redirects and body included.
 	Timeout time.Duration
+	// ResponseHeaderTimeout bounds the wait for response headers; zero means 30s.
+	ResponseHeaderTimeout time.Duration
+	// NoRedirects returns a redirect response as is instead of following it.
+	NoRedirects bool
 }
+
+// defaultResponseHeaderTimeout applies when Options leaves it unset.
+const defaultResponseHeaderTimeout = 30 * time.Second
 
 // maxRedirects bounds how far a request may be sent on.
 const maxRedirects = 5
@@ -83,11 +90,15 @@ func NewClient(opts Options) *http.Client {
 			return checkAddress(address, opts.AllowPrivate)
 		},
 	}
+	headerTimeout := opts.ResponseHeaderTimeout
+	if headerTimeout == 0 {
+		headerTimeout = defaultResponseHeaderTimeout
+	}
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           dialer.DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: headerTimeout,
 		// Fetches are minutes apart, so a kept-alive connection is only a leak.
 		DisableKeepAlives: true,
 	}
@@ -95,6 +106,9 @@ func NewClient(opts Options) *http.Client {
 		Timeout:   opts.Timeout,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if opts.NoRedirects {
+				return http.ErrUseLastResponse
+			}
 			if len(via) >= maxRedirects {
 				return fmt.Errorf("%w: more than %d redirects", ErrRedirect, maxRedirects)
 			}
@@ -114,6 +128,11 @@ func NewClient(opts Options) *http.Client {
 func ValidateURL(raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
+		// url.Error quotes the whole input, credentials included.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return fmt.Errorf("not a valid URL: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {

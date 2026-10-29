@@ -3,10 +3,13 @@ package feeds
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 
+	"bifract/pkg/egress"
 	"bifract/pkg/storage"
 )
 
@@ -184,6 +187,20 @@ func (m *Manager) Update(ctx context.Context, id string, req UpdateRequest) (*Fe
 		normalizerID = req.NormalizerID
 	}
 
+	// The stored token was given for the stored host. Unless a new one comes
+	// with it, a move to another origin must not take the token along.
+	if !req.ClearToken && req.AuthToken == "" {
+		var storedURL string
+		err := m.pg.QueryRow(ctx, "SELECT repo_url FROM alert_feeds WHERE id = $1", id).Scan(&storedURL)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("feed not found")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read feed: %w", err)
+		}
+		req.ClearToken = RepoOrigin(storedURL) != RepoOrigin(req.RepoURL)
+	}
+
 	// Handle token update
 	var tokenUpdate string
 	var args []interface{}
@@ -276,13 +293,32 @@ func (m *Manager) validateRequest(name, repoURL, schedule string) error {
 	}
 	// Rejected here too, not only at clone time: a feed saved with an ssh:// or
 	// file:// URL would otherwise sit enabled, failing on every scheduled sync.
-	if err := validateRepoURL(repoURL); err != nil {
+	if err := egress.ValidateURL(repoURL); err != nil {
 		return err
 	}
 	if !ValidSchedules[schedule] {
 		return fmt.Errorf("invalid sync schedule %q, must be one of: never, hourly, daily, weekly, monthly", schedule)
 	}
 	return nil
+}
+
+// RepoOrigin is the scheme, host and port a repository token is sent to.
+func RepoOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
+
+// WithoutUserinfo drops credentials from a URL saved before they were refused.
+func WithoutUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // scanFeed scans a feed row from a Rows or QueryRow result.
@@ -306,6 +342,7 @@ func (m *Manager) scanFeed(rows interface {
 		return nil, fmt.Errorf("scan feed: %w", err)
 	}
 
+	f.RepoURL = WithoutUserinfo(f.RepoURL)
 	f.HasAuthToken = encToken != ""
 	// Never return the actual token in API responses
 	f.AuthToken = ""

@@ -209,7 +209,7 @@ func NewEngineWithDicts(pg *storage.PostgresClient, ch *storage.ClickHouseClient
 		ch:                  ch,
 		hydrator:            hydrator,
 		dictManager:         dictManager,
-		webhookClient:       NewWebhookClient(baseURL),
+		webhookClient:       NewWebhookClient(baseURL, outboundPolicy(pg)),
 		emailClient:         NewEmailClient(pg, baseURL),
 		fractalActionClient: NewFractalActionClient(ch, pg),
 		alertsCache:         make(map[string]*Alert),
