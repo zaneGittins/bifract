@@ -18,10 +18,10 @@ const (
 	// Always routes to WHERE — it is computed before aggregation, never after.
 	// Differs from FieldKindPerRow only in that no toFloat64OrZero() coercion is needed.
 	FieldKindAssignment
-	// FieldKindJoined: a column produced by a JOIN wrapper -- model_lookup()
-	// (beacon_score, coverage, z_score, ...) or join() (_join_<col>). It only
-	// exists AFTER the join wrap, so conditions on it must defer (post-join) and
-	// references resolve to the bare output column name (never a JSON sub-column).
+	// FieldKindJoined: a column a join adds, modelLookup() (beacon_score,
+	// coverage, z_score, ...) or join() (_join_<col>). It exists only after the
+	// join, so conditions on it bind there, and references resolve to the bare
+	// output column name (never a JSON sub-column).
 	FieldKindJoined
 )
 
@@ -290,9 +290,10 @@ func (r *FieldRegistry) Resolve(name string) string {
 			// No Execute-phase expression set. If the Declare-phase Expr is just
 			// a placeholder (same as the field name) and the field is not a base
 			// column, fall through to jsonFieldRef so we get the proper
-			// fields.`name`.:String reference. Joined columns are excluded: they
-			// resolve to their bare join-output column name, not a JSON field.
-			if entry.Expr == name && entry.Kind != FieldKindBase && entry.Kind != FieldKindJoined {
+			// fields.`name`.:String reference. Joined, aggregate and window columns
+			// are excluded: they resolve to their bare output column name.
+			if entry.Expr == name && entry.Kind != FieldKindBase && entry.Kind != FieldKindJoined &&
+				entry.Kind != FieldKindAggregate && entry.Kind != FieldKindWindow {
 				return r.fieldRef(name)
 			}
 			expr = entry.Expr
@@ -303,6 +304,41 @@ func (r *FieldRegistry) Resolve(name string) string {
 		return expr
 	}
 	return r.fieldRef(name)
+}
+
+// DependsOnJoin reports whether a per-row field reads a join's output, directly or
+// through the expression it was computed from, and so exists only where that join
+// does. Joined columns are referenced by their bare names, which is how they are
+// recognised in an expression.
+func (r *FieldRegistry) DependsOnJoin(name string) bool {
+	return r.dependsOnJoin(name, map[string]bool{})
+}
+
+// SQLDependsOnJoin reports whether generated SQL reads a join output, directly or
+// through a per-row field computed from one.
+func (r *FieldRegistry) SQLDependsOnJoin(sql string) bool {
+	return slices.ContainsFunc(columnRefs(sql), r.DependsOnJoin)
+}
+
+func (r *FieldRegistry) dependsOnJoin(name string, seen map[string]bool) bool {
+	entry, ok := r.fields[name]
+	if !ok || seen[name] {
+		return false
+	}
+	seen[name] = true
+	switch entry.Kind {
+	case FieldKindJoined:
+		return true
+	case FieldKindPerRow, FieldKindAssignment:
+	default:
+		return false
+	}
+	for _, c := range columnRefs(r.Resolve(name)) {
+		if c != name && r.dependsOnJoin(c, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetResolveExpr updates the resolve expression for a field during the Execute phase.

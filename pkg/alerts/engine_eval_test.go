@@ -102,7 +102,12 @@ func TestModelNamesIn(t *testing.T) {
 		`* | model_lookup(model="beacon", key=[src_ip, dst_ip])`:                                                     "beacon",
 		`* | model_lookup(model="a", key=[x]) | model_lookup(model="b", key=[y]) | model_lookup(model="a", key=[z])`: "a,b",
 		`message="model_lookup(model=decoy)"`:                                                                        "",
-		`* | groupby(`:                                                                                               "",
+		`* | NOT modelLookup(model="seen", key=[user])`:                                                              "seen",
+		`* | modelLookup(model="c", key=[x]) OR NOT modelLookup(model="d", key=[y])`:                                 "c,d",
+		`* | chain(user) { NOT modelLookup(model="e", key=[user]); x=1 }`:                                            "e",
+		`* | case { NOT modelLookup(model="f", key=[user]) | y:=1; * }`:                                              "f",
+		`* | join(user) { * | modelLookup(model="g", key=[user]) | groupby(user) }`:                                  "g",
+		`* | groupby(`: "",
 	}
 	for q, want := range cases {
 		if got := strings.Join(modelNamesIn(q), ","); got != want {

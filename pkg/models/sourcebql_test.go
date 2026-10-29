@@ -67,9 +67,12 @@ func TestSourceBQLRejectsWhatCannotBeASource(t *testing.T) {
 		`* | sort(timestamp)`:         "reorders or drops",
 		`* | head(10)`:                "reorders or drops",
 		`* | dedup(user)`:             "reorders or drops",
-		`* | join(user) { event_id="1" | groupby(user) }`: "reads a second query",
-		`* | model_lookup(model="m", key=[user])`:         "another model's output",
-		`* | chain([user], within=5m) { a="x"; b="y" }`:   "straddle the window",
+		`* | join(user) { event_id="1" | groupby(user) }`:               "reads a second query",
+		`* | model_lookup(model="m", key=[user])`:                       "another model's output",
+		`* | NOT modelLookup(model="m", key=[user])`:                    "another model's output",
+		`* | user="a" OR modelLookup(model="m", key=[user])`:            "another model's output",
+		`* | case { NOT modelLookup(model="m", key=[user]) | y:=1; * }`: "another model's output",
+		`* | chain([user], within=5m) { a="x"; b="y" }`:                 "straddle the window",
 	}
 	for query, want := range cases {
 		_, err := compileSourcePredicates(query, parser.QueryOptions{})
@@ -282,5 +285,15 @@ func TestStripSQLStrings(t *testing.T) {
 	}
 	if strings.Contains(got, "logs.d") {
 		t.Fatalf("quoted literal survived: %q", got)
+	}
+}
+
+// The validator looks commands up by canonical name, so a key that is an alias
+// would never match.
+func TestWindowUnsafeCommandsAreCanonical(t *testing.T) {
+	for name := range windowUnsafeCommands {
+		if c := parser.CanonicalCommandName(name); c != name {
+			t.Errorf("windowUnsafeCommands: %q is spelled %q", name, c)
+		}
 	}
 }

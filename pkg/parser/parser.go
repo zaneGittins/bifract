@@ -273,7 +273,9 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 					return nil, err
 				}
 				cmd.Negate = pipelineNegate
-				if p.commandIsBooleanOperand(pipeline) {
+				// A command that does not apply NOT itself is negated as a condition,
+				// which rejects one that is not a filter instead of dropping the NOT.
+				if p.commandIsBooleanOperand(pipeline) || (cmd.Negate && !commandAppliesNegate(cmd.Name)) {
 					pipeline.HavingConditions = append(pipeline.HavingConditions, commandHavingCondition(*cmd))
 				} else {
 					pipeline.Commands = append(pipeline.Commands, *cmd)

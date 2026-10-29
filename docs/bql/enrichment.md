@@ -64,7 +64,16 @@ Adds the baseline an analytics [model](../features/models.md) has learned to eac
 | `beacon` | `[src_ip, dst_ip, dst_port]` | `beacon_score`, `conn_count`, `prevalence` and per-signal scores |
 | `long_connection` | `[src_ip, dst_ip, dst_port]` | `longconn_score`, `total_duration`, `conn_count`, `prevalence` and per-signal scores |
 
-Use the added columns like any other field. Only one `modelLookup()` per query, and it cannot be combined with `join()`.
+Use the added columns like any other field: filter, sort, compute from them and pass them to other commands.
+
+```
+event_id=22 | modelLookup(model="dns_first_seen", key=[query]) | age := dateDiff("second", first_seen, timestamp) | table(query, first_seen, age)
+```
+
+Only one `modelLookup()` that adds columns per query, and it cannot be combined with `join()`.
+
+!!! tip "Filter on model columns right after the lookup"
+    With the default `require=true`, a filter that reads only model columns, such as `is_new="1"` or `percent < 1`, narrows the model's keys before the logs are read, so the scan touches only logs with a matching key. A filter that also reads a log field, or comes after `head()`, runs on the joined rows instead.
 
 ### Position in the pipeline
 
@@ -76,9 +85,20 @@ Use the added columns like any other field. Only one `modelLookup()` per query, 
 ```
 
 !!! warning "require=false and thresholds"
-    Unscored rows get type defaults (`0` for a score), which compare like real values. `require=false | percent < 0.1` returns every row the model has never seen. Use `require=false` only to find unscored rows.
+    Unscored rows get type defaults (`0` for a score), which compare like real values. `require=false | percent < 0.1` returns every row the model has never seen. To find unscored rows, use [`NOT modelLookup()`](#keep-the-rows-a-model-does-not-score).
 
 A model scores from its creation forward, plus any backfill, so with the default `require=true` a query over older data returns nothing.
+
+### Keep the rows a model does not score
+
+Written as a condition, `modelLookup()` tests whether the model scores a row's key and adds no columns. Negate it to keep the rows it does not score:
+
+```
+event_id=22 | NOT modelLookup(model="dns_first_seen", key=[query])
+* | NOT modelLookup(model="known_users", key=[user]) OR user="admin"
+```
+
+`require=` does not apply to the condition form. A condition can sit beside a `modelLookup()` that adds columns, including one for another model.
 
 ## comment()
 

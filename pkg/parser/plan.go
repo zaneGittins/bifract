@@ -40,6 +40,11 @@ type QueryLayer struct {
 	// order. Where holds the filters before the first; the rest of the layer
 	// reads only the rows the last one keeps.
 	Caps []RowCap
+	// ModelJoin, on a stage after an aggregation, joins the model onto the rows the
+	// stage reads: "<join> ON <keys>", the left side aliased _outer, adding the
+	// ModelJoinFields columns. See modelJoinLayer.
+	ModelJoin       string
+	ModelJoinFields []string
 }
 
 // project adds a column, replacing one of the same name in place.
@@ -89,9 +94,9 @@ func (l *QueryLayer) capAfter(k int) *[]string {
 
 // foldLastCap renders a cap nothing reads through as this layer's own ordering
 // and limit, which is the same rows without a subquery.
-func (l *QueryLayer) foldLastCap(aggregated bool) {
+func (l *QueryLayer) foldLastCap(readThrough bool) {
 	n := len(l.Caps)
-	if n == 0 || aggregated {
+	if n == 0 || readThrough {
 		return
 	}
 	last := l.Caps[n-1]
@@ -229,38 +234,39 @@ type QueryPlan struct {
 	JoinMaxRows int      // max rows for subquery safety limit
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
-	ModelLookupSQL       string   // pre-built scoring subquery SQL
-	ModelLookupOn        string   // JOIN ON condition (references _outer._mlk_k<i>)
-	ModelLookupFields    []string // output field names added to outer SELECT
-	ModelLookupKeyExprs  []string // outer join-key expressions, projected as hidden _mlk_k<i> columns
-	ModelLookupKeyFields []string // the BQL field names behind ModelLookupKeyExprs (for error messages)
-	ModelLookupStrict    bool     // true (default) = INNER JOIN: keep only rows the model scored
-	ModelLookupPrefilter string   // strict-mode semi-join predicate pushed into the source scan
-	// ModelLookupPrefilterExact is set when the prefilter selects exactly the key set
-	// the JOIN matches, so the scan-level LIMIT may stay below the join.
-	ModelLookupPrefilterExact bool
-	ModelLookupGlobal         bool     // model table is Distributed: emit GLOBAL IN/JOIN
-	ModelLookupRightCols      []string // model-side key columns, aligned with ModelLookupKeyExprs
+	ModelLookupSQL      string   // pre-built scoring subquery SQL
+	ModelLookupFields   []string // output field names added to outer SELECT
+	ModelLookupKeyExprs []string // key expressions over the log scan: the scan-level ON's left side and the prefilter's
+	ModelLookupStrict   bool     // true (default) = INNER JOIN: keep only rows the model scored
+	ModelLookupCmd      int      // index of the model_lookup command
+	// ModelLookupWhere: filters on model columns alone, applied to the model side of a
+	// strict join (and so to its scan prefilter) rather than to the joined rows. Each
+	// is a property of the key, so the join keeps exactly the rows it would have kept.
+	ModelLookupWhere []string
+	// modelKeys is the model's key set: its key columns, its topology and the set
+	// the strict scan prefilter tests.
+	modelKeys *modelKeySet
 	// ModelLookupOutputs: the model's declared output column names. Set at Declare
 	// (unlike ModelLookupFields, set at Execute) so commands that run before
 	// model_lookup's Execute can still recognize a model column by name.
 	ModelLookupOutputs []string
-	// ModelLookupAtScan: an aggregation (groupby/chain/stats) follows model_lookup in
-	// the pipeline, so the model JOIN attaches to the row scan (flat, in the
-	// aggregating stage's FROM) instead of wrapping the whole query. Rows then carry
-	// model columns into GROUP BY / chain steps. Kept flat so a GLOBAL join still
-	// distributes: shards join their local scan against the broadcast model set and
-	// pre-aggregate, rather than shipping scan rows to the initiator.
+	// ModelLookupAtScan: no aggregation precedes model_lookup, so the model JOIN sits
+	// in the source stage's FROM and every command after the lookup reads the model's
+	// columns as ordinary per-row columns: assignments, transforms, filters, sorts,
+	// table() and aggregations alike. Kept flat so a GLOBAL join still distributes:
+	// shards join their local scan against the broadcast model set and pre-aggregate,
+	// rather than shipping scan rows to the initiator. After an aggregation it joins
+	// the aggregated rows instead, below the stage that reads them (ModelJoin).
 	ModelLookupAtScan bool
-	// PostJoinWhere: predicates on model columns (and chain step unions that reference
-	// them), applied in the aggregating SELECT's WHERE, after the scan-level join and
-	// before GROUP BY. Only used when ModelLookupAtScan.
-	PostJoinWhere []string
+	// PostJoinWhere: filters that read the scan-level join's columns, at the pipeline
+	// position each was written, applied to the joined rows.
+	PostJoinWhere []postJoinFilter
 
 	// Table command tracking
 	HasTableCmd             bool
 	TableHasExplicitColumns bool
-	TableJoinedFields       []string // join/model_lookup outputs named in table(), in the order given
+	TableColumns            []string // the columns table() names, as written
+	TableJoinedFields       []string // join() outputs named in table(), in the order given
 
 	// Pending conditions: classified by kind after Declare, materialized after Execute
 	pendingWhereConditions    []HavingCondition
@@ -285,6 +291,13 @@ type QueryPlan struct {
 	outerAggregations  []string          // expressions for outer (chained) aggregation query
 	outerAggFieldOrder []string          // field order for outer aggregation results
 	aggregationOutputs map[string]string // tracks agg aliases (_count, _sum, etc.) -> SQL expression
+}
+
+// postJoinFilter is a filter on the scan-level model join's rows. At is the number
+// of commands before it, which orders it against the row caps.
+type postJoinFilter struct {
+	At  int
+	SQL string
 }
 
 // NewQueryPlan creates a plan with a single source stage.
@@ -488,22 +501,6 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		selectClause = "toString(timestamp) as timestamp, norm_log, log_id"
 	}
 
-	// model_lookup() join keys derive from `fields.X`, which only exist in this
-	// direct `FROM logs` scan. Project them here as hidden `_mlk_k<i>` columns so
-	// the JOIN ON (in wrapWithModelLookup) can reference `_outer._mlk_k<i>`; the
-	// wrap strips them from the final output via EXCEPT. In scan-level mode the
-	// join sits in this stage's FROM instead and its ON references the key
-	// expressions directly, so nothing is projected and the keys need not survive
-	// aggregation.
-	if len(p.ModelLookupKeyExprs) > 0 && !p.ModelLookupAtScan {
-		if err := p.validateJoinKeysSurviveAggregation(source, "model_lookup() key", p.ModelLookupKeyExprs, p.ModelLookupKeyFields); err != nil {
-			return "", err
-		}
-		for i, keyExpr := range p.ModelLookupKeyExprs {
-			selectClause += fmt.Sprintf(", %s AS _mlk_k%d", keyExpr, i)
-		}
-	}
-
 	// join() resolves its key the same way: the outer key expression derives from
 	// `fields.X`, which exists only in this scan, so project it as a hidden
 	// `_join_k` column for the ON clause to reference (stripped by wrapWithJoin).
@@ -522,23 +519,25 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	}
 
 	// The row source this SELECT reads, plus any wrapper that must collapse rows
-	// before it does. Each wrapper takes the WHERE with it, so outerWhere is
-	// emptied once a wrapper has applied it.
+	// before it does. Each wrapper takes the pending filters with it.
 	rowSource := opts.EffectiveTableName()
 
 	// Strict mode's semi-join prefilter belongs in the scan's own WHERE: it is the
 	// only place the model's key set can prune granules through the skip indexes on
 	// the key sub-columns, and it turns the INNER JOIN above from a filter over
 	// every log in the range into a join over the rows that can possibly match.
-	if p.ModelLookupPrefilter != "" {
-		source.Layer.Where = append(source.Layer.Where, p.ModelLookupPrefilter)
+	// It filters at the lookup's position, so a cap written before it still caps
+	// the rows the lookup was handed.
+	if pf := p.modelPrefilter(); pf != "" {
+		if after := source.Layer.capAfter(p.ModelLookupCmd); after != nil {
+			*after = append(*after, pf)
+		} else {
+			source.Layer.Where = append(source.Layer.Where, pf)
+		}
 	}
 
-	whereSQL := ""
-	if len(source.Layer.Where) > 0 {
-		whereSQL = " WHERE " + andJoin(source.Layer.Where)
-	}
-	outerWhere := whereSQL
+	// pending holds the filters this SELECT, or the next wrapper, still has to apply.
+	pending := source.Layer.Where
 
 	if opts.SourceMode == SourceIceberg {
 		// Collapse at-least-once archive duplicates before any aggregation or the
@@ -551,22 +550,37 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		// through LIMIT BY, so pruning would be lost if the WHERE were applied around
 		// it. Duplicate rows are byte-identical, so filtering after the dedup keeps
 		// exactly the row a pre-dedup filter would have kept.
-		rowSource = "(SELECT * FROM " + rowSource + whereSQL + " LIMIT 1 BY log_id)"
-		outerWhere = ""
+		rowSource = "(SELECT * FROM " + rowSource + whereClause(pending) + " LIMIT 1 BY log_id)"
+		pending = nil
 	}
 
 	// Each row cap reads the rows filtered before it and keeps its own ordering;
-	// the filters after the last one are this SELECT's.
+	// the filters after the last one are this SELECT's. A scan-level model join sits
+	// among the caps at its position (see scanJoinPosition).
+	joinAt, joined := -1, false
+	if p.ModelLookupSQL != "" && p.ModelLookupAtScan {
+		joinAt = p.scanJoinPosition(&source.Layer)
+	}
 	for i, c := range source.Layer.Caps {
-		where := outerWhere
+		where := pending
 		if i > 0 {
-			where = whereClause(source.Layer.Caps[i-1].After)
+			where = source.Layer.Caps[i-1].After
+		}
+		if joinAt >= 0 && i >= joinAt {
+			after := -1
+			if i == joinAt {
+				rowSource = p.joinModelAtScan(rowSource)
+				joined = true
+			} else {
+				after = source.Layer.Caps[i-1].At
+			}
+			where = append(slices.Clone(where), p.postJoinSQL(after, c.At)...)
 		}
 		order := c.OrderBy
 		if len(order) == 0 {
 			order = defaultRowOrder(opts)
 		}
-		capSQL := "(SELECT * FROM " + rowSource + where
+		capSQL := "(SELECT * FROM " + rowSource + whereClause(where)
 		if len(order) > 0 {
 			capSQL += " ORDER BY " + strings.Join(order, ", ")
 		}
@@ -581,7 +595,10 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 		rowSource = capSQL + ")"
 	}
 	if n := len(source.Layer.Caps); n > 0 {
-		outerWhere = whereClause(source.Layer.Caps[n-1].After)
+		pending = source.Layer.Caps[n-1].After
+		if joined {
+			pending = append(slices.Clone(pending), p.postJoinSQL(source.Layer.Caps[n-1].At, -1)...)
+		}
 	}
 
 	// A pre-aggregation dedup has to collapse rows before this SELECT aggregates
@@ -605,29 +622,51 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 			// than whichever row was read first.
 			order = " ORDER BY " + o
 		}
-		rowSource = "(SELECT * FROM " + rowSource + outerWhere + order + " " + source.Layer.ScanLimitBy + ")"
-		outerWhere = ""
+		rowSource = "(SELECT * FROM " + rowSource + whereClause(pending) + order + " " + source.Layer.ScanLimitBy + ")"
+		pending = nil
 	}
 
-	// Scan-level model join: the aggregating stage reads (scan JOIN model) so its
-	// rows carry the model columns. Predicates on those columns (PostJoinWhere) go
-	// in this stage's WHERE; scan-only predicates stay wherever they already are
-	// (the same WHERE, or inside a dedup wrap), where ClickHouse pushes them into
-	// the scan.
-	if p.ModelLookupSQL != "" && p.ModelLookupAtScan {
-		// A wrapped scan (e.g. the dedup subquery) must carry an alias to be
-		// joined against (ClickHouse code 206); a subquery source already has one.
-		if strings.HasPrefix(rowSource, "(") && strings.HasSuffix(rowSource, ")") {
-			rowSource += " AS _outer"
-		}
-		rowSource += p.scanModelJoin()
-		if len(p.PostJoinWhere) > 0 {
-			pj := andJoin(p.PostJoinWhere)
-			if outerWhere == "" {
-				outerWhere = " WHERE " + pj
-			} else {
-				outerWhere += " AND " + pj
+	// Scan-level model join after every cap: this SELECT reads (scan JOIN model) so
+	// its rows carry the model columns. Filters on those columns go in this SELECT's
+	// WHERE; scan-only predicates stay wherever they already are (the same WHERE, or
+	// inside a dedup wrap), where ClickHouse pushes them into the scan.
+	if p.ModelLookupSQL != "" && p.ModelLookupAtScan && !joined {
+		joinedWhere := pending
+		if p.selectsRowsBelowModelJoin(source, opts) {
+			// Nothing after the join selects rows, so this SELECT returns the rows the
+			// scan alone would. A narrow scan picks them, reading in sorting-key order
+			// and stopping early, and only those are joined, read back by sorting key.
+			order := strings.Join(source.Layer.OrderBy, ", ")
+			limit := source.Layer.Limit
+			if source.Layer.LimitBy != "" {
+				limit = source.Layer.LimitBy + " " + limit
 			}
+			// GLOBAL whatever the topology, as pgr's re-read does: on a cluster the
+			// subquery reads logs_distributed, and on one node it costs nothing.
+			picked := fmt.Sprintf("(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM %s%s ORDER BY %s %s)",
+				rowSource, whereClause(pending), order, limit)
+			// The joined read keeps the filters: log_id is not unique, so a row sharing
+			// a picked (timestamp, log_id) may fail them. The strict prefilter is left
+			// to the INNER JOIN, which applies exactly the same key set.
+			pf := p.modelPrefilter()
+			joinedWhere = append(slices.DeleteFunc(slices.Clone(source.Layer.Where), func(w string) bool { return w == pf }), picked)
+			// The join hashes the few picked rows and streams the model past them,
+			// rather than hashing every scored key. They carry their filters with them,
+			// so a GLOBAL join on a cluster ships only those rows.
+			star := "*"
+			if opts.IncludeShardNum {
+				star = "*, _shard_num"
+			}
+			kind := " INNER JOIN "
+			if !p.ModelLookupStrict {
+				kind = " RIGHT JOIN "
+			}
+			rowSource = "(" + p.modelJoinSource() + ") AS _mlookup" + p.globalJoin() + kind +
+				"(SELECT " + star + " FROM " + rowSource + whereClause(joinedWhere) + ") AS _outer ON " + p.modelJoinKeys(p.ModelLookupKeyExprs)
+			pending = nil
+		} else {
+			rowSource = p.joinModelAtScan(rowSource)
+			pending = append(slices.Clone(joinedWhere), p.postJoinSQL(-1, -1)...)
 		}
 	}
 
@@ -636,7 +675,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	sql.WriteString(selectClause)
 	sql.WriteString(" FROM ")
 	sql.WriteString(rowSource)
-	sql.WriteString(outerWhere)
+	sql.WriteString(whereClause(pending))
 
 	// GROUP BY
 	if len(source.Layer.GroupBy) > 0 {
@@ -670,33 +709,14 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 
 	innerSQL := sql.String()
 
-	// Apply additional stages (chained aggregation, stage index > 0). An outer
-	// model join matches on the hidden _mlk_k<i> keys the source stage projected,
-	// so a projection stage with an explicit SELECT must carry them through or the
-	// wrap's ON cannot resolve. Aggregating stages are left alone: a bare carried
-	// key would be neither grouped nor aggregated there (that shape is
-	// unsupported and errors elsewhere).
-	carryKeys := p.ModelLookupSQL != "" && !p.ModelLookupAtScan && len(p.ModelLookupKeyExprs) > 0
+	// Apply additional stages (chained aggregation, stage index > 0).
 	for i := 1; i < len(p.Stages); i++ {
-		layer := p.Stages[i].Layer
-		if carryKeys && len(layer.Selects) > 0 && len(layer.GroupBy) == 0 {
-			selects := append([]SelectExpr(nil), layer.Selects...)
-			for k := range p.ModelLookupKeyExprs {
-				selects = append(selects, SelectExpr{Expr: fmt.Sprintf("_mlk_k%d", k)})
-			}
-			layer.Selects = selects
-		}
-		innerSQL = wrapWithLayer(innerSQL, layer)
+		innerSQL = wrapWithLayer(innerSQL, p.Stages[i].Layer)
 	}
 
 	// Apply join wrapping (subquery JOIN)
 	if p.IsJoin && p.JoinSubSQL != "" {
 		innerSQL = p.wrapWithJoin(innerSQL)
-	}
-
-	// Apply model_lookup JOIN wrapping (scan-level mode joined inside the FROM above)
-	if p.ModelLookupSQL != "" && !p.ModelLookupAtScan {
-		innerSQL = p.wrapWithModelLookup(innerSQL)
 	}
 
 	// Apply formatters (outer SELECT for timestamp formatting, deferred math)
@@ -848,6 +868,9 @@ func defaultRowOrder(opts QueryOptions) []string {
 
 // wrapWithLayer wraps an inner SQL string with a QueryLayer's SELECT/WHERE/GROUP BY/HAVING/ORDER BY/LIMIT.
 func wrapWithLayer(innerSQL string, layer QueryLayer) string {
+	if layer.ModelJoin != "" {
+		innerSQL = modelJoinLayer(innerSQL, layer.ModelJoin, layer.ModelJoinFields)
+	}
 	// Same split as renderStandard: a dedup that precedes this layer's
 	// aggregation has to collapse the rows feeding it, not its output. Nothing to
 	// order by here: these rows come from a stage that has already aggregated.
@@ -951,6 +974,17 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 // not is not an aggregate, and ClickHouse would reject the query (code 215) with an
 // error that says nothing about the real problem. Shared by model_lookup() and join().
 func (p *QueryPlan) validateJoinKeysSurviveAggregation(source *QueryStage, what string, keyExprs, keyFields []string) error {
+	missing := p.keysLostToAggregation(source, keyExprs, keyFields)
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %s must be part of the grouping to survive aggregation: add %s to the group/table columns, or drop the aggregation",
+		what, strings.Join(missing, ", "), strings.Join(missing, ", "))
+}
+
+// keysLostToAggregation names the keys an aggregating source stage does not group
+// by, so cannot be read after it.
+func (p *QueryPlan) keysLostToAggregation(source *QueryStage, keyExprs, keyFields []string) []string {
 	if len(source.Layer.GroupBy) == 0 && !p.IsAggregated {
 		return nil
 	}
@@ -982,87 +1016,176 @@ func (p *QueryPlan) validateJoinKeysSurviveAggregation(source *QueryStage, what 
 		}
 		missing = append(missing, name)
 	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s %s must be part of the grouping to survive aggregation: add %s to the group/table columns, or drop the aggregation",
-		what, strings.Join(missing, ", "), strings.Join(missing, ", "))
+	return missing
 }
 
-// wrapWithModelLookup wraps the outer query with a JOIN against the model scoring
-// subquery: INNER in strict mode (the default, keeping only scored rows), LEFT when
-// the query opted out with strict=false. The outer query projects the join keys as
-// hidden `_mlk_k<i>` columns (see renderStandard); the ON matches them against the
-// model side and they are dropped from the result via `EXCEPT`, so only the original
-// columns plus the model output fields are returned.
-func (p *QueryPlan) wrapWithModelLookup(outerSQL string) string {
-	var b strings.Builder
-	b.WriteString("SELECT _outer.*")
-	if n := len(p.ModelLookupKeyExprs); n > 0 {
-		excepts := make([]string, n)
-		for i := range p.ModelLookupKeyExprs {
-			excepts[i] = fmt.Sprintf("_mlk_k%d", i)
-		}
-		b.WriteString(fmt.Sprintf(" EXCEPT (%s)", strings.Join(excepts, ", ")))
+// modelJoinOn renders the model join onto rows whose key columns are left:
+// "[GLOBAL] INNER|LEFT JOIN (scoring) AS _mlookup ON ...". One key per model key
+// column joins on plain equalities, which is both the cheaper hash join (no string
+// built per row) and the exact predicate the strict prefilter pushes into the scan.
+// Several keys against a single model column (first_seen and volume_baseline
+// encode a composite entity that way) use the model's own char(30) encoding.
+func (p *QueryPlan) modelJoinOn(left []string) string {
+	kind := " INNER JOIN ("
+	if !p.ModelLookupStrict {
+		kind = " LEFT JOIN ("
 	}
-	for _, f := range p.ModelLookupFields {
-		b.WriteString(fmt.Sprintf(", _mlookup.%s", f))
-	}
-	b.WriteString(" FROM (")
-	b.WriteString(outerSQL)
-	b.WriteString(") AS _outer ")
-	if p.ModelLookupGlobal {
-		// The model table is Distributed and so is the left side. Without GLOBAL,
-		// ClickHouse refuses the double-distributed subquery outright
-		// (distributed_product_mode='deny', code 288); with it the initiator reads
-		// the model across every shard once and ships that result to the shards.
-		b.WriteString("GLOBAL ")
-	}
-	if p.ModelLookupStrict {
-		b.WriteString("INNER JOIN (")
-	} else {
-		b.WriteString("LEFT JOIN (")
-	}
-	b.WriteString(p.ModelLookupSQL)
-	b.WriteString(") AS _mlookup ON ")
-	b.WriteString(p.ModelLookupOn)
-	return b.String()
+	return p.globalJoin() + kind + p.modelJoinSource() + ") AS _mlookup ON " + p.modelJoinKeys(left)
 }
 
-// scanModelJoin renders the scan-level model join appended to the row source:
-// ` [GLOBAL] INNER|LEFT JOIN (scoring subquery) AS _mlookup ON <keys>`. The ON
-// compares the raw key expressions (which resolve against the scan) to the model's
-// key columns, so no hidden key projection is needed and the join stays flat in
-// the aggregating stage's FROM (see ModelLookupAtScan).
-func (p *QueryPlan) scanModelJoin() string {
-	var b strings.Builder
-	if p.ModelLookupGlobal {
-		b.WriteString(" GLOBAL")
+// globalJoin is " GLOBAL" when the model table is Distributed. Without it ClickHouse
+// refuses the double-distributed subquery outright (distributed_product_mode='deny',
+// code 288); with it the initiator reads the model across every shard once.
+func (p *QueryPlan) globalJoin() string {
+	if p.modelKeys.global {
+		return " GLOBAL"
 	}
-	if p.ModelLookupStrict {
-		b.WriteString(" INNER JOIN (")
-	} else {
-		b.WriteString(" LEFT JOIN (")
-	}
-	b.WriteString(p.ModelLookupSQL)
-	b.WriteString(") AS _mlookup ON ")
+	return ""
+}
 
-	right := make([]string, len(p.ModelLookupRightCols))
-	for i, c := range p.ModelLookupRightCols {
+// modelJoinKeys is the ON condition matching key columns left to the model's.
+func (p *QueryPlan) modelJoinKeys(left []string) string {
+	right := make([]string, len(p.modelKeys.rightCols))
+	for i, c := range p.modelKeys.rightCols {
 		right[i] = "_mlookup." + c
 	}
-	// Mirrors setModelLookupJoin: plain equalities when the key fields align with
-	// the model key columns, the char(30) composite encoding otherwise.
-	if modelKeysAligned(p.ModelLookupKeyExprs, right) {
-		eq := make([]string, len(right))
-		for i := range right {
-			eq[i] = p.ModelLookupKeyExprs[i] + " = " + right[i]
-		}
-		b.WriteString(strings.Join(eq, " AND "))
-	} else {
-		b.WriteString(concatModelKeys(p.ModelLookupKeyExprs) + " = " + concatModelKeys(right))
+	if !modelKeysAligned(left, right) {
+		return concatModelKeys(left) + " = " + concatModelKeys(right)
 	}
-	return b.String()
+	eq := make([]string, len(right))
+	for i := range right {
+		eq[i] = left[i] + " = " + right[i]
+	}
+	return strings.Join(eq, " AND ")
+}
+
+// modelJoinLayer joins the model onto the rows of a finished stage, for the stage
+// after it to read: exactly those rows' columns and the model's, so nothing above
+// it can meet a name both sides have.
+func modelJoinLayer(innerSQL, join string, fields []string) string {
+	cols := make([]string, len(fields))
+	for i, f := range fields {
+		cols[i] = "_mlookup." + f + " AS " + f
+	}
+	return "SELECT _outer.*, " + strings.Join(cols, ", ") + " FROM (" + innerSQL + ") AS _outer" + join
+}
+
+// modelJoinSource is the model side of the join: the scoring subquery, narrowed by
+// the filters that read only its columns.
+func (p *QueryPlan) modelJoinSource() string {
+	if len(p.ModelLookupWhere) == 0 {
+		return p.ModelLookupSQL
+	}
+	return "SELECT * FROM (" + p.ModelLookupSQL + ") WHERE " + andJoin(p.ModelLookupWhere)
+}
+
+// modelPrefilter is a strict join's semi-join pushed down into the source scan:
+// only logs whose key the model scores can survive the INNER JOIN, and the scan is
+// the one place the key sub-columns' skip indexes can prune on that set. Filters on
+// model columns narrow the set exactly as they narrow the model side.
+func (p *QueryPlan) modelPrefilter() string {
+	if p.ModelLookupSQL == "" || !p.ModelLookupStrict || p.modelKeys == nil || len(p.ModelLookupKeyExprs) == 0 {
+		return ""
+	}
+	return p.modelKeys.membership(p.ModelLookupKeyExprs, p.ModelLookupWhere)
+}
+
+// readsThroughCap reports whether the scan-level model join, or a filter on its
+// columns, comes after the row cap c and changes which rows c's own ordering and
+// limit select if they are applied in the same SELECT: a strict join drops rows,
+// and a post-join filter is written after it.
+func (p *QueryPlan) readsThroughCap(c RowCap) bool {
+	if p.ModelLookupSQL == "" || !p.ModelLookupAtScan {
+		return false
+	}
+	if len(p.postJoinSQL(c.At, -1)) > 0 {
+		return true
+	}
+	return p.ModelLookupStrict && c.At < p.ModelLookupCmd && !p.dedupsByModelKeys(c)
+}
+
+// dedupsByModelKeys reports whether c is a dedup whose keys include every model
+// key. Each group it keeps one row of then shares one key, which the strict join
+// keeps or drops whole, so the join selects the same rows on either side of it.
+func (p *QueryPlan) dedupsByModelKeys(c RowCap) bool {
+	if c.Limit != "" || c.ScanLimitBy == "" {
+		return false
+	}
+	keys := strings.Split(strings.TrimPrefix(c.ScanLimitBy, "LIMIT 1 BY "), ", ")
+	for _, k := range p.ModelLookupKeyExprs {
+		if !slices.Contains(keys, k) {
+			return false
+		}
+	}
+	return true
+}
+
+// postJoinSQL returns the post-join filters written after command index after and
+// up to command index upTo (RowCap.At values); -1 leaves that side open.
+func (p *QueryPlan) postJoinSQL(after, upTo int) []string {
+	var out []string
+	for _, f := range p.PostJoinWhere {
+		if (after < 0 || f.At > after) && (upTo < 0 || f.At <= upTo) {
+			out = append(out, f.SQL)
+		}
+	}
+	return out
+}
+
+// scanJoinPosition returns how many of the scan's row caps run before the model
+// join. A cap written after model_lookup() reads joined rows, but the join keeps
+// every row the prefilter passed, so the cap can run first, where the scan stops
+// early, unless a filter between them reads the join or its ordering does.
+func (p *QueryPlan) scanJoinPosition(l *QueryLayer) int {
+	if l.ScanLimitBy != "" {
+		// A pre-aggregation dedup wraps every cap and is joined after (see the
+		// scanDedup wrap in renderStandard).
+		return len(l.Caps)
+	}
+	n := 0
+	for n < len(l.Caps) && (l.Caps[n].At < p.ModelLookupCmd || len(p.postJoinSQL(-1, l.Caps[n].At)) == 0 && capReadsOnlyScan(l.Caps[n])) {
+		n++
+	}
+	return n
+}
+
+// capReadsOnlyScan reports whether a row cap's ordering and dedup keys can be
+// evaluated over the logs table's own columns.
+func capReadsOnlyScan(c RowCap) bool {
+	if c.LimitBy != "" && c.ScanLimitBy == "" {
+		return false
+	}
+	return orderingReadsOnlyScan(c.OrderBy, c.ScanLimitBy)
+}
+
+// selectsRowsBelowModelJoin reports whether the source SELECT's own ORDER BY, LIMIT
+// BY and LIMIT may pick its rows from the scan before the scan-level model join: the
+// join keeps every row, nothing after it selects or aggregates rows, and the
+// ordering and dedup keys read only the logs table's columns.
+func (p *QueryPlan) selectsRowsBelowModelJoin(source *QueryStage, opts QueryOptions) bool {
+	l := source.Layer
+	if len(p.PostJoinWhere) > 0 || l.Limit == "" || len(l.OrderBy) == 0 {
+		return false
+	}
+	// Rows are picked from the table itself, so no row cap may read through first.
+	if len(p.Stages) > 1 || len(l.GroupBy) > 0 || len(l.Having) > 0 || l.ScanLimitBy != "" || len(l.Caps) > 0 ||
+		p.IsAggregated || p.IsChain || opts.SourceMode == SourceIceberg || opts.SourceSubquery != "" {
+		return false
+	}
+	if len(p.WindowLayers) > 0 || p.hasDeferredWrap() || p.ModifiedZScoreExpr != "" || p.HistogramBuckets > 0 || len(p.ChartLayers) > 0 {
+		return false
+	}
+	return orderingReadsOnlyScan(l.OrderBy, l.LimitBy)
+}
+
+// joinModelAtScan appends the scan-level model join to a row source.
+func (p *QueryPlan) joinModelAtScan(rowSource string) string {
+	// A wrapped scan (a cap or dedup subquery) must carry an alias to be joined
+	// against (ClickHouse code 206); a subquery source already has one.
+	if strings.HasPrefix(rowSource, "(") && strings.HasSuffix(rowSource, ")") {
+		rowSource += " AS _outer"
+	}
+	return rowSource + p.modelJoinOn(p.ModelLookupKeyExprs)
 }
 
 // outerHasColumn reports whether the source stage's SELECT already exposes the given
@@ -1092,7 +1215,7 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	if len(src.GroupBy) > 0 || len(src.Having) > 0 || src.LimitBy != "" || src.ScanLimitBy != "" {
 		return false
 	}
-	if len(p.DeferredWhere) > 0 || len(p.PostJoinWhere) > 0 {
+	if len(p.DeferredWhere) > 0 || len(p.PostJoinWhere) > 0 || len(p.ModelLookupWhere) > 0 {
 		return false
 	}
 	if p.IsAggregated || p.HasGroupBy || p.IsAnalyze || p.IsChain || p.IsProcessTree {

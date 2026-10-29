@@ -2,7 +2,6 @@ package alerts
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"bifract/pkg/parser"
@@ -47,8 +46,9 @@ func (e *Engine) modelWatermark(ctx context.Context, alert *Alert, toTime time.T
 	return toTime
 }
 
-// modelNamesIn lists the models a query consults. Parsed rather than matched on
-// text so a name inside a string literal is not mistaken for a reference.
+// modelNamesIn lists the models a query consults, wherever it does: an entity the
+// model has yet to record would match NOT modelLookup(). Parsed rather than matched
+// on text so a name inside a string literal is not mistaken for a reference.
 func modelNamesIn(query string) []string {
 	pipeline, err := parser.ParseQuery(query)
 	if err != nil {
@@ -56,18 +56,18 @@ func modelNamesIn(query string) []string {
 	}
 	var names []string
 	seen := map[string]bool{}
-	for _, cmd := range pipeline.Commands {
-		if !strings.EqualFold(cmd.Name, "model_lookup") && !strings.EqualFold(cmd.Name, "modellookup") {
-			continue
+	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
+		if parser.CanonicalCommandName(cmd.Name) != parser.CanonicalCommandName("modelLookup") {
+			return
 		}
 		b, err := parser.BindCommand(cmd)
 		if err != nil {
-			continue
+			return
 		}
 		if n := b.Str("model", ""); n != "" && !seen[n] {
 			seen[n] = true
 			names = append(names, n)
 		}
-	}
+	})
 	return names
 }

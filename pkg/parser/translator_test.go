@@ -5587,9 +5587,9 @@ func TestModelLookupKeyResolvesAComputedColumn(t *testing.T) {
 	if strings.Contains(res.SQL, "fields.`tool`") {
 		t.Errorf("the join key reads tool as a stored field, which is empty on every row:\n%s", res.SQL)
 	}
-	// Both the hidden key column and the strict prefilter must carry the lookup.
-	if !strings.Contains(res.SQL, "'tool', toString(fields.`image`::String), '') AS _mlk_k1") {
-		t.Errorf("the hidden join key does not carry the lookup:\n%s", res.SQL)
+	// Both the join key and the strict prefilter must carry the lookup.
+	if !strings.Contains(res.SQL, "ifNull(toString(dictGetOrDefault('logs.dict_rmm', 'tool', toString(fields.`image`::String), '')), '')) = _mlookup.entity_key") {
+		t.Errorf("the join key does not carry the lookup:\n%s", res.SQL)
 	}
 	if n := strings.Count(res.SQL, "dictGetOrDefault('logs.dict_rmm', 'tool'"); n < 2 {
 		t.Errorf("the prefilter and the join key should both use the lookup, found %d uses:\n%s", n, res.SQL)

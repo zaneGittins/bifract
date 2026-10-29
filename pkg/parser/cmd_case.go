@@ -40,17 +40,14 @@ type caseColumn struct {
 }
 
 // caseDisallowedCommands are commands whose effect is whole-result/structural and
-// therefore cannot differ per case branch in a single SQL pass.
-var caseDisallowedCommands = map[string]string{
-	"groupby": "groupby", "sort": "sort", "limit": "limit", "head": "head",
-	"tail": "tail", "dedup": "dedup", "join": "join", "chain": "chain",
-	"analyzefields": "analyzefields",
-	"table":         "table", "piechart": "piechart", "barchart": "barchart",
-	"heatmap": "heatmap", "singleval": "singleval", "histogram": "histogram",
-	"modifiedzscore": "modifiedzscore", "modifiedz": "modifiedzscore", "mzscore": "modifiedzscore",
-	"madoutlier": "madoutlier", "outlier": "madoutlier", "model_lookup": "model_lookup",
-	"timechart": "timechart", "mitre": "mitre", "attack": "mitre",
-	"boxplot": "boxplot", "scatter": "scatter",
+// therefore cannot differ per case branch in a single SQL pass. Keyed by canonical
+// command name, so every alias of a command is covered.
+var caseDisallowedCommands = map[string]bool{
+	"groupby": true, "sort": true, "limit": true, "head": true, "tail": true, "dedup": true,
+	"join": true, "chain": true, "analyzefields": true, "table": true, "piechart": true,
+	"barchart": true, "heatmap": true, "singleval": true, "histogram": true,
+	"modifiedzscore": true, "madoutlier": true, "modellookup": true, "timechart": true,
+	"mitre": true, "boxplot": true, "scatter": true,
 }
 
 // caseSel is a harvested (alias, expression) pair from a branch segment.
@@ -85,8 +82,8 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 
 	// Reject structural commands by name up front for a clear message.
 	for _, cmd := range pl.Commands {
-		if disp, bad := caseDisallowedCommands[cmd.Name]; bad {
-			return eff, fmt.Errorf("%s() cannot be used inside a case branch; place it after the case", disp)
+		if caseDisallowedCommands[canonicalCommandName(cmd.Name)] {
+			return eff, fmt.Errorf("%s() cannot be used inside a case branch; place it after the case", commandDisplayName(cmd.Name))
 		}
 	}
 

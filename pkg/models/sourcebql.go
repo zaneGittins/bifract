@@ -152,12 +152,19 @@ func stripScopeGuards(where []string) ([]string, error) {
 // log; and it is evaluated over an incremental window, so it cannot depend on
 // data outside that window.
 func validateSourcePipeline(pipeline *parser.PipelineNode) error {
+	// Window safety first: it is the more specific reason where both apply. A
+	// command used as a condition reads the same outside data as one in the pipeline.
+	var unsafe error
+	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
+		if reason, bad := windowUnsafeCommands[parser.CanonicalCommandName(cmd.Name)]; bad && unsafe == nil {
+			unsafe = fmt.Errorf("%s() cannot be a model source: %s", parser.CommandDisplayName(cmd.Name), reason)
+		}
+	})
+	if unsafe != nil {
+		return unsafe
+	}
 	for _, cmd := range pipeline.Commands {
 		name := strings.ToLower(cmd.Name)
-		// Window safety first: it is the more specific reason where both apply.
-		if reason, bad := windowUnsafeCommands[name]; bad {
-			return fmt.Errorf("%s() cannot be a model source: %s", cmd.Name, reason)
-		}
 		if parser.IsAggregatingCommand(name) {
 			return fmt.Errorf("%s() cannot be a model source: it collapses rows, and a model "+
 				"aggregates the rows its source yields", cmd.Name)
@@ -175,17 +182,16 @@ func validateSourcePipeline(pipeline *parser.PipelineNode) error {
 }
 
 // windowUnsafeCommands depend on data outside the window a cycle reads, so they
-// mean something different every time the model runs.
+// mean something different every time the model runs. Keyed by canonical name.
 var windowUnsafeCommands = map[string]string{
-	"join":         "it reads a second query, which a windowed read would re-evaluate each cycle",
-	"chain":        "a sequence can straddle the window boundary",
-	"model_lookup": "a model cannot be built from another model's output",
-	"modellookup":  "a model cannot be built from another model's output",
-	"tlsh":         "its candidate set is resolved per query, not per window",
-	"pgr":          "it generates its own source",
-	"ptg":          "it generates its own source",
-	"comment":      "comment state is not part of the log",
-	"comments":     "comment state is not part of the log",
+	"join":        "it reads a second query, which a windowed read would re-evaluate each cycle",
+	"chain":       "a sequence can straddle the window boundary",
+	"modellookup": "a model cannot be built from another model's output",
+	"tlsh":        "its candidate set is resolved per query, not per window",
+	"pgr":         "it generates its own source",
+	"ptg":         "it generates its own source",
+	"comment":     "comment state is not part of the log",
+	"comments":    "comment state is not part of the log",
 }
 
 // rowChanging commands reorder or truncate, which the model's own aggregation owns.

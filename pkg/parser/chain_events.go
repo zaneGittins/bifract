@@ -178,7 +178,8 @@ func fractalScopePredicate(opts QueryOptions) string {
 }
 
 // ForEachCommand visits every command in a pipeline, including condition
-// functions used as boolean operands. Anything looking for a command by name must
+// functions used as boolean operands and the commands inside a chain() step, a
+// case branch and a join() subquery. Anything looking for a command by name must
 // use this rather than scanning Commands, which holds only the standalone ones.
 func ForEachCommand(pipeline *PipelineNode, fn func(CommandNode)) {
 	if pipeline == nil {
@@ -186,8 +187,53 @@ func ForEachCommand(pipeline *PipelineNode, fn func(CommandNode)) {
 	}
 	for _, cmd := range pipeline.Commands {
 		fn(cmd)
+		for _, sub := range nestedPipelines(cmd) {
+			ForEachCommand(sub, fn)
+		}
 	}
 	forEachHavingCommand(pipeline.HavingConditions, fn)
+}
+
+// nestedPipelines parses the pipelines a command carries in its block. One that
+// does not parse is skipped: translating the query reports it.
+func nestedPipelines(cmd CommandNode) []*PipelineNode {
+	var texts []string
+	switch canonicalCommandName(cmd.Name) {
+	case "chain":
+		var out []*PipelineNode
+		var step []Token
+		for _, tok := range append(append([]Token(nil), cmd.BlockTokens...), Token{Type: TokenSemicolon}) {
+			if tok.Type != TokenSemicolon {
+				step = append(step, tok)
+				continue
+			}
+			if len(step) > 0 {
+				p := NewParser(append(step, Token{Type: TokenEOF}))
+				p.input = cmd.BlockSource
+				if pl, err := p.Parse(); err == nil {
+					out = append(out, pl)
+				}
+			}
+			step = nil
+		}
+		return out
+	case "case":
+		inner := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cmd.Block), "{"), "}")
+		for _, br := range splitTopLevelByToken(inner, TokenSemicolon) {
+			texts = append(texts, splitTopLevelByToken(br, TokenPipe)...)
+		}
+	case "join":
+		texts = []string{cmd.Block}
+	}
+	var out []*PipelineNode
+	for _, t := range texts {
+		if t = strings.TrimSpace(t); t != "" && t != "*" {
+			if pl, err := ParseQuery(t); err == nil {
+				out = append(out, pl)
+			}
+		}
+	}
+	return out
 }
 
 func forEachHavingCommand(conds []HavingCondition, fn func(CommandNode)) {

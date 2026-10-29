@@ -297,23 +297,13 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		return nil, err
 	}
 
-	// model_lookup() placement: with an aggregation (groupby/chain/stats) AFTER it,
-	// the model join must attach to the row scan so the aggregation sees model
-	// columns per-row. With aggregation only before it (or none at all), the join
-	// stays outermost, where it touches only the final rows. Decided before Execute
-	// so chain/groupby handlers can route model-column references accordingly.
-	if mlIdx := commandIndex(pipeline.Commands, "model_lookup"); mlIdx >= 0 {
-		aggBefore, aggAfter := false, false
-		for i, cmd := range pipeline.Commands {
-			if IsAggregatingCommand(cmd.Name) {
-				if i < mlIdx {
-					aggBefore = true
-				} else if i > mlIdx {
-					aggAfter = true
-				}
-			}
-		}
-		plan.ModelLookupAtScan = aggAfter && !aggBefore
+	// model_lookup() placement: with no aggregation before it, the model join sits in
+	// the row scan's FROM, so every command after it (an aggregation included) reads
+	// the model's columns per row. After an aggregation it enriches the aggregated
+	// rows instead, joined below the stage that reads them. Decided before Execute so
+	// the handlers route model-column references accordingly.
+	if mlIdx := commandIndex(pipeline.Commands, "modelLookup"); mlIdx >= 0 {
+		plan.ModelLookupAtScan = firstAggregatingCommandIndex(pipeline.Commands) > mlIdx
 	}
 
 	// Registered only to capture declared: commands and assignments enter the
@@ -401,6 +391,12 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 			if exprType == TypeNumber {
 				registry.SetNumeric(safeField)
 			}
+			if registry.DependsOnJoin(safeField) {
+				// The model's columns exist in the SELECT that joins them, which the
+				// formatter only sees as far as that SELECT projects them.
+				assignmentFields = append(assignmentFields, fmt.Sprintf("%s AS %s", sqlExpr, safeField))
+				return nil
+			}
 			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, SQL: sqlExpr})
 		}
 		return nil
@@ -457,11 +453,21 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 		if err := handler.Execute(cmd, ctx); err != nil {
 			return nil, err
 		}
-		// A filter the command put on the scan applies to the rows a cap kept.
+		// A filter the command put on the scan applies to the rows a cap kept, and
+		// one that reads the scan-level model join applies to the joined rows.
 		if src := &plan.SourceStage().Layer; len(src.Where) > whereLen {
-			if after := src.capAfter(i); after != nil {
-				*after = append(*after, src.Where[whereLen:]...)
-				src.Where = src.Where[:whereLen]
+			added := slices.Clone(src.Where[whereLen:])
+			src.Where = src.Where[:whereLen]
+			after := src.capAfter(i)
+			for _, w := range added {
+				switch {
+				case plan.ModelLookupAtScan && registry.SQLDependsOnJoin(w):
+					plan.PostJoinWhere = append(plan.PostJoinWhere, postJoinFilter{At: i + 1, SQL: w})
+				case after != nil:
+					*after = append(*after, w)
+				default:
+					src.Where = append(src.Where, w)
+				}
 			}
 		}
 		ctx.Plan.stageAfterCmd = append(ctx.Plan.stageAfterCmd, len(ctx.Plan.Stages)-1)
@@ -857,7 +863,11 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	source := plan.SourceStage()
 	opts := ctx.Opts
 
-	source.Layer.foldLastCap(plan.IsAggregated || plan.IsChain)
+	readThrough := plan.IsAggregated || plan.IsChain
+	if n := len(source.Layer.Caps); n > 0 {
+		readThrough = readThrough || plan.readsThroughCap(source.Layer.Caps[n-1])
+	}
+	source.Layer.foldLastCap(readThrough)
 	if len(source.Layer.Caps) > 0 {
 		if plan.IsProcessTree || plan.IsAnalyze {
 			return nil, fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
@@ -1002,24 +1012,20 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		// shipping every matching row. Join queries null out Formatters after this
 		// block, so only mirror when formatters will actually be rendered. Without a
 		// LIMIT the outer sort would buffer and re-sort every row on the String alias.
-		if defaultTimeOrder && activeStage.Layer.Limit != "" && len(plan.Formatters) > 0 && !plan.IsJoin && plan.ModelLookupSQL == "" {
+		if defaultTimeOrder && activeStage.Layer.Limit != "" && len(plan.Formatters) > 0 && !plan.IsJoin {
 			plan.FormatterOrderBy = activeStage.Layer.OrderBy
 			plan.FormatterLimit = activeStage.Layer.Limit
 		}
-		// norm_log is the default content column (normalized fields). Strip it from the
-		// display order when the user has explicitly chosen columns via | table(...).
+		// table(...) shows the columns it names. Every row still carries the ones
+		// projected for its identity and content, which are only displayed if named.
 		if plan.TableHasExplicitColumns {
-			filtered := fieldOrder[:0]
-			for _, f := range fieldOrder {
-				if f != "norm_log" && f != "log_id" {
-					filtered = append(filtered, f)
-				}
-			}
-			fieldOrder = filtered
+			fieldOrder = slices.DeleteFunc(fieldOrder, func(f string) bool {
+				return rowIdentityColumns[f] && !slices.Contains(plan.TableColumns, f)
+			})
 		}
 	}
 
-	// --- Join wraps (join / model_lookup): skip the explicit formatter so the
+	// --- join() wrap: skip the explicit formatter so the
 	// wrapper's added columns pass through. An explicit formatter SELECT would drop
 	// them, breaking both the enrichment display and any trailing filter (deferred
 	// to a post-join WHERE that references those columns).
@@ -1032,12 +1038,6 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 	if plan.IsJoin && plan.JoinSubSQL != "" {
 		plan.Formatters = nil
 		fieldOrder = appendJoinedFields(fieldOrder, joinDisplayNames(plan), plan)
-	}
-	// Scan-level model_lookup is exempt: its columns are per-row inputs to the
-	// aggregation, not appended outputs, and the formatter path applies as normal.
-	if plan.ModelLookupSQL != "" && !plan.ModelLookupAtScan {
-		plan.Formatters = nil
-		fieldOrder = appendJoinedFields(fieldOrder, plan.ModelLookupFields, plan)
 	}
 
 	// --- Build z-score window layers ---
@@ -1087,8 +1087,12 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 // empty stage that aggregates over its output rows, which are all it can see.
 func pushAggregationStage(ctx *CommandContext) error {
 	prevStage := ctx.Plan.CurrentStage()
-	if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
-		return err
+	// A projection of aggregated rows (no GROUP BY of its own) is already
+	// assembled; assembling it again would clear its SELECT.
+	if len(prevStage.Layer.GroupBy) > 0 {
+		if err := assembleGroupBySelects(ctx, prevStage, nil); err != nil {
+			return err
+		}
 	}
 	prevOutputs := stageOutputAliases(prevStage)
 	ctx.Plan.PushStage()
@@ -1137,7 +1141,7 @@ func pushCarryForwardStage(ctx *CommandContext) ([]string, error) {
 
 	newStage := ctx.Plan.CurrentStage()
 	for _, c := range carried {
-		newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: c})
+		newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: quoteIdent(c)})
 	}
 	return carried, nil
 }
@@ -1477,6 +1481,13 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		if !hasFields && plan.HasTableCmd && !plan.TableHasExplicitColumns {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: contentColMode(ctx.Opts.SourceMode) + " AS fields"})
 		}
+		// The scan-level model join's columns, after the log's own. An explicit
+		// table() projects the ones it names itself.
+		if plan.ModelLookupSQL != "" && plan.ModelLookupAtScan && !plan.TableHasExplicitColumns {
+			for _, f := range plan.ModelLookupFields {
+				source.Layer.project(f)
+			}
+		}
 		if ctx.Opts.IncludeShardNum {
 			hasShardNum := false
 			for _, sel := range source.Layer.Selects {
@@ -1495,7 +1506,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 
 // deferOutOfScopeOrderBy moves ORDER BY clauses that reference columns produced
 // after the source scan -- window fields (z-score, outlier) and the outputs of a
-// model_lookup()/join() wrap -- to the deferred outer layer, where they exist.
+// join() wrap -- to the deferred outer layer, where they exist.
 //
 // It also lifts the source LIMIT past the join whenever a filter on a joined column
 // was deferred. Leaving the LIMIT on the source would apply it BEFORE that filter, so
@@ -1503,10 +1514,9 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 // near-arbitrary subset that changes run to run whenever rows tie on timestamp (and
 // especially across a prism's member fractals).
 func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryStage) {
-	// A scan-level model join is not a wrap: its columns are per-row before the
-	// aggregation, so nothing needs relocating and the stage LIMIT already applies
-	// after the join.
-	hasJoinWrap := (plan.ModelLookupSQL != "" && !plan.ModelLookupAtScan) || (plan.IsJoin && plan.JoinSubSQL != "")
+	// A model join is not a wrap: it sits in the FROM of the stage that reads its
+	// columns, so nothing needs relocating and that stage's LIMIT follows the join.
+	hasJoinWrap := plan.IsJoin && plan.JoinSubSQL != ""
 	if plan.ModifiedZScoreExpr == "" && !hasJoinWrap {
 		return
 	}
@@ -1524,13 +1534,7 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 		}
 	}
 
-	// A strict model_lookup drops rows at the join, so a LIMIT left on the scan would
-	// be applied before that filter and return an arbitrary subset of the newest
-	// MaxRows logs. The exception is an exact prefilter: the scan's own WHERE then
-	// rejects precisely the rows the join would, so the LIMIT is already counting
-	// only matches and can stay where read-in-order can use it.
-	strictInexactJoin := plan.ModelLookupSQL != "" && !plan.ModelLookupAtScan && plan.ModelLookupStrict && !plan.ModelLookupPrefilterExact
-	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0) || strictInexactJoin
+	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0)
 	if liftLimit && hasJoinWrap {
 		// The ordering must follow the filter, so it moves out with the LIMIT.
 		deferredOrder = append(deferredOrder, innerOrder...)
@@ -1569,6 +1573,10 @@ func dropHiddenDeferredFields(fieldOrder []string, plan *QueryPlan) []string {
 	}
 	return out
 }
+
+// rowIdentityColumns are projected on every non-aggregated row, named or not, so a
+// result row can be opened and located.
+var rowIdentityColumns = map[string]bool{"timestamp": true, "log_id": true, "fractal_id": true, normLogColumn: true}
 
 // dropField removes one column from the display order, leaving it in the result set.
 func dropField(fieldOrder []string, name string) []string {

@@ -44,6 +44,8 @@ const (
 // IN filter, so the rest of the pipeline composes normally.
 type tlshHandler struct{}
 
+func (h *tlshHandler) appliesNegate() {}
+
 func (h *tlshHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	p, found, err := extractTLSHFromCommand(cmd)
 	if err != nil {
