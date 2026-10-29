@@ -1392,6 +1392,34 @@ func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) erro
 	return nil
 }
 
+// transientInsertCodes are ClickHouse errors an insert can outlast: restarts,
+// Keeper loss, merge backlog and memory pressure.
+var transientInsertCodes = map[int32]bool{
+	60:  true, // UNKNOWN_TABLE, while tables attach on startup
+	159: true, // TIMEOUT_EXCEEDED
+	209: true, // SOCKET_TIMEOUT
+	210: true, // NETWORK_ERROR
+	225: true, // NO_ZOOKEEPER
+	241: true, // MEMORY_LIMIT_EXCEEDED
+	242: true, // TABLE_IS_READ_ONLY
+	252: true, // TOO_MANY_PARTS
+	279: true, // ALL_CONNECTION_TRIES_FAILED
+	999: true, // KEEPER_EXCEPTION
+}
+
+// IsTransientInsertError reports whether a failed insert may succeed on retry.
+// Errors without a ClickHouse exception (network, timeouts) count as transient.
+func IsTransientInsertError(err error) bool {
+	var ex *proto.Exception
+	if errors.As(err, &ex) {
+		return transientInsertCodes[ex.Code]
+	}
+	return true
+}
+
+// ErrInvalidBatch marks an insert the client could not encode; retrying cannot fix it.
+var ErrInvalidBatch = errors.New("failed to append log to batch")
+
 // InsertLogsInto writes entries into an arbitrary logs-shaped table. The rule tester
 // uses it to populate a scratch clone of `logs` so a detection test never writes to the
 // real table. It does not touch logs_raw: that side table has no scratch counterpart,
@@ -1424,7 +1452,7 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 			log.Normalizer,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to append log to batch: %w", err)
+			return fmt.Errorf("%w: %w", ErrInvalidBatch, err)
 		}
 	}
 

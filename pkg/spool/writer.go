@@ -33,15 +33,24 @@ type Writer struct {
 	maxSegAge  time.Duration
 
 	mu       sync.Mutex // guards file, seq, segSize, segOpened, writeOff
-	file     *os.File
+	file     segmentFile
 	seq      uint64
 	segSize  int64
 	segStart time.Time
 	writeOff int64 // total bytes written to the active file (may exceed synced)
+	torn     bool  // active segment ends in a partial frame that could not be truncated
 
 	syncMu    sync.Mutex // serializes fsync; guards syncedSeq/syncedOff
 	syncedSeq uint64     // segment the syncedOff refers to
 	syncedOff int64
+}
+
+// segmentFile is the active segment; an interface so tests can inject write errors.
+type segmentFile interface {
+	Write(p []byte) (int, error)
+	Sync() error
+	Close() error
+	Truncate(size int64) error
 }
 
 // NewWriter opens (or creates) a spool in dir and positions itself to append to
@@ -105,6 +114,18 @@ func (w *Writer) Append(logs []storage.LogEntry) error {
 	copy(frame[frameHeaderSize:], payload)
 
 	w.mu.Lock()
+	if w.file == nil {
+		w.mu.Unlock()
+		return os.ErrClosed
+	}
+	// Frames appended after a partial one would be unreadable, so seal it.
+	if w.torn {
+		if err := w.rotateLocked(); err != nil {
+			w.mu.Unlock()
+			return err
+		}
+		w.torn = false
+	}
 	// Roll the active segment first if this frame would exceed the size cap, or
 	// the age cap has elapsed, and the current segment is non-empty.
 	if w.segSize > 0 && (w.segSize+int64(len(frame)) > w.maxSegSize ||
@@ -114,7 +135,10 @@ func (w *Writer) Append(logs []storage.LogEntry) error {
 			return err
 		}
 	}
-	if _, err := w.file.Write(frame); err != nil {
+	if n, err := w.file.Write(frame); err != nil {
+		if n > 0 && w.file.Truncate(w.writeOff) != nil {
+			w.torn = true
+		}
 		w.mu.Unlock()
 		return fmt.Errorf("spool: write frame: %w", err)
 	}
@@ -137,7 +161,7 @@ func (w *Writer) Append(logs []storage.LogEntry) error {
 // recording them as synced would let that caller's Append return without ever
 // syncing - acking data that is not on disk. The frontier is therefore a lower
 // bound on what the sync covers, which is the only safe direction.
-func (w *Writer) syncTo(seq uint64, file *os.File, off int64) error {
+func (w *Writer) syncTo(seq uint64, file segmentFile, off int64) error {
 	w.syncMu.Lock()
 	defer w.syncMu.Unlock()
 	if w.syncedSeq == seq && w.syncedOff >= off {
@@ -219,6 +243,7 @@ func (w *Writer) Reset() error {
 	w.syncMu.Lock()
 	w.syncedSeq, w.syncedOff = 0, 0
 	w.syncMu.Unlock()
+	w.torn = false
 	return w.openSegment(0)
 }
 

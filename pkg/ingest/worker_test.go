@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+
 	"bifract/internal/fakedb"
 	"bifract/pkg/storage"
 	"bifract/pkg/storage/storagetest"
@@ -87,34 +89,75 @@ func TestWorkerInsertsBucketAndRecordsQuota(t *testing.T) {
 	}
 }
 
-// TestWorkerRetriesThenGivesUp: a bucket is retried before it is counted as lost,
-// and repeated loss flips the queue unhealthy so handlers start returning 429
-// instead of buffering logs that will also fail. The failure is reported both as
-// a system event and as a critical notification.
-func TestWorkerRetriesThenGivesUp(t *testing.T) {
-	client, ch := storagetest.ClickHouse()
+// fastRetry keeps the backoff short so retry tests run in milliseconds.
+func fastRetry(window time.Duration) retryPolicy {
+	return retryPolicy{initialDelay: time.Millisecond, maxDelay: 2 * time.Millisecond, window: window, shutdownWindow: window}
+}
+
+// failLogsInserts applies set to each logs insert for which fail(attempt) holds.
+func failLogsInserts(ch *fakedb.CH, fail func(attempt int32) bool, set func(*fakedb.Batch)) *atomic.Int32 {
 	var attempts atomic.Int32
 	ch.OnBatch = func(b *fakedb.Batch) {
-		// Fail every insert of the user fractal; the system event insert succeeds.
-		if strings.HasPrefix(b.Query, "INSERT INTO logs (") && attempts.Add(1) <= maxInsertRetries {
-			b.SendErr = errors.New("connection reset")
+		if strings.HasPrefix(b.Query, "INSERT INTO logs (") && fail(attempts.Add(1)) {
+			set(b)
 		}
 	}
+	return &attempts
+}
+
+func always(int32) bool { return true }
+
+func connReset(b *fakedb.Batch) { b.SendErr = errors.New("connection reset") }
+
+// tooManyParts is a server rejection that clears once merges catch up.
+func tooManyParts(b *fakedb.Batch) { b.SendErr = &proto.Exception{Code: 252, Name: "TOO_MANY_PARTS"} }
+
+// TestWorkerRetriesThroughShortOutage: a ClickHouse restart that outlasts a few
+// attempts must not drop logs that were already acked.
+func TestWorkerRetriesThroughShortOutage(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	// Connection errors while ClickHouse is down, then TOO_MANY_PARTS as it recovers.
+	var failed int
+	attempts := failLogsInserts(ch, func(a int32) bool { return a <= 6 }, func(b *fakedb.Batch) {
+		if failed++; failed <= 3 {
+			connReset(b)
+		} else {
+			tooManyParts(b)
+		}
+	})
+	q := &IngestQueue{db: client, retry: fastRetry(time.Minute)}
+
+	runWorker(q, &partBucket{key: partKey{fractalID: "f1"}, entries: entries(4, "f1")})
+
+	if got := attempts.Load(); got != 7 {
+		t.Fatalf("insert attempted %d times, want 7", got)
+	}
+	if q.Metrics.Inserted.Load() != 4 || q.Metrics.InsertErrors.Load() != 0 || q.Metrics.Retries.Load() != 6 {
+		t.Errorf("inserted=%d insertErrors=%d retries=%d, want 4, 0, 6",
+			q.Metrics.Inserted.Load(), q.Metrics.InsertErrors.Load(), q.Metrics.Retries.Load())
+	}
+	if q.ConsecutiveFailures() != 0 {
+		t.Errorf("failures=%d after a successful insert, want 0", q.ConsecutiveFailures())
+	}
+}
+
+// TestWorkerGivesUpAfterRetryWindow: once the window closes the bucket is
+// dropped, the queue reports unhealthy, and the drop is notified and recorded.
+func TestWorkerGivesUpAfterRetryWindow(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
 	n := &fakeNotifier{}
-	q := &IngestQueue{db: client, notifWriter: n}
+	q := &IngestQueue{db: client, notifWriter: n, retry: fastRetry(200 * time.Millisecond)}
+	// Fail until the worker drops the bucket, so the insert_error event can land.
+	failLogsInserts(ch, func(int32) bool { return q.Metrics.InsertErrors.Load() == 0 }, connReset)
 	q.SetSystemFractalID("sys")
-	q.consecutiveFailures.Store(unhealthyThreshold - 1)
 
 	start := time.Now()
 	runWorker(q, &partBucket{key: partKey{fractalID: "f1"}, entries: entries(4, "f1")})
-	if elapsed := time.Since(start); elapsed < initialRetryDelay+2*initialRetryDelay {
-		t.Errorf("retries did not back off: took %v", elapsed)
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Errorf("gave up after %v, before the retry window", elapsed)
 	}
 
-	if got := attempts.Load(); got < maxInsertRetries {
-		t.Fatalf("insert attempted %d times, want %d", got, maxInsertRetries)
-	}
-	if q.Metrics.Retries.Load() != maxInsertRetries-1 || q.Metrics.InsertErrors.Load() != 4 || q.Metrics.Inserted.Load() != 0 {
+	if q.Metrics.Retries.Load() < 1 || q.Metrics.InsertErrors.Load() != 4 || q.Metrics.Inserted.Load() != 0 {
 		t.Errorf("retries=%d insertErrors=%d inserted=%d", q.Metrics.Retries.Load(), q.Metrics.InsertErrors.Load(), q.Metrics.Inserted.Load())
 	}
 	if q.Healthy() {
@@ -133,6 +176,121 @@ func TestWorkerRetriesThenGivesUp(t *testing.T) {
 	ev := waitForSystemEvent(t, ch, "ingest.insert_error")
 	if ev[colFractal] != "sys" || ev[colFields].(map[string]string)["batch_size"] != "4" {
 		t.Errorf("system event row = %v", ev)
+	}
+}
+
+// TestBriefOutageDoesNotNotify: a ClickHouse blip that retries ride out loses
+// nothing, so it must not raise a critical notification.
+func TestBriefOutageDoesNotNotify(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	failLogsInserts(ch, func(a int32) bool { return a <= 4 }, connReset)
+	q := &IngestQueue{db: client, notifWriter: &fakeNotifier{}, retry: fastRetry(time.Minute)}
+
+	runWorker(q, &partBucket{key: partKey{fractalID: "f1"}, entries: entries(4, "f1")})
+
+	if q.Metrics.Inserted.Load() != 4 {
+		t.Fatalf("inserted=%d, want 4", q.Metrics.Inserted.Load())
+	}
+	if q.lastInsertErrNotify.Load() != 0 {
+		t.Error("notified for an outage the retries rode out")
+	}
+}
+
+// TestSustainedFailureNotifies: inserts failing for over insertErrorNotifyAfter
+// notify while retries continue, before anything is dropped.
+func TestSustainedFailureNotifies(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	failLogsInserts(ch, func(a int32) bool { return a <= 1 }, connReset)
+	n := &fakeNotifier{}
+	q := &IngestQueue{db: client, notifWriter: n, retry: fastRetry(time.Minute)}
+	q.failingSince.Store(time.Now().Add(-insertErrorNotifyAfter - time.Second).Unix())
+
+	runWorker(q, &partBucket{key: partKey{fractalID: "f1"}, entries: entries(4, "f1")})
+
+	calls := n.waitFor(t, 1)
+	if calls[0].notifType != "ingest.insert_errors" || calls[0].severity != "critical" {
+		t.Errorf("notification = %+v", calls[0])
+	}
+	if q.failingSince.Load() != 0 {
+		t.Error("failure streak not cleared after a successful insert")
+	}
+}
+
+// TestWorkerLimitsRetriesOnServerRejection: a batch ClickHouse rejects for a
+// reason a restart will not fix keeps the short retry budget, so it cannot hold a
+// worker and the health gate for the whole window.
+func TestWorkerLimitsRetriesOnServerRejection(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	attempts := failLogsInserts(ch, always, func(b *fakedb.Batch) {
+		b.SendErr = &proto.Exception{Code: 53, Name: "TYPE_MISMATCH"}
+	})
+	q := &IngestQueue{db: client, retry: fastRetry(time.Hour)}
+
+	runWorker(q, &partBucket{key: partKey{fractalID: "f1"}, entries: entries(4, "f1")})
+
+	if got := attempts.Load(); got != maxRejectedAttempts {
+		t.Fatalf("insert attempted %d times, want %d", got, maxRejectedAttempts)
+	}
+	if q.Metrics.InsertErrors.Load() != 4 {
+		t.Errorf("insertErrors=%d, want 4", q.Metrics.InsertErrors.Load())
+	}
+}
+
+// TestWorkerDropsInvalidBatchWithoutRetry: a batch the client cannot encode will
+// never succeed, so it must not hold a worker for the whole retry window.
+func TestWorkerDropsInvalidBatchWithoutRetry(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	attempts := failLogsInserts(ch, always, func(b *fakedb.Batch) { b.AppendErr = errors.New("unsupported type") })
+	q := &IngestQueue{db: client, retry: fastRetry(time.Hour)}
+
+	runWorker(q, &partBucket{key: partKey{fractalID: "f1"}, entries: entries(4, "f1")})
+
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("insert attempted %d times, want 1", got)
+	}
+	if q.Metrics.Retries.Load() != 0 || q.Metrics.InsertErrors.Load() != 4 {
+		t.Errorf("retries=%d insertErrors=%d, want 0 and 4", q.Metrics.Retries.Load(), q.Metrics.InsertErrors.Load())
+	}
+	// A batch the client cannot encode says nothing about ClickHouse health.
+	if q.ConsecutiveFailures() != 0 || q.retrying.Load() != 0 {
+		t.Errorf("failures=%d retrying=%d, want 0 and 0", q.ConsecutiveFailures(), q.retrying.Load())
+	}
+}
+
+// TestShutdownDrainIsBoundedAcrossBuckets: a ClickHouse outage during shutdown
+// must not hold the process past its grace period, however many buckets are
+// buffered. The shutdown window is shared, not granted per bucket.
+func TestShutdownDrainIsBoundedAcrossBuckets(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	failLogsInserts(ch, always, connReset)
+	q := &IngestQueue{db: client, stop: make(chan struct{}),
+		retry: retryPolicy{initialDelay: time.Millisecond, maxDelay: 2 * time.Millisecond, window: time.Hour, shutdownWindow: 100 * time.Millisecond}}
+	q.beginDrain()
+
+	buckets := make([]*partBucket, 20)
+	for i := range buckets {
+		buckets[i] = &partBucket{key: partKey{fractalID: "f1"}, entries: entries(1, "f1")}
+	}
+	start := time.Now()
+	runWorker(q, buckets...)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("drain took %v for a 100ms shutdown window", elapsed)
+	}
+	if q.Metrics.InsertErrors.Load() != 20 {
+		t.Errorf("insertErrors=%d, want 20", q.Metrics.InsertErrors.Load())
+	}
+}
+
+// TestAttemptTimeoutCappedByShutdown: an insert that hangs must not outlive the
+// shutdown window by its full per-attempt timeout.
+func TestAttemptTimeoutCappedByShutdown(t *testing.T) {
+	q := &IngestQueue{retry: retryPolicy{window: time.Hour, shutdownWindow: 50 * time.Millisecond}}
+	q.beginDrain()
+	ctx, cancel := q.attemptContext(time.Now().Add(time.Hour))
+	defer cancel()
+	d, _ := ctx.Deadline()
+	if left := time.Until(d); left > minAttemptTimeout+time.Second {
+		t.Fatalf("attempt may run %v into shutdown", left)
 	}
 }
 
@@ -468,5 +626,34 @@ func TestQueueEndToEnd(t *testing.T) {
 	}
 	if q.CPUPressure() || q.MemPressure() || q.DiskPressure() || q.SpoolPressure() {
 		t.Fatal("pressure flagged on an idle queue")
+	}
+	if q.Enqueue(entries(1, "f1")) {
+		t.Fatal("Enqueue accepted after Shutdown")
+	}
+}
+
+// TestEnqueueRacingShutdown: handlers still running when the queue shuts down
+// must get a rejection, not a send on a closed channel.
+func TestEnqueueRacingShutdown(t *testing.T) {
+	client, _ := storagetest.ClickHouse()
+	q := NewIngestQueue(client, 64, 2)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 200; j++ {
+				q.Enqueue(entries(1, "f1"))
+			}
+		}()
+	}
+	close(start)
+	q.Shutdown()
+	wg.Wait()
+	if q.AcceptedTotal() != q.InsertedTotal() {
+		t.Fatalf("accepted %d logs but inserted %d", q.AcceptedTotal(), q.InsertedTotal())
 	}
 }

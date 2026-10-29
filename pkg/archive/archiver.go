@@ -85,15 +85,25 @@ type fractalBuffer struct {
 // heartbeatInterval is how often the archiver refreshes archive_status while running.
 const heartbeatInterval = 30 * time.Second
 
+// finalFlushTimeout bounds the shutdown flush so it fits the container grace period.
+const finalFlushTimeout = 30 * time.Second
+
+// finalFlushContext detaches the shutdown flush from the cancelled run context.
+func finalFlushContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), finalFlushTimeout)
+}
+
 // Run drains the spool until ctx is cancelled. It returns ctx.Err() on shutdown
 // after a final flush attempt.
 func (a *Archiver) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			if err := a.flush(ctx); err != nil {
+			fctx, cancel := finalFlushContext(ctx)
+			if err := a.flush(fctx); err != nil {
 				log.Printf("[Archiver] final flush failed: %v", err)
 			}
+			cancel()
 			return ctx.Err()
 		default:
 		}
@@ -129,15 +139,12 @@ func (a *Archiver) Run(ctx context.Context) error {
 					log.Printf("[Archiver] time-roll flush failed: %v", ferr)
 				}
 			}
-			if !sleep(ctx, a.cfg.PollInterval) {
-				return ctx.Err()
-			}
+			// A cancelled sleep loops back to the final flush above.
+			sleep(ctx, a.cfg.PollInterval)
 			continue
 		case err != nil:
 			log.Printf("[Archiver] spool read error: %v", err)
-			if !sleep(ctx, a.cfg.PollInterval) {
-				return ctx.Err()
-			}
+			sleep(ctx, a.cfg.PollInterval)
 			continue
 		}
 
@@ -160,9 +167,7 @@ func (a *Archiver) Run(ctx context.Context) error {
 			log.Printf("[Archiver] roll failed: %v", err)
 			// Whatever did not commit stays buffered; retry next cycle. Back off
 			// to avoid a hot loop against a failing object store.
-			if !sleep(ctx, a.cfg.PollInterval) {
-				return ctx.Err()
-			}
+			sleep(ctx, a.cfg.PollInterval)
 		}
 	}
 }
