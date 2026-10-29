@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"bifract/internal/fakedb"
+	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 	"bifract/pkg/storage/storagetest"
 )
@@ -278,9 +280,12 @@ func eventContent(name string) *RevisionContent {
 func newTestManager(t *testing.T) (*Manager, *pgFake) {
 	t.Helper()
 	pg := newPGFake(t)
-	eng := &Engine{pg: pg.client, alertsCache: map[string]*Alert{}, webhookClient: NewWebhookClient(""), emailClient: NewEmailClient(pg.client, "")}
+	eng := &Engine{pg: pg.client, alertsCache: map[string]*Alert{}, webhookClient: NewWebhookClient("", allowPrivate), emailClient: NewEmailClient(pg.client, "")}
 	return &Manager{pg: pg.client, engine: eng}, pg
 }
+
+// allowPrivate admits the loopback test servers webhooks deliver to.
+func allowPrivate(context.Context) bool { return true }
 
 // newTestEngine wires an engine to scripted Postgres and ClickHouse.
 func newTestEngine(t *testing.T) (*Engine, *pgFake, *fakedb.CH) {
@@ -290,6 +295,13 @@ func newTestEngine(t *testing.T) (*Engine, *pgFake, *fakedb.CH) {
 	e := NewEngineWithDicts(pg.client, chClient, nil, "https://bifract.example")
 	// Hydration is pinned in its own tests; here rows reach actions as queried.
 	e.hydrator = nil
+	// Webhooks deliver to loopback test servers, through the real policy lookup.
+	pg.handle("SELECT value FROM settings WHERE key", func(args []driver.Value) fakedb.PGResult {
+		if args[0] == settings.OutboundAllowPrivateKey {
+			return fakedb.RowsOf([]driver.Value{"true"})
+		}
+		return fakedb.PGResult{}
+	})
 	return e, pg, ch
 }
 

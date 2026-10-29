@@ -45,8 +45,9 @@ func TestManagerValidation(t *testing.T) {
 	}{
 		{"blank name", func(r *CreateRequest) { r.Name = "  " }, "f1", "", "name is required"},
 		{"blank URL", func(r *CreateRequest) { r.RepoURL = "" }, "f1", "", "URL is required"},
-		{"ssh URL", func(r *CreateRequest) { r.RepoURL = "git@github.com:x/y.git" }, "f1", "", "invalid URL"},
-		{"file URL", func(r *CreateRequest) { r.RepoURL = "file:///var/lib/bifract" }, "f1", "", "unsupported URL scheme"},
+		{"ssh URL", func(r *CreateRequest) { r.RepoURL = "git@github.com:x/y.git" }, "f1", "", "not a valid URL"},
+		{"file URL", func(r *CreateRequest) { r.RepoURL = "file:///var/lib/bifract" }, "f1", "", "only http and https"},
+		{"credentials in URL", func(r *CreateRequest) { r.RepoURL = "https://u:ghp_x@github.com/x/y" }, "f1", "", "username or password"},
 		{"unknown schedule", func(r *CreateRequest) { r.SyncSchedule = "every-minute" }, "f1", "", "invalid sync schedule"},
 		{"empty schedule", func(r *CreateRequest) { r.SyncSchedule = "" }, "f1", "", "invalid sync schedule"},
 		{"no scope", func(*CreateRequest) {}, "", "", "scoped to a fractal or prism"},
@@ -156,11 +157,23 @@ func TestManagerUpdateToken(t *testing.T) {
 		{"token replaced", func(r UpdateRequest) UpdateRequest { r.AuthToken = "new-secret"; return r }, "auth_token = $11", 11},
 		{"token cleared", func(r UpdateRequest) UpdateRequest { r.ClearToken = true; return r }, "auth_token = ''", 10},
 		{"clear wins over a new token", func(r UpdateRequest) UpdateRequest { r.ClearToken = true; r.AuthToken = "x"; return r }, "auth_token = ''", 10},
+		{"same host keeps the token", func(r UpdateRequest) UpdateRequest { r.RepoURL = "https://H/other"; return r }, "", 10},
+		// The stored token was given for the old host; sending it to a new one
+		// would hand it to whoever runs that host.
+		{"new host clears the token", func(r UpdateRequest) UpdateRequest { r.RepoURL = "https://evil.example/x"; return r }, "auth_token = ''", 10},
+		{"new port clears the token", func(r UpdateRequest) UpdateRequest { r.RepoURL = "https://h:8443/x"; return r }, "auth_token = ''", 10},
+		{"new scheme clears the token", func(r UpdateRequest) UpdateRequest { r.RepoURL = "http://h/x"; return r }, "auth_token = ''", 10},
+		{"new host with a new token stores it", func(r UpdateRequest) UpdateRequest {
+			r.RepoURL = "https://evil.example/x"
+			r.AuthToken = "new-secret"
+			return r
+		}, "auth_token = $11", 11},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m, fake := newTestManager(t)
 			fake.On("UPDATE alert_feeds", fakedb.Affected(1))
+			fake.On("SELECT repo_url FROM alert_feeds", fakedb.Row("https://h/x"))
 			fake.On("WHERE f.id = $1", fakedb.Row(feedRow("feed-1", "f1", "", "")...))
 
 			if _, err := m.Update(context.Background(), "feed-1", tt.req(base)); err != nil {
@@ -189,6 +202,35 @@ func TestManagerUpdateToken(t *testing.T) {
 	}
 }
 
+// A URL saved before credentials were refused must not be shown with them.
+func TestManagerStripsLegacyURLCredentials(t *testing.T) {
+	m, fake := newTestManager(t)
+	row := feedRow("feed-1", "f1", "", "")
+	row[3] = "https://user:ghp_secret@github.com/x/y"
+	fake.On("WHERE f.id = $1", fakedb.Row(row...))
+
+	f, err := m.Get(context.Background(), "feed-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.RepoURL != "https://github.com/x/y" {
+		t.Errorf("RepoURL = %q", f.RepoURL)
+	}
+}
+
+// Without the stored URL the token decision cannot be made, so nothing is written.
+func TestManagerUpdateStoredURLReadFails(t *testing.T) {
+	m, fake := newTestManager(t)
+	fake.On("SELECT repo_url FROM alert_feeds", fakedb.PGResult{Err: errors.New("connection reset")})
+	req := UpdateRequest{Name: "S", RepoURL: "https://h/x", SyncSchedule: ScheduleHourly}
+	if _, err := m.Update(context.Background(), "feed-1", req); err == nil || !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("Update = %v", err)
+	}
+	if len(fake.Matching("UPDATE alert_feeds")) != 0 {
+		t.Error("update ran without knowing the stored URL")
+	}
+}
+
 func TestManagerUpdateAndDeleteNotFound(t *testing.T) {
 	m, fake := newTestManager(t)
 	fake.On("UPDATE alert_feeds", fakedb.Affected(0))
@@ -203,6 +245,7 @@ func TestManagerUpdateAndDeleteNotFound(t *testing.T) {
 	}
 
 	fake.ClearRules()
+	fake.On("SELECT repo_url FROM alert_feeds", fakedb.Row("https://h/x"))
 	fake.On("UPDATE alert_feeds", fakedb.PGResult{Err: errors.New("unique violation")})
 	fake.On("DELETE FROM alert_feeds", fakedb.Affected(1))
 	if _, err := m.Update(context.Background(), "f", req); err == nil || !strings.Contains(err.Error(), "already exists") {

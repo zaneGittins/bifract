@@ -66,6 +66,10 @@ const SettingsView = {
         if (dictSourcesToggle) {
             dictSourcesToggle.addEventListener('change', () => this.saveSettings(dictSourcesToggle.closest('.toggle-switch')));
         }
+        const outboundToggle = document.getElementById('outboundAllowPrivateToggle');
+        if (outboundToggle) {
+            outboundToggle.addEventListener('change', () => this.saveSettings(outboundToggle.closest('.toggle-switch')));
+        }
         document.getElementById('trustedProxiesSaveBtn')
             ?.addEventListener('click', () => this.saveTrustedProxies());
 
@@ -583,6 +587,10 @@ const SettingsView = {
                 if (dictSourcesToggle) {
                     dictSourcesToggle.checked = data.settings.dictionary_sources_allow_private === true;
                 }
+                const outboundToggle = document.getElementById('outboundAllowPrivateToggle');
+                if (outboundToggle) {
+                    outboundToggle.checked = data.settings.outbound_allow_private === true;
+                }
                 const trustedProxiesInput = document.getElementById('trustedProxiesInput');
                 if (trustedProxiesInput) {
                     trustedProxiesInput.value = (data.settings.trusted_proxy_cidrs || []).join('\n');
@@ -628,7 +636,8 @@ const SettingsView = {
                     schema_sweep_interval_minutes: parseInt(document.getElementById('schemaSweepIntervalSettings')?.value || '15', 10),
                     pgr_sensitivity_percent: parseFloat(document.getElementById('pgrSensitivitySettings')?.value || '2'),
                     require_mfa: document.getElementById('requireMFAToggle')?.checked === true,
-                    dictionary_sources_allow_private: document.getElementById('dictSourcesAllowPrivateToggle')?.checked === true
+                    dictionary_sources_allow_private: document.getElementById('dictSourcesAllowPrivateToggle')?.checked === true,
+                    outbound_allow_private: document.getElementById('outboundAllowPrivateToggle')?.checked === true
                 })
             });
 

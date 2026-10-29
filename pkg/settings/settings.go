@@ -106,6 +106,10 @@ type Settings struct {
 	// loopback addresses, for a list hosted inside the deployment's own network.
 	// Off by default so a source URL cannot be pointed at internal services.
 	DictionarySourcesAllowPrivate bool `json:"dictionary_sources_allow_private"`
+	// OutboundAllowPrivate lets webhooks and Git repositories (alert feeds and
+	// instruction libraries) reach private and loopback addresses. Off by
+	// default so a tenant admin cannot point them at internal services.
+	OutboundAllowPrivate bool `json:"outbound_allow_private"`
 	// TrustedProxyCIDRs lists the reverse proxies whose X-Forwarded-For and
 	// X-Real-IP headers are believed when working out a client's address for
 	// login and ingest rate limits and audit records. A request from any other
@@ -113,6 +117,22 @@ type Settings struct {
 	TrustedProxyCIDRs []string `json:"trusted_proxy_cidrs"`
 	mu                sync.RWMutex
 	pg                *storage.PostgresClient
+}
+
+// Keys of the egress settings, which are read per request through AllowPrivate.
+const (
+	DictionarySourcesAllowPrivateKey = "dictionary_sources_allow_private"
+	OutboundAllowPrivateKey          = "outbound_allow_private"
+)
+
+// AllowPrivate reads an egress setting from Postgres rather than memory, so a
+// change reaches every replica at once.
+func AllowPrivate(ctx context.Context, pg *storage.PostgresClient, key string) bool {
+	if pg == nil {
+		return false
+	}
+	v, _ := pg.GetSetting(ctx, key)
+	return v == "true"
 }
 
 // queryLimitsApplier applies changed search resource shares to ClickHouse (CREATE OR
@@ -267,8 +287,11 @@ func Init(pg *storage.PostgresClient) error {
 		globalSettings.RequireMFA = v == "true"
 	}
 
-	if v, err := pg.GetSetting(ctx, "dictionary_sources_allow_private"); err == nil && v != "" {
+	if v, err := pg.GetSetting(ctx, DictionarySourcesAllowPrivateKey); err == nil && v != "" {
 		globalSettings.DictionarySourcesAllowPrivate = v == "true"
+	}
+	if v, err := pg.GetSetting(ctx, OutboundAllowPrivateKey); err == nil && v != "" {
+		globalSettings.OutboundAllowPrivate = v == "true"
 	}
 
 	// Load trusted_proxy_cidrs. Stored as a JSON array; an empty array is a
@@ -402,6 +425,7 @@ func Get() Settings {
 		PgrSensitivityPercent:         globalSettings.PgrSensitivityPercent,
 		RequireMFA:                    globalSettings.RequireMFA,
 		DictionarySourcesAllowPrivate: globalSettings.DictionarySourcesAllowPrivate,
+		OutboundAllowPrivate:          globalSettings.OutboundAllowPrivate,
 		TrustedProxyCIDRs:             append([]string{}, globalSettings.TrustedProxyCIDRs...),
 		TimestampFields:               globalSettings.TimestampFields,
 		AlertTimeoutSeconds:           globalSettings.AlertTimeoutSeconds,
@@ -485,6 +509,7 @@ func Update(s *Settings) error {
 	globalSettings.PgrSensitivityPercent = s.PgrSensitivityPercent
 	globalSettings.RequireMFA = s.RequireMFA
 	globalSettings.DictionarySourcesAllowPrivate = s.DictionarySourcesAllowPrivate
+	globalSettings.OutboundAllowPrivate = s.OutboundAllowPrivate
 	globalSettings.TrustedProxyCIDRs = s.TrustedProxyCIDRs
 	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
 	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
@@ -549,7 +574,10 @@ func Update(s *Settings) error {
 	if err := globalSettings.pg.SetSetting(ctx, "require_mfa", fmt.Sprintf("%t", s.RequireMFA)); err != nil {
 		return err
 	}
-	if err := globalSettings.pg.SetSetting(ctx, "dictionary_sources_allow_private", fmt.Sprintf("%t", s.DictionarySourcesAllowPrivate)); err != nil {
+	if err := globalSettings.pg.SetSetting(ctx, DictionarySourcesAllowPrivateKey, fmt.Sprintf("%t", s.DictionarySourcesAllowPrivate)); err != nil {
+		return err
+	}
+	if err := globalSettings.pg.SetSetting(ctx, OutboundAllowPrivateKey, fmt.Sprintf("%t", s.OutboundAllowPrivate)); err != nil {
 		return err
 	}
 	trustedProxiesJSON, err := json.Marshal(s.TrustedProxyCIDRs)

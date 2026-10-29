@@ -12,6 +12,7 @@ import (
 
 	"bifract/pkg/alerts"
 	"bifract/pkg/normalizers"
+	"bifract/pkg/settings"
 	"bifract/pkg/sigma"
 
 	"gopkg.in/yaml.v3"
@@ -275,7 +276,7 @@ func (s *Syncer) SyncFeed(ctx context.Context, feed *Feed) (*SyncResult, error) 
 	}
 
 	// Clone repo
-	repoDir, err := CloneRepo(ctx, feed.RepoURL, feed.Branch, token)
+	repoDir, err := CloneRepo(ctx, feed.RepoURL, feed.Branch, token, settings.AllowPrivate(ctx, s.manager.pg, settings.OutboundAllowPrivateKey))
 	if err != nil {
 		return nil, fmt.Errorf("clone: %w", err)
 	}

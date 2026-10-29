@@ -1086,6 +1086,19 @@
                                 </div>
                                 <div class="sp-row">
                                     <div class="sp-row-info">
+                                        <label for="outboundAllowPrivateToggle" class="sp-row-label">Webhooks and Git repositories on the internal network</label>
+                                        <p class="sp-row-desc">Lets webhooks, alert feeds and instruction libraries connect to private and loopback addresses, for services hosted inside your network.</p>
+                                        <p class="sp-row-meta sp-row-cost">When off, they can only reach public addresses. Cloud metadata endpoints are refused either way.</p>
+                                    </div>
+                                    <div class="sp-row-control">
+                                        <label class="toggle-switch">
+                                            <input type="checkbox" id="outboundAllowPrivateToggle">
+                                            <span class="toggle-slider"></span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="sp-row">
+                                    <div class="sp-row-info">
                                         <label for="trustedProxiesInput" class="sp-row-label">Trusted proxies</label>
                                         <p class="sp-row-desc">Reverse proxies whose <code>X-Forwarded-For</code> and <code>X-Real-IP</code> headers are believed when deciding which address a request came from. That address is what login and ingest rate limits count against and what the auth log records. One CIDR range or IP address per line.</p>
                                         <p class="sp-row-meta sp-row-cost">The defaults are the loopback and private ranges, where the bundled Caddy, Docker networks and Kubernetes ingress run. A request from any other address is counted against that address, whatever its headers say. An empty list trusts no proxy.</p>

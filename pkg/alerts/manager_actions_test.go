@@ -34,7 +34,7 @@ func TestWebhookActionCRUD(t *testing.T) {
 		m, pg := newTestManager(t)
 		pg.answer("INSERT INTO webhook_actions", fakedb.Row("w1"))
 		pg.answer("FROM webhook_actions\n\t\tWHERE id = $1", fakedb.RowsOf(webhookRow("w1", "", "p1")))
-		hook, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{Name: "hook", URL: "https://hooks.example.test/x", RetryCount: -1}, "alice", "", "p1")
+		hook, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{Name: "hook", URL: " https://hooks.example.test/x ", RetryCount: -1}, "alice", "", "p1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,38 +42,41 @@ func TestWebhookActionCRUD(t *testing.T) {
 			t.Errorf("hook = %+v", hook)
 		}
 		args := pg.args("INSERT INTO webhook_actions")[0]
+		if args[1] != "https://hooks.example.test/x" {
+			t.Errorf("url stored as %q, want it trimmed", args[1])
+		}
 		if args[2] != "POST" || args[6] != int64(30) || args[7] != int64(3) || args[8] != true || args[11] != nil || args[12] != "p1" {
 			t.Errorf("defaults: method %v timeout %v retries %v link %v scope %v/%v", args[2], args[6], args[7], args[8], args[11], args[12])
 		}
 	})
 	t.Run("create refusals", func(t *testing.T) {
 		m, pg := newTestManager(t)
-		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: "u"}, "a", "f1", "p1"); err == nil {
+		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: "https://hooks.example/u"}, "a", "f1", "p1"); err == nil {
 			t.Error("both scopes must be refused")
 		}
 		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: " "}, "a", "f1", ""); err == nil {
 			t.Error("a blank URL must be refused")
 		}
-		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: "u", BodyMode: BodyModeTemplate, BodyTemplate: "{{"}, "a", "f1", ""); err == nil {
+		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: "https://hooks.example/u", BodyMode: BodyModeTemplate, BodyTemplate: "{{"}, "a", "f1", ""); err == nil {
 			t.Error("a broken template must be refused")
 		}
 		if len(pg.Calls()) != 0 {
 			t.Error("a refused create reached the database")
 		}
 		pg.answer("INSERT INTO webhook_actions", fakedb.PGResult{Err: errors.New(`duplicate key value violates unique constraint`)})
-		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: "u"}, "a", "f1", ""); err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		if _, err := m.CreateWebhookAction(ctx, WebhookCreateRequest{URL: "https://hooks.example/u"}, "a", "f1", ""); err == nil || !strings.Contains(err.Error(), "duplicate key") {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("update", func(t *testing.T) {
 		m, pg := newTestManager(t)
-		if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{URL: "u"}); err == nil || !strings.Contains(err.Error(), "not found") {
+		if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{URL: "https://hooks.example/u"}); err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Errorf("an update matching no row: %v", err)
 		}
 		pg.answer("UPDATE webhook_actions", fakedb.Affected(1))
 		pg.answer("FROM webhook_actions\n\t\tWHERE id = $1", fakedb.RowsOf(webhookRow("w1", "f1", "")))
 		off := false
-		if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{URL: "u", IncludeAlertLink: &off, ContentType: " text/plain "}); err != nil {
+		if _, err := m.UpdateWebhookAction(ctx, "w1", WebhookUpdateRequest{URL: "https://hooks.example/u", IncludeAlertLink: &off, ContentType: " text/plain "}); err != nil {
 			t.Fatal(err)
 		}
 		args := pg.args("UPDATE webhook_actions")[1]

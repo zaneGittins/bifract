@@ -13,6 +13,7 @@ import (
 	"bifract/internal/fakedb"
 	"bifract/pkg/alerts"
 	"bifract/pkg/normalizers"
+	"bifract/pkg/settings"
 	"bifract/pkg/sigma"
 	"bifract/pkg/storage/storagetest"
 )
@@ -66,6 +67,9 @@ func (e *syncEnv) respond(q string, args []driver.Value) (fakedb.PGResult, bool)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch {
+	// Repositories are served from loopback, so the instance allows private egress.
+	case strings.Contains(q, "SELECT value FROM settings WHERE key") && args[0] == settings.OutboundAllowPrivateKey:
+		return fakedb.Row("true"), true
 	case strings.Contains(q, "SELECT COALESCE(auth_token, '') FROM alert_feeds"):
 		return fakedb.Row(e.token), true
 	case strings.Contains(q, "SELECT id, COALESCE(feed_rule_hash, '') FROM alerts WHERE feed_id = $1 AND feed_rule_path = $2"):

@@ -39671,6 +39671,9 @@
           "dictionary_sources_allow_private": {
             "type": "boolean"
           },
+          "outbound_allow_private": {
+            "type": "boolean"
+          },
           "pgr_sensitivity_percent": {
             "type": "number"
           },
@@ -39735,6 +39738,7 @@
           "pgr_sensitivity_percent",
           "require_mfa",
           "dictionary_sources_allow_private",
+          "outbound_allow_private",
           "trusted_proxy_cidrs"
         ]
       },

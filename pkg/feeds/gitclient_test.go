@@ -3,6 +3,8 @@ package feeds
 import (
 	"context"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,42 +12,6 @@ import (
 	"strings"
 	"testing"
 )
-
-func TestValidateRepoURL(t *testing.T) {
-	tests := []struct {
-		url     string
-		wantErr string // substring; empty means accepted
-	}{
-		{"https://github.com/SigmaHQ/sigma.git", ""},
-		{"http://git.internal:8080/rules", ""},
-		{"HTTPS://github.com/x/y", ""},
-		// Every other transport is refused: ssh and git would bypass the
-		// http(s)-only auth model, file would read the server's own disk.
-		{"ssh://git@github.com/x/y.git", "unsupported URL scheme"},
-		{"git://github.com/x/y.git", "unsupported URL scheme"},
-		{"file:///etc", "unsupported URL scheme"},
-		{"ftp://example.com/repo", "unsupported URL scheme"},
-		{"git@github.com:x/y.git", "invalid URL"},
-		{"/srv/repos/rules", "unsupported URL scheme"},
-		{"https:///no-host", "hostname"},
-		{"https://:443/x", "hostname"},
-		{"", "unsupported URL scheme"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.url, func(t *testing.T) {
-			err := validateRepoURL(tt.url)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("validateRepoURL(%q) = %v, want accepted", tt.url, err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("validateRepoURL(%q) = %v, want error containing %q", tt.url, err, tt.wantErr)
-			}
-		})
-	}
-}
 
 // writeTree creates files (content keyed by slash path) under dir.
 func writeTree(t *testing.T, dir string, files map[string]string) {
@@ -301,7 +267,7 @@ func TestCloneRepo(t *testing.T) {
 
 	t.Run("clones the requested branch", func(t *testing.T) {
 		tmp := isolateTempDir(t)
-		dir, err := CloneRepo(context.Background(), src.URL, "detections", "")
+		dir, err := CloneRepo(context.Background(), src.URL, "detections", "", true)
 		if err != nil {
 			t.Fatalf("CloneRepo: %v", err)
 		}
@@ -325,7 +291,7 @@ func TestCloneRepo(t *testing.T) {
 
 	t.Run("a missing branch fails and leaves no temp dir", func(t *testing.T) {
 		tmp := isolateTempDir(t)
-		if dir, err := CloneRepo(context.Background(), src.URL, "no-such-branch", ""); err == nil {
+		if dir, err := CloneRepo(context.Background(), src.URL, "no-such-branch", "", true); err == nil {
 			CleanupRepo(dir)
 			t.Fatal("CloneRepo of a missing branch succeeded")
 		}
@@ -336,8 +302,8 @@ func TestCloneRepo(t *testing.T) {
 
 	t.Run("a refused URL never touches disk or network", func(t *testing.T) {
 		tmp := isolateTempDir(t)
-		_, err := CloneRepo(context.Background(), "file://"+src.dir, "main", "")
-		if err == nil || !strings.Contains(err.Error(), "unsupported URL scheme") {
+		_, err := CloneRepo(context.Background(), "file://"+src.dir, "main", "", true)
+		if err == nil || !strings.Contains(err.Error(), "only http and https") {
 			t.Fatalf("CloneRepo(file://) = %v, want scheme refusal", err)
 		}
 		if left := dirEntries(t, tmp); len(left) != 0 {
@@ -349,9 +315,13 @@ func TestCloneRepo(t *testing.T) {
 		isolateTempDir(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if dir, err := CloneRepo(ctx, src.URL, "main", ""); err == nil {
+		dir, err := CloneRepo(ctx, src.URL, "main", "", true)
+		if err == nil {
 			CleanupRepo(dir)
 			t.Fatal("CloneRepo with a cancelled context succeeded")
+		}
+		if !strings.Contains(err.Error(), "the sync was cancelled") {
+			t.Errorf("error = %q", err)
 		}
 	})
 }
@@ -363,7 +333,7 @@ func TestCloneRepoAuth(t *testing.T) {
 
 	t.Run("token is sent as basic auth", func(t *testing.T) {
 		isolateTempDir(t)
-		dir, err := CloneRepo(context.Background(), src.URL, "main", token)
+		dir, err := CloneRepo(context.Background(), src.URL, "main", token, true)
 		if err != nil {
 			t.Fatalf("CloneRepo with the right token: %v", err)
 		}
@@ -377,7 +347,7 @@ func TestCloneRepoAuth(t *testing.T) {
 	t.Run("no token sends no credentials", func(t *testing.T) {
 		isolateTempDir(t)
 		open := newGitRepo(t, map[string]string{"a.yml": "x"})
-		dir, err := CloneRepo(context.Background(), open.URL, "main", "")
+		dir, err := CloneRepo(context.Background(), open.URL, "main", "", true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -392,7 +362,7 @@ func TestCloneRepoAuth(t *testing.T) {
 	t.Run("a rejected token does not appear in the error", func(t *testing.T) {
 		isolateTempDir(t)
 		const wrong = "ghp_WrongButStillSecret456"
-		_, err := CloneRepo(context.Background(), src.URL, "main", wrong)
+		_, err := CloneRepo(context.Background(), src.URL, "main", wrong, true)
 		if err == nil {
 			t.Fatal("clone with a wrong token succeeded")
 		}
@@ -409,23 +379,78 @@ func TestCloneRepoAuth(t *testing.T) {
 // viewer of the scope, and logged.
 func TestRepoURLCredentialsNotEchoed(t *testing.T) {
 	const secret = "s3cretPassw0rd"
-	src := newGitRepo(t, map[string]string{"a.yml": "x"})
-	src.requireBasicAuth("someone", "different")
-	withCreds := strings.Replace(src.URL, "http://", "http://user:"+secret+"@", 1)
-
 	cases := map[string]string{
-		"unparseable URL": "http://user:" + secret + "@[::1/x.git",
-		"rejected auth":   withCreds,
+		"unparseable URL":     "http://user:" + secret + "@[::1/x.git",
+		"credentials refused": "https://user:" + secret + "@git.example/x.git",
 	}
 	for name, u := range cases {
 		t.Run(name, func(t *testing.T) {
 			isolateTempDir(t)
-			_, err := CloneRepo(context.Background(), u, "main", "")
+			_, err := CloneRepo(context.Background(), u, "main", "", true)
 			if err == nil {
 				t.Fatal("clone succeeded")
 			}
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("error leaks the URL password: %v", err)
+			}
+		})
+	}
+}
+
+// A tenant admin picks the repo URL, so by default a clone must not reach the
+// server's own network, and the refusal must not say where the name resolved.
+func TestCloneRepoRefusesPrivateAddress(t *testing.T) {
+	src := newGitRepo(t, map[string]string{"a.yml": "x"})
+	isolateTempDir(t)
+	_, err := CloneRepo(context.Background(), src.URL, "main", "", false)
+	if err == nil {
+		t.Fatal("clone of a loopback repository succeeded")
+	}
+	if len(src.authHeaders()) != 0 {
+		t.Error("the refused clone reached the server")
+	}
+	if strings.Contains(err.Error(), "127.0.0.1") || !strings.Contains(err.Error(), "not allowed") {
+		t.Errorf("error = %q, want a refusal without the address", err)
+	}
+}
+
+// Clone errors become the feed's sync status, which every viewer of the scope
+// reads, so they carry a category and never text from the far end.
+func TestCloneRepoErrorCategories(t *testing.T) {
+	const leak = "internal-banner-7f3a"
+	src := newGitRepo(t, map[string]string{"a.yml": "x"})
+	authed := newGitRepo(t, map[string]string{"a.yml": "x"})
+	authed.requireBasicAuth("x-token-auth", "right")
+	chatty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream "+leak+" at 10.0.0.7", http.StatusBadGateway)
+	}))
+	t.Cleanup(chatty.Close)
+	missing := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(missing.Close)
+
+	cases := []struct {
+		name, url, branch, token, want string
+	}{
+		{"missing branch", src.URL, "nope", "", "branch was not found"},
+		{"no credentials", authed.URL, "main", "", "authentication"},
+		{"wrong credentials", authed.URL, "main", "wrong", "authentication"},
+		{"server error", chatty.URL + "/r.git", "main", "", "the server answered HTTP 502"},
+		{"no repository", missing.URL + "/r.git", "main", "", "the repository was not found"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateTempDir(t)
+			_, err := CloneRepo(context.Background(), tt.url, tt.branch, tt.token, true)
+			if err == nil {
+				t.Fatal("clone succeeded")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.want)
+			}
+			for _, s := range []string{leak, "10.0.0.7", "127.0.0.1"} {
+				if strings.Contains(err.Error(), s) {
+					t.Errorf("error leaks %q: %v", s, err)
+				}
 			}
 		})
 	}

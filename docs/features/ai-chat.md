@@ -76,7 +76,7 @@ Each fractal has one instruction library: markdown pages with folders and `[[wik
 2. Click **New page** (or **New folder**) and write the page.
 3. Tick **Always include (pinned)** for pages the assistant should always see. Other pages are listed for it to open with `read_instruction_page` when relevant.
 
-To keep pages in Git, open **Library settings**, set **Source** to **Git Repository**, and fill in **Repository URL** and **Branch**.
+To keep pages in Git, open **Library settings**, set **Source** to **Git Repository**, and fill in **Repository URL** and **Branch**. Put credentials in **Auth Token**, not the URL; moving the URL to another host clears the token. Repositories inside your network need **Settings** > **Security** > **Webhooks and Git repositories on the internal network**.
 
 !!! tip
     Importing an [alert feed](../alerting/alert-feeds.md) gives the assistant your detection rules as context for writing BQL.

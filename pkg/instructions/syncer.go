@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"bifract/pkg/feeds"
+	"bifract/pkg/settings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +61,9 @@ func (s *Syncer) Stop() {
 	log.Println("[Instructions] Syncer stopped")
 }
 
+// librarySyncTimeout bounds one scheduled library sync, clone included.
+const librarySyncTimeout = 30 * time.Minute
+
 func (s *Syncer) checkAndSync() {
 	ctx := context.Background()
 	libs, err := s.manager.ListAllRepoLibraries(ctx)
@@ -76,9 +80,12 @@ func (s *Syncer) checkAndSync() {
 		if lib.LastSyncedAt != nil && time.Since(*lib.LastSyncedAt) < interval {
 			continue
 		}
-		if _, err := s.SyncLibrary(ctx, lib); err != nil {
+		// Each library gets its own budget, so a stalled server cannot hold the rest.
+		libCtx, cancel := context.WithTimeout(ctx, librarySyncTimeout)
+		if _, err := s.SyncLibrary(libCtx, lib); err != nil {
 			log.Printf("[Instructions] Failed to sync library %s (%s): %v", lib.Name, lib.ID, err)
 		}
+		cancel()
 	}
 }
 
@@ -105,7 +112,7 @@ func (s *Syncer) SyncLibrary(ctx context.Context, lib *Library) (*SyncResult, er
 	}
 
 	// Clone repo (shallow, single-branch) using feeds git client
-	repoDir, err := feeds.CloneRepo(ctx, lib.RepoURL, branch, token)
+	repoDir, err := feeds.CloneRepo(ctx, lib.RepoURL, branch, token, settings.AllowPrivate(ctx, s.manager.pg, settings.OutboundAllowPrivateKey))
 	if err != nil {
 		status := fmt.Sprintf("clone failed: %s", err.Error())
 		s.manager.UpdateSyncStatus(ctx, lib.ID, status, 0)

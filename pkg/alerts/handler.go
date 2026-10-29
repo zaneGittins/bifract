@@ -533,8 +533,8 @@ func (h *Handler) HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, http.StatusBadRequest, "Webhook name is required")
 		return
 	}
-	if strings.TrimSpace(req.URL) == "" {
-		h.respondError(w, http.StatusBadRequest, "Webhook URL is required")
+	if err := validateWebhookURL(req.URL); err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -609,6 +609,10 @@ func (h *Handler) HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	var req WebhookUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if err := validateWebhookURL(req.URL); err != nil {
+		h.respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

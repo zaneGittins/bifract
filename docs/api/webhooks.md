@@ -98,5 +98,6 @@ A template that does not compile is rejected on save. One that fails to render i
 
 ## Network access
 
-!!! warning
-    Bifract does not restrict webhook destinations beyond `http`/`https`, so a webhook can reach loopback and private addresses the server can reach. Keep the tenant admin role tight and apply egress controls at the network layer.
+Webhooks reach only public addresses by default. To deliver to a service inside your network, turn on **Settings** > **Security** > **Webhooks and Git repositories on the internal network**. Cloud metadata addresses are always refused, and HTTP proxy settings are not used.
+
+A URL must not carry a username or password; use the **Basic** auth type instead. Redirects are not followed: a `3xx` answer, like a refused address, fails the delivery without retrying.
