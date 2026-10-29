@@ -28,6 +28,7 @@ const Palette = {
     _data: new Map(),   // source id -> { token, q, items, pending, at }
     _seq: 0,
     _panel: null,       // { onSubmit } while a form replaces the preview
+    _browse: null,      // { tabs: [{ id, label }], tab } while browsing one source per tab
 
     register(source) {
         this._sources.push(source);
@@ -61,7 +62,15 @@ const Palette = {
         });
         list.addEventListener('click', (e) => {
             const row = e.target.closest('[data-index]');
-            if (row) this.run(Number(row.dataset.index), 0);
+            if (!row) return;
+            const r = this._results[Number(row.dataset.index)];
+            const btn = e.target.closest('button[data-act]');
+            if (btn && r) this._runAction(this._actions(r)[Number(btn.dataset.act)], r.item);
+            else this.run(Number(row.dataset.index), 0);
+        });
+        document.getElementById('paletteTabs').addEventListener('click', (e) => {
+            const tab = e.target.closest('[data-tab]');
+            if (tab) this._switchTab(tab.dataset.tab);
         });
         document.getElementById('paletteScope').addEventListener('click', () => this.setScope(null));
         document.getElementById('palettePreview').addEventListener('click', (e) => this._onPreviewClick(e));
@@ -103,13 +112,15 @@ const Palette = {
         return [...document.querySelectorAll('.modal, .modal-overlay')].some(m => getComputedStyle(m).display !== 'none');
     },
 
-    // opts.scope narrows to one scope, opts.text pre-fills the input.
+    // opts.scope narrows to one scope, opts.text pre-fills the input, and
+    // opts.browse ({ tabs: [{ id, label }] }) shows one source per tab in full rows.
     open(opts = {}) {
         if (this._open || this._modalOpen()) return;
         this._open = true;
         this._returnFocus = document.activeElement;
         this._panel = null;
         this._scope = opts.scope || null;
+        this._browse = opts.browse ? { tabs: opts.browse.tabs, tab: opts.browse.tabs[0].id } : null;
         this._active = 0;
         this._moved = false;
         this._results = [];
@@ -147,9 +158,23 @@ const Palette = {
     setScope(scope, text) {
         this._scope = scope;
         this._panel = null;
+        // Browsing belongs to the scope it opened on.
+        this._browse = null;
         const input = document.getElementById('paletteInput');
         if (text !== undefined) input.value = text;
         input.focus();
+        this._active = 0;
+        this._moved = false;
+        this._update();
+    },
+
+    // step moves to the next (1) or previous (-1) tab; a string picks a tab.
+    _switchTab(target) {
+        const b = this._browse;
+        if (!b) return;
+        const i = b.tabs.findIndex(t => t.id === b.tab);
+        b.tab = typeof target === 'string' ? target : b.tabs[(i + target + b.tabs.length) % b.tabs.length].id;
+        this._panel = null;
         this._active = 0;
         this._moved = false;
         this._update();
@@ -215,6 +240,9 @@ const Palette = {
             e.preventDefault();
             if (takeover) takeover.enter(this.query(), { secondary: mod, force: e.shiftKey });
             else this.run(this._active, mod ? 1 : 0);
+        } else if (e.key === 'Tab' && this._browse) {
+            e.preventDefault();
+            this._switchTab(e.shiftKey ? -1 : 1);
         } else if (e.key === 'Tab' && !e.shiftKey) {
             // Tab narrows to the row's section; otherwise it moves focus on to the
             // preview's buttons as usual.
@@ -350,9 +378,15 @@ const Palette = {
 
         const keep = this._moved ? this._key(this._results[this._active]) : null;
         this._results = [];
+        const tabs = this._browse ? this._browse.tabs.map(t => t.id) : null;
         for (const source of this._sources) {
             if (!this._enabled(source, ctx)) continue;
             if (this._scope && source.scope !== this._scope) continue;
+            if (tabs && source.id !== this._browse.tab) {
+                // Other tabs load too, so their counts are right before a switch.
+                if (tabs.includes(source.id)) this._items(source, q, ctx);
+                continue;
+            }
             const limit = this._scope ? this.SCOPED_LIMIT : (ql ? this.PER_GROUP : (source.idle ? source.idle(ctx) : 0));
             if (!limit) continue;
             let rows = this._items(source, q, ctx).map(item => ({ source, item, score: 0 }));
@@ -381,10 +415,26 @@ const Palette = {
             ? 'Describe what you want to find...'
             : scope ? `Search ${scope.label.toLowerCase()}...`
                 : `Search ${ctx.view === 'search' ? 'queries, ' : ''}pages, fractals, objects${this._sources.some(s => s.scope === 'ai' && this._enabled(s, ctx)) ? ', or ask AI' : ''}...`;
+        document.querySelector('#palette .pal-dialog').classList.toggle('browse', !!this._browse);
+        document.getElementById('palettePreview').classList.toggle('has-panel', !!this._panel);
+        this._renderTabs();
         const ctxLabel = document.getElementById('paletteContext');
         const active = document.querySelector('#sidebar a[data-nav][aria-current="page"]');
         ctxLabel.textContent = active ? active.dataset.tip : '';
         ctxLabel.hidden = !active || !!scope;
+    },
+
+    _renderTabs() {
+        const bar = document.getElementById('paletteTabs');
+        bar.hidden = !this._browse;
+        if (!this._browse) return;
+        bar.innerHTML = this._browse.tabs.map(t => {
+            const source = this._sources.find(s => s.id === t.id);
+            const n = source && source.items ? source.items(this.context(), '').length : this._data.get(t.id)?.items.length;
+            const on = t.id === this._browse.tab;
+            return `<button type="button" role="tab" class="pal-tab" data-tab="${Utils.escapeHtml(t.id)}" aria-selected="${on}" tabindex="-1">` +
+                `${Utils.escapeHtml(t.label)}${n !== undefined ? `<span>${n}</span>` : ''}</button>`;
+        }).join('');
     },
 
     _renderList(q, active) {
@@ -411,6 +461,10 @@ const Palette = {
         let group = null;
         let gi = 0;
         this._results.forEach((r, i) => {
+            if (this._browse) {
+                html += this._richRow(r, i, ql);
+                return;
+            }
             if (r.source !== group) {
                 if (group !== null) html += '</div>';
                 group = r.source;
@@ -427,8 +481,22 @@ const Palette = {
                 ${it.hintHtml ? `<span class="pal-hint">${it.hintHtml}</span>` : it.hint ? `<span class="pal-hint">${Utils.escapeHtml(it.hint)}</span>` : ''}
             </div>`;
         });
-        list.innerHTML = html + '</div>';
+        list.innerHTML = this._browse ? html : html + '</div>';
         this._setActive(Math.min(active, this._results.length - 1), true);
+    },
+
+    // A browse row: the source's own multi-line markup and every action as a
+    // button, since there is no preview to hold them.
+    _richRow(r, i, ql) {
+        const it = r.item;
+        const body = r.source.row ? r.source.row(it, ql) : `<span class="pal-label">${this._highlight(it.label, ql)}</span>`;
+        const acts = this._actions(r).map((a, j) =>
+            `<button type="button" class="pal-tool${a.danger ? ' danger' : ''}" data-act="${j}">${Utils.escapeHtml(a.short || a.label)}</button>`).join('');
+        return `<div class="pal-item rich" id="palOpt${i}" role="option" data-index="${i}" aria-selected="false">
+            <span class="pal-ic" aria-hidden="true">${it.icon || r.source.icon || ''}</span>
+            <div class="pal-rich">${body}</div>
+            <span class="pal-row-acts">${acts}</span>
+        </div>`;
     },
 
     _highlight(label, q) {
@@ -454,7 +522,7 @@ const Palette = {
             if (scroll) row.scrollIntoView({ block: 'nearest' });
         }
         if (!this._panel) {
-            this._renderPreview();
+            if (!this._browse) this._renderPreview();
             this._renderFoot();
         }
     },
@@ -499,6 +567,7 @@ const Palette = {
             parts = ['<kbd>↑</kbd><kbd>↓</kbd> navigate'];
             if (acts[0]) parts.push(`<kbd>↵</kbd> ${Utils.escapeHtml(acts[0].label.toLowerCase())}`);
             if (acts[1]) parts.push(`<kbd>${mod}</kbd><kbd>↵</kbd> ${Utils.escapeHtml(acts[1].label.toLowerCase())}`);
+            if (this._browse) parts.push('<kbd>Tab</kbd> next list');
             if (this._scope) parts.push('<kbd>⌫</kbd> all results');
             else if (this._results[this._active]?.source.scope) parts.push('<kbd>Tab</kbd> only this section');
             const ctx = this.context();
@@ -553,6 +622,7 @@ const Palette = {
     showPanel({ title, html, submitLabel, onSubmit }) {
         this._panel = { onSubmit, busy: false };
         const pane = document.getElementById('palettePreview');
+        pane.classList.add('has-panel');
         pane.innerHTML = `<form class="pal-panel" onsubmit="return false">
             <div class="pal-pv-kind">${Utils.escapeHtml(title)}</div>
             ${html}

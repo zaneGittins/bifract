@@ -44,7 +44,11 @@ The page you are on leads. On Query, your recent and saved queries come first, t
 | Cmd/Ctrl+S | On Query, save the query in the editor |
 | Esc | Close a form, then the palette |
 
-The **Queries** button on Query and the **Recent** button on Recall open the palette on those rows.
+The **Recent** button on Recall opens the palette on its rows.
+
+### Browse your queries
+
+The **Queries** button on Query opens your queries to browse rather than search: **Saved** first, then **Recent**, one list at a time, each row showing the name, description, query and tags with its actions beside it (Load, Run, Edit, Favorite, Delete; Save as and Remove on recent ones). Tab switches lists, typing filters the one you are on, and Backspace in the empty box goes back to the full palette.
 
 ## Ask AI
 
