@@ -97,15 +97,16 @@ func TestNullableUser(t *testing.T) {
 // has distributed tables; a read through the local name on a cluster sees one shard.
 func TestTableAccessorsFollowTopology(t *testing.T) {
 	accessors := map[string]func(*ClickHouseClient) string{
-		"logs":           (*ClickHouseClient).ReadTable,
-		"logs ":          (*ClickHouseClient).WriteTable,
-		"logs_raw":       (*ClickHouseClient).RawWriteTable,
-		"logs_raw ":      (*ClickHouseClient).RawReadTable,
-		"logs_histogram": (*ClickHouseClient).HistogramReadTable,
-		"logs_hot":       (*ClickHouseClient).HotReadTable,
-		"proc_lineage":   (*ClickHouseClient).ProcLineageReadTable,
-		"process_edges":  (*ClickHouseClient).ProcEdgesReadTable,
-		"proc_freq":      (*ClickHouseClient).ProcFreqReadTable,
+		"logs":             (*ClickHouseClient).ReadTable,
+		"logs ":            (*ClickHouseClient).WriteTable,
+		"logs_raw":         (*ClickHouseClient).RawWriteTable,
+		"logs_raw ":        (*ClickHouseClient).RawReadTable,
+		"logs_histogram":   (*ClickHouseClient).HistogramReadTable,
+		"logs_field_paths": (*ClickHouseClient).FieldPathsReadTable,
+		"logs_hot":         (*ClickHouseClient).HotReadTable,
+		"proc_lineage":     (*ClickHouseClient).ProcLineageReadTable,
+		"process_edges":    (*ClickHouseClient).ProcEdgesReadTable,
+		"proc_freq":        (*ClickHouseClient).ProcFreqReadTable,
 	}
 	single := &ClickHouseClient{}
 	cluster := &ClickHouseClient{topo: Topology{DistributedTables: true}}

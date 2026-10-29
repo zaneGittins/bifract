@@ -2015,9 +2015,20 @@ CREATE TABLE IF NOT EXISTS schema_field_stats (
     bytes_on_disk BIGINT       NOT NULL DEFAULT 0,
     PRIMARY KEY (fractal_id, field_name)
 );
+-- present is exact when the path rollup has counts; sample_present is the field's count
+-- within the value sample, the denominator for its top values' shares. Rows written
+-- before it existed held the sample's count in present, so they are filled once.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema() AND table_name = 'schema_field_stats' AND column_name = 'sample_present') THEN
+        ALTER TABLE schema_field_stats ADD COLUMN sample_present BIGINT NOT NULL DEFAULT 0;
+        UPDATE schema_field_stats SET sample_present = present;
+    END IF;
+END $$;
 
--- One row per fractal the sweep measured: the coverage denominator and the
--- column-budget figures that only ClickHouse part metadata can answer.
+-- One row per fractal the sweep measured: its sample size, coverage denominator
+-- (total_rows) and the column-budget figures only ClickHouse part metadata can answer.
 CREATE TABLE IF NOT EXISTS schema_fractal_stats (
     fractal_id    VARCHAR(64) PRIMARY KEY,
     sampled_rows  BIGINT      NOT NULL DEFAULT 0,
@@ -2028,6 +2039,16 @@ CREATE TABLE IF NOT EXISTS schema_fractal_stats (
     total_bytes   BIGINT      NOT NULL DEFAULT 0,
     sampled_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Rows the presence counts cover: all retention from the path rollup, else sampled_rows,
+-- which is what rows written before it existed were measured over.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema() AND table_name = 'schema_fractal_stats' AND column_name = 'total_rows') THEN
+        ALTER TABLE schema_fractal_stats ADD COLUMN total_rows BIGINT NOT NULL DEFAULT 0;
+        UPDATE schema_fractal_stats SET total_rows = sampled_rows;
+    END IF;
+END $$;
 
 -- How often each field is referenced by saved BQL, and by what. Derived by
 -- parsing every alert, widget, saved query, and recent history entry, which is

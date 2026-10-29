@@ -1354,6 +1354,8 @@ const (
 	// LockRepartition elects the replica that converts tables to their per-fractal
 	// partition keys. Two converters copying the same fractal would duplicate its rows.
 	LockRepartition int64 = 0x6269667261637406
+	// LockFieldPathReconcile elects the replica that repairs the field path rollup.
+	LockFieldPathReconcile int64 = 0x6269667261637407
 )
 
 func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unlock func(), acquired bool) {

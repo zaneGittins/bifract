@@ -24,12 +24,13 @@ const maxDynamicPaths = 1024
 // interval does not make the page permanently claim to be stale.
 const staleAfter = 3
 
-// FieldInsight is what the sample says about one field.
+// FieldInsight is what the sweep measured about one field.
 type FieldInsight struct {
-	Name        string  `json:"name"`
-	Present     uint64  `json:"present"`     // rows in the sample where the field is populated
-	Cardinality uint64  `json:"cardinality"` // distinct values within the sample
-	Coverage    float64 `json:"coverage"`    // Present / sample size, 0..1
+	Name          string  `json:"name"`
+	Present       uint64  `json:"present"`        // rows where the field is populated, exact when counted
+	SamplePresent uint64  `json:"sample_present"` // rows in the value sample with it, the denominator for Top
+	Cardinality   uint64  `json:"cardinality"`    // distinct values within the sample
+	Coverage      float64 `json:"coverage"`       // Present / total rows, 0..1
 }
 
 // Verdict is the closed set of recommendations. Every field carries exactly one,
@@ -126,6 +127,7 @@ type Capacity struct {
 // a cluster holding billions of rows, and cannot fail because a scan timed out.
 type Insights struct {
 	SampleSize uint64   `json:"sample_size"`
+	TotalRows  uint64   `json:"total_rows"` // rows coverage is measured over
 	Capacity   Capacity `json:"capacity"`
 	// Fields is every field the table shows: configured, unconfigured but seen in
 	// the data, and ignored. Sorted by verdict priority, so the head of the list
@@ -360,12 +362,12 @@ func verdictFor(f Field, overflowed bool) string {
 
 // buildFields produces the unified table: one row per field, configured or not,
 // each with a verdict, sorted so the worklist is at the top.
-func buildFields(measured map[string]*Field, sampledRows uint64,
+func buildFields(measured map[string]*Field, totalRows uint64,
 	usage map[string]*fieldUsage, configured map[string]IndexType,
 	custom map[string]SchemaField, ignored, overflowed map[string]bool) []Field {
 
 	// Union of what the data shows and what is configured: a reserved field
-	// absent from the sample still needs a row, or "unused" could never surface.
+	// absent from the data still needs a row, or "unused" could never surface.
 	names := make(map[string]struct{}, len(measured)+len(configured))
 	for n := range measured {
 		names[n] = struct{}{}
@@ -397,8 +399,8 @@ func buildFields(measured map[string]*Field, sampledRows uint64,
 		f.Name = name
 		// Coverage is computed here rather than stored, so it stays consistent
 		// with whatever set of fractals the last sweep managed to measure.
-		if sampledRows > 0 {
-			f.Coverage = float64(f.Present) / float64(sampledRows)
+		if totalRows > 0 {
+			f.Coverage = float64(f.Present) / float64(totalRows)
 			if f.Coverage > 1 {
 				f.Coverage = 1
 			}
@@ -522,6 +524,7 @@ func (h *Handler) BuildInsights(ctx context.Context) (*Insights, error) {
 	interval := sweepInterval()
 	out := &Insights{
 		SampleSize: stats.SampledRows,
+		TotalRows:  stats.TotalRows,
 		Capacity: Capacity{
 			Limit:       maxDynamicPaths,
 			DynamicUsed: stats.MaxPaths,
@@ -529,7 +532,7 @@ func (h *Handler) BuildInsights(ctx context.Context) (*Insights, error) {
 			Overflowed:  overflowNames,
 			CheckedAt:   checkedAtPtr(checkedAt),
 		},
-		Fields:       buildFields(stats.Fields, stats.SampledRows, usage, configured, customByName, ignoredSet, overflowed),
+		Fields:       buildFields(stats.Fields, stats.TotalRows, usage, configured, customByName, ignoredSet, overflowed),
 		TotalBytes:   stats.TotalBytes,
 		Fractals:     stats.Fractals,
 		ComputedAt:   checkedAtPtr(stats.ComputedAt),

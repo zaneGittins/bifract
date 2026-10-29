@@ -8,12 +8,12 @@ Open it from **Schema** in the sidebar's **Admin** section.
 
 ## Read the table
 
-A background sweep samples your logs and measures each field. The line at the top says when it last ran; **Refresh** runs it now.
+A background sweep counts which fields every log carries, across your full retention, and samples recent logs for their values. The line at the top says when it last ran; **Refresh** runs it now.
 
 | Column | Meaning |
 |--------|---------|
-| **In your logs** | Share of sampled logs that have the field |
-| **Uniques** | Distinct values |
+| **In your logs** | Share of logs that have the field |
+| **Uniques** | Distinct values in the sample |
 | **Size** | Bytes on disk |
 | **Queried** | How often alerts, dashboards, saved queries and recent searches use it: Never, Rarely, Sometimes, Often |
 | **Status** | **Reserved** (with **Built in** for project defaults), **Not reserved** or **Ignored** |

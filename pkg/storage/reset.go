@@ -12,6 +12,7 @@ import (
 // and it would silently stop being fed.
 var resetMaterializedViews = []string{
 	"logs_histogram_mv",
+	"logs_field_paths_mv",
 	"logs_hot_mv",
 	"proc_lineage_mv",
 	"proc_freq_spawn_mv",
@@ -32,6 +33,7 @@ var resetShardedTables = []string{
 	"logs_raw",
 	"logs_hot",
 	"logs_histogram",
+	"logs_field_paths",
 	"proc_lineage",
 	"proc_freq",
 	"process_edges",
@@ -56,7 +58,7 @@ var resetBookkeepingTables = []string{
 // Distributed tables are absent: they hold no data and no Keeper state. Dictionaries
 // are absent because they are never dropped.
 func ResetKeeperTables(extraTables []string) []string {
-	return append(append([]string{}, extraTables...), resetShardedTables...)
+	return append(append(append([]string{}, extraTables...), resetShardedTables...), fieldPathsStage)
 }
 
 // KeeperTablePath renders the Keeper path for one table, matching the macro layout
@@ -110,6 +112,7 @@ func ResetLogDataStatements(extraViews, extraTables []string) []string {
 		names = append(names, t, t+"_distributed")
 	}
 	names = append(names, repartitionWorkingTables()...)
+	names = append(names, fieldPathsStage)
 	names = append(names, resetBookkeepingTables...)
 	for _, name := range names {
 		// max_table_size_to_drop (50GB by default) otherwise refuses the logs table

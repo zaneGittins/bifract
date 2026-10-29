@@ -20,6 +20,7 @@ func TestDeleteLogsByFractalID(t *testing.T) {
 	f.OnArg(describeQuery, "logs_histogram__skip", describes("", ""))
 	f.OnArg(partsQuery, "logs", fakedb.Strs("partition_id", "l1", "l2"))
 	f.OnArg(partsQuery, "process_edges", fakedb.Strs("partition_id", "e1"))
+	f.OnArg(partsQuery, "logs_field_paths", fakedb.Strs("partition_id", "p1"))
 
 	if err := c.DeleteLogsByFractalID(context.Background(), "F1", true); err != nil {
 		t.Fatal(err)
@@ -32,6 +33,9 @@ func TestDeleteLogsByFractalID(t *testing.T) {
 	}
 	if indexOf(execs, "ALTER TABLE `process_edges` DROP PARTITION ID 'e1'") < 0 {
 		t.Error("derived tables must be dropped too")
+	}
+	if indexOf(execs, "ALTER TABLE `logs_field_paths` DROP PARTITION ID 'p1'") < 0 {
+		t.Error("field path counts must leave with the fractal")
 	}
 	// Both the fractal and the unscoped id were looked up and recorded.
 	if got := f.ExecArgs()[skip]; !reflect.DeepEqual(got, []any{"F1"}) {
@@ -48,18 +52,20 @@ func TestDeleteLogsByFractalID(t *testing.T) {
 	}
 }
 
-// Dropping one (fractal, day) partition also drops the matching histogram
-// partition, which an MV fills and which is partitioned the same way.
+// Dropping one (fractal, day) partition also drops the matching rollup partitions,
+// which MVs fill and which are partitioned the same way.
 func TestDropLogPartition(t *testing.T) {
 	c, f := newFakeClient()
 	const part = "('f1','2026-07-01')"
-	f.OnArg("table = 'logs_histogram'", part, fakedb.Strs("partition_id", "h1"))
+	f.OnArg(partsQuery, "logs_histogram", fakedb.Strs("partition_id", "h1"))
+	f.OnArg(partsQuery, "logs_field_paths", fakedb.Strs("partition_id", "p1"))
 	if err := c.DropLogPartition(context.Background(), part); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"ALTER TABLE logs DROP PARTITION " + part + dropPartitionSettings,
-		"ALTER TABLE logs_histogram DROP PARTITION ID 'h1'" + dropPartitionSettings,
+		"ALTER TABLE `logs_histogram` DROP PARTITION ID 'h1'" + dropPartitionSettings,
+		"ALTER TABLE `logs_field_paths` DROP PARTITION ID 'p1'" + dropPartitionSettings,
 	}
 	if got := f.Executed(); !reflect.DeepEqual(got, want) {
 		t.Errorf("executed %q, want %q", got, want)
@@ -70,7 +76,7 @@ func TestDropLogPartition(t *testing.T) {
 	if err := c.DropLogPartition(context.Background(), part); err == nil {
 		t.Error("expected the failure")
 	}
-	if len(f.ExecutedMatching("logs_histogram")) != 0 {
+	if len(f.ExecutedMatching("logs_histogram"))+len(f.ExecutedMatching("logs_field_paths")) != 0 {
 		t.Error("the rollup must not be dropped when the logs drop failed")
 	}
 }
@@ -231,7 +237,7 @@ func TestKeeperHelpersEscape(t *testing.T) {
 	if got := DropKeeperReplicaStatement("r'1", "/p"); got != "SYSTEM DROP REPLICA 'r''1' FROM ZKPATH '/p'" {
 		t.Errorf("stmt = %q", got)
 	}
-	if got := ResetKeeperTables([]string{"m"}); got[0] != "m" || len(got) != len(resetShardedTables)+1 {
+	if got := ResetKeeperTables([]string{"m"}); got[0] != "m" || len(got) != len(resetShardedTables)+2 || got[len(got)-1] != fieldPathsStage {
 		t.Errorf("tables = %v", got)
 	}
 	if got := ModelCHDataTables("a-b"); !reflect.DeepEqual(got, []string{"model_a_b", "model_state_a_b"}) {

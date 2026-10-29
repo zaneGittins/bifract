@@ -163,6 +163,37 @@ SELECT
 FROM logs
 GROUP BY fractal_id, ingest_day, minute;
 
+-- Exact per-field presence for the schema tab: rows carrying each top-level field, per
+-- fractal and ingest day. path '' counts every row, so a field's coverage is its count
+-- over the '' count of the same days. Partitioned like logs so retention drops both.
+-- Closed days are reconciled against logs by the schema sweep (pkg/storage/field_paths.go),
+-- which backfills history and trims days that hit the path cap.
+CREATE TABLE IF NOT EXISTS logs_field_paths (
+    fractal_id LowCardinality(String),
+    ingest_day Date,
+    path       String,
+    cnt        UInt64
+) ENGINE = SummingMergeTree(cnt)
+PARTITION BY (fractal_id, ingest_day)
+ORDER BY (fractal_id, ingest_day, path)
+SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
+
+-- Field names are sender controlled, so each insert block keeps at most 1024 paths per
+-- fractal and day (FieldPathCap). Keys are read as the schema sample reads them, up to
+-- 255 bytes.
+CREATE MATERIALIZED VIEW IF NOT EXISTS logs_field_paths_mv TO logs_field_paths
+DEFINER = default SQL SECURITY DEFINER AS
+SELECT
+    fractal_id,
+    toDate(ingest_timestamp) AS ingest_day,
+    path,
+    count() AS cnt
+FROM logs
+ARRAY JOIN arrayPushFront(arrayMap(kv -> kv.1, arrayFilter(kv -> kv.1 != '' AND kv.2 != '' AND length(kv.1) <= 255, JSONExtractKeysAndValues(norm_log, 'String'))), '') AS path
+GROUP BY fractal_id, ingest_day, path
+ORDER BY path = '' DESC, cnt DESC
+LIMIT 1024 BY fractal_id, ingest_day;
+
 -- Hot table for the alert engine: 2-hour rolling window ordered by ingest_timestamp.
 -- Alert queries with UseIngestTimestamp=true route here when cursor is < 110 min old,
 -- giving a primary-key range scan instead of a full day-partition scan on logs.

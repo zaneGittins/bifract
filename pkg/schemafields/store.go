@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"bifract/pkg/storage"
 )
@@ -22,8 +24,30 @@ type fractalResult struct {
 	SampledRows uint64
 	MaxPaths    int
 	Fields      map[string]*fieldSample
+	Paths       *pathCounts // exact presence; nil when the rollup has none
 	Bytes       map[string]*fieldMeta
 	SampledAt   time.Time
+}
+
+// maxFieldNameLen is schema_field_stats.field_name's VARCHAR length.
+const maxFieldNameLen = 255
+
+// saveableName reports whether Postgres can store a field name: valid UTF-8, no NUL,
+// within the column's length.
+func saveableName(name string) bool {
+	return utf8.ValidString(name) && !strings.ContainsRune(name, 0) && utf8.RuneCountInString(name) <= maxFieldNameLen
+}
+
+// saveableTop drops values jsonb cannot hold: a NUL marshals to \u0000, which
+// Postgres rejects. Invalid UTF-8 is replaced by json.Marshal, so it is safe.
+func saveableTop(top []TopValue) []TopValue {
+	out := make([]TopValue, 0, len(top))
+	for _, v := range top {
+		if !strings.ContainsRune(v.Value, 0) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // saveStats replaces the whole measured set in one transaction. Replacing rather
@@ -45,30 +69,38 @@ func saveStats(ctx context.Context, pg *storage.PostgresClient, results []fracta
 
 	for _, r := range results {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO schema_fractal_stats (fractal_id, sampled_rows, max_paths, total_bytes, sampled_at)
-			 VALUES ($1, $2, $3, $4, $5)`,
-			r.Meta.ID, int64(r.SampledRows), r.MaxPaths, int64(r.Meta.TotalBytes), r.SampledAt); err != nil {
+			`INSERT INTO schema_fractal_stats (fractal_id, sampled_rows, max_paths, total_bytes, sampled_at, total_rows)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			r.Meta.ID, int64(r.SampledRows), r.MaxPaths, int64(r.Meta.TotalBytes), r.SampledAt, int64(r.totalRows())); err != nil {
 			return fmt.Errorf("insert fractal stats %q: %w", r.Meta.ID, err)
 		}
 
-		// Union of what the sample saw and what the parts hold: a reserved field
-		// with no recent values still costs storage, and it needs a row or the
-		// "unused, reclaim it" case could never surface.
+		// Union of what was counted, what the sample saw and what the parts hold:
+		// a reserved field with no values still costs storage, and it needs a row
+		// or the "unused, reclaim it" case could never surface.
 		names := make(map[string]struct{}, len(r.Fields)+len(r.Bytes))
 		for n := range r.Fields {
 			names[n] = struct{}{}
+		}
+		if r.Paths != nil {
+			for n := range r.Paths.Present {
+				names[n] = struct{}{}
+			}
 		}
 		for n := range r.Bytes {
 			names[n] = struct{}{}
 		}
 
 		for name := range names {
-			var present, cardinality uint64
+			if !saveableName(name) {
+				continue // sender controlled; one would fail the whole transaction
+			}
+			var sampled, cardinality uint64
 			top := []TopValue{}
 			if fs := r.Fields[name]; fs != nil {
-				present, cardinality = fs.Present, fs.Cardinality
+				sampled, cardinality = fs.Present, fs.Cardinality
 				if fs.Top != nil {
-					top = fs.Top
+					top = saveableTop(fs.Top)
 				}
 			}
 			var bytes uint64
@@ -81,9 +113,9 @@ func saveStats(ctx context.Context, pg *storage.PostgresClient, results []fracta
 			}
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO schema_field_stats
-				   (fractal_id, field_name, present, cardinality, top_values, bytes_on_disk)
-				 VALUES ($1, $2, $3, $4, $5, $6)`,
-				r.Meta.ID, name, int64(present), int64(cardinality), string(topJSON), int64(bytes)); err != nil {
+				   (fractal_id, field_name, present, cardinality, top_values, bytes_on_disk, sample_present)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				r.Meta.ID, name, int64(r.present(name)), int64(cardinality), string(topJSON), int64(bytes), int64(sampled)); err != nil {
 				return fmt.Errorf("insert field stat %q: %w", name, err)
 			}
 		}
@@ -93,7 +125,8 @@ func saveStats(ctx context.Context, pg *storage.PostgresClient, results []fracta
 
 // loadPreviousSample reads a fractal's last persisted distribution, so a pass
 // whose sample fails can carry it forward instead of writing it as unmeasured.
-// A fractal never measured before returns a zero sample.
+// A fractal never measured before returns a zero sample. Presence is the sample's
+// own count: exact counts are read fresh each pass.
 func loadPreviousSample(ctx context.Context, pg *storage.PostgresClient, fractalID string) (fractalResult, error) {
 	out := fractalResult{Fields: map[string]*fieldSample{}}
 	var sampled int64
@@ -108,8 +141,8 @@ func loadPreviousSample(ctx context.Context, pg *storage.PostgresClient, fractal
 	}
 	out.SampledRows = uint64(sampled)
 
-	rows, err := pg.Query(ctx, `SELECT field_name, present, cardinality, top_values
-		FROM schema_field_stats WHERE fractal_id = $1 AND present > 0`, fractalID)
+	rows, err := pg.Query(ctx, `SELECT field_name, sample_present, cardinality, top_values
+		FROM schema_field_stats WHERE fractal_id = $1 AND sample_present > 0`, fractalID)
 	if err != nil {
 		return fractalResult{}, fmt.Errorf("load previous field stats: %w", err)
 	}
@@ -138,6 +171,7 @@ func loadPreviousSample(ctx context.Context, pg *storage.PostgresClient, fractal
 type aggregateStats struct {
 	Fields      map[string]*Field
 	SampledRows uint64
+	TotalRows   uint64
 	MaxPaths    int
 	TotalBytes  uint64
 	Fractals    int
@@ -160,11 +194,12 @@ func readSweptAt(ctx context.Context, pg *storage.PostgresClient) time.Time {
 
 // loadStats aggregates the persisted per-fractal rows.
 //
-// present sums, because coverage is (rows with the field) / (rows sampled) across
+// present sums, because coverage is (rows with the field) / (total rows) across
 // every fractal. cardinality takes the per-fractal maximum: distinct counts from
 // separate samples cannot be added without double counting shared values, so the
 // largest single observation is reported, which is a true lower bound. Only the
-// set-versus-bloom threshold reads it.
+// set-versus-bloom threshold reads it. Top values come from the fractal whose sample
+// saw the field most, with that sample's count as the denominator for their shares.
 func loadStats(ctx context.Context, pg *storage.PostgresClient) (*aggregateStats, error) {
 	out := &aggregateStats{Fields: map[string]*Field{}}
 
@@ -173,7 +208,8 @@ func loadStats(ctx context.Context, pg *storage.PostgresClient) (*aggregateStats
 		       SUM(present)::bigint       AS present,
 		       MAX(cardinality)::bigint   AS cardinality,
 		       SUM(bytes_on_disk)::bigint AS bytes_on_disk,
-		       (ARRAY_AGG(top_values ORDER BY present DESC))[1] AS top_values
+		       (ARRAY_AGG(top_values ORDER BY sample_present DESC, fractal_id))[1] AS top_values,
+		       (ARRAY_AGG(sample_present ORDER BY sample_present DESC, fractal_id))[1] AS sample_present
 		FROM schema_field_stats
 		GROUP BY field_name`)
 	if err != nil {
@@ -188,15 +224,17 @@ func loadStats(ctx context.Context, pg *storage.PostgresClient) (*aggregateStats
 			card    int64
 			bytes   int64
 			topJSON sql.NullString
+			sampled int64
 		)
-		if err := rows.Scan(&name, &present, &card, &bytes, &topJSON); err != nil {
+		if err := rows.Scan(&name, &present, &card, &bytes, &topJSON, &sampled); err != nil {
 			return nil, fmt.Errorf("scan field stat: %w", err)
 		}
 		f := &Field{
 			FieldInsight: FieldInsight{
-				Name:        name,
-				Present:     uint64(present),
-				Cardinality: uint64(card),
+				Name:          name,
+				Present:       uint64(present),
+				SamplePresent: uint64(sampled),
+				Cardinality:   uint64(card),
 			},
 			BytesOnDisk: uint64(bytes),
 			Top:         []TopValue{},
@@ -218,9 +256,10 @@ func loadStats(ctx context.Context, pg *storage.PostgresClient) (*aggregateStats
 		SELECT COALESCE(SUM(sampled_rows), 0)::bigint,
 		       COALESCE(MAX(max_paths), 0),
 		       COALESCE(SUM(total_bytes), 0)::bigint,
-		       COUNT(*)
+		       COUNT(*),
+		       COALESCE(SUM(total_rows), 0)::bigint
 		FROM schema_fractal_stats`).
-		Scan(&out.SampledRows, &out.MaxPaths, &out.TotalBytes, &out.Fractals); err != nil {
+		Scan(&out.SampledRows, &out.MaxPaths, &out.TotalBytes, &out.Fractals, &out.TotalRows); err != nil {
 		return nil, fmt.Errorf("load fractal stats: %w", err)
 	}
 	out.ComputedAt = readSweptAt(ctx, pg)
