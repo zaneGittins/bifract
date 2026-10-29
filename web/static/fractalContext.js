@@ -103,6 +103,9 @@ const FractalContext = {
     // result that belongs to a stale scope. See scopeToken() / isScopeStale().
     _scopeGeneration: 0,
 
+    // Bumped by every switch request, so a slower earlier one cannot land last.
+    _switchSeq: 0,
+
     // Return a token representing the current scope. An async operation that
     // loads scope-dependent data should capture this before starting, then
     // check isScopeStale(token) before applying the result.
@@ -177,15 +180,7 @@ const FractalContext = {
             const saved = JSON.parse(raw);
             if (!saved || !saved.id || !saved.name) return false;
 
-            const type = saved.type || 'fractal';
-            const role = type === 'prism'
-                ? await this.selectPrismOnServer(saved.id)
-                : await this.selectFractalOnServer(saved.id);
-            if (role === null) return false;
-
-            this._applyScope(await this._fullRecord({ id: saved.id, name: saved.name }, type), type, role);
-            this.notifyFractalChange();
-            return true;
+            return await this._switchTo({ id: saved.id, name: saved.name }, saved.type || 'fractal');
         } catch (e) {
             console.error('[FractalContext] Failed to restore from storage:', e);
             return false;
@@ -249,20 +244,32 @@ const FractalContext = {
     // state moves: on failure nothing has changed, so the UI never advertises a
     // scope the session is not actually on.
     async setCurrentFractal(fractal) {
-        const role = await this.selectFractalOnServer(fractal.id);
-        if (role === null) return false;
-        this._applyScope(await this._fullRecord(fractal, 'fractal'), 'fractal', role);
-        this.notifyFractalChange();
-        return true;
+        return this._switchTo(fractal, 'fractal');
     },
 
     // Set the current prism context. Same contract as setCurrentFractal.
     async setCurrentPrism(prism) {
-        const role = await this.selectPrismOnServer(prism.id);
-        if (role === null) return false;
-        this._applyScope(await this._fullRecord(prism, 'prism'), 'prism', role);
-        this.notifyFractalChange();
-        return true;
+        return this._switchTo(prism, 'prism');
+    },
+
+    // The results stay hidden until the server answers: a switch clears them for
+    // the new scope, a refusal shows them again as they were. Of overlapping
+    // switches only the latest applies; an earlier one returns false.
+    async _switchTo(target, type) {
+        const seq = ++this._switchSeq;
+        if (window.QueryExecutor) QueryExecutor.setResultsHidden(true);
+        try {
+            const [role, record] = await Promise.all([
+                type === 'prism' ? this.selectPrismOnServer(target.id) : this.selectFractalOnServer(target.id),
+                this._fullRecord(target, type),
+            ]);
+            if (seq !== this._switchSeq || role === null) return false;
+            this._applyScope(record, type, role);
+            this.notifyFractalChange();
+            return true;
+        } finally {
+            if (seq === this._switchSeq && window.QueryExecutor) QueryExecutor.setResultsHidden(false);
+        }
     },
 
     // Callers that only know an id and name (a link, a reload, a restored tab)
@@ -326,70 +333,21 @@ const FractalContext = {
 
     // Clear search state when switching fractals
     clearSearchState() {
-        if (window.LogDetail) LogDetail.close();
+        if (window.QueryExecutor) QueryExecutor.clearResults();
 
-        // Clear QueryExecutor state and cancel any pending requests
-        if (window.QueryExecutor) {
-            // Cancel any in-flight requests
-            if (QueryExecutor.currentRequest) {
-                QueryExecutor.currentRequest.abort();
-                QueryExecutor.currentRequest = null;
-            }
-
-            QueryExecutor.currentResults = [];
-            QueryExecutor.currentTimeRange = null;
-            QueryExecutor.sortColumn = null;
-            QueryExecutor.sortDirection = null;
-            QueryExecutor.isAggregated = false;
-            QueryExecutor.chartType = '';
-            QueryExecutor.currentFractalId = null;
+        const queryInput = document.getElementById('queryInput');
+        if (queryInput) {
+            queryInput.value = '';
+            queryInput.dispatchEvent(new Event('input'));
         }
-
-        // Clear UI elements
-        const elementsToReset = [
-            'queryInput',
-            'resultsTable',
-            'error',
-            'sqlOutput',
-            'resultsCount',
-            'executionTime',
-            'pageInfo'
-        ];
-
-        // Reset the results-header controls to the empty state.
-        if (window.QueryExecutor) QueryExecutor.syncResultControls();
-
-        elementsToReset.forEach(id => {
-            const element = document.getElementById(id);
-            if (element) {
-                if (id === 'queryInput') {
-                    element.value = '';
-                    element.dispatchEvent(new Event('input'));
-                } else if (id === 'error') {
-                    element.style.display = 'none';
-                } else {
-                    element.innerHTML = '';
-                }
-            }
-        });
-
-        // Hide timeline
-        if (window.Timeline) {
-            Timeline.hide();
-        }
+        const sqlOutput = document.getElementById('sqlOutput');
+        if (sqlOutput) sqlOutput.innerHTML = '';
 
         // Hide SQL preview until next query execution
         const sqlPreview = document.querySelector('.sql-preview');
         if (sqlPreview) {
             sqlPreview.style.display = 'none';
         }
-
-        // Reset pagination if it exists
-        const paginationControls = document.getElementById('paginationControls');
-        if (paginationControls) {
-            paginationControls.style.display = 'none';
-        }
-
     },
 
     // Leave the fractal/prism level entirely (the user navigated back to the
