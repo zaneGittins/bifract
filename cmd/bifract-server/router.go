@@ -392,6 +392,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Handler:  d.schemaFieldsHandler.HandleCatalog,
 			})
 			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/query/fields/observed",
+				Query:    []api.QueryParam{{Name: "fractal_id"}},
+				Access:   api.AccessViewer,
+				Response: query.ObservedFieldsResponse{},
+				Summary:  "List the most common fields the fractal's or prism's logs carry, with row counts over all retention.",
+				Handler:  d.queryHandler.HandleObservedFields,
+			})
+			r.Register(api.Route{
 				Method:  http.MethodGet,
 				Path:    "/logs/recent",
 				Access:  api.AccessViewer,
@@ -434,7 +443,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				},
 				Access:   api.AccessViewer,
 				Response: map[string]interface{}{},
-				Summary:  "List the field names present in the fractal's logs.",
+				Summary:  "Return one log's fields, addressed by log_id and timestamp.",
 				Handler:  d.queryHandler.HandleGetLogFields,
 			})
 			r.Register(api.Route{

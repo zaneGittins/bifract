@@ -3,6 +3,7 @@ package aitools
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -52,10 +53,12 @@ func registerQueryTools(d *set) {
 	add(d, &mcp.Tool{
 		Name:        "get_fields",
 		Annotations: readOnly(),
-		Description: "List the field names available to queries in this fractal.\n\n" +
+		Description: "List the fields this fractal's (or prism's) logs actually carry, most common first.\n\n" +
 			"These are the normalized fields BQL refers to by bare name (host=web-01, not " +
-			"fields.host). For what the values actually look like, follow with get_field_stats.\n\n" +
-			"Returns the field names, filtered if a filter was given.",
+			"fields.host). Counted over all retention, up to the 1024 most common fields per day. " +
+			"For what the values look like, follow with get_field_stats.\n\n" +
+			"Returns each field with its coverage (the share of logs carrying it, 0 to 1), " +
+			"filtered if a filter was given.",
 	}, getFields)
 
 	add(d, &mcp.Tool{
@@ -132,21 +135,44 @@ type getFieldsArgs struct {
 }
 
 func getFields(ctx context.Context, c Client, in getFieldsArgs) (any, error) {
-	response, err := c.Get(ctx, "/query/fields", nil)
+	needle := strings.ToLower(strings.TrimSpace(in.Filter))
+	keep := func(name string) bool { return needle == "" || strings.Contains(strings.ToLower(name), needle) }
+
+	response, err := c.Get(ctx, "/query/fields/observed", nil)
 	if err != nil {
 		return nil, err
 	}
-	fields := Field[[]any](response, "fields")
-	if needle := strings.ToLower(strings.TrimSpace(in.Filter)); needle != "" {
-		matched := make([]any, 0, len(fields))
-		for _, name := range fields {
-			if text, ok := name.(string); ok && strings.Contains(strings.ToLower(text), needle) {
-				matched = append(matched, name)
+	rows := Field[float64](response, "rows")
+	if rows == 0 {
+		// Nothing counted yet: the configured fields are still the right vocabulary.
+		catalog, err := c.Get(ctx, "/query/fields", nil)
+		if err != nil {
+			return nil, err
+		}
+		names, _ := catalog.([]any)
+		fields := make([]any, 0, len(names))
+		for _, n := range names {
+			if s, ok := n.(string); ok && keep(s) {
+				fields = append(fields, s)
 			}
 		}
-		fields = matched
+		return map[string]any{
+			"count":  len(fields),
+			"fields": fields,
+			"note":   "No field counts are available for this scope yet, so these are the configured fields rather than observed ones.",
+		}, nil
 	}
-	return map[string]any{"count": len(fields), "fields": fields}, nil
+
+	fields := []map[string]any{}
+	for _, f := range Field[[]any](response, "fields") {
+		name := Field[string](f, "name")
+		if name == "" || !keep(name) {
+			continue
+		}
+		coverage := math.Round(Field[float64](f, "rows")/rows*1000) / 1000
+		fields = append(fields, map[string]any{"name": name, "coverage": coverage})
+	}
+	return map[string]any{"count": len(fields), "rows": rows, "fields": fields}, nil
 }
 
 type getFieldStatsArgs struct {

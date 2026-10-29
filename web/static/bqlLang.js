@@ -25,6 +25,10 @@ const BQLLang = {
     // Configured schema fields (project defaults + admin-defined custom), loaded
     // from the backend so completion knows useful field names before any query runs.
     schemaFields: [],
+    // Fields the current fractal's or prism's logs carry, most common first, with
+    // how many rows carry each. Reloaded on every scope change.
+    observedFields: [],
+    _observedRows: new Map(),
 
     _byName: {},
     _readyCbs: [],
@@ -48,6 +52,10 @@ const BQLLang = {
         } catch (e) {
             this.schemaFields = [];
         }
+        if (window.FractalContext) {
+            FractalContext.subscribe('BQLLang', () => this.loadObserved());
+        }
+        this.loadObserved();
         this._index();
         this.loaded = true;
         const cbs = this._readyCbs;
@@ -55,13 +63,40 @@ const BQLLang = {
         cbs.forEach(cb => { try { cb(); } catch (e) { /* ignore */ } });
     },
 
-    // Field names known ahead of any query: base columns + configured schema
-    // fields, deduplicated, base columns first.
+    // loadObserved fetches the scope's observed fields. A response for a scope the
+    // user has since left is dropped rather than shown against the new one.
+    async loadObserved() {
+        // Cleared first so the previous scope's fields are never offered for this one.
+        this.observedFields = [];
+        this._observedRows = new Map();
+        if (!window.FractalContext || !FractalContext.hasScope()) return;
+        const token = FractalContext.scopeToken();
+        let data = null;
+        try {
+            const res = await fetch('/api/v1/query/fields/observed', { credentials: 'include' });
+            data = res.ok ? await res.json() : null;
+        } catch (e) { /* completion still works from configured fields */ }
+        if (FractalContext.isScopeStale(token) || !data || !Array.isArray(data.fields)) return;
+        this.observedFields = data.fields;
+        for (const f of data.fields) this._observedRows.set(f.name, f.rows);
+    },
+
+    // Ranks a field for completion: base columns first, then by how many of the
+    // scope's logs carry it; -1 if not counted.
+    fieldRank(name) {
+        if (this.baseColumns.includes(name)) return Infinity;
+        return this._observedRows.get(name) ?? -1;
+    },
+
+    // Field names known ahead of any query: base columns, then the scope's
+    // observed fields (most common first), then configured schema fields.
     knownFields() {
         const seen = new Set();
         const out = [];
-        for (const f of this.baseColumns) { if (!seen.has(f)) { seen.add(f); out.push(f); } }
-        for (const f of this.schemaFields) { if (f && !seen.has(f)) { seen.add(f); out.push(f); } }
+        const add = f => { if (f && !seen.has(f)) { seen.add(f); out.push(f); } };
+        this.baseColumns.forEach(add);
+        this.observedFields.forEach(f => add(f.name));
+        this.schemaFields.forEach(add);
         return out;
     },
 

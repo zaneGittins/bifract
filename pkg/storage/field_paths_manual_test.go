@@ -178,8 +178,8 @@ func TestReconcileFieldPaths(t *testing.T) {
 		t.Errorf("orphaned counts survived: %d", n)
 	}
 
-	if n := pathCounts(t, conn, "SELECT 'n', count() FROM "+fieldPathsStage)["n"]; n != 0 {
-		t.Errorf("the stage kept %d rows after the swaps", n)
+	if n := pathCounts(t, conn, "SELECT 'n', count() FROM system.tables WHERE database = currentDatabase() AND name = '"+fieldPathsStage+"'")["n"]; n != 0 {
+		t.Error("the stage outlived the pass")
 	}
 
 	bKey := "b|" + day(3).Format("2006-01-02") + "|"
@@ -213,6 +213,10 @@ func TestReconcileFieldPathsSpills(t *testing.T) {
 	ctx := context.Background()
 	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -3)
 	if err := conn.Exec(ctx, "DROP VIEW logs_field_paths_mv"); err != nil {
+		t.Fatal(err)
+	}
+	// Merging parts that hold millions of JSON paths exhausts a small test server.
+	if err := conn.Exec(ctx, "SYSTEM STOP MERGES logs"); err != nil {
 		t.Fatal(err)
 	}
 	for seed := range 10 {

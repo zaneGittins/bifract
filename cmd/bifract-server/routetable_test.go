@@ -368,6 +368,7 @@ var routeTable = []string{
 	"POST /api/v1/query-history 8 auth body resp viewer",
 	"DELETE /api/v1/query-history/{id} 8 auth resp viewer",
 	"GET /api/v1/query/fields 8 auth resp viewer",
+	"GET /api/v1/query/fields/observed 8 auth resp viewer",
 	"POST /api/v1/query/fieldstats 8 auth body resp viewer",
 	"POST /api/v1/query/live 8 auth body resp viewer",
 	"GET /api/v1/query/reference 8 auth viewer",

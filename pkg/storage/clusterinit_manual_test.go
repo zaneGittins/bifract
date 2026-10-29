@@ -266,4 +266,13 @@ func TestClusterFieldPaths(t *testing.T) {
 			t.Errorf("distributed %q = %d, want %d", p, n, want[p])
 		}
 	}
+
+	// Autocomplete's list sums both shards.
+	observed, err := c.ObservedFields(context.Background(), []string{"f"}, false)
+	if err != nil {
+		t.Fatalf("observed fields: %v", err)
+	}
+	if observed.Rows != 60 || len(observed.Fields) != 2 || observed.Fields[0] != (ObservedField{Name: "src", Rows: 60}) {
+		t.Errorf("observed = %+v", observed)
+	}
 }

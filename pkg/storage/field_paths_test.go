@@ -3,9 +3,12 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 
 	dbsql "bifract/db"
 	"bifract/internal/fakedb"
@@ -152,7 +155,7 @@ func TestReconcileContinuesPastAFailedPartition(t *testing.T) {
 		return fakedb.CHResult{}, false
 	})
 	today := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
-	if err := reconcileFieldPathsOn(context.Background(), f, today); err == nil {
+	if err := reconcileFieldPathsOn(context.Background(), f, today, func() error { return nil }, &fieldPathSplits{}); err == nil {
 		t.Error("the failed partition must still be reported")
 	}
 	if n := len(f.QueriedMatching("ARRAY JOIN")); n != 2 {
@@ -173,7 +176,7 @@ func TestRebuildSwapsInOnlyAfterTheRecount(t *testing.T) {
 	_, f := newFakeClient()
 	f.On("ARRAY JOIN", recount)
 	f.OnArg(partsQuery, fieldPathsStage, fakedb.Strs("partition_id", "s1"))
-	if err := rebuildFieldPaths(context.Background(), f, p); err != nil {
+	if err := rebuildFieldPaths(context.Background(), f, p, 1); err != nil {
 		t.Fatal(err)
 	}
 	if b := f.Batches(); len(b) != 1 || !b[0].Sent || len(b[0].Appended) != 2 || b[0].Appended[0][2] != "" {
@@ -188,7 +191,7 @@ func TestRebuildSwapsInOnlyAfterTheRecount(t *testing.T) {
 
 	_, f = newFakeClient()
 	f.On("ARRAY JOIN", fakedb.CHResult{Err: errors.New("memory limit")})
-	if err := rebuildFieldPaths(context.Background(), f, p); err == nil {
+	if err := rebuildFieldPaths(context.Background(), f, p, 1); err == nil {
 		t.Fatal("want the recount failure")
 	}
 	if len(f.ExecutedMatching("REPLACE PARTITION")) != 0 || len(f.Batches()) != 0 {
@@ -226,5 +229,103 @@ func TestFieldPathSettingsSpillUnderTheLimit(t *testing.T) {
 	}
 	if s["max_memory_usage"] != int64(900) {
 		t.Errorf("memory limit = %v", s["max_memory_usage"])
+	}
+	clause := SpillSettingsClause(900)
+	for k, v := range SpillSettings(900) {
+		if !strings.Contains(clause, fmt.Sprintf("%s = %v", k, v)) {
+			t.Errorf("SETTINGS clause %q is missing %s", clause, k)
+		}
+	}
+}
+
+// Observed fields come from the rollup for exactly the fractals in scope, plus the
+// unscoped rows when the default fractal is among them, most common first, with the
+// row count those fields are measured over.
+func TestObservedFields(t *testing.T) {
+	c, f := newFakeClient()
+	f.On("FROM logs_field_paths", fakedb.CHResult{
+		Cols: []fakedb.Col{{Column: "path", Type: "String"}, {Column: "n", Type: "UInt64"}},
+		Rows: [][]any{{"", uint64(100)}, {"host", uint64(90)}, {"rare", uint64(1)}},
+	})
+	got, err := c.ObservedFields(context.Background(), []string{"f1", "o'b"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Rows != 100 || len(got.Fields) != 2 || got.Fields[0] != (ObservedField{Name: "host", Rows: 90}) || got.Fields[1].Name != "rare" {
+		t.Errorf("got %+v", got)
+	}
+	q := f.QueriedMatching("FROM logs_field_paths")
+	if len(q) != 1 || !strings.Contains(q[0], "fractal_id IN ('f1', 'o\\'b', '')") {
+		t.Errorf("scope not applied:\n%s", q)
+	}
+
+	c, f = newFakeClient()
+	if got, err := c.ObservedFields(context.Background(), nil, false); err != nil || got.Rows != 0 || len(f.Queried()) != 0 {
+		t.Errorf("an empty scope must read nothing: %+v %v %v", got, err, f.Queried())
+	}
+}
+
+// logsParts scripts the logs partition listing for reconcile tests.
+func logsParts(f *fakedb.CH, rows ...[]any) {
+	f.Respond(func(q string, args []any) (fakedb.CHResult, bool) {
+		if strings.Contains(q, "FROM system.parts") && len(args) == 1 && args[0] == "logs" {
+			return fakedb.CHResult{
+				Cols: []fakedb.Col{{Column: "partition", Type: "String"}, {Column: "id", Type: "String"}, {Column: "rows", Type: "UInt64"}},
+				Rows: rows,
+			}, true
+		}
+		return fakedb.CHResult{}, false
+	})
+}
+
+// The stage exists only for a pass that repairs something, is rebuilt from the
+// current definition each time, and is gone when the pass ends.
+func TestReconcileStagesOnlyWhenRepairing(t *testing.T) {
+	today := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	created := 0
+	create := func() error { created++; return nil }
+
+	_, f := newFakeClient()
+	if err := reconcileFieldPathsOn(context.Background(), f, today, create, &fieldPathSplits{}); err != nil {
+		t.Fatal(err)
+	}
+	if created != 0 || len(f.ExecutedMatching(fieldPathsStage)) != 0 {
+		t.Errorf("a pass with nothing to repair touched the stage: created %d, %v", created, f.Executed())
+	}
+
+	_, f = newFakeClient()
+	logsParts(f, []any{"('a','2026-10-01')", "a1", uint64(5)}, []any{"('a','2026-10-02')", "a2", uint64(5)})
+	_ = reconcileFieldPathsOn(context.Background(), f, today, create, &fieldPathSplits{})
+	drops := f.ExecutedMatching("DROP TABLE IF EXISTS `" + fieldPathsStage + "`")
+	if created != 1 || len(drops) != 2 {
+		t.Errorf("want the stage created once and dropped before and after: created %d, drops %d", created, len(drops))
+	}
+}
+
+// A swap that finds nothing staged is a failure, not a repair.
+func TestSwapWithNothingStagedFails(t *testing.T) {
+	_, f := newFakeClient()
+	if err := swapInStage(context.Background(), f, "('a','2026-10-01')"); err == nil {
+		t.Error("want an error when the stage holds nothing")
+	}
+}
+
+// A partition whose slices hit the query budget is sliced finer on the next pass.
+func TestTimedOutRebuildSlicesFiner(t *testing.T) {
+	today := time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC)
+	_, f := newFakeClient()
+	logsParts(f, []any{"('a','2026-10-01')", "a1", uint64(5)})
+	timeout := fakedb.CHResult{Err: &clickhouse.Exception{Code: 159, Message: "Timeout exceeded"}}
+	f.On("ARRAY JOIN", timeout)
+	f.On("quantiles(", timeout)
+	splits := &fieldPathSplits{}
+	for range 7 {
+		_ = reconcileFieldPathsOn(context.Background(), f, today, func() error { return nil }, splits)
+	}
+	if got := splits.get("a1"); got != fieldPathMaxSplit {
+		t.Errorf("split = %d, want it doubled to the cap %d", got, fieldPathMaxSplit)
+	}
+	if got := splits.get("other"); got != 1 {
+		t.Errorf("an untouched partition split = %d, want 1", got)
 	}
 }

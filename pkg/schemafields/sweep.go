@@ -156,8 +156,9 @@ func (s *Sweeper) reconcileLoop(ctx context.Context) {
 }
 
 // reconcilePaths repairs closed days of the path rollup that disagree with logs.
-func (s *Sweeper) reconcilePaths(ctx context.Context) {
-	unlock, ok := s.pg.TryAdvisoryLock(ctx, storage.LockFieldPathReconcile)
+// A backfill can run for hours, so it stops if the lock's connection is lost.
+func (s *Sweeper) reconcilePaths(parent context.Context) {
+	ctx, unlock, ok := s.pg.HoldAdvisoryLock(parent, storage.LockFieldPathReconcile)
 	if !ok {
 		return
 	}

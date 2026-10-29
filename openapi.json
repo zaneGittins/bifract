@@ -19745,7 +19745,7 @@
     "/api/v1/logs/fields": {
       "get": {
         "operationId": "get_api_v1_logs_fields",
-        "summary": "List the field names present in the fractal's logs.",
+        "summary": "Return one log's fields, addressed by log_id and timestamp.",
         "description": "Requires the viewer role on the fractal or prism in scope.",
         "tags": [
           "logs"
@@ -26951,6 +26951,66 @@
                     "success",
                     "data"
                   ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "viewer"
+      }
+    },
+    "/api/v1/query/fields/observed": {
+      "get": {
+        "operationId": "get_api_v1_query_fields_observed",
+        "summary": "List the most common fields the fractal's or prism's logs carry, with row counts over all retention.",
+        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "tags": [
+          "query"
+        ],
+        "parameters": [
+          {
+            "name": "fractal_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/query.ObservedFieldsResponse"
                 }
               }
             }
@@ -38725,6 +38785,28 @@
           "timestamp"
         ]
       },
+      "query.ObservedFieldsResponse": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/storage.ObservedField"
+            }
+          },
+          "rows": {
+            "type": "integer"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "fields",
+          "rows"
+        ]
+      },
       "query.ProfileData": {
         "type": "object",
         "properties": {
@@ -40072,6 +40154,21 @@
           "author_gravatar_initial",
           "created_at",
           "updated_at"
+        ]
+      },
+      "storage.ObservedField": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "rows"
         ]
       },
       "storage.PrismPermission": {

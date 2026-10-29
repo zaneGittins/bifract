@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,8 @@ type QueryHandler struct {
 	// pgrRecorder accumulates pgr() score distributions for severity calibration. Optional:
 	// nil in tools and tests, where calibration has no meaning.
 	pgrRecorder *pgrcal.Recorder
+	// observedFields caches each scope's field list for autocomplete and get_fields.
+	observedFields *observedFieldsCache
 }
 
 // tlshSkipWarnings explains, per reason, which fractals tlsh() did not search.
@@ -473,6 +476,7 @@ func NewQueryHandlerFull(db *storage.ClickHouseClient, maxRows int, fractalManag
 		fractalManager:    fractalManager,
 		dictionaryManager: dictManager,
 		prismManager:      prismManager,
+		observedFields:    newObservedFieldsCache(),
 	}
 }
 
@@ -749,6 +753,93 @@ func projectsTimestamp(projections []parser.SourceProjection) bool {
 	return false
 }
 
+// logScope is the set of fractals a request reads, resolved and authorized.
+type logScope struct {
+	fractalID    string   // the single fractal read, when no prism is
+	prismID      string   // the prism read, when one is
+	prismMembers []string // its member fractals; empty when it has none
+	includeEmpty bool     // rows stored without a fractal id, which belong to the default fractal
+}
+
+func (s logScope) isPrism() bool { return s.prismID != "" }
+
+// scopeError is a scope failure and the status to answer it with.
+type scopeError struct {
+	status int
+	msg    string
+}
+
+// authorizeScoped requires a signed-in caller holding minRole on the fractal or
+// prism the auth middleware put in context.
+func authorizeScoped(r *http.Request, minRole rbac.Role) *scopeError {
+	user, ok := r.Context().Value("user").(*storage.User)
+	if !ok || user == nil {
+		return &scopeError{http.StatusUnauthorized, "Authentication required"}
+	}
+	if !rbac.HasAccess(user, rbac.RoleFromContext(r.Context()), minRole) && !rbac.HasAccess(user, rbac.PrismRoleFromContext(r.Context()), minRole) {
+		return &scopeError{http.StatusForbidden, "Insufficient permissions"}
+	}
+	return nil
+}
+
+// resolveScope decides which fractals a request reads: the requested fractal if
+// the caller holds minRole on it, else the session's or API key's prism (whose
+// members it may all read), else its selected or the default fractal.
+func (h *QueryHandler) resolveScope(r *http.Request, requested string, minRole rbac.Role) (logScope, *scopeError) {
+	var scope logScope
+	if requested != "" {
+		if user, ok := r.Context().Value("user").(*storage.User); ok && !user.IsAdmin && h.rbacResolver != nil {
+			role := h.rbacResolver.ResolveRole(r.Context(), user, requested)
+			if !rbac.HasAccess(user, role, minRole) {
+				return scope, &scopeError{http.StatusForbidden, "Insufficient permissions on target fractal"}
+			}
+		}
+		scope.fractalID = requested
+	} else {
+		id, err := h.getSelectedIndex(r)
+		if err != nil {
+			log.Printf("[QueryHandler] Failed to get selected index: %v", err)
+			return scope, &scopeError{http.StatusInternalServerError, "Failed to determine fractal context"}
+		}
+		scope.fractalID = id
+	}
+
+	if prismID, _ := r.Context().Value("selected_prism").(string); prismID != "" && requested == "" {
+		hasAccess := false
+		if user, ok := r.Context().Value("user").(*storage.User); ok {
+			if user.IsAdmin {
+				hasAccess = true
+			} else if ctxRole := rbac.PrismRoleFromContext(r.Context()); ctxRole.Satisfies(minRole) {
+				// Context role is set by auth middleware for both session and API key auth
+				hasAccess = true
+			} else if h.rbacResolver != nil {
+				if role, err := h.rbacResolver.ResolvePrismRole(r.Context(), user.Username, prismID); err == nil {
+					hasAccess = role.Satisfies(minRole)
+				}
+			}
+		}
+		if !hasAccess {
+			return scope, &scopeError{http.StatusForbidden, "Insufficient permissions"}
+		}
+		scope.prismID = prismID
+		// Prism access grants query access to all member fractals
+		if h.prismManager != nil {
+			scope.prismMembers, _ = h.prismManager.GetMemberFractalIDs(r.Context(), prismID)
+		}
+	}
+
+	if h.fractalManager != nil {
+		if def, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
+			if scope.isPrism() {
+				scope.includeEmpty = slices.Contains(scope.prismMembers, def.ID)
+			} else {
+				scope.includeEmpty = scope.fractalID == def.ID
+			}
+		}
+	}
+	return scope, nil
+}
+
 // prepareQuery resolves auth, scope, and the translated SQL shared by the search
 // and export handlers. On failure it writes the response and returns nil.
 func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purpose queryPurpose) (prep *preparedQuery) {
@@ -761,21 +852,8 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		return
 	}
 
-	user, ok := r.Context().Value("user").(*storage.User)
-	if !ok || user == nil {
-		respondJSON(w, http.StatusUnauthorized, QueryResponse{
-			Success: false,
-			Error:   "Authentication required",
-		})
-		return
-	}
-	fractalRole := rbac.RoleFromContext(r.Context())
-	prismRole := rbac.PrismRoleFromContext(r.Context())
-	if !rbac.HasAccess(user, fractalRole, minRole) && !rbac.HasAccess(user, prismRole, minRole) {
-		respondJSON(w, http.StatusForbidden, QueryResponse{
-			Success: false,
-			Error:   "Insufficient permissions",
-		})
+	if err := authorizeScoped(r, minRole); err != nil {
+		respondJSON(w, err.status, QueryResponse{Success: false, Error: err.msg})
 		return
 	}
 
@@ -850,37 +928,16 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		return
 	}
 
-	// Get selected index for query scoping
-	var selectedIndex string
-
-	// Use index_id from request body if provided, otherwise fall back to session/default
-	if req.FractalID != "" {
-		// Verify the user has access to the requested fractal
-		if user, ok := r.Context().Value("user").(*storage.User); ok && !user.IsAdmin && h.rbacResolver != nil {
-			role := h.rbacResolver.ResolveRole(r.Context(), user, req.FractalID)
-			if !rbac.HasAccess(user, role, minRole) {
-				respondJSON(w, http.StatusForbidden, QueryResponse{
-					Success: false,
-					Error:   "Insufficient permissions on target fractal",
-				})
-				return
-			}
-		}
-		selectedIndex = req.FractalID
-		log.Printf("[QueryHandler] Using index_id from request: %s", req.FractalID)
-	} else {
-		selectedIndex, err = h.getSelectedIndex(r)
-		if err != nil {
-			log.Printf("[QueryHandler] Failed to get selected index: %v", err)
-			respondJSON(w, http.StatusInternalServerError, QueryResponse{
-				Success: false,
-				Error:   "Failed to determine fractal context",
-				Query:   req.Query,
-			})
-			return
-		}
-		log.Printf("[QueryHandler] Using index_id from session/default: %s", selectedIndex)
+	scope, scopeErr := h.resolveScope(r, req.FractalID, minRole)
+	if scopeErr != nil {
+		respondJSON(w, scopeErr.status, QueryResponse{Success: false, Error: scopeErr.msg, Query: req.Query})
+		return
 	}
+	selectedIndex := scope.fractalID
+	selectedPrismID := scope.prismID
+	isPrismContext := scope.isPrism()
+	prismFractalIDs := scope.prismMembers
+	includeEmptyFractalID := scope.includeEmpty
 
 	var sql string
 	var fieldOrder []string
@@ -935,65 +992,18 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	}
 	queryMaxRows = maxRows
 
-	// Check if a prism is selected; resolve to member fractal IDs
-	var prismFractalIDs []string
-	selectedPrismID, _ := r.Context().Value("selected_prism").(string)
-	isPrismContext := selectedPrismID != "" && req.FractalID == ""
-	if isPrismContext {
-		hasAccess := false
-		if user, ok := r.Context().Value("user").(*storage.User); ok {
-			if user.IsAdmin {
-				hasAccess = true
-			} else if ctxRole := rbac.PrismRoleFromContext(r.Context()); ctxRole.Satisfies(minRole) {
-				// Context role is set by auth middleware for both session and API key auth
-				hasAccess = true
-			} else if h.rbacResolver != nil {
-				if role, err := h.rbacResolver.ResolvePrismRole(r.Context(), user.Username, selectedPrismID); err == nil {
-					hasAccess = role.Satisfies(minRole)
-				}
-			}
+	if isPrismContext && len(prismFractalIDs) == 0 {
+		if purpose == purposeExport {
+			return &preparedQuery{req: req, emptyScope: true, prismID: selectedPrismID}
 		}
-		if !hasAccess {
-			respondJSON(w, http.StatusForbidden, QueryResponse{
-				Success: false,
-				Error:   "Insufficient permissions",
-			})
-			return
-		}
-		// Prism access grants query access to all member fractals
-		if h.prismManager != nil {
-			prismFractalIDs, _ = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
-		}
-		if len(prismFractalIDs) == 0 {
-			if purpose == purposeExport {
-				return &preparedQuery{req: req, emptyScope: true, prismID: selectedPrismID}
-			}
-			respondJSON(w, http.StatusOK, QueryResponse{
-				Success:    true,
-				Results:    []map[string]interface{}{},
-				Count:      0,
-				Query:      req.Query,
-				FieldOrder: []string{},
-			})
-			return
-		}
-	}
-
-	// Include legacy logs with empty fractal_id when querying default fractal (directly or via prism)
-	includeEmptyFractalID := false
-	if h.fractalManager != nil {
-		if defaultFractal, err := h.fractalManager.GetDefaultFractal(r.Context()); err == nil {
-			if len(prismFractalIDs) > 0 {
-				for _, id := range prismFractalIDs {
-					if id == defaultFractal.ID {
-						includeEmptyFractalID = true
-						break
-					}
-				}
-			} else if !isPrismContext && selectedIndex == defaultFractal.ID {
-				includeEmptyFractalID = true
-			}
-		}
+		respondJSON(w, http.StatusOK, QueryResponse{
+			Success:    true,
+			Results:    []map[string]interface{}{},
+			Count:      0,
+			Query:      req.Query,
+			FieldOrder: []string{},
+		})
+		return
 	}
 
 	// Load dictionary mappings for match() resolution
@@ -1086,7 +1096,9 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		if !isPrismContext {
 			scopeFractals = []string{selectedIndex}
 		}
-		matches, rerr := h.tlshResolver().Resolve(r.Context(), tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: selectedPrismID})
+		// Dictionaries follow the session's prism even for a requested fractal, as match() does above.
+		ctxPrismID, _ := r.Context().Value("selected_prism").(string)
+		matches, rerr := h.tlshResolver().Resolve(r.Context(), tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: ctxPrismID})
 		if rerr != nil {
 			// Configuration and input problems both land here (no index, bad digest,
 			// oversized dictionary), and each names the fix, so surface the message.

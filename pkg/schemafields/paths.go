@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"sort"
-	"strings"
 
 	"bifract/pkg/storage"
 )
@@ -70,7 +68,7 @@ FROM %s WHERE fractal_id = %s
 GROUP BY path
 ORDER BY path = '' DESC, n DESC
 LIMIT %d
-SETTINGS %s`, s.ch.FieldPathsReadTable(), quoteCH(id), sampleMaxFields+1, spillClause(sweepMaxMemoryBytes()))
+SETTINGS %s`, s.ch.FieldPathsReadTable(), quoteCH(id), sampleMaxFields+1, storage.SpillSettingsClause(sweepMaxMemoryBytes()))
 	rows, err := s.ch.QueryLowPriorityBounded(ctx, sql, sweepMaxMemoryBytes())
 	if err != nil {
 		return nil, err
@@ -88,21 +86,6 @@ SETTINGS %s`, s.ch.FieldPathsReadTable(), quoteCH(id), sampleMaxFields+1, spillC
 		return nil, nil
 	}
 	return pc, nil
-}
-
-// spillClause renders storage.SpillSettings as a SETTINGS list, in a stable order.
-func spillClause(maxMemoryBytes int64) string {
-	settings := storage.SpillSettings(maxMemoryBytes)
-	keys := make([]string, 0, len(settings))
-	for k := range settings {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = fmt.Sprintf("%s = %v", k, settings[k])
-	}
-	return strings.Join(parts, ", ")
 }
 
 // totalRows is the coverage denominator: every row the rollup counted, or the
@@ -130,5 +113,5 @@ func (r fractalResult) present(name string) uint64 {
 	if r.SampledRows == 0 {
 		return 0
 	}
-	return sampled * r.Paths.Rows / r.SampledRows
+	return uint64(float64(sampled) / float64(r.SampledRows) * float64(r.Paths.Rows))
 }
