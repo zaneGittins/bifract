@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -135,41 +134,6 @@ func TestDeriveUsername(t *testing.T) {
 	}
 }
 
-func TestStateIsSingleUseAndExpires(t *testing.T) {
-	h := &Handler{states: map[string]stateEntry{}}
-	hexRe := regexp.MustCompile(`^[0-9a-f]{64}$`)
-
-	s1, n1, err := h.generateState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s2, n2, _ := h.generateState()
-	if !hexRe.MatchString(s1) || !hexRe.MatchString(n1) {
-		t.Fatalf("state %q / nonce %q are not 32 random bytes", s1, n1)
-	}
-	if s1 == s2 || n1 == n2 || s1 == n1 {
-		t.Fatal("state and nonce values repeat")
-	}
-
-	if nonce, ok := h.consumeState(s1); !ok || nonce != n1 {
-		t.Fatalf("consumeState = (%q, %v), want (%q, true)", nonce, ok, n1)
-	}
-	// Replaying a state, or presenting one never issued, fails.
-	for _, s := range []string{s1, "", "deadbeef"} {
-		if _, ok := h.consumeState(s); ok {
-			t.Errorf("state %q accepted", s)
-		}
-	}
-
-	h.states[s2] = stateEntry{nonce: n2, expiresAt: time.Now().Add(-time.Second)}
-	if _, ok := h.consumeState(s2); ok {
-		t.Fatal("expired state accepted")
-	}
-	if len(h.states) != 0 {
-		t.Fatalf("%d states left behind", len(h.states))
-	}
-}
-
 // userRec is a users row as the fake database holds it.
 type userRec struct {
 	username string
@@ -189,6 +153,10 @@ type harness struct {
 	sessErr              error
 	sessions             []string
 	events               []string
+
+	// jar is the browser's OIDC state cookie, as login set it and callbacks
+	// leave it.
+	jar *http.Cookie
 }
 
 func newHarness(t *testing.T, configure func(*Config)) *harness {
@@ -270,6 +238,7 @@ func (hs *harness) login() (state, nonce string) {
 	if rec.Code != http.StatusFound {
 		hs.t.Fatalf("login status = %d", rec.Code)
 	}
+	hs.jar = stateCookieIn(rec)
 	loc, err := url.Parse(rec.Header().Get("Location"))
 	if err != nil {
 		hs.t.Fatal(err)
@@ -281,8 +250,23 @@ func (hs *harness) callback(query url.Values) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/callback?"+query.Encode(), nil)
 	r.RemoteAddr = "192.0.2.1:5555"
+	if hs.jar != nil {
+		r.AddCookie(hs.jar)
+	}
 	hs.h.HandleCallback(rec, r)
+	if c := stateCookieIn(rec); c != nil && c.MaxAge < 0 {
+		hs.jar = nil
+	}
 	return rec
+}
+
+func stateCookieIn(rec *httptest.ResponseRecorder) *http.Cookie {
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == stateCookie || c.Name == secureStateCookie {
+			return c
+		}
+	}
+	return nil
 }
 
 // signIn runs a whole login with the claims edit applied to a valid claim set.
@@ -367,6 +351,15 @@ func TestLoginRedirect(t *testing.T) {
 	if q.Get("client_secret") != "" {
 		t.Error("client secret in the browser redirect")
 	}
+	// The attempt is tied to this browser by a cookie the IdP's cross-site
+	// redirect back still carries (Lax) and scripts cannot read.
+	c := stateCookieIn(rec)
+	if c == nil || !strings.HasPrefix(c.Value, q.Get("state")+".") {
+		t.Fatalf("state cookie = %+v", c)
+	}
+	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Name != "__Host-bifract_oidc" || c.Path != "/" || c.MaxAge != 600 {
+		t.Errorf("state cookie flags = %+v", c)
+	}
 }
 
 func TestCallbackSignsInExistingUser(t *testing.T) {
@@ -403,8 +396,13 @@ func TestCallbackSecureCookieFollowsConfig(t *testing.T) {
 	hs := newHarness(t, nil)
 	hs.h.secureCookies = false
 	hs.subjects["sub-123"] = userRec{username: "alice", enabled: true}
-	if c := sessionCookie(hs.signIn(nil)); c == nil || c.Secure {
+	rec := hs.signIn(nil)
+	if c := sessionCookie(rec); c == nil || c.Secure {
 		t.Fatalf("cookie = %+v, want non-Secure for a plain-HTTP deployment", c)
+	}
+	// Browsers reject a __Host- cookie that is not Secure.
+	if c := stateCookieIn(rec); c == nil || c.Name != "bifract_oidc" || c.Secure {
+		t.Fatalf("state cookie = %+v, want plain bifract_oidc", c)
 	}
 }
 
@@ -506,11 +504,25 @@ func TestCallbackFailsClosed(t *testing.T) {
 			hs.login()
 			return url.Values{"state": {"0123"}, "code": {"c"}}
 		}, want: "oidc_failed"},
-		{name: "expired state", setup: func(hs *harness) url.Values {
-			state, nonce := hs.login()
-			hs.h.states[state] = stateEntry{nonce: nonce, expiresAt: time.Now().Add(-time.Second)}
-			return url.Values{"state": {state}, "code": {"c"}}
+		// The browser drops the cookie once it expires.
+		{name: "no state cookie", setup: valid(func(hs *harness, _ map[string]any) *bool {
+			hs.jar = nil
+			return nil
+		}), want: "oidc_failed"},
+		// Login CSRF: the attacker starts a login, then has the victim's
+		// browser (holding its own attempt, or none) finish it.
+		// The token is valid for this browser's nonce, so only the state
+		// comparison can refuse it.
+		{name: "state from another browser", setup: func(hs *harness) url.Values {
+			attackerState, _ := hs.login()
+			_, nonce := hs.login()
+			hs.idp.issue(hs.idp.claims(nonce), hs.idp.key)
+			return url.Values{"state": {attackerState}, "code": {"c"}}
 		}, want: "oidc_failed"},
+		{name: "malformed state cookie", setup: valid(func(hs *harness, _ map[string]any) *bool {
+			hs.jar.Value = strings.SplitN(hs.jar.Value, ".", 2)[0]
+			return nil
+		}), want: "oidc_failed"},
 		{name: "provider error", setup: func(hs *harness) url.Values {
 			state, _ := hs.login()
 			return url.Values{"state": {state}, "error": {"access_denied"}}
@@ -587,8 +599,8 @@ func TestCallbackFailsClosed(t *testing.T) {
 	}
 }
 
-// A state is consumed by its first callback, whatever the outcome, so a
-// captured callback URL cannot be replayed.
+// A state cookie is cleared by its first callback, whatever the outcome, so the
+// callback URL cannot be replayed in that browser.
 func TestCallbackStateCannotBeReplayed(t *testing.T) {
 	hs := newHarness(t, nil)
 	hs.subjects["sub-123"] = userRec{username: "alice", enabled: true}
@@ -596,8 +608,12 @@ func TestCallbackStateCannotBeReplayed(t *testing.T) {
 	hs.idp.issue(hs.idp.claims(nonce), hs.idp.key)
 	q := url.Values{"state": {state}, "code": {"c"}}
 
-	if loc := redirectedTo(t, hs.callback(q)); loc != "/" {
+	first := hs.callback(q)
+	if loc := redirectedTo(t, first); loc != "/" {
 		t.Fatalf("first callback redirected to %q", loc)
+	}
+	if c := stateCookieIn(first); c == nil || c.MaxAge >= 0 || c.Path != "/" {
+		t.Fatalf("state cookie not cleared: %+v", c)
 	}
 	rec := hs.callback(q)
 	if loc := redirectedTo(t, rec); loc != "/login.html?error=oidc_failed" || sessionCookie(rec) != nil {

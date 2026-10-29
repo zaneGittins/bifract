@@ -19,6 +19,8 @@ Bifract supports single sign-on with any OpenID Connect provider (Entra ID, Okta
 3. Apply it: `bifract --reconfigure --dir /opt/bifract`.
 4. Open the login page. It now shows **Sign in with SSO**.
 
+Users must open Bifract on the same host as the redirect URI. A sign in is tied to the browser that started it by a cookie, and a browser on another host (for example an IP address instead of the DNS name) does not send it, so the sign in fails.
+
 ![Login page with SSO button](../images/administration/sso-login.png)
 
 On first SSO sign in, Bifract creates the account with the role in `BIFRACT_OIDC_DEFAULT_ROLE`. SSO accounts cannot sign in with a password and are exempt from Bifract's two-factor requirement. Disabling an SSO user in **Settings > Users** blocks their SSO sign in too.
