@@ -112,6 +112,7 @@ func TestParseTimeRange(t *testing.T) {
 			"now-24h": "24h",
 			"-15m":    "15m",
 			"-7d":     "7d",
+			"-14d":    "14d",
 			"-30d":    "30d",
 			"-1h":     "1h",
 			"-60m":    "1h", // same duration, same preset

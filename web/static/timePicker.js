@@ -18,6 +18,7 @@ const TimePicker = {
         '12h': 12 * 60 * 60 * 1000,
         '24h': 24 * 60 * 60 * 1000,
         '7d':  7 * 24 * 60 * 60 * 1000,
+        '14d': 14 * 24 * 60 * 60 * 1000,
         '30d': 30 * 24 * 60 * 60 * 1000,
     },
 
@@ -26,6 +27,105 @@ const TimePicker = {
         hours:   60 * 60 * 1000,
         days:    24 * 60 * 60 * 1000,
         weeks:   7 * 24 * 60 * 60 * 1000,
+    },
+
+    _unitBySuffix: { m: 'minutes', h: 'hours', d: 'days', w: 'weeks' },
+    _unitShort: { minutes: 'm', hours: 'h', days: 'd', weeks: 'w' },
+
+    CALENDAR_LABELS: {
+        today: 'Today', yesterday: 'Yesterday',
+        this_week: 'This week', last_week: 'Last week',
+        this_month: 'This month', last_month: 'Last month',
+    },
+
+    // Where "all" starts, and the floor for any offset.
+    ALL_START_MS: Date.UTC(2000, 0, 1),
+
+    isPreset(type) { return Object.hasOwn(this._presetMs, type); },
+    isCalendar(type) { return Object.hasOwn(this.CALENDAR_LABELS, type); },
+    isValidType(type) {
+        return this.isPreset(type) || this.isCalendar(type) || ['relative', 'custom', 'all', 'live'].includes(type);
+    },
+
+    // Calendar ranges in the display zone, weeks starting Monday. Those named
+    // "this" or "today" run to now; the others close at a midnight.
+    calendarRange(type, nowMs = Date.now()) {
+        const p = TZ.parts(nowMs);
+        if (!p || !this.isCalendar(type)) return null;
+        const midnight = (y, m, d) => {
+            const dt = new Date(Date.UTC(y, m - 1, d));
+            const pad = n => String(n).padStart(2, '0');
+            return TZ.parseWallClock(`${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())} 00:00`);
+        };
+        const dow = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(p.weekday);
+        const { year: y, month: m, day: d } = p;
+        const [start, end] = {
+            today:      [midnight(y, m, d), nowMs],
+            yesterday:  [midnight(y, m, d - 1), midnight(y, m, d)],
+            this_week:  [midnight(y, m, d - dow), nowMs],
+            last_week:  [midnight(y, m, d - dow - 7), midnight(y, m, d - dow)],
+            this_month: [midnight(y, m, 1), nowMs],
+            last_month: [midnight(y, m - 1, 1), midnight(y, m, 1)],
+        }[type];
+        return { start: new Date(start).toISOString(), end: new Date(end).toISOString() };
+    },
+
+    // False for ranges that close in the past, where a "last N" widening would miss them.
+    endsNow(type = this.state.type) {
+        return !['custom', 'yesterday', 'last_week', 'last_month'].includes(type);
+    },
+
+    // One Start/End bound: "now", an offset back from now ("7d", "90m"), or a
+    // wall clock in the display zone ("2026-10-20 08:00", "2026-10-20").
+    _parseBound(str, nowMs) {
+        const s = String(str || '').trim();
+        if (/^now$/i.test(s)) return { ms: nowMs, now: true };
+        const rel = /^-?(\d+)\s*([mhdw])$/i.exec(s);
+        if (rel) {
+            const n = parseInt(rel[1], 10);
+            const unit = this._unitBySuffix[rel[2].toLowerCase()];
+            const ms = nowMs - n * this._unitMs[unit];
+            return n > 0 && ms >= this.ALL_START_MS ? { ms, n, unit } : null;
+        }
+        const ms = TZ.parseWallClock(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s} 00:00` : s);
+        return Number.isFinite(ms) ? { ms } : null;
+    },
+
+    // Picker state for the Start/End inputs, or null when they do not form a
+    // range. Unedited inputs keep the current range, and an offset ending now
+    // stays relative (or its preset) so it rolls forward on re-run.
+    parseInputs(startStr, endStr, nowMs = Date.now()) {
+        const shown = this.boundsText(this.state, nowMs);
+        if (String(startStr || '').trim() === shown.start && (String(endStr || '').trim() || 'now') === shown.end) {
+            return { type: this.state.type };
+        }
+        const start = this._parseBound(startStr, nowMs);
+        const end = this._parseBound(endStr || 'now', nowMs);
+        if (!start || !end || start.ms >= end.ms) return null;
+        if (end.now && start.n) {
+            const span = start.n * this._unitMs[start.unit];
+            const preset = Object.keys(this._presetMs).find(k => this._presetMs[k] === span);
+            return preset ? { type: preset } : { type: 'relative', relativeN: start.n, relativeUnit: start.unit };
+        }
+        return { type: 'custom', customStart: new Date(start.ms).toISOString(), customEnd: new Date(end.ms).toISOString() };
+    },
+
+    // What the Start/End inputs show for a state, in the syntax they accept.
+    boundsText(state, nowMs = Date.now()) {
+        const { type } = state;
+        if (this.isPreset(type)) return { start: type, end: 'now' };
+        if (type === 'relative') {
+            return { start: `${state.relativeN}${this._unitShort[state.relativeUnit] || 'h'}`, end: 'now' };
+        }
+        const range = type === 'custom'
+            ? { start: state.customStart, end: state.customEnd }
+            : this.calendarRange(type, nowMs);
+        if (range && range.start && range.end) {
+            const secs = [range.start, range.end].some(v => TZ.parts(v)?.second);
+            const fmt = v => TZ.formatInput(v, secs);
+            return { start: fmt(range.start), end: this.endsNow(type) ? 'now' : fmt(range.end) };
+        }
+        return { start: '', end: 'now' };
     },
 
     getTimeRange() {
@@ -39,11 +139,14 @@ const TimePicker = {
 
         if (type === 'relative') {
             const ms = relativeN * (this._unitMs[relativeUnit] || this._unitMs.hours);
-            return { start: new Date(now - ms).toISOString(), end: now.toISOString() };
+            const start = Math.max(now - ms, this.ALL_START_MS);
+            return { start: new Date(Number.isFinite(start) ? start : now - 86400000).toISOString(), end: now.toISOString() };
         }
 
+        if (this.isCalendar(type)) return this.calendarRange(type, now.getTime());
+
         if (type === 'all') {
-            return { start: new Date('2000-01-01T00:00:00Z').toISOString(), end: now.toISOString() };
+            return { start: new Date(this.ALL_START_MS).toISOString(), end: now.toISOString() };
         }
 
         // Live reads arrivals itself; anything asking for a plain range gets its window.
@@ -51,22 +154,17 @@ const TimePicker = {
             return { start: new Date(now - 15 * 60 * 1000).toISOString(), end: now.toISOString() };
         }
 
-        const ms = this._presetMs[type] || this._presetMs['24h'];
+        const ms = this.isPreset(type) ? this._presetMs[type] : this._presetMs['24h'];
         return { start: new Date(now - ms).toISOString(), end: now.toISOString() };
     },
 
     getLabel() {
         const { type, relativeN, relativeUnit, customStart, customEnd } = this.state;
-        const unitShort = { minutes: 'm', hours: 'h', days: 'd', weeks: 'w' };
-        const presetLabels = {
-            '5m': 'Last 5m', '15m': 'Last 15m', '30m': 'Last 30m',
-            '1h': 'Last 1h', '2h': 'Last 2h', '4h': 'Last 4h',
-            '6h': 'Last 6h', '12h': 'Last 12h', '24h': 'Last 24h',
-            '7d': 'Last 7d', '30d': 'Last 30d',
-        };
         if (type === 'all') return 'All Time';
         if (type === 'live') return 'Live';
-        if (type === 'relative') return `Last ${relativeN}${unitShort[relativeUnit] || relativeUnit[0]}`;
+        if (this.isPreset(type)) return `Last ${type}`;
+        if (this.isCalendar(type)) return this.CALENDAR_LABELS[type];
+        if (type === 'relative') return `Last ${relativeN}${this._unitShort[relativeUnit] || relativeUnit[0]}`;
         if (type === 'custom') {
             if (customStart && customEnd) {
                 const fmt = d => {
@@ -77,21 +175,23 @@ const TimePicker = {
             }
             return 'Custom';
         }
-        return presetLabels[type] || 'Last 24h';
+        return 'Last 24h';
     },
 
     setState(newState, silent) {
+        // Range types arrive from URLs and storage; an unknown one changes nothing.
+        if ('type' in newState && !this.isValidType(newState.type)) return;
         Object.assign(this.state, newState);
         // Leaving the Live range ends Live, whether or not a search runs next.
         if (this.state.type !== 'live' && window.LiveSearch && LiveSearch.active) LiveSearch.stop();
         this._updateLabel();
         this._updateActivePreset();
+        this._syncInputs();
         if (!silent) this.saveToStorage();
     },
 
     // applyState restores a full time-range selection (from a saved query,
-    // history entry, or share link) into the picker, syncing the relative/
-    // absolute input fields so reopening the panel shows the right values.
+    // history entry, or share link) into the picker.
     // `state` uses camelCase: { type, relativeN, relativeUnit, customStart, customEnd }.
     applyState(state, silent) {
         if (!state || !state.type) return;
@@ -99,17 +199,9 @@ const TimePicker = {
         if (state.type === 'custom' && state.customStart && state.customEnd) {
             newState.customStart = state.customStart;
             newState.customEnd = state.customEnd;
-            const absStart = document.getElementById('tpAbsStart');
-            const absEnd = document.getElementById('tpAbsEnd');
-            if (absStart) absStart.value = this._toDatetimeLocal(state.customStart);
-            if (absEnd) absEnd.value = this._toDatetimeLocal(state.customEnd);
         } else if (state.type === 'relative' && state.relativeN) {
             newState.relativeN = parseInt(state.relativeN, 10);
             newState.relativeUnit = state.relativeUnit || 'hours';
-            const nEl = document.getElementById('tpRelativeN');
-            const unitEl = document.getElementById('tpRelativeUnit');
-            if (nEl) nEl.value = newState.relativeN;
-            if (unitEl) unitEl.value = newState.relativeUnit;
         }
         this.setState(newState, silent);
     },
@@ -160,10 +252,6 @@ const TimePicker = {
                     const range = JSON.parse(saved);
                     newState.customStart = range.start;
                     newState.customEnd = range.end;
-                    const absStart = document.getElementById('tpAbsStart');
-                    const absEnd = document.getElementById('tpAbsEnd');
-                    if (absStart) absStart.value = this._toDatetimeLocal(range.start);
-                    if (absEnd) absEnd.value = this._toDatetimeLocal(range.end);
                 }
             } else if (type === 'relative') {
                 const saved = localStorage.getItem(this._storageKey('relative_time_range'));
@@ -171,10 +259,6 @@ const TimePicker = {
                     const { n, unit } = JSON.parse(saved);
                     newState.relativeN = n;
                     newState.relativeUnit = unit;
-                    const nEl = document.getElementById('tpRelativeN');
-                    const unitEl = document.getElementById('tpRelativeUnit');
-                    if (nEl) nEl.value = n;
-                    if (unitEl) unitEl.value = unit;
                 }
             }
 
@@ -182,17 +266,21 @@ const TimePicker = {
         } catch (e) {}
     },
 
-    // Absolute inputs are wall clock in the user's display zone, both directions.
-    // They were browser-local, which silently disagreed with the UTC timestamps
-    // in the results table and with the UTC inputs on the Recall tab.
-    _toDatetimeLocal(iso) {
-        return TZ.formatInput(iso);
+    // The Start/End inputs always show the applied range. Wall clocks are in
+    // the display zone, matching the results table.
+    _syncInputs() {
+        const text = this.boundsText(this.state);
+        for (const [id, value] of [['tpStart', text.start], ['tpEnd', text.end]]) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            el.value = value;
+            this._markInvalid(el, false);
+        }
     },
 
-    _parseAbsInput(val) {
-        if (!val) return null;
-        const ms = TZ.parseWallClock(val.trim());
-        return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+    _markInvalid(el, invalid) {
+        el.classList.toggle('invalid', invalid);
+        el.setAttribute('aria-invalid', String(invalid));
     },
 
     _updateLabel() {
@@ -203,15 +291,16 @@ const TimePicker = {
     },
 
     _updateActivePreset() {
-        document.querySelectorAll('.tp-preset').forEach(btn => {
+        document.querySelectorAll('#timePickerPanel .tp-preset').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.value === this.state.type);
         });
     },
 
     open() {
-        // The absolute inputs are read in the display zone, so they say which.
-        const zoneTag = document.getElementById('tpAbsZone');
+        // Start/End dates are read in the display zone, so the panel says which.
+        const zoneTag = document.getElementById('tpZone');
         if (zoneTag) zoneTag.textContent = TZ.abbrev();
+        this._syncInputs();
         const panel = document.getElementById('timePickerPanel');
         const backdrop = document.getElementById('timePickerBackdrop');
         const btn = document.getElementById('timePickerBtn');
@@ -248,10 +337,6 @@ const TimePicker = {
     init() {
         const btn = document.getElementById('timePickerBtn');
         const backdrop = document.getElementById('timePickerBackdrop');
-        const relativeApply = document.getElementById('tpRelativeApply');
-        const absApply = document.getElementById('tpAbsApply');
-        const relativeNEl = document.getElementById('tpRelativeN');
-        const relativeUnitEl = document.getElementById('tpRelativeUnit');
 
         if (btn) {
             btn.addEventListener('click', (e) => {
@@ -268,40 +353,29 @@ const TimePicker = {
             if (e.key === 'Escape') this.close();
         });
 
-        document.querySelectorAll('.tp-preset').forEach(presetBtn => {
+        document.querySelectorAll('#timePickerPanel .tp-preset').forEach(presetBtn => {
             presetBtn.addEventListener('click', () => {
                 this._applyAndExecute({ type: presetBtn.dataset.value });
             });
         });
 
-        if (relativeApply) {
-            relativeApply.addEventListener('click', () => {
-                const n = parseInt(relativeNEl?.value || '4', 10);
-                const unit = relativeUnitEl?.value || 'hours';
-                if (n > 0) this._applyAndExecute({ type: 'relative', relativeN: n, relativeUnit: unit });
-            });
-        }
-
-        if (relativeNEl) {
-            relativeNEl.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') relativeApply?.click();
-            });
-        }
-
-        if (absApply) {
-            const applyAbs = () => {
-                const startEl = document.getElementById('tpAbsStart');
-                const endEl = document.getElementById('tpAbsEnd');
-                const start = this._parseAbsInput(startEl?.value);
-                const end = this._parseAbsInput(endEl?.value);
-                if (start && end) {
-                    this._applyAndExecute({ type: 'custom', customStart: start, customEnd: end });
-                }
-            };
-            absApply.addEventListener('click', applyAbs);
-            document.getElementById('tpAbsStart')?.addEventListener('keydown', e => { if (e.key === 'Enter') applyAbs(); });
-            document.getElementById('tpAbsEnd')?.addEventListener('keydown', e => { if (e.key === 'Enter') applyAbs(); });
-        }
+        const startEl = document.getElementById('tpStart');
+        const endEl = document.getElementById('tpEnd');
+        const applyRange = () => {
+            const next = this.parseInputs(startEl?.value, endEl?.value);
+            if (next) {
+                this._applyAndExecute(next);
+                return;
+            }
+            // Flag whichever bound does not parse, or both when they are inverted.
+            const bad = [startEl, endEl].filter((el, i) => !this._parseBound(el?.value || (i ? 'now' : ''), Date.now()));
+            (bad.length ? bad : [startEl, endEl]).forEach(el => el && this._markInvalid(el, true));
+        };
+        document.getElementById('tpRangeApply')?.addEventListener('click', applyRange);
+        [startEl, endEl].forEach(el => {
+            el?.addEventListener('keydown', e => { if (e.key === 'Enter') applyRange(); });
+            el?.addEventListener('input', () => this._markInvalid(el, false));
+        });
 
         this._updateLabel();
         this._updateActivePreset();

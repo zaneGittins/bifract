@@ -1611,6 +1611,22 @@
                     </button>
                     <div id="timePickerBackdrop" class="tp-backdrop" style="display:none"></div>
                     <div id="timePickerPanel" class="time-picker-panel" style="display:none">
+                        <div class="tp-section-label">Range <span class="tp-zone-tag" id="tpZone"></span></div>
+                        <div class="tp-range">
+                            <label class="tp-field">
+                                <span class="tp-field-label">Start</span>
+                                <input type="text" id="tpStart" class="tp-abs-input" placeholder="7d or YYYY-MM-DD HH:MM" spellcheck="false" autocomplete="off" aria-describedby="tpHint">
+                            </label>
+                            <label class="tp-field">
+                                <span class="tp-field-label">End</span>
+                                <input type="text" id="tpEnd" class="tp-abs-input" placeholder="now" spellcheck="false" autocomplete="off" aria-describedby="tpHint">
+                            </label>
+                        </div>
+                        <div class="tp-range-foot">
+                            <span class="tp-hint" id="tpHint">e.g. 15m, 7d, now, or a date</span>
+                            <button id="tpRangeApply" class="tp-apply-btn" type="button">Apply</button>
+                        </div>
+                        <div class="tp-divider"></div>
                         <div class="tp-section-label">Presets</div>
                         <div class="tp-presets">
                             <button class="tp-preset tp-live" data-value="live" type="button"><span class="live-dot" aria-hidden="true"></span>Live <span class="tp-live-sub">new events as they arrive</span></button>
@@ -1619,39 +1635,23 @@
                             <button class="tp-preset" data-value="30m" type="button">30m</button>
                             <button class="tp-preset" data-value="1h" type="button">1h</button>
                             <button class="tp-preset" data-value="2h" type="button">2h</button>
-                            <button class="tp-preset" data-value="4h" type="button">4h</button>
                             <button class="tp-preset" data-value="6h" type="button">6h</button>
                             <button class="tp-preset" data-value="12h" type="button">12h</button>
                             <button class="tp-preset active" data-value="24h" type="button">24h</button>
                             <button class="tp-preset" data-value="7d" type="button">7d</button>
+                            <button class="tp-preset" data-value="14d" type="button">14d</button>
                             <button class="tp-preset" data-value="30d" type="button">30d</button>
                             <button class="tp-preset" data-value="all" type="button">All</button>
                         </div>
                         <div class="tp-divider"></div>
-                        <div class="tp-section-label">Relative</div>
-                        <div class="tp-relative-row">
-                            <span class="tp-rel-prefix">Last</span>
-                            <input type="number" id="tpRelativeN" class="tp-num-input" value="4" min="1" max="9999">
-                            <select id="tpRelativeUnit" class="tp-unit-select">
-                                <option value="minutes">minutes</option>
-                                <option value="hours" selected>hours</option>
-                                <option value="days">days</option>
-                                <option value="weeks">weeks</option>
-                            </select>
-                            <button id="tpRelativeApply" class="tp-apply-btn" type="button">Apply</button>
-                        </div>
-                        <div class="tp-divider"></div>
-                        <div class="tp-section-label">Absolute range <span class="tp-zone-tag" id="tpAbsZone"></span></div>
-                        <div class="tp-absolute-col">
-                            <div class="tp-abs-row">
-                                <span class="tp-abs-label">From</span>
-                                <input type="text" id="tpAbsStart" class="tp-abs-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false">
-                            </div>
-                            <div class="tp-abs-row">
-                                <span class="tp-abs-label">To</span>
-                                <input type="text" id="tpAbsEnd" class="tp-abs-input" placeholder="YYYY-MM-DD HH:MM" spellcheck="false">
-                            </div>
-                            <button id="tpAbsApply" class="tp-apply-btn tp-abs-apply" type="button">Apply</button>
+                        <div class="tp-section-label">Calendar</div>
+                        <div class="tp-presets tp-calendar">
+                            <button class="tp-preset" data-value="today" type="button">Today</button>
+                            <button class="tp-preset" data-value="this_week" type="button">This week</button>
+                            <button class="tp-preset" data-value="this_month" type="button">This month</button>
+                            <button class="tp-preset" data-value="yesterday" type="button">Yesterday</button>
+                            <button class="tp-preset" data-value="last_week" type="button">Last week</button>
+                            <button class="tp-preset" data-value="last_month" type="button">Last month</button>
                         </div>
                     </div>
                 </div>

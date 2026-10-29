@@ -94,23 +94,24 @@ const TZ = {
     },
 
     // Interpret "YYYY-MM-DD HH:MM[:SS]" as a wall clock in the display zone.
-    // Solves for the instant whose rendering in that zone matches the input,
-    // which is the only way to do this correctly across a DST change: the
-    // offset depends on the answer. Two corrections converge everywhere; a
-    // time inside a spring-forward gap resolves to the instant after it.
+    // The offset depends on the answer across a DST change, so try the offsets
+    // from either side of it: a repeated time takes its first occurrence, and
+    // a time inside a spring-forward gap resolves to the instant after it.
     parseWallClock(str) {
         if (!str) return NaN;
         const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(str).trim());
         if (!m) return NaN;
-        const naive = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+        const fields = [+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)];
+        const naive = Date.UTC(...fields);
+        // Date.UTC rolls impossible fields over (Feb 30, 25:00); reject them instead.
+        const d = new Date(naive);
+        const back = [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()];
+        if (back.some((v, i) => v !== fields[i])) return NaN;
         if (this.isUTC()) return naive;
-        let guess = naive;
-        for (let i = 0; i < 3; i++) {
-            const next = naive - this._offsetMs(guess);
-            if (next === guess) break;
-            guess = next;
-        }
-        return guess;
+        const day = 86400000;
+        const candidates = [naive - this._offsetMs(naive - day), naive - this._offsetMs(naive + day)];
+        const fits = candidates.filter(c => c + this._offsetMs(c) === naive);
+        return fits.length ? Math.min(...fits) : Math.max(...candidates);
     },
 
     // Zone offset from UTC at a given instant, in milliseconds.

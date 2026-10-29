@@ -465,8 +465,7 @@ const QueryPalette = {
         const t = it && it.time_range;
         if (!t) return '';
         if (t === 'relative') {
-            const u = { minutes: 'm', hours: 'h', days: 'd', weeks: 'w' }[it.relative_unit]
-                || (it.relative_unit ? it.relative_unit[0] : 'h');
+            const u = TimePicker._unitShort[it.relative_unit] || (it.relative_unit ? it.relative_unit[0] : 'h');
             return `Last ${it.relative_n || 1}${u}`;
         }
         if (t === 'custom') {
@@ -476,13 +475,8 @@ const QueryPalette = {
         }
         if (t === 'all') return 'All time';
         if (t === 'live') return 'Live';
-        const map = {
-            '5m': 'Last 5m', '15m': 'Last 15m', '30m': 'Last 30m',
-            '1h': 'Last 1h', '2h': 'Last 2h', '4h': 'Last 4h',
-            '6h': 'Last 6h', '12h': 'Last 12h', '24h': 'Last 24h',
-            '7d': 'Last 7d', '30d': 'Last 30d',
-        };
-        return map[t] || t;
+        if (TimePicker.isCalendar(t)) return TimePicker.CALENDAR_LABELS[t];
+        return TimePicker.isPreset(t) ? `Last ${t}` : t;
     },
 };
 

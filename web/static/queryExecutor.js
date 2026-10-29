@@ -1426,7 +1426,9 @@ const QueryExecutor = {
         const ctx = this._emptyContext || {};
         const esc = Utils.escapeHtml;
         const label = ctx.label || '';
-        const scope = !label || label === 'All Time' ? '' : ` in ${this._rangePhrase(label)}`;
+        // Calendar names read without "in": "No events yesterday".
+        const calendar = window.TimePicker && Object.values(TimePicker.CALENDAR_LABELS).includes(label);
+        const scope = !label || label === 'All Time' ? '' : `${calendar ? ' ' : ' in '}${this._rangePhrase(label)}`;
         const title = ctx.matchAll ? `No events${scope}` : `No events match this query${scope}`;
 
         const range = this.currentTimeRange || {};
@@ -1462,9 +1464,11 @@ const QueryExecutor = {
         return html + '</div>';
     },
 
-    // "Last 24h" -> "the last 24h", "All Time" -> "all time", custom as is.
+    // "Last 24h" -> "the last 24h", "All Time" -> "all time", "Last week" ->
+    // "last week", custom as is.
     _rangePhrase(label) {
         if (label === 'All Time') return 'all time';
+        if (window.TimePicker && Object.values(TimePicker.CALENDAR_LABELS).includes(label)) return label.toLowerCase();
         return /^Last /.test(label) ? `the last ${label.slice(5)}` : label;
     },
 
@@ -1480,12 +1484,12 @@ const QueryExecutor = {
     },
 
     // The smallest preset longer than spanMs, or null when nothing is wider. A
-    // custom window may lie in the past, where a "last N" preset would miss it,
-    // so it only widens to all time. fromNow: spanMs is measured back from now.
+    // window may lie in the past, where a "last N" preset would miss it, so it
+    // only widens to all time. fromNow: spanMs is measured back from now.
     _widerRange(spanMs, fromNow = false) {
         if (!window.TimePicker) return null;
-        if (fromNow || TimePicker.state.type !== 'custom') {
-            for (const p of ['24h', '7d', '30d']) {
+        if (fromNow || TimePicker.endsNow()) {
+            for (const p of ['24h', '7d', '14d', '30d']) {
                 if (TimePicker._presetMs[p] > spanMs * 1.01) return { preset: p, label: `the last ${p}` };
             }
         }
@@ -6701,6 +6705,10 @@ const QueryExecutor = {
         // A link opens a fixed search; Live's window is the last 15 minutes.
         if (type === 'live') return { from: '-15m' };
 
+        // A link fixes the calendar window as it is now.
+        const calendar = window.TimePicker && TimePicker.calendarRange(type);
+        if (calendar) return { from: calendar.start, to: calendar.end };
+
         if (type === 'custom') {
             const start = new Date(trState.customStart);
             const end = new Date(trState.customEnd);
@@ -6709,7 +6717,7 @@ const QueryExecutor = {
         }
 
         if (type === 'relative') {
-            const unit = { minutes: 'm', hours: 'h', days: 'd', weeks: 'w' }[trState.relativeUnit] || 'h';
+            const unit = TimePicker._unitShort[trState.relativeUnit] || 'h';
             return { from: `-${trState.relativeN || 4}${unit}` };
         }
 

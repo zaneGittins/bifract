@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -287,7 +288,7 @@ func (h *Handler) HandleRecord(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.pg.Exec(r.Context(), upsert,
 		username, req.QueryText, req.TimeRange, parseTime(req.CustomStart), parseTime(req.CustomEnd),
-		req.ResultCount, req.DurationMs, req.Status, fractalIDPtr, prismIDPtr, req.RelativeN, req.RelativeUnit)
+		req.ResultCount, req.DurationMs, req.Status, fractalIDPtr, prismIDPtr, relativeArg(req.RelativeN), req.RelativeUnit)
 	if err != nil {
 		log.Printf("[QueryHistory] Failed to record: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to record query")
@@ -381,4 +382,12 @@ func (h *Handler) respondSuccess(w http.ResponseWriter, data interface{}) {
 
 func (h *Handler) respondError(w http.ResponseWriter, status int, msg string) {
 	api.WriteError(w, status, msg)
+}
+
+// relativeArg keeps relative_n inside its positive INTEGER column; anything else is stored as NULL.
+func relativeArg(n *int64) interface{} {
+	if n == nil || *n <= 0 || *n > math.MaxInt32 {
+		return nil
+	}
+	return *n
 }
