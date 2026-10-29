@@ -191,7 +191,9 @@ window.BifractCharts = {
         const n = typeof num === 'number' ? num : parseFloat(num);
         if (isNaN(n)) return String(num);
         const type = (unit && unit.type) || 'number';
-        const dec = unit && unit.decimals != null && unit.decimals !== '' ? parseInt(unit.decimals, 10) : null;
+        const parsed = unit && unit.decimals != null && unit.decimals !== '' ? parseInt(unit.decimals, 10) : NaN;
+        // toFixed throws outside 0..100, which would stop a whole wallboard rendering.
+        const dec = isNaN(parsed) ? null : Math.min(Math.max(parsed, 0), 20);
         switch (type) {
             case 'none':
                 return Number.isInteger(n) ? n.toLocaleString() : String(n);
@@ -1357,14 +1359,14 @@ window.BifractCharts = {
 
         if (thresholds.length > 0 && !isNaN(numValue)) {
             for (const t of thresholds) {
-                if (this._matchThreshold(numValue, t)) { matchedColor = t.color || '#8b5cf6'; break; }
+                if (this._matchThreshold(numValue, t)) { matchedColor = Utils.safeColor(t.color); break; }
             }
         } else {
             const rules = opts.coloringRules || [];
             for (const rule of rules) {
                 if (!rule.column) continue;
                 if (rule.column === valueField && data && data.length > 0) {
-                    if (this._evaluateRule(data[0][valueField], rule)) { matchedColor = rule.color || '#8b5cf6'; break; }
+                    if (this._evaluateRule(data[0][valueField], rule)) { matchedColor = Utils.safeColor(rule.color); break; }
                 }
             }
         }

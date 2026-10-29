@@ -326,7 +326,7 @@ const QueryPalette = {
             <div class="palette-row-actions">
               <button class="palette-icon-btn" title="Run" onclick="event.stopPropagation();QueryPalette.runIdx(${i})">${PLAY_ICON}</button>
               <button class="palette-icon-btn" title="Save as..." onclick="event.stopPropagation();QueryPalette.promote(${i})">${SAVE_ICON}</button>
-              <button class="palette-icon-btn" title="Remove" onclick="event.stopPropagation();QueryPalette.deleteHistory('${this.escapeJs(it.id)}')">${X_ICON}</button>
+              <button class="palette-icon-btn" title="Remove" onclick="event.stopPropagation();QueryPalette.deleteHistory('${Utils.escapeJs(it.id)}')">${X_ICON}</button>
             </div>
           </div>`;
     },
@@ -344,7 +344,7 @@ const QueryPalette = {
         const tr = it.time_range ? `<span class="palette-badge">${this.escapeHtml(this.rangeLabel(it))}</span>` : '';
         return `
           <div class="palette-row${active}" data-idx="${i}">
-            <button class="palette-fav${it.favorited ? ' on' : ''}" title="Favorite" onclick="event.stopPropagation();QueryPalette.toggleFavorite('${this.escapeJs(it.id)}')">${it.favorited ? STAR_FILLED : STAR_OUTLINE}</button>
+            <button class="palette-fav${it.favorited ? ' on' : ''}" title="Favorite" onclick="event.stopPropagation();QueryPalette.toggleFavorite('${Utils.escapeJs(it.id)}')">${it.favorited ? STAR_FILLED : STAR_OUTLINE}</button>
             <div class="palette-row-main" onclick="QueryPalette.clickRow(${i})">
               <div class="palette-saved-head"><span class="palette-name">${this.escapeHtml(it.name)}</span>${vis}</div>
               ${desc}
@@ -354,8 +354,8 @@ const QueryPalette = {
             </div>
             <div class="palette-row-actions">
               <button class="palette-icon-btn" title="Run" onclick="event.stopPropagation();QueryPalette.runIdx(${i})">${PLAY_ICON}</button>
-              <button class="palette-icon-btn" title="Edit" onclick="event.stopPropagation();QueryPalette.startEdit('${this.escapeJs(it.id)}')">${EDIT_ICON}</button>
-              <button class="palette-icon-btn" title="Delete" onclick="event.stopPropagation();QueryPalette.deleteSaved('${this.escapeJs(it.id)}')">${TRASH_ICON}</button>
+              <button class="palette-icon-btn" title="Edit" onclick="event.stopPropagation();QueryPalette.startEdit('${Utils.escapeJs(it.id)}')">${EDIT_ICON}</button>
+              <button class="palette-icon-btn" title="Delete" onclick="event.stopPropagation();QueryPalette.deleteSaved('${Utils.escapeJs(it.id)}')">${TRASH_ICON}</button>
             </div>
           </div>`;
     },
@@ -402,7 +402,7 @@ const QueryPalette = {
                 <label class="palette-check"><input type="checkbox" id="pePersonal" ${personal}/> Personal (only visible to you)</label>
                 <div class="palette-form-actions">
                   <button class="btn-secondary btn-sm" onclick="QueryPalette.cancelEdit()">Cancel</button>
-                  <button class="btn-primary btn-sm" onclick="QueryPalette.submitEdit('${this.escapeJs(it.id)}')">Update</button>
+                  <button class="btn-primary btn-sm" onclick="QueryPalette.submitEdit('${Utils.escapeJs(it.id)}')">Update</button>
                 </div>
               </div>
             </div>
@@ -747,10 +747,6 @@ const QueryPalette = {
     escapeHtml(str) {
         if (!str) return '';
         return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    },
-    escapeJs(str) {
-        if (!str) return '';
-        return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 };
 

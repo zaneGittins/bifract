@@ -137,7 +137,7 @@ const APIExplorer = {
             const active = this.selected === o.id ? ' active' : '';
             html += `
                 <button class="api-op${active}" data-op="${Utils.escapeHtml(o.id)}"
-                        onclick="APIExplorer.select('${Utils.escapeHtml(o.id)}')">
+                        onclick="APIExplorer.select('${Utils.escapeJs(o.id)}')">
                     <span class="api-method api-method-${o.method.toLowerCase()}">${o.method}</span>
                     <span class="api-op-path">${Utils.escapeHtml(o.path.replace('/api/v1', ''))}</span>
                 </button>`;
@@ -197,7 +197,7 @@ const APIExplorer = {
         ].join(' \\\n');
 
         const link = (o, label) => `
-            <button class="api-quick" onclick="APIExplorer.select('${Utils.escapeHtml(o.id)}')">
+            <button class="api-quick" onclick="APIExplorer.select('${Utils.escapeJs(o.id)}')">
                 <span class="api-method api-method-${o.method.toLowerCase()}">${o.method}</span>
                 <span class="api-quick-path">${Utils.escapeHtml(o.path.replace('/api/v1', ''))}</span>
                 <span class="api-quick-label">${Utils.escapeHtml(label)}</span>

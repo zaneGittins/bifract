@@ -779,7 +779,7 @@ const AlertTests = {
             <div class="at-test at-test-${state}${open ? ' open' : ''}">
                 <div class="at-test-head">
                     <button type="button" class="at-test-toggle" title="${open ? 'Hide events' : 'Show events'}"
-                            onclick="AlertTests.toggleOpen(${JSON.stringify(test.name).replace(/"/g, '&quot;')})">
+                            onclick="AlertTests.toggleOpen('${Utils.escapeJs(test.name)}')">
                         <svg class="at-caret" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,3 11,8 6,13"/></svg>
                     </button>
                     <input type="checkbox" class="at-test-pick" title="Select to combine with another test"

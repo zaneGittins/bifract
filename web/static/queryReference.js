@@ -193,7 +193,7 @@ const QueryReference = {
                         ${fn.examples.map(ex => `
                             <div class="ref-example">
                                 <code>${Utils.escapeHtml(ex)}</code>
-                                <button class="ref-copy-btn" onclick="QueryReference.copyToQuery('${this.escapeForJs(ex)}')" title="Use in query">
+                                <button class="ref-copy-btn" onclick="QueryReference.copyToQuery('${Utils.escapeJs(ex)}')" title="Use in query">
                                     <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M13 5.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5h7zM6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6z" stroke="currentColor" fill="none"/><path d="M4 3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1" stroke="currentColor" fill="none"/></svg>
                                 </button>
                             </div>
@@ -209,7 +209,7 @@ const QueryReference = {
         const isExpanded = this.expandedCards.has(key);
         return `
             <div class="ref-item ref-item-operator ${isExpanded ? 'expanded' : ''}" data-operator="${op.operator}">
-                <div class="ref-item-header" onclick="QueryReference.toggleExpand('${this.escapeForJs(key)}')">
+                <div class="ref-item-header" onclick="QueryReference.toggleExpand('${Utils.escapeJs(key)}')">
                     <div class="ref-item-title">
                         <code class="ref-item-name ref-op-name">${Utils.escapeHtml(op.operator)}</code>
                         <span class="ref-item-desc">${op.description}</span>
@@ -221,7 +221,7 @@ const QueryReference = {
                         ${op.examples.map(ex => `
                             <div class="ref-example">
                                 <code>${Utils.escapeHtml(ex)}</code>
-                                <button class="ref-copy-btn" onclick="QueryReference.copyToQuery('${this.escapeForJs(ex)}')" title="Use in query">
+                                <button class="ref-copy-btn" onclick="QueryReference.copyToQuery('${Utils.escapeJs(ex)}')" title="Use in query">
                                     <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M13 5.5a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V6a.5.5 0 0 1 .5-.5h7zM6 4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6z" stroke="currentColor" fill="none"/><path d="M4 3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1" stroke="currentColor" fill="none"/></svg>
                                 </button>
                             </div>
@@ -308,10 +308,6 @@ const QueryReference = {
                 <div class="error-message">${Utils.escapeHtml(message)}</div>
             </div>
         `;
-    },
-
-    escapeForJs(text) {
-        return text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
     }
 };
 

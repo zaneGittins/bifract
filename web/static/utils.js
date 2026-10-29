@@ -78,7 +78,8 @@ const Utils = {
 
     // Escape HTML to prevent XSS
     escapeHtml(text) {
-        if (typeof text !== 'string') return text;
+        if (text === null || text === undefined) return '';
+        text = String(text);
         const map = {
             '&': '&amp;',
             '<': '&lt;',
@@ -121,18 +122,18 @@ const Utils = {
             .forEach(el => { el.hidden = hidden; });
     },
 
-    // Escape for embedding in JS string literals inside HTML onclick attributes.
-    // HTML-decodes attribute values before JS execution, so we must escape at
-    // the JS level. Hex-escape < and > to prevent HTML parser interference.
+    // Escape for a JS string literal inside an inline handler attribute. Every
+    // character that means something to either the HTML or the JS layer becomes
+    // a \uNNNN escape, so entity decoding cannot reintroduce a quote.
     escapeJs(text) {
-        if (typeof text !== 'string') return '';
-        return text.replace(/\\/g, '\\\\')
-                   .replace(/'/g, "\\'")
-                   .replace(/"/g, '\\"')
-                   .replace(/\n/g, '\\n')
-                   .replace(/\r/g, '\\r')
-                   .replace(/</g, '\\x3c')
-                   .replace(/>/g, '\\x3e');
+        if (text === null || text === undefined) return '';
+        return String(text).replace(/[\\'"&<>\n\r\u2028\u2029`]/g,
+            c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+    },
+
+    // A user-supplied colour for a style attribute: #rrggbb or the fallback.
+    safeColor(color, fallback = '#8b5cf6') {
+        return /^#[0-9a-f]{6}$/i.test(color || '') ? color : fallback;
     },
 
     // Render a subset of markdown suitable for comments.

@@ -1176,7 +1176,7 @@ const Dashboards = {
             if ((rule.target || 'row') !== 'row') continue;
             const cellVal = row[rule.column];
             if (this.evaluateRule(cellVal, rule)) {
-                const color = rule.color || '#8b5cf6';
+                const color = Utils.safeColor(rule.color);
                 return `background-color: ${color}26;`;
             }
         }
@@ -1190,7 +1190,7 @@ const Dashboards = {
             if ((rule.target || 'row') !== 'cell') continue;
             const cellVal = row[rule.column];
             if (this.evaluateRule(cellVal, rule)) {
-                const color = rule.color || '#8b5cf6';
+                const color = Utils.safeColor(rule.color);
                 return `background-color: ${color}26;`;
             }
         }
@@ -1849,7 +1849,7 @@ const Dashboards = {
                         <div style="font-size:0.78rem;color:var(--text-muted);font-family:monospace;">${esc(l.token_prefix)}…</div>
                         <div style="font-size:0.78rem;color:var(--text-muted);">${expiry} &middot; ${last}</div>
                     </div>
-                    <button class="btn-secondary" style="color:var(--error);flex-shrink:0;" onclick="Dashboards.revokeSharedLink('${esc(l.id)}')">Revoke</button>
+                    <button class="btn-secondary" style="color:var(--error);flex-shrink:0;" onclick="Dashboards.revokeSharedLink('${Utils.escapeJs(l.id)}')">Revoke</button>
                 </div>
             `;
         }).join('');
