@@ -220,8 +220,8 @@ const Autocomplete = {
 
     _getFieldNames() {
         // Merge fields seen in the current results (FieldStats) with the fields
-        // known ahead of any query (base columns + configured schema fields), so
-        // completion works even before the first search. Deduplicated.
+        // known ahead of any query (base columns, the scope's observed fields and
+        // configured schema fields), so completion works before the first search.
         const set = new Set();
         if (window.FieldStats && typeof FieldStats.getFieldNames === 'function') {
             FieldStats.getFieldNames().forEach(f => set.add(f));
@@ -396,10 +396,11 @@ const Autocomplete = {
         const partial = ctx.partial;
         const out = [];
 
+        const rank = f => (window.BQLLang && typeof BQLLang.fieldRank === 'function') ? BQLLang.fieldRank(f) : -1;
         for (const f of this._getFieldNames()) {
             const m = this._match(f, partial);
             if (!m.ok) continue;
-            out.push({ kind: 'field', label: f, insert: f, detail: 'field', desc: '', matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix });
+            out.push({ kind: 'field', label: f, insert: f, detail: 'field', desc: '', matchIndex: m.index, matchLen: partial.length, _prefix: m.prefix, _rank: rank(f) });
         }
 
         if (window.BQLLang) {
@@ -446,12 +447,14 @@ const Autocomplete = {
         }
 
         // Rank: prefix matches first, then field < function < keyword, then earlier
-        // match position, then shorter label, then alphabetical.
+        // match position, then the field more logs carry, then shorter label, then
+        // alphabetical.
         const order = { binding: 0, field: 1, function: 2, keyword: 3 };
         out.sort((a, b) => {
             if (a._prefix !== b._prefix) return a._prefix ? -1 : 1;
             if (order[a.kind] !== order[b.kind]) return order[a.kind] - order[b.kind];
             if (a.matchIndex !== b.matchIndex) return a.matchIndex - b.matchIndex;
+            if ((a._rank ?? -1) !== (b._rank ?? -1)) return (b._rank ?? -1) - (a._rank ?? -1);
             if (a.label.length !== b.label.length) return a.label.length - b.label.length;
             return a.label.localeCompare(b.label);
         });

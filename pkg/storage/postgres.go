@@ -1380,6 +1380,55 @@ func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unl
 	}, true
 }
 
+// lockPingInterval is how often a held lock's connection is checked.
+const lockPingInterval = 30 * time.Second
+
+// HoldAdvisoryLock is TryAdvisoryLock for long work: the returned context ends if
+// the connection holding the lock dies, because Postgres then hands the lock to
+// the next caller and the work would no longer be exclusive. Release with the
+// returned function.
+func (c *PostgresClient) HoldAdvisoryLock(ctx context.Context, lockID int64) (context.Context, func(), bool) {
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return nil, nil, false
+	}
+	var ok bool
+	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, lockID).Scan(&ok); err != nil || !ok {
+		conn.Close()
+		return nil, nil, false
+	}
+	held, stop := watchLock(ctx, conn.PingContext, lockPingInterval)
+	return held, func() {
+		stop()
+		if err := UnlockAdvisory(conn, lockID); err != nil {
+			log.Printf("Warning: failed to release advisory lock %d: %v", lockID, err)
+		}
+		conn.Close()
+	}, true
+}
+
+// watchLock derives a context that ends when ping fails or stop is called.
+func watchLock(parent context.Context, ping func(context.Context) error, every time.Duration) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := ping(ctx); err != nil && ctx.Err() == nil {
+					log.Printf("Warning: advisory lock connection lost, abandoning the locked work: %v", err)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, cancel
+}
+
 // UnlockAdvisory releases a session-scoped advisory lock held on conn. If that
 // fails, conn is marked bad so it is dropped, releasing the lock, rather than
 // returned to the pool still holding it.

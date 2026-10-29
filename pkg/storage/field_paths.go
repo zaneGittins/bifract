@@ -2,10 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -39,8 +43,42 @@ const fieldPathQueryBudgetSeconds = 600
 
 // fieldPathsStage receives a partition's recount, which then replaces the live
 // partition in one atomic step, so a recount that fails or is cut short leaves
-// the existing counts in place.
+// the existing counts in place. It lives only for a pass that repairs something,
+// so it is always built from the current definition and holds nothing between.
 const fieldPathsStage = "logs_field_paths__rebuild"
+
+// fieldPathMaxSplit bounds how finely a partition whose slices keep timing out is
+// re-sliced.
+const fieldPathMaxSplit = 64
+
+// fieldPathSplits remembers, per logs partition id, how many times finer than
+// usual to slice it, doubled each time one of its slices hits the query budget.
+type fieldPathSplits struct {
+	mu sync.Mutex
+	m  map[string]int
+}
+
+func (s *fieldPathSplits) get(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return max(1, s.m[id])
+}
+
+func (s *fieldPathSplits) timedOut(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = map[string]int{}
+	}
+	s.m[id] = min(fieldPathMaxSplit, max(1, s.m[id])*2)
+}
+
+// isTimeout reports ClickHouse's TIMEOUT_EXCEEDED, raised when a statement
+// passes max_execution_time.
+func isTimeout(err error) bool {
+	var ex *clickhouse.Exception
+	return errors.As(err, &ex) && ex.Code == 159
+}
 
 // FieldPathsReadTable returns the table the schema sweep reads path counts from.
 func (c *ClickHouseClient) FieldPathsReadTable() string {
@@ -173,6 +211,71 @@ func SpillSettings(maxMemoryBytes int64) clickhouse.Settings {
 	}
 }
 
+// SpillSettingsClause renders SpillSettings for a query's SETTINGS clause.
+func SpillSettingsClause(maxMemoryBytes int64) string {
+	s := SpillSettings(maxMemoryBytes)
+	parts := make([]string, 0, len(s))
+	for _, k := range slices.Sorted(maps.Keys(s)) {
+		parts = append(parts, fmt.Sprintf("%s = %v", k, s[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ObservedField is a field some rows in scope carry, and how many.
+type ObservedField struct {
+	Name string `json:"name"`
+	Rows uint64 `json:"rows"`
+}
+
+// ObservedFieldSet is the fields in a scope, most common first, and the rows they
+// are counted over.
+type ObservedFieldSet struct {
+	Fields []ObservedField `json:"fields"`
+	Rows   uint64          `json:"rows"`
+}
+
+// observedFieldsLimit bounds the list to what one fractal-day of the rollup holds.
+const observedFieldsLimit = FieldPathCap
+
+// observedFieldsMemory bounds the interactive read; callers cache the result.
+const observedFieldsMemory = 256 << 20
+
+// ObservedFields lists the fields the given fractals' logs carry, over all
+// retention, from the rollup. includeEmpty adds the rows stored without a
+// fractal id, which belong to the default fractal.
+func (c *ClickHouseClient) ObservedFields(ctx context.Context, fractalIDs []string, includeEmpty bool) (ObservedFieldSet, error) {
+	ids := make([]string, 0, len(fractalIDs)+1)
+	for _, id := range fractalIDs {
+		ids = append(ids, "'"+EscCHStr(id)+"'")
+	}
+	if includeEmpty {
+		ids = append(ids, "''")
+	}
+	out := ObservedFieldSet{Fields: []ObservedField{}}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := c.QueryLowPriorityBounded(ctx, fmt.Sprintf(`SELECT path, sum(cnt) AS n
+FROM %s WHERE fractal_id IN (%s)
+GROUP BY path
+ORDER BY path = '' DESC, n DESC
+LIMIT %d
+SETTINGS %s`, c.FieldPathsReadTable(), strings.Join(ids, ", "), observedFieldsLimit+1, SpillSettingsClause(observedFieldsMemory)), observedFieldsMemory)
+	if err != nil {
+		return out, fmt.Errorf("observed fields: %w", err)
+	}
+	for _, r := range rows {
+		name, _ := r["path"].(string)
+		n, _ := r["n"].(uint64)
+		if name == "" {
+			out.Rows = n
+		} else {
+			out.Fields = append(out.Fields, ObservedField{Name: name, Rows: n})
+		}
+	}
+	return out, nil
+}
+
 // fieldPathSettings applies to every reconcile statement.
 func fieldPathSettings(maxMemoryBytes int64) clickhouse.Settings {
 	s := clickhouse.Settings{
@@ -202,15 +305,29 @@ func fieldPathSettings(maxMemoryBytes int64) clickhouse.Settings {
 func (c *ClickHouseClient) ReconcileFieldPaths(ctx context.Context, maxMemoryBytes int64) error {
 	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(fieldPathSettings(maxMemoryBytes)))
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	return c.onEveryShard(ctx, "reconcile field paths", func(conn driver.Conn) error {
-		if err := c.createLike(ctx, conn, "logs_field_paths", fieldPathsStage, ""); err != nil {
-			return err
-		}
-		return reconcileFieldPathsOn(ctx, conn, today)
+	return c.onEveryShardPinned(ctx, "reconcile field paths", func(conn driver.Conn) error {
+		createStage := func() error { return c.createLike(ctx, conn, "logs_field_paths", fieldPathsStage, "") }
+		return reconcileFieldPathsOn(ctx, conn, today, createStage, &c.fieldPathSplits)
 	})
 }
 
-func reconcileFieldPathsOn(ctx context.Context, conn driver.Conn, today time.Time) error {
+// onEveryShardPinned is onEveryShard with one connection per node even behind a
+// single endpoint. A repair's statements must all reach the same replica: on
+// ClickHouse Cloud the pooled connection balances each one across replicas, so a
+// swap could miss the stage part the previous statement just wrote.
+func (c *ClickHouseClient) onEveryShardPinned(ctx context.Context, what string, fn func(conn driver.Conn) error) error {
+	if c.topo.PerNodeAdmin || len(c.addrs) == 0 {
+		return c.onEveryShard(ctx, what, fn)
+	}
+	conn, err := openClickHouseConn(c.nodeConnOptions(c.addrs[0], adminNodePool))
+	if err != nil {
+		return fmt.Errorf("%s: connect: %w", what, err)
+	}
+	defer conn.Close()
+	return fn(conn)
+}
+
+func reconcileFieldPathsOn(ctx context.Context, conn driver.Conn, today time.Time, createStage func() error, splits *fieldPathSplits) error {
 	logs, err := activePartitions(ctx, conn, "logs")
 	if err != nil {
 		return err
@@ -224,18 +341,42 @@ func reconcileFieldPathsOn(ctx context.Context, conn driver.Conn, today time.Tim
 		return err
 	}
 	repaired := 0
+	staged := false
+	defer func() {
+		if staged {
+			// Background context: the pass's may be the reason it is ending.
+			if err := dropTables(context.Background(), conn, fieldPathsStage); err != nil {
+				log.Printf("[FieldPaths] drop stage: %v", err)
+			}
+		}
+	}()
 	var firstErr error
 	for _, p := range joinFieldPathPartitions(logs, rollup, counted) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		switch planFieldPathRepair(p, today) {
-		case repairNone:
+		action := planFieldPathRepair(p, today)
+		if action == repairNone {
 			continue
+		}
+		if (action == repairRebuild || action == repairCompact) && !staged {
+			// Dropped first in case a crashed pass left one behind.
+			if err := dropTables(ctx, conn, fieldPathsStage); err != nil {
+				return err
+			}
+			if err := createStage(); err != nil {
+				return err
+			}
+			staged = true
+		}
+		switch action {
 		case repairDrop:
 			err = dropPartitionID(ctx, conn, "logs_field_paths", p.RollupID)
 		case repairRebuild:
-			err = rebuildFieldPaths(ctx, conn, p)
+			err = rebuildFieldPaths(ctx, conn, p, splits.get(p.LogsID))
+			if isTimeout(err) {
+				splits.timedOut(p.LogsID)
+			}
 		case repairCompact:
 			err = compactFieldPaths(ctx, conn, p)
 		}
@@ -298,9 +439,9 @@ func countedRows(ctx context.Context, conn driver.Conn) (map[string]uint64, erro
 // slices' top paths, and swaps the result in through the stage. Late rows the MV
 // writes to the live partition meanwhile are replaced, which the next pass sees as
 // a mismatch.
-func rebuildFieldPaths(ctx context.Context, conn driver.Conn, p fieldPathPartition) error {
+func rebuildFieldPaths(ctx context.Context, conn driver.Conn, p fieldPathPartition, split int) error {
 	var bounds []string
-	if n := fieldPathChunks(p.LogRows); n > 1 {
+	if n := fieldPathChunks(p.LogRows) * split; n > 1 {
 		levels := make([]string, n-1)
 		for i := range levels {
 			levels[i] = fmt.Sprintf("%g", float64(i+1)/float64(n))
@@ -425,6 +566,9 @@ func swapInStage(ctx context.Context, conn driver.Conn, partition string) error 
 	ids, err := partitionIDs(ctx, conn, fieldPathsStage, partition)
 	if err != nil {
 		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("swap in recount: nothing staged for %s", partition)
 	}
 	for _, id := range ids {
 		if err := conn.Exec(ctx, "ALTER TABLE logs_field_paths REPLACE PARTITION ID '"+id+"' FROM "+fieldPathsStage); err != nil {

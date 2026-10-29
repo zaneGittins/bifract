@@ -29,6 +29,9 @@ import (
 )
 
 type ClickHouseClient struct {
+	// fieldPathSplits tracks partitions whose rebuild slices time out.
+	fieldPathSplits fieldPathSplits
+
 	conn     driver.Conn
 	addrs    []string // host:port addresses
 	User     string
