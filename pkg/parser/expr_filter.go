@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -115,8 +116,16 @@ func exprConditionSQLDeferred(expr *ExprNode, registry *FieldRegistry, scope *de
 	}, negate)
 }
 
+// hasWindowField reports whether the expression reads a window output.
+func hasWindowField(expr *ExprNode, registry *FieldRegistry) bool {
+	return slices.ContainsFunc(exprFieldNames(expr), func(f string) bool {
+		entry := registry.Get(f)
+		return entry != nil && entry.ClassifyKind() == FieldKindWindow
+	})
+}
+
 // deferredFieldSet names the expression's fields that the deferred layer
-// produces: window outputs and join outputs exist only after the outer wrap.
+// produces: window outputs and join outputs exist only above the scan.
 func deferredFieldSet(expr *ExprNode, registry *FieldRegistry) map[string]bool {
 	out := map[string]bool{}
 	for _, f := range exprFieldNames(expr) {

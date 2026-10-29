@@ -661,6 +661,15 @@ func EscapeCHBacktickIdent(s string) string {
 	return strings.ReplaceAll(s, "`", "``")
 }
 
+// quoteIdent renders a column name as an identifier, backtick-quoted unless it is
+// a plain one (a dotted or hyphenated field name is not).
+func quoteIdent(s string) string {
+	if isBareIdentifier(s) {
+		return s
+	}
+	return "`" + EscapeCHBacktickIdent(s) + "`"
+}
+
 // validateNumeric ensures a value is a valid number, preventing SQL injection in numeric contexts.
 func validateNumeric(s string) error {
 	_, err := strconv.ParseFloat(s, 64)
@@ -1360,7 +1369,7 @@ func buildChainStep(stepTokens []Token, source []rune, opts QueryOptions, parent
 	if len(pl.Commands) > 0 {
 		w, cf, err := harvestChainCommands(pl, opts, reg)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("chain step: %w", err)
 		}
 		conjuncts = append(conjuncts, w...)
 		for _, f := range cf {
@@ -1408,7 +1417,7 @@ func CommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOption
 	}
 	switch len(where) {
 	case 0:
-		return "", fmt.Errorf("%s() is not a condition", cmd.Name)
+		return "", notConditionError(fmt.Sprintf("%s() is not a condition", cmd.Name))
 	case 1:
 		return where[0], nil
 	default:
@@ -1426,23 +1435,23 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	if reg == nil {
 		reg = NewFieldRegistry(opts.SourceMode, opts.IcePromoted)
 	}
-	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl}
+	ctx := &CommandContext{Registry: reg, Plan: plan, Opts: opts, Pipeline: pl, AsCondition: true}
 
 	for _, cmd := range pl.Commands {
 		if getCommandHandler(cmd.Name) == nil {
-			return nil, nil, fmt.Errorf("chain step: unsupported command %s()", cmd.Name)
+			return nil, nil, fmt.Errorf("unsupported command %s()", cmd.Name)
 		}
 	}
 	for i, cmd := range pl.Commands {
 		ctx.CmdIndex = i
 		if err := getCommandHandler(cmd.Name).Declare(cmd, ctx); err != nil {
-			return nil, nil, fmt.Errorf("chain step: %w", err)
+			return nil, nil, err
 		}
 	}
 	for i, cmd := range pl.Commands {
 		ctx.CmdIndex = i
 		if err := getCommandHandler(cmd.Name).Execute(cmd, ctx); err != nil {
-			return nil, nil, fmt.Errorf("chain step: %w", err)
+			return nil, nil, err
 		}
 	}
 
@@ -1451,7 +1460,7 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
 		plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
 		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
-		return nil, nil, fmt.Errorf("chain step: only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name)
+		return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name))
 	}
 
 	// A projection (len, match, lookupIP) is a per-row scalar, so it belongs in a
@@ -1461,29 +1470,46 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	for _, sel := range src.Selects {
 		alias := extractFieldAlias(sel.String())
 		if alias == "" || !reg.Has(alias) {
-			return nil, nil, fmt.Errorf("chain step: only row conditions are allowed; %s() projects a column that cannot be scoped to one step", pl.Commands[0].Name)
+			return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() projects a column that cannot be scoped to one step", pl.Commands[0].Name))
 		}
 	}
 
 	if len(src.Where) == 0 && len(src.Selects) == 0 {
-		return nil, nil, fmt.Errorf("chain step: %s() produced no condition", pl.Commands[0].Name)
+		return nil, nil, notConditionError(fmt.Sprintf("%s() produced no condition", pl.Commands[0].Name))
 	}
 
-	// A condition command names its field first (cidr(dst_ip, ...), in(user, [...])).
 	var fields []string
 	for _, cmd := range pl.Commands {
-		if len(cmd.Args) == 0 {
-			continue
-		}
-		first := cmd.Args[0]
-		if first.Kind == ArgList && len(first.List) > 0 {
-			first = first.List[0]
-		}
-		if f := first.Value(); f != "" && isPlainFieldName(f) {
-			fields = append(fields, f)
-		}
+		fields = append(fields, conditionCommandFields(cmd)...)
 	}
 	return src.Where, fields, nil
+}
+
+// notConditionError reports a command that yields no row predicate.
+type notConditionError string
+
+func (e notConditionError) Error() string { return string(e) }
+
+// conditionCommandFields names the fields a condition command reads: modelLookup()'s
+// keys, otherwise the field it names first (cidr(dst_ip, ...), in(user, [...])).
+func conditionCommandFields(cmd CommandNode) []string {
+	if canonicalCommandName(cmd.Name) == canonicalCommandName("modelLookup") {
+		if _, keys, _, err := parseModelLookupArgs(cmd); err == nil {
+			return keys
+		}
+		return nil
+	}
+	if len(cmd.Args) == 0 {
+		return nil
+	}
+	first := cmd.Args[0]
+	if first.Kind == ArgList && len(first.List) > 0 {
+		first = first.List[0]
+	}
+	if f := first.Value(); f != "" && isPlainFieldName(f) {
+		return []string{f}
+	}
+	return nil
 }
 
 // IsPlainFieldName reports whether s is shaped like a log field name, and so is
@@ -1524,11 +1550,12 @@ func collectHavingFieldsOrdered(c HavingCondition, seen map[string]bool, out *[]
 	return *out
 }
 
-// commandIndex returns the index of the first top-level command with the given
-// name, or -1 when absent.
+// commandIndex returns the index of the first top-level command answering to the
+// given name under any of its aliases, or -1 when absent.
 func commandIndex(commands []CommandNode, name string) int {
+	name = canonicalCommandName(name)
 	for i, cmd := range commands {
-		if cmd.Name == name {
+		if canonicalCommandName(cmd.Name) == name {
 			return i
 		}
 	}

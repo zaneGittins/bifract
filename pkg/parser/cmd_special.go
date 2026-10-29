@@ -72,24 +72,14 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: expr})
 			nonAggregateFields = append(nonAggregateFields, field)
 		} else if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindJoined {
-			// Produced by a JOIN wrapper (model_lookup/join), not the source scan.
-			// Skip it here (projecting fields.`x` would be wrong and would shadow the
-			// real join column); the wrapper adds it and it is carried in FieldOrder.
-			// Under the scan-level join there is no wrapper to add it: the column
-			// survives an aggregation only as a group key or aggregate, so anything
-			// else must error rather than silently drop the requested column.
+			// Under the scan-level model join the column is per row in this SELECT,
+			// so it is projected (and grouped, when table() aggregates) like any
+			// other. The join() wrapper adds its columns outside this SELECT instead:
+			// projecting fields.`x` here would shadow them, so they are only carried
+			// in FieldOrder.
 			if ctx.Plan.ModelLookupAtScan {
-				st := ctx.Plan.CurrentStage()
-				exposed := contains(st.Layer.GroupBy, field)
-				for _, sel := range st.Layer.Selects {
-					if exposed {
-						break
-					}
-					exposed = extractFieldAlias(sel.String()) == field
-				}
-				if !exposed {
-					return fmt.Errorf("table(): model column %q is not available after the aggregation; group by it or aggregate it", field)
-				}
+				source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: field})
+				nonAggregateFields = append(nonAggregateFields, field)
 				continue
 			}
 			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, field)
@@ -194,16 +184,13 @@ func (h *tableHandler) executeProjection(cmd CommandNode, ctx *CommandContext, p
 			newStage.Layer.Selects = append(newStage.Layer.Selects, SelectExpr{Expr: name})
 			continue
 		}
-		// A model column the aggregation did not output: under the outer join
-		// wrap it is added after this stage (restrict display to it); under the
-		// scan-level join nothing re-adds it, so error rather than emit a bare
-		// reference this stage cannot resolve.
+		// A model column the aggregation did not output: nothing re-adds it, so
+		// error rather than emit a bare reference this stage cannot resolve.
 		if contains(ctx.Plan.ModelLookupOutputs, name) {
 			if ctx.Plan.ModelLookupAtScan {
 				return fmt.Errorf("table(): model column %q is not available after the aggregation; group by it or aggregate it", name)
 			}
-			ctx.Plan.TableJoinedFields = append(ctx.Plan.TableJoinedFields, name)
-			continue
+			return fmt.Errorf("table(): model column %q is read before modelLookup() adds it", name)
 		}
 		// Not produced by the aggregated stage. It may be produced by a later
 		// layer (e.g. a post-aggregation assignment computed in the outer
@@ -461,7 +448,7 @@ func (h *chainHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// (strict mode's key prefilter still narrows the scan itself).
 	if len(ctx.Plan.Stages) == 1 {
 		if stepsUseModel != "" {
-			ctx.Plan.PostJoinWhere = append(ctx.Plan.PostJoinWhere, "("+stepUnion+")")
+			ctx.Plan.PostJoinWhere = append(ctx.Plan.PostJoinWhere, postJoinFilter{At: ctx.CmdIndex, SQL: "(" + stepUnion + ")"})
 		} else {
 			scan := &ctx.Plan.SourceStage().Layer
 			scan.Where = append(scan.Where, "("+stepUnion+")")

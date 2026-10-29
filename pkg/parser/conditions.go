@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -108,8 +109,8 @@ func classifyConditions(conditions []HavingCondition, registry *FieldRegistry, p
 		case 2:
 			target = &plan.pendingHavingConditions
 		case 1:
-			// Window and model_lookup outputs exist only after the outer wrap;
-			// defer to a post-join/post-window WHERE.
+			// Window and join outputs, and fields computed from them, exist only
+			// after the window or join: filter there.
 			target = &plan.pendingDeferredConditions
 		default:
 			target = &plan.pendingWhereConditions
@@ -218,9 +219,8 @@ func compileNestedExprLeaves(cond *HavingCondition, priority int, registry *Fiel
 }
 
 // classifyExprCondition compiles an expression filter and reports the stage it
-// binds to. A deferred stage (a window or join output) is rejected rather than
-// bound: those columns exist only after an outer wrap, and reaching one from an
-// expression needs the deferredScope export that plain conditions get.
+// binds to. One bound above the scan (a window or join() output) reads its source
+// leaves through the deferredScope export.
 func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) (string, int, error) {
 	priority := exprPriority(cond.Expr, registry, plan, willHaveAggregation)
 	// A match operator makes the expression the left operand of a comparison
@@ -232,7 +232,9 @@ func classifyExprCondition(cond HavingCondition, registry *FieldRegistry, plan *
 	// A deferred filter sits above the source scan, so its source-scope leaves are
 	// exported through the plan's scope as they compile. Classification runs before
 	// exportDeferredColumns, so the aliases allocated here are projected.
-	if priority == 1 {
+	// Under the scan-level model join a post-join filter reads the joined rows
+	// directly; only a window output still sits above the scan.
+	if priority == 1 && !(plan.ModelLookupAtScan && !hasWindowField(cond.Expr, registry)) {
 		sql, err := exprConditionSQLDeferred(cond.Expr, registry, plan.deferredScope(), cond.Negate)
 		return sql, priority, err
 	}
@@ -337,6 +339,14 @@ func isGroupKey(registry *FieldRegistry, field string) bool {
 // 0=WHERE, 1=DeferredWhere, 2=HAVING. Both operands count: `a > field(_count)`
 // can only be evaluated where the later-produced side exists.
 func leafPriority(c HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) int {
+	if c.Command != nil {
+		// A condition command binds where the fields it reads exist.
+		p := 0
+		for _, f := range conditionCommandFields(*c.Command) {
+			p = max(p, fieldPriority(f, registry, plan, willHaveAggregation))
+		}
+		return p
+	}
 	p := fieldPriority(c.Field, registry, plan, willHaveAggregation)
 	if c.ValueField != "" {
 		if rp := fieldPriority(c.ValueField, registry, plan, willHaveAggregation); rp > p {
@@ -362,10 +372,14 @@ func fieldPriority(field string, registry *FieldRegistry, plan *QueryPlan, willH
 		}
 		return 1
 	case FieldKindJoined:
-		return 1 // deferred (post-join), like window fields
+		return 1 // after the join, like window fields
 	case FieldKindAggregate:
 		if willHaveAggregation {
 			return 2
+		}
+	case FieldKindPerRow, FieldKindAssignment:
+		if registry.DependsOnJoin(field) {
+			return 1 // computed from a join output, so post-join as well
 		}
 	}
 	return 0
@@ -385,13 +399,12 @@ func subtreePriority(cond HavingCondition, registry *FieldRegistry, plan *QueryP
 	return highest
 }
 
-// splitMixedAndCompound decomposes a compound that mixes a deferred-stage conjunct
-// (a window or model_lookup output, produced only after the outer wrap) with one
-// that is not, so each binds where its fields actually exist. Without it a clause
-// like `beacon_score > 0.5 AND NOT image=~foo` is routed wholesale past the
-// model_lookup join, where the source-only `fields.image` no longer resolves.
-// Distribution over AND is safe; a negated node or an OR connector is not, and a
-// compound that needs no deferral is left intact so its SQL is unchanged.
+// splitMixedAndCompound decomposes a compound that mixes a conjunct read after a
+// window or join with one that is not, so each binds where its fields exist: a
+// log-field predicate then reaches the scan, where skip indexes can prune and
+// where it resolves at all under a join() or window wrap. Distribution over AND is
+// safe; a negated node or an OR connector is not, and a compound that needs no
+// split is left intact so its SQL is unchanged.
 func splitMixedAndCompound(cond HavingCondition, registry *FieldRegistry, plan *QueryPlan, willHaveAggregation bool) []HavingCondition {
 	if !cond.IsCompound || cond.Negate || len(cond.Children) < 2 {
 		return nil
@@ -575,10 +588,9 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 	// reference must be exported there under a hidden alias (see deferredScope).
 	deferred := plan.pendingDeferredConditions
 	if plan.ModelLookupAtScan {
-		// Scan-level model join: a condition on a model column filters rows between
-		// the join and the aggregation (PostJoinWhere), where both model columns and
-		// scan fields resolve directly. Only window-field conditions still need the
-		// outermost deferred layer.
+		// Scan-level model join: a condition reading the join filters the joined
+		// rows, where both model columns and scan fields resolve directly. Only
+		// window-field conditions still need the outermost deferred layer.
 		var outer, postJoin []HavingCondition
 		for _, c := range deferred {
 			if condTouchesWindowField(c, registry) {
@@ -587,13 +599,54 @@ func materializeConditions(registry *FieldRegistry, plan *QueryPlan) {
 				postJoin = append(postJoin, c)
 			}
 		}
-		if clause := materializeCondGroup(postJoin, registry, nil, false); clause != "" {
-			plan.PostJoinWhere = append(plan.PostJoinWhere, clause)
-		}
+		materializePostJoin(postJoin, registry, plan)
 		deferred = outer
 	}
 	if clause := materializeCondGroup(deferred, registry, plan.deferredScope(), false); clause != "" {
 		plan.DeferredWhere = append(plan.DeferredWhere, clause)
+	}
+}
+
+// materializePostJoin places the filters that read the scan-level model join. Each
+// run written at one position resolves against the registry there. A conjunct that
+// reads only model columns is a property of the key, so a strict join applies it
+// to the model side, which also narrows the scan prefilter to the keys it admits:
+// the scan then reads only rows the join keeps, instead of every log in the window.
+// A row cap between the lookup and the filter selects rows first, so a filter after
+// one stays on the joined rows.
+func materializePostJoin(conds []HavingCondition, registry *FieldRegistry, plan *QueryPlan) {
+	isModelColumn := func(c string) bool { return slices.Contains(plan.ModelLookupFields, c) }
+	capBetween := func(at int) bool {
+		return slices.ContainsFunc(plan.SourceStage().Layer.Caps, func(c RowCap) bool {
+			return c.At > plan.ModelLookupCmd && c.At < at
+		})
+	}
+	for i := 0; i < len(conds); {
+		j := i + 1
+		for j < len(conds) && conds[j].CmdIndex == conds[i].CmdIndex && conds[j].AssignIndex == conds[i].AssignIndex {
+			j++
+		}
+		run, reg, at := conds[i:j], plan.conditionRegistry(conds[i], registry), conds[i].CmdIndex
+		i = j
+		// The run's connectors bind with SQL precedence, so it splits into
+		// conjuncts only when every one of them is AND.
+		units := [][]HavingCondition{run}
+		if !slices.ContainsFunc(run[:len(run)-1], func(c HavingCondition) bool { return strings.EqualFold(c.Logic, "OR") }) {
+			units = units[:0]
+			for k := range run {
+				units = append(units, run[k:k+1])
+			}
+		}
+		for _, u := range units {
+			clause := materializeCondGroup(u, reg, nil, false)
+			switch {
+			case clause == "":
+			case plan.ModelLookupStrict && !capBetween(at) && readsOnly(clause, isModelColumn):
+				plan.ModelLookupWhere = append(plan.ModelLookupWhere, clause)
+			default:
+				plan.PostJoinWhere = append(plan.PostJoinWhere, postJoinFilter{At: at, SQL: clause})
+			}
+		}
 	}
 }
 
@@ -1016,19 +1069,21 @@ func resolveCommandConditions(conditions []HavingCondition, registry *FieldRegis
 	return nil
 }
 
-// negatedCommandPredicate builds a condition function's predicate and applies its
-// negation exactly once.
-//
-// Some handlers honour cmd.Negate themselves (in, cidr) and some do not (comment,
-// tlsh). Wrapping the handler's output in NOT therefore doubled the negation on
-// the first pair, so `!in(status,"200") AND x` returned exactly what was
-// excluded, and dropped it entirely on the second. Building with Negate cleared
-// makes this the only place negation is applied.
+// negatedCommandPredicate builds a condition function's predicate with Negate
+// cleared and negates it here, the one place negation is applied, so a handler
+// that also honours Negate cannot negate twice.
 func negatedCommandPredicate(cmd CommandNode, registry *FieldRegistry, opts QueryOptions) (string, error) {
 	negate := cmd.Negate
 	cmd.Negate = false
 	sql, err := CommandPredicate(cmd, registry, opts)
 	if err != nil {
+		var nc notConditionError
+		switch {
+		case negate && errors.As(err, &nc):
+			return "", fmt.Errorf("NOT cannot apply to %s(): it is not a filter", commandDisplayName(cmd.Name))
+		case negate:
+			return "", fmt.Errorf("NOT %s(): %w", commandDisplayName(cmd.Name), err)
+		}
 		return "", err
 	}
 	if negate {
@@ -1160,16 +1215,28 @@ func firstMissingPostAggField(cond HavingCondition, registry *FieldRegistry, dec
 		}
 		return ""
 	}
-	if cond.Command != nil || cond.Expr != nil || cond.ValueField != "" || cond.Field == "" {
+	if cond.Command != nil {
+		for _, f := range conditionCommandFields(*cond.Command) {
+			if missingPostAggField(f, registry, declared) {
+				return f
+			}
+		}
 		return ""
 	}
-	if isBareAggregate(cond.Field) || isGroupKey(registry, cond.Field) || declared[cond.Field] {
-		return ""
-	}
-	if e := registry.Get(cond.Field); e != nil && e.ClassifyKind() != FieldKindJSON {
+	if cond.Expr != nil || cond.ValueField != "" || cond.Field == "" || !missingPostAggField(cond.Field, registry, declared) {
 		return ""
 	}
 	return cond.Field
+}
+
+// missingPostAggField reports whether name is a plain log field, which an
+// aggregation does not carry.
+func missingPostAggField(name string, registry *FieldRegistry, declared map[string]bool) bool {
+	if isBareAggregate(name) || isGroupKey(registry, name) || declared[name] {
+		return false
+	}
+	e := registry.Get(name)
+	return e == nil || e.ClassifyKind() == FieldKindJSON
 }
 
 // aggregateOutputNames lists the grouping keys and aggregate columns in scope,

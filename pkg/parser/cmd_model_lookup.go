@@ -2,20 +2,27 @@ package parser
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 )
 
 // modelLookupHandler handles: model_lookup(model="name", key=[field1, field2])
 //
-// For rarity models it adds percent, coverage, model_count columns via a
-// LEFT JOIN against a triple-nested scoring subquery over the model table.
-// For first_seen models it adds first_seen, last_seen, is_new columns.
-//
-// The JOIN is applied at finalization via QueryPlan.wrapWithModelLookup().
+// It joins the model's scoring subquery, one row per scored key, onto the rows it
+// reads and adds the model's output columns (modelOutputColumns). With no
+// aggregation before it the join sits in the log scan's FROM (see
+// QueryPlan.ModelLookupAtScan); after one it joins the aggregated rows, as the layer
+// between that stage and the next (see modelJoinLayer). Either way, every command
+// after it reads the model's columns as ordinary columns.
 type modelLookupHandler struct{}
 
 func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
+	if ctx.AsCondition {
+		// A condition tests the key and adds no columns.
+		return nil
+	}
 	modelName, _, _, err := parseModelLookupArgs(cmd)
 	if err != nil {
 		return err
@@ -23,87 +30,175 @@ func (h *modelLookupHandler) Declare(cmd CommandNode, ctx *CommandContext) error
 
 	info, ok := ctx.Opts.Models[modelName]
 	if !ok {
-		// Model not found — register placeholder fields so downstream conditions
-		// don't fail during the Declare phase. Execute will return a real error.
-		ctx.Registry.Register("percent", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("coverage", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("model_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("model_total", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("event_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("first_seen", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("last_seen", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("is_new", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("z_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("baseline_median", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("latest_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("mad", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("n_buckets", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("latest_bucket", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("beacon_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("longconn_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("regularity_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("ts_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("ds_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("dur_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("hist_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("prevalence", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("prevalence_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("first_seen_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("threat_intel_score", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("conn_count", FieldKindPerRow, "NULL", ctx.CmdIndex)
-		ctx.Registry.Register("total_duration", FieldKindPerRow, "NULL", ctx.CmdIndex)
+		// Model not found: register every model column as a placeholder so downstream
+		// conditions don't fail during Declare. Execute returns the real error.
+		for _, t := range slices.Sorted(maps.Keys(modelColumns)) {
+			for _, n := range modelColumns[t] {
+				ctx.Registry.Register(n, FieldKindPerRow, "NULL", ctx.CmdIndex)
+			}
+		}
 		return nil
 	}
 
 	// Register each output field as a model-lookup column: it exists only after the
-	// JOIN wrap, so it resolves to its bare output name and conditions on it defer
-	// to a post-join WHERE (see FieldKindJoined handling in conditions.go).
-	reg := func(names ...string) {
-		for _, n := range names {
-			ctx.Registry.Register(n, FieldKindJoined, n, ctx.CmdIndex)
-		}
-		ctx.Plan.ModelLookupOutputs = append([]string(nil), names...)
-	}
-	switch info.ModelType {
-	case "rarity":
+	// JOIN, so it resolves to its bare output name, and anything reading it is
+	// placed after the join (see FieldRegistry.DependsOnJoin).
+	if info.ModelType == "rarity" && conditionsReference(ctx.Pipeline.HavingConditions, "confidence") {
 		// confidence was the old name for coverage. A filter on it would read an
 		// absent log field and silently match nothing, so name the rename instead.
-		if conditionsReference(ctx.Pipeline.HavingConditions, "confidence") {
-			return fmt.Errorf("model_lookup(): rarity models report coverage, not confidence; filter on coverage instead")
-		}
-		reg("percent", "coverage", "model_count", "model_total")
-	case "first_seen":
-		reg("first_seen", "last_seen", "event_count", "is_new")
-	case "volume_baseline":
-		reg("z_score", "baseline_median", "latest_count", "mad", "n_buckets", "latest_bucket")
-	case "beacon":
-		// beacon_score is the final verdict; the rest is the breakdown ("why").
-		reg("beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count")
-	case "long_connection":
-		reg("longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score")
+		return fmt.Errorf("modelLookup(): rarity models report coverage, not confidence; filter on coverage instead")
 	}
+	names := modelColumns[info.ModelType]
+	for _, n := range names {
+		ctx.Registry.Register(n, FieldKindJoined, n, ctx.CmdIndex)
+	}
+	ctx.Plan.ModelLookupOutputs = append([]string(nil), names...)
 	return nil
 }
 
+// modelColumns lists the columns each model type's scoring subquery adds, in the
+// order they are shown.
+var modelColumns = map[string][]string{
+	"rarity":          {"model_count", "model_total", "percent", "coverage"},
+	"first_seen":      {"first_seen", "last_seen", "event_count", "is_new"},
+	"volume_baseline": {"latest_count", "baseline_median", "mad", "n_buckets", "latest_bucket", "z_score"},
+	// beacon_score is the final verdict; the rest is the breakdown ("why").
+	"beacon":          {"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count"},
+	"long_connection": {"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score"},
+}
+
 func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	if ctx.AsCondition {
+		return h.executeCondition(cmd, ctx)
+	}
 	if ctx.Plan.IsJoin {
-		return fmt.Errorf("model_lookup() cannot be combined with join()")
+		return fmt.Errorf("modelLookup() cannot be combined with join()")
 	}
 	if ctx.Plan.ModelLookupSQL != "" {
-		return fmt.Errorf("model_lookup() cannot be used more than once")
+		return fmt.Errorf("modelLookup() cannot be used more than once")
 	}
 
-	modelName, keyFields, strict, err := parseModelLookupArgs(cmd)
+	_, keyFields, strict, err := parseModelLookupArgs(cmd)
 	if err != nil {
 		return err
 	}
-	if len(keyFields) == 0 {
-		return fmt.Errorf("model_lookup() requires key=[field1, ...] parameter")
+	ks, err := resolveModelKeySet(cmd, ctx)
+	if err != nil {
+		return err
 	}
 
+	ctx.Plan.ModelLookupSQL = ks.scoringSQL
+	ctx.Plan.ModelLookupFields = ks.fields
+	ctx.Plan.modelKeys = ks
+	ctx.Plan.ModelLookupCmd = ctx.CmdIndex
+	ctx.Plan.ModelLookupStrict = strict
+	keyExprs := make([]string, len(keyFields))
+	for i, kf := range keyFields {
+		keyExprs[i] = modelLookupFieldRef(kf, ctx.Registry)
+	}
+	if ctx.Plan.ModelLookupAtScan {
+		ctx.Plan.ModelLookupKeyExprs = keyExprs
+		return nil
+	}
+	return joinModelAfterAggregation(ctx, keyFields, keyExprs)
+}
+
+// joinModelAfterAggregation joins the model onto aggregated rows: the stage after
+// the aggregation reads (aggregated rows JOIN model) on the group columns the keys
+// name, and carries the model's columns on like any column of its own.
+func joinModelAfterAggregation(ctx *CommandContext, keyFields, keyExprs []string) error {
+	plan := ctx.Plan
+	// The strict prefilter can still narrow the scan when the stage the lookup reads
+	// aggregates the scan, groups by every key and keeps every group: a group whose
+	// key the model does not score is dropped by the join, so its rows need not be
+	// read. A row cap or group limit first would select from the narrowed rows.
+	src := plan.SourceStage().Layer
+	enrichesScan := len(plan.Stages) == 1 && len(src.Caps) == 0 && src.Limit == "" && src.LimitBy == "" && src.ScanLimitBy == ""
+	carried, err := pushCarryForwardStage(ctx)
+	if err != nil {
+		return fmt.Errorf("modelLookup(): %w", err)
+	}
+	if enrichesScan && len(plan.keysLostToAggregation(plan.SourceStage(), keyExprs, keyFields)) == 0 {
+		plan.ModelLookupKeyExprs = keyExprs
+	}
+	left := make([]string, len(keyFields))
+	for i, kf := range keyFields {
+		if !slices.Contains(carried, kf) {
+			return fmt.Errorf("modelLookup() key %[1]s must be part of the grouping to survive aggregation: add %[1]s to the group/table columns, or drop the aggregation", kf)
+		}
+		left[i] = modelKeyString("_outer." + quoteIdent(kf))
+	}
+	stage := plan.CurrentStage()
+	for _, f := range plan.ModelLookupFields {
+		if slices.Contains(carried, f) {
+			return fmt.Errorf("modelLookup(): the aggregated rows already have a column %q, which the model adds", f)
+		}
+		stage.Layer.Selects = append(stage.Layer.Selects, SelectExpr{Expr: f})
+		ctx.Registry.Register(f, FieldKindAssignment, f, ctx.CmdIndex)
+		ctx.Registry.SetResolveExpr(f, f)
+	}
+	stage.Layer.ModelJoin = plan.modelJoinOn(left)
+	stage.Layer.ModelJoinFields = plan.ModelLookupFields
+	return nil
+}
+
+// executeCondition compiles modelLookup() used as a row condition: the log's key is
+// one the model scores, exactly the rows the default join keeps. NOT around it keeps
+// the rows the model does not score.
+func (h *modelLookupHandler) executeCondition(cmd CommandNode, ctx *CommandContext) error {
+	b, err := BindCommand(cmd)
+	if err != nil {
+		return err
+	}
+	for _, name := range []string{"require", "strict"} {
+		if b.Has(name) {
+			return fmt.Errorf("modelLookup() as a condition only tests whether the model scores the key, so %s= has no effect; drop it", name)
+		}
+	}
+	ks, err := resolveModelKeySet(cmd, ctx)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, len(ks.keyFields))
+	for i, kf := range ks.keyFields {
+		keys[i] = modelLookupFieldRef(kf, ctx.Registry)
+	}
+	ctx.Plan.SourceStage().Layer.Where = append(ctx.Plan.SourceStage().Layer.Where, ks.membership(keys, nil))
+	return nil
+}
+
+// modelKeySet is what a model scores: its scoring subquery and the key set that
+// subquery returns, which the join, its scan prefilter and the condition form all
+// test a log's key against.
+type modelKeySet struct {
+	keyFields  []string // the log fields matched against the model key, in order
+	table      string   // the model table
+	fractalIDs []string
+	scoringSQL string   // one row per scored key, carrying the output columns
+	fields     []string // the output columns the join adds, in display order
+	rightCols  []string // the scoring subquery's key columns, aligned with keyFields
+	// rawWhere narrows the raw key columns the way the scoring subquery narrows its
+	// rows; exact says the two key sets are then identical, so membership can read
+	// the raw columns. exact starts false so a model type that forgets it falls back
+	// to the scored set, which is always right.
+	rawWhere string
+	exact    bool
+	global   bool // the model table is Distributed: emit GLOBAL IN/JOIN
+}
+
+// resolveModelKeySet validates a modelLookup() against its model and builds the
+// model's key set.
+func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, error) {
+	modelName, keyFields, _, err := parseModelLookupArgs(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if len(keyFields) == 0 {
+		return nil, fmt.Errorf("modelLookup() requires key=[field1, ...] parameter")
+	}
 	info, ok := ctx.Opts.Models[modelName]
 	if !ok {
-		return fmt.Errorf("model %q not found: create it in the Models UI first", modelName)
+		return nil, fmt.Errorf("model %q not found: create it in the Models UI first", modelName)
 	}
 
 	// In prism context FractalIDs holds every member fractal: a model's table can
@@ -114,70 +209,97 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 	if len(fractalIDs) == 0 {
 		fractalIDs = []string{ctx.Opts.FractalID}
 	}
-
-	// rightCols are the model table's key columns, in the same order as keyFields.
-	// prefilterWhere narrows the prefilter's key set the way the scoring subquery
-	// narrows its own rows; exact says the two key sets are identical. exact starts
-	// false so a model type that forgets it loses the scan-level LIMIT rather than
-	// applying one before a filter the prefilter does not mirror.
-	var rightCols []string
-	var prefilterWhere string
-	exact := false
+	ks := &modelKeySet{keyFields: keyFields, table: info.TableName, fractalIDs: fractalIDs, global: info.Distributed,
+		fields: modelColumns[info.ModelType]}
 
 	switch info.ModelType {
 	case "rarity":
 		if len(keyFields) != 2 {
-			return fmt.Errorf("model_lookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
+			return nil, fmt.Errorf("modelLookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		ctx.Plan.ModelLookupSQL = RarityScoredSQL("`"+info.TableName+"` FINAL",
+		ks.scoringSQL = RarityScoredSQL("`"+info.TableName+"` FINAL",
 			fractalIDInClause(fractalIDs), info.MinSample, info.HistoryDays, false)
-		rightCols = []string{"partition_val", "value_val"}
-		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
+		ks.rightCols = []string{"partition_val", "value_val"}
+		ks.rawWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		// Partitions still learning are scored away, so the raw key set is a superset.
-		exact = info.MinSample <= 1
-		ctx.Plan.ModelLookupFields = []string{"model_count", "model_total", "percent", "coverage"}
+		ks.exact = info.MinSample <= 1
 
 	case "first_seen":
-		ctx.Plan.ModelLookupSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, info.HistoryDays, ctx.Opts.ModelNewSince)
-		rightCols = []string{"entity_key"}
+		ks.scoringSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, info.HistoryDays, ctx.Opts.ModelNewSince)
+		ks.rightCols = []string{"entity_key"}
 		// A key whose days have all left the window is no longer in the model.
-		prefilterWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
-		exact = true // the scoring subquery drops no key
-		ctx.Plan.ModelLookupFields = []string{"first_seen", "last_seen", "event_count", "is_new"}
+		ks.rawWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
+		ks.exact = true // the scoring subquery drops no key
 
 	case "volume_baseline":
-		ctx.Plan.ModelLookupSQL = VolumeScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
-		rightCols = []string{"entity_val"}
-		prefilterWhere = volumeScoredKeysPredicate(modelPrefilterAlias, info.TimeBucket, info.MinSample)
-		exact = true // the predicate admits exactly the entities with enough history
-		ctx.Plan.ModelLookupFields = []string{"latest_count", "baseline_median", "mad", "n_buckets", "latest_bucket", "z_score"}
+		ks.scoringSQL = VolumeScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
+		ks.rightCols = []string{"entity_val"}
+		ks.rawWhere = volumeScoredKeysPredicate(modelPrefilterAlias, info.TimeBucket, info.MinSample)
+		ks.exact = true // the predicate admits exactly the entities with enough history
 
 	case "beacon", "long_connection":
 		if len(keyFields) != 3 {
-			return fmt.Errorf("model_lookup() for %s models requires exactly 3 key fields: [src_ip, dst_ip, dst_port]", info.ModelType)
+			return nil, fmt.Errorf("modelLookup() for %s models requires exactly 3 key fields: [src_ip, dst_ip, dst_port]", info.ModelType)
 		}
 		if info.ModelType == "beacon" {
-			ctx.Plan.ModelLookupSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
-			ctx.Plan.ModelLookupFields = []string{"beacon_score", "regularity_score", "ts_score", "ds_score", "dur_score", "hist_score", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score", "conn_count"}
+			ks.scoringSQL = buildBeaconScoringSQL(info.TableName, fractalIDs)
 		} else {
-			ctx.Plan.ModelLookupSQL = buildLongConnScoringSQL(info.TableName, fractalIDs)
-			ctx.Plan.ModelLookupFields = []string{"longconn_score", "total_duration", "conn_count", "prevalence", "prevalence_score", "first_seen_score", "threat_intel_score"}
+			ks.scoringSQL = buildLongConnScoringSQL(info.TableName, fractalIDs)
 		}
 		// Positional key mapping: key[0]->src_ip, key[1]->dst_ip, key[2]->dst_port.
-		rightCols = []string{"src_ip", "dst_ip", "dst_port"}
-		exact = true // every scored pair is returned
+		ks.rightCols = []string{"src_ip", "dst_ip", "dst_port"}
+		ks.exact = true // every scored pair is returned
 
 	default:
-		return fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
+		return nil, fmt.Errorf("unknown model type %q for model %q", info.ModelType, modelName)
+	}
+	return ks, nil
+}
+
+// membership is the predicate "the model scores this key, and its scored row
+// passes modelWhere": exactly the keys the join matches. It reads the raw key
+// columns where they hold exactly that set, and the scored set otherwise.
+func (k *modelKeySet) membership(keys, modelWhere []string) string {
+	var cols, set string
+	if k.exact && len(modelWhere) == 0 {
+		qualified := make([]string, len(k.rightCols))
+		for i, c := range k.rightCols {
+			qualified[i] = modelPrefilterAlias + "." + c
+		}
+		cols = k.keyColumns(qualified)
+		where := modelPrefilterAlias + "." + fractalIDInClause(k.fractalIDs)
+		if k.rawWhere != "" {
+			where += " AND " + k.rawWhere
+		}
+		set = fmt.Sprintf("SELECT %s FROM `%s` AS %s WHERE %s", cols, k.table, modelPrefilterAlias, where)
+	} else {
+		set = fmt.Sprintf("SELECT %s FROM (%s)", k.keyColumns(k.rightCols), k.scoringSQL)
+		if len(modelWhere) > 0 {
+			set += " WHERE " + andJoin(modelWhere)
+		}
 	}
 
-	setModelLookupJoin(ctx, keyFields, rightCols)
-	ctx.Plan.ModelLookupStrict = strict
-	ctx.Plan.ModelLookupGlobal = info.Distributed
-	if strict {
-		setModelLookupPrefilter(ctx, info.TableName, fractalIDs, rightCols, prefilterWhere, exact)
+	// Both sides mirror the JOIN ON exactly (see QueryPlan.modelJoinOn).
+	lhs := keys[0]
+	switch {
+	case !modelKeysAligned(keys, k.rightCols):
+		lhs = concatModelKeys(keys)
+	case len(keys) > 1:
+		lhs = "(" + strings.Join(keys, ", ") + ")"
 	}
-	return nil
+	op := "IN"
+	if k.global {
+		op = "GLOBAL IN"
+	}
+	return fmt.Sprintf("%s %s (%s)", lhs, op, set)
+}
+
+// keyColumns renders the model-side key columns the way the log side compares them.
+func (k *modelKeySet) keyColumns(cols []string) string {
+	if !modelKeysAligned(k.keyFields, k.rightCols) {
+		return concatModelKeys(cols)
+	}
+	return strings.Join(cols, ", ")
 }
 
 // modelPrefilterAlias names the model table inside the strict prefilter subquery. That
@@ -193,85 +315,6 @@ const modelPrefilterAlias = "_mlk_src"
 // both ask here rather than testing the lengths themselves.
 func modelKeysAligned(keys, rightCols []string) bool {
 	return len(keys) == len(rightCols)
-}
-
-// setModelLookupJoin projects the outer join keys as hidden `_mlk_k<i>` columns and
-// builds the JOIN ON that matches them against the model-side key columns. The keys
-// are projected in the source scan (where `fields.X` is available) by renderStandard
-// and stripped from the result via EXCEPT in wrapWithModelLookup, so the enrichment
-// works for any pipeline shape (bare, filtered, or with a trailing threshold).
-//
-// One key field per model key column joins on plain equalities, which is both the
-// cheaper hash join (no string built per scanned log) and the exact predicate the
-// strict prefilter can push into the scan. Several key fields against a single model
-// column (first_seen and volume_baseline encode a composite entity that way) must use
-// the model's own char(30) encoding instead.
-func setModelLookupJoin(ctx *CommandContext, keyFields, rightCols []string) {
-	keyExprs := make([]string, len(keyFields))
-	leftParts := make([]string, len(keyFields))
-	for i, kf := range keyFields {
-		keyExprs[i] = modelLookupFieldRef(kf, ctx.Registry)
-		leftParts[i] = fmt.Sprintf("_outer._mlk_k%d", i)
-	}
-	rightParts := make([]string, len(rightCols))
-	for i, c := range rightCols {
-		rightParts[i] = "_mlookup." + c
-	}
-	ctx.Plan.ModelLookupKeyExprs = keyExprs
-	ctx.Plan.ModelLookupKeyFields = append([]string(nil), keyFields...)
-	ctx.Plan.ModelLookupRightCols = append([]string(nil), rightCols...)
-
-	if modelKeysAligned(leftParts, rightParts) {
-		eq := make([]string, len(leftParts))
-		for i := range leftParts {
-			eq[i] = leftParts[i] + " = " + rightParts[i]
-		}
-		ctx.Plan.ModelLookupOn = strings.Join(eq, " AND ")
-		return
-	}
-	ctx.Plan.ModelLookupOn = concatModelKeys(leftParts) + " = " + concatModelKeys(rightParts)
-}
-
-// setModelLookupPrefilter pushes strict mode's semi-join down into the source scan:
-// only logs whose key is in the model can survive the INNER JOIN, and the scan is the
-// one place the key sub-columns' skip indexes can prune on that set. The subquery
-// reads the model table's raw key columns with no FINAL and no aggregation, since
-// merging never drops a key; extraWhere bounds a windowed table to its window.
-//
-// exact reports that this key set is identical to the one the JOIN matches. A model
-// type that discards keys after aggregation (rarity's min_sample) leaves a superset:
-// a correct filter, but the JOIN is still the final arbiter, so the scan's LIMIT may
-// not stay below it.
-func setModelLookupPrefilter(ctx *CommandContext, table string, fractalIDs, rightCols []string, extraWhere string, exact bool) {
-	keys := ctx.Plan.ModelLookupKeyExprs
-	if len(keys) == 0 || len(rightCols) == 0 {
-		return
-	}
-	qualified := make([]string, len(rightCols))
-	for i, c := range rightCols {
-		qualified[i] = modelPrefilterAlias + "." + c
-	}
-	where := modelPrefilterAlias + "." + fractalIDInClause(fractalIDs)
-	if extraWhere != "" {
-		where += " AND " + extraWhere
-	}
-
-	// Both sides mirror the JOIN ON exactly (see setModelLookupJoin), reusing
-	// ModelLookupKeyExprs verbatim so the two can never disagree about what a key is.
-	lhs, cols := keys[0], strings.Join(qualified, ", ")
-	switch {
-	case !modelKeysAligned(keys, rightCols):
-		lhs, cols = concatModelKeys(keys), concatModelKeys(qualified)
-	case len(keys) > 1:
-		lhs = "(" + strings.Join(keys, ", ") + ")"
-	}
-	op := "IN"
-	if ctx.Plan.ModelLookupGlobal {
-		op = "GLOBAL IN"
-	}
-	ctx.Plan.ModelLookupPrefilter = fmt.Sprintf("%s %s (SELECT %s FROM %s AS %s WHERE %s)",
-		lhs, op, cols, "`"+table+"`", modelPrefilterAlias, where)
-	ctx.Plan.ModelLookupPrefilterExact = exact
 }
 
 // concatModelKeys joins key parts with the char(30) separator used throughout the
@@ -459,32 +502,30 @@ func parseModelLookupArgs(cmd CommandNode) (modelName string, keyFields []string
 	}
 	modelName = b.Str("model", "")
 	if modelName == "" {
-		return "", nil, false, fmt.Errorf("model_lookup() requires model= parameter")
+		return "", nil, false, fmt.Errorf("modelLookup() requires model= parameter")
 	}
 	return modelName, b.Strings("key"), strict, nil
 }
 
-// resolveFieldRef converts a user field name to a ClickHouse expression reference.
-// Extraction outputs (already produced by prior pipeline steps) are referenced directly.
-// Standard log fields are referenced via the JSON sub-column.
+// modelLookupFieldRef is the reference a key field is matched by, as a String like
+// every model key column: a JOIN does not convert a number to compare it with a
+// String (ClickHouse code 386). A stored field already reads as ::String, bare, so
+// the scan prefilter keeps its skip indexes.
 func modelLookupFieldRef(field string, registry *FieldRegistry) string {
-	switch field {
-	case "timestamp", normLogColumn, "log_id", "fractal_id", "ingest_timestamp", "normalizer":
-		return field
-	default:
-		// Resolved through the registry, so a key an earlier command produced is
-		// looked up as the value that command computed rather than as a stored
-		// field of the same name. A match() enrichment column read as JSON is empty
-		// on every row, so the join matched nothing and the query returned no rows
-		// with no error. The registry falls back to the JSON path when it knows
-		// nothing about the name, which is every ordinary log field.
-		//
-		// The key is projected as _mlk_k<i> then concat/compared against the model
-		// table's String key columns, a non-skip-index context, so resolveFieldRef's
-		// ::String cast keeps a Dynamic-stored path (pre-type-hint rows) joinable
-		// rather than tripping ClickHouse error 44.
-		return resolveFieldRef(field, registry)
+	// Resolved through the registry, so a key an earlier command produced is looked
+	// up as the value that command computed rather than as a stored field of the
+	// same name, which is empty on every row.
+	return modelKeyString(resolveFieldRef(field, registry))
+}
+
+// modelKeyString casts a key reference to String unless it already is one. A NULL
+// key reads as the empty string, as a stored field the log lacks does, so NOT
+// modelLookup() keeps the row rather than NOT (NULL IN ...) dropping it.
+func modelKeyString(ref string) string {
+	if strings.HasPrefix(ref, "fields.`") && strings.HasSuffix(ref, "::String") {
+		return ref
 	}
+	return "ifNull(toString(" + ref + "), '')"
 }
 
 func init() {

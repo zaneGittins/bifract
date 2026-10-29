@@ -82,7 +82,7 @@ func TestUnbracketedNamedListKeepsEveryValue(t *testing.T) {
 		want  []string
 	}{
 		{`* | match(dict="d", field=f, column=k, include=c1,c2)`, []string{"c1", "c2"}},
-		{`* | model_lookup(model="m", key=a,b)`, []string{"_mlk_k0", "_mlk_k1"}},
+		{`* | model_lookup(model="m", key=a,b)`, []string{"fields.`a`::String = _mlookup.", "fields.`b`::String = _mlookup."}},
 	}
 	for _, c := range cases {
 		pipeline, err := ParseQuery(c.query)

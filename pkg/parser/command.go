@@ -15,6 +15,9 @@ type CommandContext struct {
 	// Declared holds every command's declarations, for checks that look ahead.
 	// Registry holds only what precedes the running command.
 	Declared *FieldRegistry
+	// AsCondition is set when the command is compiled as a row condition (a boolean
+	// operand, a negated command or a chain step) rather than run as a pipeline stage.
+	AsCondition bool
 }
 
 // declared is Declared, or Registry where nothing was declared ahead of it.
@@ -33,8 +36,23 @@ type CommandHandler interface {
 	Execute(cmd CommandNode, ctx *CommandContext) error
 }
 
+// negatingHandler is a handler that applies cmd.Negate itself. Any other command
+// written after NOT is compiled as a condition and negated there, so NOT is never
+// silently dropped.
+type negatingHandler interface {
+	appliesNegate()
+}
+
 // commandRegistry maps command names to their handlers.
 var commandHandlers = map[string]CommandHandler{}
+
+// canonicalCommandNames maps every registered name to the first name its handler
+// was registered under, so a command is recognised whichever alias it is written as.
+var canonicalCommandNames = map[string]string{}
+
+// commandDisplayNames maps a canonical name to the spelling it was registered
+// under, for messages about a command the parser has lower-cased.
+var commandDisplayNames = map[string]string{}
 
 // aggregatingCommandNames holds the names of commands that collapse rows via
 // GROUP BY or aggregate functions. It is the single source of truth for that
@@ -51,7 +69,41 @@ var aggregatingCommandNames = map[string]bool{}
 func registerCommand(handler CommandHandler, names ...string) {
 	for _, name := range names {
 		commandHandlers[strings.ToLower(name)] = handler
+		canonicalCommandNames[strings.ToLower(name)] = strings.ToLower(names[0])
 	}
+	commandDisplayNames[strings.ToLower(names[0])] = names[0]
+}
+
+// commandDisplayName is a command's registered spelling, whichever alias it was
+// written as.
+func commandDisplayName(name string) string {
+	if d, ok := commandDisplayNames[canonicalCommandName(name)]; ok {
+		return d
+	}
+	return name
+}
+
+// canonicalCommandName folds a command name, as written or as registered, to the
+// one name its handler answers to. An unregistered name folds to itself.
+func canonicalCommandName(name string) string {
+	name = strings.ToLower(name)
+	if c, ok := canonicalCommandNames[name]; ok {
+		return c
+	}
+	return name
+}
+
+// CanonicalCommandName folds any spelling of a command to the one name its handler
+// answers to, for callers that look a command up by name.
+func CanonicalCommandName(name string) string { return canonicalCommandName(name) }
+
+// CommandDisplayName is a command's registered spelling, for messages.
+func CommandDisplayName(name string) string { return commandDisplayName(name) }
+
+// commandAppliesNegate reports whether the command's handler applies NOT itself.
+func commandAppliesNegate(name string) bool {
+	_, ok := getCommandHandler(name).(negatingHandler)
+	return ok
 }
 
 // registerAggregatingCommand registers a handler whose command aggregates

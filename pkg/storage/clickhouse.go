@@ -1116,6 +1116,12 @@ func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
 			// parser buffer ceiling (not an allocation) and the SQL is bounded, so raising it fleet-
 			// wide is safe and has no effect on the small SQL every other feature sends.
 			"max_query_size": maxGeneratedQuerySize,
+			// Every join Bifract sends puts its bounded side on the right, where it is
+			// hashed: a model's scored keys, a join() subquery, a pgr frontier. The
+			// cost-based swap reads the logs scan as the smaller side whenever an
+			// IN-subquery prefilter collapses its row estimate, and then hashes every
+			// scanned log instead (measured: 2.4x the memory and time on 20M rows).
+			"query_plan_join_swap_table": "false",
 		},
 		DialTimeout:     o.Pool.DialTimeout,
 		ReadTimeout:     0,

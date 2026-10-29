@@ -439,8 +439,8 @@ func TestExprFilterDoesNotHijackCommands(t *testing.T) {
 	})
 }
 
-// modelOpts adds a beacon model so model_lookup() resolves, producing the joined
-// columns that only exist above the source scan.
+// modelOpts adds a beacon model so model_lookup() resolves, and a join() source
+// whose columns exist only above the scan.
 func modelOpts() QueryOptions {
 	o := exprOpts()
 	o.FractalID = "f1"
@@ -478,8 +478,19 @@ func TestExprFilterOverDeferredColumns(t *testing.T) {
 		}
 	})
 
-	t.Run("mixed with a log field exports the source leaf", func(t *testing.T) {
+	t.Run("mixed with a log field reads both in the joined scan", func(t *testing.T) {
 		sql := translateWith(t, `* | model_lookup(model="beacons", key=[src_ip,dst_ip,dst_port]) | round(beacon_score,2) > 0.9 AND lower(image) = "chrome.exe"`, modelOpts())
+		// The scan-level join puts both columns in one SELECT, so nothing is exported.
+		if strings.Contains(sql, "_dfr_") {
+			t.Errorf("nothing needs exporting under a scan-level join: %s", sql)
+		}
+		if !strings.Contains(sql, "lower(fields.`image`::String) = 'chrome.exe'") || strings.LastIndex(sql, "> 0.9") < strings.Index(sql, "_mlookup ON") {
+			t.Errorf("expected the filter on the joined rows: %s", sql)
+		}
+	})
+
+	t.Run("mixed with a log field above a join wrap exports the source leaf", func(t *testing.T) {
+		sql := translateWith(t, `* | join(dst_ip) { * | groupby(dst_ip) } | round(_join__count,2) > 9 AND lower(image) = "chrome.exe"`, modelOpts())
 		if !strings.Contains(sql, "fields.`image`::String AS _dfr_0") {
 			t.Errorf("source leaf not exported into the scan: %s", sql)
 		}

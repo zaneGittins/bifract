@@ -74,8 +74,12 @@ func (h *inHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+func (h *inHandler) appliesNegate() {}
+
 // cidrHandler handles cidr(field, "range") - filter by CIDR range
 type cidrHandler struct{}
+
+func (h *cidrHandler) appliesNegate() {}
 
 func (h *cidrHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	return nil
