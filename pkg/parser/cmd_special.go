@@ -35,9 +35,6 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return h.executeProjection(cmd, ctx, source)
 	}
 
-	// Clear existing selects (table replaces default)
-	source.Layer.Selects = nil
-
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -45,23 +42,48 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if n, err := validateInt(b.Str("limit", "")); err == nil {
 		source.Layer.Limit = fmt.Sprintf("LIMIT %d", n)
 	}
+	if err := projectColumns(ctx, source, b.Flat("fields"), true); err != nil {
+		return fmt.Errorf("table(): %w", err)
+	}
+	return nil
+}
+
+// projectColumns replaces a raw-row stage's projection with the named columns.
+// With aggregates, an aggregate call (count, sum(bytes)) groups by the others;
+// without, every argument is a column name.
+func projectColumns(ctx *CommandContext, source *QueryStage, args []Argument, aggregates bool) error {
+	ctx.Plan.HasTableCmd = true
+	// modifiedzscore()/madoutlier() window layers wrap this projection and read
+	// their value column from it.
+	var windowValue []SelectExpr
+	for _, sel := range source.Layer.Selects {
+		if extractFieldAlias(sel.String()) == windowValueColumn {
+			windowValue = append(windowValue, sel)
+		}
+	}
+	source.Layer.Selects = nil
 
 	var nonAggregateFields []string
 
-	for _, arg := range b.Flat("fields") {
+	for _, arg := range args {
 		ctx.Plan.TableHasExplicitColumns = true
 		ctx.Plan.TableColumns = append(ctx.Plan.TableColumns, strings.Trim(arg.Value(), "`"))
 		field := arg.FieldName()
 
-		if selects, ok, err := tableAggregateSelects(arg, ctx); err != nil {
-			return fmt.Errorf("table(): %w", err)
-		} else if ok {
-			source.Layer.Selects = append(source.Layer.Selects, selects...)
-			ctx.Plan.IsAggregated = true
-			continue
+		if aggregates {
+			if selects, ok, err := tableAggregateSelects(arg, ctx); err != nil {
+				return err
+			} else if ok {
+				source.Layer.Selects = append(source.Layer.Selects, selects...)
+				ctx.Plan.IsAggregated = true
+				continue
+			}
 		}
 
-		if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindBase {
+		if entry := ctx.Registry.Get(field); entry != nil && entry.Kind == FieldKindWindow {
+			// A window output is added by the layer that wraps this projection.
+			continue
+		} else if entry != nil && entry.Kind == FieldKindBase {
 			// A base column is a real column, not a fields.`x` sub-path: as JSON it read
 			// empty on every row, and aliasing that empty over the column's own name
 			// shadowed the column for anything selecting it later in the same SELECT.
@@ -88,7 +110,7 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		} else if entry := ctx.Registry.Get(field); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
 			safeAlias, err := ArgAlias(arg)
 			if err != nil {
-				return fmt.Errorf("table(): %w", err)
+				return err
 			}
 			computedExpr := ctx.Registry.Resolve(field)
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", computedExpr, safeAlias)})
@@ -98,19 +120,19 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			// column; resolve bare via the registry rather than as a fields.`x` JSON path.
 			safeAlias, err := ArgAlias(arg)
 			if err != nil {
-				return fmt.Errorf("table(): %w", err)
+				return err
 			}
 			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{Expr: fmt.Sprintf("%s AS %s", resolveFieldRef(field, ctx.Registry), safeAlias)})
 			nonAggregateFields = append(nonAggregateFields, field)
 		} else {
 			safeAlias, err := ArgAlias(arg)
 			if err != nil {
-				return fmt.Errorf("table(): %w", err)
+				return err
 			}
 			ref := groupableCast(ctx.Registry.fieldRef(field))
 			if field == "" {
 				if ref, err = ResolveArg(arg, ctx.Registry); err != nil {
-					return fmt.Errorf("table(): %w", err)
+					return err
 				}
 				// Register the derived alias, as groupby() does. Without it a later
 				// sort/dedup/filter on the name resolved it as a JSON sub-column
@@ -136,6 +158,9 @@ func (h *tableHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 				source.Layer.GroupBy = append(source.Layer.GroupBy, resolveFieldRef(field, ctx.Registry))
 			}
 		}
+	}
+	if !ctx.Plan.IsAggregated {
+		source.Layer.Selects = append(source.Layer.Selects, windowValue...)
 	}
 	return nil
 }

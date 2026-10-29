@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -83,6 +84,11 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		return err
 	}
 	labelFields := b.Strings("labels")
+	for _, a := range b.Flat("labels") {
+		if a.FieldName() == "" {
+			return fmt.Errorf("graph(): labels= takes field names, not expressions (%s); compute it first with eval() or :=", a)
+		}
+	}
 	ctx.Plan.ChartConfig["render"] = chartRender(b, 100, 500)
 	if err := applyChartLimit(b, ctx); err != nil {
 		return fmt.Errorf("graph(): %w", err)
@@ -96,6 +102,29 @@ func (h *graphHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.ChartConfig["parentField"] = parentField
 	if len(labelFields) > 0 {
 		ctx.Plan.ChartConfig["labels"] = labelFields
+	}
+	return projectGraphFields(b, ctx)
+}
+
+// projectGraphFields selects graph()'s columns by name, as table() would, when the
+// rows are still raw logs: their fields sit inside norm_log, where the renderer
+// finds no child or parent. Rows already shaped by table(), an aggregation or a
+// source command carry the columns and are left alone.
+func projectGraphFields(b *Bound, ctx *CommandContext) error {
+	if ctx.Plan.HasTableCmd || ctx.Plan.IsAggregated || len(ctx.Plan.CurrentStage().Layer.GroupBy) > 0 ||
+		ctx.Opts.SourceSubquery != "" {
+		return nil
+	}
+	var args []Argument
+	seen := map[string]bool{}
+	for _, a := range slices.Concat(b.All("child"), b.All("parent"), b.Flat("labels")) {
+		if name := a.FieldName(); !seen[name] {
+			seen[name] = true
+			args = append(args, a)
+		}
+	}
+	if err := projectColumns(ctx, ctx.Plan.CurrentStage(), args, false); err != nil {
+		return fmt.Errorf("graph(): %w", err)
 	}
 	return nil
 }
