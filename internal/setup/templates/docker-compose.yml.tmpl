@@ -160,6 +160,8 @@ services:
     networks:
       - bifract-network
     restart: unless-stopped
+    # Docker's 10s default would kill it mid-drain and lose acked logs.
+    stop_grace_period: 90s
 
   # Ingest data-plane tier. Same image as bifract, run in ingest mode
   # (`/bifract-server ingest`, matching the archiver's command-arg dispatch). Scales
@@ -217,6 +219,8 @@ services:
     networks:
       - bifract-network
     restart: unless-stopped
+    # Docker's 10s default would kill it mid-drain and lose acked logs.
+    stop_grace_period: 90s
 
   # Iceberg archive sidecar (dormant-but-present). Same image, archiver command.
   # Drains the shared spool into per-fractal Iceberg tables on object storage.
@@ -267,6 +271,8 @@ services:
     networks:
       - bifract-network
     restart: unless-stopped
+    # Docker's 10s default would cut the final flush short, so the next start re-archives rows.
+    stop_grace_period: 90s
 
   # Iceberg maintenance (compaction + snapshot expiry): the always-on maintenance
   # service. A dedicated, resource-capped container running maintain-loop, kept

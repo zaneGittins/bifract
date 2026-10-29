@@ -44,6 +44,8 @@ spec:
                 topologyKey: kubernetes.io/hostname
       # No client-go anywhere in Bifract: nothing here needs an API token.
       automountServiceAccountToken: false
+      # Kubernetes' 30s default would cut the HTTP drain and ingest flush short.
+      terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
         seccompProfile:

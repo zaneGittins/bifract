@@ -52,6 +52,8 @@ spec:
       # Nothing in Bifract talks to the Kubernetes API (no client-go), so the
       # token is pure attack surface on a pod that reaches the network.
       automountServiceAccountToken: false
+      # Kubernetes' 30s default would cut the HTTP drain and ingest flush short.
+      terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
         seccompProfile:

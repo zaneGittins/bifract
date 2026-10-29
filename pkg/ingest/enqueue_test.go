@@ -323,6 +323,12 @@ func TestHealthy(t *testing.T) {
 			q.consecutiveFailures.Store(unhealthyThreshold)
 			q.lastFailureUnix.Store(now - int64(unhealthyCooldown.Seconds()) - 1)
 		}, true},
+		{"cooled down but a worker is still retrying", func(q *IngestQueue) {
+			// An attempt that hangs longer than the cooldown must not reopen the gate.
+			q.consecutiveFailures.Store(unhealthyThreshold)
+			q.lastFailureUnix.Store(now - int64(unhealthyCooldown.Seconds()) - 1)
+			q.retrying.Store(1)
+		}, false},
 		{"cpu", func(q *IngestQueue) { q.cpuState.active.Store(1) }, false},
 		{"memory", func(q *IngestQueue) { q.memState.active.Store(1) }, false},
 		{"disk", func(q *IngestQueue) { q.diskState.active.Store(1) }, false},
@@ -334,6 +340,9 @@ func TestHealthy(t *testing.T) {
 			tc.setup(q)
 			if got := q.Healthy(); got != tc.want {
 				t.Fatalf("Healthy = %v, want %v", got, tc.want)
+			}
+			if got := q.Enqueue(entries(1, "f1")); got != tc.want {
+				t.Fatalf("Enqueue = %v, want %v", got, tc.want)
 			}
 		})
 	}

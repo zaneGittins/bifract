@@ -1,6 +1,7 @@
 package spool
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -191,5 +192,107 @@ func TestClearGenerationUnreadable(t *testing.T) {
 	}
 	if err := WriteClearGeneration(filepath.Join(dir, "missing"), 1); err == nil {
 		t.Fatal("WriteClearGeneration into a missing dir should fail")
+	}
+}
+
+// shortWriteFile writes the first half of the next frame, then fails, the way a
+// full disk leaves a partial write behind.
+type shortWriteFile struct {
+	segmentFile
+	fail bool
+}
+
+func (f *shortWriteFile) Write(p []byte) (int, error) {
+	if !f.fail {
+		return f.segmentFile.Write(p)
+	}
+	f.fail = false
+	n, _ := f.segmentFile.Write(p[:len(p)/2])
+	return n, errors.New("no space left on device")
+}
+
+// TestShortWriteDoesNotHideLaterFrames: a failed Append rejects its batch, but
+// must not leave bytes that make the reader skip batches acked after it.
+func TestShortWriteDoesNotHideLaterFrames(t *testing.T) {
+	for name, truncateFails := range map[string]bool{"truncated": false, "sealed": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			w := mustWriter(t, WriterOptions{Dir: dir})
+			if err := w.Append(sampleLogs(1, 0)); err != nil {
+				t.Fatal(err)
+			}
+			sf := &shortWriteFile{segmentFile: w.file, fail: true}
+			w.file = sf
+			if truncateFails {
+				w.file = noTruncate{sf}
+			}
+			if err := w.Append(sampleLogs(1, 1)); err == nil {
+				t.Fatal("short write reported success")
+			}
+			if err := w.Append(sampleLogs(1, 2)); err != nil {
+				t.Fatalf("append after short write: %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			got := drainAll(t, mustReader(t, dir))
+			if len(got) != 2 || got[0].LogID != "log-00000000" || got[1].LogID != "log-00000002" {
+				t.Fatalf("read %d logs %+v, want log 0 then log 2", len(got), got)
+			}
+		})
+	}
+}
+
+type noTruncate struct{ segmentFile }
+
+func (noTruncate) Truncate(int64) error { return errors.New("read-only file system") }
+
+// syncLog records whether the torn segment was fsync'd before it was closed.
+type syncLog struct {
+	segmentFile
+	synced, syncedBeforeClose bool
+}
+
+func (f *syncLog) Sync() error { f.synced = true; return f.segmentFile.Sync() }
+func (f *syncLog) Close() error {
+	f.syncedBeforeClose = f.synced
+	return f.segmentFile.Close()
+}
+
+// TestSealingTornSegmentSyncs: a concurrent Append whose frame is written but not
+// yet fsync'd skips its own fsync once the segment rotates, trusting rotation to
+// have synced it. Sealing a torn segment must keep that promise.
+func TestSealingTornSegmentSyncs(t *testing.T) {
+	w := mustWriter(t, WriterOptions{Dir: t.TempDir()})
+	if err := w.Append(sampleLogs(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	sl := &syncLog{segmentFile: noTruncate{&shortWriteFile{segmentFile: w.file, fail: true}}}
+	w.file = sl
+	if err := w.Append(sampleLogs(1, 1)); err == nil {
+		t.Fatal("short write reported success")
+	}
+	sl.synced = false
+	if err := w.Append(sampleLogs(1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if !sl.syncedBeforeClose {
+		t.Fatal("torn segment closed without fsync")
+	}
+}
+
+// TestResetClearsTorn: a reset spool starts clean, so its first segment is used.
+func TestResetClearsTorn(t *testing.T) {
+	w := mustWriter(t, WriterOptions{Dir: t.TempDir()})
+	w.torn = true
+	if err := w.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(sampleLogs(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if w.seq != 0 {
+		t.Fatalf("append after reset went to segment %d, want 0", w.seq)
 	}
 }

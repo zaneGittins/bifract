@@ -66,6 +66,8 @@ services:
     image: bifract-dev
     container_name: bifract-app
     restart: unless-stopped
+    # Docker's 10s default would kill it mid-drain and lose acked logs.
+    stop_grace_period: 90s
     # mem_limit gives automemlimit a real cgroup ceiling to derive GOMEMLIMIT from,
     # so the GC tightens as the process approaches the limit instead of the container
     # being OOM-killed at it. CPU is deliberately left uncapped: automaxprocs would
@@ -146,6 +148,8 @@ services:
     image: bifract-dev
     container_name: bifract-ingest
     restart: unless-stopped
+    # Docker's 10s default would kill it mid-drain and lose acked logs.
+    stop_grace_period: 90s
     command: ["ingest"]
     # Sized above the ingest queue's worst case (BIFRACT_INGEST_QUEUE_SIZE x 5,000
     # logs, ~1GB) plus the archive spool, so GOMEMLIMIT lands above normal working
@@ -193,6 +197,8 @@ services:
     image: bifract-dev
     container_name: bifract-archiver
     restart: unless-stopped
+    # Docker's 10s default would cut the final flush short, so the next start re-archives rows.
+    stop_grace_period: 90s
     # Override the image ENTRYPOINT (/bifract-server); in compose `command` is
     # appended to the entrypoint, so the entrypoint itself must be replaced.
     entrypoint: ["/bifract-archiver"]

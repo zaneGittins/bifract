@@ -14,7 +14,7 @@ Accepted logs are queued in memory and written to ClickHouse in batches by a wor
 
 | Check | Trips at | Clears at |
 |---|---|---|
-| Failed inserts | 3 consecutive ClickHouse insert failures | 30 s after the last failure |
+| Failed inserts | 3 consecutive failed ClickHouse insert attempts | 30 s after the last failure |
 | ClickHouse CPU | Above 80% for 6 polls (30 s) | Below 60% |
 | ClickHouse memory | Above 90% for 3 polls (15 s); reads the pod's cgroup limit on Kubernetes | Below 80% |
 | ClickHouse disk | Above 90% used | Below 80% |
@@ -25,6 +25,10 @@ Accepted logs are queued in memory and written to ClickHouse in batches by a wor
 | Rate limit | More than `BIFRACT_INGEST_RATE_LIMIT` requests/second from one client IP | Next second |
 
 The health checks (failures, CPU, memory, disk, spool) run before the body is read, so an overloaded server does not spend CPU parsing. Each queue slot holds at most 5,000 logs; larger requests are split across slots. The archive spool is fail-closed: a batch that cannot be spooled is rejected, never acknowledged.
+
+## What a 200 means
+
+A `200` means the logs are in the ingest buffer (and in the archive spool, when it is on). They are written to ClickHouse within the flush interval (30 seconds by default, `BIFRACT_INGEST_FLUSH_SECONDS`). A failed insert is retried with backoff for about 2 minutes, which rides out a ClickHouse restart, and new requests get `429` meanwhile. An error a retry cannot fix, such as a type mismatch, gets 3 attempts. On shutdown, buffered logs are flushed; if ClickHouse is failing, the flush gives up after about 15 seconds. Logs are dropped only when retries run out or a batch cannot be encoded. Each drop is logged, counted in the insert error metrics and raises the Ingest Insert Errors notification. A crash or forced kill loses logs still in the buffer; with the archive on they remain in the spool.
 
 ## Settings
 
