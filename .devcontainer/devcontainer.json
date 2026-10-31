@@ -1,0 +1,30 @@
+{
+  // Try Bifract: installs a release the way the docs do, then loads Lab 001 from
+  // the Exchange. Prebuilds run everything up to updateContentCommand.
+  "name": "Try Bifract",
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+  "containerEnv": {
+    // A release tag, or "source" to build this checkout instead.
+    "BIFRACT_DEMO_VERSION": "source"
+  },
+  "onCreateCommand": "bash .devcontainer/demo.sh install",
+  "updateContentCommand": "bash .devcontainer/demo.sh load",
+  "postCreateCommand": "bash .devcontainer/demo.sh rotate",
+  "postStartCommand": "bash .devcontainer/demo.sh welcome",
+  // The editor opens once the stack is installed; the lab keeps loading behind it.
+  "waitFor": "onCreateCommand",
+  "forwardPorts": [443, 8443],
+  "portsAttributes": {
+    "443": { "label": "Bifract", "protocol": "https", "onAutoForward": "openBrowserOnce" },
+    "8443": { "label": "Bifract ingest", "protocol": "https", "onAutoForward": "silent" }
+  },
+  "otherPortsAttributes": { "onAutoForward": "silent" }
+}
