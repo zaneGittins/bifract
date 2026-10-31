@@ -37,6 +37,7 @@ Without `function=`, each group gets `_count`. Pass `function=` for a different 
 | fields | One or more fields or expressions to group by |
 | `function=` | Aggregate per group. Default: `count()` |
 | `limit=` | Maximum number of groups returned |
+| `distinct=` | Count the distinct values of the last field per group of the others, as `_count`: `groupBy(src_ip, dst_ip, distinct=true)` is the destinations each source reached |
 
 A bare `| count()` after `groupBy()` counts the groups, not the rows in each:
 

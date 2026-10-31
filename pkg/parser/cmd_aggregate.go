@@ -628,6 +628,23 @@ func (h *groupbyHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	return nil
 }
 
+// countedKeyRef resolves the key distinct= counts, as a group key would resolve but without
+// projecting it: it is not an output of the aggregation.
+func countedKeyRef(keyArg Argument, computed map[string]bool, isMultiStage bool, ctx *CommandContext) (string, error) {
+	arg := keyArg.Value()
+	switch {
+	case keyArg.FieldName() == "":
+		sql, err := ResolveArg(keyArg, ctx.Registry)
+		if err != nil {
+			return "", fmt.Errorf("groupby(): %w", err)
+		}
+		return sql, nil
+	case computed[arg], isMultiStage, arg == "timestamp", arg == normLogColumn, arg == "log_id", arg == "normalizer":
+		return arg, nil
+	}
+	return ctx.Registry.fieldRef(arg), nil
+}
+
 func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// After an aggregation the groupby aggregates the rows the pipeline has at this
 	// point: an aggregating stage's groups, or a projection of them (an assignment,
@@ -680,7 +697,14 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		}
 	}
 
-	for _, keyArg := range b.Flat("fields") {
+	// distinct= counts the distinct values of the last key within the groups of the others,
+	// as timechart's groupby(f, distinct=true) does per bucket, so that key is not grouped by.
+	keys := b.Flat("fields")
+	var counted *Argument
+	if (b.Flag("distinct", false) || b.Flag("unique", false)) && len(keys) > 0 {
+		counted, keys = &keys[len(keys)-1], keys[:len(keys)-1]
+	}
+	for _, keyArg := range keys {
 		arg := keyArg.Value()
 		// A model column the previous aggregation did not output is gone: the
 		// entry was dropped by ScopeToOutputs, so ask ModelLookupOutputs directly.
@@ -731,16 +755,16 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		ctx.Registry.SetGroupKeyAlias(arg, sanitizedAlias(arg), ctx.CmdIndex)
 	}
 
-	// distinct= counts distinct values of the last group key, so it is applied
-	// after the keys are known.
-	if b.Flag("distinct", false) || b.Flag("unique", false) {
-		if len(source.Layer.GroupBy) > 0 {
-			lastField := source.Layer.GroupBy[len(source.Layer.GroupBy)-1]
-			source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
-				Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", groupableCast(lastField)),
-			})
-			ctx.Plan.IsAggregated = true
+	if counted != nil {
+		ref, err := countedKeyRef(*counted, computedFields, isMultiStage, ctx)
+		if err != nil {
+			return err
 		}
+		source.Layer.Selects = append(source.Layer.Selects, SelectExpr{
+			Expr: fmt.Sprintf("COUNT(DISTINCT %s) AS _count", groupableCast(ref)),
+		})
+		ctx.Plan.IsAggregated = true
+		hasFunction = true // the distinct count is _count; no default COUNT(*) beside it
 	}
 
 	// Default aggregation: when no function= was specified, add COUNT(*)
