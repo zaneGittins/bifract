@@ -30,6 +30,7 @@ import (
 	"bifract/pkg/comments"
 	"bifract/pkg/contextlinks"
 	"bifract/pkg/dashboards"
+	"bifract/pkg/datasets"
 	"bifract/pkg/deeplink"
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/egress"
@@ -805,7 +806,19 @@ func main() {
 	queryHistoryHandler.SetRBACFull(authHandler.RBACResolver())
 	contextLinkManager := contextlinks.NewManager(pg)
 	contextLinkHandler := contextlinks.NewHandler(contextLinkManager)
-	exchangeHandler := exchange.NewHandler(newExchangeClient())
+	exchangeClient := newExchangeClient()
+	exchangeHandler := exchange.NewHandler(exchangeClient)
+	// Dataset imports run here, feeding the app tier's ingest queue so rows take the
+	// normal insert path. Downloads may reach the network only as the index may, and
+	// an import waits below half the depth live ingest is refused at.
+	datasetStore := datasets.NewStore(pg)
+	datasetHandler := datasets.NewHandler(exchangeClient, fractalManager, datasetStore, sseHub)
+	stopDatasetWorker := func() {}
+	if exchangeClient.Enabled() {
+		stopDatasetWorker = datasets.NewWorker(datasetStore,
+			egress.NewClient(egress.Options{AllowPrivate: exchangeClient.AllowsPrivate()}),
+			ingestQueue, db, sseHub, config.IngestQueueSize/4, os.TempDir()).Start()
+	}
 
 	// Initialize feed system
 	feedManager := feeds.NewManager(pg)
@@ -850,6 +863,7 @@ func main() {
 		dictionaryHandler:     dictionaryHandler,
 		elasticHandler:        elasticHandler,
 		exchangeHandler:       exchangeHandler,
+		datasetHandler:        datasetHandler,
 		feedHandler:           feedHandler,
 		fractalHandler:        fractalHandler,
 		groupHandler:          groupHandler,
@@ -923,6 +937,9 @@ func main() {
 
 	// Stop claiming archive recall/restore jobs
 	stopArchiveJobWorkers()
+
+	// Stop feeding dataset imports before the ingest queue drains
+	stopDatasetWorker()
 
 	// Stop the distribution queue and DDL monitors
 	distMonitor.Stop()

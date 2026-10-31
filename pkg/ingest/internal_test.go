@@ -78,7 +78,7 @@ func newInternalFixture(t *testing.T, defaultNormalizer bool) *internalFixture {
 			}
 			now := time.Now()
 			return fakedb.Row("frac-caddy", "caddy", "", false, true, "", now, now,
-				nil, nil, nil, "reject", int64(0), int64(0), nil, nil), true
+				nil, nil, nil, "reject", int64(0), int64(0), nil, nil, nil, nil), true
 		case strings.Contains(q, "FROM normalizers WHERE is_default"):
 			if !defaultNormalizer {
 				return fakedb.PGResult{}, true

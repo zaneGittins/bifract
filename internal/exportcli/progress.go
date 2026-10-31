@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/term"
 
+	"bifract/internal/clistyle"
 	"bifract/internal/ingestcli"
 )
 
@@ -43,7 +44,7 @@ func showProgress(c *countingWriter) func() {
 				return
 			case <-t.C:
 				fmt.Fprintf(os.Stderr, "\r\033[K%s %s written, %s elapsed",
-					ingestcli.DimStyle.Render("Exporting:"), ingestcli.FormatBytes(c.n.Load()), time.Since(start).Round(time.Second))
+					clistyle.DimStyle.Render("Exporting:"), ingestcli.FormatBytes(c.n.Load()), time.Since(start).Round(time.Second))
 			}
 		}
 	}()

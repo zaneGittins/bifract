@@ -1629,6 +1629,7 @@
                         <div class="tp-divider"></div>
                         <div class="tp-section-label">Presets</div>
                         <div class="tp-presets">
+                            <button class="tp-preset tp-dataset" data-value="dataset" type="button" hidden>Dataset range <span class="tp-live-sub" id="tpDatasetDates"></span></button>
                             <button class="tp-preset tp-live" data-value="live" type="button"><span class="live-dot" aria-hidden="true"></span>Live <span class="tp-live-sub">new events as they arrive</span></button>
                             <button class="tp-preset" data-value="5m" type="button">5m</button>
                             <button class="tp-preset" data-value="15m" type="button">15m</button>
@@ -2278,6 +2279,7 @@
                                 <input type="text" id="exchangeSearchInput" class="admin-search" placeholder="Search the Exchange" aria-label="Search the Exchange">
                                 <select id="exchangeKindFilter" class="exchange-kind-filter" aria-label="Kind">
                                     <option value="">All kinds</option>
+                                    <option value="dataset">Datasets</option>
                                     <option value="bundle">Bundles</option>
                                     <option value="lookup">Lookups</option>
                                     <option value="model">Models</option>

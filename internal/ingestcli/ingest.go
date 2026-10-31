@@ -40,6 +40,9 @@ type Config struct {
 	Limit     int
 	Insecure  bool
 	Adaptive  bool // true when auto mode is active (no manual flags)
+	// Counts holds the log count of files already known, such as datasets, so
+	// progress need not read them twice.
+	Counts map[string]int64
 }
 
 // Stats tracks ingestion progress with atomic counters.

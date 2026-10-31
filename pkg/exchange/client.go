@@ -36,9 +36,10 @@ var ErrDisabled = errors.New("the exchange is turned off on this server")
 
 // Client fetches an exchange index and its files.
 type Client struct {
-	indexURL string
-	http     *http.Client
-	now      func() time.Time
+	indexURL     string
+	allowPrivate bool
+	http         *http.Client
+	now          func() time.Time
 
 	mu sync.Mutex
 	// cached is the last good index, served while a refresh runs or after one fails.
@@ -61,12 +62,17 @@ type cachedFile struct {
 // allowPrivate admits addresses inside the network, for an operator's own mirror.
 func NewClient(indexURL string, allowPrivate bool) *Client {
 	return &Client{
-		indexURL: indexURL,
-		http:     egress.NewClient(egress.Options{AllowPrivate: allowPrivate, Timeout: fetchTimeout}),
-		now:      time.Now,
-		files:    map[string]cachedFile{},
+		indexURL:     indexURL,
+		allowPrivate: allowPrivate,
+		http:         egress.NewClient(egress.Options{AllowPrivate: allowPrivate, Timeout: fetchTimeout}),
+		now:          time.Now,
+		files:        map[string]cachedFile{},
 	}
 }
+
+// AllowsPrivate reports whether this index, and what it points to, may be inside
+// the network: true only for an operator's own mirror.
+func (c *Client) AllowsPrivate() bool { return c.allowPrivate }
 
 // Enabled reports whether an index URL is configured.
 func (c *Client) Enabled() bool { return c.indexURL != "" }

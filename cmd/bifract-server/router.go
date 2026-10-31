@@ -16,6 +16,7 @@ import (
 	"bifract/pkg/comments"
 	"bifract/pkg/contextlinks"
 	"bifract/pkg/dashboards"
+	"bifract/pkg/datasets"
 	"bifract/pkg/deeplink"
 	"bifract/pkg/dictionaries"
 	"bifract/pkg/exchange"
@@ -74,6 +75,7 @@ type routerDeps struct {
 	dictionaryHandler     *dictionaries.Handler
 	elasticHandler        *ingest.ElasticBulkHandler
 	exchangeHandler       *exchange.Handler
+	datasetHandler        *datasets.Handler
 	feedHandler           *feeds.Handler
 	fractalHandler        *fractals.Handler
 	groupHandler          *groups.Handler
@@ -2560,6 +2562,38 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: api.Response[exchange.ItemContent]{},
 				Summary:  "Read one Exchange item and its file.",
 				Handler:  d.exchangeHandler.HandleItem,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/exchange/datasets",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[[]*datasets.Import]{},
+				Summary:  "List Exchange dataset imports and their progress.",
+				Handler:  d.datasetHandler.HandleList,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodGet,
+				Path:     "/exchange/datasets/events",
+				Produces: "text/event-stream",
+				Access:   api.AccessTenantAdmin,
+				Summary:  "Stream Exchange dataset import progress.",
+				Handler:  d.datasetHandler.HandleEvents,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/exchange/datasets/{id}/import",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[*datasets.Import]{},
+				Summary:  "Create a fractal for an Exchange dataset and import the dataset into it.",
+				Handler:  d.datasetHandler.HandleAdd,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/exchange/datasets/imports/{importId}/retry",
+				Access:   api.AccessTenantAdmin,
+				Response: api.Response[*datasets.Import]{},
+				Summary:  "Run a failed dataset import again from the start.",
+				Handler:  d.datasetHandler.HandleRetry,
 			})
 
 			// Dictionaries

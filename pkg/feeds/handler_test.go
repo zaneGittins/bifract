@@ -96,7 +96,7 @@ func newHandlerEnv(t *testing.T, feeds ...[]driver.Value) *handlerEnv {
 		return fakedb.PGResult{}, false
 	})
 	fake.On("FROM fractals", fakedb.Row("default-frac", "default", "", true, false, "",
-		time.Now(), time.Now(), nil, nil, nil, "reject", int64(0), int64(0), nil, nil))
+		time.Now(), time.Now(), nil, nil, nil, "reject", int64(0), int64(0), nil, nil, nil, nil))
 
 	mgr := &Manager{pg: pg}
 	am := alerts.NewManager(pg, alerts.NewEngineWithDicts(pg, nil, nil, "http://localhost"), nil)

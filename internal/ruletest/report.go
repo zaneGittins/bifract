@@ -8,14 +8,14 @@ import (
 	"sort"
 	"strings"
 
-	"bifract/internal/ingestcli"
+	"bifract/internal/clistyle"
 )
 
 // Shared styling with the ingest CLI so the two subcommands look like one tool.
-func dim(s string) string     { return ingestcli.DimStyle.Render(s) }
-func warn(s string) string    { return ingestcli.WarningStyle.Render(s) }
-func okMark(s string) string  { return ingestcli.SuccessStyle.Render(s) }
-func badMark(s string) string { return ingestcli.ErrorStyle.Render(s) }
+func dim(s string) string     { return clistyle.DimStyle.Render(s) }
+func warn(s string) string    { return clistyle.WarningStyle.Render(s) }
+func okMark(s string) string  { return clistyle.SuccessStyle.Render(s) }
+func badMark(s string) string { return clistyle.ErrorStyle.Render(s) }
 
 // Report writes the summary in the requested format.
 func Report(w io.Writer, s *Summary, format string, explain bool) error {
@@ -41,7 +41,7 @@ func reportText(w io.Writer, s *Summary, explain bool) error {
 		if name == "" {
 			name = sr.Path
 		}
-		fmt.Fprintf(w, "%s %s\n", ingestcli.BoldStyle.Render(name), dim("("+sr.Path+")"))
+		fmt.Fprintf(w, "%s %s\n", clistyle.BoldStyle.Render(name), dim("("+sr.Path+")"))
 
 		for _, c := range sr.Results {
 			if c.Passed {

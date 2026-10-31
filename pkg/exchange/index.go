@@ -10,6 +10,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -28,11 +29,14 @@ const (
 	KindDashboard  = "dashboard"
 	// KindBundle groups other items so they can be added together.
 	KindBundle = "bundle"
+	// KindDataset is a log file imported into a fractal of its own.
+	KindDataset = "dataset"
 )
 
 var kinds = map[string]bool{
 	KindLookup: true, KindDetection: true, KindNormalizer: true, KindPolicy: true,
 	KindModel: true, KindSearch: true, KindDashboard: true, KindBundle: true,
+	KindDataset: true,
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -40,6 +44,11 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 // Lookups and models are installed under their id, which BQL names bare in dict=
 // and model=.
 var nameIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// A dataset is imported into a fractal named after its id.
+var datasetIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Index is the list of items an exchange offers.
 type Index struct {
@@ -61,8 +70,21 @@ type Item struct {
 	// fields map through the normalizer it requires.
 	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
 	// Items are a bundle's members.
-	Items  []string `yaml:"items,omitempty" json:"items,omitempty"`
-	Lookup *Lookup  `yaml:"lookup,omitempty" json:"lookup,omitempty"`
+	Items   []string `yaml:"items,omitempty" json:"items,omitempty"`
+	Lookup  *Lookup  `yaml:"lookup,omitempty" json:"lookup,omitempty"`
+	Dataset *Dataset `yaml:"dataset,omitempty" json:"dataset,omitempty"`
+}
+
+// Dataset is a zstd-compressed NDJSON file of logs in the shape Bifract exports,
+// published elsewhere and checked against its size and hash before import.
+type Dataset struct {
+	URL    string `yaml:"url" json:"url"`
+	SHA256 string `yaml:"sha256" json:"sha256"`
+	Bytes  int64  `yaml:"bytes" json:"bytes"`
+	Logs   int64  `yaml:"logs" json:"logs"`
+	// Start and End bound the event timestamps; the fractal opens on this range.
+	Start time.Time `yaml:"start" json:"start"`
+	End   time.Time `yaml:"end" json:"end"`
 }
 
 // Lookup is a URL-filled lookup. The data stays upstream; only this is installed.
@@ -138,6 +160,10 @@ func ReadIndex(data []byte) (*Index, error) {
 	}
 	return &idx, nil
 }
+
+// HasFile reports whether the item installs a file from the exchange. Lookups and
+// datasets fetch their data from elsewhere; bundles only list items.
+func (it Item) HasFile() bool { return it.Path != "" }
 
 // Find returns the item with the given id, or nil.
 func (idx *Index) Find(id string) *Item {
@@ -253,6 +279,8 @@ func (idx *Index) checkRefs(it *Item) error {
 			return fmt.Errorf("requires %q, which is not in this index", r)
 		case req.Kind == KindBundle:
 			return fmt.Errorf("requires the bundle %q; require its items instead", r)
+		case req.Kind == KindDataset:
+			return fmt.Errorf("requires the dataset %q, which is added as a fractal of its own", r)
 		case req.Kind == KindNormalizer:
 			normalizers++
 		}
@@ -271,6 +299,8 @@ func (idx *Index) checkRefs(it *Item) error {
 			missing = fmt.Errorf("bundle member %q is not in this index", m)
 		case mem.Kind == KindBundle:
 			return fmt.Errorf("bundle member %q is a bundle; list its items instead", m)
+		case mem.Kind == KindDataset:
+			return fmt.Errorf("bundle member %q is a dataset, which is added as a fractal of its own", m)
 		default:
 			members = append(members, m)
 		}
@@ -326,6 +356,9 @@ func (it Item) validate() error {
 	if it.Lookup != nil && it.Kind != KindLookup {
 		return fmt.Errorf("only a lookup takes a lookup section")
 	}
+	if it.Dataset != nil && it.Kind != KindDataset {
+		return fmt.Errorf("only a dataset takes a dataset section")
+	}
 	switch it.Kind {
 	case KindBundle:
 		if it.Path != "" || len(it.Requires) > 0 {
@@ -349,8 +382,42 @@ func (it Item) validate() error {
 			return fmt.Errorf("lookup source needs a key_field")
 		}
 		return nil
+	case KindDataset:
+		return it.validateDataset()
 	}
 	return validPath(it.Path)
+}
+
+func (it Item) validateDataset() error {
+	if it.Path != "" || len(it.Requires) > 0 {
+		return fmt.Errorf("a dataset has no path or requirements; its file comes from dataset.url")
+	}
+	if !datasetIDPattern.MatchString(it.ID) {
+		return fmt.Errorf("a dataset is added as a fractal named after its id, so %q must start with a letter and use only letters, digits, - and _", it.ID)
+	}
+	d := it.Dataset
+	if d == nil {
+		return fmt.Errorf("a dataset needs a dataset section")
+	}
+	if err := egress.ValidateURL(d.URL); err != nil {
+		return fmt.Errorf("dataset url: %w", err)
+	}
+	if !strings.HasPrefix(strings.ToLower(d.URL), "https://") {
+		return fmt.Errorf("dataset url must use https")
+	}
+	switch {
+	case !sha256Pattern.MatchString(d.SHA256):
+		return fmt.Errorf("dataset sha256 must be 64 lowercase hex digits")
+	case d.Bytes <= 0:
+		return fmt.Errorf("dataset bytes must be the file size")
+	case d.Logs <= 0:
+		return fmt.Errorf("dataset logs must be the number of logs in the file")
+	case d.Start.IsZero():
+		return fmt.Errorf("dataset start is required")
+	case !d.End.After(d.Start):
+		return fmt.Errorf("dataset end must be after its start")
+	}
+	return nil
 }
 
 // pathPattern admits plain file paths only: no escapes a server could decode

@@ -17,6 +17,7 @@ SECTION = "exchange"
 # Kind, label, and what adding one does. Bundles lead, as in the app.
 KINDS = {
     "bundle": ("Bundle", "Adds each of its items that is not there yet, requirements first."),
+    "dataset": ("Dataset", "Creates a fractal named after the dataset and imports its logs into it. Needs a tenant admin."),
     "lookup": ("Lookup", "Adds a lookup filled from the URL below, refreshed on its schedule. Needs a tenant admin."),
     "model": ("Model", "Adds an analytics model to the fractal. It builds from new logs; run a backfill under Analytics for stored ones. Needs an analyst."),
     "detection": ("Detection", "Adds an alert to the fractal, or a draft in your name when the scope reviews alert changes."),
@@ -168,6 +169,20 @@ def item_page(it, items):
         out += ["## Settings", "", "| Setting | Value |", "|---|---|"]
         out += [f"| {k} | {cell(v)} |" for k, v in rows if v]
         out += [""]
+    elif it["kind"] == "dataset":
+        ds = it["dataset"]
+        rows = [
+            ("Fractal", code(it["id"])),
+            ("Logs", f"{int(ds['logs']):,}"),
+            ("Time range", f"{ds['start']} to {ds['end']}"),
+            ("File", f"<{ds['url']}>"),
+            ("Size", f"{int(ds['bytes']) / 1e6:,.0f} MB"),
+            ("SHA-256", code(ds["sha256"])),
+        ]
+        out += ["## Data", "", "| Setting | Value |", "|---|---|"]
+        out += [f"| {k} | {cell(v)} |" for k, v in rows]
+        out += ["", "To load it with the CLI instead, into the fractal an ingest token points at:", ""]
+        out += ["```sh", f"bifract --ingest --url https://bifract.example.com:8443 --token <ingest token> dataset:{it['id']}", "```", ""]
     else:
         with open(os.path.join(EXCHANGE, it["path"]), encoding="utf-8") as f:
             content = f.read().rstrip("\n")

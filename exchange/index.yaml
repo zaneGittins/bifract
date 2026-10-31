@@ -153,6 +153,26 @@ items:
     description: Conservative alert policy rules. ATT&CK labels and no wildcard queries block; the rest advise.
     path: policies/soc-baseline.yaml
 
+  # Datasets. Each is imported into a new fractal named after its id; needs a tenant admin.
+  - id: bifract-labs-001
+    kind: dataset
+    name: "Lab 001: Meridian workstation intrusion"
+    description: >-
+      Three days of endpoint and network telemetry from a small Windows domain, with an
+      intrusion inside it. Sysmon, Windows event logs, Zeek and Velociraptor Autoruns from
+      a domain controller, three workstations and a network sensor. Domains and attacker
+      infrastructure are fictional; do not contact any indicator in it.
+    author: Bifract Labs
+    homepage: https://github.com/zaneGittins/bifract-labs/tree/main/labs/001
+    tags: [windows, sysmon, zeek, training]
+    dataset:
+      url: https://github.com/zaneGittins/bifract-labs/releases/download/lab-001/bifract-labs-001.jsonl.zst
+      sha256: 2583aeee2a941d6ea32aedd9af7fb11a95403fbdc091d34e146fb99fa760fbc5
+      bytes: 118236887
+      logs: 2083151
+      start: 2026-10-27T08:37:53Z
+      end: 2026-10-30T13:49:59Z
+
   # Bundles. Adding one adds each member not already present, requirements first.
   - id: rmm-hunting
     kind: bundle

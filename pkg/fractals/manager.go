@@ -2,6 +2,7 @@ package fractals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -74,6 +75,28 @@ func (m *Manager) CreateFractalForRestore(ctx context.Context, name, description
 	fractal, err := m.storage.CreateFractalForRestore(ctx, name, description, createdBy, sourceFractalID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create restore fractal: %w", err)
+	}
+	if m.onCreateHook != nil {
+		m.onCreateHook(ctx, fractal)
+	}
+	return fractal, nil
+}
+
+// ErrNameTaken reports a fractal name already in use.
+var ErrNameTaken = errors.New("already exists")
+
+// CreateFractalForDataset creates a no-retention fractal for an Exchange dataset,
+// opening on [start, end]. Same validation and create hook as CreateFractal.
+func (m *Manager) CreateFractalForDataset(ctx context.Context, name, description, createdBy string, start, end time.Time) (*Fractal, error) {
+	if err := m.validateCreateRequest(CreateFractalRequest{Name: name, Description: description}); err != nil {
+		return nil, err
+	}
+	if existing, err := m.storage.GetFractalByName(ctx, name); err == nil && existing != nil {
+		return nil, fmt.Errorf("a fractal named '%s' %w", name, ErrNameTaken)
+	}
+	fractal, err := m.storage.CreateFractalForDataset(ctx, name, description, createdBy, start, end)
+	if err != nil {
+		return nil, err
 	}
 	if m.onCreateHook != nil {
 		m.onCreateHook(ctx, fractal)
@@ -325,29 +348,8 @@ func (m *Manager) GetFractalStats(ctx context.Context, fractalID string) (*Fract
 
 // validateCreateRequest validates the create index request
 func (m *Manager) validateCreateRequest(req CreateFractalRequest) error {
-	if strings.TrimSpace(req.Name) == "" {
-		return fmt.Errorf("index name is required")
-	}
-
-	req.Name = strings.TrimSpace(req.Name)
-
-	// Validate name format
-	if len(req.Name) > 100 {
-		return fmt.Errorf("index name must be 100 characters or less")
-	}
-
-	// Check for valid characters (alphanumeric, hyphens, underscores)
-	if !isValidFractalName(req.Name) {
-		return fmt.Errorf("index name can only contain letters, numbers, hyphens, and underscores")
-	}
-
-	// Reserved names
-	reservedNames := []string{"default", "admin", "system", "logs", "events", "audit", "alerts"}
-	lowerName := strings.ToLower(req.Name)
-	for _, reserved := range reservedNames {
-		if lowerName == reserved {
-			return fmt.Errorf("'%s' is a reserved index name", req.Name)
-		}
+	if err := ValidateName(strings.TrimSpace(req.Name)); err != nil {
+		return err
 	}
 
 	// Validate description length
@@ -355,6 +357,27 @@ func (m *Manager) validateCreateRequest(req CreateFractalRequest) error {
 		return fmt.Errorf("description must be 500 characters or less")
 	}
 
+	return nil
+}
+
+// ValidateName reports why name cannot be given to a new fractal, or nil.
+func ValidateName(name string) error {
+	if name == "" {
+		return fmt.Errorf("index name is required")
+	}
+	if len(name) > 100 {
+		return fmt.Errorf("index name must be 100 characters or less")
+	}
+	if !isValidFractalName(name) {
+		return fmt.Errorf("index name can only contain letters, numbers, hyphens, and underscores")
+	}
+	reservedNames := []string{"default", "admin", "system", "logs", "events", "audit", "alerts"}
+	lowerName := strings.ToLower(name)
+	for _, reserved := range reservedNames {
+		if lowerName == reserved {
+			return fmt.Errorf("'%s' is a reserved index name", name)
+		}
+	}
 	return nil
 }
 

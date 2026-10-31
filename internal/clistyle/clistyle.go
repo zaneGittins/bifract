@@ -1,4 +1,5 @@
-package ingestcli
+// Package clistyle holds the terminal styles the bifract CLI commands share.
+package clistyle
 
 import "github.com/charmbracelet/lipgloss"
 

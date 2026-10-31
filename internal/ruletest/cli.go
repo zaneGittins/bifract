@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"bifract/internal/ingestcli"
+	"bifract/internal/clistyle"
 	"bifract/pkg/normalizers"
 )
 
@@ -407,8 +407,8 @@ func parseArgs(args []string) (*Options, error) {
 
 // PrintUsage prints help for the --test mode.
 func PrintUsage() {
-	t := ingestcli.TitleStyle.Render
-	b := ingestcli.BoldStyle.Render
+	t := clistyle.TitleStyle.Render
+	b := clistyle.BoldStyle.Render
 
 	fmt.Println(t("bifract --test") + " - test detection rules against sample logs")
 	fmt.Println()

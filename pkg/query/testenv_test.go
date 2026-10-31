@@ -66,7 +66,7 @@ func newTestEnvOn(t *testing.T, maxRows int, db *storage.ClickHouseClient, ch *f
 }
 
 func fractalRow(id, name string, isDefault bool) []driver.Value {
-	return []driver.Value{id, name, "", isDefault, false, "", fixtureTime, fixtureTime, nil, nil, nil, "reject", int64(0), int64(0), nil, nil}
+	return []driver.Value{id, name, "", isDefault, false, "", fixtureTime, fixtureTime, nil, nil, nil, "reject", int64(0), int64(0), nil, nil, nil, nil}
 }
 
 func (e *testEnv) answerPG(q string, args []driver.Value) (fakedb.PGResult, bool) {

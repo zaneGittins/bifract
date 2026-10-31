@@ -28,6 +28,11 @@ type Fractal struct {
 	EarliestLog *time.Time `json:"earliest_log,omitempty" db:"earliest_log"`
 	LatestLog   *time.Time `json:"latest_log,omitempty" db:"latest_log"`
 
+	// DefaultRangeStart and DefaultRangeEnd are the time range the query page opens
+	// on, such as an imported dataset's span. Both or neither are set.
+	DefaultRangeStart *time.Time `json:"default_range_start,omitempty" db:"default_range_start"`
+	DefaultRangeEnd   *time.Time `json:"default_range_end,omitempty" db:"default_range_end"`
+
 	// RBAC: populated by handler, not stored in DB
 	UserRole string `json:"user_role,omitempty" db:"-"`
 }

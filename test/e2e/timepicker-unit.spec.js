@@ -4,11 +4,11 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 
-function load(zone) {
+function load(zone, stored = {}, currentFractal = null) {
   const read = (f) => fs.readFileSync(path.join(__dirname, '../../web/static', f), 'utf8');
-  const window = {};
-  const document = { dispatchEvent() {}, getElementById() { return null; }, querySelectorAll() { return []; } };
-  const localStorage = { getItem() { return null; }, setItem() {} };
+  const window = { FractalContext: { currentFractal } };
+  const document = { dispatchEvent() {}, getElementById() { return null; }, querySelectorAll() { return []; }, querySelector() { return null; } };
+  const localStorage = { getItem(k) { return stored[k] ?? null; }, setItem(k, v) { stored[k] = v; } };
   new Function('window', 'document', 'localStorage', read('timezone.js'))(window, document, localStorage);
   window.TZ._zone = zone;
   window.TZ._fmtCache.clear();
@@ -166,4 +166,44 @@ test('custom ranges keep their seconds in the inputs', () => {
   const TP = load('UTC');
   const state = { type: 'custom', customStart: '2026-10-01T08:00:30.000Z', customEnd: '2026-10-01T09:15:00.000Z' };
   expect(TP.boundsText(state, NOW)).toEqual({ start: '2026-10-01 08:00:30', end: '2026-10-01 09:15:00' });
+});
+
+const dataset = {
+  id: 'f1',
+  default_range_start: '2026-10-27T08:37:53Z',
+  default_range_end: '2026-10-30T13:49:59Z',
+};
+
+test('a fractal range covers its first and last logs in whole minutes', () => {
+  const TP = load('UTC');
+  expect(TP.fractalRange(dataset)).toEqual({
+    type: 'custom', customStart: iso(2026, 10, 27, 8, 37), customEnd: iso(2026, 10, 30, 13, 50),
+  });
+  // An end already on a minute still moves past it, since the minute's logs follow.
+  expect(TP.fractalRange({ default_range_start: iso(2026, 10, 27), default_range_end: iso(2026, 10, 28) }).customEnd)
+    .toBe(iso(2026, 10, 28, 0, 1));
+  expect(TP.fractalRange({ id: 'plain' })).toBeNull();
+  expect(TP.fractalRange({ default_range_start: iso(2026, 10, 28), default_range_end: iso(2026, 10, 27) })).toBeNull();
+});
+
+test('a dataset fractal opens on its range until one is picked there, without saving it', () => {
+  const stored = {};
+  const TP = load('UTC', stored, dataset);
+  TP.restoreFromStorage();
+  expect(TP.state).toMatchObject({ type: 'custom', customStart: iso(2026, 10, 27, 8, 37), customEnd: iso(2026, 10, 30, 13, 50) });
+  expect(TP.isFractalRange()).toBe(true);
+  expect(stored).toEqual({});
+});
+
+test('a range picked in the fractal before wins over its default', () => {
+  const TP = load('UTC', { bifract_time_range_type_f1: '7d' }, dataset);
+  TP.restoreFromStorage();
+  expect(TP.state.type).toBe('7d');
+  expect(TP.isFractalRange()).toBe(false);
+});
+
+test('a fractal without a range opens on the last 24 hours', () => {
+  const TP = load('UTC', {}, { id: 'plain' });
+  TP.restoreFromStorage();
+  expect(TP.state.type).toBe('24h');
 });

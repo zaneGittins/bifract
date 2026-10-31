@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 
+	"bifract/internal/clistyle"
 	"bifract/internal/exportcli"
 	"bifract/internal/ingestcli"
 	"bifract/internal/mcpserver"
@@ -34,7 +35,7 @@ func main() {
 				if _, failed := err.(ruletest.ExitFailure); failed {
 					os.Exit(1)
 				}
-				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", clistyle.ErrorStyle.Render("Error:"), err)
 				os.Exit(2)
 			}
 			return
@@ -45,7 +46,7 @@ func main() {
 	for i, arg := range args {
 		if arg == "--ingest" {
 			if err := ingestcli.RunIngest(args[i+1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", clistyle.ErrorStyle.Render("Error:"), err)
 				os.Exit(1)
 			}
 			return
@@ -56,7 +57,7 @@ func main() {
 	for i, arg := range args {
 		if arg == "--export" {
 			if err := exportcli.RunExport(args[i+1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", clistyle.ErrorStyle.Render("Error:"), err)
 				os.Exit(1)
 			}
 			return
@@ -68,7 +69,7 @@ func main() {
 	for i, arg := range args {
 		if arg == "--mcp" {
 			if err := mcpserver.Run(context.Background(), args[i+1:]); err != nil {
-				fmt.Fprintf(os.Stderr, "\n%s %v\n", ingestcli.ErrorStyle.Render("Error:"), err)
+				fmt.Fprintf(os.Stderr, "\n%s %v\n", clistyle.ErrorStyle.Render("Error:"), err)
 				os.Exit(1)
 			}
 			return
