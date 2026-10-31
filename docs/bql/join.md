@@ -45,7 +45,7 @@ Sort by a joined column, with a larger subquery cap:
 
 ## Limitations
 
-- **One key, one join.** A second key is an error. Use one `join()` per query.
+- **One key, one join.** A second key, or a second `join()`, is an error.
 - **No nested joins.** The subquery cannot contain `join()`.
 - **No `modelLookup()`** in the same query as `join()`.
 - **Aggregation runs first.** An aggregation after `join()` runs on the outer rows before the join, and is rejected if it drops the key. To count only rows another query matches, filter with a [result-set binding](basics.md#result-sets) instead: `let &keys := <subquery>; ... | in(field, &keys) | count()`.

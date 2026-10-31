@@ -24,6 +24,10 @@ func (h *joinHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	if ctx.Plan.JoinSubSQL != "" {
+		// The plan holds one join; a second would silently replace the first.
+		return fmt.Errorf("only one join() per query is supported")
+	}
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err

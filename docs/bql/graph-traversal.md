@@ -34,7 +34,7 @@ Pipe to `pgraph()` to draw the tree as a process map instead of a table.
 `ptg()` reads `proc_lineage`, a table filled at ingest from events with `bifract_category="process_creation"` and a non-empty `process_guid`. Normalize your EDR source to that category and to the fields `process_guid`, `parent_process_guid`, `image`, `parent_image`, `commandline` and `computer_name`.
 
 !!! warning
-    Only `start=`, the time range and the fractal scope the tree. After `ptg()`, only `_depth`/`_path` filters and `pgraph()` take effect: field filters, `table()` and `sort()` are ignored, `limit()` is an error, and aggregations and `chain()` are rejected. Filters before `ptg()` are ignored too. Processes outside the selected time range are silently left out, so set the range to cover the whole investigation.
+    Only `start=`, the time range and the fractal scope the tree. After `ptg()`, only `_depth`/`_path` filters, `pgraph()` and `graph()` are allowed; anything else is an error. Filters before `ptg()` are ignored. Processes outside the selected time range are silently left out, so set the range to cover the whole investigation.
 
 `ptg()` reads live data only; it is not available over archived data.
 

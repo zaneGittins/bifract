@@ -33,6 +33,9 @@ Format specifiers (ClickHouse `formatDateTime`):
 | `%M` | Full month name | March |
 | `%F` | Date, same as `%Y-%m-%d` | 2026-03-04 |
 | `%T` | Time, same as `%H:%i:%S` | 14:30:05 |
+| `%R` | Hour and minute, same as `%H:%i` | 14:30 |
+
+The strftime spellings `%A` and `%B` are accepted as `%W` and `%M`.
 
 !!! warning
     `%M` is the month name, not the minute. Use `%i` for minutes.

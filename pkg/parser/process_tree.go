@@ -75,6 +75,56 @@ func ProcessTreeCommand(pipeline *PipelineNode) (ProcessTreeParams, bool, error)
 	return ProcessTreeParams{}, false, nil
 }
 
+// processTreeViews draw ptg()'s parent/child rows as they are.
+var processTreeViews = map[string]bool{"pgraph": true, "graph": true}
+
+// validateProcessTreeTail rejects what ptg() cannot apply. Its rows are the walked tree, so
+// after it only _depth/_path filters and a graph take effect; anything else would be dropped.
+func validateProcessTreeTail(pipeline *PipelineNode) error {
+	at := commandIndex(pipeline.Commands, "ptg")
+	if at < 0 {
+		return nil
+	}
+	const hint = "filter with _depth or _path, or pipe to pgraph() or graph()"
+	for _, cmd := range pipeline.Commands[at+1:] {
+		if !processTreeViews[canonicalCommandName(cmd.Name)] {
+			return fmt.Errorf("ptg() returns its process tree as is, so %s() cannot follow it: %s", cmd.Name, hint)
+		}
+	}
+	for _, a := range pipeline.Assignments {
+		if a.CmdIndex > at {
+			return fmt.Errorf("ptg() returns its process tree as is, so %s := cannot follow it: %s", a.Field, hint)
+		}
+	}
+	for _, c := range pipeline.HavingConditions {
+		if c.CmdIndex > at {
+			if f := nonTreeField(c); f != "" {
+				return fmt.Errorf("ptg() can only be filtered on _depth and _path, not %s", f)
+			}
+		}
+	}
+	return nil
+}
+
+// nonTreeField returns the first field in cond that is not _depth or _path, or "".
+func nonTreeField(cond HavingCondition) string {
+	if cond.IsCompound {
+		for _, child := range cond.Children {
+			if f := nonTreeField(child); f != "" {
+				return f
+			}
+		}
+		return ""
+	}
+	if cond.Field != "_depth" && cond.Field != "_path" {
+		if cond.Field == "" {
+			return "that condition"
+		}
+		return cond.Field
+	}
+	return ""
+}
+
 // BuildProcessTreeRowsSQL reads the own process_creation row of every node in
 // ProvenanceTreeTable (a node is its own member), within the query window like the walk.
 func BuildProcessTreeRowsSQL(opts QueryOptions) string {

@@ -1107,23 +1107,24 @@ func numericCast(fieldName, resolvedExpr string, registry *FieldRegistry) string
 	return fmt.Sprintf("toFloat64OrNull(%s)", resolvedExpr)
 }
 
-// convertTimeFormat converts BQL time format to ClickHouse format
-func convertTimeFormat(bqlFormat string) string {
-	// Convert common format patterns to ClickHouse
-	format := bqlFormat
-	format = strings.ReplaceAll(format, "%Y", "%Y")    // Year (4 digits)
-	format = strings.ReplaceAll(format, "%m", "%m")    // Month (01-12)
-	format = strings.ReplaceAll(format, "%d", "%d")    // Day (01-31)
-	format = strings.ReplaceAll(format, "%H", "%H")    // Hour (00-23)
-	format = strings.ReplaceAll(format, "%M", "%M")    // Minute (00-59)
-	format = strings.ReplaceAll(format, "%S", "%S")    // Second (00-59)
-	format = strings.ReplaceAll(format, "%R", "%H:%M") // Hour:Minute
+// strftimeOnlySpecifiers are strftime spellings ClickHouse's formatDateTime lacks, mapped to
+// its own. Every other specifier is ClickHouse's, passed through as written.
+var strftimeOnlySpecifiers = map[byte]byte{'A': 'W', 'B': 'M'}
 
-	// Handle some common patterns
-	if format == "%A %d %B %Y, %R" {
-		return "%W %d %B %Y, %H:%M"
+// convertTimeFormat maps a strftime() format to formatDateTime. It walks specifiers so a
+// literal %% is never read as the start of one.
+func convertTimeFormat(format string) string {
+	out := []byte(format)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] != '%' {
+			continue
+		}
+		if ch, ok := strftimeOnlySpecifiers[out[i+1]]; ok {
+			out[i+1] = ch
+		}
+		i++ // past the specifier, including the second % of %%
 	}
-	return format
+	return string(out)
 }
 
 // parseBucketSpan parses spans like "1h", "30m", "5s" into a numeric value and unit.
