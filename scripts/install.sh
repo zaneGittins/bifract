@@ -44,22 +44,53 @@ else
     fi
 fi
 
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${BINARY}-${OS}-${ARCH}"
+BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
+ASSET="${BINARY}-${OS}-${ARCH}"
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Downloading ${BINARY} ${TAG} for ${OS}/${ARCH}..."
-if ! curl -fL -o "/tmp/${BINARY}" "$DOWNLOAD_URL"; then
-    echo "Download failed. URL: ${DOWNLOAD_URL}"
-    echo "Check that release assets exist at https://github.com/${REPO}/releases/tag/${TAG}"
+for f in "$ASSET" checksums.txt checksums.txt.sigstore.json; do
+    if ! curl -fL -o "${TMP_DIR}/${f}" "${BASE_URL}/${f}"; then
+        echo "Download failed. URL: ${BASE_URL}/${f}"
+        echo "Check that release assets exist at https://github.com/${REPO}/releases/tag/${TAG}"
+        exit 1
+    fi
+done
+
+if command -v cosign >/dev/null 2>&1; then
+    if ! cosign verify-blob \
+        --bundle "${TMP_DIR}/checksums.txt.sigstore.json" \
+        --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}" \
+        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+        "${TMP_DIR}/checksums.txt"; then
+        echo "Signature verification of checksums.txt failed."
+        exit 1
+    fi
+else
+    echo "cosign not found; skipping signature check (install cosign to verify the release signature)."
+fi
+
+EXPECTED=$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print $1 }' "${TMP_DIR}/checksums.txt")
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL=$(sha256sum "${TMP_DIR}/${ASSET}" | cut -d' ' -f1)
+else
+    ACTUAL=$(shasum -a 256 "${TMP_DIR}/${ASSET}" | cut -d' ' -f1)
+fi
+if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "Checksum mismatch for ${ASSET} (expected ${EXPECTED:-none}, got ${ACTUAL})."
     exit 1
 fi
-chmod +x "/tmp/${BINARY}"
+echo "Checksum verified."
+mv "${TMP_DIR}/${ASSET}" "${TMP_DIR}/${BINARY}"
+chmod +x "${TMP_DIR}/${BINARY}"
 
 # Install (may need sudo)
 if [ -w "$INSTALL_DIR" ]; then
-    mv "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+    mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 else
     echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-    sudo mv "/tmp/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+    sudo mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 fi
 
 echo ""

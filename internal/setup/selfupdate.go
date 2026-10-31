@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -79,25 +78,6 @@ func SelfUpdate(origArgs []string) {
 		return
 	}
 
-	binaryURL := fmt.Sprintf(
-		"https://github.com/zaneGittins/bifract/releases/download/%s/bifract-%s-%s",
-		latest, runtime.GOOS, runtime.GOARCH,
-	)
-
-	printStep("Downloading bifract " + latest + "...")
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(binaryURL)
-	if err != nil {
-		printWarn(fmt.Sprintf("Download failed: %v; continuing with current version", err))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		printWarn(fmt.Sprintf("Download returned %d; continuing with current version", resp.StatusCode))
-		return
-	}
-
 	execPath, err := os.Executable()
 	if err != nil {
 		printWarn(fmt.Sprintf("Cannot determine executable path: %v", err))
@@ -109,21 +89,15 @@ func SelfUpdate(origArgs []string) {
 		return
 	}
 
-	// Write to a temp file next to the current binary, then atomic rename.
+	// Download next to the current binary, verify, then atomic rename.
+	printStep("Downloading and verifying bifract " + latest + "...")
 	tmpPath := execPath + ".update"
-	tmp, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
-		printWarn(fmt.Sprintf("Cannot write update: %v", err))
+	asset := fmt.Sprintf("bifract-%s-%s", runtime.GOOS, runtime.GOARCH)
+	client := &http.Client{Timeout: 120 * time.Second}
+	if err := downloadSignedRelease(client, latest, asset, tmpPath); err != nil {
+		printWarn(fmt.Sprintf("Update rejected: %v; continuing with current version", err))
 		return
 	}
-
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		printWarn(fmt.Sprintf("Download incomplete: %v; continuing with current version", err))
-		return
-	}
-	tmp.Close()
 
 	if err := os.Rename(tmpPath, execPath); err != nil {
 		os.Remove(tmpPath)

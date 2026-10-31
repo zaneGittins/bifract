@@ -28,7 +28,7 @@ For disk, ClickHouse typically compresses structured logs 7 to 10 times, so 10 G
     curl -sfL https://docs.bifract.io/install.sh | sh
     ```
 
-    This installs `bifract` to `/usr/local/bin` and runs `sudo bifract --install`. Set `BIFRACT_VERSION` (for example `BIFRACT_VERSION=v1.2.3`) to pin a release.
+    This installs `bifract` to `/usr/local/bin` and runs `sudo bifract --install`. Set `BIFRACT_VERSION` (for example `BIFRACT_VERSION=v1.2.3`) to pin a release. The script checks the binary against the release's signed checksums; see [Verifying Releases](verifying-releases.md).
 
 2. Answer the wizard steps:
 
@@ -57,7 +57,7 @@ For disk, ClickHouse typically compresses structured logs 7 to 10 times, so 10 G
 sudo bifract --upgrade
 ```
 
-`--upgrade` first updates the `bifract` CLI itself if a newer release exists (skip with `--skip-self-update`), then upgrades the stack in place.
+`--upgrade` first updates the `bifract` CLI itself if a newer release exists (skip with `--skip-self-update`), then upgrades the stack in place. The new CLI is installed only if its checksum and Sigstore signature verify.
 
 !!! warning "ClickHouse cannot be downgraded"
     An upgrade can move the bundled ClickHouse to a newer version. After it starts, do not go back to an older `docker-compose.yml`: an older ClickHouse cannot read data the newer one wrote, so those logs disappear from search. See [Rolling back after a ClickHouse upgrade](../administration/backup-restore.md#rolling-back-after-a-clickhouse-upgrade).
