@@ -183,7 +183,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	// field against many digests has no workable SQL form, so the distance runs in
 	// Go over the model's distinct-digest index and comes back as an IN filter.
 	var tlshMatches []parser.TLSHMatch
-	var tlshWarnings []string
+	var queryWarnings []string
 	var hasTLSHFilter bool
 	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
 	if tlshErr != nil {
@@ -200,8 +200,8 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 			return nil, rerr
 		}
 		tlshMatches = res.Matches
-		tlshWarnings = tlshSkipWarnings(tlshParams.Field, res.Skipped)
-		for _, w := range tlshWarnings {
+		queryWarnings = tlshSkipWarnings(tlshParams.Field, res.Skipped)
+		for _, w := range queryWarnings {
 			log.Printf("[ExecuteBQL] %s", w)
 		}
 	}
@@ -239,6 +239,7 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	if rs != nil {
 		sourceFocus = rs.Focus
 		sourceQuerySettings = rs.QuerySettings
+		queryWarnings = append(queryWarnings, rs.Warnings...)
 	}
 	hasSubquerySource := opts.SourceSubquery != ""
 
@@ -316,6 +317,6 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 		ChartConfig:  chartConfig,
 		FieldOrder:   fieldOrder,
 		IsAggregated: isAggregated,
-		Warnings:     tlshWarnings,
+		Warnings:     queryWarnings,
 	}, nil
 }

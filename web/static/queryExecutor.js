@@ -632,6 +632,7 @@ const QueryExecutor = {
         let buf = '';
         let pendingRender = false;
         let failed = false;
+        let finished = false;
         let timeRange = this.currentTimeRange;
         let histogram = null;
 
@@ -641,8 +642,9 @@ const QueryExecutor = {
             pendingRender = true;
             requestAnimationFrame(() => {
                 pendingRender = false;
-                // A render queued before an error frame must not repaint over it.
-                if (failed) return;
+                // A render queued before an error or done frame must not repaint over it:
+                // done renders everything and adds the final count's notes.
+                if (failed || finished) return;
                 // Only rebuild the table when the current page's rows have actually
                 // changed. After page 1 fills up, streaming rows go to later pages
                 // and the visible content is stable — avoid needless innerHTML churn.
@@ -702,7 +704,8 @@ const QueryExecutor = {
                         field_order: frame.field_order,
                         is_aggregated: frame.is_aggregated,
                         chart_type: frame.chart_type,
-                        chart_config: frame.chart_config
+                        chart_config: frame.chart_config,
+                        warnings: frame.warnings
                     }, elements, !!frame.streaming);
                     // Replace the previous search's timeline with an empty axis for this
                     // one, so a stale chart is never left on screen while counts arrive.
@@ -754,6 +757,7 @@ const QueryExecutor = {
                     this._failQuery(frame.error || 'Query failed', frame.error_type, frame.error_pos);
                     break;
                 case 'done':
+                    finished = true;
                     this._streamingActive = false;
                     this._renderCurrentResults(elements, { preservePage: true });
                     this._finalizeQuery({
@@ -764,7 +768,8 @@ const QueryExecutor = {
                         histogram: histogram,
                         histogram_pending: frame.histogram_pending,
                         time_start: timeRange.start,
-                        time_end: timeRange.end
+                        time_end: timeRange.end,
+                        warnings: this._queryWarnings
                     }, elements);
                     break;
             }
@@ -806,6 +811,7 @@ const QueryExecutor = {
         this._extraColumns = [];
         this.chartType = data.chart_type || '';
         this.chartConfig = data.chart_config || {};
+        this._queryWarnings = Array.isArray(data.warnings) ? data.warnings : [];
         this.sortColumn = null;
         this.sortDirection = null;
         this._histogramApplied = false;
@@ -3469,6 +3475,8 @@ const QueryExecutor = {
         // reconnection. Its rows carry no anomaly_score, so the anomaly chrome (legend,
         // pills, relative shading) is suppressed rather than shown as a column of blanks.
         this._pgScored = !(this.chartConfig && this.chartConfig.scored === false);
+        // What pgr() had to leave out (tree truncated, row limit reached), shown in the stats bar.
+        this._pgWarnings = (this._queryWarnings || []).filter(w => String(w).startsWith('pgr:'));
         this._pgModel = this._pgBuildModel((results || []).slice(0, limit));
         this._pgNovelSet = null; // recomputed lazily against the new model
         // Window start bounds the novelty badge: a relationship first seen inside the window under
@@ -4008,6 +4016,7 @@ const QueryExecutor = {
         const procMeta = new Map();      // guid -> {cmd, user} (command line + user, cmd truncated server-side)
         const procTime = new Map();      // guid -> epoch ms (process creation / first-seen time)
         const procHost = new Map();      // guid -> computer_name (for cross-host reconnection notation)
+        const procGroup = new Map();     // guid -> {n, first, last}: identical siblings pgr() drew as this one node
         const isChild = new Set();       // process guids seen as a spawn child
         const hasCreation = new Set();   // process guids with their OWN process_creation row (spawn child side)
         const procSet = new Set();
@@ -4044,6 +4053,8 @@ const QueryExecutor = {
                 // parent_guid (its creation event is missing / outside the time range).
                 if (et === 'spawn') hasCreation.add(r.child);
                 if (et === 'spawn' && !whyByNode.has(r.child)) { const w = this._pgWhyOf(r); if (w) whyByNode.set(r.child, w); }
+                const gn = et === 'spawn' ? parseInt(r.group_size, 10) : NaN;
+                if (gn > 1) procGroup.set(r.child, { n: gn, first: this._pgParseTime(r.group_first), last: this._pgParseTime(r.group_last) });
                 if (info) logInfoById.set(r.child, info);
                 bumpAnomaly(r.child, anomaly);
                 // command line + user ride on the child process row (pm-joined server-side).
@@ -4228,7 +4239,7 @@ const QueryExecutor = {
         const labelDerived = (g) => !procLabel.get(g) && !!procLabelHint.get(g);
 
         return { procLabel, procLabelHint, labelOf, labelDerived, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats, crossBridges,
-            logInfoById, anomalyByNode, firstSeenByNode, whyByNode, procMeta, procTime, procHost, procSet, roots, parentOf, rootOf, homeRoot, externalProcs, ghostProcs };
+            logInfoById, anomalyByNode, firstSeenByNode, whyByNode, procMeta, procTime, procHost, procGroup, procSet, roots, parentOf, rootOf, homeRoot, externalProcs, ghostProcs };
     },
 
     // The explanation columns pgr() emits with every scored edge, or null for rows without them
@@ -4431,7 +4442,14 @@ const QueryExecutor = {
             ? `<span class="graph-stat-count">${shownN}</span> of <span class="graph-stat-count">${procN}</span> processes`
             : `<span class="graph-stat-count">${procN}</span> processes`;
         const chev = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-        box.innerHTML = `<span class="graph-stat-item pg-stat-scope">${count}${scopeBtn ? '<span class="pg-stat-dot">·</span>' + scopeBtn : ''}</span>` +
+        let reps = 0;
+        m.procGroup.forEach(g => { reps += g.n - 1; });
+        const warn = this._pgWarnings || [];
+        const warnLabel = warn.some(w => w.includes('truncated')) ? 'tree truncated' : 'row limit reached';
+        box.innerHTML = (warn.length ? `<span class="graph-stat-item pg-stat-trunc" title="${Utils.escapeHtml(warn.join('\n'))}">${warnLabel}</span>` + sep : '') +
+            `<span class="graph-stat-item pg-stat-scope">${count}${scopeBtn ? '<span class="pg-stat-dot">·</span>' + scopeBtn : ''}</span>` +
+            (reps ? sep + `<span class="graph-stat-item" title="Identical sibling processes (same parent, image and command line) are drawn once with a ×N count">` +
+                `<span class="graph-stat-count">${reps.toLocaleString()}</span> repeats folded</span>` : '') +
             (hb ? sep + `<span class="graph-stat-item pg-stat-hidden pg-stat-click" role="button" tabindex="0" title="Branches you hid from this view. Click to show them again">${hb} hidden branch${hb === 1 ? '' : 'es'} · show</span>` : '') +
             (hostN ? sep + `<span class="graph-stat-item"><span class="graph-stat-count">${hostN}</span> host${hostN === 1 ? '' : 's'}</span>` : '') +
             // Links inside one tree (no peer trees) still count, as pairs.
@@ -4883,7 +4901,7 @@ const QueryExecutor = {
             const cls = `pg-node pg-sev-${sevOf(a)}${id === this._pgFocus ? ' pg-focus' : ''}${isCol ? ' pg-collapsed' : ''}${ext ? ' pg-node-external' : ''}${ghost ? ' pg-node-ghost' : ''}`;
             nodesHtml += `<div class="${cls}"${dl} data-id="${esc(id)}" style="left:${(p.x - 18).toFixed(1)}px;top:${p.y.toFixed(1)}px" title="${esc(String(name))}${ghost ? '\n' + this._pgGhostNote(id) : ''}${host ? '\nhost: ' + esc(String(host)) : ''}${ext ? '\nreconnected from another tree' : ''}\nclick to inspect · right-click for actions">` +
                 `<span class="pg-hexwrap"><span class="pg-hex">${ICON.proc}</span>${toggle}</span>` +
-                `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}${novelMark}</span>${hostLabel}${sub}</span></div>`;
+                `<span class="pg-node-info"><span class="pg-node-name">${esc(this._pgShort(name))}${this._pgGroupCount(id)}${novelMark}</span>${hostLabel}${sub}</span></div>`;
         });
 
         // 4) Assemble. Fill the available viewport height; a transformed canvas holds edges,
@@ -5420,6 +5438,15 @@ const QueryExecutor = {
         });
     },
 
+    // The xN count on a node pgr() collapsed from identical siblings (same parent, image and
+    // command line), or '' for a single process.
+    _pgGroupCount(guid) {
+        const g = this._pgModel && this._pgModel.procGroup.get(guid);
+        if (!g) return '';
+        const span = g.first != null && g.last != null ? `, first ${TZ.format(g.first, 'full')}, last ${TZ.format(g.last, 'full')}` : '';
+        return ` <span class="pg-agg-count" title="${g.n.toLocaleString()} identical processes${span}">×${g.n.toLocaleString()}</span>`;
+    },
+
     // Process drawer (both views): actions, why it scored (lead + fact chips), and the curated
     // process fields, loaded in full from the source log.
     async _pgOpenNodeDrawer(guid) {
@@ -5449,8 +5476,11 @@ const QueryExecutor = {
         const timeStr = t != null ? TZ.format(t, 'full') : '';
         // Instant process-centric summary straight from the model, so the drawer is never empty while
         // the full field set loads.
+        const group = m.procGroup.get(guid);
+        const groupKv = group ? kv('first started', group.first != null ? TZ.format(group.first, 'full') : '') +
+            kv('last started', group.last != null ? TZ.format(group.last, 'full') : '') : '';
         const instant = kv('command line', meta.cmd) + kv(m.labelDerived(guid) ? 'image (from a linked event)' : 'image', name) + kv('user', meta.user) +
-            kv('host', procHost) + kv('time', timeStr) +
+            kv('host', procHost) + kv('time', timeStr) + groupKv +
             kv('relationship first seen', this._pgFirstSeenText(guid));
         // The process guid rides in the header as a subtle id; clicking it opens the complete raw log.
         // Static (non-clickable) when there's no source log.
@@ -5463,6 +5493,7 @@ const QueryExecutor = {
         const ICON_SEARCH = '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>';
         const actions = [
             act('proc', 'Search process', 'Search every event of this process (process_guid) in a new tab', ICON_SEARCH),
+            group && image ? act('members', 'Search members', `Search process creations like the ${group.n.toLocaleString()} this node stands for (same image and parent), in a new tab`, ICON_SEARCH) : '',
             info && info.log_id ? act('hash', 'Search hash', 'Looking up the image hash…', '<path d="M5 9h14M5 15h14M10 4 8 20M16 4l-2 16"/>', ' disabled') : '',
             procHost && t != null ? act('host', 'Host ±5 min', `Everything on ${procHost} from 5 minutes before to 5 minutes after this process started, in a new tab`, '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>') : '',
             meta.cmd ? act('cmd', 'Copy command', 'Copy the command line', '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>') : '',
@@ -5473,7 +5504,7 @@ const QueryExecutor = {
             `<div class="pg-drawer-head"><div class="pg-drawer-title"><span class="pg-drawer-heading">Process</span>` +
             `<span class="pg-drawer-proc" title="${esc(String(name))}">${esc(this._pgShort(name))}</span>${idLink}</div>` +
             `<button class="pg-drawer-close" title="Close (Esc)">&times;</button></div>` +
-            `${pill ? `<div class="pg-drawer-count">anomaly ${pill}</div>` : ''}` +
+            `${pill || group ? `<div class="pg-drawer-count">${pill ? `anomaly ${pill}` : ''}${group ? this._pgGroupCount(guid) : ''}</div>` : ''}` +
             `<div class="pg-acts">${actions}</div>` +
             `<div class="pg-drawer-body">${whyHtml ? `<div class="pg-why"><div class="pg-why-head">Why</div>${whyHtml}</div>` : ''}` +
             `<div class="pg-kv-group pg-drawer-fields">${instant || '<div class="pg-drawer-empty">No details for this process.</div>'}</div></div>`;
@@ -5487,6 +5518,8 @@ const QueryExecutor = {
             const b = e.target.closest('.pg-act'); if (!b || b.disabled) return;
             const k = b.dataset.act;
             if (k === 'proc') this._pgPivot(`process_guid=${PgView.bqlQuote(guid)}`);
+            else if (k === 'members') this._pgPivot(PgView.membersQuery(image, procHost, m.parentOf.get(guid), m.procGroup.get(m.parentOf.get(guid))),
+                group.first != null && group.last != null ? { from: new Date(group.first).toISOString(), to: new Date(group.last + 1000).toISOString() } : undefined);
             else if (k === 'hash') this._pgPivot(b.dataset.q);
             else if (k === 'host') this._pgPivot(`computer_name=${PgView.bqlQuote(procHost)}`, { from: new Date(t - 300000).toISOString(), to: new Date(t + 300000).toISOString() });
             else if (k === 'cmd') this._pgCopyText(meta.cmd, () => { if (window.Toast) Toast.show('Command line copied', 'info'); });
@@ -5524,6 +5557,7 @@ const QueryExecutor = {
                         kv('user', pick(['user']) || meta.user),
                         kv('host', pick(['computer_name']) || procHost),
                         kv('time', timeStr),
+                        groupKv,
                         kv('parent image', pick(['parent_image'])),
                         kv('parent guid', pick(['parent_process_guid'])),
                         kv('process guid', pick(['process_guid']) || guid),
@@ -5764,7 +5798,7 @@ const QueryExecutor = {
             // Ghost rows read as a data gap via the muted mono name + row style (see legend), not a
             // per-row text tag. The tooltip still explains on hover.
             const nameTitle = ghost ? this._pgGhostNote(guid) + ': ' + m.labelOf(guid) : m.labelOf(guid);
-            const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(nameTitle)}">${hl(m.labelOf(guid))}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
+            const nameCell = `<span class="pg-name-wrap"><span class="pg-name" title="${esc(nameTitle)}">${hl(m.labelOf(guid))}${this._pgGroupCount(guid)}${cyc ? ' <em class="pg-muted">(cycle)</em>' : ''}${descHtml}</span>${subline}</span>`;
             const firstSeenCell = this._pgFirstSeenCell(guid);
             // Wall clock to the second (date only when it changes from the row above), with the gap
             // since the parent stacked beneath it. The column is sized to its content after render.

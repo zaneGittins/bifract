@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
@@ -45,23 +46,23 @@ var provenanceEmptyScoreSQL = func() string {
 	return "SELECT " + strings.Join(parts, ", ") + " WHERE 1 = 0"
 }()
 
-// provenanceScoreSQL runs pass 1 (tree traversal, collect guids) and returns the pass-2
-// scored-edge SQL, which becomes the query's subquery source. Returns a zero-row stub when the
-// tree is empty. The pass-2 SQL already carries `ORDER BY (event_type='spawn') DESC,
-// anomaly_score DESC LIMIT`, so the spawn backbone is prioritized inside the subquery and an
-// outer LIMIT never re-truncates process structure.
-func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions) (string, error) {
+// provenanceScoreSQL runs pgr end to end and returns its rows as a literal subquery source.
+// Pass 1 walks the tree (collectProvenanceTree), reconnection adds peers, pass 2 scores every
+// edge in ClickHouse, diffusion (when on) propagates in Go, and the result is budgeted to
+// p.Limit and re-emitted. Materializing here means every consumer (table, count, downstream BQL,
+// pgraph) reads the same rows, and pgr knows what it had to leave out: warnings say so.
+func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions) (string, []string, error) {
 	// pgr is per-fractal / per-prism by definition; refuse to run unscoped (which would scan
 	// every tenant's data). The handler always populates fractal for user queries.
 	if opts.FractalID == "" && len(opts.FractalIDs) == 0 {
-		return "", fmt.Errorf("pgr: fractal scoping is required")
+		return "", nil, fmt.Errorf("pgr: fractal scoping is required")
 	}
-	guids, err := h.collectProvenanceTreeGuids(ctx, p, opts)
+	tree, err := h.collectProvenanceTree(ctx, p, opts, parser.MaxProvenanceNodes)
 	if err != nil {
-		return "", fmt.Errorf("pgr: tree pass: %w", err)
+		return "", nil, fmt.Errorf("pgr: tree pass: %w", err)
 	}
-	if len(guids) == 0 {
-		return provenanceEmptyScoreSQL, nil
+	if tree == nil {
+		return provenanceEmptyScoreSQL, nil, nil
 	}
 
 	// Cross-tree reconnection (NoDoze object-mediated): find peer processes in OTHER trees
@@ -70,58 +71,59 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// parser.BuildReconnectionSQL. Failure is non-fatal -- pgr still returns the base tree.
 	//
 	// The rarity-gate ceilings (totalHosts/totalImages) are fetched ONCE here, in ONE scan, and
-	// passed in as literals rather than the two separate live scalar subqueries the SQL used to
-	// embed -- computed fresh for this call only, never cached across separate pgr() calls, so
-	// results stay identical to a fully live per-call computation. On failure both stay 0, which
-	// only tightens the gate to its absolute floor (reconnectHostPrevalenceMax/
-	// reconnectImagePrevalenceMax) -- fails toward under-reconnecting, never toward a wrong match.
-	combined := guids
-	var emitPeers []parser.ReconnectPeer
+	// passed in as literals rather than live scalar subqueries -- computed fresh for this call
+	// only. On failure both stay 0, which only tightens the gate to its absolute floor
+	// (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax) -- fails toward under-reconnecting,
+	// never toward a wrong match.
+	var bridges []map[string]interface{}
 	if p.Reconnect && ctx.Err() == nil {
 		var reconTotalHosts, reconTotalImages int64
 		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
 			if ctx.Err() != nil {
-				return "", ctx.Err()
+				return "", nil, ctx.Err()
 			}
 			log.Printf("[pgr] reconnection totals lookup failed, using rarity-gate floor only: %v", tErr)
 		} else if len(totRows) > 0 {
 			reconTotalHosts = reconInt64(totRows[0]["total_hosts"])
 			reconTotalImages = reconInt64(totRows[0]["total_images"])
 		}
-		reconSQL, rErr := parser.BuildReconnectionSQL(guids, p, reconTotalHosts, reconTotalImages, opts)
-		if rErr != nil {
-			log.Printf("[pgr] build reconnection query: %v", rErr)
-		} else if reconSQL != "" {
+		if reconSQL := parser.BuildReconnectionSQL(p, reconTotalHosts, reconTotalImages, opts); reconSQL != "" {
 			// The reconnection SQL uses explicit GLOBAL IN / GLOBAL JOIN on its cross-distributed-table
 			// subqueries (see BuildReconnectionSQL), so it runs on a cluster without the fragile
 			// distributed_product_mode='global' setting (which errors code 36 on this query's shape).
-			reconRows, qErr := h.db.QueryProvenance(ctx, reconSQL)
+			reconRows, qErr := h.db.QueryProvenance(ctx, reconSQL, tree.table())
 			if qErr != nil {
 				// Distinguish a cancelled/timed-out request (bail so the caller sees it) from a
 				// genuine reconnection-feature failure (fall back to the base tree).
 				if ctx.Err() != nil {
-					return "", ctx.Err()
+					return "", nil, ctx.Err()
 				}
 				log.Printf("[pgr] reconnection lookup failed: %v", qErr)
 			} else {
 				peers := rankAndCapReconnectPeers(parseReconnectPeers(reconRows), p.MaxPeers)
-				combined = h.expandReconnectionPeers(ctx, guids, peers, opts)
-				// Reconnection owns its bridge edges (AppendReconnectionEdges), so emit every
-				// peer: the emit logic decides shape (net/dns converge on the object node,
-				// file is writer->executor, injection/access are skipped -- pass-2 owns those).
-				emitPeers = peers
+				h.expandReconnectionPeers(ctx, tree, peers, opts)
+				// The lookup names whichever member touched the artifact; the graph draws its node.
+				for i := range peers {
+					peers[i].SrcGUID = tree.node(peers[i].SrcGUID)
+					peers[i].PeerGUID = tree.node(peers[i].PeerGUID)
+				}
+				// Reconnection owns its bridge edges, so emit every peer: the emit logic decides
+				// shape (net/dns converge on the object node, file is writer->executor,
+				// injection/access are skipped -- pass-2 owns those).
+				bridges = parser.ReconnectionEdgeRows(peers)
 			}
 		}
 	}
+	treeTable := tree.table()
 
-	// Fleet size, reported as total_hosts. Fetched once per call and passed as a literal so the
-	// diffuse-fallback rebuild below does not rescan it; never cached across calls. It is display
-	// only, so a failed lookup leaves it 0 and changes no score.
+	// Fleet size, reported as total_hosts. Fetched once per call and passed as a literal, never
+	// cached across calls. It is display only, so a failed lookup leaves it 0 and changes no score.
 	var baseline parser.ProvenanceBaseline
+	baseline.NodeStart, baseline.NodeEnd = tree.span()
 	if ctx.Err() == nil {
 		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
 			if ctx.Err() != nil {
-				return "", ctx.Err()
+				return "", nil, ctx.Err()
 			}
 			log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", tErr)
 		} else if len(totRows) > 0 {
@@ -135,12 +137,9 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// Failure or overflow is non-fatal and leaves the keys empty: scoring then runs against the
 	// unrestricted baseline, which is slower but returns the same scores.
 	if ctx.Err() == nil {
-		keySQL, kErr := parser.BuildProvenanceEdgeKeysSQL(combined, p.EdgeTypes, opts)
-		if kErr != nil {
-			log.Printf("[pgr] build edge-key query: %v", kErr)
-		} else if keyRows, qErr := h.db.QueryProvenance(ctx, keySQL); qErr != nil {
+		if keyRows, qErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceEdgeKeysSQL(p.EdgeTypes, opts), treeTable); qErr != nil {
 			if ctx.Err() != nil {
-				return "", ctx.Err()
+				return "", nil, ctx.Err()
 			}
 			log.Printf("[pgr] edge-key lookup failed, scoring against the unrestricted baseline: %v", qErr)
 		} else if len(keyRows) > parser.MaxProvenanceEdgeKeys {
@@ -150,177 +149,75 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		}
 	}
 
-	// The scoring SQL's inner per-partition leaf cap reads opts.MaxRows, but pgr() carries its own
-	// row budget (p.Limit / defaultPgrLimit) precisely because the deployment MaxQueryRows can be
-	// far lower than a tree needs. Scope the override to the scoring builds so the deployment cap
-	// still governs everything else.
+	// The scoring SQL's leaf cap reads opts.MaxRows, but pgr() carries its own row budget
+	// (p.Limit) precisely because the deployment MaxQueryRows can be far lower than a tree needs.
 	scoreOpts := opts
 	if p.Limit > 0 {
 		scoreOpts.MaxRows = p.Limit
 	}
 
-	scoreSQL, err := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, p.Diffuse, baseline, scoreOpts)
+	// Diffusion (NoDoze network-diffusion): the scoring SQL keeps leaves down to a low floor (NOT
+	// the user threshold) so diffuseProvenanceRows can promote them, then applies the threshold to
+	// the PROPAGATED score. A failed diffusion scan falls back to per-edge scoring.
+	diffuse := p.Diffuse
+	rows, err := h.scanProvenance(ctx, parser.BuildProvenanceScoringSQL(p.Threshold, p.EdgeTypes, diffuse, baseline, scoreOpts), treeTable)
+	if err != nil && diffuse && ctx.Err() == nil {
+		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", err)
+		diffuse = false
+		rows, err = h.scanProvenance(ctx, parser.BuildProvenanceScoringSQL(p.Threshold, p.EdgeTypes, false, baseline, scoreOpts), treeTable)
+	}
 	if err != nil {
-		return "", fmt.Errorf("pgr: build scoring query: %w", err)
-	}
-	if len(emitPeers) > 0 {
-		scoreSQL = parser.AppendReconnectionEdges(scoreSQL, emitPeers)
-	}
-	if !p.Diffuse {
-		return scoreSQL, nil
-	}
-
-	// Diffusion (NoDoze network-diffusion): the scoring SQL kept leaves down to a low floor (NOT
-	// the user threshold). Execute it, propagate anomaly along the tree in Go, apply the threshold
-	// to the PROPAGATED score, and re-emit the survivors as a literal subquery source. Doing this
-	// server-side makes the propagated anomaly_score the value EVERY consumer sees -- table, count,
-	// downstream BQL, and pgraph -- so an AI agent reading pgr() and an analyst viewing
-	// pgr()|pgraph() get identical scores. Bounded (per-process cap + scan LIMIT keep the
-	// intermediate set small). Non-fatal: on failure fall back to per-edge scoring (diffuse=false).
-	//
-	// Wrap in an outer SELECT before LIMIT: with reconnection on, scoreSQL ends in
-	// `... UNION ALL SELECT <lit>`, and in ClickHouse `A UNION ALL B LIMIT n` binds the LIMIT to B
-	// alone -- a bare append would NOT bound the whole set. The outer ORDER BY keeps spawn first so
-	// the LIMIT only ever trims low-signal leaves, never process structure.
-	scanSQL := fmt.Sprintf("SELECT * FROM (%s) AS _d ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC LIMIT %d", scoreSQL, diffuseMaxScanRows)
-	rows, qErr := h.db.QueryProvenance(ctx, scanSQL)
-	if qErr != nil {
 		if ctx.Err() != nil {
-			return "", ctx.Err()
+			return "", nil, ctx.Err()
 		}
-		log.Printf("[pgr] diffusion score query failed, falling back to per-edge scoring: %v", qErr)
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, baseline, scoreOpts)
-		if ferr != nil {
-			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
-		}
-		if len(emitPeers) > 0 {
-			fb = parser.AppendReconnectionEdges(fb, emitPeers)
-		}
-		return fb, nil
+		return "", nil, fmt.Errorf("pgr: scoring pass: %w", err)
 	}
-	survivors := diffuseProvenanceRows(rows, p.Threshold, p.Lambda)
-	h.recordProvenanceScores(survivors)
-	sql, dropped, overflow := emitLiteralEdgeSource(survivors, provenanceColumns, provenanceNumericColumns, diffuseMaxEmitBytes)
-	if overflow {
-		// The spawn backbone alone exceeds the inline-literal budget (a very large tree). Re-emitting
-		// it as literals would trip ClickHouse's max_query_size (error 62), so fall back to the
-		// streamed per-edge scoring SQL, which carries no literal payload and scales to any size.
-		// Diffusion (propagation) is lost for this one query, but pgr returns the full graph with
-		// per-edge anomaly instead of failing -- and flat/pgraph stay in parity (both use this SQL).
-		log.Printf("[pgr] diffusion payload too large to inline (%d edges); falling back to per-edge scoring for this query", len(survivors))
-		fb, ferr := parser.BuildProvenanceScoringSQL(combined, p.Threshold, p.EdgeTypes, false, baseline, scoreOpts)
-		if ferr != nil {
-			return "", fmt.Errorf("pgr: build scoring query: %w", ferr)
-		}
-		if len(emitPeers) > 0 {
-			fb = parser.AppendReconnectionEdges(fb, emitPeers)
-		}
-		return fb, nil
+	scanned := len(rows)
+	rows = append(rows, bridges...)
+	if diffuse {
+		rows = diffuseProvenanceRows(rows, p.Threshold, p.Lambda)
+		h.recordProvenanceScores(rows)
 	}
-	if dropped > 0 {
-		log.Printf("[pgr] diffusion emitted a bounded subset: dropped %d low-signal leaf edges to fit the query-size limit", dropped)
+	annotateProvenanceGroups(rows, tree)
+
+	var warnings []string
+	if tree.truncated {
+		warnings = append(warnings, fmt.Sprintf("pgr: process tree truncated by its size caps at %d nodes (%d processes); narrow the time range or lower depth=", len(tree.order), tree.nMember))
 	}
-	return sql, nil
+	if scanned >= provenanceMaxScanRows {
+		warnings = append(warnings, fmt.Sprintf("pgr: scored more edges than the %d it can rank; the least anomalous leaves were dropped first", provenanceMaxScanRows))
+	}
+	kept := budgetProvenanceRows(rows, tree, p.Limit)
+	sql, emitted := emitProvenanceSource(kept, provenanceEmitMaxBytes)
+	if w := provenanceRowWarning(len(rows), len(kept), emitted); w != "" {
+		warnings = append(warnings, w)
+	}
+	return sql, warnings, nil
 }
 
-// collectProvenanceTreeGuids gathers pgr pass 1's process-tree guid set via iterative BFS over
-// proc_lineage -- one indexed hop per depth level (parser.BuildProcessTreeHopSQL) -- replacing the
-// single WITH RECURSIVE query whose per-level self-join forced a FINAL full scan of the ENTIRE
-// fractal at every depth (the pgr CPU/timeout culprit; EXPLAIN: recursive read ~all granules per
-// level, a hop reads ~5-9/142 via the primary key / idx_parent_guid bloom).
-//
-// The reachable guid set is IDENTICAL to the recursive traversal for any tree up to
-// maxProvenanceGuids: same parent/child edges walked to the same depth, and process_guid is
-// globally unique so FINAL (which the hops omit) changes only WHICH row per guid, not which guids
-// exist. Only when a tree exceeds the cap does the selected subset differ -- breadth-first
-// (shallowest-first) here, versus the recursive query's ORDER BY _path ASC LIMIT truncation. pgr
-// scoring consumes only the guid set (never _depth/_path), so that is the sole behavioral change,
-// and it affects only trees larger than the 10k cap.
-func (h *QueryHandler) collectProvenanceTreeGuids(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions) ([]string, error) {
-	// The seed must exist as a process in proc_lineage, matching the recursive base's
-	// WHERE process_guid = start. A guid that appears only in leaf logs (net/dns/file) but never
-	// as a process_creation is NOT a tree anchor -- returning empty here matches the old behavior
-	// (the recursive base would yield no rows), so scoring is not run on a phantom root.
-	seedRows, err := h.db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL([]string{p.Start}, false, opts))
-	if err != nil {
-		return nil, err
+// provenanceRowWarning says when rows were left out, and by which limit: limit= (kept < total)
+// or the literal-size bound (emitted < kept), which raising limit= cannot help.
+func provenanceRowWarning(total, kept, emitted int) string {
+	switch {
+	case emitted < kept:
+		return fmt.Sprintf("pgr: result too large to return in full, showing %d of %d edges; lower limit= or narrow the time range", emitted, total)
+	case kept < total:
+		return fmt.Sprintf("pgr: row limit reached, showing %d of %d edges; raise limit= to see more", emitted, total)
 	}
-	seedExists := false
-	for _, r := range seedRows {
-		if reconString(r["process_guid"]) == p.Start {
-			seedExists = true
-			break
-		}
-	}
-	if !seedExists {
-		return nil, nil
-	}
-
-	seen := map[string]struct{}{p.Start: {}}
-	all := []string{p.Start}
-
-	// walk expands one direction breadth-first from the seed, up to p.Depth levels (matching the
-	// recursive t._depth < maxDepth bound), adding newly discovered guids and stopping at the
-	// maxProvenanceGuids cap. forward: children (row.process_guid where parent_guid ∈ frontier);
-	// backward: parents (row.parent_guid where process_guid ∈ frontier).
-	walk := func(forward bool) error {
-		frontier := []string{p.Start}
-		for level := 0; level < p.Depth && len(frontier) > 0 && len(all) < parser.MaxProvenanceGuids; level++ {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			rows, hErr := h.db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL(frontier, forward, opts))
-			if hErr != nil {
-				return hErr
-			}
-			var next []string
-			for _, r := range rows {
-				g := reconString(r["parent_guid"]) // backward: next node is the parent
-				if forward {
-					g = reconString(r["process_guid"]) // forward: next node is the child
-				}
-				if g == "" {
-					continue
-				}
-				if _, dup := seen[g]; dup {
-					continue
-				}
-				seen[g] = struct{}{}
-				all = append(all, g)
-				next = append(next, g)
-				if len(all) >= parser.MaxProvenanceGuids {
-					break
-				}
-			}
-			frontier = next
-		}
-		return nil
-	}
-
-	switch p.Direction {
-	case "forward":
-		if err := walk(true); err != nil {
-			return nil, err
-		}
-	case "backward":
-		if err := walk(false); err != nil {
-			return nil, err
-		}
-	default: // both
-		if err := walk(true); err != nil {
-			return nil, err
-		}
-		if err := walk(false); err != nil {
-			return nil, err
-		}
-	}
-	return all, nil
+	return ""
 }
 
-// diffuseMaxScanRows bounds the intermediate (pre-threshold) edge set pulled into Go for
-// propagation, so a pathological tree cannot balloon memory. Spawn is ordered first, so a LIMIT
-// trims low-signal leaves before structure.
-const diffuseMaxScanRows = 20000
+// scanProvenance executes a scoring SQL with the tree attached, spawn first, bounded so a
+// pathological tree cannot balloon memory. The outer SELECT wraps before LIMIT so a UNION-ending
+// statement is bounded as a whole.
+func (h *QueryHandler) scanProvenance(ctx context.Context, scoreSQL string, tree storage.ExternalTable) ([]map[string]interface{}, error) {
+	return h.db.QueryProvenance(ctx, fmt.Sprintf("SELECT * FROM (%s) AS _d ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC LIMIT %d", scoreSQL, provenanceMaxScanRows), tree)
+}
+
+// provenanceMaxScanRows bounds the scored edge set pulled into Go (pre-threshold when diffusing),
+// so a pathological tree cannot balloon memory. Spawn is ordered first, so the LIMIT trims
+// low-signal leaves before structure; filling it is reported as a warning.
+const provenanceMaxScanRows = 20000
 
 // diffuseProvenanceRows applies NoDoze network-diffusion to the scored edge rows IN GO. Anomaly is
 // propagated along the spawn spine in SURPRISAL space (s = -log(1 - anomaly)): a common edge
@@ -442,90 +339,157 @@ func diffuseProvenanceRows(rows []map[string]interface{}, threshold, lambda floa
 	return out
 }
 
-// diffuseMaxEmitBytes bounds the generated literal-source SQL. ClickHouse rejects any query whose
-// text exceeds max_query_size (default 262144 bytes) with error 62 before it even parses, so the
-// inline UNION-ALL-of-literals must stay under it -- with headroom for the downstream wrapper
-// (pgraph/table/sort) that composes over this source. See emitLiteralEdgeSource.
-const diffuseMaxEmitBytes = 230000
+// provenanceEmitMaxBytes bounds the literal source provenanceScoreSQL emits. The connection's
+// max_query_size is 16MB (storage.maxGeneratedQuerySize); this leaves room for the downstream
+// pipeline that wraps it. See emitProvenanceSource.
+const provenanceEmitMaxBytes = 4 << 20
 
-// emitLiteralEdgeSource renders edge rows as a UNION ALL of SELECT literals so the propagated
-// result can serve as a source subquery -- downstream BQL composes over it exactly as it would
-// over the scoring SQL. Numeric columns are emitted typed (toFloat64) so comparisons stay numeric;
-// string columns are escaped for ClickHouse literals. Empty set -> the zero-row stub.
-//
-// The generated text is BOUNDED to maxBytes so it can never trip ClickHouse's max_query_size
-// (error 62) on a large tree. rows must be spawn-first (diffuseProvenanceRows guarantees this):
-// the spawn backbone (process structure) is always emitted, and low-signal leaf edges beyond the
-// budget are dropped (returned as droppedLeaves so the caller can log it). If the spawn backbone
-// alone exceeds the budget the tree is too large to inline as literals -- overflow=true signals
-// the caller to fall back to streamed per-edge scoring (which carries no literal payload).
-//
-// Column aliases (AS name) are written only on the first UNION member; ClickHouse takes the result
-// column names from the first SELECT and matches the rest positionally, which roughly halves the
-// per-row text so far more of the tree fits under the budget.
-func emitLiteralEdgeSource(rows []map[string]interface{}, cols, numericCols []string, maxBytes int) (sql string, droppedLeaves int, overflow bool) {
+// emitProvenanceSource renders rows as one values() table function, so the materialized result
+// can serve as a source subquery that downstream BQL composes over exactly like the scoring SQL.
+// One values() call is a single literal block the server parses in one pass, where a UNION ALL of
+// per-row SELECTs plans every row as its own query. Numeric columns are typed Float64 so
+// comparisons stay numeric. Rows are emitted in order until maxBytes; emitted says how many fit,
+// so callers order by priority (budgetProvenanceRows) first. No rows yields the zero-row stub.
+func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql string, emitted int) {
 	if len(rows) == 0 {
-		return provenanceEmptyScoreSQL, 0, false
+		return provenanceEmptyScoreSQL, 0
 	}
 	numeric := map[string]bool{}
-	for _, c := range numericCols {
+	for _, c := range provenanceNumericColumns {
 		numeric[c] = true
 	}
-	repl := strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "\t", "\\t")
-	var sb strings.Builder
-	emitted := 0
-	emitRow := func(r map[string]interface{}) {
-		if emitted > 0 {
-			sb.WriteString(" UNION ALL ")
+	structure := make([]string, len(provenanceColumns))
+	for i, c := range provenanceColumns {
+		typ := "String"
+		if numeric[c] {
+			typ = "Float64"
 		}
-		sb.WriteString("SELECT ")
-		for j, c := range cols {
+		structure[i] = c + " " + typ
+	}
+	repl := strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "\t", "\\t", "\x00", "\\0")
+	var sb strings.Builder
+	sb.WriteString("SELECT * FROM values('" + strings.Join(structure, ", ") + "'")
+	head := sb.Len()
+	for _, r := range rows {
+		if emitted > 0 && sb.Len()-head >= maxBytes {
+			break
+		}
+		sb.WriteString(", (")
+		for j, c := range provenanceColumns {
 			if j > 0 {
 				sb.WriteString(", ")
 			}
 			if numeric[c] {
-				sb.WriteString("toFloat64(")
-				sb.WriteString(strconv.FormatFloat(reconFloat(r[c]), 'f', -1, 64))
-				sb.WriteString(")")
+				f := reconFloat(r[c])
+				if math.IsNaN(f) || math.IsInf(f, 0) {
+					f = 0
+				}
+				sb.WriteString(strconv.FormatFloat(f, 'f', -1, 64))
 			} else {
 				sb.WriteString("'")
 				sb.WriteString(repl.Replace(reconString(r[c])))
 				sb.WriteString("'")
 			}
-			if emitted == 0 { // only the first UNION member names the columns
-				sb.WriteString(" AS ")
-				sb.WriteString(c)
-			}
 		}
+		sb.WriteString(")")
 		emitted++
 	}
+	sb.WriteString(")")
+	return sb.String(), emitted
+}
 
-	spawnBytes := 0
+// budgetProvenanceRows picks the rows that fit pgr's limit= when there are more. Structure is
+// kept in walk order (seed and ancestors, then the nearest descendants, then peers), but a quarter
+// of the budget is held for leaves and bridges, so a wide tree can never push every file, network
+// and DNS edge out. Bridges go before leaves, leaves by anomaly, and a leaf is kept only when its
+// process is drawn. Room left in either share goes to the other. The result is in emit priority.
+func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, limit int) []map[string]interface{} {
+	if limit <= 0 || len(rows) <= limit {
+		return rows
+	}
+	rank := make(map[string]int, len(tree.order))
+	for i, n := range tree.order {
+		rank[n] = i
+	}
+	rankOf := func(r map[string]interface{}) int {
+		if i, ok := rank[reconString(r["child"])]; ok {
+			return i
+		}
+		return len(rank)
+	}
+	var spawn, other []map[string]interface{}
 	for _, r := range rows {
 		if reconString(r["event_type"]) == "spawn" {
-			emitRow(r) // structure is never dropped
-			spawnBytes = sb.Len()
+			spawn = append(spawn, r)
+		} else {
+			other = append(other, r)
+		}
+	}
+	sort.SliceStable(spawn, func(i, j int) bool { return rankOf(spawn[i]) < rankOf(spawn[j]) })
+	isBridge := func(r map[string]interface{}) bool { return reconString(r["score_basis"]) == "reconnect" }
+	sort.SliceStable(other, func(i, j int) bool {
+		if bi, bj := isBridge(other[i]), isBridge(other[j]); bi != bj {
+			return bi
+		}
+		return reconFloat(other[i]["anomaly_score"]) > reconFloat(other[j]["anomaly_score"])
+	})
+
+	out := make([]map[string]interface{}, 0, limit)
+	drawn := map[string]bool{}
+	nextSpawn := 0
+	takeSpawn := func(upTo int) {
+		for ; nextSpawn < len(spawn) && len(out) < upTo; nextSpawn++ {
+			r := spawn[nextSpawn]
+			drawn[reconString(r["parent"])], drawn[reconString(r["child"])] = true, true
+			out = append(out, r)
+		}
+	}
+	used := make([]bool, len(other))
+	takeOther := func() {
+		for i, r := range other {
+			if len(out) >= limit {
+				return
+			}
+			// A parent outside the tree (a peer, an object node) has no spawn row to wait for.
+			if p := reconString(r["parent"]); !used[i] && (drawn[p] || !tree.has(p)) {
+				used[i] = true
+				out = append(out, r)
+			}
+		}
+	}
+	takeSpawn(limit - min(limit/4, len(other)))
+	takeOther()
+	takeSpawn(limit)
+	takeOther()
+	return out
+}
+
+// annotateProvenanceGroups fills the group columns of each spawn row whose child is a collapsed
+// node: how many processes it stands for and when the first and last were created.
+func annotateProvenanceGroups(rows []map[string]interface{}, tree *provenanceTree) {
+	const layout = "2006-01-02 15:04:05.000"
+	for _, r := range rows {
+		if reconString(r["event_type"]) != "spawn" {
 			continue
 		}
-		// Leaf edge: keep only while under budget. Leaves are sorted most-anomalous-first, so the
-		// dropped tail is the lowest-signal noise.
-		if sb.Len() >= maxBytes {
-			droppedLeaves++
+		child := reconString(r["child"])
+		n := tree.size[child]
+		if n <= 1 {
 			continue
 		}
-		emitRow(r)
+		r["group_size"] = float64(n)
+		if f, ok := tree.firstMs[child]; ok {
+			r["group_first"] = time.UnixMilli(f).UTC().Format(layout)
+			r["group_last"] = time.UnixMilli(tree.lastMs[child]).UTC().Format(layout)
+		}
 	}
-	if spawnBytes > maxBytes {
-		return "", 0, true // backbone alone won't fit; caller falls back to streamed scoring
-	}
-	return sb.String(), droppedLeaves, false
 }
 
 // Reconnection expansion caps (orchestration side; SQL-side caps live in pkg/parser).
 const (
 	reconnectMaxExpand      = 5    // high-anomaly peers auto-expanded into real subtrees
 	reconnectExpandDepth    = 3    // shallow descendant depth per expanded peer
-	reconnectExpandMaxGuids = 2000 // hard cap on total guids after expansion
+	reconnectExpandMaxNodes = 2000 // hard cap on total nodes after expansion
 	reconnectHighAnomaly    = 0.8  // only peers at/above this bridge severity expand
 )
 
@@ -643,15 +607,14 @@ func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []pars
 	return out
 }
 
-// expandReconnectionPeers ranks peers by bridge severity and traverses a shallow descendant
-// subtree for the top reconnectMaxExpand of them (>= reconnectHighAnomaly), merging those guids
-// into the tree set (capped). Ordering is deterministic (anomaly desc, then guid) so the same
-// query yields the same result. The per-peer traversals run concurrently; failures are logged
-// and skipped (best-effort). Returns the combined guid set.
-func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, treeGuids []string, peers []parser.ReconnectPeer, opts parser.QueryOptions) []string {
-	combined := append([]string(nil), treeGuids...)
-	if ctx.Err() != nil || len(combined) >= reconnectExpandMaxGuids {
-		return combined
+// expandReconnectionPeers ranks peers by bridge severity and walks a shallow descendant subtree
+// for the top reconnectMaxExpand of them (>= reconnectHighAnomaly), merging those nodes into tree
+// (capped at reconnectExpandMaxNodes). Ordering is deterministic (anomaly desc, then guid) so the
+// same query yields the same result. The per-peer walks run concurrently; failures are logged and
+// skipped (best-effort).
+func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, tree *provenanceTree, peers []parser.ReconnectPeer, opts parser.QueryOptions) {
+	if ctx.Err() != nil || len(tree.order) >= reconnectExpandMaxNodes {
+		return
 	}
 
 	// Best anomaly per distinct peer.
@@ -683,48 +646,41 @@ func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, treeGuids []
 		toExpand = append(toExpand, g)
 	}
 	if len(toExpand) == 0 {
-		return combined
+		return
 	}
 
-	// Traverse each peer's shallow subtree concurrently (h.db is a pooled client). Results are
-	// merged in toExpand order so the outcome stays deterministic regardless of finish order.
-	// Uses the same iterative indexed walk as pass 1 (collectProvenanceTreeGuids) rather than the
-	// recursive CTE, so a peer expansion is a few granule reads instead of a FINAL full scan.
-	results := make([][]string, len(toExpand))
+	// Walk each peer's shallow subtree concurrently (h.db is a pooled client) with the same
+	// collapsing walk as pass 1. Results merge in toExpand order so the outcome stays
+	// deterministic regardless of finish order.
+	results := make([]*provenanceTree, len(toExpand))
 	var wg sync.WaitGroup
 	for i, g := range toExpand {
 		pp := parser.ProvenanceParams{Start: g, Depth: reconnectExpandDepth, Direction: "forward"}
 		wg.Add(1)
 		go func(idx int, guid string, params parser.ProvenanceParams) {
 			defer wg.Done()
-			gs, qErr := h.collectProvenanceTreeGuids(ctx, params, opts)
+			sub, qErr := h.collectProvenanceTree(ctx, params, opts, reconnectExpandMaxNodes)
 			if qErr != nil {
 				log.Printf("[pgr] expand peer %s: %v", guid, qErr)
 				return
 			}
-			results[idx] = gs
+			results[idx] = sub
 		}(i, g, pp)
 	}
 	wg.Wait()
 
-	seen := make(map[string]bool, len(treeGuids))
-	for _, g := range treeGuids {
-		seen[g] = true
-	}
-	for _, gs := range results {
-		for _, sg := range gs {
-			if sg == "" || seen[sg] {
-				continue
-			}
-			seen[sg] = true
-			combined = append(combined, sg)
-			if len(combined) >= reconnectExpandMaxGuids {
-				log.Printf("[pgr] reconnection expansion hit guid cap (%d)", reconnectExpandMaxGuids)
-				return combined
+	for _, sub := range results {
+		if sub == nil {
+			continue
+		}
+		for _, node := range sub.order {
+			tree.add(sub.members[node], sub.size[node], sub.firstMs[node], sub.lastMs[node], reconnectExpandMaxNodes)
+			if len(tree.order) >= reconnectExpandMaxNodes {
+				log.Printf("[pgr] reconnection expansion hit node cap (%d)", reconnectExpandMaxNodes)
+				return
 			}
 		}
 	}
-	return combined
 }
 
 func reconString(v interface{}) string {
@@ -779,6 +735,7 @@ type resolvedSource struct {
 	Limit          int      // outer-query result-row cap this source prefers, overriding opts.MaxRows (0 = no preference)
 	OrderBy        []string // outer-query ORDER BY this source prefers, overriding the generic timestamp-DESC default
 	QuerySettings  string   // optional top-level SETTINGS clause (no leading space) the executor appends to the final query -- e.g. pgr's scan budget
+	Warnings       []string // non-fatal notices about what the source left out, e.g. pgr's truncation
 }
 
 // sourceResolver produces a resolvedSource for a source command. Resolution runs in the query
@@ -839,7 +796,7 @@ func (h *QueryHandler) resolveSourceCommand(ctx context.Context, cmd parser.Comm
 	return r(h, ctx, cmd, opts)
 }
 
-// resolvePgrSource resolves pgr() into its two-pass scored-edge subquery.
+// resolvePgrSource runs pgr() and resolves it into its materialized scored-edge source.
 func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNode, opts parser.QueryOptions) (*resolvedSource, error) {
 	if opts.SourceMode == parser.SourceIceberg {
 		return nil, fmt.Errorf("pgr() operates on live process lineage and is not available over archived data")
@@ -850,7 +807,7 @@ func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNo
 	}
 	// Diffusion (when enabled) is applied server-side in provenanceScoreSQL, so the propagated
 	// anomaly_score is what every consumer sees -- pgraph() is a pure renderer of these rows.
-	sql, err := h.provenanceScoreSQL(ctx, p, opts)
+	sql, warnings, err := h.provenanceScoreSQL(ctx, p, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -861,9 +818,10 @@ func resolvePgrSource(h *QueryHandler, ctx context.Context, cmd parser.CommandNo
 		Focus:          p.Start,
 		Limit:          p.Limit,
 		OrderBy:        parser.ProvenanceOrderBy,
-		// Budget the downstream scan (the diffuse=false scoring scan runs here, not in the
-		// resolver) so a pathological tree aborts server-side instead of pegging every shard.
+		// The scoring scans ran in the resolver; the downstream query only reads the literal
+		// source, so this budget is a backstop rather than the main guard.
 		QuerySettings: storage.ProvenanceQuerySettings,
+		Warnings:      warnings,
 	}, nil
 }
 

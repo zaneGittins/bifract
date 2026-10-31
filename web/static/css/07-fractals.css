@@ -394,6 +394,14 @@
     border-bottom: 1px dashed color-mix(in srgb, var(--text-muted) 55%, transparent);
     cursor: help;
 }
+/* pgr() left something out (tree truncated or row limit reached); the reason is in the title. */
+.pg-stat-trunc {
+    color: var(--warning);
+    font-size: 11px;
+    font-weight: 600;
+    border-bottom: 1px dashed color-mix(in srgb, var(--warning) 55%, transparent);
+    cursor: help;
+}
 .graph-stats .pg-anom { margin-left: 4px; padding: 1px 6px; font-size: 10.5px; }
 
 /* Legend popover: anchored under the "?" button, dismissed on outside click. */

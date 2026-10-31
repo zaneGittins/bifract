@@ -4,6 +4,8 @@
 package storagetest
 
 import (
+	"context"
+
 	"bifract/internal/fakedb"
 	"bifract/pkg/storage"
 )
@@ -24,5 +26,12 @@ func ClickHouse() (*storage.ClickHouseClient, *fakedb.CH) {
 // topology from storage.DeriveTopology.
 func ClickHouseWith(topo storage.Topology) (*storage.ClickHouseClient, *fakedb.CH) {
 	ch := fakedb.NewCH()
+	ch.CtxArgs = func(ctx context.Context) []any {
+		var out []any
+		for _, t := range storage.ExternalTablesOf(ctx) {
+			out = append(out, t)
+		}
+		return out
+	}
 	return storage.NewClickHouseClientFromConn(ch, "logs", topo), ch
 }
