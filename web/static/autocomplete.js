@@ -376,7 +376,7 @@ const Autocomplete = {
             for (const v of values) {
                 const m = this._match(v.value, ctx.partial);
                 if (!m.ok) continue;
-                const escaped = v.value.replace(/"/g, '\\"');
+                const escaped = Utils.bqlEscape(v.value);
                 out.push({
                     kind: 'value',
                     label: v.value,
