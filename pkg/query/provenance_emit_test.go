@@ -199,3 +199,44 @@ func TestEmitProvenanceSourceEscapesControlAndNonFinite(t *testing.T) {
 		t.Errorf("non-finite numbers leaked: %s", sql)
 	}
 }
+
+// A hot leaf deep in the tree keeps the spawn rows on its path to the seed, even when walk
+// order would fill the structure share with a wide level first. Lead bridges are the hottest:
+// a C2 the implant shares with another host outranks any leaf.
+func TestBudgetProvenanceRowsKeepsPathToHotLeaf(t *testing.T) {
+	tree := newProvenanceTree()
+	for _, g := range []string{"root", "d1", "w1", "w2", "w3", "w4", "w5", "w6", "d2", "d3", "d4"} {
+		tree.add([]string{g}, 1, 0, 0, parser.MaxProvenanceNodes)
+	}
+	rows := []map[string]interface{}{}
+	for _, e := range [][2]string{{"root", "d1"}, {"root", "w1"}, {"root", "w2"}, {"root", "w3"}, {"root", "w4"}, {"root", "w5"}, {"root", "w6"}, {"d1", "d2"}, {"d2", "d3"}, {"d3", "d4"}} {
+		tree.parent[e[1]] = e[0]
+		rows = append(rows, spawnRow(e[0], e[1]))
+	}
+	keys := func(rows []map[string]interface{}, limit int) string {
+		var out []string
+		for _, r := range budgetProvenanceRows(rows, tree, limit) {
+			out = append(out, reconString(r["parent"])+">"+reconString(r["child"]))
+		}
+		return fmt.Sprint(out)
+	}
+
+	leaves := append(append([]map[string]interface{}{}, rows...), leafRow("d4", "net:hot", 0.99), leafRow("w1", "net:low", 0.1))
+	if got, want := keys(leaves, 8), "[root>d1 root>w1 root>w2 d1>d2 d2>d3 d3>d4 d4>net:hot w1>net:low]"; got != want {
+		t.Errorf("hot leaf: got %v, want %s", got, want)
+	}
+
+	// A path longer than the structure share is not taken, and its leaf is not drawn alone.
+	if got, want := keys(leaves, 4), "[root>d1 root>w1 root>w2 w1>net:low]"; got != want {
+		t.Errorf("path too long: got %v, want %s", got, want)
+	}
+
+	lead := leafRow("d4", "net:203.0.113.87", 0.85)
+	lead["score_basis"], lead["recon_role"] = "reconnect", "lead"
+	context := leafRow("peer", "dns:g.live.com", 0.94)
+	context["score_basis"], context["recon_role"] = "reconnect", "context"
+	bridges := append(append([]map[string]interface{}{}, rows...), context, lead)
+	if got, want := keys(bridges, 6), "[root>d1 root>w1 d1>d2 d2>d3 d3>d4 d4>net:203.0.113.87]"; got != want {
+		t.Errorf("lead bridge: got %v, want %s", got, want)
+	}
+}

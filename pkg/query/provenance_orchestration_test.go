@@ -486,6 +486,10 @@ func TestExpandReconnectionPeers(t *testing.T) {
 		if fmt.Sprint(tree.order) != fmt.Sprint(want) {
 			t.Errorf("got %v, want %v (p2's child a is already in the tree)", tree.order, want)
 		}
+		// Merged subtrees keep their parent links; a process already in the tree keeps its own.
+		if tree.parent["p1c"] != "p1" || tree.parent["a"] != "" {
+			t.Errorf("parents p1c=%q a=%q", tree.parent["p1c"], tree.parent["a"])
+		}
 	})
 
 	t.Run("a failed expansion is skipped, not fatal", func(t *testing.T) {
@@ -852,10 +856,11 @@ func TestProvenanceScoreSQLLimitKeepsLeaves(t *testing.T) {
 	if !strings.Contains(got, "'net:203.0.113.9'") {
 		t.Error("a leaf of a drawn process must survive the row limit")
 	}
-	if strings.Contains(got, "'file:x'") {
-		t.Error("a leaf of a process that is not drawn must not be emitted")
+	// Walk order alone would stop before c59; its hot leaf brings its spawn row in.
+	if !strings.Contains(got, "'file:x'") || !strings.Contains(got, "('root', 'c59'") {
+		t.Error("the hottest leaf must keep the process it hangs off")
 	}
-	if n := strings.Count(got, "'spawn'"); n != 39 {
+	if n := strings.Count(got, "'spawn'"); n != 38 {
 		t.Errorf("%d spawn rows; the rest of the budget goes back to structure", n)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "showing 40 of 62 edges") {

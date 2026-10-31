@@ -494,11 +494,13 @@ func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql stri
 	return sb.String(), emitted
 }
 
-// budgetProvenanceRows picks the rows that fit pgr's limit= when there are more. Structure is
-// kept in walk order (seed and ancestors, then the nearest descendants, then peers), but a quarter
-// of the budget is held for leaves and bridges, so a wide tree can never push every file, network
-// and DNS edge out. Bridges go before leaves, leaves by anomaly, and a leaf is kept only when its
-// process is drawn. Room left in either share goes to the other. The result is in emit priority.
+// budgetProvenanceRows picks the rows that fit pgr's limit= when there are more. A quarter of
+// the budget is held for leaves and bridges, so a wide tree can never push every file, network
+// and DNS edge out: lead bridges first, then other bridges, then leaves by anomaly, each kept
+// only when its process is drawn. Structure keeps the spawn rows on the path from the seed to
+// each process those rows hang off, then the rest in walk order (seed and ancestors, then the
+// nearest descendants, then peers). Room left in either share goes to the other. The result is
+// in emit priority.
 func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, limit int) []map[string]interface{} {
 	if limit <= 0 || len(rows) <= limit {
 		return rows
@@ -522,22 +524,70 @@ func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, l
 		}
 	}
 	sort.SliceStable(spawn, func(i, j int) bool { return rankOf(spawn[i]) < rankOf(spawn[j]) })
-	isBridge := func(r map[string]interface{}) bool { return reconString(r["score_basis"]) == "reconnect" }
+	heat := func(r map[string]interface{}) int {
+		switch {
+		case reconString(r["recon_role"]) == reconRoleLead:
+			return 2
+		case reconString(r["score_basis"]) == "reconnect":
+			return 1
+		}
+		return 0
+	}
 	sort.SliceStable(other, func(i, j int) bool {
-		if bi, bj := isBridge(other[i]), isBridge(other[j]); bi != bj {
-			return bi
+		if hi, hj := heat(other[i]), heat(other[j]); hi != hj {
+			return hi > hj
 		}
 		return reconFloat(other[i]["anomaly_score"]) > reconFloat(other[j]["anomaly_score"])
 	})
 
+	held := min(limit/4, len(other))
+	structure := limit - held
+
+	// The structure share holds the paths to the processes the held rows hang off, hottest
+	// first while they fit, filled up in walk order. Kept in walk order, a path the walk would
+	// have reached anyway changes nothing.
+	spawnOf := make(map[string]int, len(spawn)) // node -> the spawn row that draws it
+	for i, r := range spawn {
+		if _, ok := spawnOf[reconString(r["child"])]; !ok {
+			spawnOf[reconString(r["child"])] = i
+		}
+	}
+	chosen, nChosen := make([]bool, len(spawn)), 0
+	for _, r := range other[:held] {
+		var path []int
+		for n, seen := reconString(r["parent"]), map[string]bool{}; n != "" && !seen[n]; n = tree.parent[n] {
+			seen[n] = true
+			if i, ok := spawnOf[n]; ok && !chosen[i] {
+				path = append(path, i)
+			}
+		}
+		if nChosen+len(path) <= structure {
+			for _, i := range path {
+				chosen[i] = true
+			}
+			nChosen += len(path)
+		}
+	}
+	for i := 0; i < len(spawn) && nChosen < structure; i++ {
+		if !chosen[i] {
+			chosen[i] = true
+			nChosen++
+		}
+	}
+
 	out := make([]map[string]interface{}, 0, limit)
 	drawn := map[string]bool{}
-	nextSpawn := 0
-	takeSpawn := func(upTo int) {
-		for ; nextSpawn < len(spawn) && len(out) < upTo; nextSpawn++ {
-			r := spawn[nextSpawn]
-			drawn[reconString(r["parent"])], drawn[reconString(r["child"])] = true, true
-			out = append(out, r)
+	taken := make([]bool, len(spawn))
+	takeSpawn := func(pick func(int) bool) {
+		for i, r := range spawn {
+			if len(out) >= limit {
+				return
+			}
+			if !taken[i] && pick(i) {
+				taken[i] = true
+				drawn[reconString(r["parent"])], drawn[reconString(r["child"])] = true, true
+				out = append(out, r)
+			}
 		}
 	}
 	used := make([]bool, len(other))
@@ -553,9 +603,9 @@ func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, l
 			}
 		}
 	}
-	takeSpawn(limit - min(limit/4, len(other)))
+	takeSpawn(func(i int) bool { return chosen[i] })
 	takeOther()
-	takeSpawn(limit)
+	takeSpawn(func(int) bool { return true })
 	takeOther()
 	return out
 }
@@ -778,7 +828,12 @@ func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, tree *proven
 			continue
 		}
 		for _, node := range sub.order {
-			tree.add(sub.members[node], sub.size[node], sub.firstMs[node], sub.lastMs[node], reconnectExpandMaxNodes)
+			// The subtree's parent links let a hot leaf in it keep its path (budgetProvenanceRows).
+			if tree.add(sub.members[node], sub.size[node], sub.firstMs[node], sub.lastMs[node], reconnectExpandMaxNodes) {
+				if up, ok := sub.parent[node]; ok && tree.has(up) {
+					tree.parent[tree.order[len(tree.order)-1]] = tree.node(up)
+				}
+			}
 			if len(tree.order) >= reconnectExpandMaxNodes {
 				log.Printf("[pgr] reconnection expansion hit node cap (%d)", reconnectExpandMaxNodes)
 				return
