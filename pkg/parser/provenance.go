@@ -905,11 +905,13 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 		edgeFrac = fractal + " AND "
 	}
 	// rareGate is the proc_freq rarity subquery (host- + image-prevalence ceilings) an artifact must
-	// pass to bridge; et is the proc_freq event_type. Shared by net/dns.
+	// pass to bridge; et is the proc_freq event_type. Shared by net/dns. It aggregates only the
+	// tree's own targets, which are all the callers test, instead of every target in the fractal.
 	rareGate := func(et string) string {
-		return fmt.Sprintf("SELECT target_norm FROM %s WHERE event_type = '%s'%s GROUP BY target_norm "+
+		treeTargets := fmt.Sprintf("SELECT fkey_tgt FROM %s WHERE %sevent_type = '%s' AND %s", edgeTable, edgeFrac, et, inTree("process_guid"))
+		return fmt.Sprintf("SELECT target_norm FROM %s WHERE event_type = '%s'%s AND target_norm GLOBAL IN (%s) GROUP BY target_norm "+
 			"HAVING length(groupUniqArrayMerge(%d)(hosts)) <= %s AND uniqExact(src_image) <= %s",
-			procFreq, et, fracAnd, procFreqHostsCap, hostGate, imageGate)
+			procFreq, et, fracAnd, treeTargets, procFreqHostsCap, hostGate, imageGate)
 	}
 
 	// file: write -> execute. The tree's written paths come from the edge rollup (label = raw
@@ -918,20 +920,21 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	if want("file") {
 		writtenPaths := fmt.Sprintf(
 			"SELECT lower(label) AS p, any(process_guid) AS writer FROM %[1]s WHERE %[2]sevent_type = 'file_write' "+
-				"AND %[3]s AND label != '' GROUP BY p LIMIT %[4]d",
+				"AND %[3]s AND label != '' GROUP BY p ORDER BY p LIMIT %[4]d",
 			edgeTable, edgeFrac, inTree("process_guid"), maxReconnectCandidateArtifacts)
-		plFrac := procLineageFractalCond(opts, "pl.")
-		plWhere := ""
-		if plFrac != "" {
-			plWhere = plFrac + " AND "
-		}
+		// Latest row per process running a written path. Deduped with LIMIT BY rather than FINAL,
+		// which on a Distributed table only dedupes within each shard.
+		executors := fmt.Sprintf(
+			"SELECT process_guid, image, log_id, timestamp, fractal_id, computer_name FROM %[1]s WHERE %[2]slower(image) GLOBAL IN (SELECT p FROM (%[3]s)) "+
+				"AND %[4]s ORDER BY process_guid, timestamp DESC, log_id DESC LIMIT 1 BY process_guid",
+			procLineage, edgeFrac, writtenPaths, notInTree("process_guid"))
 		parts = append(parts, fmt.Sprintf(
 			"SELECT 'file' AS recon_type, pl.process_guid AS peer_guid, wp.writer AS src_guid, '' AS object_id, "+
 				"pl.image AS label, toFloat64(1.0) AS anomaly, pl.image AS peer_image, pl.log_id AS peer_log_id, "+
 				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal, pl.computer_name AS peer_host "+
-				"FROM %[1]s AS pl FINAL GLOBAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
-				"WHERE %[3]s%[4]s ORDER BY pl.process_guid LIMIT %[5]d",
-			procLineage, writtenPaths, plWhere, notInTree("pl.process_guid"), maxReconnectPeers))
+				"FROM (%[1]s) AS pl GLOBAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
+				"ORDER BY pl.process_guid LIMIT %[3]d",
+			executors, writtenPaths, maxReconnectPeers))
 	}
 
 	// net: two processes connect to the same rare EXTERNAL IP. fkey_tgt is the abstracted IP
@@ -943,7 +946,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 		extOnly := "fkey_tgt NOT LIKE '%/24' AND fkey_tgt != 'internal'"
 		rareIP := fmt.Sprintf(
 			"SELECT fkey_tgt AS ip, any(process_guid) AS toucher FROM %[1]s WHERE %[2]sevent_type = 'net_connect' "+
-				"AND %[3]s AND %[4]s AND fkey_tgt GLOBAL IN (%[5]s) GROUP BY ip LIMIT %[6]d",
+				"AND %[3]s AND %[4]s AND fkey_tgt GLOBAL IN (%[5]s) GROUP BY ip ORDER BY ip LIMIT %[6]d",
 			edgeTable, edgeFrac, inTree("process_guid"), extOnly, rareGate("net_connect"), maxReconnectCandidateArtifacts)
 		peerScan := fmt.Sprintf(
 			"SELECT process_guid AS peer_guid, fkey_tgt AS ip, dst_node, fkey_src AS img, log_id, "+
@@ -963,7 +966,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	if want("dns") {
 		rareDom := fmt.Sprintf(
 			"SELECT fkey_tgt AS q, any(process_guid) AS toucher FROM %[1]s WHERE %[2]sevent_type = 'dns_query' "+
-				"AND %[3]s AND NOT %[6]s AND fkey_tgt GLOBAL IN (%[4]s) GROUP BY q LIMIT %[5]d",
+				"AND %[3]s AND NOT %[6]s AND fkey_tgt GLOBAL IN (%[4]s) GROUP BY q ORDER BY q LIMIT %[5]d",
 			edgeTable, edgeFrac, inTree("process_guid"), rareGate("dns_query"), maxReconnectCandidateArtifacts, internalDomainExpr("fkey_tgt"))
 		peerScan := fmt.Sprintf(
 			"SELECT process_guid AS peer_guid, fkey_tgt AS q, dst_node, fkey_src AS img, log_id, "+

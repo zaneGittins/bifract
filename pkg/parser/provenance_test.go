@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -593,5 +594,48 @@ func TestScoringSQLNarrowsCommandLineWindow(t *testing.T) {
 	pm = cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, opts), "pm")
 	if !strings.Contains(pm, "timestamp >= '2026-10-01 00:00:00.000' AND timestamp <= '2026-10-31 00:00:00.000'") {
 		t.Errorf("without a span pm reads the query window:\n%s", pm)
+	}
+}
+
+// The rarity gate is evaluated only for the tree's own artifacts of that type, never by
+// grouping every target in the fractal's baseline; the result for the tree is the same.
+func TestReconnectionRarityGateScopedToTree(t *testing.T) {
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}, 100, 50, reconOpts())
+	for _, et := range []string{"net_connect", "dns_query"} {
+		want := "FROM proc_freq WHERE event_type = '" + et + "' AND fractal_id = 'f1' AND target_norm GLOBAL IN (SELECT fkey_tgt FROM process_edges WHERE fractal_id = 'f1' AND event_type = '" + et + "' AND process_guid GLOBAL IN (SELECT guid FROM _pgr_tree)) GROUP BY target_norm"
+		if !strings.Contains(sql, want) {
+			t.Errorf("%s gate not scoped to the tree:\n%s", et, sql)
+		}
+	}
+}
+
+// Each candidate list is read twice (as a filter and as a join), so a capped list must be the
+// same list both times: ordered before its LIMIT.
+func TestReconnectionCandidateCapsAreDeterministic(t *testing.T) {
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}, 100, 50, reconOpts())
+	for _, k := range []string{"p", "ip", "q"} {
+		if want := fmt.Sprintf("GROUP BY %s ORDER BY %s LIMIT %d", k, k, maxReconnectCandidateArtifacts); !strings.Contains(sql, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+// Executors of a dropped file are found among the processes running a written path, scoped to
+// the query's fractals and outside the tree, latest row per process, without FINAL over the
+// whole lineage table.
+func TestReconnectionFileExecutorsWithoutFinal(t *testing.T) {
+	prism := reconOpts()
+	prism.FractalID, prism.FractalIDs = "", []string{"f1", "f2"}
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{"file_write": true}}, 100, 50, prism)
+	if strings.Contains(sql, "FINAL") {
+		t.Errorf("file branch must not FINAL the lineage table:\n%s", sql)
+	}
+	for _, want := range []string{
+		"FROM proc_lineage WHERE fractal_id IN ('f1', 'f2') AND lower(image) GLOBAL IN (SELECT p FROM (",
+		"AND process_guid GLOBAL NOT IN (SELECT guid FROM _pgr_tree) ORDER BY process_guid, timestamp DESC, log_id DESC LIMIT 1 BY process_guid",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q in:\n%s", want, sql)
+		}
 	}
 }

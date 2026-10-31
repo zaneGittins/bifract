@@ -797,6 +797,23 @@ func TestProvenanceScoreSQLReconnectionFailures(t *testing.T) {
 		}
 	})
 
+	// Fleet size runs alongside reconnection; a request cancelled while it runs fails, it does
+	// not score with a fleet size of 0.
+	t.Run("cancellation during the fleet-size lookup is surfaced", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		f := newFakeLineage(">root", "root>a")
+		f.totalHosts = func() ([]map[string]interface{}, error) {
+			cancel()
+			return nil, context.Canceled
+		}
+		if _, _, err := f.handler().provenanceScoreSQL(ctx, p, pgrOpts()); !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want the cancellation", err)
+		}
+		if f.kinds()["scan"] != 0 {
+			t.Error("a cancelled request must not score")
+		}
+	})
+
 	t.Run("cancellation is surfaced", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		f := newFakeLineage(">root", "root>a")

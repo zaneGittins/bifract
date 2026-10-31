@@ -64,6 +64,19 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		return provenanceEmptyScoreSQL, nil, nil
 	}
 
+	// Fleet size depends on nothing else, so it runs alongside reconnection and the edge keys.
+	// Buffered, so an early return never leaks the goroutine.
+	type fleetResult struct {
+		rows []map[string]interface{}
+		err  error
+	}
+	fleet := make(chan fleetResult, 1)
+	fleetSQL := parser.BuildProvenanceTotalHostsSQL(opts)
+	go func() {
+		rows, err := h.db.QueryProvenance(ctx, fleetSQL)
+		fleet <- fleetResult{rows, err}
+	}()
+
 	// Cross-tree reconnection (NoDoze object-mediated): find peer processes in OTHER trees
 	// that share a leaf with this subgraph, auto-expand the most anomalous ones into real
 	// subtrees, and emit bridge edges for the rest. Bounded and rarity-pruned; see
@@ -116,20 +129,8 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	}
 	treeTable := tree.table()
 
-	// Fleet size, reported as total_hosts. Fetched once per call and passed as a literal, never
-	// cached across calls. It is display only, so a failed lookup leaves it 0 and changes no score.
 	var baseline parser.ProvenanceBaseline
 	baseline.NodeStart, baseline.NodeEnd = tree.span()
-	if ctx.Err() == nil {
-		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
-			if ctx.Err() != nil {
-				return "", nil, ctx.Err()
-			}
-			log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", tErr)
-		} else if len(totRows) > 0 {
-			baseline.TotalHosts = reconInt64(totRows[0]["total_hosts"])
-		}
-	}
 
 	// The tree's own edge keys, which scope every proc_freq CTE in the scoring SQL to the rows its
 	// joins can match (see parser.ProvenanceBaseline). Without them each CTE aggregates the
@@ -147,6 +148,17 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		} else {
 			baseline.SrcKeys, baseline.TgtKeys = provenanceEdgeKeys(keyRows)
 		}
+	}
+
+	// Fleet size, reported as total_hosts: passed as a literal, never cached across calls. Display
+	// only, so a failed lookup leaves it 0 and changes no score.
+	if fs := <-fleet; fs.err != nil {
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
+		log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", fs.err)
+	} else if len(fs.rows) > 0 {
+		baseline.TotalHosts = reconInt64(fs.rows[0]["total_hosts"])
 	}
 
 	// The scoring SQL's leaf cap reads opts.MaxRows, but pgr() carries its own row budget
