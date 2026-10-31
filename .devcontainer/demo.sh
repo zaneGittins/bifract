@@ -10,6 +10,10 @@ MARKER=$INSTALL_DIR/.codespace
 DATASET=bifract-labs-001
 BASE=https://localhost
 NOTICE=/usr/local/etc/vscode-dev-containers/first-run-notice.txt
+# Opened when the codespace opens; rewritten as the lab loads.
+WELCOME=$PWD/WELCOME.md
+LAB_STORY=https://github.com/zaneGittins/bifract-labs/tree/main/labs/001
+DOCS=https://docs.bifract.io/getting-started/codespaces/
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -38,6 +42,102 @@ api() { curl -sk -b "$JAR" -H 'Content-Type: application/json' "$@"; }
 # The newest import of the dataset, as JSON, or nothing.
 dataset_import() {
 	api "$BASE/api/v1/exchange/datasets" | jq -c --arg d "$DATASET" '[.data[]? | select(.dataset_id == $d)][0] // empty'
+}
+
+# The address the browser reaches Bifract at.
+public_url() {
+	if [ -n "${CODESPACE_NAME:-}" ]; then
+		echo "https://$CODESPACE_NAME-443.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
+	else
+		echo "$BASE"
+	fi
+}
+
+# A deep link running a query over the lab's range, $FROM to $TO.
+search_url() {
+	printf '%s/go/search?fractal=%s&from=%s&to=%s&q=%s' "$(public_url)" "$DATASET" "$FROM" "$TO" \
+		"$(jq -rn --arg q "$1" '$q | @uri')"
+}
+
+# One starter query, linked once the lab has a fractal to run it in.
+# shellcheck disable=SC2016 # the backticks are Markdown
+try_line() {
+	if [ -n "${FROM:-}" ]; then
+		printf -- '- %s: [`%s`](%s)\n' "$1" "$2" "$(search_url "$2")"
+	else
+		printf -- '- %s: `%s`\n' "$1" "$2"
+	fi
+}
+
+# Writes WELCOME.md for the lab's state, given its import as JSON (or nothing).
+write_welcome() {
+	local imp=${1:-null} url status lab range=
+	url=$(public_url)
+	status=$(jq -r '.status // ""' <<<"$imp")
+	FROM='' TO=''
+	if [ -n "$status" ]; then
+		range=$(api "$BASE/api/v1/fractals/$(jq -r .fractal_id <<<"$imp")" |
+			jq -r '.data | select(.default_range_start and .default_range_end) | "\(.default_range_start) \(.default_range_end)"')
+	fi
+	local note=''
+	if [ -n "${range:-}" ]; then
+		FROM=$(date -u -d "${range% *}" +%Y-%m-%dT%H:%M:00Z)
+		TO=$(date -u -d "${range#* } + 1 minute" +%Y-%m-%dT%H:%M:00Z)
+		note=$'\nEach link runs the search over the lab\'s three days.\n'
+	fi
+	local progress
+	progress="$url/#f/$(jq -r '.fractal_id // ""' <<<"$imp")/exchange/$DATASET"
+	case $status in
+	succeeded)
+		lab="Loaded: $(jq -r '.logs_done' <<<"$imp" | numfmt --grouping) logs. \
+[Start with every process launch]($(search_url 'bifract_category=process_creation | table(timestamp, hostname, user, image, commandline)'))."
+		;;
+	failed)
+		lab="Loading failed: $(jq -r '.error' <<<"$imp"). Retry it under [Exchange]($progress)."
+		;;
+	"")
+		lab="Bifract is still being set up. The lab starts loading next, and this page updates as it goes."
+		;;
+	*)
+		lab="Loading: $(jq -r '.logs_done' <<<"$imp" | numfmt --grouping) of $(jq -r '.logs_total' <<<"$imp" | numfmt --grouping) logs. \
+Follow it under [Exchange]($progress); the lab can be searched while it fills."
+		;;
+	esac
+	cat >"$WELCOME" <<EOF
+# Try Bifract
+
+Bifract is running in this codespace. Open it and sign in:
+
+| | |
+|---|---|
+| Open | [$url]($url) |
+| Username | \`admin\` |
+| Password | \`$(sudo cat "$PASSWORD_FILE")\` |
+
+## Lab 001: Meridian workstation intrusion
+
+Three days of logs from a small Windows domain, with an intrusion inside it, in
+fractal \`$DATASET\`. $lab
+
+## Things to try
+$note
+$(try_line "Who is in the lab (no hostname means the network sensor)" '* | groupBy(hostname)')
+$(try_line "What kinds of events it holds" '* | groupBy(bifract_category) | sort(_count, order=desc)')
+$(try_line "The rarest programs" 'bifract_category=process_creation | groupBy(image) | sort(_count, order=asc) | head(10)')
+$(try_line "The rarest DNS lookups" 'event_id=22 | groupBy(query) | sort(_count, order=asc) | head(10)')
+- Follow a process: copy a \`process_guid\` from a process launch and run
+  \`pgr(start="<guid>") | pgraph()\` to see what it spawned, wrote and connected
+  to, each step scored by how unusual it is.
+
+The lab's story: [bifract-labs]($LAB_STORY). Bifract's guide to this codespace:
+[docs]($DOCS). When you are done, delete the codespace from
+[github.com/codespaces](https://github.com/codespaces) to save your free hours.
+EOF
+}
+
+# Signs in and rewrites WELCOME.md for the lab's current state.
+refresh_welcome() {
+	login && write_welcome "$(dataset_import)"
 }
 
 install_stack() {
@@ -76,6 +176,7 @@ EOF
 	sudo bifract --install --config "$config"
 	echo "${CODESPACE_NAME:-}" | sudo tee "$MARKER" >/dev/null
 	wait_for "Bifract" 300 healthy
+	write_welcome
 }
 
 load() {
@@ -91,7 +192,8 @@ load() {
 	local imp status
 	while :; do
 		imp=$(dataset_import)
-		status=$(jq -r '.status // "missing"' <<<"$imp")
+		write_welcome "$imp"
+		status=$(jq -r '.status // "missing"' <<<"${imp:-null}")
 		case $status in
 		succeeded)
 			log "Lab 001 is loaded: $(jq -r .logs_done <<<"$imp") logs"
@@ -122,25 +224,18 @@ rotate() {
 	printf '%s' "$next" | sudo tee "$PASSWORD_FILE" >/dev/null
 	echo "${CODESPACE_NAME:-}" | sudo tee "$MARKER" >/dev/null
 	log "Set a new admin password for this codespace"
+	refresh_welcome
 }
 
 welcome() {
-	wait_for "Bifract" 300 healthy || true
-	local url="$BASE"
-	if [ -n "${CODESPACE_NAME:-}" ]; then
-		url="https://$CODESPACE_NAME-443.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
-	fi
+	wait_for "Bifract" 300 healthy && refresh_welcome || true
 	local text
 	text=$(
 		cat <<EOF
-Bifract is running at $url
+Bifract is running at $(public_url)
   Username: admin
   Password: $(sudo cat "$PASSWORD_FILE")
-
-Lab 001 (Meridian workstation intrusion) is in fractal $DATASET, or loading
-into it: Exchange shows progress. The time picker opens on the lab's range, and
-endpoint analytics is on, so pgr() works.
-Getting started: https://docs.bifract.io/getting-started/codespaces/
+WELCOME.md has what is loaded and what to try.
 EOF
 	)
 	printf '%s\n' "$text" | sudo tee "$NOTICE" >/dev/null

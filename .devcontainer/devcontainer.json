@@ -28,5 +28,12 @@
     "443": { "label": "Bifract", "protocol": "https", "onAutoForward": "openBrowserOnce" },
     "8443": { "label": "Bifract ingest", "protocol": "https", "onAutoForward": "silent" }
   },
-  "otherPortsAttributes": { "onAutoForward": "silent" }
+  "otherPortsAttributes": { "onAutoForward": "silent" },
+  "customizations": {
+    // demo.sh writes WELCOME.md with the sign-in, the lab's state and what to try.
+    "codespaces": { "openFiles": ["WELCOME.md"] },
+    "vscode": {
+      "settings": { "workbench.editorAssociations": { "WELCOME.md": "vscode.markdown.preview.editor" } }
+    }
+  }
 }
