@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -302,24 +303,14 @@ func main() {
 	}
 
 	// Convert tables provisioned before their per-fractal partition keys, so clearing a
-	// fractal drops partitions instead of running mutations. One replica does it under an
-	// advisory lock; it is resumable, so a restart mid-copy carries on where it stopped.
+	// fractal drops partitions instead of running mutations, then backfill pgr's access paths
+	// (migration 019) for rows written before them; the backfill waits for the conversion,
+	// whose copied rows bypass the summary views. One replica does both under an advisory
+	// lock. Every replica retries until they report done, so a rolling deploy or a lost lock
+	// hands the work to whichever replica is left; each step resumes where it stopped.
 	go func() {
-		ctx := context.Background()
-		unlock, ok := pg.TryAdvisoryLock(ctx, storage.LockRepartition)
-		if !ok {
-			return
-		}
-		defer unlock()
-		keep, err := pg.FractalIDSet(ctx)
-		if err != nil {
-			log.Printf("Warning: partition conversion: list fractals: %v", err)
-			return
-		}
-		// Rows under an empty fractal_id belong to the default fractal.
-		keep[""] = true
-		if err := db.ConvertPartitioning(ctx, keep); err != nil {
-			log.Printf("Warning: partition conversion incomplete, will resume on next start: %v", err)
+		for wait := time.Minute; !convertAndBackfill(db, pg); wait = min(2*wait, 6*time.Hour) {
+			time.Sleep(wait)
 		}
 	}()
 
@@ -1336,4 +1327,41 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 
 func (a *APIKeyValidatorAdapter) UpdateLastUsed(ctx context.Context, keyID string) error {
 	return a.storage.UpdateLastUsed(ctx, keyID)
+}
+
+// convertAndBackfill runs the partition conversion and the pgr access-path backfill if this
+// replica wins the lock, and reports whether both are done. Losing the lock's connection
+// cancels the work, since another replica may then take it.
+func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient) bool {
+	ctx, unlock, ok := pg.HoldAdvisoryLock(context.Background(), storage.LockRepartition)
+	if !ok {
+		return false
+	}
+	defer unlock()
+	// Both steps compare tables against the migrated schema.
+	db.WaitForSchemaReady(ctx)
+	keep, err := pg.FractalIDSet(ctx)
+	if err != nil {
+		log.Printf("Warning: partition conversion: list fractals: %v", err)
+		return false
+	}
+	// Rows under an empty fractal_id belong to the default fractal.
+	keep[""] = true
+	if err := db.ConvertPartitioning(ctx, keep); err != nil {
+		log.Printf("Warning: partition conversion incomplete, will resume: %v", err)
+		return false
+	}
+	filled, err := pg.GetSetting(ctx, storage.ProvenanceSummaryReadySetting)
+	if err != nil && !errors.Is(err, storage.ErrSettingNotFound) {
+		log.Printf("Warning: pgr access-path backfill: read summary state: %v", err)
+		return false
+	}
+	markFilled := func(ctx context.Context) error {
+		return pg.SetSetting(ctx, storage.ProvenanceSummaryReadySetting, "true")
+	}
+	if err := db.BackfillProvenancePaths(ctx, filled == "true", markFilled); err != nil {
+		log.Printf("Warning: pgr access-path backfill incomplete, will resume: %v", err)
+		return false
+	}
+	return true
 }

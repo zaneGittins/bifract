@@ -120,3 +120,112 @@ func TestProvenanceSQLAcrossShards(t *testing.T) {
 		t.Errorf("summary %v", sum)
 	}
 }
+
+// An upgraded cluster's history: parts on both shards from before the projections, and no
+// summary rows. The backfill fills the summary to match the scans, records it, and leaves
+// every part with its projections.
+func TestBackfillProvenancePathsAcrossShards(t *testing.T) {
+	dropEverything(t)
+	initialize(t)
+	c := newTestClusterClient(t)
+	defer c.Close()
+	ctx := context.Background()
+	oldMin := provenanceBackfillMinPoll
+	provenanceBackfillMinPoll = 100 * time.Millisecond
+	defer func() { provenanceBackfillMinPoll = oldMin }()
+
+	for i, addr := range chTestHosts {
+		for _, p := range provenanceProjections {
+			for _, name := range p.names {
+				execOnShard(t, addr, "ALTER TABLE logs."+p.table+" DROP PROJECTION "+name)
+			}
+		}
+		for _, f := range []string{"f1", "f2"} {
+			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_lineage (fractal_id, timestamp, ingest_timestamp, log_id, process_guid, parent_guid, image, parent_image, commandline, computer_name) "+
+				"SELECT '%[1]s', now64(), now64(), toString(number), concat('%[1]s-%[2]d-', toString(number)), 'p', 'C:\\\\a.exe', 'C:\\\\p.exe', 'a', concat('WS', toString(number %% 5 + %[2]d)) FROM numbers(1000)", f, i))
+			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.proc_freq SELECT '%[1]s', 'img%[2]d', 'spawn', 't', today() - %[2]d, today() - %[2]d, 1, groupUniqArrayState(256)(h) FROM (SELECT arrayJoin(['WS1', 'WS9']) AS h)", f, i))
+			execOnShard(t, addr, fmt.Sprintf("INSERT INTO logs.process_edges (fractal_id, process_guid, event_type, dst_node, cnt, ingest_timestamp) VALUES ('%s', 'g', 'dns_query', 'dns:x', 1, now64())", f))
+		}
+		execOnShard(t, addr, "TRUNCATE TABLE logs.provenance_summary")
+		execOnShard(t, addr, "ALTER TABLE logs.proc_lineage ADD PROJECTION by_parent (SELECT fractal_id, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_guid))")
+		execOnShard(t, addr, "ALTER TABLE logs.proc_lineage ADD PROJECTION by_image (SELECT _part_offset ORDER BY (fractal_id, image_lc))")
+		execOnShard(t, addr, "ALTER TABLE logs.process_edges ADD PROJECTION by_target (SELECT _part_offset ORDER BY (fractal_id, event_type, fkey_tgt))")
+		execOnShard(t, addr, "ALTER TABLE logs.proc_freq ADD PROJECTION by_target (SELECT _part_offset ORDER BY (fractal_id, event_type, target_norm))")
+	}
+
+	marked := 0
+	if err := c.BackfillProvenancePaths(ctx, false, func(context.Context) error { marked++; return nil }); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if marked != 1 {
+		t.Errorf("marked %d times", marked)
+	}
+	for _, addr := range chTestHosts {
+		conn, err := openClickHouseConn(ConnOptions{Addrs: []string{addr}, Database: "logs", User: "default", Password: "bifract", Pool: chTestPool()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lacking uint64
+		if err := conn.QueryRow(ctx, "SELECT countIf(NOT hasAll(projections, if(table = 'proc_lineage', ['by_parent', 'by_image'], ['by_target']))) FROM system.parts "+
+			"WHERE database = 'logs' AND active AND table IN ('proc_lineage', 'process_edges', 'proc_freq')").Scan(&lacking); err != nil {
+			t.Fatal(err)
+		}
+		conn.Close()
+		if lacking != 0 {
+			t.Errorf("%s: %d parts still lack a projection", addr, lacking)
+		}
+	}
+
+	for _, f := range []string{"f1", "f2"} {
+		opts := parser.QueryOptions{FractalID: f, ProcLineageTable: c.ProcLineageReadTable(), ProcFreqTable: c.ProcFreqReadTable(), ProvenanceSummaryTable: c.ProvenanceSummaryReadTable()}
+		row := func(sql string) map[string]interface{} {
+			got, err := c.QueryProvenance(ctx, sql)
+			if err != nil || len(got) != 1 {
+				t.Fatalf("%s: %v %v", sql, got, err)
+			}
+			return got[0]
+		}
+		sum, recon := row(parser.BuildProvenanceSummarySQL(opts)), row(parser.BuildReconnectionTotalsSQL(opts))
+		first := row("SELECT toString(min(if(first_day = toDate(0), day, first_day))) AS d FROM " + c.ProcFreqReadTable() + " WHERE fractal_id = '" + f + "'")["d"]
+		if sum["total_hosts"] != row(parser.BuildProvenanceTotalHostsSQL(opts))["total_hosts"] || sum["recon_hosts"] != recon["total_hosts"] ||
+			sum["recon_images"] != recon["total_images"] || sum["first_day"] != first || sum["total_hosts"] != uint64(6) {
+			t.Errorf("%s: summary %v, scans %v first %v", f, sum, recon, first)
+		}
+	}
+
+	// Done is done: a second run issues nothing.
+	if err := c.BackfillProvenancePaths(ctx, true, nil); err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+}
+
+// A clear recorded after a fractal's read began makes the fill drop and refill that
+// fractal; one recorded before it does not.
+func TestProvenanceFillSeesClears(t *testing.T) {
+	dropEverything(t)
+	initialize(t)
+	ctx := context.Background()
+	conn, err := openClickHouseConn(ConnOptions{Addrs: []string{chTestHosts[0]}, Database: "logs", User: "default", Password: "bifract", Pool: chTestPool()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	execOnShard(t, chTestHosts[0], "INSERT INTO logs.proc_lineage (fractal_id, timestamp, ingest_timestamp, log_id, process_guid, computer_name) VALUES ('f1', now64(), now64(), 'l', 'g', 'WS1')")
+	execOnShard(t, chTestHosts[0], "CREATE TABLE logs."+provenanceFillCleared+" (fractal_id String, at DateTime64(3)) ENGINE = MergeTree ORDER BY fractal_id")
+	selects := make([]string, len(provenanceSummaryViews))
+	for i, v := range provenanceSummaryViews {
+		if selects[i], err = initViewSelect(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := markProvenanceFillClear(ctx, conn, []string{"f1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fillFractalSummary(ctx, conn, "f1", selects); err != nil {
+		t.Errorf("a clear before the read forced a refill: %v", err)
+	}
+	execOnShard(t, chTestHosts[0], "INSERT INTO logs."+provenanceFillCleared+" SELECT '*', now64(3) + INTERVAL 1 HOUR")
+	if err := fillFractalSummary(ctx, conn, "f1", selects); err == nil || !strings.Contains(err.Error(), "cleared during every attempt") {
+		t.Errorf("a clear after the read began must refill: %v", err)
+	}
+}

@@ -1,9 +1,9 @@
 -- pgr()/ptg() access paths: every lookup keyed by what the query already holds (a parent guid,
 -- an image, an artifact, a target), so its cost follows the tree instead of the fractal.
 --
--- Metadata-only. Existing parts keep working through the old read path and gain the
--- projections and materialized columns as they merge; the background backfill
--- (storage.BackfillProvenancePaths) completes them without a startup data pass.
+-- Metadata-only. Existing parts compute the new columns on read and work without the
+-- projections; the background backfill (storage.BackfillProvenancePaths) builds their
+-- projections and the summary without a startup data pass.
 -- Projections on Replacing/Aggregating engines need deduplicate_merge_projection_mode set.
 
 -- Tables created by migration 007 and not yet rebuilt by the repartition conversion lack

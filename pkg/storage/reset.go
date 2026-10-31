@@ -115,6 +115,7 @@ func ResetLogDataStatements(extraViews, extraTables []string) []string {
 		names = append(names, t, t+"_distributed")
 	}
 	names = append(names, repartitionWorkingTables()...)
+	names = append(names, provenanceFillDone, provenanceFillCleared)
 	names = append(names, fieldPathsStage)
 	names = append(names, resetBookkeepingTables...)
 	for _, name := range names {

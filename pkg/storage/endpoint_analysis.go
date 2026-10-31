@@ -200,7 +200,8 @@ func (c *ClickHouseClient) ClearAllLogData(ctx context.Context, modelIDs []strin
 }
 
 // truncateOnEveryShard empties tables on every node. TRUNCATE removes whole parts
-// without rewriting data or running a mutation, so it is instant at any size.
+// without rewriting data or running a mutation, so it is instant at any size. A
+// provenance summary fill in progress is told every fractal was cleared.
 func (c *ClickHouseClient) truncateOnEveryShard(ctx context.Context, tables []string, what string) error {
 	for _, t := range tables {
 		// max_table_size_to_drop (50GB by default) otherwise refuses large tables with code 359.
@@ -209,7 +210,9 @@ func (c *ClickHouseClient) truncateOnEveryShard(ctx context.Context, tables []st
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
 	}
-	return nil
+	return c.onEveryShard(ctx, what, func(conn driver.Conn) error {
+		return markProvenanceFillClear(ctx, conn, []string{provenanceFillAll})
+	})
 }
 
 // withConversionTables adds the copy-holding working tables of any table mid-conversion

@@ -1598,7 +1598,7 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 				return err
 			}
 		}
-		return nil
+		return markProvenanceFillClear(ctx, conn, ids)
 	})
 	if err != nil {
 		return fmt.Errorf("delete logs for fractal %s: %w", fractalID, err)
