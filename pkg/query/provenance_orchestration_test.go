@@ -767,6 +767,10 @@ func TestProvenanceScoreSQLReconnection(t *testing.T) {
 			t.Errorf("missing bridge %s in:\n%.600s", want, got)
 		}
 	}
+	// The peer has no host to compare, so the bridge is context, and the role rides the row.
+	if !strings.Contains(got, "'evil.exe', 1, '', '', 'context')") {
+		t.Errorf("bridge rows must carry their reconnection role:\n%.900s", got)
+	}
 	if !strings.Contains(got, "'root', 'a', '', 'spawn', 0.5, 0.5, 'transition', '', 0, 0, 0, 0, 2, 4, 'l', 't', 'f', '', '', 'h', 'p.exe', 2, '") {
 		t.Errorf("the collapsed node's spawn row must carry its size:\n%.600s", got)
 	}

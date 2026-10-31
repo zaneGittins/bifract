@@ -75,6 +75,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax) -- fails toward under-reconnecting,
 	// never toward a wrong match.
 	var bridges []map[string]interface{}
+	var peers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
 		var reconTotalHosts, reconTotalImages int64
 		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
@@ -99,7 +100,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 				}
 				log.Printf("[pgr] reconnection lookup failed: %v", qErr)
 			} else {
-				peers := rankAndCapReconnectPeers(parseReconnectPeers(reconRows), p.MaxPeers)
+				peers = rankAndCapReconnectPeers(parseReconnectPeers(reconRows), p.MaxPeers)
 				h.expandReconnectionPeers(ctx, tree, peers, opts)
 				// The lookup names whichever member touched the artifact; the graph draws its node.
 				for i := range peers {
@@ -178,6 +179,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		h.recordProvenanceScores(rows)
 	}
 	annotateProvenanceGroups(rows, tree)
+	classifyReconnections(rows, peers)
 
 	var warnings []string
 	if tree.truncated {

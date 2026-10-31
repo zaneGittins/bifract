@@ -176,11 +176,12 @@ var ProvenanceOrderBy = []string{"(event_type = 'spawn') DESC", "anomaly_score D
 // group_size is how many identical sibling processes a spawn row's child node stands for (1 for
 // a single process); group_first / group_last span their creation times when it is more than one.
 // The scoring SQL emits the single-process defaults; the query layer fills in collapsed nodes.
+// recon_role is set on reconnection bridges: lead, shared or context (see the query layer).
 var ProvenanceColumns = []string{
 	"parent", "child", "label", "event_type", "anomaly_score", "edge_score", "score_basis", "first_seen",
 	"edge_host_days", "source_host_days", "source_exec_host_days", "target_host_days", "target_hosts", "total_hosts",
 	"log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label",
-	"group_size", "group_first", "group_last",
+	"group_size", "group_first", "group_last", "recon_role",
 }
 
 // ProvenanceNumericColumns is the subset of ProvenanceColumns that is Float64, so downstream
@@ -751,7 +752,7 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 		"1 - stability * if(source_host_days > 0, least(1, edge_host_days / source_host_days), 0), 1 / (1 + target_host_days)), 4) AS anomaly_score, " +
 		"anomaly_score AS edge_score, " +
 		"if(fe_first = toDate(0), '', toString(fe_first)) AS first_seen, " +
-		"toFloat64(1) AS group_size, '' AS group_first, '' AS group_last " +
+		"toFloat64(1) AS group_size, '' AS group_first, '' AS group_last, '' AS recon_role " +
 		"FROM (" + joined + ") AS joined"
 
 	// Leaf gating differs by mode. Non-diffuse: filter leaves by the user threshold in SQL and
@@ -1036,7 +1037,7 @@ func ReconnectionEdgeRows(peers []ReconnectPeer) []map[string]interface{} {
 			"parent": parent, "child": child, "label": label, "event_type": eventType,
 			"anomaly_score": anomaly, "edge_score": anomaly, "score_basis": "reconnect", "first_seen": "",
 			"log_id": logID, "timestamp": ts, "fractal_id": fractal, "command_line": "", "proc_user": "",
-			"host": host, "parent_label": parentLabel, "group_size": float64(1), "group_first": "", "group_last": "",
+			"host": host, "parent_label": parentLabel, "group_size": float64(1), "group_first": "", "group_last": "", "recon_role": "",
 		} {
 			r[k] = v
 		}

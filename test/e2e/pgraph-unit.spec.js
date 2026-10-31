@@ -283,3 +283,53 @@ test.describe('rare stepper', () => {
     expect(PgView.stepTo([], null, 1)).toBe(null);
   });
 });
+
+test.describe('lateral leads', () => {
+  const typeOf = (id) => (/^(net|dns|file):/.exec(id) || [null, 'process'])[1];
+  const home = new Set(['qc', 'w']);
+  const row = (parent, child, extra) => Object.assign({ parent, child, recon_role: 'lead', anomaly_score: '0.94', host: '', parent_label: '', label: '', timestamp: '' }, extra);
+
+  test('a lead is its seed-side process, the shared artifact and the hosts on the other end', () => {
+    const leads = PgView.reconLeads([
+      row('qc', 'net:203.0.113.87', { label: '203.0.113.87', anomaly_score: '0.95' }),
+      row('p4', 'net:203.0.113.87', { host: 'WS04', parent_label: 'qcsvc.exe', label: '203.0.113.87', timestamp: '2026-10-31 10:50:00.000' }),
+      row('p3', 'net:203.0.113.87', { host: 'WS03', parent_label: 'qcsvc.exe', label: '203.0.113.87' }),
+      row('w', 'x9', { host: 'WS05', label: 'C:\\t\\a.exe', anomaly_score: '1' }), // dropped & ran
+    ], g => home.has(g), typeOf);
+    expect(leads.map(l => l.key)).toEqual(['file:C:\\t\\a.exe', 'net:203.0.113.87']); // strongest first
+    const c2 = leads[1];
+    expect(c2.src).toBe('qc');
+    expect(c2.type).toBe('net');
+    expect(c2.anomaly).toBe(0.95);
+    expect(c2.peers.map(p => `${p.host} ${p.image}`)).toEqual(['WS03 qcsvc.exe', 'WS04 qcsvc.exe']);
+    expect(leads[0].src).toBe('w');
+    expect(leads[0].peers.map(p => p.guid)).toEqual(['x9']);
+  });
+
+  test('a bridge without its seed side or its peers is not drawn', () => {
+    expect(PgView.reconLeads([row('p3', 'net:1.2.3.4', { host: 'WS03' })], g => home.has(g), typeOf)).toEqual([]);
+    expect(PgView.reconLeads([row('qc', 'net:1.2.3.4')], g => home.has(g), typeOf)).toEqual([]);
+  });
+
+  test('lane: artifact on its process row, hosts beside it, capped with +N, blocks never overlap', () => {
+    const peers = (n) => Array.from({ length: n }, (_, i) => ({ guid: 'p' + i, host: 'WS' + i }));
+    const leads = [
+      { key: 'a', src: 's1', label: 'x', peers: peers(7) },
+      { key: 'b', src: 's2', label: 'y', peers: peers(2) },
+    ];
+    const at = { s1: { x: 100, y: 200 }, s2: { x: 160, y: 240 } };
+    const lay = PgView.leadLayout(leads, s => at[s], 600, () => 200);
+    const by = (id) => lay.nodes.find(n => n.id === id);
+    expect(by('pglead:a')).toMatchObject({ kind: 'art', x: 600, y: 200 });
+    const cardsA = lay.nodes.filter(n => n.lead === leads[0] && (n.kind === 'peer' || n.kind === 'more'));
+    expect(cardsA.map(n => n.kind)).toEqual(['peer', 'peer', 'peer', 'peer', 'peer', 'more']);
+    expect(by('pgleadmore:a').more).toBe(2);
+    expect(cardsA.every(n => n.x === 600 + 200 + PgView.LEAD_GAP)).toBe(true);
+    const bottomA = Math.max(...cardsA.map(n => n.y));
+    const cardsB = lay.nodes.filter(n => n.lead === leads[1] && n.kind === 'peer');
+    expect(Math.min(...cardsB.map(n => n.y))).toBeGreaterThan(bottomA);
+    expect(by('pglead:b').y).toBe(240); // the artifact stays on its process's row
+    expect(lay.bottom).toBeGreaterThanOrEqual(Math.max(...cardsB.map(n => n.y)));
+    expect(lay.right).toBeGreaterThan(600 + 200 + PgView.LEAD_GAP);
+  });
+});

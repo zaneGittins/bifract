@@ -3612,7 +3612,7 @@ const QueryExecutor = {
     // search matches) and all their ancestors.
     _pgPathKeepSet() {
         const m = this._pgModel;
-        const extra = [this._pgFocus, ...this._pgNovelRoots(), ...this._pgPathReveal];
+        const extra = [this._pgFocus, ...this._pgNovelRoots(), ...this._pgPathReveal, ...(m.reconLeads || []).map(L => L.src)];
         const term = (this._pgSearch || '').toLowerCase();
         if (term) m.procSet.forEach(g => { if (String(m.labelOf(g)).toLowerCase().includes(term)) extra.push(g); });
         return PgView.pathKeep(PgView.pathAnchors(m, a => this._pgIsAnomalous(a), extra), m.parentOf);
@@ -3658,7 +3658,8 @@ const QueryExecutor = {
     // Roots after the view filters, plus the process count of roots folded away in Path mode.
     _pgViewRoots() {
         const m = this._pgModel, P = this._pgPeers;
-        const all = (m.roots.length ? m.roots : Array.from(m.procSet)).filter(r => !P || !P.peerRoots.has(r)).map(id => ({ kind: 'proc', id }));
+        const lr = this._pgLeadRoots;
+        const all = (m.roots.length ? m.roots : Array.from(m.procSet)).filter(r => (!P || !P.peerRoots.has(r)) && !(lr && lr.has(r))).map(id => ({ kind: 'proc', id }));
         return this._pgViewEntries('#roots', all);
     },
     // Expand a "+N hidden" marker: show that branch (or every hidden root) in full.
@@ -3707,10 +3708,17 @@ const QueryExecutor = {
         this._pgPeers = null;
         this._pgPeerOpen = new Set();
         this._pgGroupMore = new Set();
+        this._pgLeadRoots = new Set();
         if (!m || !m.homeRoot) return;
         const treeProcs = new Map();
         m.procSet.forEach(g => { const r = m.rootOf.get(g) || g; if (!treeProcs.has(r)) treeProcs.set(r, []); treeProcs.get(r).push(g); });
-        const peers = Array.from(treeProcs.keys()).filter(r => r !== m.homeRoot);
+        // Hosts reached by a lateral lead are drawn in its lane, not the Reconnected section.
+        const leadRoots = this._pgLeadRoots;
+        (m.reconLeads || []).forEach(L => L.peers.forEach(p => leadRoots.add(m.rootOf.get(p.guid) || p.guid)));
+        const peers = Array.from(treeProcs.keys()).filter(r => r !== m.homeRoot && !leadRoots.has(r));
+        // The rest is context: folded into one summary when there are leads to look at first, or
+        // too many links to take in at once.
+        this._pgLinkedOpen = !(m.reconLeads || []).length && peers.length <= 3;
         if (!peers.length) return;
         // Peak anomaly of a peer tree's own content; bridge-only leaf rows are the link, not content.
         const score = (r) => {
@@ -4017,6 +4025,8 @@ const QueryExecutor = {
         const procTime = new Map();      // guid -> epoch ms (process creation / first-seen time)
         const procHost = new Map();      // guid -> computer_name (for cross-host reconnection notation)
         const procGroup = new Map();     // guid -> {n, first, last}: identical siblings pgr() drew as this one node
+        const leadRows = [];             // bridge rows pgr() classed as lateral leads (recon_role)
+        let reconShared = false;         // some bridge read as shared software
         const isChild = new Set();       // process guids seen as a spawn child
         const hasCreation = new Set();   // process guids with their OWN process_creation row (spawn child side)
         const procSet = new Set();
@@ -4030,6 +4040,8 @@ const QueryExecutor = {
             if (!r.child) return; // a spawn row for a TRUE root has an empty parent; keep it (see below)
             const et = r.event_type || '';
             const anomaly = parseFloat(r.anomaly_score);
+            if (r.recon_role === 'lead') leadRows.push(r);
+            else if (r.recon_role === 'shared') reconShared = true;
             // Earliest day this (source, relationship, target) was ever seen. Empty when the
             // relationship has no baseline row at all, which is itself the strongest novelty signal.
             if (r.first_seen && !firstSeenByNode.has(r.child)) firstSeenByNode.set(r.child, r.first_seen);
@@ -4121,6 +4133,7 @@ const QueryExecutor = {
         const homeRoot = (this._pgFocus && procSet.has(this._pgFocus)) ? (rootOf.get(this._pgFocus) || this._pgFocus) : null;
         const externalProcs = new Set();
         if (homeRoot) procSet.forEach(g => { if ((rootOf.get(g) || g) !== homeRoot) externalProcs.add(g); });
+        const reconLeads = homeRoot ? PgView.reconLeads(leadRows, g => (rootOf.get(g) || g) === homeRoot, id => this._pgTypeOf(id)) : [];
 
         // Shared object nodes: a leaf touched by processes in >= 2 DIFFERENT trees is a
         // reconnection bridge (that is the whole point -- linking trees). A leaf shared by two
@@ -4239,7 +4252,7 @@ const QueryExecutor = {
         const labelDerived = (g) => !procLabel.get(g) && !!procLabelHint.get(g);
 
         return { procLabel, procLabelHint, labelOf, labelDerived, spawnKids, interactions, leafGroups, leafOwners, leafMeta, sharedLeaves, linkedLeaves, linkInfo, linkStats, crossBridges,
-            logInfoById, anomalyByNode, firstSeenByNode, whyByNode, procMeta, procTime, procHost, procGroup, procSet, roots, parentOf, rootOf, homeRoot, externalProcs, ghostProcs };
+            logInfoById, anomalyByNode, firstSeenByNode, whyByNode, procMeta, procTime, procHost, procGroup, procSet, roots, parentOf, rootOf, homeRoot, externalProcs, ghostProcs, reconLeads, reconShared };
     },
 
     // The explanation columns pgr() emits with every scored edge, or null for rows without them
@@ -4363,6 +4376,7 @@ const QueryExecutor = {
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-focus"></span>Start (queried)</div>
                     ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-new"></span>First time this parent spawned this child</div>` : ''}
                     ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ext"></span>Reconnected peer (other tree)</div>` : ''}
+                    ${scored ? `<div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-lead"></span>Lateral: another host reached through an artifact this tree had no business touching</div>` : ''}
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-agg"></span>Similar processes (&times;N)</div>
                     <div class="pg-legend-row"><span class="pg-legend-swatch pg-sw-ghost"></span>Missing creation event</div>
                     <div class="pg-legend-title">Edges</div>
@@ -4424,6 +4438,10 @@ const QueryExecutor = {
         const pairs = ls.capped ? `${ls.pairs} of ${ls.pairTotal}${ls.scanCapped ? '+' : ''}` : String(ls.pairs);
         const reconTitle = (peerN ? `${peerN} reconnected tree${peerN === 1 ? '' : 's'} via ` : '') + `${ls.bridges} bridge${ls.bridges === 1 ? '' : 's'} (shared artifacts), ` +
             `${pairs} linked process pair${ls.pairTotal === 1 ? '' : 's'}${ls.capped ? ', strongest first' : ''}. Click to list them`;
+        const leads = m.reconLeads || [];
+        const leadHosts = new Set();
+        leads.forEach(L => L.peers.forEach(p => leadHosts.add(String(p.host || p.guid).toLowerCase())));
+        const leadVia = leads.length === 1 ? this._pgLeadLabel(leads[0]) : `${leads.length} artifacts`;
         const rareN = this._pgRareOrder().length;
         const ss = this._pgSevScale || {};
         const rareLine = ss.rel ? `the top third of this graph's saturated score range (${(ss.lo + ss.span * 0.66).toFixed(2)}+)` : `${((this._pgCutoffs && this._pgCutoffs.high) || 0.9).toFixed(2)}+`;
@@ -4452,9 +4470,12 @@ const QueryExecutor = {
                 `<span class="graph-stat-count">${reps.toLocaleString()}</span> repeats folded</span>` : '') +
             (hb ? sep + `<span class="graph-stat-item pg-stat-hidden pg-stat-click" role="button" tabindex="0" title="Branches you hid from this view. Click to show them again">${hb} hidden branch${hb === 1 ? '' : 'es'} · show</span>` : '') +
             (hostN ? sep + `<span class="graph-stat-item"><span class="graph-stat-count">${hostN}</span> host${hostN === 1 ? '' : 's'}</span>` : '') +
+            (leadHosts.size ? sep + `<span class="graph-stat-item pg-stat-lead pg-stat-click" role="button" tabindex="0" title="Hosts reached through an artifact this tree had no business touching. Click to show them">` +
+                `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>` +
+                `${leadHosts.size} host${leadHosts.size === 1 ? '' : 's'} reached via ${Utils.escapeHtml(leadVia)}</span>` : '') +
             // Links inside one tree (no peer trees) still count, as pairs.
-            (peerN || ls.pairs ? sep + `<span class="graph-stat-item pg-stat-recon pg-stat-click" role="button" tabindex="0" title="${reconTitle}">` +
-                (peerN ? `<span class="graph-stat-count">${peerN}</span> reconnected` : `<span class="graph-stat-count">${pairs}</span> linked pair${ls.pairTotal === 1 ? '' : 's'}`) + '</span>' : '') +
+            (peerN || (ls.pairs && !leads.length) ? sep + `<span class="graph-stat-item pg-stat-recon pg-stat-click" role="button" tabindex="0" title="${reconTitle}">` +
+                (peerN ? `<span class="graph-stat-count">${peerN}</span> linked${m.reconShared ? ' · shared software' : ''}` : `<span class="graph-stat-count">${pairs}</span> linked pair${ls.pairTotal === 1 ? '' : 's'}`) + '</span>' : '') +
             (rareN ? sep + `<span class="graph-stat-item pg-stat-rare" title="Processes with rare or anomalous activity (${rareLine}). Step through them with the arrows">` +
                 `<button class="pg-rare-step pg-rare-prev" aria-label="Previous rare process">${chev('m15 6-6 6 6 6')}</button>` +
                 `<span class="graph-stat-count">${rareN}</span> rare` +
@@ -4471,7 +4492,8 @@ const QueryExecutor = {
         box.querySelector('.pg-rare-prev')?.addEventListener('click', () => this._pgStepRare(-1));
         box.querySelector('.pg-rare-next')?.addEventListener('click', () => this._pgStepRare(1));
         onAct(box.querySelector('.pg-stat-hidden'), () => { this._pgHiddenBranches.clear(); this._pgKeepView = true; this._pgRender(); });
-        // "N reconnected" opens the graph-wide overview drawer (_pgOpenReconOverview).
+        onAct(box.querySelector('.pg-stat-lead'), () => { this._pgSetView('graph'); if (leads[0]) this._pgCenterOn('pglead:' + leads[0].key, 0.9); });
+        // "N linked" opens the graph-wide overview drawer (_pgOpenReconOverview).
         onAct(box.querySelector('.pg-stat-recon'), () => { this._pgSetView('graph'); this._pgOpenReconOverview(); });
     },
 
@@ -4668,8 +4690,11 @@ const QueryExecutor = {
         const rootList = withMarker('#roots', this._pgViewRoots());
         // Reconnected section: section -> bridge groups -> peer summaries -> (expanded) peer tree.
         const pv = this._pgPeerView();
-        const peerNodes = new Map(); // virtual id -> { kind: 'sec'|'group'|'peer'|'more', ... }
-        if (pv && (pv.groups.length || pv.hiddenPeers)) {
+        const peerNodes = new Map(); // virtual id -> { kind: 'sec'|'summary'|'group'|'peer'|'more', ... }
+        if (pv && (pv.groups.length || pv.hiddenPeers) && !this._pgLinkedOpen) {
+            peerNodes.set('pgsec:recon', { kind: 'summary', pv });
+            rootList.push('pgsec:recon');
+        } else if (pv && (pv.groups.length || pv.hiddenPeers)) {
             const sec = 'pgsec:recon';
             peerNodes.set(sec, { kind: 'sec', pv });
             const secKids = [];
@@ -4713,8 +4738,26 @@ const QueryExecutor = {
         pos.forEach(p => { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; });
         const PAD_L = 46, PAD_T = 40, PAD_R = 300, PAD_B = 56; // room for hex + right-hand labels
         pos.forEach(p => { p.x = p.x - minX + PAD_L; p.y = p.y - minY + PAD_T; });
+        // Lateral leads: each drawn beside the process that touched the shared artifact, past
+        // every label (a node is at most 236px wide), with the hosts it reached in a column.
+        const leadNodes = new Map();
+        let laneRight = 0;
+        const leads = (m.reconLeads || []).filter(L => pos.has(L.src));
+        if (leads.length) {
+            let secTop = Infinity;
+            peerNodes.forEach((_, id) => { const p = pos.get(id); if (p) secTop = Math.min(secTop, p.y); });
+            let edgeX = -Infinity;
+            pos.forEach(p => { if (p.y < secTop) edgeX = Math.max(edgeX, p.x); });
+            const lay = PgView.leadLayout(leads, src => pos.get(src), edgeX + 262, L => this._pgLeadArtWidth(L));
+            const push = lay.bottom + 70 - secTop; // keep the Reconnected section below the lane
+            if (push > 0) pos.forEach(p => { if (p.y >= secTop) p.y += push; });
+            lay.nodes.forEach(n => { leadNodes.set(n.id, n); pos.set(n.id, { x: n.x + 18, y: n.y }); });
+            laneRight = lay.right;
+        }
+        let bottomY = 0;
+        pos.forEach(p => { bottomY = Math.max(bottomY, p.y); });
         // Bridge group headers are wide (artifact + chips); keep them inside the canvas bounds.
-        const W = Math.max((maxX - minX) + PAD_L + PAD_R, peerNodes.size ? PAD_L + 112 + 640 : 0), H = (maxY - minY) + PAD_T + PAD_B;
+        const W = Math.max((maxX - minX) + PAD_L + PAD_R, peerNodes.size ? PAD_L + 112 + 640 : 0, laneRight + 40), H = bottomY + PAD_B;
         this._pgBounds = { w: W, h: H };
         this._pgPositions = pos;
 
@@ -4780,6 +4823,18 @@ const QueryExecutor = {
             const sp = pos.get(lp.a), tp = pos.get(lp.b);
             edgeSegs.push({ x1: sp.x, y1: sp.y, x2: tp.x, y2: tp.y, a: NaN, sev: 'none', w: 1.6, dash: 1, recon: true, toObj: true, reconA: lp.a, reconB: lp.b });
         });
+        // Lateral leads: the process's own edge along its row to the shared artifact (it starts past
+        // the label, so it crosses nothing), then a dashed link to each host reached through it.
+        leadNodes.forEach(n => {
+            if (n.kind !== 'art') return;
+            const sp = pos.get(n.lead.src);
+            const nameW = Math.min(236, 45 + this._pgShort(m.labelOf(n.lead.src)).length * 7.2);
+            edgeSegs.push({ x1: sp.x - 18 + nameW + 6, y1: sp.y, x2: n.x - 6, y2: sp.y, a: NaN, sev: 'high', w: 2.4, noStartPullback: true, noEndPullback: true });
+            const ax = n.x + this._pgLeadArtWidth(n.lead) + 4;
+            leadNodes.forEach(k => {
+                if (k.lead === n.lead && (k.kind === 'peer' || k.kind === 'more')) edgeSegs.push({ x1: ax, y1: n.y, x2: k.x - 4, y2: k.y, a: NaN, sev: 'none', w: 1.8, curve: true, leadLink: true, noStartPullback: true, noEndPullback: true });
+            });
+        });
         // Straight segments: a linear chain is colinear (row == depth), so consecutive edges
         // align into one clean diagonal spine, exactly like the CrowdStrike/Elastic rail.
         // Endpoints are pulled back to the hex edge so the arrowhead sits just off the node.
@@ -4793,6 +4848,10 @@ const QueryExecutor = {
             const y1 = e.noStartPullback ? e.y1 : e.y1 + uy * 19;
             const x2 = e.noEndPullback ? e.x2 : e.x2 - ux * 21;
             const y2 = e.noEndPullback ? e.y2 : e.y2 - uy * 21;
+            if (e.curve) { // an S-curve from a lateral artifact to one of its hosts
+                const h = (x2 - x1) / 2;
+                return `M${x1.toFixed(1)},${y1.toFixed(1)} C${(x1 + h).toFixed(1)},${y1.toFixed(1)} ${(x2 - h).toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+            }
             if (e.recon) {
                 // Gently bow reconnection bridges so they read as distinct links without the
                 // heavy sweep that tangles a long cross-canvas curve.
@@ -4804,11 +4863,11 @@ const QueryExecutor = {
         const marker = (sev) => `<marker id="pgar-${sev}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="pg-arrow pg-e-${sev}"/></marker>`;
         let svg = `<svg class="pg-edge-layer" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs>${['high', 'med', 'low', 'none'].map(marker).join('')}</defs>`;
         edgeSegs.forEach(e => {
-            const cls = `pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}${e.recon ? ' pg-e-recon' : ''}${e.peer ? ' pg-e-peer' : ''}${e.trunk ? ' pg-e-trunk' : ''}`;
+            const cls = `pg-e pg-e-${e.sev}${e.dash ? ' pg-e-dash' : ''}${e.recon ? ' pg-e-recon' : ''}${e.peer ? ' pg-e-peer' : ''}${e.trunk ? ' pg-e-trunk' : ''}${e.leadLink ? ' pg-e-lead' : ''}`;
             // Trunk points at nothing in particular (it's the parent's own column extended down,
             // not one specific edge), so it gets no arrowhead -- only the elbow stub into each
             // child does.
-            const mk = (e.trunk || e.peer || (e.recon && e.toObj)) ? '' : ` marker-end="url(#pgar-${e.sev})"`;
+            const mk = (e.trunk || e.peer || e.leadLink || (e.recon && e.toObj)) ? '' : ` marker-end="url(#pgar-${e.sev})"`;
             // Reconnection bridges stay invisible until the analyst is actually on one of the two
             // endpoints (see _pgSetReconHover) -- a persistent purple line across the whole canvas
             // for every cross-tree link was the #1 clutter complaint, and the relationship is
@@ -4843,6 +4902,8 @@ const QueryExecutor = {
                     `<span class="pg-hidden-pill">+${hm.count} hidden${hm.peers ? ' peer' + (hm.count === 1 ? '' : 's') : ''}</span></div>`;
                 return;
             }
+            const ln = leadNodes.get(id);
+            if (ln) { nodesHtml += this._pgLeadNodeHtml(ln, at(p), ICON); return; }
             const pn = peerNodes.get(id);
             if (pn) { nodesHtml += this._pgPeerNodeHtml(pn, at(p), ICON); return; }
             // Aggregate (fan-out) node: a folded group of similar siblings. Its own +/- reveals or
@@ -4954,6 +5015,9 @@ const QueryExecutor = {
         const rare = this._pgRareOrder();
         const story = rare.length ? rare : (f != null ? Array.from(this._pgSubtreeSet([f])) : []);
         const ids = [m.parentOf.get(up), up, f, ...story].filter(id => id != null && pos.has(id) && home(id));
+        // Lateral leads are the story too: frame their process and lane with the chain.
+        (m.reconLeads || []).forEach(L => { if (pos.has(L.src)) ids.push(L.src); });
+        pos.forEach((_, id) => { if (id.startsWith('pglead')) ids.push(id); });
         if (!ids.length) { this._pgFit(false); return; }
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         ids.forEach(id => { const p = pos.get(id); x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); });
@@ -5073,7 +5137,12 @@ const QueryExecutor = {
             const chip = e.target.closest('.pg-mb-click');
             if (chip) { this._pgOpenDrawer(chip.dataset.chip, chip.dataset.ctype); return; }
             if (moved) return;
+            const lk = e.target.closest('[data-linked]');
+            if (lk) { this._pgLinkedOpen = lk.dataset.linked === 'open'; this._pgKeepView = true; this._pgRender(); return; }
             const node = e.target.closest('.pg-node'); if (!node) return;
+            if (node.dataset.leadpeer) { this._pgOpenNodeDrawer(node.dataset.leadpeer); return; }
+            if (node.dataset.leadsrc) { this._pgOpenDrawer(node.dataset.leadsrc, node.dataset.leadtype === 'file' ? 'link' : node.dataset.leadtype); return; }
+            if (node.dataset.leadmore) { this._pgOpenReconOverview(); return; }
             // An aggregate node expands/collapses its members, a "+N hidden" marker shows its
             // branch, and a process node opens the in-graph detail drawer.
             if (node.dataset.hid) { this._pgOpenHidden(node.dataset.hid); return; }
@@ -5129,14 +5198,76 @@ const QueryExecutor = {
         });
     },
 
+    // ---- Lateral leads (see PgView.reconLeads) ----
+    _pgLeadLabel(L) { return L.type === 'file' ? String(L.label).split(/[\\/]/).pop() : String(L.label); },
+    // The shared artifact's fleet footprint, from the seed's own scored edge to it.
+    _pgLeadChips(L) {
+        const grp = this._pgModel.leafGroups.get(L.src);
+        const e = grp && (grp[L.type] || []).find(x => x.id === L.key && x.why && x.why.basis !== 'reconnect');
+        if (!e) return [];
+        return PgView.whyChips(e.why, { now: Date.now(), windowStartMs: this._pgWindowStartMs, targetQuery: PgView.targetQuery(L.type, L.label) }).filter(c => c.label === 'Target on');
+    },
+    // Fixed so the lane's edges meet the node; a long artifact ellipsizes inside it.
+    _pgLeadArtWidth(L) { return Math.round(Math.min(420, 44 + this._pgLeadLabel(L).length * 7.3 + (this._pgLeadChips(L).length ? 146 : 0))); },
+    // Distinct hosts across the Reconnected section's peers.
+    _pgLinkedHosts() {
+        const P = this._pgPeers, m = this._pgModel;
+        if (!P) return 0;
+        const hosts = new Set();
+        P.groups.forEach(g => g.peers.forEach(p => hosts.add(String((m.procHost && (m.procHost.get(p.via) || m.procHost.get(p.root))) || p.root).toLowerCase())));
+        return hosts.size;
+    },
+    // The section folds by default when there are leads to look at first or too many links (see
+    // _pgBuildPeers); only then does the open section offer to fold back.
+    _pgFoldable() { const P = this._pgPeers; return !!P && ((this._pgModel.reconLeads || []).length > 0 || P.peerRoots.size > 3); },
+    _pgLeadHosts(L) { return new Set(L.peers.map(p => String(p.host).toLowerCase()).filter(Boolean)).size || L.peers.length; },
+    _pgLeadNodeHtml(n, style, ICON) {
+        const esc = Utils.escapeHtml, m = this._pgModel, L = n.lead;
+        if (n.kind === 'head') {
+            const h = this._pgLeadHosts(L);
+            return `<div class="pg-lead-head" style="${style}">Lateral · ${h} host${h === 1 ? '' : 's'}</div>`;
+        }
+        if (n.kind === 'more') {
+            return `<div class="pg-node pg-node-hidden" data-leadmore="1" style="${style}" role="button" tabindex="0" title="Every host linked through ${esc(L.label)}">` +
+                `<span class="pg-hidden-pill">+${n.more} more host${n.more === 1 ? '' : 's'}</span></div>`;
+        }
+        if (n.kind === 'art') {
+            const ico = L.type === 'file' ? ICON.file : this._pgIocIcon(L.type);
+            const noun = L.type === 'file' ? 'dropped here and run on another host' : 'shared with another host';
+            return `<div class="pg-node pg-node-bridge pg-lead-art" data-leadsrc="${esc(L.src)}" data-leadtype="${esc(L.type)}" style="${style};width:${this._pgLeadArtWidth(L)}px" role="button" tabindex="0" ` +
+                `title="${esc(String(L.label))}\n${noun}${isNaN(L.anomaly) ? '' : '\nbridge score ' + L.anomaly.toFixed(2)}">` +
+                `<span class="pg-bridge-ico pg-ico-${esc(L.type)}">${ico}</span><span class="pg-bridge-label">${esc(this._pgLeadLabel(L))}</span>` +
+                FactChips.render(this._pgLeadChips(L), { compact: true }) + '</div>';
+        }
+        const p = n.peer;
+        const seedT = m.procTime.get(this._pgFocus), t = this._pgParseTime(p.ts);
+        const delta = seedT != null && t != null ? PgView.fmtDelta(t - seedT) : '';
+        const image = this._pgShort(p.image || m.labelOf(p.guid));
+        const pill = isNaN(p.anomaly) ? '' : `<span class="pg-anom pg-anom-${this._pgSev(p.anomaly)}">${p.anomaly.toFixed(2)}</span>`;
+        return `<div class="pg-node pg-node-peer pg-lead-peer" data-leadpeer="${esc(p.guid)}" style="${style}" role="button" tabindex="0" ` +
+            `title="${esc(String(p.image || m.labelOf(p.guid)))}${p.host ? ' on ' + esc(p.host) : ''}${delta ? '\n' + delta + ' after the seed process started' : ''}\nClick to inspect">` +
+            (p.host ? `<span class="pg-peer-host">${esc(PgView.shortHost(p.host))}</span><span class="pg-peer-sep">·</span>` : '') +
+            `<span class="pg-peer-proc">${esc(image)}</span>${pill}${delta ? `<span class="pg-lead-delta">${esc(delta)}</span>` : ''}</div>`;
+    },
+
     // Graph nodes of the Reconnected section (see _pgBuildPeers): section header, bridge group
-    // header, peer summary (host · process · score; click expands), and "+N more".
+    // header, peer summary (host · process · score; click expands), and "+N more". Folded, the
+    // section is one summary node.
     _pgPeerNodeHtml(n, style, ICON) {
         const esc = Utils.escapeHtml, m = this._pgModel;
+        if (n.kind === 'summary') {
+            const hosts = this._pgLinkedHosts();
+            const why = m.reconShared ? 'one process shares many artifacts with them: looks like shared software'
+                : 'none reaches another host through an artifact this tree had no business touching';
+            return `<div class="pg-node pg-node-linked" data-linked="open" style="${style}" role="button" tabindex="0" title="Show every linked tree">` +
+                `<span class="pg-linked-line"><span class="pg-sec-title">Linked</span><span><b>${hosts}</b> host${hosts === 1 ? '' : 's'} via <b>${n.pv.bridges}</b> shared artifact${n.pv.bridges === 1 ? '' : 's'}</span><span class="pg-linked-show">show ›</span></span>` +
+                `<span class="pg-linked-why">${esc(why)}</span></div>`;
+        }
         if (n.kind === 'sec') {
             const pv = n.pv;
             return `<div class="pg-node pg-node-sec" style="${style}"><span class="pg-sec-title">Reconnected</span>` +
-                `<span class="pg-sec-meta">${pv.total} peer tree${pv.total === 1 ? '' : 's'} via ${pv.bridges} bridge${pv.bridges === 1 ? '' : 's'}, strongest first</span></div>`;
+                `<span class="pg-sec-meta">${pv.total} peer tree${pv.total === 1 ? '' : 's'} via ${pv.bridges} bridge${pv.bridges === 1 ? '' : 's'}, strongest first</span>` +
+                (this._pgFoldable() ? `<span class="pg-linked-show" data-linked="fold" role="button" tabindex="0" title="Fold these links back into a summary">fold</span>` : '') + `</div>`;
         }
         if (n.kind === 'more') {
             return `<div class="pg-node pg-node-hidden" data-more="${esc(n.g.key)}" style="${style}" role="button" tabindex="0" title="Show the other ${n.more} peers linked by this bridge">` +
@@ -5894,6 +6025,32 @@ const QueryExecutor = {
         roots.forEach((r, i) => walk(r, [], i === roots.length - 1 && !rootsHidden, null));
         if (rootsHidden) hiddenRow('#roots', rootsHidden, [], true);
 
+        // Lateral section: each lead (PgView.reconLeads) as its artifact, then the hosts it reached.
+        const leads = (m.reconLeads || []).filter(L => !this._pgHiddenBranches.has(L.src));
+        if (leads.length) {
+            const hosts = new Set();
+            leads.forEach(L => L.peers.forEach(p => hosts.add(String(p.host || p.guid).toLowerCase())));
+            rows.push(`<div class="pg-row pg-sec-row pg-lead-sec"><span class="pg-gutter"></span><span class="pg-sec-title">Lateral</span>` +
+                `<span class="pg-sec-meta">${hosts.size} host${hosts.size === 1 ? '' : 's'} reached through an artifact this tree had no business touching</span></div>`);
+            const seedT = m.procTime.get(this._pgFocus);
+            leads.forEach(L => {
+                const ico = L.type === 'file' ? ICON.file : ICON[L.type];
+                rows.push(`<div class="pg-row pg-bridge-row pg-lead-row" title="${esc(String(L.label))}\nfrom ${esc(String(m.labelOf(L.src)))}"><span class="pg-gutter"></span>` +
+                    `<span class="pg-icon pg-icon-${esc(L.type)}">${ico}</span><span class="pg-bridge-label">${hl(this._pgLeadLabel(L))}</span>` +
+                    `<span class="pg-bridge-kind">from ${esc(this._pgShort(m.labelOf(L.src)))}</span>` +
+                    FactChips.render(this._pgLeadChips(L), { compact: true }) +
+                    `<span class="pg-bridge-count">${L.peers.length} host${L.peers.length === 1 ? '' : 's'}</span></div>`);
+                L.peers.forEach((p, j) => {
+                    const t = this._pgParseTime(p.ts);
+                    const delta = seedT != null && t != null ? PgView.fmtDelta(t - seedT) : '';
+                    rows.push(`<div class="pg-row pg-peer-row pg-lead-peer-row" data-leadpeer="${esc(p.guid)}" title="${esc(String(p.image || m.labelOf(p.guid)))}${p.host ? ' on ' + esc(p.host) : ''}. Click to inspect"><span class="pg-gutter"></span>${guidesHtml([false], j === L.peers.length - 1)}` +
+                        (p.host ? `<span class="pg-peer-host" title="${esc(p.host)}">${esc(PgView.shortHost(p.host))}</span><span class="pg-peer-sep">·</span>` : '') +
+                        `<span class="pg-peer-proc">${hl(this._pgShort(p.image || m.labelOf(p.guid)))}</span>` +
+                        `${delta ? `<span class="pg-lead-delta">${esc(delta)}</span>` : ''}${anomalyPill(p.anomaly)}</div>`);
+                });
+            });
+        }
+
         // Reconnected section (see _pgBuildPeers): bridge groups, each peer a one-line summary that
         // expands to its subtree. Search shows every matching peer, expanded.
         const pv = this._pgPeerView();
@@ -5974,6 +6131,7 @@ const QueryExecutor = {
         // Activate a row: a process opens its drawer, a leaf its source log, a marker or fan-out
         // aggregate expands in place.
         const activate = (row) => {
+            if (row.dataset.leadpeer) { this._pgOpenNodeDrawer(row.dataset.leadpeer); return; }
             if (row.dataset.peerroot) { this._pgWantTreeFocus = true; this._pgTogglePeer(row.dataset.peerroot); return; }
             if (row.dataset.more) { this._pgGroupMore.add(row.dataset.more); this._pgWantTreeFocus = true; this._pgRender(); return; }
             if (row.dataset.hid) { this._pgWantTreeFocus = true; this._pgOpenHidden(row.dataset.hid); return; }
