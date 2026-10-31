@@ -27,6 +27,13 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 		{"fields.dst_ip::String", AbstractIP},         // net target
 		{"fields.target_image::String", AbstractPath}, // remote_thread/process_access target
 		{"fields.query::String", AbstractDomain},      // dns target
+		{"image", AbstractPath},                       // proc_lineage.child_image (sibling collapse)
+		{"commandline", AbstractPath},                 // proc_lineage.child_cmd_key
+	}
+	// migration 019 adds the proc_lineage collapse keys pgr's forward hop groups by.
+	delta019 := []use{
+		{"image", AbstractPath},
+		{"commandline", AbstractPath},
 	}
 	// migration 009 introduces/repairs these MVs (image src, file target, p2p target, dns query).
 	delta009 := []use{
@@ -50,6 +57,7 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 		{"../../db/init-clickhouse.sql", all},
 		{"../../db/migrations/clickhouse/009_proc_freq_events.sql", delta009},
 		{"../../db/migrations/clickhouse/011_process_edges.sql", delta011},
+		{"../../db/migrations/clickhouse/019_provenance_access_paths.sql", delta019},
 	}
 	// Compare whitespace-insensitively: ClickHouse ignores SQL whitespace, so the abstracted VALUE
 	// (what must match proc_freq) is identical regardless of spacing between args. The abstraction

@@ -252,30 +252,29 @@ func main() {
 		}()
 	}
 
-	// proc_lineage retention is decoupled from logs and kept long for DFIR (year-old
-	// process trees). BIFRACT_PROC_LINEAGE_TTL_DAYS overrides the 365-day DDL default via
-	// a metadata-only MODIFY TTL. Runs in the background; the table exists after init.
-	if days := getEnvInt("BIFRACT_PROC_LINEAGE_TTL_DAYS", 0); days > 0 {
-		go func() {
-			if err := db.ReconcileProcLineageTTL(context.Background(), days); err != nil {
+	// Retention for the pgr tables, metadata-only MODIFY TTLs applied once migrations finish
+	// (in cluster mode they run in the background). proc_lineage is kept long for DFIR and
+	// proc_freq is the scoring baseline; both default to 730 days in the DDL. The summary
+	// follows whatever the two then have.
+	go func() {
+		ctx := context.Background()
+		// Uncapped: a slow cluster upgrade must still reach the reconciles, or the summary's
+		// TTL would stay out of step with its tables until a restart.
+		db.WaitForSchemaReady(ctx)
+		if days := getEnvInt("BIFRACT_PROC_LINEAGE_TTL_DAYS", 0); days > 0 {
+			if err := db.ReconcileProcLineageTTL(ctx, days); err != nil {
 				log.Printf("Warning: proc_lineage TTL reconcile (%d days) failed: %v", days, err)
-			} else {
-				log.Printf("proc_lineage TTL set to %d days", days)
 			}
-		}()
-	}
-
-	// proc_freq is the aggregated pgr() frequency baseline; a longer window gives more
-	// stable rarity. BIFRACT_PROC_FREQ_TTL_DAYS overrides the 180-day DDL default.
-	if days := getEnvInt("BIFRACT_PROC_FREQ_TTL_DAYS", 0); days > 0 {
-		go func() {
-			if err := db.ReconcileProcFreqTTL(context.Background(), days); err != nil {
+		}
+		if days := getEnvInt("BIFRACT_PROC_FREQ_TTL_DAYS", 0); days > 0 {
+			if err := db.ReconcileProcFreqTTL(ctx, days); err != nil {
 				log.Printf("Warning: proc_freq TTL reconcile (%d days) failed: %v", days, err)
-			} else {
-				log.Printf("proc_freq TTL set to %d days", days)
 			}
-		}()
-	}
+		}
+		if err := db.ReconcileProvenanceSummaryTTL(ctx); err != nil {
+			log.Printf("Warning: provenance_summary TTL reconcile failed: %v", err)
+		}
+	}()
 
 	// Initialize settings from database
 	if err := settings.Init(pg); err != nil {

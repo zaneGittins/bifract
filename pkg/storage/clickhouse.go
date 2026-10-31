@@ -228,6 +228,36 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 	return c.conn.Exec(ctx, stmt)
 }
 
+// provenanceSummaryTable holds the fleet-wide facts pgr reads per call (see migration 019).
+const provenanceSummaryTable = "provenance_summary"
+
+// ReconcileProvenanceSummaryTTL keeps each provenance_summary row as long as the rows it
+// summarizes, reading the retention proc_lineage and proc_freq actually have. A lineage
+// row's last_day rounds its ingest time down, so that kind keeps one extra day.
+// Metadata-only, and skipped when already in step.
+func (c *ClickHouseClient) ReconcileProvenanceSummaryTTL(ctx context.Context) error {
+	var days [2]int
+	for i, table := range []string{"proc_lineage", "proc_freq"} {
+		info, err := describeTable(ctx, c.conn, table)
+		if err != nil {
+			return err
+		}
+		m := ttlDaysRe.FindStringSubmatch(info.ttl)
+		if m == nil {
+			return fmt.Errorf("%s TTL %q is not a day interval", table, info.ttl)
+		}
+		days[i], _ = strconv.Atoi(m[1])
+	}
+	ttl := fmt.Sprintf("last_day + toIntervalDay(if(kind = 'lineage_host', %d, %d))", days[0]+1, days[1])
+	if cur, err := describeTable(ctx, c.conn, provenanceSummaryTable); err != nil || cur.ttl == ttl {
+		return err
+	}
+	return c.conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s%s MODIFY TTL %s SETTINGS materialize_ttl_after_modify = 0",
+		provenanceSummaryTable, c.OnClusterSQL(), ttl))
+}
+
+var ttlDaysRe = regexp.MustCompile(`\+ toIntervalDay\((\d+)\)$`)
+
 // ProcFreqReadTable returns the read table for the pgr() frequency baseline. In cluster
 // mode this fans out to all shards via proc_freq_distributed; the scoring join re-aggregates
 // the AggregatingMergeTree state across shards (sum / groupUniqArrayMerge).
@@ -1546,6 +1576,7 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 	for _, t := range repartitionTargets {
 		tables = append(tables, t.table)
 	}
+	tables = append(tables, provenanceSummaryTable)
 	err := c.onEveryShard(ctx, "drop fractal partitions", func(conn driver.Conn) error {
 		// Before the live drop, so a conversion in progress cannot copy the rows back.
 		if err := markRepartitionSkip(ctx, conn, ids); err != nil {

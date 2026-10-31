@@ -163,7 +163,7 @@ func TestConvertPartitioningResumes(t *testing.T) {
 			t.Fatal(err)
 		}
 		stage, old := target.table+repartStage, target.table+repartOld
-		cols, err := columnList(ctx, conn, stage)
+		cols, err := columnList(ctx, conn, stage, old)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -247,5 +247,58 @@ func TestConvertPartitioningSkipsClearedFractal(t *testing.T) {
 	}
 	if mutations != 0 {
 		t.Errorf("%d mutations ran; conversion and clears must only move and drop partitions", mutations)
+	}
+}
+
+// An upgrade landing mid-conversion migrates the live table, but the stage and old tables
+// an earlier release created keep its columns. A copied-but-unmoved fractal is redone into
+// a rebuilt stage, and columns old lacks take their defaults.
+func TestConvertPartitioningResumesAcrossMigration(t *testing.T) {
+	c, conn := repartClient(t)
+	ctx := context.Background()
+	target := repartitionTargets[1]
+	if target.table != "proc_lineage" {
+		t.Fatalf("target %s, want proc_lineage", target.table)
+	}
+	before := repartTotals(t, conn, target.table)
+	live, err := describeTable(ctx, conn, target.table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.swapIn(ctx, conn, target, live, false); err != nil {
+		t.Fatal(err)
+	}
+	stage, old := target.table+repartStage, target.table+repartOld
+	// The earlier release's shape: no proc_user, no lookup columns.
+	for _, tbl := range []string{stage, old} {
+		for _, stmt := range []string{
+			"ALTER TABLE " + tbl + " DROP PROJECTION by_parent", "ALTER TABLE " + tbl + " DROP PROJECTION by_image",
+			"ALTER TABLE " + tbl + " DROP COLUMN proc_user, DROP COLUMN child_image, DROP COLUMN child_cmd_key, DROP COLUMN image_lc",
+		} {
+			if err := conn.Exec(ctx, stmt); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+	}
+	cols, err := columnList(ctx, conn, stage, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec(ctx, "INSERT INTO "+stage+" ("+cols+") SELECT "+cols+" FROM "+old+" WHERE fractal_id = 'b'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Exec(ctx, "INSERT INTO "+target.table+repartDone+" VALUES ('b')"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ConvertPartitioning(ctx, repartKeep); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	assertConverted(t, conn)
+	after := repartTotals(t, conn, target.table)
+	for f := range repartKeep {
+		if after[f] != before[f] {
+			t.Errorf("fractal %q: %d after, %d before", f, after[f], before[f])
+		}
 	}
 }

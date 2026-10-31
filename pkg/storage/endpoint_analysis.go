@@ -178,8 +178,9 @@ func loadEndpointMVSet(ctx context.Context, conn driver.Conn, query string) (map
 	return set, rows.Err()
 }
 
-// endpointAnalysisTables hold the baselines the endpoint-analysis MVs accumulate.
-var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges"}
+// endpointAnalysisTables hold the baselines the endpoint-analysis MVs accumulate, and the
+// summary derived from them.
+var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges", provenanceSummaryTable}
 
 // ClearEndpointAnalysisBaselines empties the baseline tables on every node. The MVs
 // stay attached, so the baselines rebuild from the next insert.
