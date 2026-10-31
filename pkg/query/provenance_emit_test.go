@@ -44,7 +44,7 @@ func TestEmitProvenanceSourceShape(t *testing.T) {
 		t.Fatalf("emitted %d of %d", n, len(rows))
 	}
 	if !strings.HasPrefix(sql, "SELECT * FROM values('parent String, child String, label String, event_type String, anomaly_score Float64,") ||
-		!strings.Contains(sql, "group_size Float64, group_first String, group_last String'") {
+		!strings.Contains(sql, "group_size Float64, group_first String, group_last String, recon_role String'") {
 		t.Errorf("structure: %.300s", sql)
 	}
 	if got := strings.Count(sql, ", ('"); got != len(rows) {

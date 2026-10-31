@@ -249,6 +249,64 @@ const PgView = {
         return chips;
     },
 
+    // ---- Lateral leads ----
+    // pgr() marks a reconnection bridge recon_role="lead" when it reaches another host through an
+    // artifact the seed had no business touching. A lead is drawn as its seed-side process, the
+    // shared artifact, and the hosts on the other end.
+
+    // Leads from the bridge rows marked lead, strongest first. A net/dns bridge is two rows per
+    // peer (seed side -> artifact, peer -> artifact); a file bridge is writer -> executor.
+    reconLeads(rows, isHome, typeOf) {
+        const by = new Map();
+        rows.forEach(r => {
+            const ct = typeOf(r.child), obj = ct === 'net' || ct === 'dns';
+            const key = obj ? r.child : 'file:' + r.label;
+            let L = by.get(key);
+            if (!L) { L = { key, type: obj ? ct : 'file', label: r.label || r.child, src: null, anomaly: NaN, peers: new Map() }; by.set(key, L); }
+            const a = parseFloat(r.anomaly_score);
+            if (!isNaN(a) && !(a <= L.anomaly)) L.anomaly = a;
+            const peer = (guid, image) => {
+                if (!L.peers.has(guid)) L.peers.set(guid, { guid, host: r.host || '', image, anomaly: a, ts: r.timestamp || '' });
+            };
+            if (!obj) { L.src = L.src || r.parent; peer(r.child, r.label || ''); }
+            else if (isHome(r.parent)) L.src = L.src || r.parent;
+            else peer(r.parent, r.parent_label || '');
+        });
+        return Array.from(by.values())
+            .filter(L => L.src && L.peers.size)
+            .map(L => Object.assign({}, L, { peers: Array.from(L.peers.values()).sort((x, y) => x.host.localeCompare(y.host) || (x.guid < y.guid ? -1 : 1)) }))
+            .sort((x, y) => ((isNaN(y.anomaly) ? 0 : y.anomaly) - (isNaN(x.anomaly) ? 0 : x.anomaly)) || (x.key < y.key ? -1 : 1));
+    },
+
+    LEAD_HOSTS: 5,  // hosts drawn per lead before "+N more"
+    LEAD_GAP: 80,   // artifact node to host column
+    LEAD_ROW: 44,   // host card pitch
+
+    // Lane layout for leads: each artifact on its seed-side process's row at laneX, its hosts in a
+    // column beside it, centered on that row but pushed down so lead blocks never overlap.
+    // srcAt(src) -> {x, y}; artWidth(lead) -> the artifact node's width. Returns the nodes (ids
+    // pglead:/pgleadhead:/pgleadpeer:/pgleadmore:) and the lane's right and bottom edges.
+    leadLayout(leads, srcAt, laneX, artWidth) {
+        const nodes = [];
+        let free = -Infinity, right = laneX, bottom = -Infinity;
+        leads.forEach(L => {
+            const sp = srcAt(L.src);
+            if (!sp) return;
+            nodes.push({ id: 'pglead:' + L.key, kind: 'art', lead: L, x: laneX, y: sp.y });
+            const shown = L.peers.slice(0, this.LEAD_HOSTS), more = L.peers.length - shown.length;
+            const n = shown.length + (more ? 1 : 0);
+            const cx = laneX + artWidth(L) + this.LEAD_GAP;
+            const top = Math.max(sp.y - (n - 1) * this.LEAD_ROW / 2, free + this.LEAD_ROW);
+            nodes.push({ id: 'pgleadhead:' + L.key, kind: 'head', lead: L, x: cx, y: top - 28 });
+            shown.forEach((p, i) => nodes.push({ id: 'pgleadpeer:' + L.key + '\x00' + p.guid, kind: 'peer', lead: L, peer: p, x: cx, y: top + i * this.LEAD_ROW }));
+            if (more) nodes.push({ id: 'pgleadmore:' + L.key, kind: 'more', lead: L, more, x: cx, y: top + shown.length * this.LEAD_ROW });
+            free = top + (n - 1) * this.LEAD_ROW + 28;
+            right = Math.max(right, cx + 320);
+            bottom = Math.max(bottom, sp.y, top + (n - 1) * this.LEAD_ROW);
+        });
+        return { nodes, right, bottom };
+    },
+
     // ---- Search pivots ----
 
     bqlQuote(s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; },

@@ -169,7 +169,7 @@ func TestScoringSQLCarriesParentLabel(t *testing.T) {
 	if !strings.Contains(sql, "any(ev.parent_label) AS parent_label") {
 		t.Error("edge aggregation must keep parent_label")
 	}
-	if !strings.Contains(sql, "proc_user, host, parent_label, group_size, group_first, group_last FROM (") {
+	if !strings.Contains(sql, "proc_user, host, parent_label, group_size, group_first, group_last, recon_role FROM (") {
 		t.Error("parent_label must reach the final projection")
 	}
 }

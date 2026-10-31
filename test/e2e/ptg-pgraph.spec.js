@@ -231,8 +231,11 @@ test.describe('pgr() | pgraph()', () => {
       await page.keyboard.press('Escape');
     }
 
-    // Reconnection count agrees with the Reconnected section.
-    if (seed.peers) {
+    // Reconnection count agrees with the Reconnected section, which starts folded into a
+    // Linked summary when there are leads or many links.
+    if (seed.peers && await page.locator('.pg-graph .pg-node-sec, .pg-graph .pg-node-linked').count()) {
+      const linked = page.locator('.pg-graph .pg-node-linked');
+      if (await linked.count()) await linked.click();
       const peerN = await page.locator('.pg-graph .pg-sec-meta').innerText().then(t => parseInt(t, 10));
       await expect(page.locator('.pg-stat-recon .graph-stat-count')).toHaveText(String(peerN));
     }
@@ -302,21 +305,30 @@ test.describe('pgr() | pgraph()', () => {
     }
 
     // Reconnected peers sit in their own section, grouped by bridge, collapsed to one line
-    // that expands to the peer's tree.
+    // that expands to the peer's tree. Lateral leads have a section of their own above it.
     if (seed.peers) {
-      await expect(page.locator('.pg-tree .pg-sec-row')).toHaveCount(1);
-      expect(await page.locator('.pg-tree .pg-bridge-row').count()).toBeGreaterThan(0);
-      const peer = page.locator('.pg-tree .pg-peer-row').first();
-      const wasOpen = (await peer.getAttribute('aria-expanded')) === 'true';
-      const root = await peer.getAttribute('data-peerroot');
-      await peer.click();
-      await expect(page.locator(`.pg-tree .pg-peer-row[data-peerroot="${root}"]`)).toHaveAttribute('aria-expanded', String(!wasOpen));
+      const leads = await page.locator('.pg-tree .pg-lead-sec').count();
+      expect(leads).toBeLessThanOrEqual(1);
+      const peer = page.locator('.pg-tree .pg-peer-row[data-peerroot]').first();
+      const peers = await peer.count();
+      if (peers) {
+        await expect(page.locator('.pg-tree .pg-sec-row:not(.pg-lead-sec)')).toHaveCount(1);
+        expect(await page.locator('.pg-tree .pg-bridge-row:not(.pg-lead-row)').count()).toBeGreaterThan(0);
+        const wasOpen = (await peer.getAttribute('aria-expanded')) === 'true';
+        const root = await peer.getAttribute('data-peerroot');
+        await peer.click();
+        await expect(page.locator(`.pg-tree .pg-peer-row[data-peerroot="${root}"]`)).toHaveAttribute('aria-expanded', String(!wasOpen));
+      }
       await page.locator('.pg-view-btn[data-view="graph"]').click();
-      await expect(page.locator('.pg-graph .pg-node-sec')).toHaveCount(1);
-      // Peers stack below the seeded tree rather than widening the canvas.
-      const secY = await page.locator('.pg-graph .pg-node-sec').evaluate(el => parseFloat(el.style.top));
-      const focusY = await page.locator('.pg-graph .pg-node.pg-focus').evaluate(el => parseFloat(el.style.top));
-      expect(secY).toBeGreaterThan(focusY);
+      if (leads) await expect(page.locator('.pg-graph .pg-lead-art').first()).toBeVisible();
+      if (peers) {
+        const sec = page.locator('.pg-graph .pg-node-sec, .pg-graph .pg-node-linked');
+        await expect(sec).toHaveCount(1);
+        // Peers stack below the seeded tree rather than widening the canvas.
+        const secY = await sec.evaluate(el => parseFloat(el.style.top));
+        const focusY = await page.locator('.pg-graph .pg-node.pg-focus').evaluate(el => parseFloat(el.style.top));
+        expect(secY).toBeGreaterThan(focusY);
+      }
     }
 
     expect(errors, 'page errors during render').toEqual([]);
