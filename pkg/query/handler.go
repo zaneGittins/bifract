@@ -1079,7 +1079,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// the model's distinct-digest index. Comparing a field against many digests has
 	// no workable SQL form, so the distance runs in Go and returns an IN filter.
 	var tlshMatches []parser.TLSHMatch
-	var tlshWarnings []string
+	var queryWarnings []string
 	var hasTLSHFilter bool
 	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
 	if tlshErr != nil {
@@ -1113,7 +1113,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 		// Not an error: the query still runs over the indexed members. But those
 		// fractals were not searched, so saying nothing would let a prism
 		// under-report and look like a clean "no matches".
-		tlshWarnings = append(tlshWarnings, tlshSkipWarnings(tlshParams.Field, matches.Skipped)...)
+		queryWarnings = append(queryWarnings, tlshSkipWarnings(tlshParams.Field, matches.Skipped)...)
 		log.Printf("[QueryHandler] tlsh() pre-resolve: field=%q threshold=%d -> %d matching digest(s), %d fractal(s) skipped",
 			tlshParams.Field, tlshParams.Threshold, len(tlshMatches), len(matches.Skipped))
 	}
@@ -1177,6 +1177,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	if rs != nil {
 		sourceFocus = rs.Focus
 		sourceQuerySettings = rs.QuerySettings
+		queryWarnings = append(queryWarnings, rs.Warnings...)
 	}
 
 	translationResult, err := parser.TranslateToSQLWithOrder(pipeline, opts)
@@ -1328,7 +1329,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 
 	prep = &preparedQuery{
 		req:                 req,
-		warnings:            tlshWarnings,
+		warnings:            queryWarnings,
 		sql:                 sql,
 		fieldOrder:          fieldOrder,
 		isAggregated:        isAggregated,
@@ -1950,6 +1951,9 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 		"chart_config":  prep.chartConfig,
 		"time_start":    prep.startTime.Format(time.RFC3339),
 		"time_end":      prep.endTime.Format(time.RFC3339),
+	}
+	if len(prep.warnings) > 0 {
+		meta["warnings"] = prep.warnings
 	}
 	// Announce the histogram's shape up front so the client can clear the previous
 	// search's timeline and reserve the axis before any counts exist, instead of

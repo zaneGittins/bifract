@@ -16,11 +16,10 @@ import (
 	"time"
 )
 
-func TestProvenanceScoring(t *testing.T) {
-	c := New(t)
-
-	// pgr() scores against baselines that are only collected while endpoint
-	// behavioral analytics is on. Turn it on for the run and put it back after.
+// enableEndpointAnalytics turns endpoint behavioral analytics on for the test and back off
+// after. pgr() reads process lineage and baselines that are only collected while it is on.
+func enableEndpointAnalytics(t *testing.T, c *Client) {
+	t.Helper()
 	var analytics struct {
 		Enabled bool `json:"enabled"`
 	}
@@ -31,6 +30,11 @@ func TestProvenanceScoring(t *testing.T) {
 		}
 		t.Cleanup(func() { c.Status(t, "POST", "/system/endpoint-analysis", map[string]any{"enabled": false}) })
 	}
+}
+
+func TestProvenanceScoring(t *testing.T) {
+	c := New(t)
+	enableEndpointAnalytics(t, c)
 
 	var fractal struct {
 		ID string `json:"id"`

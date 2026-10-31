@@ -32,6 +32,9 @@ type CH struct {
 	PrepareErr error
 	// OnBatch, when set, can script a batch's failures as it is prepared.
 	OnBatch func(b *Batch)
+	// CtxArgs, when set, appends values carried by a query's context to the args the
+	// responder and rules see, e.g. the external tables a storage helper attached.
+	CtxArgs func(ctx context.Context) []any
 
 	mu       sync.Mutex
 	execs    []string
@@ -209,6 +212,13 @@ func (f *CH) answer(query string, args []any) CHResult {
 	return CHResult{}
 }
 
+func (f *CH) withCtxArgs(ctx context.Context, args []any) []any {
+	if f.CtxArgs == nil {
+		return args
+	}
+	return append(append([]any(nil), args...), f.CtxArgs(ctx)...)
+}
+
 func hasArg(args []any, want any) bool {
 	for _, a := range args {
 		if reflect.DeepEqual(a, want) {
@@ -230,16 +240,16 @@ func (f *CH) Exec(_ context.Context, query string, args ...any) error {
 	return nil
 }
 
-func (f *CH) Query(_ context.Context, query string, args ...any) (driver.Rows, error) {
-	res := f.answer(query, args)
+func (f *CH) Query(ctx context.Context, query string, args ...any) (driver.Rows, error) {
+	res := f.answer(query, f.withCtxArgs(ctx, args))
 	if res.Err != nil {
 		return nil, res.Err
 	}
 	return &chRows{res: res, pos: -1}, nil
 }
 
-func (f *CH) QueryRow(_ context.Context, query string, args ...any) driver.Row {
-	res := f.answer(query, args)
+func (f *CH) QueryRow(ctx context.Context, query string, args ...any) driver.Row {
+	res := f.answer(query, f.withCtxArgs(ctx, args))
 	if res.Err != nil {
 		return &chRow{err: res.Err}
 	}

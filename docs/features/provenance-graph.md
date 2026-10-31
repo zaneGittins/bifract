@@ -59,8 +59,16 @@ Optional: `user` on `process_creation` (shown in the drawer) and `query_results`
 | **Show all** / **Focus suspicious** | Larger scored graphs open focused: only processes on a path to red activity, plus the seed and its ancestors. The rest folds into `+N hidden` markers; click one to expand it. |
 | **N rare** with **‹ ›** | Steps through processes with rare activity, centering each and opening its details. |
 | Canvas controls | Zoom, fit and minimap, bottom left. The minimap is off until you turn it on. |
-| Process drawer | Click a process. **Search process**, **Search hash** and **Host ±5 min** open searches in a new tab; **Copy command** copies the command line; **Hide branch** hides it (undo from the hidden branches stat). |
+| Process drawer | Click a process. **Search process**, **Search hash** and **Host ±5 min** open searches in a new tab; **Copy command** copies the command line; **Hide branch** hides it (undo from the hidden branches stat). On a repeated process, **Search members** searches process creations with the same image and parent over its time span. |
 | Keyboard (table) | `↑` `↓` or `j` `k` move, `Enter` opens the drawer, `←` `→` collapse and expand, `Esc` closes. |
+
+### Repeated processes
+
+A process that runs the same command over and over, such as a remote-access tool polling `cmd /C "tasklist | findstr"` every two seconds, is drawn once with a count: `cmd.exe ×47,900`. Siblings fold together only when they share a parent, an image and a command line (user folders, GUIDs and long numbers are ignored, as in scoring). Anything that differs stays its own node: a different command line, or a child that only one of the repeats started, still appears under the folded node. The repeats' files, connections and lookups all count, and the drawer shows when the first and last one started.
+
+### When the graph is incomplete
+
+`pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, so a wide tree cannot crowd them all out. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
 
 ## Anomaly scoring
 
@@ -84,6 +92,8 @@ Each action shows a **Why** sentence and fact chips in the drawer and on edge ho
     | `target_host_days` | Other host-days on which any process touched the target |
     | `target_hosts`, `total_hosts` | Hosts that touched the target (capped at 256) out of all hosts |
     | `first_seen` | First day the relationship was observed |
+    | `group_size` | On a spawn edge, how many identical processes the child node stands for (1 for a single process) |
+    | `group_first`, `group_last` | When the first and last of those processes started, for `group_size` above 1 |
 
 ## Reconnection
 

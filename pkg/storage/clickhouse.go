@@ -1113,11 +1113,11 @@ func openClickHouseConn(o ConnOptions) (driver.Conn, error) {
 		},
 		Settings: clickhouse.Settings{
 			"output_format_native_use_flattened_dynamic_and_json_serialization": 1,
-			// pgr()'s machine-generated scoring SQL repeats the (bounded) process guid IN-list across
-			// its edge branches and inlines reconnection/command-line data as literals, so a midsize
-			// graph legitimately exceeds ClickHouse's 256KB default and fails with code 62. This is a
-			// parser buffer ceiling (not an allocation) and the SQL is bounded, so raising it fleet-
-			// wide is safe and has no effect on the small SQL every other feature sends.
+			// pgr() re-emits its materialized rows as a literal source and scopes its baseline by
+			// literal edge-key lists, so a midsize graph legitimately exceeds ClickHouse's 256KB
+			// default and fails with code 62. This is a parser buffer ceiling (not an allocation)
+			// and the SQL is bounded, so raising it fleet-wide is safe and has no effect on the
+			// small SQL every other feature sends.
 			"max_query_size": maxGeneratedQuerySize,
 			// Every join Bifract sends puts its bounded side on the right, where it is
 			// hashed: a model's scored keys, a join() subquery, a pgr frontier. The
@@ -1738,11 +1738,11 @@ func (c *ClickHouseClient) killWhere(ctx context.Context, where string) error {
 }
 
 // maxGeneratedQuerySize raises ClickHouse's max_query_size (default 256KB) for the query paths
-// that carry machine-generated SQL. pgr()'s scoring/reconnection SQL repeats the (bounded) process
-// guid IN-list across its edge branches and inlines reconnection edges as literals, so a midsize
-// graph legitimately exceeds 256KB and would fail with code 62. The generated SQL is bounded
-// (maxProvenanceGuids, maxReconnectPeers), so this headroom is safe; it is a parser buffer ceiling,
-// not an allocation, and has no effect on the small queries every other feature sends.
+// that carry machine-generated SQL. pgr() inlines its edge keys and its materialized rows as
+// literals, so a midsize graph legitimately exceeds 256KB and would fail with code 62. The
+// generated SQL is bounded (MaxProvenanceEdgeKeys, provenanceEmitMaxBytes), so this headroom is
+// safe; it is a parser buffer ceiling, not an allocation, and has no effect on the small queries
+// every other feature sends.
 const maxGeneratedQuerySize = 16 * 1024 * 1024 // 16 MB
 
 // QueryLowPriority executes a query at ClickHouse priority 5, yielding CPU
@@ -1810,9 +1810,14 @@ var ProvenanceQuerySettings = fmt.Sprintf("max_rows_to_read=%d, max_execution_ti
 	ProvenanceMaxRowsToRead, ProvenanceMaxExecutionSec)
 
 // QueryProvenance executes a pgr resolver scan at low priority with the provenance scan budget
-// (see ProvenanceMaxRowsToRead). Used for pgr's tree hops, probe, reconnection, totals, and the
-// diffusion scan so none of them can run away on a pathological tree.
-func (c *ClickHouseClient) QueryProvenance(ctx context.Context, query string) ([]map[string]interface{}, error) {
+// (see ProvenanceMaxRowsToRead). Used for every pgr pass (tree hops, reconnection, totals, edge
+// keys and the scoring scan) so none of them can run away on a pathological tree. tables ride along as
+// external data (see ExternalTable).
+func (c *ClickHouseClient) QueryProvenance(ctx context.Context, query string, tables ...ExternalTable) ([]map[string]interface{}, error) {
+	ctx, err := withExternalTables(ctx, tables)
+	if err != nil {
+		return nil, err
+	}
 	return c.query(ctx, query, clickhouse.Settings{
 		"priority":              5,
 		"max_query_size":        maxGeneratedQuerySize,

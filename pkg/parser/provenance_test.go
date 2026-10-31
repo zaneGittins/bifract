@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestAbstractExprMatchesMVs guards write/read parity: the abstraction inlined into the
@@ -158,10 +159,7 @@ func reconOpts() QueryOptions {
 func TestScoringSQLCarriesParentLabel(t *testing.T) {
 	opts := reconOpts()
 	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, map[string]bool{"file_write": true, "remote_thread": true}, false, ProvenanceBaseline{TotalHosts: 10}, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sql := BuildProvenanceScoringSQL(0.7, map[string]bool{"file_write": true, "remote_thread": true}, false, ProvenanceBaseline{TotalHosts: 10}, opts)
 	if !strings.Contains(sql, "parent_image AS parent_label") {
 		t.Error("spawn branch must emit the parent image as parent_label")
 	}
@@ -171,17 +169,14 @@ func TestScoringSQLCarriesParentLabel(t *testing.T) {
 	if !strings.Contains(sql, "any(ev.parent_label) AS parent_label") {
 		t.Error("edge aggregation must keep parent_label")
 	}
-	if !strings.Contains(sql, "proc_user, host, parent_label FROM (") {
+	if !strings.Contains(sql, "proc_user, host, parent_label, group_size, group_first, group_last FROM (") {
 		t.Error("parent_label must reach the final projection")
 	}
 }
 
 func TestBuildReconnectionSQL(t *testing.T) {
 	p := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}
-	sql, err := BuildReconnectionSQL([]string{"g1", "g2"}, p, 100, 50, reconOpts())
-	if err != nil {
-		t.Fatal(err)
-	}
+	sql := BuildReconnectionSQL(p, 100, 50, reconOpts())
 	for _, want := range []string{
 		"'file' AS recon_type", "'net' AS recon_type", "'dns' AS recon_type",
 		"'remote_thread' AS recon_type", "'process_access' AS recon_type",
@@ -195,73 +190,69 @@ func TestBuildReconnectionSQL(t *testing.T) {
 	}
 
 	// reconnect=false yields no SQL.
-	if s, _ := BuildReconnectionSQL([]string{"g1"}, ProvenanceParams{Reconnect: false}, 100, 50, reconOpts()); s != "" {
+	if s := BuildReconnectionSQL(ProvenanceParams{Reconnect: false}, 100, 50, reconOpts()); s != "" {
 		t.Error("reconnect=false should yield empty SQL")
 	}
 	// include= narrows the generated branches.
 	only := ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{"net_connect": true}}
-	s, _ := BuildReconnectionSQL([]string{"g1"}, only, 100, 50, reconOpts())
+	s := BuildReconnectionSQL(only, 100, 50, reconOpts())
 	if !strings.Contains(s, "'net' AS recon_type") || strings.Contains(s, "'dns' AS recon_type") {
 		t.Error("include=net_connect should generate only the net branch")
 	}
 }
 
-func TestAppendReconnectionEdges(t *testing.T) {
+// edgeRow finds the bridge row parent -> child, or nil.
+func edgeRow(rows []map[string]interface{}, parent, child string) map[string]interface{} {
+	for _, r := range rows {
+		if r["parent"] == parent && r["child"] == child {
+			return r
+		}
+	}
+	return nil
+}
+
+func TestReconnectionEdgeRows(t *testing.T) {
 	peers := []ReconnectPeer{
 		{ReconType: "file", PeerGUID: "exec", SrcGUID: "writer", Label: "c:\\a.exe", Anomaly: 1.0},
 		{ReconType: "net", PeerGUID: "peer", SrcGUID: "tree", ObjectID: "net:1.2.3.4", Label: "1.2.3.4", Anomaly: 0.85},
 		{ReconType: "remote_thread", PeerGUID: "victim", Anomaly: 0.95}, // pass-2 owns; must NOT be emitted
 	}
-	out := AppendReconnectionEdges("SELECT 1", peers)
-	// file: writer -> executor
-	if !strings.Contains(out, "'writer' AS parent, 'exec' AS child") || !strings.Contains(out, "'reconnect_file'") {
+	rows := ReconnectionEdgeRows(peers)
+	if r := edgeRow(rows, "writer", "exec"); r == nil || r["event_type"] != "reconnect_file" {
 		t.Error("file bridge should be writer->executor")
 	}
-	// net: both endpoints converge on the object node
-	if !strings.Contains(out, "'tree' AS parent, 'net:1.2.3.4' AS child") ||
-		!strings.Contains(out, "'peer' AS parent, 'net:1.2.3.4' AS child") {
+	if edgeRow(rows, "tree", "net:1.2.3.4") == nil || edgeRow(rows, "peer", "net:1.2.3.4") == nil {
 		t.Error("net bridge should wire both tree toucher and peer to the object node")
 	}
-	// injection target is not emitted as a literal edge
-	if strings.Contains(out, "'victim'") {
-		t.Error("injection/access peer must not be emitted (pass-2 owns it)")
+	if len(rows) != 3 {
+		t.Errorf("injection/access peer must not be emitted (pass-2 owns it): %v", rows)
 	}
 }
 
 // A reconnected peer is usually not expanded into a subtree, so its bridge edge is the only place
 // its identity can come from: the peer's own connection/lookup event names the image, and that
 // must ride out as parent_label or the node renders as a bare guid.
-func TestAppendReconnectionEdgesCarriesPeerImage(t *testing.T) {
-	peers := []ReconnectPeer{
+func TestReconnectionEdgeRowsCarryPeerImage(t *testing.T) {
+	rows := ReconnectionEdgeRows([]ReconnectPeer{
 		{ReconType: "net", PeerGUID: "peer", SrcGUID: "tree", ObjectID: "net:1.2.3.4", Label: "1.2.3.4", Anomaly: 0.85, PeerImage: "c:\\windows\\evil.exe"},
-	}
-	out := AppendReconnectionEdges("SELECT 1", peers)
-	if !strings.Contains(out, "'c:\\\\windows\\\\evil.exe' AS parent_label") {
-		t.Errorf("peer edge must carry the peer image as parent_label, got: %s", out)
+	})
+	if r := edgeRow(rows, "peer", "net:1.2.3.4"); r == nil || r["parent_label"] != "c:\\windows\\evil.exe" {
+		t.Errorf("peer edge must carry the peer image as parent_label, got: %v", r)
 	}
 	// The tree-side edge's parent is an in-tree process with its own row; it must not be relabeled.
-	treeEdge := out[strings.Index(out, "'tree' AS parent"):]
-	if end := strings.Index(treeEdge, " UNION ALL "); end > 0 {
-		treeEdge = treeEdge[:end]
-	}
-	if !strings.Contains(treeEdge, "'' AS parent_label") {
-		t.Errorf("tree-side edge should leave parent_label empty, got: %s", treeEdge)
+	if r := edgeRow(rows, "tree", "net:1.2.3.4"); r == nil || r["parent_label"] != "" {
+		t.Errorf("tree-side edge should leave parent_label empty, got: %v", r)
 	}
 }
 
-func TestAppendReconnectionEdgesDedup(t *testing.T) {
+func TestReconnectionEdgeRowsDedup(t *testing.T) {
 	// Two net peers sharing one object node must emit the tree-side edge only once.
-	peers := []ReconnectPeer{
+	rows := ReconnectionEdgeRows([]ReconnectPeer{
 		{ReconType: "net", PeerGUID: "p1", SrcGUID: "tree", ObjectID: "net:9.9.9.9", Label: "9.9.9.9", Anomaly: 0.85},
 		{ReconType: "net", PeerGUID: "p2", SrcGUID: "tree", ObjectID: "net:9.9.9.9", Label: "9.9.9.9", Anomaly: 0.85},
-	}
-	out := AppendReconnectionEdges("SELECT 1", peers)
-	if n := strings.Count(out, "'tree' AS parent, 'net:9.9.9.9' AS child"); n != 1 {
-		t.Errorf("tree-side convergence edge should be deduped to 1, got %d", n)
-	}
-	if strings.Count(out, "'p1' AS parent, 'net:9.9.9.9' AS child") != 1 ||
-		strings.Count(out, "'p2' AS parent, 'net:9.9.9.9' AS child") != 1 {
-		t.Error("each peer's convergence edge should appear once")
+	})
+	if len(rows) != 3 || edgeRow(rows, "p1", "net:9.9.9.9") == nil || edgeRow(rows, "p2", "net:9.9.9.9") == nil {
+		t.Errorf("want one tree-side edge and one per peer, got %v", rows)
 	}
 }
 
@@ -316,10 +307,7 @@ func scoringSQL(t *testing.T, edgeTypes map[string]bool, bl ProvenanceBaseline) 
 	t.Helper()
 	opts := reconOpts()
 	opts.MaxRows = 100
-	sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, edgeTypes, false, bl, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sql := BuildProvenanceScoringSQL(0.7, edgeTypes, false, bl, opts)
 	return sql
 }
 
@@ -340,13 +328,10 @@ func TestScoringSQLReadsCommandLinesByLogKey(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.opts.MaxRows = 100
-			sql, err := BuildProvenanceScoringSQL([]string{"g1"}, 0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, c.opts)
-			if err != nil {
-				t.Fatal(err)
-			}
+			sql := BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, c.opts)
 			pm := cteBody(t, sql, "pm")
 			for _, want := range []string{
-				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE process_guid IN ('g1') AND " + c.scope + ")",
+				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE process_guid IN (SELECT guid FROM _pgr_tree WHERE guid = node) AND " + c.scope + ")",
 				"' AND " + c.scope + " AND (timestamp, log_id)",
 			} {
 				if !strings.Contains(pm, want) {
@@ -452,7 +437,7 @@ func TestScoringSQLLeavesOneOut(t *testing.T) {
 	}
 	// sx must count executions exactly as the spawn MV does, or self_exec drifts from exec_hd.
 	sx := cteBody(t, sql, "sx")
-	for _, want := range []string{"FROM proc_lineage FINAL", "parent_image != '' AND image != ''", "process_guid IN ('g1')", "toDate(ingest_timestamp)"} {
+	for _, want := range []string{"FROM proc_lineage FINAL", "parent_image != '' AND image != ''", "process_guid GLOBAL IN (SELECT guid FROM _pgr_tree)", "toDate(ingest_timestamp)"} {
 		if !strings.Contains(sx, want) {
 			t.Errorf("sx missing %q: %s", want, sx)
 		}
@@ -529,22 +514,84 @@ func TestScoringSQLUnrestrictedWithoutEdgeKeys(t *testing.T) {
 	}
 }
 
-// The scoring SQL and the reconnection literals must project ProvenanceColumns in order, or the
-// UNION ALL binds columns positionally to the wrong names.
-func TestReconnectionEdgesProjectProvenanceColumns(t *testing.T) {
-	out := AppendReconnectionEdges("SELECT 1", []ReconnectPeer{
+// Bridge rows must carry every ProvenanceColumn, typed like the scoring SQL's, so they render
+// and re-emit exactly like scored edges.
+func TestReconnectionEdgeRowsCarryProvenanceColumns(t *testing.T) {
+	rows := ReconnectionEdgeRows([]ReconnectPeer{
 		{ReconType: "file", PeerGUID: "exec", SrcGUID: "writer", Label: "c:\\a.exe", Anomaly: 1.0},
 	})
-	lit := out[strings.Index(out, " UNION ALL SELECT ")+len(" UNION ALL "):]
-	pos := 0
-	for _, c := range ProvenanceColumns {
-		i := strings.Index(lit[pos:], " AS "+c)
-		if i < 0 {
-			t.Fatalf("reconnection literal is missing %q (or out of order): %s", c, lit)
-		}
-		pos += i + len(" AS "+c)
+	numeric := map[string]bool{}
+	for _, c := range ProvenanceNumericColumns {
+		numeric[c] = true
 	}
-	if !strings.Contains(lit, "'reconnect' AS score_basis") || !strings.Contains(lit, "toFloat64(1.0000) AS edge_score") {
-		t.Errorf("a bridge must say it is a bridge and carry its own score: %s", lit)
+	r := rows[0]
+	for _, c := range ProvenanceColumns {
+		v, ok := r[c]
+		if !ok {
+			t.Fatalf("bridge row is missing %q", c)
+		}
+		if _, isF := v.(float64); isF != numeric[c] {
+			t.Errorf("%s has type %T", c, v)
+		}
+	}
+	if r["score_basis"] != "reconnect" || r["edge_score"] != 1.0 || r["group_size"] != 1.0 {
+		t.Errorf("a bridge must say it is a bridge and carry its own score: %v", r)
+	}
+}
+
+// The forward hop collapses identical siblings with proc_freq's own normalization, keyed on the
+// parent's node so a group's children are grouped across all of its members, and reads the
+// frontier from external data rather than a literal list.
+func TestProcessGroupHopSQL(t *testing.T) {
+	sql := BuildProcessGroupHopSQL(reconOpts())
+	for _, want := range []string{
+		"f.node AS parent_node",
+		abstractExpr("c.image", AbstractPath) + " AS nimg",
+		abstractExpr("c.commandline", AbstractPath) + " AS ncmd",
+		"GROUP BY parent_node, nimg, ncmd",
+		"uniqExact(c.process_guid) AS n",
+		"c.parent_guid GLOBAL IN (SELECT guid FROM _pgr_frontier)",
+		"GLOBAL INNER JOIN _pgr_frontier AS f ON c.parent_guid = f.guid",
+		"c.fractal_id = 'f1'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("hop SQL missing %q:\n%s", want, sql)
+		}
+	}
+}
+
+// Members of a collapsed group are merged onto their node before aggregation, so their spawn
+// edges become one and their leaves union; nothing in pass 2 reads a literal guid list.
+func TestScoringSQLMapsMembersOntoNodes(t *testing.T) {
+	sql := scoringSQL(t, map[string]bool{"file_write": true}, ProvenanceBaseline{TotalHosts: 10})
+	for _, want := range []string{
+		"LEFT JOIN _pgr_tree AS ms ON ms.guid = ev.src_node LEFT JOIN _pgr_tree AS md ON md.guid = ev.dst_node",
+		"if(ms.node = '', ev.src_node, ms.node) AS src_node",
+		"process_guid GLOBAL IN (SELECT guid FROM _pgr_tree) AND event_type IN ('file_write')",
+		// A collapsed node's spawn edge carries the node's own creation log (whichever member is
+		// the node, however timestamps tie), a leaf its latest event.
+		"ev.dst_node AS raw_dst",
+		"if(event_type = 'spawn', argMin(ev.log_id, (ev.raw_dst != dst_node, ev.timestamp)), argMax(ev.log_id, ev.timestamp)) AS log_id",
+		"if(event_type = 'spawn', argMin(ev.timestamp, (ev.raw_dst != dst_node, ev.timestamp)), max(ev.timestamp)) AS timestamp",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("scoring SQL missing %q", want)
+		}
+	}
+}
+
+// pm looks up command lines only inside the span the nodes were created in.
+func TestScoringSQLNarrowsCommandLineWindow(t *testing.T) {
+	opts := reconOpts()
+	opts.StartTime = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	opts.EndTime = time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
+	bl := ProvenanceBaseline{NodeStart: time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC), NodeEnd: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)}
+	pm := cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, bl, opts), "pm")
+	if !strings.Contains(pm, "timestamp >= '2026-10-27 08:00:00.000' AND timestamp <= '2026-10-27 09:00:00.000'") {
+		t.Errorf("pm not narrowed to the node span:\n%s", pm)
+	}
+	pm = cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, opts), "pm")
+	if !strings.Contains(pm, "timestamp >= '2026-10-01 00:00:00.000' AND timestamp <= '2026-10-31 00:00:00.000'") {
+		t.Errorf("without a span pm reads the query window:\n%s", pm)
 	}
 }

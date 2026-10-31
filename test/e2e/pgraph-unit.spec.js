@@ -191,6 +191,17 @@ test.describe('search pivots', () => {
     expect(PgView.imageQuery('C:\\w\\c.exe')).toBe('bifract_category="process_creation" image="C:\\\\w\\\\c.exe" | groupby(computer_name) | sort(_count, order=desc)');
   });
 
+  // A collapsed node's members share its parent node and an image that the server compared
+  // normalized (case, user folders, GUIDs). Matching the file name case-insensitively keeps
+  // every member; a single parent pins them, a collapsed parent falls back to the host.
+  test('members of a collapsed node', () => {
+    expect(PgView.membersQuery('C:\\WINDOWS\\System32\\cmd.exe', 'WS02', 'p1', null))
+      .toBe('bifract_category="process_creation" image=$"\\\\cmd.exe" computer_name="WS02" parent_process_guid="p1"');
+    expect(PgView.membersQuery('/usr/bin/sh', 'WS02', 'p1', { n: 40 }))
+      .toBe('bifract_category="process_creation" image=$"/sh" computer_name="WS02"');
+    expect(PgView.membersQuery('cmd.exe', '', undefined, null)).toBe('bifract_category="process_creation" image=$"cmd.exe"');
+  });
+
   test('hash pivots pick the strongest digest from a Sysmon list', () => {
     expect(PgView.hashQuery('hash', 'SHA256=ABC123,MD5=FF00,IMPHASH=0011')).toBe('hash=~ABC123');
     expect(PgView.hashQuery('hash', 'MD5=ff00')).toBe('hash=~ff00');

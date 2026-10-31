@@ -355,3 +355,23 @@ func TestHandleQueryStreamNeedsFlusher(t *testing.T) {
 		t.Errorf("got %d after %d queries", rec.Code, len(e.ch.Queried()))
 	}
 }
+
+// Notices about what a query could not cover reach the streamed search too, in the meta frame,
+// so the client can flag the result before rows arrive: here pgr() hitting its row limit.
+func TestHandleQueryStreamCarriesWarnings(t *testing.T) {
+	e := newTestEnv(t, 1000)
+	e.respond(func(sql string) ([]map[string]interface{}, error) {
+		switch {
+		case strings.HasPrefix(sql, "SELECT process_guid, parent_guid, toUnixTimestamp64Milli"):
+			return []map[string]interface{}{{"process_guid": "root", "parent_guid": "", "ts_ms": int64(1)}}, nil
+		case strings.HasPrefix(sql, "SELECT * FROM (") && strings.Contains(sql, ") AS _d ORDER BY"):
+			return []map[string]interface{}{spawnRow("root", "a"), spawnRow("root", "b")}, nil
+		}
+		return nil, nil
+	})
+	frames := runStream(t, e, QueryRequest{Query: `pgr(start="root", limit=1, reconnect=false)`, FractalID: "f1"})
+	ws, _ := frames[0]["warnings"].([]interface{})
+	if frames[0]["type"] != "meta" || len(ws) != 1 || !strings.Contains(ws[0].(string), "row limit reached") {
+		t.Errorf("meta = %v", frames[0])
+	}
+}

@@ -264,6 +264,19 @@ const PgView = {
         return image ? `bifract_category="process_creation" image=${this.bqlQuote(image)} | groupby(computer_name) | sort(_count, order=desc)` : '';
     },
 
+    // Process creations like a collapsed node's members. The server grouped them on a normalized
+    // image (case, user folders, GUIDs), so match the file name with its separator, case-insensitively.
+    // A single parent pins them; a collapsed parent is many guids, so the host scopes instead. The
+    // caller bounds the time span. Same-image siblings with another command line can match too.
+    membersQuery(image, host, parent, parentGroup) {
+        const s = String(image);
+        const cut = Math.max(s.lastIndexOf('\\'), s.lastIndexOf('/'));
+        let q = `bifract_category="process_creation" image=$${this.bqlQuote(cut >= 0 ? s.slice(cut) : s)}`;
+        if (host) q += ` computer_name=${this.bqlQuote(host)}`;
+        if (parent && !parentGroup) q += ` parent_process_guid=${this.bqlQuote(parent)}`;
+        return q;
+    },
+
     // A hash field value may be a bare digest or Sysmon's "SHA256=..,MD5=.." list; search the
     // strongest digest by substring in the latter case.
     hashQuery(field, value) {

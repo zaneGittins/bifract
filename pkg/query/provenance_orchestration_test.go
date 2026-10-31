@@ -13,43 +13,63 @@ import (
 
 	"bifract/internal/fakedb"
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 	"bifract/pkg/storage/storagetest"
 )
 
 // fakeLineage stands in for ClickHouse behind pgr()'s passes. It answers the
-// tree-hop queries from an in-memory parent->child edge list and every other
-// pass from per-kind handlers, and records what it was asked. Passes are
-// recognised by the shape of the SQL their parser builders emit. handler wires it
-// behind a real ClickHouse client, so every pass runs through QueryProvenance.
+// tree-hop queries from an in-memory process list, grouping forward hops the way
+// BuildProcessGroupHopSQL does, and every other pass from per-kind handlers, and
+// records what it was asked. Passes are recognised by the shape of the SQL their
+// parser builders emit. handler wires it behind a real ClickHouse client, so every
+// pass runs through QueryProvenance with its external tables.
 type fakeLineage struct {
 	mu       sync.Mutex
 	parentOf map[string]string   // child -> parent, for processes that exist
-	children map[string][]string // parent -> children, in insertion order
+	children map[string][]string // parent -> children, in creation order
+	image    map[string]string   // process -> normalized image (default: its guid)
+	cmd      map[string]string   // process -> normalized command line
+	createMs map[string]int64    // process -> creation time
 	failHop  map[string]bool     // frontier guid whose hop fails
 	calls    []string
 
 	reconTotals func() ([]map[string]interface{}, error)
-	recon       func(sql string) ([]map[string]interface{}, error)
+	recon       func(sql string, tree storage.ExternalTable) ([]map[string]interface{}, error)
 	totalHosts  func() ([]map[string]interface{}, error)
 	edgeKeys    func(sql string) ([]map[string]interface{}, error)
-	scan        func(sql string) ([]map[string]interface{}, error)
+	scan        func(sql string, tree storage.ExternalTable) ([]map[string]interface{}, error)
 }
 
 // newFakeLineage builds a lineage from "parent>child" pairs. A root is declared
-// with ">root" (it exists as a process with no parent).
+// with ">root" (it exists as a process with no parent). Every process has its
+// own image, so nothing collapses unless a test says so with same().
 func newFakeLineage(edges ...string) *fakeLineage {
-	f := &fakeLineage{parentOf: map[string]string{}, children: map[string][]string{}, failHop: map[string]bool{}}
+	f := &fakeLineage{parentOf: map[string]string{}, children: map[string][]string{}, image: map[string]string{},
+		cmd: map[string]string{}, createMs: map[string]int64{}, failHop: map[string]bool{}}
 	for _, e := range edges {
 		p, c, _ := strings.Cut(e, ">")
-		f.parentOf[c] = p
-		if p != "" {
-			f.children[p] = append(f.children[p], c)
-		}
+		f.addProc(p, c)
 	}
 	return f
 }
 
-var hopRE = regexp.MustCompile(`^SELECT process_guid, parent_guid FROM \S+ WHERE .* (process_guid|parent_guid) IN \(([^)]*)\)$`)
+func (f *fakeLineage) addProc(parent, child string) {
+	f.parentOf[child] = parent
+	if parent != "" {
+		f.children[parent] = append(f.children[parent], child)
+	}
+	f.image[child], f.cmd[child] = child, child
+	f.createMs[child] = int64(len(f.createMs) + 1)
+}
+
+// same gives processes one image and command line, so siblings among them collapse.
+func (f *fakeLineage) same(image, cmd string, guids ...string) {
+	for _, g := range guids {
+		f.image[g], f.cmd[g] = image, cmd
+	}
+}
+
+var backHopRE = regexp.MustCompile(`^SELECT process_guid, parent_guid, toUnixTimestamp64Milli\(timestamp\) AS ts_ms FROM \S+ WHERE .* process_guid = '([^']*)'$`)
 
 func (f *fakeLineage) kinds() map[string]int {
 	f.mu.Lock()
@@ -74,11 +94,18 @@ func (f *fakeLineage) handler() *QueryHandler {
 
 // handlerAnswering returns a QueryHandler whose ClickHouse client answers every
 // query with answer's rows, typed as ClickHouse columns so they scan back
-// through the client's row mapper unchanged.
-func handlerAnswering(answer func(sql string) ([]map[string]interface{}, error)) *QueryHandler {
+// through the client's row mapper unchanged. tables holds the query's external
+// tables by name.
+func handlerAnswering(answer func(sql string, tables map[string]storage.ExternalTable) ([]map[string]interface{}, error)) *QueryHandler {
 	db, ch := storagetest.ClickHouse()
-	ch.Respond(func(sql string, _ []any) (fakedb.CHResult, bool) {
-		rows, err := answer(sql)
+	ch.Respond(func(sql string, args []any) (fakedb.CHResult, bool) {
+		tables := map[string]storage.ExternalTable{}
+		for _, a := range args {
+			if t, ok := a.(storage.ExternalTable); ok {
+				tables[t.Name] = t
+			}
+		}
+		rows, err := answer(sql, tables)
 		if err != nil {
 			return fakedb.CHResult{Err: err}, true
 		}
@@ -106,6 +133,8 @@ func chResultOf(rows []map[string]interface{}) fakedb.CHResult {
 				types[k] = "Int64"
 			case float64:
 				types[k] = "Float64"
+			case []string:
+				types[k] = "Array(String)"
 			case []uint64:
 				types[k] = "Array(UInt64)"
 			case []int64:
@@ -141,27 +170,59 @@ func chResultOf(rows []map[string]interface{}) fakedb.CHResult {
 	return res
 }
 
-func (f *fakeLineage) query(sql string) ([]map[string]interface{}, error) {
-	if m := hopRE.FindStringSubmatch(sql); m != nil {
+// groupHop answers BuildProcessGroupHopSQL: the frontier members' children,
+// grouped by (parent node, image, command line), earliest first.
+func (f *fakeLineage) groupHop(frontier storage.ExternalTable) ([]map[string]interface{}, error) {
+	type group struct {
+		node, image, cmd string
+		members          []string
+	}
+	var groups []*group
+	byKey := map[string]*group{}
+	for _, fr := range frontier.Rows {
+		g, node := fr[0], fr[1]
+		if f.failHop[g] {
+			return nil, fmt.Errorf("hop failed at %s", g)
+		}
+		for _, c := range f.children[g] {
+			key := node + "\x00" + f.image[c] + "\x00" + f.cmd[c]
+			gr := byKey[key]
+			if gr == nil {
+				gr = &group{node: node, image: f.image[c], cmd: f.cmd[c]}
+				byKey[key] = gr
+				groups = append(groups, gr)
+			}
+			gr.members = append(gr.members, c)
+		}
+	}
+	var rows []map[string]interface{}
+	for _, gr := range groups {
+		sort.Slice(gr.members, func(i, j int) bool { return f.createMs[gr.members[i]] < f.createMs[gr.members[j]] })
+		rows = append(rows, map[string]interface{}{
+			"parent_node": gr.node, "nimg": gr.image, "ncmd": gr.cmd, "rep": gr.members[0],
+			"n": uint64(len(gr.members)), "members": gr.members,
+			"first_ms": f.createMs[gr.members[0]], "last_ms": f.createMs[gr.members[len(gr.members)-1]],
+		})
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i]["first_ms"].(int64) < rows[j]["first_ms"].(int64) })
+	return rows, nil
+}
+
+func (f *fakeLineage) query(sql string, tables map[string]storage.ExternalTable) ([]map[string]interface{}, error) {
+	if m := backHopRE.FindStringSubmatch(sql); m != nil {
 		f.record("hop")
-		var frontier []string
-		for _, q := range strings.Split(m[2], ", ") {
-			frontier = append(frontier, strings.Trim(q, "'"))
+		g := m[1]
+		if f.failHop[g] {
+			return nil, fmt.Errorf("hop failed at %s", g)
 		}
-		var rows []map[string]interface{}
-		for _, g := range frontier {
-			if f.failHop[g] {
-				return nil, fmt.Errorf("hop failed at %s", g)
-			}
-			if m[1] == "parent_guid" { // forward: the frontier's children
-				for _, c := range f.children[g] {
-					rows = append(rows, map[string]interface{}{"process_guid": c, "parent_guid": g})
-				}
-			} else if p, ok := f.parentOf[g]; ok { // backward: the frontier node and its parent
-				rows = append(rows, map[string]interface{}{"process_guid": g, "parent_guid": p})
-			}
+		if p, ok := f.parentOf[g]; ok {
+			return []map[string]interface{}{{"process_guid": g, "parent_guid": p, "ts_ms": f.createMs[g]}}, nil
 		}
-		return rows, nil
+		return nil, nil
+	}
+	if strings.HasPrefix(sql, "SELECT f.node AS parent_node") {
+		f.record("hop")
+		return f.groupHop(tables[parser.ProvenanceFrontierTable])
 	}
 	call := func(kind string, h func() ([]map[string]interface{}, error)) ([]map[string]interface{}, error) {
 		f.record(kind)
@@ -170,6 +231,7 @@ func (f *fakeLineage) query(sql string) ([]map[string]interface{}, error) {
 		}
 		return h()
 	}
+	tree := tables[parser.ProvenanceTreeTable]
 	switch {
 	case strings.HasPrefix(sql, "SELECT length(groupUniqArrayMerge("):
 		return call("recon_totals", f.reconTotals)
@@ -187,14 +249,14 @@ func (f *fakeLineage) query(sql string) ([]map[string]interface{}, error) {
 			if f.scan == nil {
 				return nil, nil
 			}
-			return f.scan(sql)
+			return f.scan(sql, tree)
 		})
 	default:
 		return call("recon", func() ([]map[string]interface{}, error) {
 			if f.recon == nil {
 				return nil, nil
 			}
-			return f.recon(sql)
+			return f.recon(sql, tree)
 		})
 	}
 }
@@ -210,7 +272,17 @@ func sortedCopy(s []string) []string {
 	return out
 }
 
-func TestCollectProvenanceTreeGuids(t *testing.T) {
+// collect runs pass 1 against f with the default node cap.
+func (f *fakeLineage) collect(t *testing.T, p parser.ProvenanceParams) *provenanceTree {
+	t.Helper()
+	tree, err := f.handler().collectProvenanceTree(context.Background(), p, pgrOpts(), parser.MaxProvenanceNodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tree
+}
+
+func TestCollectProvenanceTree(t *testing.T) {
 	// up -> root -> a -> b -> c, root -> d.
 	lineage := func() *fakeLineage {
 		return newFakeLineage(">up", "up>root", "root>a", "a>b", "b>c", "root>d")
@@ -225,34 +297,99 @@ func TestCollectProvenanceTreeGuids(t *testing.T) {
 		{"forward", "a", 5, "forward", []string{"a", "b", "c"}},
 		{"forward depth-limited", "root", 1, "forward", []string{"root", "a", "d"}},
 		{"backward walks parents", "b", 5, "backward", []string{"b", "a", "root", "up"}},
-		{"both directions", "a", 1, "both", []string{"a", "b", "root"}},
-		{"unknown direction means both", "a", 1, "", []string{"a", "b", "root"}},
+		{"both directions, ancestors first", "a", 1, "both", []string{"a", "root", "b"}},
+		{"unknown direction means both", "a", 1, "", []string{"a", "root", "b"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := lineage()
-			got, err := f.handler().collectProvenanceTreeGuids(context.Background(), parser.ProvenanceParams{Start: tc.start, Depth: tc.depth, Direction: tc.direction}, pgrOpts())
-			if err != nil {
-				t.Fatal(err)
+			tree := lineage().collect(t, parser.ProvenanceParams{Start: tc.start, Depth: tc.depth, Direction: tc.direction})
+			if fmt.Sprint(tree.order) != fmt.Sprint(tc.want) {
+				t.Errorf("got %v, want %v", tree.order, tc.want)
 			}
-			if got[0] != tc.start {
-				t.Errorf("the seed must lead the guid set, got %v", got)
-			}
-			if fmt.Sprint(sortedCopy(got)) != fmt.Sprint(sortedCopy(tc.want)) {
-				t.Errorf("got %v, want %v", got, tc.want)
+			if tree.truncated {
+				t.Error("a small tree is not truncated")
 			}
 		})
 	}
 }
 
+// A polling loop: the seed runs `cmd /c tasklist | findstr` every few seconds,
+// and each cmd starts its own tasklist. Identical siblings collapse into one
+// node, a group's children are the union of its members' children, and a
+// distinct command line or a unique grandchild under one member stays its own
+// node, attached to the group.
+func TestCollectProvenanceTreeCollapsesRepeatedChildren(t *testing.T) {
+	f := newFakeLineage(">root")
+	var cmds, lists []string
+	for i := 0; i < 300; i++ {
+		c, l := fmt.Sprintf("cmd%03d", i), fmt.Sprintf("list%03d", i)
+		f.addProc("root", c)
+		f.addProc(c, l)
+		cmds, lists = append(cmds, c), append(lists, l)
+	}
+	f.same("cmd.exe", "cmd /c tasklist", cmds...)
+	f.same("tasklist.exe", "tasklist", lists...)
+	f.addProc("root", "netuse1")
+	f.same("net.exe", "net use \\\\dc01 /user:alice", "netuse1")
+	f.addProc("root", "netuse2")
+	f.same("net.exe", "net use \\\\dc01 /user:bob", "netuse2")
+	f.addProc("cmd137", "evil") // one member's unique child
+
+	tree := f.collect(t, parser.ProvenanceParams{Start: "root", Depth: 5, Direction: "forward"})
+	want := []string{"root", "cmd000", "netuse1", "netuse2", "list000", "evil"}
+	if fmt.Sprint(tree.order) != fmt.Sprint(want) {
+		t.Fatalf("nodes %v, want %v", tree.order, want)
+	}
+	if tree.size["cmd000"] != 300 || tree.size["list000"] != 300 || tree.size["netuse1"] != 1 {
+		t.Errorf("sizes cmd=%d list=%d netuse1=%d", tree.size["cmd000"], tree.size["list000"], tree.size["netuse1"])
+	}
+	if tree.node("cmd137") != "cmd000" || tree.node("list299") != "list000" || tree.node("evil") != "evil" {
+		t.Error("members must map onto their group's node")
+	}
+	if tree.nMember != 1+300+300+2+1 || tree.truncated {
+		t.Errorf("%d members (truncated=%v); every process is kept behind its node", tree.nMember, tree.truncated)
+	}
+	if first, last := tree.firstMs["cmd000"], tree.lastMs["cmd000"]; first != f.createMs["cmd000"] || last != f.createMs["cmd299"] {
+		t.Errorf("group span %d..%d", first, last)
+	}
+
+	tbl := tree.table()
+	if tbl.Name != parser.ProvenanceTreeTable || len(tbl.Rows) != tree.nMember {
+		t.Fatalf("tree table %s has %d rows", tbl.Name, len(tbl.Rows))
+	}
+	nodeOf := map[string]string{}
+	for _, r := range tbl.Rows {
+		nodeOf[r[0]] = r[1]
+	}
+	if nodeOf["cmd137"] != "cmd000" || nodeOf["evil"] != "evil" || nodeOf["root"] != "root" {
+		t.Error("the tree table must map every member onto its node, and each node onto itself")
+	}
+}
+
+// Ancestors get their own budget: they are walked before the descendants, so a
+// subtree that fills the node cap can no longer push them out.
+func TestCollectProvenanceTreeAncestorsSurviveWideSubtree(t *testing.T) {
+	f := newFakeLineage(">explorer", "explorer>root")
+	for i := 0; i < parser.MaxProvenanceNodes+50; i++ {
+		f.addProc("root", fmt.Sprintf("c%05d", i)) // all distinct, nothing collapses
+	}
+	tree := f.collect(t, parser.ProvenanceParams{Start: "root", Depth: 3})
+	if len(tree.order) != parser.MaxProvenanceNodes || !tree.truncated {
+		t.Fatalf("collected %d nodes (truncated=%v), want the cap %d", len(tree.order), tree.truncated, parser.MaxProvenanceNodes)
+	}
+	if tree.order[1] != "explorer" {
+		t.Errorf("the ancestor must be walked first, got %v", tree.order[:3])
+	}
+}
+
 // Malformed lineage (a guid reused as its own ancestor) must terminate: the
 // seen-guard visits each guid once in either direction.
-func TestCollectProvenanceTreeGuidsCycle(t *testing.T) {
+func TestCollectProvenanceTreeCycle(t *testing.T) {
 	for _, dir := range []string{"forward", "backward"} {
 		f := newFakeLineage("x>y", "y>x")
-		got, err := f.handler().collectProvenanceTreeGuids(context.Background(), parser.ProvenanceParams{Start: "x", Depth: 50, Direction: dir}, pgrOpts())
-		if err != nil || fmt.Sprint(got) != "[x y]" {
-			t.Errorf("%s: got %v, %v", dir, got, err)
+		tree := f.collect(t, parser.ProvenanceParams{Start: "x", Depth: 50, Direction: dir})
+		if fmt.Sprint(tree.order) != "[x y]" {
+			t.Errorf("%s: got %v", dir, tree.order)
 		}
 		if n := f.kinds()["hop"]; n > 3 {
 			t.Errorf("%s: %d hops; the walk kept going after the frontier emptied", dir, n)
@@ -262,33 +399,32 @@ func TestCollectProvenanceTreeGuidsCycle(t *testing.T) {
 
 // A guid seen only in leaf logs (never as a process_creation) is not a tree
 // anchor: no traversal, no scoring on a phantom root.
-func TestCollectProvenanceTreeGuidsMissingSeed(t *testing.T) {
+func TestCollectProvenanceTreeMissingSeed(t *testing.T) {
 	f := newFakeLineage(">root", "root>a")
-	got, err := f.handler().collectProvenanceTreeGuids(context.Background(), parser.ProvenanceParams{Start: "ghost", Depth: 5}, pgrOpts())
-	if err != nil || got != nil {
-		t.Fatalf("got %v, %v; want no tree", got, err)
+	if tree := f.collect(t, parser.ProvenanceParams{Start: "ghost", Depth: 5}); tree != nil {
+		t.Fatalf("got %v; want no tree", tree.order)
 	}
 	if n := f.kinds()["hop"]; n != 1 {
 		t.Errorf("%d hop queries for a missing seed, want only the seed check", n)
 	}
 }
 
-func TestCollectProvenanceTreeGuidsErrors(t *testing.T) {
+func TestCollectProvenanceTreeErrors(t *testing.T) {
 	f := newFakeLineage(">root", "root>a", "a>b")
 	f.failHop["a"] = true
-	if _, err := f.handler().collectProvenanceTreeGuids(context.Background(), parser.ProvenanceParams{Start: "root", Depth: 5, Direction: "forward"}, pgrOpts()); err == nil {
+	if _, err := f.handler().collectProvenanceTree(context.Background(), parser.ProvenanceParams{Start: "root", Depth: 5, Direction: "forward"}, pgrOpts(), parser.MaxProvenanceNodes); err == nil {
 		t.Error("a failed hop must fail the traversal, not return a truncated tree")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
-	cancelAfterSeed := handlerAnswering(func(sql string) ([]map[string]interface{}, error) {
+	cancelAfterSeed := handlerAnswering(func(string, map[string]storage.ExternalTable) ([]map[string]interface{}, error) {
 		calls++
 		cancel()
-		return []map[string]interface{}{{"process_guid": "root", "parent_guid": ""}}, nil
+		return []map[string]interface{}{{"process_guid": "root", "parent_guid": "up"}}, nil
 	})
-	if _, err := cancelAfterSeed.collectProvenanceTreeGuids(ctx,
-		parser.ProvenanceParams{Start: "root", Depth: 5}, pgrOpts()); !errors.Is(err, context.Canceled) {
+	if _, err := cancelAfterSeed.collectProvenanceTree(ctx,
+		parser.ProvenanceParams{Start: "root", Depth: 5}, pgrOpts(), parser.MaxProvenanceNodes); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 	if calls != 1 {
@@ -296,81 +432,72 @@ func TestCollectProvenanceTreeGuidsErrors(t *testing.T) {
 	}
 }
 
-// The traversal stops at MaxProvenanceGuids however wide a level is.
-func TestCollectProvenanceTreeGuidsCap(t *testing.T) {
-	edges := []string{">root"}
-	for i := 0; i < parser.MaxProvenanceGuids+50; i++ {
-		edges = append(edges, fmt.Sprintf("root>c%05d", i))
-	}
-	f := newFakeLineage(edges...)
-	got, err := f.handler().collectProvenanceTreeGuids(context.Background(), parser.ProvenanceParams{Start: "root", Depth: 3, Direction: "forward"}, pgrOpts())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != parser.MaxProvenanceGuids {
-		t.Errorf("collected %d guids, want the cap %d", len(got), parser.MaxProvenanceGuids)
-	}
-}
-
 func peer(guid string, anomaly float64) parser.ReconnectPeer {
 	return parser.ReconnectPeer{ReconType: "net", PeerGUID: guid, SrcGUID: "root", ObjectID: "net:" + guid, Label: guid, Anomaly: anomaly}
 }
 
-func TestExpandReconnectionPeers(t *testing.T) {
-	tree := []string{"root", "a"}
+// baseTree is root -> a, collected from f (which must contain it).
+func baseTree(t *testing.T, f *fakeLineage) *provenanceTree {
+	t.Helper()
+	tree := newProvenanceTree()
+	tree.add([]string{"root"}, 1, 0, 0, parser.MaxProvenanceNodes)
+	tree.add([]string{"a"}, 1, 0, 0, parser.MaxProvenanceNodes)
+	return tree
+}
 
+func TestExpandReconnectionPeers(t *testing.T) {
 	t.Run("nothing severe enough expands", func(t *testing.T) {
 		f := newFakeLineage()
-		got := f.handler().expandReconnectionPeers(context.Background(), tree, []parser.ReconnectPeer{peer("p1", 0.79)}, pgrOpts())
-		if fmt.Sprint(got) != fmt.Sprint(tree) || len(f.kinds()) != 0 {
-			t.Errorf("got %v with queries %v; want the tree unchanged and no queries", got, f.kinds())
-		}
-		got[0] = "mutated"
-		if tree[0] != "root" {
-			t.Error("the result aliases the caller's tree slice")
+		tree := baseTree(t, f)
+		f.handler().expandReconnectionPeers(context.Background(), tree, []parser.ReconnectPeer{peer("p1", 0.79)}, pgrOpts())
+		if fmt.Sprint(tree.order) != "[root a]" || len(f.kinds()) != 0 {
+			t.Errorf("got %v with queries %v; want the tree unchanged and no queries", tree.order, f.kinds())
 		}
 	})
 
 	t.Run("top five by severity then guid, merged in rank order", func(t *testing.T) {
 		f := newFakeLineage(">p1", "p1>p1c", ">p2", "p2>a", ">p3", ">p4", ">p5", ">p6", ">p7", "p7>p7c")
+		tree := baseTree(t, f)
 		peers := []parser.ReconnectPeer{
 			peer("p6", 0.85), peer("p5", 0.85), peer("p4", 0.85),
 			peer("p3", 0.9), peer("p2", 0.85), peer("p1", 0.85),
 			peer("p1", 1.0), // a peer's best row ranks it
 			peer("p7", 0.5), // below the expansion bar
 		}
-		got := f.handler().expandReconnectionPeers(context.Background(), tree, peers, pgrOpts())
+		f.handler().expandReconnectionPeers(context.Background(), tree, peers, pgrOpts())
 		// Rank: p1 (1.0), p3 (0.9), then 0.85 ties by guid: p2, p4, p5. p6 is sixth.
 		want := []string{"root", "a", "p1", "p1c", "p3", "p2", "p4", "p5"}
-		if fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Errorf("got %v, want %v (p2's child a is already in the tree)", got, want)
+		if fmt.Sprint(tree.order) != fmt.Sprint(want) {
+			t.Errorf("got %v, want %v (p2's child a is already in the tree)", tree.order, want)
 		}
 	})
 
 	t.Run("a failed expansion is skipped, not fatal", func(t *testing.T) {
 		f := newFakeLineage(">p1", "p1>p1c", ">p2", "p2>p2c")
 		f.failHop["p1"] = true
-		got := f.handler().expandReconnectionPeers(context.Background(), tree, []parser.ReconnectPeer{peer("p1", 1), peer("p2", 1)}, pgrOpts())
-		if fmt.Sprint(got) != fmt.Sprint([]string{"root", "a", "p2", "p2c"}) {
-			t.Errorf("got %v", got)
+		tree := baseTree(t, f)
+		f.handler().expandReconnectionPeers(context.Background(), tree, []parser.ReconnectPeer{peer("p1", 1), peer("p2", 1)}, pgrOpts())
+		if fmt.Sprint(tree.order) != "[root a p2 p2c]" {
+			t.Errorf("got %v", tree.order)
 		}
 	})
 
-	t.Run("guid cap", func(t *testing.T) {
-		big := make([]string, reconnectExpandMaxGuids-1)
-		for i := range big {
-			big[i] = fmt.Sprintf("t%04d", i)
-		}
+	t.Run("node cap", func(t *testing.T) {
 		f := newFakeLineage(">p1", "p1>x", "p1>y")
-		got := f.handler().expandReconnectionPeers(context.Background(), big, []parser.ReconnectPeer{peer("p1", 1)}, pgrOpts())
-		if len(got) != reconnectExpandMaxGuids {
-			t.Errorf("expanded to %d guids, want the cap %d", len(got), reconnectExpandMaxGuids)
+		tree := newProvenanceTree()
+		for i := 0; i < reconnectExpandMaxNodes-1; i++ {
+			tree.add([]string{fmt.Sprintf("t%04d", i)}, 1, 0, 0, reconnectExpandMaxNodes)
+		}
+		f.handler().expandReconnectionPeers(context.Background(), tree, []parser.ReconnectPeer{peer("p1", 1)}, pgrOpts())
+		if len(tree.order) != reconnectExpandMaxNodes {
+			t.Errorf("expanded to %d nodes, want the cap %d", len(tree.order), reconnectExpandMaxNodes)
 		}
 
-		full := append(big, "t-last")
 		f = newFakeLineage(">p1", "p1>x")
-		if got := f.handler().expandReconnectionPeers(context.Background(), full, []parser.ReconnectPeer{peer("p1", 1)}, pgrOpts()); len(got) != len(full) || len(f.kinds()) != 0 {
-			t.Errorf("a tree already at the cap must not expand: %d guids, queries %v", len(got), f.kinds())
+		before := len(tree.order)
+		f.handler().expandReconnectionPeers(context.Background(), tree, []parser.ReconnectPeer{peer("p1", 1)}, pgrOpts())
+		if len(tree.order) != before || len(f.kinds()) != 0 {
+			t.Errorf("a tree already at the cap must not expand: %d nodes, queries %v", len(tree.order), f.kinds())
 		}
 	})
 
@@ -378,9 +505,10 @@ func TestExpandReconnectionPeers(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		f := newFakeLineage(">p1", "p1>x")
-		got := f.handler().expandReconnectionPeers(ctx, tree, []parser.ReconnectPeer{peer("p1", 1)}, pgrOpts())
-		if len(got) != len(tree) || len(f.kinds()) != 0 {
-			t.Errorf("got %v with queries %v", got, f.kinds())
+		tree := baseTree(t, f)
+		f.handler().expandReconnectionPeers(ctx, tree, []parser.ReconnectPeer{peer("p1", 1)}, pgrOpts())
+		if len(tree.order) != 2 || len(f.kinds()) != 0 {
+			t.Errorf("got %v with queries %v", tree.order, f.kinds())
 		}
 	})
 }
@@ -397,9 +525,23 @@ func scoreOptsFor(p parser.ProvenanceParams) parser.QueryOptions {
 	return o
 }
 
+// scanOf is the statement pgr runs to score: the scoring SQL, spawn first, bounded.
+func scanOf(scoring string) string {
+	return fmt.Sprintf("SELECT * FROM (%s) AS _d ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC LIMIT %d", scoring, provenanceMaxScanRows)
+}
+
+// treeRows renders an external tree table as "guid>node" pairs.
+func treeRows(tbl storage.ExternalTable) []string {
+	var out []string
+	for _, r := range tbl.Rows {
+		out = append(out, r[0]+">"+r[1])
+	}
+	return out
+}
+
 func TestProvenanceScoreSQLRequiresScope(t *testing.T) {
 	f := newFakeLineage(">root")
-	_, err := f.handler().provenanceScoreSQL(context.Background(), pgrParams(false, false), parser.QueryOptions{})
+	_, _, err := f.handler().provenanceScoreSQL(context.Background(), pgrParams(false, false), parser.QueryOptions{})
 	if err == nil || !strings.Contains(err.Error(), "fractal scoping is required") {
 		t.Fatalf("err = %v", err)
 	}
@@ -410,17 +552,18 @@ func TestProvenanceScoreSQLRequiresScope(t *testing.T) {
 
 func TestProvenanceScoreSQLEmptyTree(t *testing.T) {
 	f := newFakeLineage(">other")
-	sql, err := f.handler().provenanceScoreSQL(context.Background(), pgrParams(true, true), pgrOpts())
-	if err != nil || sql != provenanceEmptyScoreSQL {
-		t.Fatalf("got %q, %v; want the zero-row stub", sql, err)
+	sql, warnings, err := f.handler().provenanceScoreSQL(context.Background(), pgrParams(true, true), pgrOpts())
+	if err != nil || sql != provenanceEmptyScoreSQL || warnings != nil {
+		t.Fatalf("got %q, %v, %v; want the zero-row stub", sql, warnings, err)
 	}
 	if k := f.kinds(); k["hop"] != 1 || len(k) != 1 {
 		t.Errorf("queries %v; an empty tree must stop after the seed check", k)
 	}
 }
 
-// Per-edge scoring (diffuse=false): the pass-2 SQL is built from the tree, the
-// fleet size, and the tree's own edge keys, under pgr()'s row budget.
+// Per-edge scoring (diffuse=false): pass 2 is built from the fleet size and the
+// tree's own edge keys under pgr()'s row budget, runs with the tree attached,
+// and its rows come back as a literal source.
 func TestProvenanceScoreSQLPerEdge(t *testing.T) {
 	p := pgrParams(false, false)
 	f := newFakeLineage(">root", "root>a", "a>b")
@@ -434,19 +577,29 @@ func TestProvenanceScoreSQLPerEdge(t *testing.T) {
 			{"fkey_src": "", "fkey_tgt": "t1"},
 		}, nil
 	}
-	got, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+	var scanned string
+	var tree []string
+	f.scan = func(sql string, tbl storage.ExternalTable) ([]map[string]interface{}, error) {
+		scanned, tree = sql, treeRows(tbl)
+		return []map[string]interface{}{spawnRow("root", "a"), spawnRow("a", "b"), leafRow("b", "net:203.0.113.9", 0.9)}, nil
+	}
+	got, warnings, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := parser.BuildProvenanceScoringSQL([]string{"root", "a", "b"}, p.Threshold, p.EdgeTypes, false,
-		parser.ProvenanceBaseline{TotalHosts: 12, SrcKeys: []string{"s1", ""}, TgtKeys: []string{"t1", "t2"}}, scoreOptsFor(p))
-	if err != nil {
-		t.Fatal(err)
+	start, end := time.UnixMilli(f.createMs["root"]).UTC(), time.UnixMilli(f.createMs["b"]).UTC()
+	want := parser.BuildProvenanceScoringSQL(p.Threshold, p.EdgeTypes, false,
+		parser.ProvenanceBaseline{TotalHosts: 12, SrcKeys: []string{"s1", ""}, TgtKeys: []string{"t1", "t2"}, NodeStart: start, NodeEnd: end}, scoreOptsFor(p))
+	if scanned != scanOf(want) {
+		t.Errorf("scoring scan differs from the expected build\n got: %.300s\nwant: %.300s", scanned, scanOf(want))
 	}
-	if got != want {
-		t.Errorf("scoring SQL differs from the expected build\n got: %.300s\nwant: %.300s", got, want)
+	if fmt.Sprint(tree) != "[root>root a>a b>b]" {
+		t.Errorf("scan ran with tree %v", tree)
 	}
-	if k := f.kinds(); k["recon"]+k["recon_totals"]+k["scan"] != 0 {
+	if !strings.HasPrefix(got, "SELECT * FROM values('parent String,") || !strings.Contains(got, "'net:203.0.113.9'") || warnings != nil {
+		t.Errorf("rows were not re-emitted as a literal source (warnings %v):\n%.300s", warnings, got)
+	}
+	if k := f.kinds(); k["recon"]+k["recon_totals"] != 0 || k["scan"] != 1 {
 		t.Errorf("reconnect and diffuse are off, yet ran %v", k)
 	}
 }
@@ -456,10 +609,6 @@ func TestProvenanceScoreSQLPerEdge(t *testing.T) {
 // truncated key set would not.
 func TestProvenanceScoreSQLBaselineFallbacks(t *testing.T) {
 	p := pgrParams(false, false)
-	want, err := parser.BuildProvenanceScoringSQL([]string{"root", "a"}, p.Threshold, p.EdgeTypes, false, parser.ProvenanceBaseline{}, scoreOptsFor(p))
-	if err != nil {
-		t.Fatal(err)
-	}
 	cases := map[string]func() ([]map[string]interface{}, error){
 		"lookup fails": func() ([]map[string]interface{}, error) { return nil, errors.New("boom") },
 		"too many keys": func() ([]map[string]interface{}, error) {
@@ -475,150 +624,156 @@ func TestProvenanceScoreSQLBaselineFallbacks(t *testing.T) {
 			f := newFakeLineage(">root", "root>a")
 			f.totalHosts = func() ([]map[string]interface{}, error) { return nil, errors.New("hosts down") }
 			f.edgeKeys = func(string) ([]map[string]interface{}, error) { return keys() }
-			got, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
-			if err != nil {
+			var scanned string
+			f.scan = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
+				scanned = sql
+				return nil, nil
+			}
+			if _, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts()); err != nil {
 				t.Fatal(err)
 			}
-			if got != want {
+			bl := parser.ProvenanceBaseline{NodeStart: time.UnixMilli(1).UTC(), NodeEnd: time.UnixMilli(2).UTC()}
+			if want := scanOf(parser.BuildProvenanceScoringSQL(p.Threshold, p.EdgeTypes, false, bl, scoreOptsFor(p))); scanned != want {
 				t.Error("fallback did not score against the unrestricted baseline")
 			}
 		})
 	}
 }
 
-// Diffusion executes the scoring SQL, propagates in Go, and re-emits the
-// survivors. The scan must wrap the scoring SQL before limiting it: with
-// reconnection appended it ends in UNION ALL, and ClickHouse binds a bare
-// trailing LIMIT to the last member only.
+// Diffusion scores with leaves down to a floor, propagates in Go, and re-emits
+// the survivors.
 func TestProvenanceScoreSQLDiffusion(t *testing.T) {
 	p := pgrParams(true, false)
 	var scanned string
 	f := newFakeLineage(">root", "root>a")
-	f.scan = func(sql string) ([]map[string]interface{}, error) {
+	f.scan = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
 		scanned = sql
-		return []map[string]interface{}{spawnRow("root", "a"), leafRow("a", "net:203.0.113.9", 1)}, nil
+		return []map[string]interface{}{spawnRow("root", "a"), leafRow("a", "net:203.0.113.9", 1), leafRow("a", "dns:example.test", 0)}, nil
 	}
-	got, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+	got, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
 	if err != nil {
 		t.Fatal(err)
 	}
-	scoring, err := parser.BuildProvenanceScoringSQL([]string{"root", "a"}, p.Threshold, p.EdgeTypes, true, parser.ProvenanceBaseline{}, scoreOptsFor(p))
-	if err != nil {
-		t.Fatal(err)
+	bl := parser.ProvenanceBaseline{NodeStart: time.UnixMilli(1).UTC(), NodeEnd: time.UnixMilli(2).UTC()}
+	if want := scanOf(parser.BuildProvenanceScoringSQL(p.Threshold, p.EdgeTypes, true, bl, scoreOptsFor(p))); scanned != want {
+		t.Errorf("diffusion scan is not the wrapped, bounded diffuse scoring SQL:\n%.400s", scanned)
 	}
-	wantScan := fmt.Sprintf("SELECT * FROM (%s) AS _d ORDER BY (event_type = 'spawn') DESC, anomaly_score DESC LIMIT %d", scoring, diffuseMaxScanRows)
-	if scanned != wantScan {
-		t.Errorf("diffusion scan is not the wrapped, bounded scoring SQL:\n%.400s", scanned)
-	}
-	if !strings.HasPrefix(got, "SELECT ") || !strings.Contains(got, " UNION ALL ") || !strings.Contains(got, "'net:203.0.113.9'") {
-		t.Errorf("survivors were not re-emitted as a literal source:\n%.400s", got)
+	if !strings.Contains(got, "'net:203.0.113.9'") || strings.Contains(got, "dns:example.test") {
+		t.Errorf("survivors were not re-emitted, or a sub-threshold leaf survived:\n%.400s", got)
 	}
 }
 
-// Diffusion is best-effort: a failed scan or a tree too large to inline falls
-// back to per-edge scoring, so pgr() still returns the full graph. A cancelled
-// request is not a failure to paper over.
+// Diffusion is best-effort: a failed scan falls back to per-edge scoring, so
+// pgr() still returns the graph. A cancelled request is not a failure to paper
+// over, and a per-edge failure is an error.
 func TestProvenanceScoreSQLDiffusionFallbacks(t *testing.T) {
 	p := pgrParams(true, false)
-	perEdge, err := parser.BuildProvenanceScoringSQL([]string{"root", "a"}, p.Threshold, p.EdgeTypes, false, parser.ProvenanceBaseline{}, scoreOptsFor(p))
-	if err != nil {
-		t.Fatal(err)
-	}
+	bl := parser.ProvenanceBaseline{NodeStart: time.UnixMilli(1).UTC(), NodeEnd: time.UnixMilli(2).UTC()}
+	perEdge := scanOf(parser.BuildProvenanceScoringSQL(p.Threshold, p.EdgeTypes, false, bl, scoreOptsFor(p)))
 
-	t.Run("scan fails", func(t *testing.T) {
+	t.Run("diffusion scan fails", func(t *testing.T) {
 		f := newFakeLineage(">root", "root>a")
-		f.scan = func(string) ([]map[string]interface{}, error) { return nil, errors.New("code 241") }
-		got, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
-		if err != nil || got != perEdge {
-			t.Errorf("got err=%v, per-edge fallback=%v", err, got == perEdge)
+		f.scan = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
+			if sql != perEdge {
+				return nil, errors.New("code 241")
+			}
+			return []map[string]interface{}{spawnRow("root", "a")}, nil
+		}
+		got, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+		if err != nil || !strings.Contains(got, "'root', 'a'") || f.kinds()["scan"] != 2 {
+			t.Errorf("got err=%v, scans=%d, sql=%.200s", err, f.kinds()["scan"], got)
 		}
 	})
 
-	t.Run("backbone too large to inline", func(t *testing.T) {
+	t.Run("both scans fail", func(t *testing.T) {
 		f := newFakeLineage(">root", "root>a")
-		f.scan = func(string) ([]map[string]interface{}, error) {
-			var rows []map[string]interface{}
-			for i := 0; i < 2000; i++ {
-				r := spawnRow("root", fmt.Sprintf("c%04d", i))
-				r["command_line"] = strings.Repeat("x", 200)
-				rows = append(rows, r)
-			}
-			return rows, nil
+		f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+			return nil, errors.New("code 241")
 		}
-		got, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
-		if err != nil || got != perEdge {
-			t.Errorf("got err=%v, per-edge fallback=%v (len %d)", err, got == perEdge, len(got))
+		if _, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts()); err == nil {
+			t.Error("a failed per-edge scan must fail pgr()")
 		}
 	})
 
 	t.Run("cancelled during the scan", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		f := newFakeLineage(">root", "root>a")
-		f.scan = func(string) ([]map[string]interface{}, error) {
+		f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
 			cancel()
 			return nil, context.Canceled
 		}
-		if _, err := f.handler().provenanceScoreSQL(ctx, p, pgrOpts()); !errors.Is(err, context.Canceled) {
+		if _, _, err := f.handler().provenanceScoreSQL(ctx, p, pgrOpts()); !errors.Is(err, context.Canceled) {
 			t.Errorf("err = %v, want the cancellation", err)
+		}
+		if f.kinds()["scan"] != 1 {
+			t.Error("a cancelled request must not retry")
 		}
 	})
 }
 
 // Reconnection: the rarity-gate totals are read once and passed into the
-// reverse lookup as literals, severe peers are expanded into the scored guid
-// set, and every admitted peer's bridge edges ride the scoring SQL.
+// reverse lookup as literals, which runs against the tree's members. Severe
+// peers are expanded into the scored tree, and bridges attach to the node of
+// whichever member touched the artifact.
 func TestProvenanceScoreSQLReconnection(t *testing.T) {
 	p := pgrParams(false, true)
 	opts := pgrOpts()
 	var reconSQL string
-	f := newFakeLineage(">root", "root>a", ">peer", "peer>peerkid")
+	var reconTree, scanTree []string
+	f := newFakeLineage(">root", "root>a", "root>a2", ">peer", "peer>peerkid")
+	f.same("w.exe", "w.exe --poll", "a", "a2")
 	f.reconTotals = func() ([]map[string]interface{}, error) {
 		return []map[string]interface{}{{"total_hosts": uint64(40), "total_images": uint64(9)}}, nil
 	}
-	f.recon = func(sql string) ([]map[string]interface{}, error) {
-		reconSQL = sql
+	f.recon = func(sql string, tbl storage.ExternalTable) ([]map[string]interface{}, error) {
+		reconSQL, reconTree = sql, treeRows(tbl)
 		return []map[string]interface{}{
-			{"recon_type": "net", "peer_guid": "peer", "src_guid": "a", "object_id": "net:198.51.100.7", "label": "198.51.100.7", "anomaly": 0.85, "peer_image": "evil.exe"},
+			{"recon_type": "net", "peer_guid": "peer", "src_guid": "a2", "object_id": "net:198.51.100.7", "label": "198.51.100.7", "anomaly": 0.85, "peer_image": "evil.exe"},
 			{"recon_type": "net", "peer_guid": "", "src_guid": "a", "object_id": "net:x"}, // no peer: dropped
 		}, nil
 	}
-	got, err := f.handler().provenanceScoreSQL(context.Background(), p, opts)
+	f.scan = func(_ string, tbl storage.ExternalTable) ([]map[string]interface{}, error) {
+		scanTree = treeRows(tbl)
+		return []map[string]interface{}{spawnRow("root", "a"), spawnRow("peer", "peerkid")}, nil
+	}
+	got, _, err := f.handler().provenanceScoreSQL(context.Background(), p, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	wantRecon, err := parser.BuildReconnectionSQL([]string{"root", "a"}, p, 40, 9, opts)
-	if err != nil {
-		t.Fatal(err)
+	if reconSQL != parser.BuildReconnectionSQL(p, 40, 9, opts) {
+		t.Error("reverse lookup was not built from the fetched rarity-gate totals")
 	}
-	if reconSQL != wantRecon {
-		t.Error("reverse lookup was not built from the tree and the fetched rarity-gate totals")
+	if fmt.Sprint(reconTree) != "[root>root a>a a2>a]" {
+		t.Errorf("reverse lookup ran against %v", reconTree)
 	}
-
-	peers := []parser.ReconnectPeer{{ReconType: "net", PeerGUID: "peer", SrcGUID: "a", ObjectID: "net:198.51.100.7", Label: "198.51.100.7", Anomaly: 0.85, PeerImage: "evil.exe"}}
-	base, err := parser.BuildProvenanceScoringSQL([]string{"root", "a", "peer", "peerkid"}, p.Threshold, p.EdgeTypes, false, parser.ProvenanceBaseline{}, scoreOptsFor(p))
-	if err != nil {
-		t.Fatal(err)
+	if fmt.Sprint(scanTree) != "[root>root a>a a2>a peer>peer peerkid>peerkid]" {
+		t.Errorf("scoring did not cover the expanded peer: %v", scanTree)
 	}
-	if want := parser.AppendReconnectionEdges(base, peers); got != want {
-		t.Errorf("scoring SQL does not cover the expanded peer and its bridge edges\n got: %.300s\nwant: %.300s", got, want)
+	for _, want := range []string{"('a', 'net:198.51.100.7', '198.51.100.7', 'reconnect_net'", "('peer', 'net:198.51.100.7', '198.51.100.7', 'reconnect_net'"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing bridge %s in:\n%.600s", want, got)
+		}
+	}
+	if !strings.Contains(got, "'root', 'a', '', 'spawn', 0.5, 0.5, 'transition', '', 0, 0, 0, 0, 2, 4, 'l', 't', 'f', '', '', 'h', 'p.exe', 2, '") {
+		t.Errorf("the collapsed node's spawn row must carry its size:\n%.600s", got)
 	}
 }
 
 func TestProvenanceScoreSQLReconnectionFailures(t *testing.T) {
 	p := pgrParams(false, true)
-	base, err := parser.BuildProvenanceScoringSQL([]string{"root", "a"}, p.Threshold, p.EdgeTypes, false, parser.ProvenanceBaseline{}, scoreOptsFor(p))
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	t.Run("feature failure falls back to the base tree", func(t *testing.T) {
 		f := newFakeLineage(">root", "root>a")
 		f.reconTotals = func() ([]map[string]interface{}, error) { return nil, errors.New("proc_freq missing") }
-		f.recon = func(string) ([]map[string]interface{}, error) { return nil, errors.New("code 36") }
-		got, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
-		if err != nil || got != base {
-			t.Errorf("err=%v, base tree=%v", err, got == base)
+		f.recon = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+			return nil, errors.New("code 36")
+		}
+		f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+			return []map[string]interface{}{spawnRow("root", "a")}, nil
+		}
+		got, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+		if err != nil || !strings.Contains(got, "'root', 'a'") || strings.Contains(got, "reconnect_") {
+			t.Errorf("err=%v, sql=%.200s", err, got)
 		}
 		if f.kinds()["recon"] != 1 {
 			t.Error("a failed totals lookup must still attempt reconnection at the floor gate")
@@ -628,14 +783,47 @@ func TestProvenanceScoreSQLReconnectionFailures(t *testing.T) {
 	t.Run("cancellation is surfaced", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		f := newFakeLineage(">root", "root>a")
-		f.recon = func(string) ([]map[string]interface{}, error) {
+		f.recon = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
 			cancel()
 			return nil, context.Canceled
 		}
-		if _, err := f.handler().provenanceScoreSQL(ctx, p, pgrOpts()); !errors.Is(err, context.Canceled) {
+		if _, _, err := f.handler().provenanceScoreSQL(ctx, p, pgrOpts()); !errors.Is(err, context.Canceled) {
 			t.Errorf("err = %v, want the cancellation", err)
 		}
 	})
+}
+
+// The row limit and the node cap interact: a tree with more spawn edges than
+// limit= used to return spawn rows only. Now leaves keep their share of the
+// budget, and pgr says what it left out.
+func TestProvenanceScoreSQLLimitKeepsLeaves(t *testing.T) {
+	p := pgrParams(false, false)
+	p.Limit = 40
+	f := newFakeLineage(">root")
+	var rows []map[string]interface{}
+	for i := 0; i < 60; i++ {
+		c := fmt.Sprintf("c%02d", i)
+		f.addProc("root", c)
+		rows = append(rows, spawnRow("root", c))
+	}
+	rows = append(rows, leafRow("c03", "net:203.0.113.9", 0.95), leafRow("c59", "file:x", 0.99))
+	f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) { return rows, nil }
+	got, warnings, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "'net:203.0.113.9'") {
+		t.Error("a leaf of a drawn process must survive the row limit")
+	}
+	if strings.Contains(got, "'file:x'") {
+		t.Error("a leaf of a process that is not drawn must not be emitted")
+	}
+	if n := strings.Count(got, "'spawn'"); n != 39 {
+		t.Errorf("%d spawn rows; the rest of the budget goes back to structure", n)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "showing 40 of 62 edges") {
+		t.Errorf("warnings %v", warnings)
+	}
 }
 
 // pgrCommand parses q and returns its source command, so arguments are bound the
@@ -741,5 +929,51 @@ func TestReconPeerArtifact(t *testing.T) {
 		if got := reconPeerArtifact(tc.peer); got != tc.want {
 			t.Errorf("reconPeerArtifact(%+v) = %q, want %q", tc.peer, got, tc.want)
 		}
+	}
+}
+
+// Filling the node cap with the last group of a level, while that level still has children to
+// walk, is a truncation too.
+func TestCollectProvenanceTreeCapAtEndOfLevel(t *testing.T) {
+	f := newFakeLineage(">root")
+	for i := 0; i < parser.MaxProvenanceNodes-1; i++ {
+		c := fmt.Sprintf("c%05d", i)
+		f.addProc("root", c)
+		f.addProc(c, c+"-kid")
+	}
+	tree := f.collect(t, parser.ProvenanceParams{Start: "root", Depth: 3, Direction: "forward"})
+	if len(tree.order) != parser.MaxProvenanceNodes || !tree.truncated {
+		t.Errorf("%d nodes, truncated=%v; the cap cut the next level", len(tree.order), tree.truncated)
+	}
+}
+
+// The member cap keeps the walk bounded, but a group's size stays the number of processes it
+// stands for; only members another node already holds are taken off.
+func TestProvenanceTreeMemberCapKeepsGroupSize(t *testing.T) {
+	tree := newProvenanceTree()
+	tree.add([]string{"held"}, 1, 0, 0, parser.MaxProvenanceNodes)
+	tree.nMember = parser.MaxProvenanceMembers - 2 // room for two more members
+	tree.add([]string{"a", "held", "b", "c", "d"}, 100, 0, 0, parser.MaxProvenanceNodes)
+	if tree.size["a"] != 99 || len(tree.members["a"]) != 2 || !tree.truncated {
+		t.Errorf("size %d, %d members kept, truncated=%v; want 99 (100 less the one held elsewhere), 2, true",
+			tree.size["a"], len(tree.members["a"]), tree.truncated)
+	}
+}
+
+// A scoring scan that fills its row bound may have cut rows; that is a notice, not silence.
+func TestProvenanceScoreSQLScanBoundWarns(t *testing.T) {
+	p := pgrParams(false, false)
+	p.Limit = 20000
+	f := newFakeLineage(">root")
+	f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+		rows := make([]map[string]interface{}, provenanceMaxScanRows)
+		for i := range rows {
+			rows[i] = spawnRow("root", fmt.Sprintf("c%05d", i))
+		}
+		return rows, nil
+	}
+	_, warnings, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "scored more edges than") {
+		t.Errorf("err=%v warnings=%v", err, warnings)
 	}
 }

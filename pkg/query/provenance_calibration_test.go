@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"bifract/pkg/pgrcal"
+	"bifract/pkg/storage"
 	"bifract/pkg/storage/storagetest"
 )
 
@@ -15,13 +16,13 @@ func TestDiffusionFeedsCalibration(t *testing.T) {
 	rec := pgrcal.NewRecorder(pgc.DB())
 
 	f := newFakeLineage(">root", "root>a")
-	f.scan = func(string) ([]map[string]interface{}, error) {
+	f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
 		// The second leaf is below the threshold before and after propagation.
 		return []map[string]interface{}{spawnRow("root", "a"), leafRow("a", "net:203.0.113.9", 1), leafRow("a", "dns:example.test", 0)}, nil
 	}
 	h := f.handler()
 	h.SetPgrRecorder(rec)
-	if _, err := h.provenanceScoreSQL(context.Background(), pgrParams(true, false), pgrOpts()); err != nil {
+	if _, _, err := h.provenanceScoreSQL(context.Background(), pgrParams(true, false), pgrOpts()); err != nil {
 		t.Fatal(err)
 	}
 

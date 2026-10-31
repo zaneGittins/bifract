@@ -623,3 +623,34 @@ func TestConfigureInsertSettings(t *testing.T) {
 		t.Errorf("unparseable = %v, want the default", got)
 	}
 }
+
+// Re-enabling right after disabling can find a detached view still held by a running query;
+// ClickHouse says to retry later, so the ATTACH is retried. Other failures are not.
+func TestReconcileEndpointAnalysisMVsRetriesBusyAttach(t *testing.T) {
+	defer func(d time.Duration) { endpointAttachRetryDelay = d }(endpointAttachRetryDelay)
+	endpointAttachRetryDelay = time.Millisecond
+
+	c, f := newFakeClient()
+	f.On("FROM system.detached_tables", fakedb.Strs("table", "proc_lineage_mv"))
+	busy := 2
+	f.FailExecFunc(func(stmt string) error {
+		if busy > 0 {
+			busy--
+			return fakedb.Exception(57, "Cannot attach table with UUID x, because it was detached but still used by some query. Retry later.")
+		}
+		return nil
+	})
+	if err := c.ReconcileEndpointAnalysisMVs(context.Background(), true); err != nil {
+		t.Fatalf("a busy ATTACH must be retried: %v", err)
+	}
+	if got := f.Executed(); len(got) != 3 || got[2] != "ATTACH TABLE proc_lineage_mv" {
+		t.Errorf("executed %q", got)
+	}
+
+	c, f = newFakeClient()
+	f.On("FROM system.detached_tables", fakedb.Strs("table", "proc_lineage_mv"))
+	f.FailExec("ATTACH", fakedb.Exception(57, "Table already exists"))
+	if err := c.ReconcileEndpointAnalysisMVs(context.Background(), true); err == nil || len(f.Executed()) != 1 {
+		t.Errorf("only the busy case is retried: err=%v executed=%q", err, f.Executed())
+	}
+}
