@@ -25,6 +25,33 @@ const (
 	reconRoleContext = "context" // everything else
 )
 
+// pointBridgesAtSharpestToucher re-points each net/dns peer's tree side at the tree node whose
+// own scored edge to the shared artifact is most anomalous. The reverse lookup names whichever
+// tree process touched it, which may be a browser that resolved the same name as an implant;
+// the bridge is drawn from, and judged by, the implant. Ties go to the lowest node id.
+func pointBridgesAtSharpestToucher(peers []parser.ReconnectPeer, rows []map[string]interface{}) {
+	type toucher struct {
+		node  string
+		score float64
+	}
+	sharpest := map[string]toucher{}
+	for _, r := range rows {
+		et := reconString(r["event_type"])
+		if et == "spawn" || reconString(r["score_basis"]) == "reconnect" {
+			continue
+		}
+		obj, node, score := reconString(r["child"]), reconString(r["parent"]), reconFloat(r["edge_score"])
+		if cur, ok := sharpest[obj]; !ok || score > cur.score || score == cur.score && node < cur.node {
+			sharpest[obj] = toucher{node, score}
+		}
+	}
+	for i, pe := range peers {
+		if t, ok := sharpest[pe.ObjectID]; ok && pe.ObjectID != "" {
+			peers[i].SrcGUID = t.node
+		}
+	}
+}
+
 // classifyReconnections sets recon_role on the bridge rows in rows. A link is a lead when the
 // peer is on another host, the seed's own edge to the shared artifact is anomalous (a dropped
 // file another host ran always is), and the tree process does not share many artifacts. The

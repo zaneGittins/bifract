@@ -1139,3 +1139,44 @@ func TestProvenanceScoreSQLReadsSummary(t *testing.T) {
 		}
 	})
 }
+
+// A small fleet: dozens of peers share the tree's telemetry domains, and one peer on another
+// host shares only its C2, which the lookup names through a browser that resolved it too. The
+// C2 peer is admitted ahead of the telemetry and drawn from the implant as a lead.
+func TestProvenanceScoreSQLSurfacesRareC2(t *testing.T) {
+	p := pgrParams(false, true)
+	f := newFakeLineage(">root", "root>browser", "root>implant")
+	f.recon = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+		var rows []map[string]interface{}
+		for i := 0; i < parser.DefaultReconnectPeers+10; i++ {
+			for _, d := range []string{"g.live.com", "oneclient.sfx.ms"} {
+				rows = append(rows, map[string]interface{}{"recon_type": "dns", "peer_guid": fmt.Sprintf("tel%02d", i), "src_guid": "browser",
+					"object_id": "dns:" + d, "label": d, "anomaly": 0.85, "peer_image": "onedrive.exe", "peer_host": "WS01"})
+			}
+		}
+		return append(rows, map[string]interface{}{"recon_type": "net", "peer_guid": "c2peer", "src_guid": "browser",
+			"object_id": "net:203.0.113.87", "label": "203.0.113.87", "anomaly": 0.85, "peer_image": "qcsvc.exe", "peer_host": "WS03"}), nil
+	}
+	f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+		return []map[string]interface{}{
+			spawnRow("root", "browser"), spawnRow("root", "implant"),
+			leafRow("browser", "net:203.0.113.87", 0.5), leafRow("implant", "net:203.0.113.87", 1),
+			leafRow("browser", "dns:g.live.com", 0.5),
+		}, nil
+	}
+	got, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"('implant', 'net:203.0.113.87', '203.0.113.87', 'reconnect_net'", "('c2peer', 'net:203.0.113.87'"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(got, "('browser', 'net:203.0.113.87', '203.0.113.87', 'reconnect_net'") {
+		t.Error("the C2 bridge must hang off the implant, not the browser")
+	}
+	if !regexp.MustCompile(`\('implant', 'net:203\.0\.113\.87', [^)]*'lead'\)`).MatchString(got) {
+		t.Errorf("the C2 bridge is not a lead:\n%.2000s", got)
+	}
+}

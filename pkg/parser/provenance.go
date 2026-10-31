@@ -60,7 +60,8 @@ const (
 	// maxReconnectCandidateArtifacts caps the distinct artifacts (written paths / external
 	// IPs / domains) pulled from the current subgraph before the reverse lookup.
 	maxReconnectCandidateArtifacts = 500
-	// maxReconnectPeers caps total peer edges the reverse lookup returns, PER recon type.
+	// maxReconnectPeers caps total peer edges the reverse lookup returns, PER recon type,
+	// keeping those of the least-shared artifacts first.
 	// The cross-type total is capped separately (MaxPeers / peers=), because every peer not
 	// picked for subtree expansion becomes its own root -- a whole extra tree in the graph.
 	maxReconnectPeers = 200
@@ -967,7 +968,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 				"pl.image AS label, toFloat64(1.0) AS anomaly, pl.image AS peer_image, pl.log_id AS peer_log_id, "+
 				"toString(pl.timestamp) AS peer_ts, pl.fractal_id AS peer_fractal, pl.computer_name AS peer_host "+
 				"FROM (%[1]s) AS pl GLOBAL INNER JOIN (%[2]s) AS wp ON lower(pl.image) = wp.p "+
-				"ORDER BY pl.process_guid LIMIT %[3]d",
+				"ORDER BY count() OVER (PARTITION BY wp.p), pl.process_guid LIMIT %[3]d",
 			executors, writtenPaths, maxReconnectPeers))
 	}
 
@@ -991,7 +992,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 			"SELECT 'net' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, l.dst_node AS object_id, "+
 				"any(l.ip) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",
+				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.ip = ri.ip GROUP BY peer_guid, object_id ORDER BY count() OVER (PARTITION BY object_id), peer_guid LIMIT %[3]d",
 			peerScan, rareIP, maxReconnectPeers))
 	}
 
@@ -1011,7 +1012,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 			"SELECT 'dns' AS recon_type, l.peer_guid AS peer_guid, any(ri.toucher) AS src_guid, l.dst_node AS object_id, "+
 				"any(l.q) AS label, toFloat64(0.85) AS anomaly, any(l.img) AS peer_image, any(l.log_id) AS peer_log_id, "+
 				"any(l.ts) AS peer_ts, any(l.fractal_id) AS peer_fractal, any(l.host) AS peer_host "+
-				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id ORDER BY peer_guid LIMIT %[3]d",
+				"FROM (%[1]s) AS l GLOBAL INNER JOIN (%[2]s) AS ri ON l.q = ri.q GROUP BY peer_guid, object_id ORDER BY count() OVER (PARTITION BY object_id), peer_guid LIMIT %[3]d",
 			peerScan, rareDom, maxReconnectPeers))
 	}
 

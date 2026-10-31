@@ -108,7 +108,7 @@ Each action shows a **Why** sentence and fact chips in the drawer and on edge ho
 
 - **Lateral leads** are drawn beside the tree: the shared artifact next to the process that touched it, and a **Lateral** column with each host reached through it. The stats bar shows them in red, for example **2 hosts reached via 203.0.113.87**; click it to jump there. A link is a lead when it reaches another host, the seed's own process had no business touching the artifact (its own score for that edge is high; a file it dropped that another host ran always counts), and that process does not share many artifacts with other hosts. Up to 3 artifacts are promoted, strongest first.
 - Every other link is context. When there are leads, or more than 3 links, it folds into one **Linked** summary below the tree, which says why: an agent sharing dozens of telemetry domains with the fleet reads as **shared software**. Click **show** to open it as the **Reconnected** section, grouped by the artifact that links them, strongest first; click a peer to expand its tree.
-- Up to 50 peers are admitted by default. Change it with `peers=` (max 500), or turn reconnection off with `reconnect=false`:
+- Up to 50 peers are admitted by default, those reached through the artifacts the fewest others share first, so one peer sharing a C2 outranks dozens sharing telemetry. Change it with `peers=` (max 500), or turn reconnection off with `reconnect=false`:
 
 ```
 pgr(start="{GUID}", peers=200) | pgraph()
