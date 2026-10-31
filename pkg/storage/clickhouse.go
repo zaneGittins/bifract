@@ -231,6 +231,17 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 // provenanceSummaryTable holds the fleet-wide facts pgr reads per call (see migration 019).
 const provenanceSummaryTable = "provenance_summary"
 
+// ProvenanceSummaryReadySetting is the Postgres setting the provenance backfill sets to
+// "true" once provenance_summary covers rows written before it existed. Until then pgr
+// computes the same facts by scanning.
+const ProvenanceSummaryReadySetting = "provenance_summary_ready"
+
+// ProvenanceSummaryReadTable returns the read table for pgr's fleet-wide facts. Each shard
+// summarizes its own rows, so readers count distinct values.
+func (c *ClickHouseClient) ProvenanceSummaryReadTable() string {
+	return c.topo.Table(provenanceSummaryTable)
+}
+
 // ReconcileProvenanceSummaryTTL keeps each provenance_summary row as long as the rows it
 // summarizes, reading the retention proc_lineage and proc_freq actually have. A lineage
 // row's last_day rounds its ingest time down, so that kind keeps one extra day.

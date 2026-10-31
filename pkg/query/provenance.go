@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
@@ -64,41 +65,55 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		return provenanceEmptyScoreSQL, nil, nil
 	}
 
-	// Fleet size depends on nothing else, so it runs alongside reconnection and the edge keys.
-	// Buffered, so an early return never leaks the goroutine.
+	// Fleet-wide inputs: the fleet size, the reconnection rarity-gate ceilings and the baseline's
+	// first day. Once the backfill has filled provenance_summary they are one lookup; until then,
+	// or when that lookup fails, each is a scan of the fractal, as below.
+	sum, summarized := h.readProvenanceSummary(ctx, opts)
+	if ctx.Err() != nil {
+		return "", nil, ctx.Err()
+	}
+
+	// Scanned, fleet size depends on nothing else, so it runs alongside reconnection and the edge
+	// keys. Buffered, so an early return never leaks the goroutine.
 	type fleetResult struct {
 		rows []map[string]interface{}
 		err  error
 	}
-	fleet := make(chan fleetResult, 1)
-	fleetSQL := parser.BuildProvenanceTotalHostsSQL(opts)
-	go func() {
-		rows, err := h.db.QueryProvenance(ctx, fleetSQL)
-		fleet <- fleetResult{rows, err}
-	}()
+	var fleet chan fleetResult
+	if !summarized {
+		fleet = make(chan fleetResult, 1)
+		fleetSQL := parser.BuildProvenanceTotalHostsSQL(opts)
+		go func() {
+			rows, err := h.db.QueryProvenance(ctx, fleetSQL)
+			fleet <- fleetResult{rows, err}
+		}()
+	}
 
 	// Cross-tree reconnection (NoDoze object-mediated): find peer processes in OTHER trees
 	// that share a leaf with this subgraph, auto-expand the most anomalous ones into real
 	// subtrees, and emit bridge edges for the rest. Bounded and rarity-pruned; see
 	// parser.BuildReconnectionSQL. Failure is non-fatal -- pgr still returns the base tree.
 	//
-	// The rarity-gate ceilings (totalHosts/totalImages) are fetched ONCE here, in ONE scan, and
-	// passed in as literals rather than live scalar subqueries -- computed fresh for this call
-	// only. On failure both stay 0, which only tightens the gate to its absolute floor
+	// The rarity-gate ceilings (totalHosts/totalImages) are fetched ONCE here and passed in as
+	// literals rather than live scalar subqueries -- computed fresh for this call only. On failure
+	// both stay 0, which only tightens the gate to its absolute floor
 	// (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax) -- fails toward under-reconnecting,
 	// never toward a wrong match.
 	var bridges []map[string]interface{}
 	var peers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
-		var reconTotalHosts, reconTotalImages int64
-		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
-			if ctx.Err() != nil {
+		reconTotalHosts, reconTotalImages := sum.reconHosts, sum.reconImages
+		if !summarized {
+			totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts))
+			switch {
+			case tErr != nil && ctx.Err() != nil:
 				return "", nil, ctx.Err()
+			case tErr != nil:
+				log.Printf("[pgr] reconnection totals lookup failed, using rarity-gate floor only: %v", tErr)
+			case len(totRows) > 0:
+				reconTotalHosts = reconInt64(totRows[0]["total_hosts"])
+				reconTotalImages = reconInt64(totRows[0]["total_images"])
 			}
-			log.Printf("[pgr] reconnection totals lookup failed, using rarity-gate floor only: %v", tErr)
-		} else if len(totRows) > 0 {
-			reconTotalHosts = reconInt64(totRows[0]["total_hosts"])
-			reconTotalImages = reconInt64(totRows[0]["total_images"])
 		}
 		if reconSQL := parser.BuildReconnectionSQL(p, reconTotalHosts, reconTotalImages, opts); reconSQL != "" {
 			// The reconnection SQL uses explicit GLOBAL IN / GLOBAL JOIN on its cross-distributed-table
@@ -129,7 +144,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	}
 	treeTable := tree.table()
 
-	var baseline parser.ProvenanceBaseline
+	baseline := parser.ProvenanceBaseline{TotalHosts: sum.totalHosts, FirstDay: sum.firstDay}
 	baseline.NodeStart, baseline.NodeEnd = tree.span()
 
 	// The tree's own edge keys, which scope every proc_freq CTE in the scoring SQL to the rows its
@@ -152,13 +167,16 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 
 	// Fleet size, reported as total_hosts: passed as a literal, never cached across calls. Display
 	// only, so a failed lookup leaves it 0 and changes no score.
-	if fs := <-fleet; fs.err != nil {
-		if ctx.Err() != nil {
+	if fleet != nil {
+		fs := <-fleet
+		switch {
+		case fs.err != nil && ctx.Err() != nil:
 			return "", nil, ctx.Err()
+		case fs.err != nil:
+			log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", fs.err)
+		case len(fs.rows) > 0:
+			baseline.TotalHosts = reconInt64(fs.rows[0]["total_hosts"])
 		}
-		log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", fs.err)
-	} else if len(fs.rows) > 0 {
-		baseline.TotalHosts = reconInt64(fs.rows[0]["total_hosts"])
 	}
 
 	// The scoring SQL's leaf cap reads opts.MaxRows, but pgr() carries its own row budget
@@ -206,6 +224,60 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		warnings = append(warnings, w)
 	}
 	return sql, warnings, nil
+}
+
+// provenanceSummary is pgr's fleet-wide input read from provenance_summary.
+type provenanceSummary struct {
+	totalHosts, reconHosts, reconImages int64
+	firstDay                            time.Time
+}
+
+// readProvenanceSummary reads the fleet-wide inputs once the backfill has filled the summary.
+// It reports false when it has not, or the read fails, and the caller scans instead.
+func (h *QueryHandler) readProvenanceSummary(ctx context.Context, opts parser.QueryOptions) (provenanceSummary, bool) {
+	if !h.provenanceSummaryFilled(ctx) {
+		return provenanceSummary{}, false
+	}
+	rows, err := h.db.QueryProvenance(ctx, parser.BuildProvenanceSummarySQL(opts))
+	if err == nil && len(rows) == 0 {
+		err = errors.New("no rows")
+	}
+	var day time.Time
+	if err == nil {
+		day, err = time.Parse(time.DateOnly, reconString(rows[0]["first_day"]))
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[pgr] provenance summary read failed, scanning instead: %v", err)
+		}
+		return provenanceSummary{}, false
+	}
+	r := rows[0]
+	return provenanceSummary{totalHosts: reconInt64(r["total_hosts"]), reconHosts: reconInt64(r["recon_hosts"]),
+		reconImages: reconInt64(r["recon_images"]), firstDay: day}, true
+}
+
+// provenanceSummaryCheckEvery bounds how often pgr re-reads the backfill's ready setting.
+const provenanceSummaryCheckEvery = time.Minute
+
+// provenanceSummaryFilled reports whether the backfill has filled provenance_summary. The
+// setting is re-read at most once a minute, so neither state costs a Postgres read per call.
+func (h *QueryHandler) provenanceSummaryFilled(ctx context.Context) bool {
+	if h.pg == nil {
+		return false
+	}
+	c := &h.summaryFilled
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.checked.IsZero() && time.Since(c.checked) < provenanceSummaryCheckEvery {
+		return c.value
+	}
+	v, err := h.pg.GetSetting(ctx, storage.ProvenanceSummaryReadySetting)
+	if err != nil && ctx.Err() != nil {
+		return false
+	}
+	c.value, c.checked = err == nil && v == "true", time.Now()
+	return c.value
 }
 
 // provenanceRowWarning says when rows were left out, and by which limit: limit= (kept < total)

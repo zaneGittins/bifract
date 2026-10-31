@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"regexp"
@@ -35,6 +36,7 @@ type fakeLineage struct {
 	calls      []string
 
 	reconTotals func() ([]map[string]interface{}, error)
+	summary     func() ([]map[string]interface{}, error)
 	recon       func(sql string, tree storage.ExternalTable) ([]map[string]interface{}, error)
 	totalHosts  func() ([]map[string]interface{}, error)
 	edgeKeys    func(sql string) ([]map[string]interface{}, error)
@@ -248,6 +250,8 @@ func (f *fakeLineage) query(sql string, tables map[string]storage.ExternalTable)
 	switch {
 	case strings.HasPrefix(sql, "SELECT length(groupUniqArrayMerge("):
 		return call("recon_totals", f.reconTotals)
+	case strings.HasPrefix(sql, "SELECT uniqExactIf(value, kind = 'lineage_host')"):
+		return call("summary", f.summary)
 	case strings.HasPrefix(sql, "SELECT uniqExact(computer_name) AS total_hosts"):
 		return call("total_hosts", f.totalHosts)
 	case strings.HasPrefix(sql, "SELECT DISTINCT fkey_src, fkey_tgt FROM"):
@@ -1010,4 +1014,129 @@ func TestProvenanceScoreSQLScanBoundWarns(t *testing.T) {
 	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "scored more edges than") {
 		t.Errorf("err=%v warnings=%v", err, warnings)
 	}
+}
+
+// Once the backfill has filled the summary, one read of it replaces the fleet-size,
+// reconnection-totals and baseline-span scans. Until then, or when it fails, they run as before.
+func TestProvenanceScoreSQLReadsSummary(t *testing.T) {
+	p := pgrParams(false, true)
+	opts := pgrOpts()
+	run := func(t *testing.T, filled bool, summary func() ([]map[string]interface{}, error)) (f *fakeLineage, recon, scan string, pg *fakedb.PG) {
+		t.Helper()
+		f = newFakeLineage(">root", "root>a")
+		f.summary = summary
+		f.reconTotals = func() ([]map[string]interface{}, error) {
+			return []map[string]interface{}{{"total_hosts": uint64(99), "total_images": uint64(98)}}, nil
+		}
+		f.totalHosts = func() ([]map[string]interface{}, error) {
+			return []map[string]interface{}{{"total_hosts": uint64(97)}}, nil
+		}
+		f.recon = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
+			recon = sql
+			return nil, nil
+		}
+		f.scan = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
+			scan = sql
+			return nil, nil
+		}
+		h := f.handler()
+		var pgc *storage.PostgresClient
+		pgc, pg = storagetest.Postgres()
+		if filled {
+			pg.On("FROM settings", fakedb.PGResult{Cols: []string{"value"}, Rows: [][]driver.Value{{"true"}}})
+		}
+		h.pg = pgc
+		if _, _, err := h.provenanceScoreSQL(context.Background(), p, opts); err != nil {
+			t.Fatal(err)
+		}
+		return f, recon, scan, pg
+	}
+	summary := func() ([]map[string]interface{}, error) {
+		return []map[string]interface{}{{"total_hosts": uint64(40), "recon_hosts": uint64(12), "recon_images": uint64(7), "first_day": "2026-09-01"}}, nil
+	}
+
+	t.Run("filled", func(t *testing.T) {
+		f, recon, scan, _ := run(t, true, summary)
+		if k := f.kinds(); k["summary"] != 1 || k["recon_totals"]+k["total_hosts"] != 0 {
+			t.Errorf("ran %v", k)
+		}
+		if recon != parser.BuildReconnectionSQL(p, 12, 7, opts) {
+			t.Error("rarity gate not built from the summary")
+		}
+		for _, want := range []string{"toFloat64(40) AS total_hosts", "span AS (SELECT dateDiff('day', toDate('2026-09-01'), "} {
+			if !strings.Contains(scan, want) {
+				t.Errorf("scan missing %q", want)
+			}
+		}
+	})
+	t.Run("not yet filled", func(t *testing.T) {
+		f, recon, scan, _ := run(t, false, summary)
+		if k := f.kinds(); k["summary"] != 0 || k["recon_totals"] != 1 || k["total_hosts"] != 1 {
+			t.Errorf("ran %v", k)
+		}
+		if recon != parser.BuildReconnectionSQL(p, 99, 98, opts) || !strings.Contains(scan, "toFloat64(97) AS total_hosts") || !strings.Contains(scan, "FROM proc_freq") {
+			t.Error("unfilled summary must score from the scans")
+		}
+	})
+	t.Run("read fails", func(t *testing.T) {
+		f, recon, _, _ := run(t, true, func() ([]map[string]interface{}, error) { return nil, errors.New("down") })
+		if k := f.kinds(); k["recon_totals"] != 1 || k["total_hosts"] != 1 || recon != parser.BuildReconnectionSQL(p, 99, 98, opts) {
+			t.Errorf("a failed summary read must fall back to the scans, ran %v", f.kinds())
+		}
+	})
+	t.Run("unusable first day", func(t *testing.T) {
+		for _, day := range []string{"", "soon"} {
+			f, _, scan, _ := run(t, true, func() ([]map[string]interface{}, error) {
+				return []map[string]interface{}{{"total_hosts": uint64(40), "recon_hosts": uint64(12), "recon_images": uint64(7), "first_day": day}}, nil
+			})
+			if k := f.kinds(); k["total_hosts"] != 1 || !strings.Contains(scan, "toFloat64(97) AS total_hosts") {
+				t.Errorf("first_day %q must fall back to the scans, ran %v", day, k)
+			}
+		}
+	})
+	t.Run("not true is not filled", func(t *testing.T) {
+		f := newFakeLineage(">root", "root>a")
+		f.summary = summary
+		h := f.handler()
+		pgc, pg := storagetest.Postgres()
+		pg.On("FROM settings", fakedb.PGResult{Cols: []string{"value"}, Rows: [][]driver.Value{{"false"}}})
+		h.pg = pgc
+		if _, _, err := h.provenanceScoreSQL(context.Background(), p, opts); err != nil {
+			t.Fatal(err)
+		}
+		if f.kinds()["summary"] != 0 {
+			t.Error(`only "true" means filled`)
+		}
+	})
+	t.Run("cancelled during the summary read", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		f := newFakeLineage(">root", "root>a")
+		f.summary = func() ([]map[string]interface{}, error) { cancel(); return nil, context.Canceled }
+		h := f.handler()
+		pgc, pg := storagetest.Postgres()
+		pg.On("FROM settings", fakedb.PGResult{Cols: []string{"value"}, Rows: [][]driver.Value{{"true"}}})
+		h.pg = pgc
+		if _, _, err := h.provenanceScoreSQL(ctx, p, opts); !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want the cancellation", err)
+		}
+		if k := f.kinds(); k["scan"]+k["total_hosts"] != 0 {
+			t.Errorf("a cancelled request must not go on to scan, ran %v", k)
+		}
+	})
+	t.Run("filled is remembered", func(t *testing.T) {
+		f := newFakeLineage(">root", "root>a")
+		f.summary = summary
+		h := f.handler()
+		pgc, pg := storagetest.Postgres()
+		pg.On("FROM settings", fakedb.PGResult{Cols: []string{"value"}, Rows: [][]driver.Value{{"true"}}})
+		h.pg = pgc
+		for range 2 {
+			if _, _, err := h.provenanceScoreSQL(context.Background(), p, opts); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := len(pg.Matching("FROM settings")); n != 1 {
+			t.Errorf("setting read %d times, want once", n)
+		}
+	})
 }

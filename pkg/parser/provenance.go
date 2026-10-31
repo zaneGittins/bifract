@@ -305,27 +305,26 @@ func BuildProcessTreeHopSQL(guid string, opts QueryOptions) string {
 
 // BuildProcessGroupHopSQL builds one forward hop of the walk, collapsing repeated identical
 // children. The frontier arrives as ProvenanceFrontierTable (member guid -> node). Children of
-// every member are grouped by (parent node, normalized image, normalized command line), using
-// proc_freq's path abstraction (user dirs, GUIDs and 6+ digit runs masked), so a polling loop's
-// 47,900 `cmd /c tasklist` children become one row while distinct command lines stay apart.
-// Recursing on the groups makes a group's children the union of its members' children, so a
-// unique grandchild under one member still surfaces as its own node.
+// every member are grouped by (parent node, child_image, child_cmd_key), the image and command
+// line abstracted as proc_freq abstracts them (user dirs, GUIDs and 6+ digit runs masked) and
+// stored on the row, so a polling loop's 47,900 `cmd /c tasklist` children become one row while
+// distinct command lines stay apart. Recursing on the groups makes a group's children the union
+// of its members' children, so a unique grandchild under one member still surfaces as its own node.
 //
 // Each row is one group: rep (earliest member, the node id), n (exact member count), members
-// (capped at MaxProvenanceMembers), and the creation time span. The membership filter is a set
-// built once from the external table and lets the parent_guid bloom index prune a small frontier;
-// the join only maps each child to its parent's node.
+// (capped at MaxProvenanceMembers), and the creation time span. It reads only the by_parent
+// projection's columns, so the children are a lookup keyed by parent, and on a cluster each
+// shard aggregates its own before the initiator merges them.
 func BuildProcessGroupHopSQL(opts QueryOptions) string {
 	conds := append(procLineageWindow(opts, "c."),
 		"c.parent_guid GLOBAL IN (SELECT guid FROM "+ProvenanceFrontierTable+")")
-	return fmt.Sprintf("SELECT f.node AS parent_node, %[1]s AS nimg, %[2]s AS ncmd, "+
+	return fmt.Sprintf("SELECT f.node AS parent_node, c.child_image AS nimg, c.child_cmd_key AS ncmd, "+
 		"argMin(c.process_guid, (c.timestamp, c.process_guid)) AS rep, uniqExact(c.process_guid) AS n, "+
-		"groupUniqArray(%[3]d)(c.process_guid) AS members, "+
+		"groupUniqArray(%[1]d)(c.process_guid) AS members, "+
 		"toUnixTimestamp64Milli(min(c.timestamp)) AS first_ms, toUnixTimestamp64Milli(max(c.timestamp)) AS last_ms "+
-		"FROM %[4]s AS c GLOBAL INNER JOIN %[5]s AS f ON c.parent_guid = f.guid WHERE %[6]s "+
+		"FROM %[2]s AS c GLOBAL INNER JOIN %[3]s AS f ON c.parent_guid = f.guid WHERE %[4]s "+
 		"GROUP BY parent_node, nimg, ncmd ORDER BY first_ms, rep",
-		abstractExpr("c.image", AbstractPath), abstractExpr("c.commandline", AbstractPath), MaxProvenanceMembers,
-		procLineageTable(opts), ProvenanceFrontierTable, strings.Join(conds, " AND "))
+		MaxProvenanceMembers, procLineageTable(opts), ProvenanceFrontierTable, strings.Join(conds, " AND "))
 }
 
 func procLineageTable(opts QueryOptions) string {
@@ -340,6 +339,13 @@ func procFreqTable(opts QueryOptions) string {
 		return opts.ProcFreqTable
 	}
 	return "proc_freq"
+}
+
+func provenanceSummaryTable(opts QueryOptions) string {
+	if opts.ProvenanceSummaryTable != "" {
+		return opts.ProvenanceSummaryTable
+	}
+	return "provenance_summary"
 }
 
 func procEdgesTable(opts QueryOptions) string {
@@ -385,9 +391,9 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 		return " AND " + fractal
 	}
 
-	// Abstraction shortcut (identical transform to the proc_freq MVs). Used by spawn/p2p, which
-	// still read proc_lineage/logs directly; the file/net/dns leaf edges now come pre-abstracted
-	// from the process_edges rollup below.
+	// Abstraction shortcut (identical transform to the proc_freq MVs) for the columns that are not
+	// stored abstracted: a spawn's parent image and the p2p branches' logs fields. A spawn's own
+	// image is child_image, and the file/net/dns leaf edges come pre-abstracted from the rollup.
 	aPath := func(col string) string { return abstractExpr(col, AbstractPath) }
 
 	// Each edge SELECT yields: src_node, dst_node, label, event_type, fkey_src, fkey_tgt, log_id,
@@ -405,7 +411,7 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 		"SELECT parent_guid AS src_node, process_guid AS dst_node, image AS label, 'spawn' AS event_type, "+
 			"%s AS fkey_src, %s AS fkey_tgt, log_id, toString(timestamp) AS timestamp, fractal_id, computer_name AS host, "+
 			"parent_image AS parent_label, toDate(ingest_timestamp) AS iday FROM %s FINAL WHERE %s%s",
-		aPath("parent_image"), aPath("image"), procLineage, inTree("process_guid"), frac())
+		aPath("parent_image"), "child_image", procLineage, inTree("process_guid"), frac())
 
 	// Leaf edges (file/net/dns) come from the process_edges rollup keyed by
 	// (fractal_id, process_guid, event_type, dst_node): a PRIMARY-KEY lookup on the tree's guids
@@ -468,9 +474,9 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 }
 
 // BuildProvenanceTotalHostsSQL returns a query for the fleet size BuildProvenanceScoringSQL
-// reports as total_hosts (uncapped, from proc_lineage). provenanceScoreSQL runs it once per pgr()
-// call and passes the result in as a literal, so the diffuse-fallback rebuild never rescans it;
-// it is never cached across calls.
+// reports as total_hosts (uncapped, from proc_lineage). Until provenance_summary is filled,
+// provenanceScoreSQL runs it once per pgr() call and passes the result in as a literal, so the
+// diffuse-fallback rebuild never rescans it; it is never cached across calls.
 func BuildProvenanceTotalHostsSQL(opts QueryOptions) string {
 	procLineage := procLineageTable(opts)
 	where := ""
@@ -482,8 +488,8 @@ func BuildProvenanceTotalHostsSQL(opts QueryOptions) string {
 
 // BuildReconnectionTotalsSQL returns a single query producing both proc_freq rarity-gate
 // ceilings BuildReconnectionSQL needs (see hostGate/imageGate): the capped host-prevalence count
-// and the distinct source-image count. Computed once per pgr() call (only when Reconnect is on)
-// in ONE scan instead of two separate scalar subqueries each re-scanning proc_freq.
+// and the distinct source-image count. Until provenance_summary is filled, computed once per
+// pgr() call (only when Reconnect is on) in one scan.
 func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 	procFreq := procFreqTable(opts)
 	where := ""
@@ -494,12 +500,29 @@ func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 		procFreqHostsCap, procFreq, where)
 }
 
+// BuildProvenanceSummarySQL reads every fleet-wide input from provenance_summary in one
+// lookup: what BuildProvenanceTotalHostsSQL, BuildReconnectionTotalsSQL and the scoring SQL's
+// baseline span compute by scanning the fractal. Each shard holds its own copy of a row, so
+// counts are of distinct values; recon_hosts keeps the 256 cap the baseline's host sets have.
+// first_day is 1970-01-01 for an empty baseline, which is what the scan yields too.
+func BuildProvenanceSummarySQL(opts QueryOptions) string {
+	where := ""
+	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
+		where = " WHERE " + fractal
+	}
+	return fmt.Sprintf("SELECT uniqExactIf(value, kind = 'lineage_host') AS total_hosts, "+
+		"least(%[1]d, uniqExactIf(value, kind = 'freq_host')) AS recon_hosts, uniqExactIf(value, kind = 'freq_image') AS recon_images, "+
+		"toString(minIf(toDateOrZero(value), kind = 'freq_day')) AS first_day FROM %[2]s%[3]s",
+		procFreqHostsCap, provenanceSummaryTable(opts), where)
+}
+
 // ProvenanceBaseline holds the per-call inputs BuildProvenanceScoringSQL scores against. All of
 // it is fetched once per pgr() call and substituted as literals rather than left as live scalar
 // subqueries, so nothing is re-scanned when the scoring SQL is rebuilt within the same call (the
 // diffuse-fallback path builds it twice). Never cached across calls.
 type ProvenanceBaseline struct {
-	// TotalHosts is the fleet size reported as total_hosts (BuildProvenanceTotalHostsSQL).
+	// TotalHosts is the fleet size reported as total_hosts (BuildProvenanceSummarySQL, or
+	// BuildProvenanceTotalHostsSQL until the summary is filled).
 	TotalHosts int64
 	// SrcKeys/TgtKeys are the DISTINCT fkey_src / fkey_tgt of the tree's own edges
 	// (BuildProvenanceEdgeKeysSQL), scoping every proc_freq CTE to rows its join can match.
@@ -512,8 +535,11 @@ type ProvenanceBaseline struct {
 	SrcKeys []string
 	TgtKeys []string
 	// NodeStart/NodeEnd span the creation times of the graph's nodes. When set they narrow the
-	// command-line lookup (pm) from the whole query window to the logs those rows can be in.
+	// command-line and user lookups from the whole query window to the rows the nodes can be in.
 	NodeStart, NodeEnd time.Time
+	// FirstDay is the baseline's earliest day (BuildProvenanceSummarySQL). Zero has the scoring
+	// SQL compute it from proc_freq.
+	FirstDay time.Time
 }
 
 // MaxProvenanceEdgeKeys caps each edge key set. Past it the query layer drops both sets and
@@ -565,7 +591,7 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	procFreq := procFreqTable(opts)
 	logs := opts.EffectiveTableName()
 
-	// pm reads the nodes' process_creation logs, so it only needs the span their rows fall in.
+	// pl/pu read the nodes' own process_creation rows, so they only need the span those fall in.
 	pmStart, pmEnd := opts.StartTime, opts.EndTime
 	if !bl.NodeStart.IsZero() && bl.NodeStart.After(pmStart) {
 		pmStart = bl.NodeStart
@@ -661,8 +687,12 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	asOf := fmt.Sprintf("toDate('%s')", opts.EndTime.UTC().Format("2006-01-02"))
 	// span = days the baseline covers, gating the stability terms (see minStabilityDays). It is the
 	// age of the WHOLE baseline, so it is never key-restricted.
-	b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', %[3]s, %[4]s) + 1 AS days FROM %[1]s%[2]s), ",
-		procFreq, freqWhere(), firstSeen, asOf))
+	if bl.FirstDay.IsZero() {
+		b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', %[3]s, %[4]s) + 1 AS days FROM %[1]s%[2]s), ",
+			procFreq, freqWhere(), firstSeen, asOf))
+	} else {
+		b.WriteString(fmt.Sprintf("span AS (SELECT dateDiff('day', toDate('%s'), %s) + 1 AS days), ", bl.FirstDay.UTC().Format("2006-01-02"), asOf))
+	}
 	// NoDoze Eq.4/Eq.5 node stability: a day is STABLE for a node when it gained no new edge, and
 	// stability is the share of stable days over the node's observed lifetime. rel holds one
 	// first-seen day per relationship, so counting distinct dates per node counts the days that
@@ -692,14 +722,20 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	// sx: the tree's own executions of each binary, the host-days its processes added to the
 	// exec_hd above. Same keyhole lookup and filter as proc_freq's spawn MV.
 	procLineage := procLineageTable(opts)
-	b.WriteString(fmt.Sprintf("sx AS (SELECT %[1]s AS node, length(groupUniqArray((computer_name, toDate(ingest_timestamp)))) AS self_exec FROM %[2]s FINAL WHERE %[3]s%[4]s AND parent_image != '' AND image != '' GROUP BY node), ",
-		abstractExpr("image", AbstractPath), procLineage, inTree("process_guid"), frac()))
-	// pm = per-node command line + user, looked up by the logs primary key proc_lineage holds; a
-	// guid filter defeats the bloom on large trees. Only nodes need one (a node is its own member),
-	// not every member of a collapsed group. Truncated: command lines can be enormous.
-	b.WriteString(fmt.Sprintf("pm AS (SELECT fields.process_guid::String AS guid, any(substring(fields.commandline::String, 1, 300)) AS command_line, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s "+
-		"AND (timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM %[4]s WHERE process_guid IN (SELECT guid FROM %[5]s WHERE guid = node)%[3]s) AND fields.bifract_category = 'process_creation' GROUP BY guid) ",
-		logs, timeWin, frac(), procLineage, ProvenanceTreeTable))
+	b.WriteString(fmt.Sprintf("sx AS (SELECT child_image AS node, length(groupUniqArray((computer_name, toDate(ingest_timestamp)))) AS self_exec FROM %[1]s FINAL WHERE %[2]s%[3]s AND parent_image != '' AND image != '' GROUP BY node), ",
+		procLineage, inTree("process_guid"), frac()))
+	// pm = per-node command line + user from the node's own lineage row (pl), a primary-key lookup.
+	// Only nodes need one (a node is its own member), not every member of a collapsed group.
+	// A row written before proc_lineage carried the user reads '\0' there and falls back to its
+	// logs row (pu), found by the logs primary key the lineage row holds; a guid filter defeats the
+	// bloom on large trees. Truncated: command lines can be enormous.
+	nodes := fmt.Sprintf("process_guid GLOBAL IN (SELECT guid FROM %s WHERE guid = node)", ProvenanceTreeTable)
+	b.WriteString(fmt.Sprintf("pl AS (SELECT process_guid AS guid, any(substring(commandline, 1, 300)) AS command_line, max(proc_user) AS lineage_user FROM %[1]s WHERE %[2]s%[3]s AND %[4]s GROUP BY guid), ",
+		procLineage, timeWin, frac(), nodes))
+	b.WriteString(fmt.Sprintf("pu AS (SELECT fields.process_guid::String AS guid, any(fields.user::String) AS proc_user FROM %[1]s WHERE %[2]s%[3]s "+
+		"AND (timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM %[4]s WHERE %[5]s%[3]s AND proc_user = '\\0') AND fields.bifract_category = 'process_creation' GROUP BY guid), ",
+		logs, timeWin, frac(), procLineage, nodes))
+	b.WriteString("pm AS (SELECT pl.guid AS guid, pl.command_line AS command_line, if(pl.lineage_user = '\\0', pu.proc_user, pl.lineage_user) AS proc_user FROM pl LEFT JOIN pu ON pu.guid = pl.guid) ")
 
 	// joined: one row per edge with its baseline, plus the edge's OWN share of that baseline. The
 	// baseline includes the activity being scored, so each count is taken leave-one-out: the
@@ -852,9 +888,9 @@ func internalDomainExpr(col string) string {
 //
 // Returns "" when reconnection is disabled or no edge type is selected.
 //
-// totalHosts/totalImages (from BuildReconnectionTotalsSQL, computed once per pgr() call -- see
-// provenanceScoreSQL) are the rarity-gate ceiling inputs, substituted as literals instead of
-// live scalar subqueries. Always fresh per call; never cached across separate pgr() calls.
+// totalHosts/totalImages (BuildProvenanceSummarySQL, or BuildReconnectionTotalsSQL until the
+// summary is filled; read once per pgr() call, see provenanceScoreSQL) are the rarity-gate
+// ceiling inputs, substituted as literals instead of live scalar subqueries.
 func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opts QueryOptions) string {
 	if !p.Reconnect {
 		return ""
@@ -893,10 +929,9 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	// recon_type, peer_guid, src_guid, object_id, label, anomaly, peer_image, peer_log_id, peer_ts, peer_fractal
 	var parts []string
 
-	// net/dns now read the process_edges rollup (small, PK-scoped by process_guid) instead of
-	// scanning raw logs -- the same acceleration as pgr's pass-2 (measured 156s -> ms). The tree
-	// side is a PK lookup (process_guid IN tree); the peer side scans process_edges by artifact,
-	// cheap because the rollup is ~10,000x smaller than logs. fkey_tgt is the abstracted artifact
+	// net/dns read the process_edges rollup. The tree side is a primary-key lookup (process_guid
+	// IN tree); the peer side and the rarity gate look artifacts up by (event_type, target), the
+	// by_target projections of process_edges and proc_freq. fkey_tgt is the abstracted artifact
 	// (matches proc_freq.target_norm), dst_node is the 'net:'/'dns:' node id, fkey_src the actor
 	// image, label the raw artifact.
 	edgeTable := procEdgesTable(opts)
@@ -915,17 +950,17 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	}
 
 	// file: write -> execute. The tree's written paths come from the edge rollup (label = raw
-	// target_file); peer = a proc_lineage process launched with image == that path. The executor
-	// side stays on proc_lineage (the process skeleton carries image); it is far smaller than logs.
+	// target_file); peer = a proc_lineage process launched with image == that path.
 	if want("file") {
 		writtenPaths := fmt.Sprintf(
 			"SELECT lower(label) AS p, any(process_guid) AS writer FROM %[1]s WHERE %[2]sevent_type = 'file_write' "+
 				"AND %[3]s AND label != '' GROUP BY p ORDER BY p LIMIT %[4]d",
 			edgeTable, edgeFrac, inTree("process_guid"), maxReconnectCandidateArtifacts)
-		// Latest row per process running a written path. Deduped with LIMIT BY rather than FINAL,
-		// which on a Distributed table only dedupes within each shard.
+		// Latest row per process running a written path, looked up by image_lc (the by_image
+		// projection). Deduped with LIMIT BY rather than FINAL, which on a Distributed table only
+		// dedupes within each shard.
 		executors := fmt.Sprintf(
-			"SELECT process_guid, image, log_id, timestamp, fractal_id, computer_name FROM %[1]s WHERE %[2]slower(image) GLOBAL IN (SELECT p FROM (%[3]s)) "+
+			"SELECT process_guid, image, log_id, timestamp, fractal_id, computer_name FROM %[1]s WHERE %[2]simage_lc GLOBAL IN (SELECT p FROM (%[3]s)) "+
 				"AND %[4]s ORDER BY process_guid, timestamp DESC, log_id DESC LIMIT 1 BY process_guid",
 			procLineage, edgeFrac, writtenPaths, notInTree("process_guid"))
 		parts = append(parts, fmt.Sprintf(
