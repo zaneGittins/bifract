@@ -4,7 +4,9 @@
   "name": "Try Bifract",
   "image": "mcr.microsoft.com/devcontainers/base:bookworm",
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // For gh codespace ssh and logs.
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
   "hostRequirements": {
     "cpus": 4,
