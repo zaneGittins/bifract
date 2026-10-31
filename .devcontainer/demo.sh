@@ -59,8 +59,8 @@ search_url() {
 		"$(jq -rn --arg q "$1" '$q | @uri')"
 }
 
-# A number from the import, with thousands separators.
-count() { jq -r ".$2" <<<"$1" | numfmt --grouping; }
+# A number from the import, with thousands separators whatever the locale.
+count() { jq -r ".$2" <<<"$1" | sed -E ':a;s/^([0-9]+)([0-9]{3})/\1,\2/;ta'; }
 
 # Writes WELCOME.md for the lab's state, given its import as JSON (or nothing).
 write_welcome() {
