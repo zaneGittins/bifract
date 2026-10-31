@@ -419,6 +419,32 @@
     font-size: 0.85rem;
 }
 
+.exchange-failed {
+    color: var(--error);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.exchange-row-status.failed {
+    color: var(--error);
+}
+
+.exchange-progress {
+    height: 6px;
+    max-width: 480px;
+    margin-bottom: 8px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+}
+
+.exchange-progress span {
+    display: block;
+    height: 100%;
+    background: var(--accent-primary);
+    transition: width 0.4s ease;
+}
+
 /* One pane at a time: the list until something is picked, then that item. */
 @media (max-width: 900px) {
     .exchange-shell {

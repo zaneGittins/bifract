@@ -118,7 +118,7 @@ func (db *tokenDB) get(id string) (tokenRow, bool) {
 }
 
 func (db *tokenDB) fractalValues(f fractalRow) []driver.Value {
-	return []driver.Value{f.id, f.name, "", false, false, f.createdBy, rowTime, rowTime, nil, nil, nil, "reject", int64(0), int64(0), nil, nil}
+	return []driver.Value{f.id, f.name, "", false, false, f.createdBy, rowTime, rowTime, nil, nil, nil, "reject", int64(0), int64(0), nil, nil, nil, nil}
 }
 
 func (db *tokenDB) sortedTokens() []*tokenRow {

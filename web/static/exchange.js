@@ -1,9 +1,12 @@
 // Exchange: browse shared content and add it through each kind's own import
 // endpoint. The list on the right holds bundles, their items and the items in no
 // bundle; searching flattens it. The selection fills the main pane on the left.
-// Adding an item adds its requirements first; a bundle adds its members.
+// Adding an item adds its requirements first; a bundle adds its members. A dataset
+// is different: adding one creates a fractal of its own and imports into it in the
+// background, with progress streamed over SSE.
 const Exchange = {
     KINDS: {
+        dataset: { label: 'Dataset', hint: 'Creates a fractal named after it and imports its logs there in the background. Needs a tenant admin.' },
         bundle: { label: 'Bundle', hint: 'Adds each item below that is not here yet, requirements first.' },
         lookup: { label: 'Lookup', hint: 'Added to this fractal. Rows refresh from the upstream URL. Needs a tenant admin.' },
         model: { label: 'Model', hint: 'Added to this fractal. It builds from new logs; run a backfill under Analytics for stored ones. Needs an analyst.' },
@@ -25,6 +28,12 @@ const Exchange = {
     _errors: {},
     _normalizers: null,
     _bound: false,
+    // Each dataset's latest import, by dataset id. Only tenant admins can read them.
+    imports: new Map(),
+    _events: null,
+    _eventsRetry: null,
+    _eventsBackoff: 0,
+    _renderQueued: false,
 
     init() {
         if (window.FractalContext && typeof FractalContext.subscribe === 'function') {
@@ -109,6 +118,7 @@ const Exchange = {
         const dashboards = items.filter(it => it.kind === 'dashboard')
             .map(it => read(`/api/v1/dashboards?limit=100&search=${encodeURIComponent(it.name)}`, 'dashboard', it.name));
         await Promise.all([
+            this.loadImports(items),
             read('/api/v1/dictionaries', 'lookup'),
             read('/api/v1/normalizers', 'normalizer'),
             read('/api/v1/alerts?limit=2000', 'detection'),
@@ -118,6 +128,132 @@ const Exchange = {
         ]);
         this._normalizers = null;
         return keys;
+    },
+
+    // Datasets create fractals, so only tenant admins add them or see their imports.
+    canAddDatasets() {
+        return !!window.Auth?.currentUser?.is_admin;
+    },
+
+    async loadImports(items = this.items) {
+        if (!this.canAddDatasets() || !items.some(it => it.kind === 'dataset')) return;
+        try {
+            const data = await HttpUtils.safeFetch('/api/v1/exchange/datasets');
+            // Newest first, so the first per dataset is its latest.
+            const seen = new Set();
+            for (const imp of data.data || []) {
+                if (seen.has(imp.dataset_id)) continue;
+                seen.add(imp.dataset_id);
+                this.onImport(imp, false);
+            }
+            this.watchImports();
+        } catch (e) {
+            console.error('Failed to load dataset imports:', e);
+        }
+    },
+
+    importOpen(imp) {
+        return !!imp && ['pending', 'downloading', 'importing'].includes(imp.status);
+    },
+
+    // Progress arrives over SSE while any import is running. The browser reconnects
+    // on its own after a dropped connection; one it gives up on is reopened with
+    // backoff. Either way the list is read again, since events were missed.
+    watchImports() {
+        const open = [...this.imports.values()].some(imp => this.importOpen(imp));
+        if (!open) {
+            this._events?.close();
+            this._events = null;
+            clearTimeout(this._eventsRetry);
+            this._eventsRetry = null;
+            return;
+        }
+        if (this._events || this._eventsRetry) return;
+        const es = new EventSource('/api/v1/exchange/datasets/events', { withCredentials: true });
+        this._events = es;
+        let connects = 0;
+        es.onmessage = (e) => {
+            let event;
+            try { event = JSON.parse(e.data); } catch (_) { return; }
+            if (event.type === 'connected') {
+                this._eventsBackoff = 0;
+                if (connects++ > 0) this.loadImports().then(() => this.renderSoon());
+            } else if (event.type === 'dataset_import' && event.data) {
+                this.onImport(event.data);
+            }
+        };
+        es.onerror = () => {
+            if (es.readyState !== EventSource.CLOSED || this._events !== es) return;
+            this._events = null;
+            this._eventsBackoff = Math.min((this._eventsBackoff || 2500) * 2, 60000);
+            this._eventsRetry = setTimeout(() => {
+                this._eventsRetry = null;
+                this.loadImports().then(() => this.renderSoon());
+            }, this._eventsBackoff);
+        };
+    },
+
+    // Keeps the newest state of each dataset's latest import. A list read and the
+    // stream can cross, so an older state of the same import is dropped.
+    onImport(imp, announce = true) {
+        const prev = this.imports.get(imp.dataset_id);
+        if (prev && (prev.id > imp.id || (prev.id === imp.id && Date.parse(prev.updated_at) > Date.parse(imp.updated_at)))) return;
+        this.imports.set(imp.dataset_id, imp);
+        if (announce && this.importOpen(prev) && !this.importOpen(imp)) {
+            const name = this.find(imp.dataset_id)?.name || imp.dataset_id;
+            if (imp.status === 'succeeded') Toast.success(`Imported ${name}`, `${this.count(imp.logs_done)} logs are in fractal ${imp.fractal_name}.`);
+            else Toast.error(`Could not import ${name}`, imp.error || 'The import failed.');
+        }
+        if (!announce) return;
+        this.watchImports();
+        if (prev?.status === imp.status && this.importOpen(imp)) this.showProgress(imp);
+        else this.renderSoon();
+    },
+
+    // Renders on the next frame, once however many changes arrive, and not at all
+    // while the Exchange is hidden: showing it renders anyway.
+    renderSoon() {
+        if (this._renderQueued) return;
+        this._renderQueued = true;
+        requestAnimationFrame(() => {
+            this._renderQueued = false;
+            if (document.getElementById('exchangeView')?.offsetParent) this.render();
+        });
+    },
+
+    // Progress within one status updates its marks in place rather than rebuilding
+    // the panes, which would drop scroll and hover.
+    showProgress(imp) {
+        const id = CSS.escape(imp.dataset_id);
+        const { label, pct } = this.importProgress(imp);
+        document.querySelectorAll(`#exchangeView [data-progress="${id}"]`).forEach(el => {
+            if (el.dataset.part === 'mark') el.textContent = `${pct}%`;
+            else if (el.dataset.part === 'status') el.textContent = `${label} ${pct}%`;
+            else if (el.dataset.part === 'detail') el.textContent = this.importDetail(imp);
+            else if (el.dataset.part === 'bar') {
+                el.setAttribute('aria-valuenow', pct);
+                el.setAttribute('aria-valuetext', this.importDetail(imp));
+                el.firstElementChild.style.width = `${pct}%`;
+            }
+        });
+    },
+
+    importDetail(imp) {
+        const { label } = this.importProgress(imp);
+        if (imp.status === 'importing') return `${label}: ${this.count(imp.logs_done)} of ${this.count(imp.logs_total)} logs`;
+        if (imp.status === 'downloading') return `${label}: ${Utils.formatBytes(imp.bytes_done)} of ${Utils.formatBytes(imp.bytes_total)}`;
+        return 'Waiting to start';
+    },
+
+    count(n) {
+        return Number(n || 0).toLocaleString();
+    },
+
+    // Where a running import has got to, as a whole percentage.
+    importProgress(imp) {
+        if (imp.status === 'downloading') return { label: 'Downloading', pct: imp.bytes_total ? Math.floor(imp.bytes_done * 100 / imp.bytes_total) : 0 };
+        if (imp.status === 'importing') return { label: 'Importing', pct: imp.logs_total ? Math.floor(imp.logs_done * 100 / imp.logs_total) : 0 };
+        return { label: 'Queued', pct: 0 };
     },
 
     // The name an item is installed under: lookups and models by id, the rest by
@@ -137,6 +273,7 @@ const Exchange = {
     },
 
     isInstalled(item) {
+        if (item.kind === 'dataset') return this.imports.get(item.id)?.status === 'succeeded';
         if (item.kind === 'bundle') return this.members(item).every(m => this.isInstalled(m));
         const key = this.installedKey(item);
         return !!key && this.installed.has(key);
@@ -172,6 +309,7 @@ const Exchange = {
     // screens show one pane at a time, so there the default leaves the list showing.
     selected() {
         return (this._detail && this.find(this._detail))
+            || this.items.find(it => it.kind === 'dataset')
             || this.items.find(it => it.kind === 'bundle') || this.items[0] || null;
     },
 
@@ -205,9 +343,11 @@ const Exchange = {
         const row = (it, nested) => this.listRowHtml(it, sel, nested);
         let html;
         if (!terms.length && !kind) {
+            const datasets = this.items.filter(it => it.kind === 'dataset');
             const bundles = this.items.filter(it => it.kind === 'bundle');
-            const loose = this.items.filter(it => it.kind !== 'bundle' && !this.bundlesOf(it).length);
-            html = `<div class="exchange-list-label">Bundles</div>`
+            const loose = this.items.filter(it => it.kind !== 'bundle' && it.kind !== 'dataset' && !this.bundlesOf(it).length);
+            html = (datasets.length ? `<div class="exchange-list-label">Datasets</div>` + datasets.map(it => row(it, false)).join('') : '')
+                + `<div class="exchange-list-label">Bundles</div>`
                 + bundles.map(b => row(b, false) + this.members(b).map(m => row(m, true)).join('')).join('')
                 + (loose.length ? `<div class="exchange-list-label">Other items</div>` + loose.map(it => row(it, false)).join('') : '');
         } else {
@@ -232,6 +372,12 @@ const Exchange = {
 
     // A compact status for the list: a tick when present, a count for a bundle.
     statusMark(it) {
+        const imp = it.kind === 'dataset' && this.imports.get(it.id);
+        if (this.importOpen(imp)) {
+            const { label, pct } = this.importProgress(imp);
+            return `<span class="exchange-row-status" title="${label}" data-progress="${Utils.escapeAttr(it.id)}" data-part="mark">${pct}%</span>`;
+        }
+        if (imp && imp.status === 'failed') return '<span class="exchange-row-status failed" title="Import failed">!</span>';
         if (it.kind === 'bundle') {
             const members = this.members(it);
             const done = members.filter(m => this.isInstalled(m)).length;
@@ -243,6 +389,12 @@ const Exchange = {
     },
 
     statusHtml(it) {
+        const imp = it.kind === 'dataset' && this.imports.get(it.id);
+        if (this.importOpen(imp)) {
+            const { label, pct } = this.importProgress(imp);
+            return `<span class="exchange-partial" data-progress="${Utils.escapeAttr(it.id)}" data-part="status">${label} ${pct}%</span>`;
+        }
+        if (imp && imp.status === 'failed') return '<span class="exchange-failed">Import failed</span>';
         if (it.kind === 'bundle') {
             const members = this.members(it);
             const done = members.filter(m => this.isInstalled(m)).length;
@@ -294,6 +446,7 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
     actionHtml(it) {
         const busy = this._busy.get(it.id);
         if (busy) return `<button type="button" class="btn-primary" disabled>${Utils.escapeHtml(busy)}</button>`;
+        if (it.kind === 'dataset') return this.datasetActionHtml(it);
         if (this.isInstalled(it)) return '';
         const steps = this.pending(it);
         let label = 'Add';
@@ -301,10 +454,32 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
         return `<button type="button" class="btn-primary" data-action="install" data-id="${Utils.escapeAttr(it.id)}">${label}</button>`;
     },
 
-    // Adding more than one thing says what it adds and skips before doing it.
+    // A dataset is added once, then opened, while it fills too; a failed import can
+    // be run again.
+    datasetActionHtml(it) {
+        if (!this.canAddDatasets()) return '';
+        const imp = this.imports.get(it.id);
+        const attr = Utils.escapeAttr;
+        if (!imp) return `<button type="button" class="btn-primary" data-action="install" data-id="${attr(it.id)}">Add</button>`;
+        if (imp.status === 'failed') return `<button type="button" class="btn-primary" data-action="retry-import" data-id="${attr(it.id)}">Retry</button>`;
+        return `<button type="button" class="btn-primary" data-action="open-fractal" data-id="${attr(it.id)}">Open</button>`;
+    },
+
+    // Adding more than one thing says what it adds and skips before doing it, and
+    // adding a dataset what it creates and downloads.
     confirmHtml(it) {
         if (this._confirm !== it.id) return '';
         const esc = Utils.escapeHtml;
+        if (it.kind === 'dataset') {
+            return `
+<div class="exchange-confirm" role="region" aria-label="Confirm adding">
+    <p>Creates fractal <strong>${esc(it.id)}</strong> and imports ${this.count(it.dataset.logs)} logs into it, downloading ${esc(Utils.formatBytes(it.dataset.bytes))}. It runs in the background.</p>
+    <div class="exchange-confirm-actions">
+        <button type="button" class="btn-secondary btn-sm" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary btn-sm" data-action="confirm" data-id="${Utils.escapeAttr(it.id)}">Add dataset</button>
+    </div>
+</div>`;
+        }
         const steps = this.pending(it);
         const skipped = this.order(it).filter(s => this.isInstalled(s));
         const list = (items) => items.map(s => `<li>${this.kindHtml(s)}<span>${esc(s.name)}</span></li>`).join('');
@@ -349,6 +524,7 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
     // What an item adds: a lookup's source settings, or the file it imports.
     definitionHtml(it) {
         const esc = Utils.escapeHtml;
+        if (it.kind === 'dataset') return this.datasetHtml(it);
         if (it.kind === 'lookup') {
             const s = it.lookup.source;
             const rows = [
@@ -374,6 +550,35 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
             return '<p class="exchange-hint">Loading...</p>';
         }
         return `<pre class="exchange-content yaml-code">${Utils.highlightYAML(file.content)}</pre>`;
+    },
+
+    // What a dataset imports, and how its import is going.
+    datasetHtml(it) {
+        const esc = Utils.escapeHtml;
+        const d = it.dataset;
+        const fmt = v => (window.TZ ? TZ.formatInput(v, true) : v);
+        const rows = [
+            ['Fractal', it.id],
+            ['Logs', this.count(d.logs)],
+            ['Time range', `${fmt(d.start)} to ${fmt(d.end)}`],
+            ['Size', `${Utils.formatBytes(d.bytes)} compressed`],
+            ['File', d.url],
+            ['SHA-256', d.sha256],
+        ];
+        let html = `<dl class="exchange-source">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
+        const imp = this.imports.get(it.id);
+        if (this.importOpen(imp)) {
+            const { pct } = this.importProgress(imp);
+            const id = Utils.escapeAttr(it.id);
+            const detail = esc(this.importDetail(imp));
+            html += `<h3 class="exchange-section">Import</h3>
+<div class="exchange-progress" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-valuetext="${detail}" data-progress="${id}" data-part="bar"><span style="width:${pct}%"></span></div>
+<p class="exchange-hint"><span data-progress="${id}" data-part="detail">${detail}</span>. Fractal ${esc(imp.fractal_name)} can be searched while it fills.</p>`;
+        } else if (imp?.status === 'failed') {
+            html += `<h3 class="exchange-section">Import</h3><p class="exchange-error">${esc(imp.error || 'The import failed.')}</p>
+<p class="exchange-hint">Retry empties fractal ${esc(imp.fractal_name)} and imports the dataset again.</p>`;
+        }
+        return html;
     },
 
     every(minutes) {
@@ -402,7 +607,7 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
                 break;
             case 'install':
                 if (!item) break;
-                if (this.pending(item).length > 1) {
+                if (item.kind === 'dataset' || this.pending(item).length > 1) {
                     // A multi-step add from a row's menu confirms on that item's own view.
                     if (this.selected()?.id !== item.id) this.select(item);
                     this._confirm = item.id;
@@ -420,6 +625,38 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
                 this._confirm = null;
                 this.render();
                 break;
+            case 'retry-import':
+                if (item) this.retryImport(item);
+                break;
+            case 'open-fractal':
+                if (item) this.openFractal(item);
+                break;
+        }
+    },
+
+    async retryImport(item) {
+        const imp = this.imports.get(item.id);
+        if (!imp || this._busy.has(item.id)) return;
+        this._busy.set(item.id, 'Retrying...');
+        this.render();
+        try {
+            const data = await this.expectOK(this.post(null, `/api/v1/exchange/datasets/imports/${imp.id}/retry`, {}));
+            this.onImport(data.data);
+        } catch (err) {
+            Toast.error(`Could not retry ${item.name}`, err.message);
+        } finally {
+            this._busy.delete(item.id);
+            this.render();
+        }
+    },
+
+    async openFractal(item) {
+        const imp = this.imports.get(item.id);
+        if (!imp || !window.FractalContext) return;
+        // A fractal added this session may not be in the selector's list yet.
+        await window.FractalSelector?.loadAvailableFractals?.();
+        if (await FractalContext.setCurrentFractal({ id: imp.fractal_id, name: imp.fractal_name })) {
+            window.App?.showFractalView('search');
         }
     },
 
@@ -490,8 +727,9 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
         Toast.error(failed.size === steps.length ? `Could not add ${item.name}` : `Added ${added.length} of ${steps.length} for ${item.name}`, parts.join(' '));
     },
 
+    // A null token posts without a scope check, for what is not added to a fractal.
     async post(token, url, body, contentType = 'application/json') {
-        if (this.isStale(token)) throw new Error('The fractal changed before this was added. Nothing more was added.');
+        if (token !== null && this.isStale(token)) throw new Error('The fractal changed before this was added. Nothing more was added.');
         const resp = await fetch(url, {
             method: 'POST',
             credentials: 'include',
@@ -514,6 +752,14 @@ ${it.kind === 'bundle' ? this.contentsHtml(it) : `<h3 class="exchange-section">D
     },
 
     installers: {
+        // Not scoped: the dataset gets a fractal of its own.
+        async dataset(item) {
+            const data = await this.expectOK(this.post(null, `/api/v1/exchange/datasets/${encodeURIComponent(item.id)}/import`, {}));
+            this.onImport(data.data);
+            await window.FractalSelector?.loadAvailableFractals?.();
+            return { installed: false, message: `Importing into fractal ${data.data.fractal_name}. Progress shows here.` };
+        },
+
         async lookup(item, token) {
             await this.expectOK(this.post(token, '/api/v1/dictionaries', {
                 name: item.id,

@@ -18,6 +18,13 @@ GitHub; item files are fetched relative to it.
 Lookups have no file here. Their entry holds the source settings, and installs fetch the
 rows from upstream on a schedule.
 
+Datasets have no file here either. Their entry points at a zstd-compressed NDJSON file in
+the shape Bifract exports, published elsewhere (such as a GitHub release), and lists its
+`url` (https), `sha256`, `bytes`, `logs` and `start`/`end` event times. Installs check the
+size, hash and log count before importing into a new fractal named after the dataset's id,
+which opens on the `start`/`end` range. Compress with at most `zstd --long=27`. A dataset
+takes no `path`, is not part of a bundle, and nothing can require it.
+
 Installs read this index from `main` and skip items they do not understand. Add new
 fields or kinds freely, but do not change what an existing field means.
 
@@ -27,7 +34,7 @@ fields or kinds freely, but do not change what an existing field means.
 
     ```yaml
     - id: my-rule            # lowercase, digits, - and _; lookups and models: letters, digits and _
-      kind: detection        # lookup, model, detection, search, dashboard, normalizer or policy
+      kind: detection        # dataset, lookup, model, detection, search, dashboard, normalizer or policy
       name: My Rule          # the name it installs under; a model installs under its id
       description: One line on what it does.
       tags: [windows]

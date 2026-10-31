@@ -11,6 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
+
+	"bifract/internal/clistyle"
 )
 
 const (
@@ -77,7 +79,7 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m ProgressModel) View() string {
 	if m.quitting {
-		return DimStyle.Render("Interrupted.") + "\n"
+		return clistyle.DimStyle.Render("Interrupted.") + "\n"
 	}
 
 	var b strings.Builder
@@ -108,10 +110,10 @@ func (m ProgressModel) renderLiveStatus() string {
 	m.stats.mu.Unlock()
 
 	// Header line
-	b.WriteString(TitleStyle.Render("  bifract ingest"))
-	b.WriteString(DimStyle.Render(fmt.Sprintf("  %d/%d files", filesDone, filesTotal)))
+	b.WriteString(clistyle.TitleStyle.Render("  bifract ingest"))
+	b.WriteString(clistyle.DimStyle.Render(fmt.Sprintf("  %d/%d files", filesDone, filesTotal)))
 	if currentFile != "" {
-		b.WriteString(DimStyle.Render(fmt.Sprintf("  %s", currentFile)))
+		b.WriteString(clistyle.DimStyle.Render(fmt.Sprintf("  %s", currentFile)))
 	}
 	b.WriteString("\n")
 
@@ -126,31 +128,31 @@ func (m ProgressModel) renderLiveStatus() string {
 	filled := int(pct * float64(barWidth))
 	empty := barWidth - filled
 
-	bar := BarFilledStyle.Render(strings.Repeat(filledChar, filled)) +
-		BarEmptyStyle.Render(strings.Repeat(emptyChar, empty))
+	bar := clistyle.BarFilledStyle.Render(strings.Repeat(filledChar, filled)) +
+		clistyle.BarEmptyStyle.Render(strings.Repeat(emptyChar, empty))
 
-	b.WriteString(fmt.Sprintf("  %s %s\n", bar, DimStyle.Render(fmt.Sprintf("%.0f%%", pct*100))))
+	b.WriteString(fmt.Sprintf("  %s %s\n", bar, clistyle.DimStyle.Render(fmt.Sprintf("%.0f%%", pct*100))))
 
 	// Stats line
 	if m.stats.Pacer != nil {
 		throttled := m.stats.Throttled.Load()
 		currentLimit := m.stats.Pacer.CurrentLimit()
 		b.WriteString(fmt.Sprintf("  %s sent  %s errors  %s retries  %s/s  %s  %s workers  %s throttled\n",
-			ValueStyle.Render(formatNumber(sent)),
+			clistyle.ValueStyle.Render(formatNumber(sent)),
 			renderErrors(errors),
-			DimStyle.Render(fmt.Sprintf("%d", retries)),
-			ValueStyle.Render(fmt.Sprintf("%.0f", rate)),
-			DimStyle.Render(formatDuration(time.Since(m.stats.StartTime))),
-			ValueStyle.Render(fmt.Sprintf("%d", currentLimit)),
+			clistyle.DimStyle.Render(fmt.Sprintf("%d", retries)),
+			clistyle.ValueStyle.Render(fmt.Sprintf("%.0f", rate)),
+			clistyle.DimStyle.Render(formatDuration(time.Since(m.stats.StartTime))),
+			clistyle.ValueStyle.Render(fmt.Sprintf("%d", currentLimit)),
 			renderThrottled(throttled),
 		))
 	} else {
 		b.WriteString(fmt.Sprintf("  %s sent  %s errors  %s retries  %s/s  %s\n",
-			ValueStyle.Render(formatNumber(sent)),
+			clistyle.ValueStyle.Render(formatNumber(sent)),
 			renderErrors(errors),
-			DimStyle.Render(fmt.Sprintf("%d", retries)),
-			ValueStyle.Render(fmt.Sprintf("%.0f", rate)),
-			DimStyle.Render(formatDuration(time.Since(m.stats.StartTime))),
+			clistyle.DimStyle.Render(fmt.Sprintf("%d", retries)),
+			clistyle.ValueStyle.Render(fmt.Sprintf("%.0f", rate)),
+			clistyle.DimStyle.Render(formatDuration(time.Since(m.stats.StartTime))),
 		))
 	}
 
@@ -158,8 +160,8 @@ func (m ProgressModel) renderLiveStatus() string {
 	// gives no way to tell a bad token from an oversized batch.
 	if last := m.stats.LastError(); last != "" {
 		b.WriteString(fmt.Sprintf("  %s %s\n",
-			ErrorStyle.Render("last error:"),
-			DimStyle.Render(truncate(last, m.width-16))))
+			clistyle.ErrorStyle.Render("last error:"),
+			clistyle.DimStyle.Render(truncate(last, m.width-16))))
 	}
 
 	return b.String()
@@ -189,69 +191,69 @@ func (m ProgressModel) renderSummary() string {
 	b.WriteString("\n")
 
 	if m.err != nil {
-		b.WriteString(ErrorStyle.Render("  Error: ") + fmt.Sprintf("%v\n", m.err))
+		b.WriteString(clistyle.ErrorStyle.Render("  Error: ") + fmt.Sprintf("%v\n", m.err))
 		b.WriteString("\n")
 	}
 
 	// Summary box
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(Dim).
+		BorderForeground(clistyle.Dim).
 		Padding(0, 2).
 		MarginLeft(1)
 
 	var summary strings.Builder
-	summary.WriteString(TitleStyle.Render("Ingestion Complete") + "\n\n")
+	summary.WriteString(clistyle.TitleStyle.Render("Ingestion Complete") + "\n\n")
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
-		SuccessStyle.Render("*"),
-		fmt.Sprintf("Logs sent:   %s", ValueStyle.Render(fmt.Sprintf("%d", sent)))))
+		clistyle.SuccessStyle.Render("*"),
+		fmt.Sprintf("Logs sent:   %s", clistyle.ValueStyle.Render(fmt.Sprintf("%d", sent)))))
 
 	if errors > 0 {
 		summary.WriteString(fmt.Sprintf("  %s  %s\n",
-			ErrorStyle.Render("x"),
-			fmt.Sprintf("Errors:      %s", ErrorStyle.Render(fmt.Sprintf("%d", errors)))))
+			clistyle.ErrorStyle.Render("x"),
+			fmt.Sprintf("Errors:      %s", clistyle.ErrorStyle.Render(fmt.Sprintf("%d", errors)))))
 	} else {
 		summary.WriteString(fmt.Sprintf("  %s  %s\n",
-			SuccessStyle.Render("*"),
-			fmt.Sprintf("Errors:      %s", DimStyle.Render("0"))))
+			clistyle.SuccessStyle.Render("*"),
+			fmt.Sprintf("Errors:      %s", clistyle.DimStyle.Render("0"))))
 	}
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
-		DimStyle.Render("~"),
-		fmt.Sprintf("Retries:     %s", DimStyle.Render(fmt.Sprintf("%d", retries)))))
+		clistyle.DimStyle.Render("~"),
+		fmt.Sprintf("Retries:     %s", clistyle.DimStyle.Render(fmt.Sprintf("%d", retries)))))
 
 	throttled := m.stats.Throttled.Load()
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
-		DimStyle.Render("~"),
+		clistyle.DimStyle.Render("~"),
 		fmt.Sprintf("Throttled:   %s", renderThrottled(throttled))))
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
-		DimStyle.Render("~"),
-		fmt.Sprintf("Batches:     %s", DimStyle.Render(fmt.Sprintf("%d", batches)))))
+		clistyle.DimStyle.Render("~"),
+		fmt.Sprintf("Batches:     %s", clistyle.DimStyle.Render(fmt.Sprintf("%d", batches)))))
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
-		DimStyle.Render("~"),
-		fmt.Sprintf("Data sent:   %s", DimStyle.Render(FormatBytes(bytesSent)))))
+		clistyle.DimStyle.Render("~"),
+		fmt.Sprintf("Data sent:   %s", clistyle.DimStyle.Render(FormatBytes(bytesSent)))))
 
 	summary.WriteString(fmt.Sprintf("  %s  %s\n",
-		DimStyle.Render("~"),
-		fmt.Sprintf("Duration:    %s", DimStyle.Render(formatDuration(elapsed)))))
+		clistyle.DimStyle.Render("~"),
+		fmt.Sprintf("Duration:    %s", clistyle.DimStyle.Render(formatDuration(elapsed)))))
 
 	if elapsed.Seconds() > 0 && sent > 0 {
 		summary.WriteString(fmt.Sprintf("  %s  %s",
-			DimStyle.Render("~"),
-			fmt.Sprintf("Rate:        %s logs/sec", ValueStyle.Render(fmt.Sprintf("%.0f", float64(sent)/elapsed.Seconds())))))
+			clistyle.DimStyle.Render("~"),
+			fmt.Sprintf("Rate:        %s logs/sec", clistyle.ValueStyle.Render(fmt.Sprintf("%.0f", float64(sent)/elapsed.Seconds())))))
 	}
 
 	// Without this, a failed run reports a count and no cause.
 	if breakdown := m.stats.ErrorBreakdown(); len(breakdown) > 0 {
-		summary.WriteString("\n\n" + BoldStyle.Render("  Failures") + "\n")
+		summary.WriteString("\n\n" + clistyle.BoldStyle.Render("  Failures") + "\n")
 		for _, e := range breakdown {
 			summary.WriteString(fmt.Sprintf("  %s  %s %s\n",
-				ErrorStyle.Render("x"),
-				ValueStyle.Render(fmt.Sprintf("%8s logs", formatNumber(e.Logs))),
-				DimStyle.Render(truncate(e.Message, 70))))
+				clistyle.ErrorStyle.Render("x"),
+				clistyle.ValueStyle.Render(fmt.Sprintf("%8s logs", formatNumber(e.Logs))),
+				clistyle.DimStyle.Render(truncate(e.Message, 70))))
 		}
 	}
 
@@ -263,16 +265,16 @@ func (m ProgressModel) renderSummary() string {
 
 func renderErrors(errors int64) string {
 	if errors > 0 {
-		return ErrorStyle.Render(fmt.Sprintf("%d", errors))
+		return clistyle.ErrorStyle.Render(fmt.Sprintf("%d", errors))
 	}
-	return DimStyle.Render("0")
+	return clistyle.DimStyle.Render("0")
 }
 
 func renderThrottled(count int64) string {
 	if count > 0 {
-		return WarningStyle.Render(fmt.Sprintf("%d", count))
+		return clistyle.WarningStyle.Render(fmt.Sprintf("%d", count))
 	}
-	return DimStyle.Render("0")
+	return clistyle.DimStyle.Render("0")
 }
 
 func tick() tea.Cmd {
@@ -336,8 +338,8 @@ func runPlain(cfg *Config, client *Client, stats *Stats) error {
 		mode = "auto"
 	}
 	fmt.Printf("%s  %s  files=%d  workers=%d  batch=%d  mode=%s\n",
-		TitleStyle.Render("bifract ingest"),
-		DimStyle.Render(cfg.URL),
+		clistyle.TitleStyle.Render("bifract ingest"),
+		clistyle.DimStyle.Render(cfg.URL),
 		len(cfg.Files), cfg.Workers, cfg.BatchSize, mode)
 
 	err := runIngestion(cfg, client, stats)
@@ -362,6 +364,10 @@ func runIngestion(cfg *Config, client *Client, stats *Stats) error {
 	var total atomic.Int64
 	var countWG sync.WaitGroup
 	for _, file := range cfg.Files {
+		if n, ok := cfg.Counts[file]; ok {
+			total.Add(n)
+			continue
+		}
 		countWG.Add(1)
 		go func(f string) {
 			defer countWG.Done()

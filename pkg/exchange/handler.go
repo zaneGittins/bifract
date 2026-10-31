@@ -66,7 +66,7 @@ func (h *Handler) HandleItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := ItemContent{Item: *it}
-	if it.Kind == KindLookup || it.Kind == KindBundle {
+	if !it.HasFile() {
 		api.WriteSuccess(w, out)
 		return
 	}

@@ -15,6 +15,7 @@ import (
 	"bifract/internal/ruletest"
 	"bifract/pkg/alerts"
 	"bifract/pkg/dashboards"
+	"bifract/pkg/fractals"
 	"bifract/pkg/models"
 	"bifract/pkg/normalizers"
 )
@@ -42,10 +43,23 @@ func readItem(it Item) ([]byte, error) {
 
 // Each file loads as its import would, and is named in the index as it will be
 // installed, since the UI shows an item as installed by that name.
+// A dataset is added as a fractal named after its id, so the id must be one a
+// fractal can take.
+func TestRepoDatasetsNameFractals(t *testing.T) {
+	for _, it := range loadRepoIndex(t).Items {
+		if it.Kind != KindDataset {
+			continue
+		}
+		if err := fractals.ValidateName(it.ID); err != nil {
+			t.Errorf("%s: %v", it.ID, err)
+		}
+	}
+}
+
 func TestRepoIndexItemsResolve(t *testing.T) {
 	idx := loadRepoIndex(t)
 	for _, it := range idx.Items {
-		if it.Kind == KindLookup || it.Kind == KindBundle {
+		if !it.HasFile() {
 			continue
 		}
 		content, err := readItem(it)
@@ -112,7 +126,7 @@ var (
 func TestRepoReferencesAreRequired(t *testing.T) {
 	idx := loadRepoIndex(t)
 	for _, it := range idx.Items {
-		if it.Kind == KindLookup || it.Kind == KindBundle {
+		if !it.HasFile() {
 			continue
 		}
 		content, err := readItem(it)

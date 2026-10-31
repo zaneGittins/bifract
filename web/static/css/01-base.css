@@ -1358,6 +1358,10 @@ body {
     font-family: var(--font-main);
 }
 
+.tp-dataset[hidden] {
+    display: none;
+}
+
 .tp-preset {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-strong);
@@ -1416,7 +1420,8 @@ body {
     100% { box-shadow: 0 0 0 0 transparent; }
 }
 
-.tp-live {
+.tp-live,
+.tp-dataset {
     grid-column: 1 / -1;
     display: flex;
     align-items: center;

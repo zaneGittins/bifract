@@ -429,7 +429,7 @@ func project(q, table string, hits []row) (fakedb.PGResult, error) {
 		for _, r := range hits {
 			out = append(out, []driver.Value{
 				r["id"], r["name"], "", r["is_default"], r["is_system"], "", r["created_at"], r["updated_at"],
-				nil, nil, nil, "reject", int64(0), int64(0), nil, nil,
+				nil, nil, nil, "reject", int64(0), int64(0), nil, nil, nil, nil,
 			})
 		}
 	default:

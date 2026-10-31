@@ -2092,6 +2092,17 @@ func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime tim
 	return count, nil
 }
 
+// CountFractalLogs counts the logs stored in a fractal. fractal_id leads the
+// partition key, so only that fractal's partitions are read.
+func (c *ClickHouseClient) CountFractalLogs(ctx context.Context, fractalID string) (uint64, error) {
+	var count uint64
+	err := c.conn.QueryRow(ctx, "SELECT count() FROM "+c.ReadTable()+" WHERE fractal_id = ?", fractalID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count logs for fractal %s: %w", fractalID, err)
+	}
+	return count, nil
+}
+
 // QueryRows executes a query and returns the raw driver.Rows for streaming iteration.
 // The caller is responsible for closing the returned Rows.
 func (c *ClickHouseClient) QueryRows(ctx context.Context, query string, args ...interface{}) (driver.Rows, error) {

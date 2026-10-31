@@ -7,7 +7,7 @@ BQL is Bifract's query language for searching and analyzing logs. A query is a f
 ## Run a query
 
 1. Open a fractal, then click **Query** in the sidebar.
-2. Pick the time range with the time picker in the toolbar (default **Last 24h**).
+2. Pick the time range with the time picker in the toolbar (default **Last 24h**, or the dataset's range in a fractal added from an [Exchange dataset](../exchange/using.md#datasets)).
 3. Type a query in the query bar, for example `event_id=4625 | groupBy(src_ip)`.
 4. Press **Enter** or click **Run**. **Shift+Enter** adds a new line.
 

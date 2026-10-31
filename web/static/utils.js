@@ -100,6 +100,14 @@ const Utils = {
                    .replace(/>/g, '&gt;');
     },
 
+    // A byte count in binary units, such as "112.8 MB".
+    formatBytes(bytes) {
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let n = Number(bytes) || 0, i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return `${i ? n.toFixed(1) : n} ${units[i]}`;
+    },
+
     // Deterministic per-tag color from a fixed palette. The same tag string
     // always maps to the same color, used for notebook section tags and alert
     // labels so chips are visually distinguishable and consistent app-wide.

@@ -265,6 +265,8 @@ func ClearedLogDataPostgresStatements() []string {
 		`UPDATE analytics_models SET last_scored_at = NULL`,
 		// An in-flight restore would resume mid-window against an empty target.
 		`UPDATE archive_restore_jobs SET status = 'canceled' WHERE status IN ('running', 'pending')`,
+		// Dataset fractals are emptied too, so their imports have to run again.
+		`UPDATE dataset_imports SET status = 'failed', error = 'Log data was reset; import it again.', finished_at = NOW(), updated_at = NOW() WHERE status <> 'failed'`,
 	}
 }
 

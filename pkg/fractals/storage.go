@@ -2,8 +2,11 @@ package fractals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 
 	"bifract/pkg/storage"
 )
@@ -23,24 +26,33 @@ func NewStorage(pg *storage.PostgresClient, ch *storage.ClickHouseClient) *Stora
 }
 
 // CreateFractal creates a new index in the database
+// fractalColumns are the columns every query returning a Fractal selects, in the
+// order scanDest lists their destinations.
+const fractalColumns = `id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
+	retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log,
+	default_range_start, default_range_end`
+
+func (f *Fractal) scanDest() []any {
+	return []any{
+		&f.ID, &f.Name, &f.Description, &f.IsDefault, &f.IsSystem,
+		&f.CreatedBy, &f.CreatedAt, &f.UpdatedAt,
+		&f.RetentionDays, &f.ArchiveRetentionDays,
+		&f.DiskQuotaBytes, &f.DiskQuotaAction,
+		&f.LogCount, &f.SizeBytes, &f.EarliestLog, &f.LatestLog,
+		&f.DefaultRangeStart, &f.DefaultRangeEnd,
+	}
+}
+
 func (s *Storage) CreateFractal(ctx context.Context, req CreateFractalRequest, createdBy string) (*Fractal, error) {
 	fractal := &Fractal{}
 
 	query := `
 		INSERT INTO fractals (name, description, created_by)
 		VALUES ($1, $2, $3)
-		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		RETURNING ` + fractalColumns + `
 	`
 
-	err := s.pg.QueryRow(ctx, query, req.Name, req.Description, storage.NullableUser(createdBy)).Scan(
-		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays,
-		&fractal.ArchiveRetentionDays,
-		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-	)
+	err := s.pg.QueryRow(ctx, query, req.Name, req.Description, storage.NullableUser(createdBy)).Scan(fractal.scanDest()...)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fractal: %w", err)
@@ -61,17 +73,9 @@ func (s *Storage) CreateFractalForRestore(ctx context.Context, name, description
 		INSERT INTO fractals (name, description, created_by, retention_days,
 		                      restored_from_fractal_id, restored_from_ts, restored_to_ts)
 		VALUES ($1, $2, $3, NULL, $4, $5, $6)
-		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		RETURNING ` + fractalColumns + `
 	`
-	err := s.pg.QueryRow(ctx, query, name, description, createdBy, sourceFractalID, from, to).Scan(
-		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays,
-		&fractal.ArchiveRetentionDays,
-		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-	)
+	err := s.pg.QueryRow(ctx, query, name, description, createdBy, sourceFractalID, from, to).Scan(fractal.scanDest()...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create restore fractal: %w", err)
 	}
@@ -84,6 +88,26 @@ type RestoreProvenance struct {
 	SourceFractalName string     `json:"source_fractal_name"`
 	From              *time.Time `json:"from,omitempty"`
 	To                *time.Time `json:"to,omitempty"`
+}
+
+// CreateFractalForDataset creates a no-retention fractal for an imported dataset,
+// opening on the dataset's time range.
+func (s *Storage) CreateFractalForDataset(ctx context.Context, name, description, createdBy string, start, end time.Time) (*Fractal, error) {
+	fractal := &Fractal{}
+	query := `
+		INSERT INTO fractals (name, description, created_by, retention_days, default_range_start, default_range_end)
+		VALUES ($1, $2, $3, NULL, $4, $5)
+		RETURNING ` + fractalColumns + `
+	`
+	err := s.pg.QueryRow(ctx, query, name, description, storage.NullableUser(createdBy), start, end).Scan(fractal.scanDest()...)
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		return nil, fmt.Errorf("a fractal named '%s' %w", name, ErrNameTaken)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dataset fractal: %w", err)
+	}
+	return fractal, nil
 }
 
 // GetFractalProvenance returns a fractal's restore provenance, or ok=false when
@@ -124,20 +148,12 @@ func (s *Storage) GetFractal(ctx context.Context, fractalID string) (*Fractal, e
 	fractal := &Fractal{}
 
 	query := `
-		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		SELECT ` + fractalColumns + `
 		FROM fractals
 		WHERE id = $1
 	`
 
-	err := s.pg.QueryRow(ctx, query, fractalID).Scan(
-		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays,
-		&fractal.ArchiveRetentionDays,
-		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-	)
+	err := s.pg.QueryRow(ctx, query, fractalID).Scan(fractal.scanDest()...)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fractal: %w", err)
@@ -151,20 +167,12 @@ func (s *Storage) GetFractalByName(ctx context.Context, name string) (*Fractal, 
 	fractal := &Fractal{}
 
 	query := `
-		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		SELECT ` + fractalColumns + `
 		FROM fractals
 		WHERE name = $1
 	`
 
-	err := s.pg.QueryRow(ctx, query, name).Scan(
-		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays,
-		&fractal.ArchiveRetentionDays,
-		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-	)
+	err := s.pg.QueryRow(ctx, query, name).Scan(fractal.scanDest()...)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get fractal by name: %w", err)
@@ -178,21 +186,13 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 	fractal := &Fractal{}
 
 	query := `
-		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		SELECT ` + fractalColumns + `
 		FROM fractals
 		WHERE is_default = true
 		LIMIT 1
 	`
 
-	err := s.pg.QueryRow(ctx, query).Scan(
-		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays,
-		&fractal.ArchiveRetentionDays,
-		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-	)
+	err := s.pg.QueryRow(ctx, query).Scan(fractal.scanDest()...)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get default fractal: %w", err)
@@ -204,8 +204,7 @@ func (s *Storage) GetDefaultFractal(ctx context.Context) (*Fractal, error) {
 // ListFractals retrieves all fractals with optional filtering
 func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 	query := `
-		SELECT id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		       retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		SELECT ` + fractalColumns + `
 		FROM fractals
 		ORDER BY is_default DESC, name ASC
 	`
@@ -219,14 +218,7 @@ func (s *Storage) ListFractals(ctx context.Context) ([]*Fractal, error) {
 	var fractals []*Fractal
 	for rows.Next() {
 		fractal := &Fractal{}
-		err := rows.Scan(
-			&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-			&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-			&fractal.RetentionDays,
-			&fractal.ArchiveRetentionDays,
-			&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-			&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-		)
+		err := rows.Scan(fractal.scanDest()...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan fractal: %w", err)
 		}
@@ -242,19 +234,11 @@ func (s *Storage) UpdateFractal(ctx context.Context, fractalID string, req Updat
 		UPDATE fractals
 		SET name = $2, description = $3, updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, name, description, is_default, is_system, COALESCE(created_by, ''), created_at, updated_at,
-		          retention_days, archive_retention_days, disk_quota_bytes, COALESCE(disk_quota_action, 'reject'), log_count, size_bytes, earliest_log, latest_log
+		RETURNING ` + fractalColumns + `
 	`
 
 	fractal := &Fractal{}
-	err := s.pg.QueryRow(ctx, query, fractalID, req.Name, req.Description).Scan(
-		&fractal.ID, &fractal.Name, &fractal.Description, &fractal.IsDefault, &fractal.IsSystem,
-		&fractal.CreatedBy, &fractal.CreatedAt, &fractal.UpdatedAt,
-		&fractal.RetentionDays,
-		&fractal.ArchiveRetentionDays,
-		&fractal.DiskQuotaBytes, &fractal.DiskQuotaAction,
-		&fractal.LogCount, &fractal.SizeBytes, &fractal.EarliestLog, &fractal.LatestLog,
-	)
+	err := s.pg.QueryRow(ctx, query, fractalID, req.Name, req.Description).Scan(fractal.scanDest()...)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to update fractal: %w", err)

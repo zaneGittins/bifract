@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/term"
 
+	"bifract/internal/clistyle"
 	"bifract/internal/ingestcli"
 	"bifract/internal/mcpserver"
 	"bifract/pkg/api"
@@ -127,7 +128,7 @@ func run(ctx context.Context, cfg mcpserver.Config, opts options) error {
 
 	if opts.output != "" {
 		fmt.Fprintf(os.Stderr, "%s %s logs to %s (%s)\n",
-			ingestcli.SuccessStyle.Render("Exported"), ingestcli.ValueStyle.Render(rows), opts.output, ingestcli.FormatBytes(counter.n.Load()))
+			clistyle.SuccessStyle.Render("Exported"), clistyle.ValueStyle.Render(rows), opts.output, ingestcli.FormatBytes(counter.n.Load()))
 	}
 	return nil
 }
@@ -223,9 +224,9 @@ func printUsage() {
   bifract --export -o logs.jsonl.gz
   bifract --export -q 'event_id=4625' --start 2026-10-01T00:00:00Z -o failed-logons.jsonl
 `,
-		ingestcli.TitleStyle.Render("bifract --export"),
-		ingestcli.BoldStyle.Render("Usage:"),
-		ingestcli.BoldStyle.Render("Options:"),
-		ingestcli.BoldStyle.Render("Environment:"),
-		ingestcli.BoldStyle.Render("Examples:"))
+		clistyle.TitleStyle.Render("bifract --export"),
+		clistyle.BoldStyle.Render("Usage:"),
+		clistyle.BoldStyle.Render("Options:"),
+		clistyle.BoldStyle.Render("Environment:"),
+		clistyle.BoldStyle.Render("Examples:"))
 }

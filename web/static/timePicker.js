@@ -229,6 +229,26 @@ const TimePicker = {
         return `bifract_${suffix}_${fractalId}`;
     },
 
+    // The range a fractal opens on, such as an imported dataset's span, widened to
+    // whole minutes so its first and last logs fall inside. Null when it has none.
+    fractalRange(fractal = window.FractalContext?.currentFractal) {
+        const start = Date.parse(fractal?.default_range_start || '');
+        const end = Date.parse(fractal?.default_range_end || '');
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+        const minute = 60 * 1000;
+        return {
+            type: 'custom',
+            customStart: new Date(Math.floor(start / minute) * minute).toISOString(),
+            customEnd: new Date((Math.floor(end / minute) + 1) * minute).toISOString(),
+        };
+    },
+
+    isFractalRange(state = this.state) {
+        const range = this.fractalRange();
+        return !!range && state.type === 'custom'
+            && state.customStart === range.customStart && state.customEnd === range.customEnd;
+    },
+
     saveToStorage() {
         try {
             const { type, relativeN, relativeUnit, customStart, customEnd } = this.state;
@@ -241,10 +261,17 @@ const TimePicker = {
         } catch (e) {}
     },
 
+    // A fractal with a range of its own, such as an imported dataset, opens on it
+    // until a range is picked there.
     restoreFromStorage() {
         try {
-            const type = localStorage.getItem(this._storageKey('time_range_type')) || '24h';
-            const newState = { type };
+            const type = localStorage.getItem(this._storageKey('time_range_type'));
+            const fallback = this.fractalRange();
+            if (!type && fallback) {
+                this.setState(fallback, true);
+                return;
+            }
+            const newState = { type: type || '24h' };
 
             if (type === 'custom') {
                 const saved = localStorage.getItem(this._storageKey('custom_time_range'));
@@ -292,8 +319,25 @@ const TimePicker = {
 
     _updateActivePreset() {
         document.querySelectorAll('#timePickerPanel .tp-preset').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.value === this.state.type);
+            const active = btn.dataset.value === 'dataset' ? this.isFractalRange() : btn.dataset.value === this.state.type;
+            btn.classList.toggle('active', active);
         });
+    },
+
+    // The Dataset range shortcut shows only in a fractal that has a range.
+    _syncFractalRange() {
+        const btn = document.querySelector('#timePickerPanel .tp-dataset');
+        if (!btn) return;
+        const range = this.fractalRange();
+        btn.hidden = !range;
+        const dates = document.getElementById('tpDatasetDates');
+        if (dates && range) {
+            const fmt = v => {
+                const p = TZ.parts(v);
+                return p ? `${TZ.MONTHS[p.month - 1]} ${p.day}` : '';
+            };
+            dates.textContent = `${fmt(range.customStart)} to ${fmt(range.customEnd)}`;
+        }
     },
 
     open() {
@@ -301,6 +345,8 @@ const TimePicker = {
         const zoneTag = document.getElementById('tpZone');
         if (zoneTag) zoneTag.textContent = TZ.abbrev();
         this._syncInputs();
+        this._syncFractalRange();
+        this._updateActivePreset();
         const panel = document.getElementById('timePickerPanel');
         const backdrop = document.getElementById('timePickerBackdrop');
         const btn = document.getElementById('timePickerBtn');
@@ -355,7 +401,9 @@ const TimePicker = {
 
         document.querySelectorAll('#timePickerPanel .tp-preset').forEach(presetBtn => {
             presetBtn.addEventListener('click', () => {
-                this._applyAndExecute({ type: presetBtn.dataset.value });
+                const value = presetBtn.dataset.value;
+                const next = value === 'dataset' ? this.fractalRange() : { type: value };
+                if (next) this._applyAndExecute(next);
             });
         });
 

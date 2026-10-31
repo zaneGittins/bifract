@@ -10,7 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"bifract/pkg/datasetfile"
+	"bifract/pkg/normalizers"
 )
+
+// zstdMagic opens every zstd frame.
+const zstdMagic = "\x28\xb5\x2f\xfd"
 
 // FileFormat represents a detected file format.
 type FileFormat int
@@ -21,6 +27,8 @@ const (
 	FormatJSONObject
 	FormatCSV
 	FormatParquet
+	// FormatZstd is zstd-compressed NDJSON, such as an Exchange dataset.
+	FormatZstd
 	FormatUnknown
 )
 
@@ -36,6 +44,8 @@ func (f FileFormat) String() string {
 		return "CSV"
 	case FormatParquet:
 		return "Parquet"
+	case FormatZstd:
+		return "zstd NDJSON"
 	default:
 		return "unknown"
 	}
@@ -59,8 +69,11 @@ func DetectFormat(path string) (FileFormat, error) {
 
 	reader := bufio.NewReader(f)
 
-	if magic, _ := reader.Peek(4); string(magic) == "PAR1" {
+	switch magic, _ := reader.Peek(4); string(magic) {
+	case "PAR1":
 		return FormatParquet, nil
+	case zstdMagic:
+		return FormatZstd, nil
 	}
 
 	// Skip whitespace/newlines to find first content byte
@@ -113,6 +126,13 @@ func CountLogs(path string) (int64, error) {
 		return countCSVRows(path)
 	case FormatParquet:
 		return countParquetRows(path)
+	case FormatZstd:
+		var n int64
+		err := withZstd(path, func(r io.Reader) (err error) {
+			n, err = datasetfile.CountLogs(r)
+			return err
+		})
+		return n, err
 	default:
 		return countLines(path)
 	}
@@ -232,6 +252,10 @@ func ReadFile(path string, batchSize, limit int, batchCh chan<- Batch, stats *St
 		return readCSV(path, batchSize, limit, batchCh, stats)
 	case FormatParquet:
 		return readParquet(path, batchSize, limit, batchCh, stats)
+	case FormatZstd:
+		return withZstd(path, func(r io.Reader) error {
+			return readNDJSONFrom(r, path, batchSize, limit, batchCh, stats)
+		})
 	default:
 		return fmt.Errorf("unsupported format")
 	}
@@ -243,16 +267,35 @@ func readNDJSON(path string, batchSize, limit int, batchCh chan<- Batch, stats *
 		return err
 	}
 	defer f.Close()
+	return readNDJSONFrom(f, path, batchSize, limit, batchCh, stats)
+}
 
-	scanner := bufio.NewScanner(f)
+func withZstd(path string, fn func(io.Reader) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	r, err := datasetfile.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return fn(r)
+}
+
+// readNDJSONFrom sends each line as a log. A line Bifract exported goes back as the
+// log it was, so it is not tagged with the path it was read from.
+func readNDJSONFrom(r io.Reader, path string, batchSize, limit int, batchCh chan<- Batch, stats *Stats) error {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 4*1024*1024), 16*1024*1024)
 
 	b := newBatcher(batchCh, batchSize)
 	count := 0
 
 	for scanner.Scan() {
-		// Unmarshal straight off the scanner's buffer: json.Unmarshal copies
-		// every string it stores, so nothing outlives the next Scan.
+		// Decode straight off the scanner's buffer: DecodeJSON copies every
+		// string it stores, so nothing outlives the next Scan.
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
@@ -262,13 +305,18 @@ func readNDJSON(path string, batchSize, limit int, batchCh chan<- Batch, stats *
 			break
 		}
 
+		// Numbers stay exact, as the server keeps them.
 		var log map[string]interface{}
-		if err := json.Unmarshal(line, &log); err != nil {
+		if err := normalizers.DecodeJSON(line, &log); err != nil {
 			stats.Errors.Add(1)
 			continue
 		}
 
-		log["bifract_ingest_path"] = path
+		if fields, _, exported := datasetfile.Unwrap(log); exported {
+			log = fields
+		} else {
+			log["bifract_ingest_path"] = path
+		}
 		b.add(log, len(line))
 		count++
 	}
@@ -313,7 +361,7 @@ func readJSONArray(path string, batchSize, limit int, batchCh chan<- Batch, stat
 		}
 
 		var log map[string]interface{}
-		if err := json.Unmarshal(raw, &log); err != nil {
+		if err := normalizers.DecodeJSON(raw, &log); err != nil {
 			stats.Errors.Add(1)
 			continue
 		}
@@ -335,7 +383,7 @@ func readJSONObject(path string, batchCh chan<- Batch, stats *Stats) error {
 	}
 
 	var log map[string]interface{}
-	if err := json.Unmarshal(data, &log); err != nil {
+	if err := normalizers.DecodeJSON(data, &log); err != nil {
 		return fmt.Errorf("invalid JSON object: %w", err)
 	}
 

@@ -33,6 +33,16 @@ bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
   --workers 8 --batch-size 2000 *.json
 ```
 
+## Load an Exchange dataset
+
+`dataset:<id>` downloads a dataset from the [Exchange](../exchange/using.md#datasets), checks its size, SHA-256 and log count, and ingests it into the fractal the token points at:
+
+```bash
+bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN dataset:bifract-labs-001
+```
+
+The verified file is kept in your user cache directory (`bifract/datasets`), so running it again skips the download. Use a token with no normalizer: datasets are already normalized. `--exchange` reads the index from another URL, as `BIFRACT_EXCHANGE_URL` does for the server.
+
 ## Options
 
 | Flag | Default | Description |
@@ -43,6 +53,7 @@ bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
 | `--workers`, `-w` | auto (CPU cores, 2 to 32) | Concurrent upload workers |
 | `--limit`, `-l` | unlimited | Max logs per file |
 | `--recursive`, `-r` | off | Recurse into directories |
+| `--exchange` | `BIFRACT_EXCHANGE_URL`, else the Bifract repository | Exchange index that `dataset:<id>` is read from |
 | `--insecure`, `-k` | off | Skip TLS certificate verification |
 | `--help`, `-h` | | Show help |
 
@@ -57,8 +68,11 @@ bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
 | JSON array, single JSON object, NDJSON | File content |
 | CSV, TSV | `.csv`, `.tsv` extension |
 | Parquet | `.parquet` extension or the `PAR1` file header |
+| zstd-compressed NDJSON | The zstd file header |
 
-With `-r`, only files ending in `.json`, `.ndjson`, `.jsonl`, `.csv`, `.tsv` or `.parquet` are picked up.
+With `-r`, only files ending in `.json`, `.ndjson`, `.jsonl`, `.csv`, `.tsv`, `.parquet`, `.jsonl.zst` or `.ndjson.zst` are picked up.
+
+Each log gets a `bifract_ingest_path` field naming the file it came from, except NDJSON lines in the shape an export of logs writes (only `timestamp`, `log_id`, `fractal_id` and `fields`): those go back in as the logs they were, with their original timestamp.
 
 Parquet rows are sent as JSON objects, so normalizers and timestamp detection apply. Nested structs, lists and maps become nested JSON. Values convert without loss:
 

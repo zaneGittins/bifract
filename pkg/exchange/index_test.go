@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 const validIndex = `
@@ -123,6 +124,24 @@ func TestParseIndexRejects(t *testing.T) {
 		{"nested bundle", `items: [{id: p, kind: policy, name: P, path: p.yaml}, {id: a, kind: bundle, name: A, items: [p]}, {id: b, kind: bundle, name: B, items: [a]}]`, "bundle"},
 		{"requires a bundle", `items: [{id: p, kind: policy, name: P, path: p.yaml}, {id: a, kind: bundle, name: A, items: [p]}, {id: q, kind: policy, name: Q, path: q.yaml, requires: [a]}]`, "bundle"},
 		{"items on a non-bundle", `items: [{id: p, kind: policy, name: P, path: p.yaml}, {id: q, kind: policy, name: Q, path: q.yaml, items: [p]}]`, "items"},
+		{"dataset without section", `items: [{id: d, kind: dataset, name: D}]`, "dataset section"},
+		{"dataset over http", datasetYAML("url: http://x.example/d.jsonl.zst"), "https"},
+		{"dataset bad url", datasetYAML("url: \"file:///etc/passwd\""), "url"},
+		{"dataset short sha256", datasetYAML("sha256: abc"), "sha256"},
+		{"dataset uppercase sha256", datasetYAML("sha256: " + strings.Repeat("A", 64)), "sha256"},
+		{"dataset no logs", datasetYAML("logs: 0"), "logs"},
+		{"dataset no bytes", datasetYAML("bytes: 0"), "bytes"},
+		{"dataset no start", datasetYAML("start: null"), "start"},
+		{"dataset ends before start", datasetYAML("end: 2026-10-26T00:00:00Z"), "end"},
+		{"dataset with path", `items: [{id: d, kind: dataset, name: D, path: d.yaml}]`, "path"},
+		{"dataset id is a fractal name", strings.Replace(datasetYAML(""), "id: lab-001", "id: 1lab", 1), "id"},
+		{"requires a dataset", datasetYAML("") + `
+  - {id: p, kind: policy, name: P, path: p.yaml, requires: [lab-001]}`, "fractal of its own"},
+		{"dataset in a bundle", datasetYAML("") + `
+  - {id: b, kind: bundle, name: B, items: [lab-001]}`, "dataset"},
+		{"dataset requires", strings.Replace(datasetYAML(""), "name: Lab", "name: Lab\n    requires: [p]", 1) + `
+  - {id: p, kind: policy, name: P, path: p.yaml}`, "requirements"},
+		{"dataset section on a policy", `items: [{id: p, kind: policy, name: P, path: p.yaml, dataset: {url: "https://x.example/d"}}]`, "dataset"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -134,6 +153,48 @@ func TestParseIndexRejects(t *testing.T) {
 				t.Errorf("error %q does not mention %q", err, c.want)
 			}
 		})
+	}
+}
+
+// datasetYAML is a valid dataset index with one dataset field overridden.
+func datasetYAML(override string) string {
+	fields := map[string]string{
+		"url":    "url: https://github.com/o/r/releases/download/lab-001/d.jsonl.zst",
+		"sha256": "sha256: " + strings.Repeat("ab", 32),
+		"bytes":  "bytes: 1024",
+		"logs":   "logs: 10",
+		"start":  "start: 2026-10-27T08:37:53Z",
+		"end":    "end: 2026-10-30T13:49:59Z",
+	}
+	if override != "" {
+		key, _, _ := strings.Cut(override, ":")
+		fields[key] = override
+	}
+	var b strings.Builder
+	b.WriteString("items:\n  - id: lab-001\n    kind: dataset\n    name: Lab\n    dataset:\n")
+	for _, k := range []string{"url", "sha256", "bytes", "logs", "start", "end"} {
+		b.WriteString("      " + fields[k] + "\n")
+	}
+	return b.String()
+}
+
+func TestParseDataset(t *testing.T) {
+	idx, err := ParseIndex([]byte(datasetYAML("")))
+	if err != nil {
+		t.Fatalf("ParseIndex: %v", err)
+	}
+	d := idx.Find("lab-001").Dataset
+	if d == nil {
+		t.Fatal("dataset section not parsed")
+	}
+	if d.Logs != 10 || d.Bytes != 1024 || d.SHA256 != strings.Repeat("ab", 32) {
+		t.Errorf("unexpected dataset: %+v", d)
+	}
+	if got := d.Start.UTC().Format(time.RFC3339); got != "2026-10-27T08:37:53Z" {
+		t.Errorf("start = %s", got)
+	}
+	if !d.End.After(d.Start) {
+		t.Errorf("end %s is not after start %s", d.End, d.Start)
 	}
 }
 

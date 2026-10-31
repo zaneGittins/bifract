@@ -14245,6 +14245,289 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/exchange/datasets": {
+      "get": {
+        "operationId": "get_api_v1_exchange_datasets",
+        "summary": "List Exchange dataset imports and their progress.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "exchange"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/datasets.Import"
+                      }
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
+    "/api/v1/exchange/datasets/events": {
+      "get": {
+        "operationId": "get_api_v1_exchange_datasets_events",
+        "summary": "Stream Exchange dataset import progress.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "exchange"
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An open server-sent event stream; the response does not complete.",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
+    "/api/v1/exchange/datasets/imports/{importId}/retry": {
+      "post": {
+        "operationId": "post_api_v1_exchange_datasets_imports_byImportId_retry",
+        "summary": "Run a failed dataset import again from the start.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "exchange"
+        ],
+        "parameters": [
+          {
+            "name": "importId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/datasets.Import"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
+    "/api/v1/exchange/datasets/{id}/import": {
+      "post": {
+        "operationId": "post_api_v1_exchange_datasets_byId_import",
+        "summary": "Create a fractal for an Exchange dataset and import the dataset into it.",
+        "description": "Requires instance-wide administration.",
+        "tags": [
+          "exchange"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/datasets.Import"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "tenant_admin"
+      }
+    },
     "/api/v1/exchange/items/{id}": {
       "get": {
         "operationId": "get_api_v1_exchange_items_byId",
@@ -34672,6 +34955,81 @@
           }
         }
       },
+      "datasets.Import": {
+        "type": "object",
+        "properties": {
+          "bytes_done": {
+            "type": "integer"
+          },
+          "bytes_total": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dataset_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fractal_id": {
+            "type": "string"
+          },
+          "fractal_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "logs_done": {
+            "type": "integer"
+          },
+          "logs_total": {
+            "type": "integer"
+          },
+          "requested_by": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "dataset_id",
+          "fractal_id",
+          "fractal_name",
+          "url",
+          "sha256",
+          "bytes_total",
+          "logs_total",
+          "status",
+          "bytes_done",
+          "logs_done",
+          "created_at",
+          "updated_at"
+        ]
+      },
       "dictionaries.AddColumnRequest": {
         "type": "object",
         "properties": {
@@ -35075,11 +35433,47 @@
           "rows"
         ]
       },
+      "exchange.Dataset": {
+        "type": "object",
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "logs": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "sha256",
+          "bytes",
+          "logs",
+          "start",
+          "end"
+        ]
+      },
       "exchange.Item": {
         "type": "object",
         "properties": {
           "author": {
             "type": "string"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/exchange.Dataset"
           },
           "description": {
             "type": "string"
@@ -35466,6 +35860,14 @@
           "created_by": {
             "type": "string"
           },
+          "default_range_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "default_range_start": {
+            "type": "string",
+            "format": "date-time"
+          },
           "description": {
             "type": "string"
           },
@@ -35540,6 +35942,14 @@
           },
           "created_by": {
             "type": "string"
+          },
+          "default_range_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "default_range_start": {
+            "type": "string",
+            "format": "date-time"
           },
           "description": {
             "type": "string"
