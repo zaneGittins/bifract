@@ -1159,6 +1159,14 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// and drop it from the pipeline; the rest of the pipeline (filters/aggregations/charts,
 	// including pgraph()) then translates over that source like any other query. Everything
 	// downstream keys off opts.SourceSubquery -- no per-command special-casing.
+	ptgWarnings, perr := ResolveProcessTree(r.Context(), h.db, pipeline, &opts)
+	if perr != nil {
+		log.Printf("[QueryHandler] %v", perr)
+		respondJSON(w, http.StatusInternalServerError, QueryResponse{Success: false, Query: req.Query, Error: "ptg() could not walk the process tree"})
+		return nil
+	}
+	queryWarnings = append(queryWarnings, ptgWarnings...)
+
 	var sourceFocus string
 	var sourceQuerySettings string
 	if _, ok := parser.FirstSourceCommand(pipeline); ok && purpose == purposeExport {
@@ -1555,6 +1563,10 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ptg() walks its tree from the database too; validation translates over an empty one.
+	if _, ok, _ := parser.ProcessTreeCommand(pipeline); ok {
+		opts.ProcessTree = &parser.ProcessTree{}
+	}
 	if _, err := parser.TranslateToSQLWithOrder(pipeline, opts); err != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{
 			Valid:     false,

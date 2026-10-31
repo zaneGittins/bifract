@@ -86,6 +86,8 @@ func TestGraphKeepsShapedRows(t *testing.T) {
 	pgr := serverOpts()
 	pgr.SourceSubquery = "SELECT 'x' AS a, 'y' AS b, 'z' AS c"
 	pgr.SourceColumns = []string{"a", "b", "c"}
+	ptgOpts := serverOpts()
+	ptgOpts.ProcessTree = &ProcessTree{}
 	for _, tc := range []struct {
 		q, without string
 		opts       QueryOptions
@@ -94,7 +96,7 @@ func TestGraphKeepsShapedRows(t *testing.T) {
 		{`* | graph(child=a, parent=b) | table(z)`, `* | table(z)`, serverOpts()},
 		{`* | groupby(a, b) | graph(child=a, parent=b)`, `* | groupby(a, b)`, serverOpts()},
 		{`* | count() | graph(child=a, parent=b)`, `* | count()`, serverOpts()},
-		{`ptg(start="ABC") | graph(child=process_guid, parent=parent_guid, labels=image)`, `ptg(start="ABC")`, serverOpts()},
+		{`ptg(start="ABC") | graph(child=process_guid, parent=parent_guid, labels=image)`, `ptg(start="ABC")`, ptgOpts},
 		{`* | graph(child=a, parent=b)`, `*`, pgr},
 	} {
 		got := translateGraph(t, tc.q, tc.opts)

@@ -18,6 +18,9 @@ type provenanceTree struct {
 	size    map[string]int64    // node -> exact member count (members may be capped)
 	firstMs map[string]int64    // node -> earliest member creation (unix ms), when in range
 	lastMs  map[string]int64    // node -> latest member creation
+	depth   map[string]int      // node -> hops from the seed, either direction
+	path    map[string]string   // node -> "a > b > c", seed-relative like ptg()'s _path
+	parent  map[string]string   // descendant node -> its parent node
 	nMember int
 	// spanUnknown is set when a node is not its group's earliest member, so its own creation
 	// time is not known and span cannot bound it.
@@ -28,7 +31,7 @@ type provenanceTree struct {
 
 func newProvenanceTree() *provenanceTree {
 	return &provenanceTree{members: map[string][]string{}, nodeOf: map[string]string{}, size: map[string]int64{},
-		firstMs: map[string]int64{}, lastMs: map[string]int64{}}
+		firstMs: map[string]int64{}, lastMs: map[string]int64{}, depth: map[string]int{}, path: map[string]string{}, parent: map[string]string{}}
 }
 
 func (t *provenanceTree) has(guid string) bool { _, ok := t.nodeOf[guid]; return ok }
@@ -74,6 +77,17 @@ func (t *provenanceTree) add(members []string, n, firstMs, lastMs int64, nodeCap
 		t.firstMs[node], t.lastMs[node] = firstMs, lastMs
 	}
 	return true
+}
+
+// groupSpan formats when a collapsed node's first and last members were created, or "" for a
+// single process or an unknown span.
+func (t *provenanceTree) groupSpan(node string) (first, last string) {
+	const layout = "2006-01-02 15:04:05.000"
+	f, ok := t.firstMs[node]
+	if t.size[node] <= 1 || !ok {
+		return "", ""
+	}
+	return time.UnixMilli(f).UTC().Format(layout), time.UnixMilli(t.lastMs[node]).UTC().Format(layout)
 }
 
 // node maps a guid onto its node, or returns it unchanged when it is not in the tree.
@@ -127,8 +141,8 @@ func (t *provenanceTree) span() (start, end time.Time) {
 // collapses identical siblings, so a polling loop with tens of thousands of children costs a
 // handful of nodes and the cap is spent on distinct behavior. Returns nil when the seed is not a
 // process in range (a guid seen only in leaf logs is not a tree anchor).
-func (h *QueryHandler) collectProvenanceTree(ctx context.Context, p parser.ProvenanceParams, opts parser.QueryOptions, nodeCap int) (*provenanceTree, error) {
-	seedRows, err := h.db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL(p.Start, opts))
+func collectProvenanceTree(ctx context.Context, db *storage.ClickHouseClient, p parser.ProvenanceParams, opts parser.QueryOptions, nodeCap int) (*provenanceTree, error) {
+	seedRows, err := db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL(p.Start, opts))
 	if err != nil {
 		return nil, err
 	}
@@ -147,15 +161,16 @@ func (h *QueryHandler) collectProvenanceTree(ctx context.Context, p parser.Prove
 	}
 	t := newProvenanceTree()
 	t.add([]string{p.Start}, 1, seedMs, seedMs, nodeCap)
+	t.path[p.Start] = p.Start
 
 	if p.Direction != "forward" {
 		// The seed check returned the seed's parent; each level reads that parent's own row.
-		parent := seedParent
+		parent, child := seedParent, p.Start
 		for level := 0; level < p.Depth && parent != "" && !t.has(parent); level++ {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			rows, hErr := h.db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL(parent, opts))
+			rows, hErr := db.QueryProvenance(ctx, parser.BuildProcessTreeHopSQL(parent, opts))
 			if hErr != nil {
 				return nil, hErr
 			}
@@ -170,7 +185,8 @@ func (h *QueryHandler) collectProvenanceTree(ctx context.Context, p parser.Prove
 			if !t.add([]string{parent}, 1, ms, ms, nodeCap) {
 				break
 			}
-			parent = next
+			t.depth[parent], t.path[parent] = level+1, parent+" > "+t.path[child]
+			parent, child = next, parent
 		}
 	}
 
@@ -190,7 +206,7 @@ func (h *QueryHandler) collectProvenanceTree(ctx context.Context, p parser.Prove
 					ft.Rows = append(ft.Rows, []string{g, node})
 				}
 			}
-			rows, hErr := h.db.QueryProvenance(ctx, parser.BuildProcessGroupHopSQL(opts), ft)
+			rows, hErr := db.QueryProvenance(ctx, parser.BuildProcessGroupHopSQL(opts), ft)
 			if hErr != nil {
 				return nil, hErr
 			}
@@ -211,7 +227,9 @@ func (h *QueryHandler) collectProvenanceTree(ctx context.Context, p parser.Prove
 					t.truncated = true // groupUniqArray capped this group's members
 				}
 				if t.add(ordered, n, reconInt64(r["first_ms"]), reconInt64(r["last_ms"]), nodeCap) {
-					next = append(next, t.order[len(t.order)-1])
+					node, up := t.order[len(t.order)-1], reconString(r["parent_node"])
+					t.parent[node], t.depth[node], t.path[node] = up, t.depth[up]+1, t.path[up]+" > "+node
+					next = append(next, node)
 				}
 			}
 			frontier = next

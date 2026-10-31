@@ -180,10 +180,8 @@ type QueryPlan struct {
 	Chain     *ChainMeta
 
 	// Process-tree (ptg) fields: MV-backed process lineage traversal over proc_lineage.
-	IsProcessTree        bool
-	ProcessTreeStart     string
-	ProcessTreeDepth     int
-	ProcessTreeDirection string // "forward" | "backward" | "both"
+	IsProcessTree    bool
+	ProcessTreeStart string
 
 	// AnalyzeFields-specific fields
 	AnalyzeFieldsList      []string
@@ -794,8 +792,6 @@ func (p *QueryPlan) renderProcessTree(opts QueryOptions) (string, error) {
 	source := p.SourceStage()
 	result, err := buildProcessTreeSQL(
 		p.ProcessTreeStart,
-		p.ProcessTreeDepth,
-		p.ProcessTreeDirection,
 		source.Layer.Having,
 		p.ChartType,
 		p.ChartConfig,

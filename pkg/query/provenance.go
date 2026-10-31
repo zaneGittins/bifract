@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
@@ -57,7 +56,7 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	if opts.FractalID == "" && len(opts.FractalIDs) == 0 {
 		return "", nil, fmt.Errorf("pgr: fractal scoping is required")
 	}
-	tree, err := h.collectProvenanceTree(ctx, p, opts, parser.MaxProvenanceNodes)
+	tree, err := collectProvenanceTree(ctx, h.db, p, opts, parser.MaxProvenanceNodes)
 	if err != nil {
 		return "", nil, fmt.Errorf("pgr: tree pass: %w", err)
 	}
@@ -366,7 +365,6 @@ func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql stri
 		}
 		structure[i] = c + " " + typ
 	}
-	repl := strings.NewReplacer("\\", "\\\\", "'", "\\'", "\n", "\\n", "\r", "\\r", "\t", "\\t", "\x00", "\\0")
 	var sb strings.Builder
 	sb.WriteString("SELECT * FROM values('" + strings.Join(structure, ", ") + "'")
 	head := sb.Len()
@@ -386,9 +384,7 @@ func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql stri
 				}
 				sb.WriteString(strconv.FormatFloat(f, 'f', -1, 64))
 			} else {
-				sb.WriteString("'")
-				sb.WriteString(repl.Replace(reconString(r[c])))
-				sb.WriteString("'")
+				sb.WriteString(parser.SQLStringLiteral(reconString(r[c])))
 			}
 		}
 		sb.WriteString(")")
@@ -467,20 +463,16 @@ func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, l
 // annotateProvenanceGroups fills the group columns of each spawn row whose child is a collapsed
 // node: how many processes it stands for and when the first and last were created.
 func annotateProvenanceGroups(rows []map[string]interface{}, tree *provenanceTree) {
-	const layout = "2006-01-02 15:04:05.000"
 	for _, r := range rows {
 		if reconString(r["event_type"]) != "spawn" {
 			continue
 		}
 		child := reconString(r["child"])
-		n := tree.size[child]
-		if n <= 1 {
-			continue
-		}
-		r["group_size"] = float64(n)
-		if f, ok := tree.firstMs[child]; ok {
-			r["group_first"] = time.UnixMilli(f).UTC().Format(layout)
-			r["group_last"] = time.UnixMilli(tree.lastMs[child]).UTC().Format(layout)
+		if n := tree.size[child]; n > 1 {
+			r["group_size"] = float64(n)
+			if first, last := tree.groupSpan(child); first != "" {
+				r["group_first"], r["group_last"] = first, last
+			}
 		}
 	}
 }
@@ -659,7 +651,7 @@ func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, tree *proven
 		wg.Add(1)
 		go func(idx int, guid string, params parser.ProvenanceParams) {
 			defer wg.Done()
-			sub, qErr := h.collectProvenanceTree(ctx, params, opts, reconnectExpandMaxNodes)
+			sub, qErr := collectProvenanceTree(ctx, h.db, params, opts, reconnectExpandMaxNodes)
 			if qErr != nil {
 				log.Printf("[pgr] expand peer %s: %v", guid, qErr)
 				return

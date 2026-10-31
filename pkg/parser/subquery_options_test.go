@@ -23,6 +23,7 @@ func TestSubqueryOptionsInheritTheOuterContext(t *testing.T) {
 		"SourceColumns":        true,
 		"SourceNumericColumns": true,
 		"SourceOrderBy":        true,
+		"ProcessTree":          true, // walked for the outer pipeline's ptg()
 	}
 
 	var outer QueryOptions
@@ -80,6 +81,8 @@ func nonZero(t *testing.T, f reflect.StructField) reflect.Value {
 	case reflect.Slice:
 		s := reflect.MakeSlice(typ, 1, 1)
 		return s
+	case reflect.Pointer:
+		return reflect.New(typ.Elem())
 	case reflect.Map:
 		m := reflect.MakeMap(typ)
 		m.SetMapIndex(reflect.Zero(typ.Key()).Convert(typ.Key()), reflect.Zero(typ.Elem()))

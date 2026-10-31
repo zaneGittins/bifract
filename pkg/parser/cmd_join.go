@@ -187,5 +187,7 @@ func subqueryOptions(ctx *CommandContext, maxRows int) QueryOptions {
 	opts.AlertExtraFields, opts.IncludeShardNum, opts.IncludeIngestTime = nil, false, false
 	// A source command feeds the outer pipeline; the subquery reads the logs.
 	opts.SourceSubquery, opts.SourceColumns, opts.SourceNumericColumns, opts.SourceOrderBy = "", nil, nil, nil
+	// ptg()'s tree was walked for the outer pipeline's start=.
+	opts.ProcessTree = nil
 	return opts
 }
