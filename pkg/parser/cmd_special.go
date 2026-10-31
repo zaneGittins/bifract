@@ -251,35 +251,12 @@ func (h *ptgHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if ctx.Plan.ProcessTreeStart != "" {
 		return fmt.Errorf("cannot use multiple ptg() functions in the same query")
 	}
-	b, err := BindCommand(cmd)
+	p, err := ParseProcessTreeParams(cmd)
 	if err != nil {
 		return err
 	}
-	start := b.Str("start", "")
-	direction := strings.ToLower(b.Str("direction", ""))
-	depth := 0
-	if d := b.Int("depth", 0); d > 0 {
-		depth = d
-	}
-	if start == "" {
-		return fmt.Errorf("ptg() requires a start= parameter, e.g. ptg(start=\"<process_guid>\")")
-	}
-	if depth == 0 {
-		depth = 10
-	}
-	if depth > 50 {
-		depth = 50
-	}
-	if direction == "" {
-		direction = "both"
-	}
-	if direction != "forward" && direction != "backward" && direction != "both" {
-		return fmt.Errorf("ptg() direction= must be forward, backward, or both (got %q)", direction)
-	}
 	ctx.Plan.IsProcessTree = true
-	ctx.Plan.ProcessTreeStart = start
-	ctx.Plan.ProcessTreeDepth = depth
-	ctx.Plan.ProcessTreeDirection = direction
+	ctx.Plan.ProcessTreeStart = p.Start
 	ctx.Registry.SetResolveExpr("_depth", "_depth")
 	ctx.Registry.SetResolveExpr("_path", "_path")
 	return nil

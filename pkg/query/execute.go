@@ -225,6 +225,12 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	opts.TLSHMatches = tlshMatches
 	opts.DisplayTimezone = scope.Timezone
 
+	ptgWarnings, err := ResolveProcessTree(ctx, h.db, pipeline, &opts)
+	if err != nil {
+		return nil, err
+	}
+	queryWarnings = append(queryWarnings, ptgWarnings...)
+
 	// Source commands (e.g. pgr()) generate the pipeline's source. Resolve into a subquery
 	// source and drop the command; the rest of the pipeline (including pgraph()) translates
 	// over it like any other query. Guards below key off opts.SourceSubquery.

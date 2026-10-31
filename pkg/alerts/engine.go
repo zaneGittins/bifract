@@ -16,6 +16,7 @@ import (
 	"bifract/pkg/evidence"
 	"bifract/pkg/models"
 	"bifract/pkg/parser"
+	"bifract/pkg/query"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 	"bifract/pkg/tlshresolve"
@@ -760,6 +761,9 @@ func missingBaseColumn(code int32, err error) string {
 // windowStart is the alert's own window start, before any lookback widening in
 // buildQueryOpts; rows completing before it were reported by an earlier window.
 func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.QueryOptions, timeoutSec int, windowStart time.Time) ([]map[string]interface{}, error) {
+	if _, err := query.ResolveProcessTree(ctx, e.ch, alert.ParsedQuery, &opts); err != nil {
+		return nil, err
+	}
 	translated, err := parser.TranslateToSQLWithOrder(alert.ParsedQuery, opts)
 	if err != nil {
 		return nil, fmt.Errorf("translate query: %w", err)

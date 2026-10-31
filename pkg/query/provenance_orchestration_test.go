@@ -24,14 +24,15 @@ import (
 // parser builders emit. handler wires it behind a real ClickHouse client, so every
 // pass runs through QueryProvenance with its external tables.
 type fakeLineage struct {
-	mu       sync.Mutex
-	parentOf map[string]string   // child -> parent, for processes that exist
-	children map[string][]string // parent -> children, in creation order
-	image    map[string]string   // process -> normalized image (default: its guid)
-	cmd      map[string]string   // process -> normalized command line
-	createMs map[string]int64    // process -> creation time
-	failHop  map[string]bool     // frontier guid whose hop fails
-	calls    []string
+	mu         sync.Mutex
+	parentOf   map[string]string   // child -> parent, for processes that exist
+	children   map[string][]string // parent -> children, in creation order
+	image      map[string]string   // process -> normalized image (default: its guid)
+	cmd        map[string]string   // process -> normalized command line
+	createMs   map[string]int64    // process -> creation time
+	failHop    map[string]bool     // frontier guid whose hop fails
+	outOfRange map[string]bool     // process whose own row is outside the query window
+	calls      []string
 
 	reconTotals func() ([]map[string]interface{}, error)
 	recon       func(sql string, tree storage.ExternalTable) ([]map[string]interface{}, error)
@@ -45,7 +46,7 @@ type fakeLineage struct {
 // own image, so nothing collapses unless a test says so with same().
 func newFakeLineage(edges ...string) *fakeLineage {
 	f := &fakeLineage{parentOf: map[string]string{}, children: map[string][]string{}, image: map[string]string{},
-		cmd: map[string]string{}, createMs: map[string]int64{}, failHop: map[string]bool{}}
+		cmd: map[string]string{}, createMs: map[string]int64{}, failHop: map[string]bool{}, outOfRange: map[string]bool{}}
 	for _, e := range edges {
 		p, c, _ := strings.Cut(e, ">")
 		f.addProc(p, c)
@@ -220,6 +221,18 @@ func (f *fakeLineage) query(sql string, tables map[string]storage.ExternalTable)
 		}
 		return nil, nil
 	}
+	if strings.HasPrefix(sql, "SELECT process_guid, parent_guid, toString(timestamp) AS ts") {
+		f.record("rows")
+		var rows []map[string]interface{}
+		for _, r := range tables[parser.ProvenanceTreeTable].Rows {
+			g := r[0]
+			if p, ok := f.parentOf[g]; ok && !f.outOfRange[g] {
+				rows = append(rows, map[string]interface{}{"process_guid": g, "parent_guid": p, "ts": fmt.Sprintf("2026-10-01 00:00:%02d.000", f.createMs[g]%60),
+					"log_id": "log-" + g, "fractal_id": "f1", "image": f.image[g], "parent_image": "", "commandline": f.cmd[g], "computer_name": "WS02"})
+			}
+		}
+		return rows, nil
+	}
 	if strings.HasPrefix(sql, "SELECT f.node AS parent_node") {
 		f.record("hop")
 		return f.groupHop(tables[parser.ProvenanceFrontierTable])
@@ -275,7 +288,7 @@ func sortedCopy(s []string) []string {
 // collect runs pass 1 against f with the default node cap.
 func (f *fakeLineage) collect(t *testing.T, p parser.ProvenanceParams) *provenanceTree {
 	t.Helper()
-	tree, err := f.handler().collectProvenanceTree(context.Background(), p, pgrOpts(), parser.MaxProvenanceNodes)
+	tree, err := collectProvenanceTree(context.Background(), f.handler().db, p, pgrOpts(), parser.MaxProvenanceNodes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +425,7 @@ func TestCollectProvenanceTreeMissingSeed(t *testing.T) {
 func TestCollectProvenanceTreeErrors(t *testing.T) {
 	f := newFakeLineage(">root", "root>a", "a>b")
 	f.failHop["a"] = true
-	if _, err := f.handler().collectProvenanceTree(context.Background(), parser.ProvenanceParams{Start: "root", Depth: 5, Direction: "forward"}, pgrOpts(), parser.MaxProvenanceNodes); err == nil {
+	if _, err := collectProvenanceTree(context.Background(), f.handler().db, parser.ProvenanceParams{Start: "root", Depth: 5, Direction: "forward"}, pgrOpts(), parser.MaxProvenanceNodes); err == nil {
 		t.Error("a failed hop must fail the traversal, not return a truncated tree")
 	}
 
@@ -423,7 +436,7 @@ func TestCollectProvenanceTreeErrors(t *testing.T) {
 		cancel()
 		return []map[string]interface{}{{"process_guid": "root", "parent_guid": "up"}}, nil
 	})
-	if _, err := cancelAfterSeed.collectProvenanceTree(ctx,
+	if _, err := collectProvenanceTree(ctx, cancelAfterSeed.db,
 		parser.ProvenanceParams{Start: "root", Depth: 5}, pgrOpts(), parser.MaxProvenanceNodes); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}

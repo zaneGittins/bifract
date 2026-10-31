@@ -116,56 +116,31 @@ func procLineageFractalCond(opts QueryOptions, prefix string) string {
 	return ""
 }
 
-var procTreeFieldOrder = []string{"timestamp", "process_guid", "parent_guid", "image", "parent_image", "commandline", "computer_name", "_depth", "_path"}
+var procTreeFieldOrder = []string{"timestamp", "process_guid", "parent_guid", "image", "parent_image", "commandline", "computer_name", "_depth", "_path", "group_size", "group_first", "group_last"}
 
 // ptg() projected into pgr()'s edge shape for pgraph(). Column names, order, and expressions
 // mirror provenance spawn rows (see pkg/query/provenance.go) so pgraph stays a single-shape
 // renderer. command_line is capped like pgr's; proc_user is empty because proc_lineage carries
 // no user column and ptg() deliberately does not join logs to get one.
 const procTreePgraphCols = "parent_guid AS parent, process_guid AS child, image AS label, 'spawn' AS event_type, " +
-	"log_id, toString(timestamp) AS timestamp, fractal_id, substring(commandline, 1, 300) AS command_line, " +
-	"'' AS proc_user, computer_name AS host, parent_image AS parent_label"
+	"log_id, timestamp, fractal_id, substring(commandline, 1, 300) AS command_line, " +
+	"'' AS proc_user, computer_name AS host, parent_image AS parent_label, group_size, group_first, group_last"
 
-var procTreePgraphFieldOrder = []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
+var procTreePgraphFieldOrder = []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label", "group_size", "group_first", "group_last"}
 
-// buildProcessTreeSQL generates a recursive CTE for ptg() over the flat proc_lineage
-// table (MV-backed process lineage). It uses bare columns (no fields.* JSON access, no
-// norm_log) and reads proc_lineage FINAL so re-ingested / iceberg-replayed duplicates
-// collapse. Only the time/fractal base conditions are applied (proc_lineage is flat, so
-// user fields.* filters are dropped -- v1 scoping).
+// buildProcessTreeSQL translates ptg() over its tree, which the query layer walked before
+// translation (QueryOptions.ProcessTree): a literal source, one row per node. User pre-filters
+// do not apply (ptg() is scoped by start=, the time range and the fractal); only _depth/_path
+// post-filters do.
 func buildProcessTreeSQL(
-	startValue string, maxDepth int, direction string,
+	startValue string,
 	havingConditions []string,
 	chartType string, chartConfig map[string]interface{},
 	opts QueryOptions,
 ) (*TranslationResult, error) {
-	tbl := opts.ProcLineageTable
-	if tbl == "" {
-		tbl = "proc_lineage"
+	if opts.ProcessTree == nil {
+		return nil, fmt.Errorf("ptg() is not available here: its process tree is only walked for searches, dashboards and alerts")
 	}
-
-	// Reconstruct ONLY base time + fractal scoping from opts. proc_lineage is flat, so
-	// user pre-filters (fields.* field filters, norm_log free-text search, etc.) do not
-	// apply and are intentionally dropped (v1 scoping). Rebuilding from opts -- rather than
-	// reusing source.Layer.Where -- guarantees fractal isolation and prevents leaking
-	// logs-only columns (norm_log/raw_log/ingest_timestamp) that would crash the query.
-	tsStart := chTimeLiteral(opts.StartTime)
-	tsEnd := chTimeLiteral(opts.EndTime)
-	baseConds := []string{
-		fmt.Sprintf("timestamp >= '%s'", tsStart),
-		fmt.Sprintf("timestamp <= '%s'", tsEnd),
-	}
-	recConds := []string{
-		fmt.Sprintf("l.timestamp >= '%s'", tsStart),
-		fmt.Sprintf("l.timestamp <= '%s'", tsEnd),
-	}
-	if fc := procLineageFractalCond(opts, ""); fc != "" {
-		baseConds = append(baseConds, fc)
-		recConds = append(recConds, procLineageFractalCond(opts, "l."))
-	}
-	baseConds = append(baseConds, fmt.Sprintf("process_guid = '%s'", escapeString(startValue)))
-	baseWhere := strings.Join(baseConds, " AND ")
-	recTail := " AND " + strings.Join(recConds, " AND ")
 
 	// Post-traversal filters route here from window-field conditions (_depth/_path). Drop
 	// any that reference logs-only columns (a compound like `_depth<=3 AND image="x"` would
@@ -179,42 +154,9 @@ func buildProcessTreeSQL(
 	}
 	havingConditions = safeHaving
 
-	// fractal_id rides the CTE (it is not shown in the table projection) because the pgraph
-	// projection below needs it for the node click -> log detail fetch.
-	const dataCols = "timestamp, log_id, fractal_id, process_guid, parent_guid, image, parent_image, commandline, computer_name"
-	const dataColsL = "l.timestamp, l.log_id, l.fractal_id, l.process_guid, l.parent_guid, l.image, l.parent_image, l.commandline, l.computer_name"
-	const unionCols = "timestamp, log_id, fractal_id, process_guid, parent_guid, image, parent_image, commandline, computer_name, _depth, _path"
-	const finalCols = "formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') AS timestamp, process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, toString(_depth) AS _depth, _path"
-
-	// One recursive CTE body per direction. forward = descendants (join children on
-	// l.parent_guid = t._node_id); backward = ancestors (walk up via l.process_guid =
-	// t._node_id, carrying parent_guid as the next node to find).
-	cte := func(name, dir string) string {
-		if dir == "backward" {
-			return fmt.Sprintf(
-				"%s AS (SELECT %s, toUInt32(0) AS _depth, parent_guid AS _node_id, process_guid AS _path FROM %s FINAL WHERE %s"+
-					" UNION ALL "+
-					"SELECT %s, t._depth + 1 AS _depth, l.parent_guid AS _node_id, concat(l.process_guid, ' > ', t._path) AS _path"+
-					" FROM %s AS l FINAL INNER JOIN %s t ON l.process_guid = t._node_id WHERE t._depth < %d%s)",
-				name, dataCols, tbl, baseWhere, dataColsL, tbl, name, maxDepth, recTail)
-		}
-		return fmt.Sprintf(
-			"%s AS (SELECT %s, toUInt32(0) AS _depth, process_guid AS _node_id, process_guid AS _path FROM %s FINAL WHERE %s"+
-				" UNION ALL "+
-				"SELECT %s, t._depth + 1 AS _depth, l.process_guid AS _node_id, concat(t._path, ' > ', l.process_guid) AS _path"+
-				" FROM %s AS l FINAL INNER JOIN %s t ON l.parent_guid = t._node_id WHERE t._depth < %d%s)",
-			name, dataCols, tbl, baseWhere, dataColsL, tbl, name, maxDepth, recTail)
-	}
-
-	var withClause, traversal string
-	switch direction {
-	case "forward", "backward":
-		withClause = "WITH RECURSIVE " + cte("tree", direction) + " "
-		traversal = "tree"
-	default: // both
-		withClause = "WITH RECURSIVE " + cte("tree_fwd", "forward") + ", " + cte("tree_bwd", "backward") + " "
-		traversal = fmt.Sprintf("(SELECT %s FROM tree_fwd UNION DISTINCT SELECT %s FROM tree_bwd)", unionCols, unionCols)
-	}
+	const unionCols = "timestamp, log_id, fractal_id, process_guid, parent_guid, image, parent_image, commandline, computer_name, _depth, _path, group_size, group_first, group_last"
+	const finalCols = "substring(timestamp, 1, 19) AS timestamp, process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, toString(_depth) AS _depth, _path, group_size, group_first, group_last"
+	traversal := processTreeValuesSQL(opts.ProcessTree)
 
 	// Post-traversal filters (e.g. _depth <= 3) MUST be applied in an inner scope where
 	// _depth is still UInt32. If the filter shares a SELECT with `toString(_depth) AS _depth`,
@@ -241,7 +183,6 @@ func buildProcessTreeSQL(
 	}
 
 	var sql strings.Builder
-	sql.WriteString(withClause)
 	sql.WriteString("SELECT ")
 	sql.WriteString(outCols)
 	sql.WriteString(" FROM (")

@@ -1462,86 +1462,80 @@ func TestMathAssignment(t *testing.T) {
 }
 
 func TestPTGFunction(t *testing.T) {
+	// The query layer walks the tree before translating; this is what it hands over.
+	tree := &ProcessTree{Rows: []ProcessTreeRow{
+		{Timestamp: "2026-01-01 10:00:00.000", LogID: "l1", FractalID: "test-fractal", ProcessGUID: "ABC", ParentGUID: "UP",
+			Image: `C:\w\rd.exe`, ParentImage: "explorer.exe", Commandline: "rd.exe --portable", ComputerName: "WS02", Path: "ABC", GroupSize: 1},
+		{Timestamp: "2026-01-01 10:00:02.000", LogID: "l2", FractalID: "test-fractal", ProcessGUID: "C1", ParentGUID: "ABC",
+			Image: "cmd.exe", ParentImage: `C:\w\rd.exe`, Commandline: "cmd /C \"it's\"\nx", ComputerName: "WS02", Depth: 1, Path: "ABC > C1",
+			GroupSize: 47900, GroupFirst: "2026-01-01 10:00:02.000", GroupLast: "2026-01-01 23:00:00.000"},
+	}}
 	opts := QueryOptions{
 		StartTime:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		EndTime:          time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 		MaxRows:          1000,
 		FractalID:        "test-fractal",
 		ProcLineageTable: "proc_lineage",
+		ProcessTree:      tree,
 	}
 
-	translate := func(t *testing.T, query string) string {
+	translateResult := func(t *testing.T, query string, o QueryOptions) (*TranslationResult, error) {
 		t.Helper()
 		pipeline, err := ParseQuery(query)
 		if err != nil {
 			t.Fatalf("Failed to parse %q: %v", query, err)
 		}
-		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		return TranslateToSQLWithOrder(pipeline, o)
+	}
+	translate := func(t *testing.T, query string) string {
+		t.Helper()
+		result, err := translateResult(t, query, opts)
 		if err != nil {
 			t.Fatalf("Failed to translate %q: %v", query, err)
 		}
 		return result.SQL
 	}
 
-	t.Run("both (default) traverses proc_lineage with forward+backward CTEs", func(t *testing.T) {
-		sql := translate(t, `ptg(start="ABC123")`)
+	t.Run("reads the resolved tree, never a recursive query", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC")`)
 		for _, want := range []string{
-			"WITH RECURSIVE tree_fwd AS",
-			"tree_bwd AS",
-			"FROM proc_lineage FINAL",
-			"process_guid = 'ABC123'",
-			"l.parent_guid = t._node_id",  // forward: children
-			"l.process_guid = t._node_id", // backward: ancestors
-			"UNION DISTINCT",
-			"t._depth < 10", // default depth
-			"ORDER BY _path ASC",
-			"fractal_id = 'test-fractal'",
+			"FROM (SELECT * FROM values('timestamp String, log_id String,",
+			"('2026-01-01 10:00:02.000', 'l2', 'test-fractal', 'C1', 'ABC', 'cmd.exe',",
+			"1, 'ABC > C1', 47900, '2026-01-01 10:00:02.000', '2026-01-01 23:00:00.000')",
+			"ORDER BY _path ASC LIMIT 1000",
 		} {
 			if !strings.Contains(sql, want) {
 				t.Errorf("expected %q in SQL, got: %s", want, sql)
 			}
 		}
-	})
-
-	t.Run("forward only", func(t *testing.T) {
-		sql := translate(t, `ptg(start="ABC", direction=forward, depth=5)`)
-		if !strings.Contains(sql, "WITH RECURSIVE tree AS") {
-			t.Errorf("expected single tree CTE, got: %s", sql)
-		}
-		if strings.Contains(sql, "tree_bwd") {
-			t.Errorf("forward-only should not emit tree_bwd, got: %s", sql)
-		}
-		if !strings.Contains(sql, "l.parent_guid = t._node_id") {
-			t.Errorf("expected forward child join, got: %s", sql)
-		}
-		if !strings.Contains(sql, "t._depth < 5") {
-			t.Errorf("expected depth 5, got: %s", sql)
+		if strings.Contains(sql, "RECURSIVE") || strings.Contains(sql, "proc_lineage") {
+			t.Errorf("translation must not traverse proc_lineage, got: %s", sql)
 		}
 	})
 
-	t.Run("backward only walks up via process_guid", func(t *testing.T) {
-		sql := translate(t, `ptg(start="ABC", direction=backward)`)
-		if !strings.Contains(sql, "l.process_guid = t._node_id") {
-			t.Errorf("expected backward parent join, got: %s", sql)
-		}
-		if strings.Contains(sql, "l.parent_guid = t._node_id") {
-			t.Errorf("backward should not use forward join, got: %s", sql)
+	t.Run("log data stays inside its literals", func(t *testing.T) {
+		sql := translate(t, `ptg(start="ABC")`)
+		if !strings.Contains(sql, `'cmd /C "it\'s"\nx'`) || !strings.Contains(sql, `'C:\\w\\rd.exe'`) {
+			t.Errorf("values not escaped: %s", sql)
 		}
 	})
 
-	t.Run("depth is capped at 50", func(t *testing.T) {
-		sql := translate(t, `ptg(start="ABC", depth=99)`)
-		if !strings.Contains(sql, "t._depth < 50") {
-			t.Errorf("expected depth cap 50, got: %s", sql)
+	t.Run("an unresolved tree is an error, an empty one is no rows", func(t *testing.T) {
+		unresolved := opts
+		unresolved.ProcessTree = nil
+		if _, err := translateResult(t, `ptg(start="ABC")`, unresolved); err == nil || !strings.Contains(err.Error(), "not available here") {
+			t.Errorf("err = %v", err)
+		}
+		empty := opts
+		empty.ProcessTree = &ProcessTree{}
+		res, err := translateResult(t, `ptg(start="ABC") | pgraph()`, empty)
+		if err != nil || !strings.Contains(res.SQL, "WHERE 0") {
+			t.Errorf("empty tree: %v %v", err, res)
 		}
 	})
 
 	t.Run("pipes to graph() unchanged", func(t *testing.T) {
-		pipeline, err := ParseQuery(`ptg(start="ABC") | graph(child=process_guid, parent=parent_guid, labels=image)`)
-		if err != nil {
-			t.Fatalf("parse failed: %v", err)
-		}
-		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		result, err := translateResult(t, `ptg(start="ABC") | graph(child=process_guid, parent=parent_guid, labels=image)`, opts)
 		if err != nil {
 			t.Fatalf("translate failed: %v", err)
 		}
@@ -1551,11 +1545,7 @@ func TestPTGFunction(t *testing.T) {
 	})
 
 	t.Run("pgraph() projects the pgr edge shape", func(t *testing.T) {
-		pipeline, err := ParseQuery(`ptg(start="ABC") | pgraph()`)
-		if err != nil {
-			t.Fatalf("parse failed: %v", err)
-		}
-		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		result, err := translateResult(t, `ptg(start="ABC") | pgraph()`, opts)
 		if err != nil {
 			t.Fatalf("translate failed: %v", err)
 		}
@@ -1565,7 +1555,7 @@ func TestPTGFunction(t *testing.T) {
 		for _, want := range []string{
 			"parent_guid AS parent", "process_guid AS child", "image AS label",
 			"'spawn' AS event_type", "fractal_id", "parent_image AS parent_label",
-			"substring(commandline, 1, 300) AS command_line",
+			"substring(commandline, 1, 300) AS command_line", "group_size, group_first, group_last",
 		} {
 			if !strings.Contains(result.SQL, want) {
 				t.Errorf("expected %q in SQL, got: %s", want, result.SQL)
@@ -1581,60 +1571,31 @@ func TestPTGFunction(t *testing.T) {
 		if result.ChartConfig["scored"] != false {
 			t.Errorf("expected scored=false, got %v", result.ChartConfig["scored"])
 		}
-		want := []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label"}
+		want := []string{"parent", "child", "label", "event_type", "log_id", "timestamp", "fractal_id", "command_line", "proc_user", "host", "parent_label", "group_size", "group_first", "group_last"}
 		if strings.Join(result.FieldOrder, ",") != strings.Join(want, ",") {
 			t.Errorf("expected pgr field order %v, got %v", want, result.FieldOrder)
 		}
 	})
 
-	t.Run("pgraph() keeps _depth pruning and fractal scoping", func(t *testing.T) {
-		sql := translate(t, `ptg(start="ABC", direction=forward) | _depth <= 3 | pgraph()`)
-		if !strings.Contains(sql, "WHERE _depth <= 3") {
-			t.Errorf("expected inner _depth filter, got: %s", sql)
-		}
-		if !strings.Contains(sql, "fractal_id = 'test-fractal'") {
-			t.Errorf("expected fractal scoping, got: %s", sql)
-		}
-	})
-
 	t.Run("table output keeps the ptg columns", func(t *testing.T) {
-		pipeline, _ := ParseQuery(`ptg(start="ABC")`)
-		result, err := TranslateToSQLWithOrder(pipeline, opts)
+		result, err := translateResult(t, `ptg(start="ABC")`, opts)
 		if err != nil {
 			t.Fatalf("translate failed: %v", err)
 		}
 		if strings.Contains(result.SQL, "AS parent_label") {
 			t.Errorf("plain ptg() must not use the pgraph projection, got: %s", result.SQL)
 		}
-		if result.FieldOrder[1] != "process_guid" {
+		if result.FieldOrder[1] != "process_guid" || result.FieldOrder[len(result.FieldOrder)-3] != "group_size" {
 			t.Errorf("expected ptg field order, got %v", result.FieldOrder)
 		}
 	})
 
-	t.Run("drops logs fields.* pre-filters (flat table, v1 scoping)", func(t *testing.T) {
-		sql := translate(t, `image="cmd.exe" | ptg(start="ABC")`)
-		if strings.Contains(sql, "fields.") {
-			t.Errorf("proc_lineage is flat; fields.* filters must be dropped, got: %s", sql)
-		}
-	})
-
-	t.Run("drops free-text norm_log pre-filter (would crash flat table)", func(t *testing.T) {
-		// Regression: a leading full-text search compiles to match(lower(norm_log), ...),
-		// which does not contain "fields." and used to leak into the proc_lineage query,
-		// crashing with "Unknown expression norm_log".
-		sql := translate(t, `"powershell" | ptg(start="ABC")`)
-		if strings.Contains(sql, "norm_log") || strings.Contains(sql, "raw_log") {
-			t.Errorf("logs-only columns must not leak into proc_lineage query, got: %s", sql)
-		}
-	})
-
-	t.Run("preserves fractal isolation", func(t *testing.T) {
-		sql := translate(t, `ptg(start="ABC")`)
-		if !strings.Contains(sql, "fractal_id = 'test-fractal'") {
-			t.Errorf("base case must scope to the fractal, got: %s", sql)
-		}
-		if !strings.Contains(sql, "l.fractal_id = 'test-fractal'") {
-			t.Errorf("recursive case must also scope to the fractal, got: %s", sql)
+	t.Run("drops logs-only pre-filters", func(t *testing.T) {
+		for _, q := range []string{`image="cmd.exe" | ptg(start="ABC")`, `"powershell" | ptg(start="ABC")`} {
+			sql := translate(t, q)
+			if strings.Contains(sql, "fields.") || strings.Contains(sql, "norm_log") || strings.Contains(sql, "raw_log") {
+				t.Errorf("%s: logs-only filters must not reach the tree source, got: %s", q, sql)
+			}
 		}
 	})
 
@@ -1642,25 +1603,38 @@ func TestPTGFunction(t *testing.T) {
 		// Regression: `toString(_depth) AS _depth` in the same SELECT as `WHERE _depth <= 2`
 		// made ClickHouse resolve _depth to the String alias -> code 386 NO_COMMON_TYPE.
 		// The toString projection must be in a strictly OUTER select than the filter.
-		sql := translate(t, `ptg(start="A", direction=forward) | _depth <= 2`)
-		if !strings.Contains(sql, "WHERE _depth <= 2") {
-			t.Fatalf("expected inner _depth filter, got: %s", sql)
-		}
-		ts := strings.Index(sql, "toString(_depth)")
-		wh := strings.Index(sql, "WHERE _depth")
-		if ts < 0 || wh < 0 || ts > wh {
-			t.Errorf("toString(_depth) must be in the outer SELECT (before the inner WHERE); got toString@%d where@%d: %s", ts, wh, sql)
+		for _, q := range []string{`ptg(start="A", direction=forward) | _depth <= 2`, `ptg(start="A") | _depth <= 2 | pgraph()`} {
+			sql := translate(t, q)
+			ts, wh := strings.Index(sql, "toString(_depth)"), strings.Index(sql, "WHERE _depth <= 2")
+			if wh < 0 || (ts >= 0 && ts > wh) {
+				t.Errorf("%s: expected an inner _depth filter below any toString(_depth); got: %s", q, sql)
+			}
 		}
 	})
 
-	t.Run("requires start=", func(t *testing.T) {
-		_, err := ParseQuery(`ptg(depth=5)`)
-		if err != nil {
-			return // parse-time rejection is fine
+	t.Run("arguments", func(t *testing.T) {
+		for q, want := range map[string]ProcessTreeParams{
+			`ptg(start="A")`: {Start: "A", Depth: 10, Direction: "both"},
+			`ptg(start="A", depth=99, direction=BACKWARD)`:   {Start: "A", Depth: 50, Direction: "backward"},
+			`* | ptg(start="A", depth=3, direction=forward)`: {Start: "A", Depth: 3, Direction: "forward"},
+		} {
+			pipeline, err := ParseQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok, err := ProcessTreeCommand(pipeline)
+			if !ok || err != nil || got != want {
+				t.Errorf("%s: got %+v %v %v, want %+v", q, got, ok, err, want)
+			}
 		}
-		pipeline, _ := ParseQuery(`ptg(depth=5)`)
-		if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil {
-			t.Error("expected error when start= is missing")
+		for _, q := range []string{`ptg(depth=5)`, `ptg(start="A", direction=sideways)`} {
+			pipeline, err := ParseQuery(q)
+			if err != nil {
+				continue // parse-time rejection is fine
+			}
+			if _, err := TranslateToSQLWithOrder(pipeline, opts); err == nil {
+				t.Errorf("%s: expected an error", q)
+			}
 		}
 	})
 }

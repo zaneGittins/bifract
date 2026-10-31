@@ -22,6 +22,10 @@ Each row is one process: `timestamp`, `process_guid`, `parent_guid`, `image`, `p
 |-------|-------------|
 | `_depth` | Hops from the seed (0 is the seed) |
 | `_path` | GUIDs from the seed to this process, joined by ` > ` |
+| `group_size` | How many identical processes the row stands for (1 for a single process) |
+| `group_first`, `group_last` | When the first and last of them started, for `group_size` above 1 |
+
+Siblings with the same parent, image and command line (user folders, GUIDs and long numbers ignored) are returned once, as the earliest of them, with a count: a process polling `cmd /C "tasklist"` every two seconds is one row, not thousands. A child that only one of them started still appears, under that row. The tree holds up to 1,000 rows standing for up to 500,000 processes; past that the result notes that it was truncated.
 
 Pipe to `pgraph()` to draw the tree as a process map instead of a table.
 
