@@ -87,3 +87,21 @@ func TestRunInstallRejectsBadConfig(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A source build installs the image built beside it, which no registry has, so
+// only the images missing locally are pulled. A release always pulls.
+func TestPullKeepsLocalDevImage(t *testing.T) {
+	for tag, want := range map[string]string{
+		"dev":    "compose pull --policy missing",
+		"v0.0.9": "compose pull",
+	} {
+		fake := newFakeExec(t)
+		if err := (&DockerOps{Dir: t.TempDir()}).Pull(tag); err != nil {
+			t.Fatal(err)
+		}
+		calls := fake.calls()
+		if len(calls) != 1 || calls[0].joined() != want {
+			t.Errorf("%s: calls = %v, want %q", tag, calls, want)
+		}
+	}
+}

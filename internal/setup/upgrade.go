@@ -328,7 +328,7 @@ func RunUpgrade(dir string) error {
 
 	// Pull new images (docker streams its own progress, so no spinner)
 	printStepStream("Pulling updated images...")
-	if err := docker.Pull(); err != nil {
+	if err := docker.Pull(cfg.ImageTag); err != nil {
 		return fmt.Errorf("docker compose pull: %w", err)
 	}
 	printDone("Images updated")
