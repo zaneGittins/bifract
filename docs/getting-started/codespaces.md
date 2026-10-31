@@ -9,7 +9,7 @@ A GitHub Codespace runs Bifract in a cloud machine you reach from your browser, 
 1. Click **Open in GitHub Codespaces** above and sign in to GitHub.
 2. Click **Create new codespace**. It uses a 4-core machine with 16 GB of memory, the smallest that runs Bifract with the lab.
 3. Wait for the editor to open. `WELCOME.md` opens with Bifract's address, username and password, and shows the lab's progress if it is still loading.
-4. Click the address and sign in as `admin` with the password from `WELCOME.md`.
+4. Click **Open Bifract** in `WELCOME.md` and sign in as `admin` with the password shown there.
 
 Reopening the link later takes you back to the same codespace, so nothing is installed twice.
 
@@ -25,10 +25,10 @@ The domains and attacker infrastructure in the lab are fictional. Do not contact
 
 ## Things to try
 
-`WELCOME.md` links each of these straight to the search. Who is in the lab (no hostname means the network sensor):
+`WELCOME.md` links each of these straight to the search. Process launches per host:
 
 ```bql
-* | groupBy(hostname)
+bifract_category=process_creation | groupBy(hostname) | sort(_count, order=desc)
 ```
 
 What kinds of events it holds:

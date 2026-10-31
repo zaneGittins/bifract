@@ -25,7 +25,7 @@
   "waitFor": "onCreateCommand",
   "forwardPorts": [443, 8443],
   "portsAttributes": {
-    "443": { "label": "Bifract", "protocol": "https", "onAutoForward": "openBrowserOnce" },
+    "443": { "label": "Bifract", "protocol": "https", "onAutoForward": "notify" },
     "8443": { "label": "Bifract ingest", "protocol": "https", "onAutoForward": "silent" }
   },
   "otherPortsAttributes": { "onAutoForward": "silent" },

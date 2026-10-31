@@ -78,7 +78,7 @@ write_welcome() {
 		try="**Try a search**
 
 1. [Every process launch]($(search_url 'bifract_category=process_creation | table(timestamp, hostname, user, image, commandline)'))
-2. [Hosts in the lab]($(search_url '* | groupBy(hostname)'))
+2. [Process launches per host]($(search_url 'bifract_category=process_creation | groupBy(hostname) | sort(_count, order=desc)'))
 3. [Kinds of events]($(search_url '* | groupBy(bifract_category) | sort(_count, order=desc)'))
 4. [Rarest programs]($(search_url 'bifract_category=process_creation | groupBy(image) | sort(_count, order=asc) | head(10)'))
 5. [Rarest DNS lookups]($(search_url 'event_id=22 | groupBy(query) | sort(_count, order=asc) | head(10)'))
