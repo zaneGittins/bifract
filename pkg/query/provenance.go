@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,7 +102,6 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// literals rather than live scalar subqueries. On failure both stay 0, which only tightens
 	// the gate to its absolute floor (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax):
 	// it fails toward under-reconnecting, never toward a wrong match.
-	var bridges []map[string]interface{}
 	var peers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
 		reconTotalHosts, reconTotalImages := sum.reconHosts, sum.reconImages
@@ -136,10 +137,6 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 					peers[i].SrcGUID = tree.node(peers[i].SrcGUID)
 					peers[i].PeerGUID = tree.node(peers[i].PeerGUID)
 				}
-				// Reconnection owns its bridge edges, so emit every peer: the emit logic decides
-				// shape (net/dns converge on the object node, file is writer->executor,
-				// injection/access are skipped -- pass-2 owns those).
-				bridges = parser.ReconnectionEdgeRows(peers)
 			}
 		}
 	}
@@ -204,7 +201,11 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		return "", nil, fmt.Errorf("pgr: scoring pass: %w", err)
 	}
 	scanned := len(rows)
-	rows = append(rows, bridges...)
+	// Reconnection owns its bridge edges, so emit every peer: the emit logic decides shape
+	// (net/dns converge on the object node, file is writer->executor, injection/access are
+	// skipped, pass 2 owns those). Built after the scan, which scores the tree's own edges.
+	pointBridgesAtSharpestToucher(peers, rows)
+	rows = append(rows, parser.ReconnectionEdgeRows(peers)...)
 	if diffuse {
 		rows = diffuseProvenanceRows(rows, p.Threshold, p.Lambda)
 		h.recordProvenanceScores(rows)
@@ -648,17 +649,18 @@ func reconPeerArtifact(pe parser.ReconnectPeer) string {
 // root, its own tree. Uncapped, the per-type SQL limit allows 200 peers x 5 recon types = 1,000
 // extra trees, which is unreadable regardless of how the count is displayed.
 //
-// Rank is by how many DISTINCT rare artifacts a peer shares with the tree: a peer reached
-// through three rare IOCs is a far stronger bridge than one reached through a single IP. That
-// signal is free from the rows themselves and is the only discriminator available here --
-// ReconnectPeer.Anomaly is a per-type constant (file 1.0 > access 0.9 > net/dns 0.85), so it
-// only orders recon types, and on its own leaves the choice of WHICH 50 net peers to keep as
-// GUID-alphabetical. Ties fall back to anomaly, then guid, so the ordering stays deterministic.
+// Rank is by the distinct artifacts a peer shares with the tree, each weighted by how few
+// candidates share it (1 / peers sharing it): three IOCs only this peer touched beat one, and
+// a C2 one peer touched beats any number of peers sharing the same telemetry domains, which on
+// a small fleet pass the prevalence gate as easily. ReconnectPeer.Anomaly is a per-type
+// constant (file 1.0 > access 0.9 > net/dns 0.85), so it only breaks ties, then guid, keeping
+// the ordering deterministic.
 func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []parser.ReconnectPeer {
 	if maxPeers <= 0 {
 		maxPeers = parser.DefaultReconnectPeers
 	}
 	artifacts := map[string]map[string]bool{}
+	sharers := map[string]map[string]bool{}
 	best := map[string]float64{}
 	order := make([]string, 0, len(peers))
 	for _, pe := range peers {
@@ -666,7 +668,12 @@ func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []pars
 			order = append(order, pe.PeerGUID)
 			artifacts[pe.PeerGUID] = map[string]bool{}
 		}
-		artifacts[pe.PeerGUID][reconPeerArtifact(pe)] = true
+		a := reconPeerArtifact(pe)
+		artifacts[pe.PeerGUID][a] = true
+		if sharers[a] == nil {
+			sharers[a] = map[string]bool{}
+		}
+		sharers[a][pe.PeerGUID] = true
 		if pe.Anomaly > best[pe.PeerGUID] {
 			best[pe.PeerGUID] = pe.Anomaly
 		}
@@ -674,10 +681,16 @@ func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []pars
 	if len(order) <= maxPeers {
 		return peers
 	}
+	weight := make(map[string]float64, len(order))
+	for g, arts := range artifacts {
+		for _, a := range slices.Sorted(maps.Keys(arts)) { // a fixed order keeps float sums equal
+			weight[g] += 1 / float64(len(sharers[a]))
+		}
+	}
 	sort.Slice(order, func(i, j int) bool {
 		a, b := order[i], order[j]
-		if len(artifacts[a]) != len(artifacts[b]) {
-			return len(artifacts[a]) > len(artifacts[b])
+		if weight[a] != weight[b] {
+			return weight[a] > weight[b]
 		}
 		if best[a] != best[b] {
 			return best[a] > best[b]

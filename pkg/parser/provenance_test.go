@@ -703,3 +703,17 @@ func TestReconnectionFileExecutorsWithoutFinal(t *testing.T) {
 		}
 	}
 }
+
+// Each branch's peer limit keeps the rows of the least-shared artifacts first, so a C2 one
+// other process touched is never cut for a telemetry domain dozens share.
+func TestReconnectionPeerLimitPrefersRareArtifacts(t *testing.T) {
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true}, 100, 50, reconOpts())
+	for want, n := range map[string]int{
+		"GROUP BY peer_guid, object_id ORDER BY count() OVER (PARTITION BY object_id), peer_guid LIMIT": 2, // net, dns
+		"ORDER BY count() OVER (PARTITION BY wp.p), pl.process_guid LIMIT":                              1, // file
+	} {
+		if got := strings.Count(sql, want); got != n {
+			t.Errorf("%q appears %d times, want %d", want, got, n)
+		}
+	}
+}
