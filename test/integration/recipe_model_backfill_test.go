@@ -17,28 +17,11 @@ import (
 )
 
 func TestModelBackfillAfterEdit(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-backfill-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "backfill")
+	shipper := newShipper(t, scoped, fractalID)
 
 	marker := fmt.Sprintf("backfill-%d", time.Now().UnixNano())
 	define := func(source string) map[string]any {
@@ -73,7 +56,8 @@ func TestModelBackfillAfterEdit(t *testing.T) {
 			"suite_marker": marker, "computer_name": fmt.Sprintf("h%d", i%hosts),
 		})
 	}
-	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", batch, nil)
+	shipper.DoRaw(t, "POST", "/ingest", batch, nil)
+	ingested := time.Now()
 
 	type row struct {
 		EventCount float64 `json:"event_count"`
@@ -101,16 +85,7 @@ func TestModelBackfillAfterEdit(t *testing.T) {
 	waitActive()
 
 	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{"window": "7d"}, nil)
-	Eventually(t, "the backfill to complete", 3*time.Minute, func() bool {
-		var m struct {
-			BackfillStatus string `json:"backfill_status"`
-		}
-		scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
-		if m.BackfillStatus == "failed" {
-			t.Fatal("backfill failed")
-		}
-		return m.BackfillStatus == "completed"
-	})
+	waitBackfill(t, scoped, model.ID)
 
 	// Backfill and live state split the logs at the watermark between them, so
 	// once live state catches up every log is counted exactly once.
@@ -123,8 +98,23 @@ func TestModelBackfillAfterEdit(t *testing.T) {
 	if rows != hosts || events != logs {
 		t.Fatalf("after edit and backfill: %d hosts with %v events, want %d hosts with %d events", rows, events, hosts, logs)
 	}
-	// Stays exact: nothing arrives late to double the count.
-	time.Sleep(90 * time.Second)
+	// Stays exact: once live state has run past the logs' ingest time no later
+	// cycle can read them again, so one more cycle settles it.
+	watermark := func() time.Time {
+		var m struct {
+			StateWatermark *time.Time `json:"state_watermark"`
+		}
+		scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
+		if m.StateWatermark == nil {
+			return time.Time{}
+		}
+		return *m.StateWatermark
+	}
+	seen := watermark()
+	Eventually(t, "live state to run past the logs", 4*time.Minute, func() bool {
+		w := watermark()
+		return w.After(seen) && w.After(ingested)
+	})
 	if _, events = count(); events != logs {
 		t.Fatalf("events drifted to %v after settling, want %d (double counted)", events, logs)
 	}
@@ -135,28 +125,11 @@ func TestModelBackfillAfterEdit(t *testing.T) {
 //
 //	go test -tags integration ./test/integration/ -run TestModelBackfillRange -v
 func TestModelBackfillRange(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-backfill-range-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "backfill-range")
+	shipper := newShipper(t, scoped, fractalID)
 
 	// Three hosts, each logging only at its own age; the range covers "mid" alone.
 	marker := fmt.Sprintf("backfill-range-%d", time.Now().UnixNano())
@@ -171,7 +144,7 @@ func TestModelBackfillRange(t *testing.T) {
 			})
 		}
 	}
-	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", batch, nil)
+	shipper.DoRaw(t, "POST", "/ingest", batch, nil)
 
 	Eventually(t, "the ingested logs to become queryable", 120*time.Second, func() bool {
 		var res struct {
@@ -179,7 +152,7 @@ func TestModelBackfillRange(t *testing.T) {
 		}
 		c.DoRaw(t, "POST", "/query", map[string]any{
 			"query":      fmt.Sprintf("suite_marker=%q | count()", marker),
-			"fractal_id": fractal.ID,
+			"fractal_id": fractalID,
 			"start":      noon.AddDate(0, 0, -45).Format(time.RFC3339),
 			"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 		}, &res)
@@ -211,18 +184,12 @@ func TestModelBackfillRange(t *testing.T) {
 	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{
 		"from": noon.AddDate(0, 0, -30).Format(time.RFC3339), "to": noon.AddDate(0, 0, -20).Format(time.RFC3339),
 	}, nil)
+	waitBackfill(t, scoped, model.ID)
 	var m struct {
-		BackfillStatus string `json:"backfill_status"`
 		BackfillWindow string `json:"backfill_window"`
 		BackfillTotal  int    `json:"backfill_total"`
 	}
-	Eventually(t, "the backfill to complete", 3*time.Minute, func() bool {
-		scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
-		if m.BackfillStatus == "failed" {
-			t.Fatal("backfill failed")
-		}
-		return m.BackfillStatus == "completed"
-	})
+	scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
 	// Noon to noon: a partial day at each end plus nine whole days.
 	if m.BackfillWindow != "range" || m.BackfillTotal != 11 {
 		t.Errorf("backfill window %q over %d chunks, want range over 11", m.BackfillWindow, m.BackfillTotal)

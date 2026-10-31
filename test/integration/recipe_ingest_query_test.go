@@ -15,6 +15,7 @@ import (
 )
 
 func TestIngestAndQuery(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
 	// 1. A fractal is the container logs land in. Creating one needs tenant

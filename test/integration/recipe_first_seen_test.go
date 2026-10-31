@@ -17,29 +17,11 @@ import (
 )
 
 func TestFirstSeenNewToModel(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-first-seen-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
-	ingest := c.WithKey(token.Token)
+	fractalID, scoped := newFractal(t, c, "first-seen")
+	ingest := newShipper(t, scoped, fractalID)
 
 	marker := fmt.Sprintf("first-seen-%d", time.Now().UnixNano())
 	userA, userB := marker+"-a", marker+"-b"
@@ -66,7 +48,7 @@ func TestFirstSeenNewToModel(t *testing.T) {
 		}
 		c.DoRaw(t, "POST", "/query", map[string]any{
 			"query":      q,
-			"fractal_id": fractal.ID,
+			"fractal_id": fractalID,
 			"start":      start,
 			"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 		}, &res)
@@ -102,16 +84,7 @@ func TestFirstSeenNewToModel(t *testing.T) {
 		return m.Status == "active"
 	})
 	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{"window": "7d"}, nil)
-	Eventually(t, "the backfill to complete", 180*time.Second, func() bool {
-		var m struct {
-			BackfillStatus string `json:"backfill_status"`
-		}
-		scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
-		if m.BackfillStatus == "failed" {
-			t.Fatal("backfill failed")
-		}
-		return m.BackfillStatus == "completed"
-	})
+	waitBackfill(t, scoped, model.ID)
 
 	// The data view holds one row per entity, aggregated over every log.
 	dataRows := func(search string) []map[string]any {
@@ -157,8 +130,8 @@ func TestFirstSeenNewToModel(t *testing.T) {
 		"timestamp": bTime.Format(time.RFC3339), "suite_user": userB, "suite_marker": marker,
 	}}, nil)
 
-	// A state cycle runs every minute over logs ingested at least 30s ago.
-	Eventually(t, "a state cycle to record entity B", 240*time.Second, func() bool {
+	// A state cycle runs every minute over logs ingested at least two minutes ago.
+	Eventually(t, "a state cycle to record entity B", 6*time.Minute, func() bool {
 		return len(dataRows(userB)) == 1
 	})
 	bData := dataRows(userB)[0]

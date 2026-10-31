@@ -22,26 +22,11 @@ import (
 )
 
 func TestSearchStreamMatchesBufferedSearch(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-stream-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	var token struct {
-		Token string `json:"token"`
-	}
-	c.InScope(fractal.ID).Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "stream")
+	shipper := newShipper(t, scoped, fractalID)
 
 	// 400 events across the last day, one every 3.5 minutes. Every 37th is
 	// "sparse", so a sparse search spans every chunk with few rows in each; two of
@@ -68,12 +53,11 @@ func TestSearchStreamMatchesBufferedSearch(t *testing.T) {
 		map[string]any{"timestamp": tie, "suite_marker": marker, "kind": "sparse", "user": "tie-b", "seq": 1001},
 		map[string]any{"timestamp": end.Add(-20 * time.Hour).Format(time.RFC3339Nano), "suite_marker": marker, "kind": "rare", "user": "r", "seq": 2000},
 	)
-	shipper := c.WithKey(token.Token)
 	shipper.DoRaw(t, "POST", "/ingest", logs, nil)
 
 	body := func(q string) map[string]any {
 		return map[string]any{
-			"query": q, "fractal_id": fractal.ID,
+			"query": q, "fractal_id": fractalID,
 			"start": start.Format(time.RFC3339Nano), "end": end.Format(time.RFC3339Nano),
 		}
 	}

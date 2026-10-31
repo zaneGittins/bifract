@@ -63,8 +63,8 @@ func TestStateCyclesTileIngestTime(t *testing.T) {
 	if !from2.Equal(to1) {
 		t.Errorf("second window starts %v, want where the first ended (%v)", from2, to1)
 	}
-	if lag := time.Since(to2); lag < stateMaintLag || lag > stateMaintLag+time.Minute {
-		t.Errorf("window ends %v behind now, want about %v", lag, stateMaintLag)
+	if lag := time.Since(to2); lag < StateMaintLag() || lag > StateMaintLag()+time.Minute {
+		t.Errorf("window ends %v behind now, want about %v", lag, StateMaintLag())
 	}
 	got, _ := env.db.get(r.id)
 	if !ms(*got.watermark).Equal(to2) {
@@ -146,7 +146,7 @@ func TestStateCycleCatchesUpInCappedWindows(t *testing.T) {
 		}
 		prev = to
 	}
-	if lag := time.Since(prev); lag > stateMaintLag+time.Minute {
+	if lag := time.Since(prev); lag > StateMaintLag()+time.Minute {
 		t.Errorf("caught up to %v behind now", lag)
 	}
 }

@@ -19,28 +19,11 @@ import (
 )
 
 func TestVolumeBaselineScoring(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-volume-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "volume")
+	shipper := newShipper(t, scoped, fractalID)
 
 	// Day 1 is yesterday (UTC), the latest complete bucket the model scores;
 	// nothing is ingested for today, the incomplete bucket.
@@ -80,10 +63,10 @@ func TestVolumeBaselineScoring(t *testing.T) {
 		}
 	}
 	add("BURSTY", 1, 6)
-	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs, nil)
+	shipper.DoRaw(t, "POST", "/ingest", logs, nil)
 
 	window := map[string]any{
-		"fractal_id": fractal.ID,
+		"fractal_id": fractalID,
 		"start":      noon.AddDate(0, 0, -days-1).Format(time.RFC3339),
 		"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 	}
@@ -131,16 +114,7 @@ func TestVolumeBaselineScoring(t *testing.T) {
 		return m.Status == "active"
 	})
 	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{"window": "30d"}, nil)
-	Eventually(t, "the backfill to complete", 180*time.Second, func() bool {
-		var m struct {
-			BackfillStatus string `json:"backfill_status"`
-		}
-		scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
-		if m.BackfillStatus == "failed" {
-			t.Fatal("backfill failed")
-		}
-		return m.BackfillStatus == "completed"
-	})
+	waitBackfill(t, scoped, model.ID)
 
 	// The scored bucket follows the server clock, so the expectations only hold
 	// while it is still the day the data was laid out against.

@@ -12,50 +12,55 @@ package integration
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
 
 // enableEndpointAnalytics turns endpoint behavioral analytics on for the test and back off
 // after. pgr() reads process lineage and baselines that are only collected while it is on.
+// The setting is instance-wide, so recipes running in parallel share one lease: the first
+// turns it on, and it goes back off only when the last is done.
 func enableEndpointAnalytics(t *testing.T, c *Client) {
 	t.Helper()
-	var analytics struct {
-		Enabled bool `json:"enabled"`
-	}
-	c.DoRaw(t, "GET", "/system/endpoint-analysis", nil, &analytics)
-	if !analytics.Enabled {
-		if code := c.Status(t, "POST", "/system/endpoint-analysis", map[string]any{"enabled": true}); code >= 300 {
-			t.Skipf("endpoint behavioral analytics is off and could not be enabled (%d); enable it under Settings > General > Endpoint Analytics", code)
+
+	analyticsLease.Lock()
+	defer analyticsLease.Unlock()
+	if analyticsLease.holders == 0 {
+		var analytics struct {
+			Enabled bool `json:"enabled"`
 		}
-		t.Cleanup(func() { c.Status(t, "POST", "/system/endpoint-analysis", map[string]any{"enabled": false}) })
+		c.DoRaw(t, "GET", "/system/endpoint-analysis", nil, &analytics)
+		analyticsLease.restore = !analytics.Enabled
+		if !analytics.Enabled {
+			if code := c.Status(t, "POST", "/system/endpoint-analysis", map[string]any{"enabled": true}); code >= 300 {
+				t.Skipf("endpoint behavioral analytics is off and could not be enabled (%d); enable it under Settings > General > Endpoint Analytics", code)
+			}
+		}
 	}
+	analyticsLease.holders++
+	t.Cleanup(func() {
+		analyticsLease.Lock()
+		defer analyticsLease.Unlock()
+		if analyticsLease.holders--; analyticsLease.holders == 0 && analyticsLease.restore {
+			c.Status(t, "POST", "/system/endpoint-analysis", map[string]any{"enabled": false})
+		}
+	})
+}
+
+var analyticsLease struct {
+	sync.Mutex
+	holders int
+	restore bool
 }
 
 func TestProvenanceScoring(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 	enableEndpointAnalytics(t, c)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-pgr-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "pgr")
+	shipper := newShipper(t, scoped, fractalID)
 
 	// Sysmon-shaped events, already in the normalized field names the provenance
 	// graph reads (see docs/features/provenance-graph.md).
@@ -109,10 +114,10 @@ func TestProvenanceScoring(t *testing.T) {
 		connect(1, 5, node, c2) // its whole history is beaconing to one IP
 	}
 	connect(1, 5, node, resolver)
-	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs, nil)
+	shipper.DoRaw(t, "POST", "/ingest", logs, nil)
 
 	window := map[string]any{
-		"fractal_id": fractal.ID,
+		"fractal_id": fractalID,
 		"start":      base.Add(-time.Hour).Format(time.RFC3339),
 		"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 	}

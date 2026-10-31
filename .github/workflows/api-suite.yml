@@ -76,7 +76,7 @@ jobs:
           BIFRACT_API_URL: http://localhost:8080
           BIFRACT_API_KEY: ${{ steps.key.outputs.key }}
           BIFRACT_FRACTAL_ID: ${{ steps.key.outputs.fractal }}
-        run: go test -tags integration ./test/integration/ -v -count=1 -timeout 15m
+        run: go test -tags integration ./test/integration/ -v -count=1 -parallel 32 -timeout 15m
 
       - name: Server logs on failure
         if: failure()

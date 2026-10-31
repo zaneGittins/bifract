@@ -15,6 +15,7 @@ import (
 )
 
 func TestInvestigation(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 	fractalID := requireFractal(t, c)
 	scoped := c.InScope(fractalID)

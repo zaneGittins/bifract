@@ -126,34 +126,9 @@ func (c *Client) DoRaw(t *testing.T, method, path string, body, out any) {
 func (c *Client) Raw(t *testing.T, method, path, contentType string, body []byte) []byte {
 	t.Helper()
 
-	var payload io.Reader
-	if body != nil {
-		payload = bytes.NewReader(body)
-	}
-	req, err := http.NewRequest(method, c.BaseURL+"/api/v1"+path, payload)
-	if err != nil {
-		t.Fatalf("building %s %s: %v", method, path, err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if c.Scope != "" {
-		req.Header.Set("X-Bifract-Scope", c.Scope)
-	}
-
-	res, err := c.http.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer res.Body.Close()
-
-	raw, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("reading the %s %s body: %v", method, path, err)
-	}
-	if res.StatusCode < 200 || res.StatusCode > 299 {
-		t.Fatalf("%s %s: %d\n%s", method, path, res.StatusCode, truncate(raw))
+	status, raw := c.send(t, method, path, contentType, body)
+	if status < 200 || status > 299 {
+		t.Fatalf("%s %s: %d\n%s", method, path, status, truncate(raw))
 	}
 	return raw
 }
@@ -195,38 +170,58 @@ func (c *Client) Failure(t *testing.T, method, path string, body any) (int, api.
 func (c *Client) call(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 
-	var payload io.Reader
+	var payload []byte
+	contentType := ""
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			t.Fatalf("encoding the %s %s body: %v", method, path, err)
 		}
-		payload = bytes.NewReader(encoded)
+		payload, contentType = encoded, "application/json"
 	}
+	return c.send(t, method, path, contentType, payload)
+}
 
-	req, err := http.NewRequest(method, c.BaseURL+"/api/v1"+path, payload)
-	if err != nil {
-		t.Fatalf("building %s %s: %v", method, path, err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Key)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.Scope != "" {
-		req.Header.Set("X-Bifract-Scope", c.Scope)
-	}
+// send makes one request, retrying while the server answers 429: that is
+// backpressure asking the caller to wait, as any log shipper would, and not
+// the answer a recipe is asserting.
+func (c *Client) send(t *testing.T, method, path, contentType string, body []byte) (int, []byte) {
+	t.Helper()
 
-	res, err := c.http.Do(req)
-	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
-	}
-	defer res.Body.Close()
+	backoff := 500 * time.Millisecond
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		var payload io.Reader
+		if body != nil {
+			payload = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, c.BaseURL+"/api/v1"+path, payload)
+		if err != nil {
+			t.Fatalf("building %s %s: %v", method, path, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Key)
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if c.Scope != "" {
+			req.Header.Set("X-Bifract-Scope", c.Scope)
+		}
 
-	raw, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("reading the %s %s body: %v", method, path, err)
+		res, err := c.http.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		raw, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			t.Fatalf("reading the %s %s body: %v", method, path, err)
+		}
+		if res.StatusCode != http.StatusTooManyRequests || time.Now().After(deadline) {
+			return res.StatusCode, raw
+		}
+		time.Sleep(backoff)
+		backoff = min(2*backoff, 5*time.Second)
 	}
-	return res.StatusCode, raw
 }
 
 // decodeEnvelope unwraps the standard response envelope. Asserting the shape
@@ -263,7 +258,8 @@ func truncate(b []byte) string {
 
 // Eventually retries until check passes or the deadline expires. Ingestion is
 // asynchronous and batched, so a recipe that writes and reads back has to wait
-// for the queue rather than assume.
+// for the queue rather than assume. Deadlines are sized for production timings;
+// polling often lets a stack tuned for tests finish in a fraction of them.
 func Eventually(t *testing.T, what string, within time.Duration, check func() bool) {
 	t.Helper()
 
@@ -272,7 +268,45 @@ func Eventually(t *testing.T, what string, within time.Duration, check func() bo
 		if check() {
 			return
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("timed out after %s waiting for %s", within, what)
+}
+
+// newFractal creates a fractal for one recipe and deletes it afterwards, so
+// recipes running in parallel never share what they write. It returns the
+// fractal's id and a client scoped to it.
+func newFractal(t *testing.T, c *Client, name string) (string, *Client) {
+	t.Helper()
+
+	var fractal struct {
+		ID string `json:"id"`
+	}
+	c.Do(t, "POST", "/fractals", map[string]any{
+		"name":        fmt.Sprintf("api-suite-%s-%d", name, time.Now().UnixNano()),
+		"description": "Created by the API test suite",
+	}, &fractal)
+	if fractal.ID == "" {
+		t.Fatal("the created fractal came back without an id")
+	}
+	t.Cleanup(func() {
+		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
+			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
+		}
+	})
+	return fractal.ID, c.InScope(fractal.ID)
+}
+
+// newShipper mints a JSON ingest token for a fractal and returns a client that
+// sends logs as it.
+func newShipper(t *testing.T, scoped *Client, fractalID string) *Client {
+	t.Helper()
+
+	var token struct {
+		Token string `json:"token"`
+	}
+	scoped.Do(t, "POST", "/fractals/"+fractalID+"/ingest-tokens", map[string]any{
+		"name": "api-suite", "parser_type": "json",
+	}, &token)
+	return scoped.InScope("").WithKey(token.Token)
 }

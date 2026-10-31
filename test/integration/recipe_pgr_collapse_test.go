@@ -17,28 +17,12 @@ import (
 )
 
 func TestProvenanceCollapse(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 	enableEndpointAnalytics(t, c)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-pgr-collapse-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "pgr-collapse")
+	shipper := newShipper(t, scoped, fractalID)
 
 	run := time.Now().UnixNano() % 0xffffffff
 	guid := func(n int) string { return fmt.Sprintf("{%08x-0000-4000-8000-%012d}", run, n) }
@@ -83,11 +67,11 @@ func TestProvenanceCollapse(t *testing.T) {
 		"bifract_category": "network_connect", "process_guid": guid(9000), "image": evil, "dst_ip": c2,
 	})
 	for i := 0; i < len(logs); i += 1000 {
-		c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs[i:min(i+1000, len(logs))], nil)
+		shipper.DoRaw(t, "POST", "/ingest", logs[i:min(i+1000, len(logs))], nil)
 	}
 
 	window := map[string]any{
-		"fractal_id": fractal.ID,
+		"fractal_id": fractalID,
 		"start":      base.Add(-time.Hour).Format(time.RFC3339),
 		"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 	}
