@@ -59,79 +59,55 @@ search_url() {
 		"$(jq -rn --arg q "$1" '$q | @uri')"
 }
 
-# One starter query, linked once the lab has a fractal to run it in.
-# shellcheck disable=SC2016 # the backticks are Markdown
-try_line() {
-	if [ -n "${FROM:-}" ]; then
-		printf -- '- %s: [`%s`](%s)\n' "$1" "$2" "$(search_url "$2")"
-	else
-		printf -- '- %s: `%s`\n' "$1" "$2"
-	fi
-}
+# A number from the import, with thousands separators.
+count() { jq -r ".$2" <<<"$1" | numfmt --grouping; }
 
 # Writes WELCOME.md for the lab's state, given its import as JSON (or nothing).
 write_welcome() {
-	local imp=${1:-null} url status lab range=
+	local imp=${1:-null} url status lab range='' try=''
 	url=$(public_url)
 	status=$(jq -r '.status // ""' <<<"$imp")
-	FROM='' TO=''
 	if [ -n "$status" ]; then
 		range=$(api "$BASE/api/v1/fractals/$(jq -r .fractal_id <<<"$imp")" |
 			jq -r '.data | select(.default_range_start and .default_range_end) | "\(.default_range_start) \(.default_range_end)"')
 	fi
-	local note=''
-	if [ -n "${range:-}" ]; then
+	# Searches link once the lab's fractal exists, over its whole range.
+	if [ -n "$range" ]; then
 		FROM=$(date -u -d "${range% *}" +%Y-%m-%dT%H:%M:00Z)
 		TO=$(date -u -d "${range#* } + 1 minute" +%Y-%m-%dT%H:%M:00Z)
-		note=$'\nEach link runs the search over the lab\'s three days.\n'
+		try="**Try a search**
+
+1. [Every process launch]($(search_url 'bifract_category=process_creation | table(timestamp, hostname, user, image, commandline)'))
+2. [Hosts in the lab]($(search_url '* | groupBy(hostname)'))
+3. [Kinds of events]($(search_url '* | groupBy(bifract_category) | sort(_count, order=desc)'))
+4. [Rarest programs]($(search_url 'bifract_category=process_creation | groupBy(image) | sort(_count, order=asc) | head(10)'))
+5. [Rarest DNS lookups]($(search_url 'event_id=22 | groupBy(query) | sort(_count, order=asc) | head(10)'))
+6. Follow a process: \`pgr(start=\"<guid>\") | pgraph()\` with any \`process_guid\`
+"
 	fi
-	local progress
-	progress="$url/#f/$(jq -r '.fractal_id // ""' <<<"$imp")/exchange/$DATASET"
+	local exchange
+	exchange="$url/#f/$(jq -r '.fractal_id // ""' <<<"$imp")/exchange/$DATASET"
 	case $status in
-	succeeded)
-		lab="Loaded: $(jq -r '.logs_done' <<<"$imp" | numfmt --grouping) logs. \
-[Start with every process launch]($(search_url 'bifract_category=process_creation | table(timestamp, hostname, user, image, commandline)'))."
-		;;
-	failed)
-		lab="Loading failed: $(jq -r '.error' <<<"$imp"). Retry it under [Exchange]($progress)."
-		;;
-	"")
-		lab="Bifract is still being set up. The lab starts loading next, and this page updates as it goes."
-		;;
-	*)
-		lab="Loading: $(jq -r '.logs_done' <<<"$imp" | numfmt --grouping) of $(jq -r '.logs_total' <<<"$imp" | numfmt --grouping) logs. \
-Follow it under [Exchange]($progress); the lab can be searched while it fills."
-		;;
+	succeeded) lab="Loaded: $(count "$imp" logs_done) logs." ;;
+	failed) lab="Loading failed: $(jq -r '.error' <<<"$imp"). [Retry in Exchange]($exchange)." ;;
+	"") lab="Loading starts in a moment; this page updates as it goes." ;;
+	*) lab="Loading: $(count "$imp" logs_done) of $(count "$imp" logs_total) logs. [Watch it in Exchange]($exchange); searches work while it loads." ;;
 	esac
 	cat >"$WELCOME" <<EOF
-# Try Bifract
+<p align="center"><img src="web/static/logo.png" alt="Bifract" width="72"></p>
+<h1 align="center">Bifract is running</h1>
 
-Bifract is running in this codespace. Open it and sign in:
-
-| | |
-|---|---|
-| Open | [$url]($url) |
-| Username | \`admin\` |
-| Password | \`$(sudo cat "$PASSWORD_FILE")\` |
+**[Open Bifract]($url)** and sign in as \`admin\` with password \`$(sudo cat "$PASSWORD_FILE")\`
 
 ## Lab 001: Meridian workstation intrusion
 
-Three days of logs from a small Windows domain, with an intrusion inside it, in
-fractal \`$DATASET\`. $lab
+Three days of logs from a small Windows domain, with an intrusion hidden inside.
+$lab
 
-## Things to try
-$note
-$(try_line "Who is in the lab (no hostname means the network sensor)" '* | groupBy(hostname)')
-$(try_line "What kinds of events it holds" '* | groupBy(bifract_category) | sort(_count, order=desc)')
-$(try_line "The rarest programs" 'bifract_category=process_creation | groupBy(image) | sort(_count, order=asc) | head(10)')
-$(try_line "The rarest DNS lookups" 'event_id=22 | groupBy(query) | sort(_count, order=asc) | head(10)')
-- Follow a process: copy a \`process_guid\` from a process launch and run
-  \`pgr(start="<guid>") | pgraph()\` to see what it spawned, wrote and connected
-  to, each step scored by how unusual it is.
+$try
+---
 
-The lab's story: [bifract-labs]($LAB_STORY). Bifract's guide to this codespace:
-[docs]($DOCS). When you are done, delete the codespace from
-[github.com/codespaces](https://github.com/codespaces) to save your free hours.
+[The lab's story]($LAB_STORY) · [Codespaces guide]($DOCS) · [Delete this codespace](https://github.com/codespaces) when you are done
 EOF
 }
 
