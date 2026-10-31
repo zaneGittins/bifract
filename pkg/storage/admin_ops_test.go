@@ -18,9 +18,11 @@ import (
 func TestDeleteLogsByFractalID(t *testing.T) {
 	c, f := newFakeClient()
 	f.OnArg(describeQuery, "logs_histogram__skip", describes("", ""))
+	f.OnArg(describeQuery, provenanceFillCleared, describes("", ""))
 	f.OnArg(partsQuery, "logs", fakedb.Strs("partition_id", "l1", "l2"))
 	f.OnArg(partsQuery, "process_edges", fakedb.Strs("partition_id", "e1"))
 	f.OnArg(partsQuery, "logs_field_paths", fakedb.Strs("partition_id", "p1"))
+	f.OnArg(partsQuery, "provenance_summary", fakedb.Strs("partition_id", "s1"))
 
 	if err := c.DeleteLogsByFractalID(context.Background(), "F1", true); err != nil {
 		t.Fatal(err)
@@ -36,6 +38,13 @@ func TestDeleteLogsByFractalID(t *testing.T) {
 	}
 	if indexOf(execs, "ALTER TABLE `logs_field_paths` DROP PARTITION ID 'p1'") < 0 {
 		t.Error("field path counts must leave with the fractal")
+	}
+	// A summary fill in progress hears of the clear after the source rows go and before the
+	// summary's do, so it can never write stale rows back unnoticed.
+	edges, cleared := indexOf(execs, "ALTER TABLE `process_edges` DROP PARTITION ID 'e1'"), indexOf(execs, "INSERT INTO "+provenanceFillCleared)
+	summary := indexOf(execs, "ALTER TABLE `provenance_summary` DROP PARTITION ID 's1'")
+	if !(edges < cleared && cleared < summary) {
+		t.Errorf("want source drops, then the fill marker, then the summary drop:\n%s", strings.Join(execs, "\n"))
 	}
 	// Both the fractal and the unscoped id were looked up and recorded.
 	if got := f.ExecArgs()[skip]; !reflect.DeepEqual(got, []any{"F1"}) {
@@ -256,6 +265,20 @@ func TestClearAllLogDataTruncatesEverything(t *testing.T) {
 			t.Errorf("%s not truncated", table)
 		}
 	}
+	if last := f.Executed()[len(f.Executed())-1]; !strings.Contains(last, "`"+provenanceSummaryTable+"`") {
+		t.Errorf("the summary must be truncated last, after the fill marker; last was %s", last)
+	}
+
+	// With a fill running, every fractal is marked cleared before the summary goes.
+	c, f = newFakeClient()
+	f.OnArg(describeQuery, provenanceFillCleared, describes("", ""))
+	if err := c.ClearEndpointAnalysisBaselines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	marked := indexOf(f.Executed(), "INSERT INTO "+provenanceFillCleared)
+	if marked < 0 || f.ExecArgs()[marked][0] != provenanceFillAll || marked != len(f.Executed())-2 {
+		t.Errorf("fill marker: %q", f.Executed())
+	}
 
 	c, f = newFakeClient()
 	if err := c.ClearEndpointAnalysisBaselines(context.Background()); err != nil {
@@ -438,6 +461,46 @@ func TestReconcileTTLsAreMetadataOnly(t *testing.T) {
 	}
 	if got := f.Executed(); !reflect.DeepEqual(got, want) {
 		t.Errorf("executed %q", got)
+	}
+}
+
+// Summary rows follow the retention the summarized tables actually have, which an earlier
+// setting may have changed, not the one this start was given.
+func TestReconcileProvenanceSummaryTTL(t *testing.T) {
+	describe := func(f *fakedb.CH, table, ttl string) {
+		f.OnArg("FROM system.tables", table, fakedb.CHResult{
+			Cols: []fakedb.Col{{Column: "partition_key", Type: "String"}, {Column: "engine_full", Type: "String"}},
+			Rows: [][]any{{"fractal_id", "ReplacingMergeTree PARTITION BY fractal_id ORDER BY x TTL " + ttl + " SETTINGS index_granularity = 8192"}},
+		})
+	}
+	c, f := newFakeClient()
+	describe(f, "proc_lineage", "toDateTime(ingest_timestamp) + toIntervalDay(400)")
+	describe(f, "proc_freq", "day + toIntervalDay(30)")
+	describe(f, "provenance_summary", "last_day + toIntervalDay(730)")
+	if err := c.ReconcileProvenanceSummaryTTL(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// last_day rounds a lineage row's ingest time down, so its row is kept a day longer.
+	want := []string{"ALTER TABLE provenance_summary MODIFY TTL last_day + toIntervalDay(if(kind = 'lineage_host', 401, 30)) SETTINGS materialize_ttl_after_modify = 0"}
+	if got := f.Executed(); !reflect.DeepEqual(got, want) {
+		t.Errorf("executed %q", got)
+	}
+
+	// Already in step: no ALTER, so a cluster does not take a DDL on every start.
+	c, f = newFakeClient()
+	describe(f, "proc_lineage", "toDateTime(ingest_timestamp) + toIntervalDay(400)")
+	describe(f, "proc_freq", "day + toIntervalDay(30)")
+	describe(f, "provenance_summary", "last_day + toIntervalDay(if(kind = 'lineage_host', 401, 30))")
+	if err := c.ReconcileProvenanceSummaryTTL(context.Background()); err != nil || len(f.Executed()) != 0 {
+		t.Errorf("in-step TTL: err %v, executed %q", err, f.Executed())
+	}
+
+	// An unreadable retention changes nothing rather than guessing.
+	c, f = newFakeClient()
+	describe(f, "proc_lineage", "toDateTime(ingest_timestamp) + toIntervalMonth(3)")
+	describe(f, "proc_freq", "day + toIntervalDay(30)")
+	if err := c.ReconcileProvenanceSummaryTTL(context.Background()); err == nil || len(f.Executed()) != 0 {
+		t.Errorf("unparsed TTL: err %v, executed %q", err, f.Executed())
 	}
 }
 

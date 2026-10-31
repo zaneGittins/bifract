@@ -252,30 +252,33 @@ func main() {
 		}()
 	}
 
-	// proc_lineage retention is decoupled from logs and kept long for DFIR (year-old
-	// process trees). BIFRACT_PROC_LINEAGE_TTL_DAYS overrides the 365-day DDL default via
-	// a metadata-only MODIFY TTL. Runs in the background; the table exists after init.
-	if days := getEnvInt("BIFRACT_PROC_LINEAGE_TTL_DAYS", 0); days > 0 {
-		go func() {
-			if err := db.ReconcileProcLineageTTL(context.Background(), days); err != nil {
+	// Retention for the pgr tables, metadata-only MODIFY TTLs applied once migrations finish
+	// (in cluster mode they run in the background). proc_lineage is kept long for DFIR and
+	// proc_freq is the scoring baseline; both default to 730 days in the DDL. The summary
+	// follows whatever the two then have.
+	go func() {
+		ctx := context.Background()
+		// Uncapped: a slow cluster upgrade must still reach the reconciles, or the summary's
+		// TTL would stay out of step with its tables until a restart.
+		db.WaitForSchemaReady(ctx)
+		if days := getEnvInt("BIFRACT_PROC_LINEAGE_TTL_DAYS", 0); days > 0 {
+			if err := db.ReconcileProcLineageTTL(ctx, days); err != nil {
 				log.Printf("Warning: proc_lineage TTL reconcile (%d days) failed: %v", days, err)
 			} else {
 				log.Printf("proc_lineage TTL set to %d days", days)
 			}
-		}()
-	}
-
-	// proc_freq is the aggregated pgr() frequency baseline; a longer window gives more
-	// stable rarity. BIFRACT_PROC_FREQ_TTL_DAYS overrides the 180-day DDL default.
-	if days := getEnvInt("BIFRACT_PROC_FREQ_TTL_DAYS", 0); days > 0 {
-		go func() {
-			if err := db.ReconcileProcFreqTTL(context.Background(), days); err != nil {
+		}
+		if days := getEnvInt("BIFRACT_PROC_FREQ_TTL_DAYS", 0); days > 0 {
+			if err := db.ReconcileProcFreqTTL(ctx, days); err != nil {
 				log.Printf("Warning: proc_freq TTL reconcile (%d days) failed: %v", days, err)
 			} else {
 				log.Printf("proc_freq TTL set to %d days", days)
 			}
-		}()
-	}
+		}
+		if err := db.ReconcileProvenanceSummaryTTL(ctx); err != nil {
+			log.Printf("Warning: provenance_summary TTL reconcile failed: %v", err)
+		}
+	}()
 
 	// Initialize settings from database
 	if err := settings.Init(pg); err != nil {
@@ -303,24 +306,15 @@ func main() {
 	}
 
 	// Convert tables provisioned before their per-fractal partition keys, so clearing a
-	// fractal drops partitions instead of running mutations. One replica does it under an
-	// advisory lock; it is resumable, so a restart mid-copy carries on where it stopped.
+	// fractal drops partitions instead of running mutations, then backfill pgr's access paths
+	// (migration 019) for rows written before them; the backfill waits for the conversion,
+	// whose copied rows bypass the summary views. One replica does both under an advisory
+	// lock. Every replica retries until they report done, so a rolling deploy or a lost lock
+	// hands the work to whichever replica is left; each step resumes where it stopped.
 	go func() {
-		ctx := context.Background()
-		unlock, ok := pg.TryAdvisoryLock(ctx, storage.LockRepartition)
-		if !ok {
-			return
-		}
-		defer unlock()
-		keep, err := pg.FractalIDSet(ctx)
-		if err != nil {
-			log.Printf("Warning: partition conversion: list fractals: %v", err)
-			return
-		}
-		// Rows under an empty fractal_id belong to the default fractal.
-		keep[""] = true
-		if err := db.ConvertPartitioning(ctx, keep); err != nil {
-			log.Printf("Warning: partition conversion incomplete, will resume on next start: %v", err)
+		const firstRetry, maxRetry = time.Minute, 6 * time.Hour
+		for wait := firstRetry; !convertAndBackfill(db, pg); wait = min(2*wait, maxRetry) {
+			time.Sleep(wait)
 		}
 	}()
 
@@ -1337,4 +1331,39 @@ func (a *APIKeyValidatorAdapter) ValidateAPIKey(ctx context.Context, key string)
 
 func (a *APIKeyValidatorAdapter) UpdateLastUsed(ctx context.Context, keyID string) error {
 	return a.storage.UpdateLastUsed(ctx, keyID)
+}
+
+// convertAndBackfill runs the partition conversion and the pgr access-path backfill if this
+// replica wins the lock, and reports whether both are done. Losing the lock's connection
+// cancels the work, since another replica may then take it.
+func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient) bool {
+	// Both steps compare tables against the migrated schema.
+	db.WaitForSchemaReady(context.Background())
+	ctx, unlock, ok := pg.HoldAdvisoryLock(context.Background(), storage.LockRepartition)
+	if !ok {
+		return false
+	}
+	defer unlock()
+	keep, err := pg.FractalIDSet(ctx)
+	if err != nil {
+		log.Printf("Warning: partition conversion: list fractals: %v", err)
+		return false
+	}
+	// Rows under an empty fractal_id belong to the default fractal.
+	keep[""] = true
+	converted := true
+	if err := db.ConvertPartitioning(ctx, keep); err != nil {
+		log.Printf("Warning: partition conversion incomplete, will resume: %v", err)
+		converted = false
+	}
+	// Rows a conversion still has to copy would bypass the summary views; a conversion that
+	// failed before copying anything does not hold the backfill up.
+	if pending, err := db.ConversionInProgress(ctx); err != nil || pending {
+		return false
+	}
+	if err := db.BackfillProvenancePaths(ctx, pg); err != nil {
+		log.Printf("Warning: pgr access-path backfill incomplete, will resume: %v", err)
+		return false
+	}
+	return converted
 }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bifract/pkg/bqlvars"
@@ -50,6 +51,8 @@ type QueryHandler struct {
 	pgrRecorder *pgrcal.Recorder
 	// observedFields caches each scope's field list for autocomplete and get_fields.
 	observedFields *observedFieldsCache
+	// summaryFilled caches whether the provenance backfill has filled provenance_summary.
+	summaryFilled atomic.Pointer[summaryFilledCheck]
 }
 
 // tlshSkipWarnings explains, per reason, which fractals tlsh() did not search.
@@ -137,15 +140,16 @@ func (h *QueryHandler) SetGeoIPEnabled(enabled bool) {
 // from the handler rather than the request.
 func (h *QueryHandler) logsQueryOptions() parser.QueryOptions {
 	return parser.QueryOptions{
-		GeoIPEnabled:       h.geoIPEnabled,
-		DictionaryDatabase: h.dictDatabase(),
-		TableName:          h.queryTableName(),
-		ProcLineageTable:   h.procLineageTableName(),
-		ProcFreqTable:      h.procFreqTableName(),
-		ProcEdgesTable:     h.procEdgesTableName(),
-		IncludeShardNum:    h.db != nil && h.db.Topology().DistributedTables,
-		IncludeIngestTime:  true,
-		NormLogIndexHints:  true,
+		GeoIPEnabled:           h.geoIPEnabled,
+		DictionaryDatabase:     h.dictDatabase(),
+		TableName:              h.queryTableName(),
+		ProcLineageTable:       h.procLineageTableName(),
+		ProcFreqTable:          h.procFreqTableName(),
+		ProcEdgesTable:         h.procEdgesTableName(),
+		ProvenanceSummaryTable: h.provenanceSummaryTableName(),
+		IncludeShardNum:        h.db != nil && h.db.Topology().DistributedTables,
+		IncludeIngestTime:      true,
+		NormLogIndexHints:      true,
 	}
 }
 
@@ -191,6 +195,14 @@ func (h *QueryHandler) procEdgesTableName() string {
 		return h.db.ProcEdgesReadTable()
 	}
 	return "process_edges"
+}
+
+// provenanceSummaryTableName returns the read table for pgr()'s fleet-wide facts.
+func (h *QueryHandler) provenanceSummaryTableName() string {
+	if h.db != nil {
+		return h.db.ProvenanceSummaryReadTable()
+	}
+	return "provenance_summary"
 }
 
 // SetRBACResolver injects the RBAC resolver for access filtering.

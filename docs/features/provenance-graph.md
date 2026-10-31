@@ -29,6 +29,8 @@ Bifract then maintains two baselines as logs arrive: process lineage (who spawne
 
 For just the spawn tree, without scoring or file, network and DNS activity, use `ptg(start="{GUID}") | pgraph()`. It reads only the lineage table, so it is faster. See [Graph Traversal](../bql/graph-traversal.md) for all arguments.
 
+Both look up only the rows a tree touches, so their cost follows the size of the tree, not of the fractal or its retention. Command lines come from the lineage table, so they stay visible after the logs behind them age out.
+
 ## Required fields
 
 Your [normalizer](normalizers.md) must set `bifract_category` and the fields below (under the `fields` column). Every event also needs `computer_name` and a `timestamp`. `process_creation` alone builds the tree; each extra category adds a layer.
@@ -69,6 +71,10 @@ A process that runs the same command over and over, such as a remote-access tool
 ### When the graph is incomplete
 
 `pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, so a wide tree cannot crowd them all out. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
+
+### After upgrading
+
+Baselines written before the upgrade that added pgr's lookups are backfilled by a background job. Graphs are correct while it runs, just slower over older history. One server drives it: it first fills the fleet summary (logging `provenance summary filled`), then indexes one fractal per ClickHouse node at a time (logging `materializing ...`, and `provenance projections complete` when done).
 
 ## Anomaly scoring
 

@@ -87,14 +87,15 @@ type QueryOptions struct {
 	//
 	// All three are keyed by ClickHouse object name, not list name: a secondary
 	// key column on any list resolves to an ordinary HASHED dictionary.
-	PatternPrefilters  map[string]string
-	DictionaryDatabase string       // ClickHouse database holding the dictionary objects; qualifies every dictGet
-	TableName          string       // Override source table (default "logs", use "logs_distributed" in cluster mode)
-	ProcLineageTable   string       // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
-	ProcessTree        *ProcessTree // ptg()'s tree, walked by the query layer before translation; nil = not resolved
-	ProcFreqTable      string       // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
-	ProcEdgesTable     string       // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
-	IncludeShardNum    bool         // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
+	PatternPrefilters      map[string]string
+	DictionaryDatabase     string       // ClickHouse database holding the dictionary objects; qualifies every dictGet
+	TableName              string       // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	ProcLineageTable       string       // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
+	ProcessTree            *ProcessTree // ptg()'s tree, walked by the query layer before translation; nil = not resolved
+	ProcFreqTable          string       // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
+	ProcEdgesTable         string       // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
+	ProvenanceSummaryTable string       // Fleet-totals read table for pgr() ("provenance_summary" or "provenance_summary_distributed")
+	IncludeShardNum        bool         // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	// IncludeIngestTime projects ingest_timestamp as the hidden _ingest_timestamp
 	// column for the detail panel. Set by the paths feeding it (search, recall); off
 	// for alerts and the rule tester, whose rows are matched rather than displayed.

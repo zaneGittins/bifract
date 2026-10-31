@@ -87,6 +87,23 @@ func (c *ClickHouseClient) ConvertPartitioning(ctx context.Context, keep map[str
 	})
 }
 
+// ConversionInProgress reports whether any shard still holds rows a conversion has yet to
+// copy into its live table.
+func (c *ClickHouseClient) ConversionInProgress(ctx context.Context) (bool, error) {
+	pending := false
+	err := c.onEveryShard(ctx, "check partition conversion", func(conn driver.Conn) error {
+		for _, t := range repartitionTargets {
+			old, err := describeTable(ctx, conn, t.table+repartOld)
+			if err != nil {
+				return err
+			}
+			pending = pending || old.exists
+		}
+		return nil
+	})
+	return pending, err
+}
+
 func (c *ClickHouseClient) convertTarget(ctx context.Context, conn driver.Conn, t repartitionTarget, keep map[string]bool) error {
 	oldName := t.table + repartOld
 	live, err := describeTable(ctx, conn, t.table)
@@ -148,7 +165,10 @@ func (c *ClickHouseClient) copyOld(ctx context.Context, conn driver.Conn, t repa
 	oldName, stageName := t.table+repartOld, t.table+repartStage
 	doneName, skipName := t.table+repartDone, t.table+repartSkip
 
-	cols, err := columnList(ctx, conn, stageName)
+	if err := c.alignStage(ctx, conn, t); err != nil {
+		return err
+	}
+	cols, err := columnList(ctx, conn, stageName, oldName)
 	if err != nil {
 		return err
 	}
@@ -288,46 +308,111 @@ func (c *ClickHouseClient) createLike(ctx context.Context, conn driver.Conn, tab
 
 // initTableDDL returns table's CREATE TABLE statement from init-clickhouse.sql.
 func initTableDDL(table string) (string, error) {
-	header := "CREATE TABLE IF NOT EXISTS " + table + " ("
+	return initStatement("CREATE TABLE IF NOT EXISTS " + table + " (")
+}
+
+// initStatement returns the init-clickhouse.sql statement that starts with header,
+// without its leading comments.
+func initStatement(header string) (string, error) {
 	for _, stmt := range splitClickHouseSQL(dbsql.ClickHouseSQL) {
 		if i := strings.Index(stmt, header); i >= 0 {
 			return stmt[i:], nil
 		}
 	}
-	return "", fmt.Errorf("no CREATE TABLE %s in init-clickhouse.sql", table)
+	return "", fmt.Errorf("no %s... in init-clickhouse.sql", strings.TrimSpace(header))
 }
 
 // sameColumns refuses a swap when the live table's columns differ from the definition the
 // new table was built from, since the copy names columns and would drop or fail on any
 // the two do not share.
 func sameColumns(ctx context.Context, conn driver.Conn, a, b string) error {
-	q := "SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = ? ORDER BY name"
-	list := func(table string) (string, error) {
-		rows, err := conn.Query(ctx, q, table)
-		if err != nil {
-			return "", err
-		}
-		defer rows.Close()
-		var parts []string
-		for rows.Next() {
-			var name, typ string
-			if err := rows.Scan(&name, &typ); err != nil {
-				return "", err
-			}
-			parts = append(parts, name+" "+typ)
-		}
-		return strings.Join(parts, ", "), rows.Err()
-	}
-	ca, err := list(a)
+	ca, err := columnSignature(ctx, conn, a)
 	if err != nil {
 		return err
 	}
-	cb, err := list(b)
+	cb, err := columnSignature(ctx, conn, b)
 	if err != nil {
 		return err
 	}
 	if ca != cb {
 		return fmt.Errorf("columns of %s (%s) differ from init-clickhouse.sql (%s); not converting", a, ca, cb)
+	}
+	return nil
+}
+
+// columnSignature lists table's columns and types, the structure MOVE PARTITION requires
+// two tables to share.
+func columnSignature(ctx context.Context, conn driver.Conn, table string) (string, error) {
+	rows, err := conn.Query(ctx, "SELECT name, type FROM system.columns WHERE database = currentDatabase() AND table = ? ORDER BY name", table)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var parts []string
+	for rows.Next() {
+		var name, typ string
+		if err := rows.Scan(&name, &typ); err != nil {
+			return "", err
+		}
+		parts = append(parts, name+" "+typ)
+	}
+	return strings.Join(parts, ", "), rows.Err()
+}
+
+// alignStage gives a stage an earlier release created the columns a migration has since
+// added to the live table, since MOVE PARTITION needs both to have the same columns. Staged
+// copies keep their rows and read the new columns' defaults, as the live table's older parts
+// do. Any other difference is refused.
+func (c *ClickHouseClient) alignStage(ctx context.Context, conn driver.Conn, t repartitionTarget) error {
+	stageName := t.table + repartStage
+	stage, err := describeTable(ctx, conn, stageName)
+	if err != nil {
+		return err
+	}
+	if !stage.exists {
+		live, err := describeTable(ctx, conn, t.table)
+		if err != nil {
+			return err
+		}
+		return c.createLike(ctx, conn, t.table, stageName, live.ttl)
+	}
+	rows, err := conn.Query(ctx, "SELECT name, type, default_kind, default_expression FROM system.columns WHERE database = currentDatabase() AND table = ? "+
+		"AND name NOT IN (SELECT name FROM system.columns WHERE database = currentDatabase() AND table = ?) ORDER BY position", t.table, stageName)
+	if err != nil {
+		return err
+	}
+	var adds []string
+	for rows.Next() {
+		var name, typ, kind, expr string
+		if err := rows.Scan(&name, &typ, &kind, &expr); err != nil {
+			rows.Close()
+			return err
+		}
+		col := quoteCHIdent(name) + " " + typ
+		if kind != "" {
+			col += " " + kind + " " + expr
+		}
+		adds = append(adds, col)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range adds {
+		if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stageName)+" ADD COLUMN IF NOT EXISTS "+col); err != nil {
+			return fmt.Errorf("align %s: %w", stageName, err)
+		}
+	}
+	live, err := columnSignature(ctx, conn, t.table)
+	if err != nil {
+		return err
+	}
+	staged, err := columnSignature(ctx, conn, stageName)
+	if err != nil {
+		return err
+	}
+	if staged != live {
+		return fmt.Errorf("columns of %s (%s) cannot be aligned with %s (%s); not converting", stageName, staged, t.table, live)
 	}
 	return nil
 }
@@ -346,7 +431,7 @@ func probeMove(ctx context.Context, conn driver.Conn, live, stage, dst string) e
 	if err := dropFractalPartitions(ctx, conn, stage, probe); err != nil {
 		return err
 	}
-	cols, err := columnList(ctx, conn, stage)
+	cols, err := columnList(ctx, conn, stage, live)
 	if err != nil {
 		return err
 	}
@@ -423,14 +508,19 @@ func dropTables(ctx context.Context, conn driver.Conn, names ...string) error {
 	return nil
 }
 
-func columnList(ctx context.Context, conn driver.Conn, table string) (string, error) {
+// columnList names the columns a copy from src into dst writes: dst's insertable columns
+// that src also has. Computed columns are recomputed by dst, and columns a migration added
+// after src was set aside take their defaults.
+func columnList(ctx context.Context, conn driver.Conn, dst, src string) (string, error) {
 	names, err := stringColumn(ctx, conn,
-		"SELECT name FROM system.columns WHERE database = currentDatabase() AND table = ? ORDER BY position", table)
+		"SELECT name FROM system.columns WHERE database = currentDatabase() AND table = ? "+
+			"AND default_kind NOT IN ('MATERIALIZED', 'ALIAS', 'EPHEMERAL') "+
+			"AND name IN (SELECT name FROM system.columns WHERE database = currentDatabase() AND table = ?) ORDER BY position", dst, src)
 	if err != nil {
 		return "", err
 	}
 	if len(names) == 0 {
-		return "", fmt.Errorf("%s has no columns", table)
+		return "", fmt.Errorf("%s has no columns", dst)
 	}
 	for i, n := range names {
 		names[i] = quoteCHIdent(n)
