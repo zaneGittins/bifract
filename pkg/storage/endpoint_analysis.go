@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
 
 // endpointAnalysisMVNames are the materialized views gated by the "Advanced endpoint
@@ -95,6 +97,35 @@ func (c *ClickHouseClient) ReconcileEndpointAnalysisMVs(ctx context.Context, ena
 // where the schema migration was skipped because a shard was down) is left alone and
 // gets created attached by a later startup once migrations run, rather than erroring on
 // ATTACH of a non-existent table.
+// endpointAttachRetryDelay is the first wait before retrying an ATTACH of a view a running
+// query still holds; it doubles per attempt.
+var endpointAttachRetryDelay = 250 * time.Millisecond
+
+const endpointAttachAttempts = 5
+
+// execEndpointToggle runs one ATTACH/DETACH. Re-enabling right after disabling can find the
+// detached view still held by a query that was running at the time; ClickHouse refuses with
+// code 57 and asks to retry later, so that case is retried briefly.
+func execEndpointToggle(ctx context.Context, conn driver.Conn, stmt string) error {
+	delay := endpointAttachRetryDelay
+	for attempt := 1; ; attempt++ {
+		sctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		err := conn.Exec(sctx, stmt)
+		cancel()
+		var ex *proto.Exception
+		busy := errors.As(err, &ex) && ex.Code == 57 && strings.Contains(ex.Message, "still used by some query")
+		if !busy || attempt == endpointAttachAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+}
+
 func reconcileEndpointMVsOnConn(ctx context.Context, conn driver.Conn, enabled bool) error {
 	inList := endpointMVInList()
 	attached, err := loadEndpointMVSet(ctx, conn, `SELECT name FROM system.tables
@@ -121,9 +152,7 @@ func reconcileEndpointMVsOnConn(ctx context.Context, conn driver.Conn, enabled b
 			// Already in the desired state, or (for ATTACH) not yet created on this node.
 			continue
 		}
-		sctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		execErr := conn.Exec(sctx, stmt)
-		cancel()
+		execErr := execEndpointToggle(ctx, conn, stmt)
 		if execErr != nil {
 			return fmt.Errorf("%s: %w", stmt, execErr)
 		}

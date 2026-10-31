@@ -18,6 +18,7 @@ import (
 
 func TestProvenanceCollapse(t *testing.T) {
 	c := New(t)
+	enableEndpointAnalytics(t, c)
 
 	var fractal struct {
 		ID string `json:"id"`
