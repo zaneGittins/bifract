@@ -1569,7 +1569,7 @@ ${m.description ? `<div class="me-sec">
     _buildSourceQuery(def) {
         if (def && typeof def.source_bql === 'string' && def.source_bql.trim()) return def.source_bql.trim();
         const lines = [];
-        const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        const esc = s => Utils.bqlQuote(s);
         const relit = s => {
             // Wrap as /.../ regex literal, escaping unescaped forward slashes.
             let out = '/';
@@ -1609,7 +1609,7 @@ ${m.description ? `<div class="me-sec">
     _rowSearch(row, model, range) {
         const def = model.definition || {};
         const mt = model.model_type || 'rarity';
-        const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        const esc = s => Utils.bqlQuote(s);
         const rowFilters = [];
         let from = '', to = '';
         if (mt === 'beacon' || mt === 'long_connection') {

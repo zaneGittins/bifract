@@ -90,6 +90,15 @@ const Utils = {
         return text.replace(/[&<>"']/g, function(m) { return map[m]; });
     },
 
+    // Escape for the inside of a double-quoted BQL string; the lexer reads backslash as an escape.
+    bqlEscape(text) {
+        return String(text == null ? '' : text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    },
+
+    bqlQuote(text) {
+        return '"' + this.bqlEscape(text) + '"';
+    },
+
     // Escape for use in HTML attributes (data-*, title, etc.)
     escapeAttr(text) {
         if (typeof text !== 'string') return '';
