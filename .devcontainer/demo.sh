@@ -14,6 +14,15 @@ NOTICE=/usr/local/etc/vscode-dev-containers/first-run-notice.txt
 WELCOME=$PWD/WELCOME.md
 LAB_STORY=https://github.com/zaneGittins/bifract-labs/tree/main/labs/001
 DOCS=https://docs.bifract.io/getting-started/codespaces/
+# The welcome page's searches, which warm also runs.
+LABELS=("Every process launch" "Process launches per host" "Kinds of events" "Rarest programs" "Rarest DNS lookups")
+QUERIES=(
+	'bifract_category=process_creation | table(timestamp, hostname, user, image, commandline)'
+	'bifract_category=process_creation | groupBy(hostname) | sort(_count, order=desc)'
+	'* | groupBy(bifract_category) | sort(_count, order=desc)'
+	'bifract_category=process_creation | groupBy(image) | sort(_count, order=asc) | head(10)'
+	'event_id=22 | groupBy(query) | sort(_count, order=asc) | head(10)'
+)
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -75,15 +84,13 @@ write_welcome() {
 	if [ -n "$range" ]; then
 		FROM=$(date -u -d "${range% *}" +%Y-%m-%dT%H:%M:00Z)
 		TO=$(date -u -d "${range#* } + 1 minute" +%Y-%m-%dT%H:%M:00Z)
-		try="**Try a search**
-
-1. [Every process launch]($(search_url 'bifract_category=process_creation | table(timestamp, hostname, user, image, commandline)'))
-2. [Process launches per host]($(search_url 'bifract_category=process_creation | groupBy(hostname) | sort(_count, order=desc)'))
-3. [Kinds of events]($(search_url '* | groupBy(bifract_category) | sort(_count, order=desc)'))
-4. [Rarest programs]($(search_url 'bifract_category=process_creation | groupBy(image) | sort(_count, order=asc) | head(10)'))
-5. [Rarest DNS lookups]($(search_url 'event_id=22 | groupBy(query) | sort(_count, order=asc) | head(10)'))
-6. Follow a process: \`pgr(start=\"<guid>\") | pgraph()\` with any \`process_guid\`
-"
+		try=$'**Try a search**\n\n'
+		local i
+		for i in "${!QUERIES[@]}"; do
+			try+="$((i + 1)). [${LABELS[i]}]($(search_url "${QUERIES[i]}"))"$'\n'
+		done
+		try+="$((${#QUERIES[@]} + 1)). Follow a process: \`pgr(start=\"<guid>\") | pgraph()\` with any \`process_guid\`"$'\n'
+		LAB_FRACTAL=$(jq -r .fractal_id <<<"$imp")
 	fi
 	local exchange
 	exchange="$url/#f/$(jq -r '.fractal_id // ""' <<<"$imp")/exchange/$DATASET"
@@ -208,8 +215,22 @@ rotate() {
 	refresh_welcome
 }
 
+# Runs the welcome page's searches once, so their data is off the disk before
+# anyone clicks: a codespace made from a prebuild reads its disk lazily, and the
+# first search would otherwise take half a minute.
+warm() {
+	[ -n "${LAB_FRACTAL:-}" ] || return 0
+	local q
+	for q in "${QUERIES[@]}"; do
+		jq -n --arg q "$q" --arg s "$FROM" --arg e "$TO" --arg f "$LAB_FRACTAL" \
+			'{query: $q, start: $s, end: $e, fractal_id: $f}' |
+			api --data @- "$BASE/api/v1/query" >/dev/null
+	done
+}
+
 welcome() {
 	wait_for "Bifract" 300 healthy && refresh_welcome || true
+	nohup bash "$0" warm </dev/null >/dev/null 2>&1 &
 	local text
 	text=$(
 		cat <<EOF
@@ -226,8 +247,9 @@ EOF
 case ${1:-} in
 install) install_stack ;;
 load | rotate | welcome) "$1" ;;
+warm) refresh_welcome && warm ;;
 *)
-	echo "usage: $0 install|load|rotate|welcome" >&2
+	echo "usage: $0 install|load|rotate|welcome|warm" >&2
 	exit 2
 	;;
 esac
