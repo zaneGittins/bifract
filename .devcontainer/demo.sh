@@ -149,7 +149,12 @@ compose:
   install_dir: $INSTALL_DIR
   tls: {mode: self-signed}
 EOF
-	sudo bifract --install --config "$config"
+	if ! sudo bifract --install --config "$config"; then
+		log "Install failed: container state and app log follow"
+		sudo docker compose --project-directory "$INSTALL_DIR" ps -a || true
+		sudo docker compose --project-directory "$INSTALL_DIR" logs --tail 100 bifract bifract-ingest || true
+		return 1
+	fi
 	echo "${CODESPACE_NAME:-}" | sudo tee "$MARKER" >/dev/null
 	wait_for "Bifract" 300 healthy
 	write_welcome
