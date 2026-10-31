@@ -10,41 +10,24 @@
 package integration
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 	"time"
 )
 
 func TestIndexHintsKeepEveryMatch(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-hints-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	var token struct {
-		Token string `json:"token"`
-	}
-	c.InScope(fractal.ID).Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
-	shipper := c.WithKey(token.Token)
+	fractalID, scoped := newFractal(t, c, "hints")
+	shipper := newShipper(t, scoped, fractalID)
 
 	// The fractal is this test's own, so its scope needs no marker field, which
 	// would itself be hinted.
 	end := time.Now().UTC().Truncate(time.Millisecond)
 	body := func(q string) map[string]any {
 		return map[string]any{
-			"query": q, "fractal_id": fractal.ID,
+			"query": q, "fractal_id": fractalID,
 			"start": end.Add(-time.Hour).Format(time.RFC3339Nano), "end": end.Format(time.RFC3339Nano),
 		}
 	}

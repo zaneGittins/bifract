@@ -18,28 +18,11 @@ import (
 )
 
 func TestRarityScoring(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-rarity-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "rarity")
+	shipper := newShipper(t, scoped, fractalID)
 
 	// WS02: ports 80, 443 and 8080 every day for 28 days, then port 22 once.
 	// WS03: the same three ports every day, plus port 3389 on two days.
@@ -70,7 +53,7 @@ func TestRarityScoring(t *testing.T) {
 	add("WS02", "22", 1, 5)
 	add("WS03", "3389", 2, 1)
 	add("WS03", "3389", 9, 1)
-	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs, nil)
+	shipper.DoRaw(t, "POST", "/ingest", logs, nil)
 
 	Eventually(t, "the ingested logs to become queryable", 120*time.Second, func() bool {
 		var rows struct {
@@ -78,7 +61,7 @@ func TestRarityScoring(t *testing.T) {
 		}
 		c.DoRaw(t, "POST", "/query", map[string]any{
 			"query":      fmt.Sprintf("suite_marker=%q | count()", marker),
-			"fractal_id": fractal.ID,
+			"fractal_id": fractalID,
 			"start":      noon.AddDate(0, 0, -days-1).Format(time.RFC3339),
 			"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 		}, &rows)
@@ -114,16 +97,7 @@ func TestRarityScoring(t *testing.T) {
 		return m.Status == "active"
 	})
 	scoped.Do(t, "POST", "/models/"+model.ID+"/backfill", map[string]any{"window": "30d"}, nil)
-	Eventually(t, "the backfill to complete", 180*time.Second, func() bool {
-		var m struct {
-			BackfillStatus string `json:"backfill_status"`
-		}
-		scoped.Do(t, "GET", "/models/"+model.ID, nil, &m)
-		if m.BackfillStatus == "failed" {
-			t.Fatal("backfill failed")
-		}
-		return m.BackfillStatus == "completed"
-	})
+	waitBackfill(t, scoped, model.ID)
 
 	var rows []map[string]any
 	scoped.Do(t, "GET", "/models/"+model.ID+"/data?limit=100", nil, &rows)
@@ -146,7 +120,7 @@ func TestRarityScoring(t *testing.T) {
 	c.DoRaw(t, "POST", "/query", map[string]any{
 		"query": fmt.Sprintf("suite_marker=%q dst_port=\"22\" | modelLookup(model=%q, key=[computer_name, dst_port]) | head(1) | table(percent, coverage, model_count, model_total)",
 			marker, modelName),
-		"fractal_id": fractal.ID,
+		"fractal_id": fractalID,
 		"start":      noon.AddDate(0, 0, -days-1).Format(time.RFC3339),
 		"end":        time.Now().UTC().Add(time.Minute).Format(time.RFC3339),
 	}, &res)
@@ -222,6 +196,24 @@ func TestRarityScoring(t *testing.T) {
 
 // modelFindings reads a model's Findings view: the rows its alert would raise,
 // in the order the view ranks them, and the view's total.
+// waitBackfill waits for a model's backfill to finish. A server runs one
+// backfill at a time by default, so the deadline covers waiting behind the
+// backfills of recipes running alongside.
+func waitBackfill(t *testing.T, scoped *Client, modelID string) {
+	t.Helper()
+
+	Eventually(t, "the backfill to complete", 8*time.Minute, func() bool {
+		var m struct {
+			BackfillStatus string `json:"backfill_status"`
+		}
+		scoped.Do(t, "GET", "/models/"+modelID, nil, &m)
+		if m.BackfillStatus == "failed" {
+			t.Fatal("backfill failed")
+		}
+		return m.BackfillStatus == "completed"
+	})
+}
+
 func modelFindings(t *testing.T, c *Client, modelID, query string) ([]map[string]any, int) {
 	t.Helper()
 	var page struct {

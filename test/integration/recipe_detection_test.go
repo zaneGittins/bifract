@@ -15,9 +15,9 @@ import (
 )
 
 func TestDetectionLifecycle(t *testing.T) {
+	t.Parallel()
 	c := New(t)
-	fractalID := requireFractal(t, c)
-	scoped := c.InScope(fractalID)
+	_, scoped := newFractal(t, c, "detection")
 
 	// 1. Check the query parses before committing to a rule. This costs nothing
 	//    and is what a CI gate should run on every proposed detection.

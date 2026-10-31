@@ -26,7 +26,7 @@ import (
 // the window it asks for.
 const (
 	// stateMaintDefaultInterval is how often a cycle runs, and so the most a
-	// model's state lags behind the logs, on top of stateMaintLag.
+	// model's state lags behind the logs, on top of the read lag.
 	//
 	// A cycle's cost is dominated by the fixed overhead of reading whole granules
 	// rather than by the rows in its window, so a shorter interval multiplies the
@@ -35,18 +35,19 @@ const (
 	// times as often therefore cost four times the IO for the same coverage.
 	//
 	// What the interval buys is freshness. An alert that consults a model is held
-	// at that model's watermark, so this plus stateMaintLag is the worst case lag
+	// at that model's watermark, so this plus the read lag is the worst case lag
 	// of a model-backed detection. BIFRACT_MODEL_STATE_INTERVAL trades the two.
 	stateMaintDefaultInterval = 60 * time.Second
 
-	// stateMaintLag holds the cutoff back from now so a cycle never reads a
+	// stateMaintDefaultLag holds the cutoff back from now so a cycle never reads a
 	// window that inserts are still landing in. ingest_timestamp is stamped when
 	// a log is received, and the ingest queue holds a quiet partition for up to
 	// its 30s flush interval before inserting (longer with retries, and a
 	// cluster's Distributed insert forwards to shards after that). Reading closer
 	// than that would advance the watermark past rows not yet committed, which
-	// are then never counted.
-	stateMaintLag = 2 * time.Minute
+	// are then never counted. BIFRACT_MODEL_STATE_LAG shortens it only where the
+	// ingest flush is shortened to match.
+	stateMaintDefaultLag = 2 * time.Minute
 
 	// stateMaintMaxWindow caps one cycle's read. After downtime the watermark can
 	// be far behind, and a single unbounded read would scan every partition since;
@@ -90,10 +91,22 @@ func StateMaintInterval() time.Duration {
 	return stateMaintDefaultInterval
 }
 
+// StateMaintLag is how far behind now a cycle stops reading. It must exceed the
+// ingest tier's flush interval, or rows that commit late are never counted.
+func StateMaintLag() time.Duration {
+	if v := os.Getenv("BIFRACT_MODEL_STATE_LAG"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+		log.Printf("[Model State] ignoring BIFRACT_MODEL_STATE_LAG=%q: want whole seconds", v)
+	}
+	return stateMaintDefaultLag
+}
+
 func (s *StateMaintainer) Start(interval time.Duration) {
 	s.stopCh = make(chan struct{})
 	go s.loop(interval)
-	log.Printf("[Model State] Started (interval: %v, lag: %v)", interval, stateMaintLag)
+	log.Printf("[Model State] Started (interval: %v, lag: %v)", interval, StateMaintLag())
 }
 
 func (s *StateMaintainer) Stop() {
@@ -310,7 +323,7 @@ func (s *StateMaintainer) maintain(ctx context.Context, r maintainRow) error {
 // behind is caught up over several cycles rather than in one unbounded scan.
 func maintainWindow(watermark, now time.Time) (from, to time.Time) {
 	from = watermark
-	to = now.Add(-stateMaintLag)
+	to = now.Add(-StateMaintLag())
 	if max := from.Add(stateMaintMaxWindow); to.After(max) {
 		to = max
 	}

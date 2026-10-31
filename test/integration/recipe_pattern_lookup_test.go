@@ -12,7 +12,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,33 +19,16 @@ import (
 )
 
 func TestPatternLookup(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
-	var fractal struct {
-		ID string `json:"id"`
-	}
-	c.Do(t, "POST", "/fractals", map[string]any{
-		"name":        fmt.Sprintf("api-suite-patterns-%d", time.Now().UnixNano()),
-		"description": "Created by the API test suite",
-	}, &fractal)
-	t.Cleanup(func() {
-		if code := c.Status(t, "DELETE", "/fractals/"+fractal.ID, nil); code >= 300 {
-			t.Logf("could not clean up fractal %s: %d", fractal.ID, code)
-		}
-	})
-	scoped := c.InScope(fractal.ID)
-
-	var token struct {
-		Token string `json:"token"`
-	}
-	scoped.Do(t, "POST", "/fractals/"+fractal.ID+"/ingest-tokens", map[string]any{
-		"name": "api-suite", "parser_type": "json",
-	}, &token)
+	fractalID, scoped := newFractal(t, c, "patterns")
+	shipper := newShipper(t, scoped, fractalID)
 
 	end := time.Now().UTC().Truncate(time.Millisecond)
 	body := func(q string) map[string]any {
 		return map[string]any{
-			"query": q, "fractal_id": fractal.ID,
+			"query": q, "fractal_id": fractalID,
 			"start": end.Add(-24 * time.Hour).Format(time.RFC3339Nano), "end": end.Format(time.RFC3339Nano),
 		}
 	}
@@ -61,7 +43,7 @@ func TestPatternLookup(t *testing.T) {
 		logs[i]["timestamp"] = end.Add(-time.Duration(i+1) * time.Minute).Format(time.RFC3339Nano)
 	}
 	logs[1]["timestamp"] = end.Add(-20 * time.Hour).Format(time.RFC3339Nano)
-	c.WithKey(token.Token).DoRaw(t, "POST", "/ingest", logs, nil)
+	shipper.DoRaw(t, "POST", "/ingest", logs, nil)
 	Eventually(t, "the ingested logs to become queryable", 120*time.Second, func() bool {
 		var res struct {
 			Results []struct {

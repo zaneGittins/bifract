@@ -44,6 +44,7 @@ const missingID = "00000000-0000-0000-0000-000000000000"
 // corpus that asserts nothing is worse than none, so each of these has to be rejected
 // rather than quietly accepted.
 func TestGovernanceTestRefusals(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 	one := []map[string]any{{"process_name": "cmd.exe"}}
 
@@ -78,6 +79,7 @@ func TestGovernanceTestRefusals(t *testing.T) {
 // TestGovernancePolicyRefusals covers policy authoring. A rule that cannot be evaluated
 // must be refused when it is written, not when it silently stops enforcing.
 func TestGovernancePolicyRefusals(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 	rule := func(field, operator, value, message, severity string) any {
 		return map[string]any{"policies": []map[string]any{{
@@ -108,6 +110,7 @@ func TestGovernancePolicyRefusals(t *testing.T) {
 
 // TestGovernanceRevisionRefusals covers history and rollback.
 func TestGovernanceRevisionRefusals(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
 	runRefusals(t, c, []refusal{
@@ -121,6 +124,7 @@ func TestGovernanceRevisionRefusals(t *testing.T) {
 // TestGovernanceProposalRefusals covers the review gate's input validation. These hold
 // whether or not the gate is enabled: a malformed proposal is malformed either way.
 func TestGovernanceProposalRefusals(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 	definition := map[string]any{
 		"name": "n", "query_string": `a="b"`, "alert_type": "event", "severity": "low",
@@ -161,6 +165,7 @@ func TestGovernanceProposalRefusals(t *testing.T) {
 
 // TestGovernanceGateConfigRefusals covers the review settings themselves.
 func TestGovernanceGateConfigRefusals(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
 	runRefusals(t, c, []refusal{
