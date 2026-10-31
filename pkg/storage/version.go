@@ -16,11 +16,10 @@ type ServerVersion struct {
 // MinClickHouseVersion is the oldest server the shipped schema, migrations and
 // generated SQL are known to work against.
 //
-// It is pinned to 25.12 as a support choice: the oldest release supported with pgr's
-// lookup projections, which older releases accept but may not use. The hard limit is
-// 25.6, for the JSON/Dynamic support the whole log schema depends on. An older server
-// does not fail at startup, it fails midway through a migration or returns wrong
-// results for a typed field, which is far harder to diagnose.
+// It is pinned to 25.12, the oldest release supported with pgr's lookup projections.
+// Below 25.6 the JSON/Dynamic log schema breaks outright: not at startup but midway
+// through a migration, or as wrong results for a typed field, which is far harder to
+// diagnose than refusing to start.
 var MinClickHouseVersion = ServerVersion{Major: 25, Minor: 12}
 
 // ParseServerVersion reads a ClickHouse version string. It tolerates the build

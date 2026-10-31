@@ -87,6 +87,23 @@ func (c *ClickHouseClient) ConvertPartitioning(ctx context.Context, keep map[str
 	})
 }
 
+// ConversionInProgress reports whether any shard still holds rows a conversion has yet to
+// copy into its live table.
+func (c *ClickHouseClient) ConversionInProgress(ctx context.Context) (bool, error) {
+	pending := false
+	err := c.onEveryShard(ctx, "check partition conversion", func(conn driver.Conn) error {
+		for _, t := range repartitionTargets {
+			old, err := describeTable(ctx, conn, t.table+repartOld)
+			if err != nil {
+				return err
+			}
+			pending = pending || old.exists
+		}
+		return nil
+	})
+	return pending, err
+}
+
 func (c *ClickHouseClient) convertTarget(ctx context.Context, conn driver.Conn, t repartitionTarget, keep map[string]bool) error {
 	oldName := t.table + repartOld
 	live, err := describeTable(ctx, conn, t.table)
@@ -148,7 +165,7 @@ func (c *ClickHouseClient) copyOld(ctx context.Context, conn driver.Conn, t repa
 	oldName, stageName := t.table+repartOld, t.table+repartStage
 	doneName, skipName := t.table+repartDone, t.table+repartSkip
 
-	if err := c.refreshStage(ctx, conn, t); err != nil {
+	if err := c.alignStage(ctx, conn, t); err != nil {
 		return err
 	}
 	cols, err := columnList(ctx, conn, stageName, oldName)
@@ -291,13 +308,18 @@ func (c *ClickHouseClient) createLike(ctx context.Context, conn driver.Conn, tab
 
 // initTableDDL returns table's CREATE TABLE statement from init-clickhouse.sql.
 func initTableDDL(table string) (string, error) {
-	header := "CREATE TABLE IF NOT EXISTS " + table + " ("
+	return initStatement("CREATE TABLE IF NOT EXISTS " + table + " (")
+}
+
+// initStatement returns the init-clickhouse.sql statement that starts with header,
+// without its leading comments.
+func initStatement(header string) (string, error) {
 	for _, stmt := range splitClickHouseSQL(dbsql.ClickHouseSQL) {
 		if i := strings.Index(stmt, header); i >= 0 {
 			return stmt[i:], nil
 		}
 	}
-	return "", fmt.Errorf("no CREATE TABLE %s in init-clickhouse.sql", table)
+	return "", fmt.Errorf("no %s... in init-clickhouse.sql", strings.TrimSpace(header))
 }
 
 // sameColumns refuses a swap when the live table's columns differ from the definition the
@@ -337,39 +359,62 @@ func columnSignature(ctx context.Context, conn driver.Conn, table string) (strin
 	return strings.Join(parts, ", "), rows.Err()
 }
 
-// refreshStage rebuilds a stage an earlier release created when a migration has since
-// changed the live table's columns, since MOVE PARTITION refuses it. Its copies were never
-// moved, so they are unrecorded first and redone.
-func (c *ClickHouseClient) refreshStage(ctx context.Context, conn driver.Conn, t repartitionTarget) error {
-	stageName, doneName := t.table+repartStage, t.table+repartDone
+// alignStage gives a stage an earlier release created the columns a migration has since
+// added to the live table, since MOVE PARTITION needs both to have the same columns. Staged
+// copies keep their rows and read the new columns' defaults, as the live table's older parts
+// do. Any other difference is refused.
+func (c *ClickHouseClient) alignStage(ctx context.Context, conn driver.Conn, t repartitionTarget) error {
+	stageName := t.table + repartStage
+	stage, err := describeTable(ctx, conn, stageName)
+	if err != nil {
+		return err
+	}
+	if !stage.exists {
+		live, err := describeTable(ctx, conn, t.table)
+		if err != nil {
+			return err
+		}
+		return c.createLike(ctx, conn, t.table, stageName, live.ttl)
+	}
+	rows, err := conn.Query(ctx, "SELECT name, type, default_kind, default_expression FROM system.columns WHERE database = currentDatabase() AND table = ? "+
+		"AND name NOT IN (SELECT name FROM system.columns WHERE database = currentDatabase() AND table = ?) ORDER BY position", t.table, stageName)
+	if err != nil {
+		return err
+	}
+	var adds []string
+	for rows.Next() {
+		var name, typ, kind, expr string
+		if err := rows.Scan(&name, &typ, &kind, &expr); err != nil {
+			rows.Close()
+			return err
+		}
+		col := quoteCHIdent(name) + " " + typ
+		if kind != "" {
+			col += " " + kind + " " + expr
+		}
+		adds = append(adds, col)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, col := range adds {
+		if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(stageName)+" ADD COLUMN IF NOT EXISTS "+col); err != nil {
+			return fmt.Errorf("align %s: %w", stageName, err)
+		}
+	}
 	live, err := columnSignature(ctx, conn, t.table)
 	if err != nil {
 		return err
 	}
-	stage, err := columnSignature(ctx, conn, stageName)
-	if err != nil || stage == live {
-		return err
-	}
-	var staged []string
-	if stage != "" {
-		if staged, err = stringColumn(ctx, conn, "SELECT DISTINCT fractal_id FROM "+quoteCHIdent(stageName)); err != nil {
-			return err
-		}
-	}
-	for _, f := range staged {
-		if err := conn.Exec(ctx, "ALTER TABLE "+quoteCHIdent(doneName)+" DELETE WHERE fractal_id = ? SETTINGS mutations_sync = 2", f); err != nil {
-			return fmt.Errorf("unrecord fractal %q: %w", f, err)
-		}
-	}
-	info, err := describeTable(ctx, conn, t.table)
+	staged, err := columnSignature(ctx, conn, stageName)
 	if err != nil {
 		return err
 	}
-	if err := dropTables(ctx, conn, stageName); err != nil {
-		return err
+	if staged != live {
+		return fmt.Errorf("columns of %s (%s) cannot be aligned with %s (%s); not converting", stageName, staged, t.table, live)
 	}
-	log.Printf("[ClickHouse] %s columns changed mid-conversion; recopying %d staged fractals", t.table, len(staged))
-	return c.createLike(ctx, conn, t.table, stageName, info.ttl)
+	return nil
 }
 
 // probeMove proves MOVE PARTITION works from stage into dst on this server before the

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bifract/pkg/bqlvars"
@@ -51,11 +52,7 @@ type QueryHandler struct {
 	// observedFields caches each scope's field list for autocomplete and get_fields.
 	observedFields *observedFieldsCache
 	// summaryFilled caches whether the provenance backfill has filled provenance_summary.
-	summaryFilled struct {
-		mu      sync.Mutex
-		value   bool
-		checked time.Time
-	}
+	summaryFilled atomic.Pointer[summaryFilledCheck]
 }
 
 // tlshSkipWarnings explains, per reason, which fractals tlsh() did not search.

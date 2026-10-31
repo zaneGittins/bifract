@@ -1264,8 +1264,26 @@ func (c *PostgresClient) BulkDeleteComments(ctx context.Context, commentIDs []st
 
 // Settings methods
 
-// ErrSettingNotFound is GetSetting's error for a key that was never set.
-var ErrSettingNotFound = errors.New("setting not found")
+// errSettingNotFound is GetSetting's error for a key that was never set.
+var errSettingNotFound = errors.New("setting not found")
+
+// provenanceSummaryFilledSetting is "true" once the provenance backfill has filled
+// provenance_summary; until then pgr computes the same facts by scanning.
+const provenanceSummaryFilledSetting = "provenance_summary_filled"
+
+// ProvenanceSummaryFilled reports whether the backfill has filled provenance_summary.
+func (c *PostgresClient) ProvenanceSummaryFilled(ctx context.Context) (bool, error) {
+	v, err := c.GetSetting(ctx, provenanceSummaryFilledSetting)
+	if errors.Is(err, errSettingNotFound) {
+		return false, nil
+	}
+	return v == "true", err
+}
+
+// MarkProvenanceSummaryFilled records that the backfill has filled provenance_summary.
+func (c *PostgresClient) MarkProvenanceSummaryFilled(ctx context.Context) error {
+	return c.SetSetting(ctx, provenanceSummaryFilledSetting, "true")
+}
 
 func (c *PostgresClient) GetSetting(ctx context.Context, key string) (string, error) {
 	var value string
@@ -1274,7 +1292,7 @@ func (c *PostgresClient) GetSetting(ctx context.Context, key string) (string, er
 	`, key).Scan(&value)
 
 	if err == sql.ErrNoRows {
-		return "", ErrSettingNotFound
+		return "", errSettingNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to get setting: %w", err)

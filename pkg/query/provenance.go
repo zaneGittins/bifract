@@ -81,10 +81,12 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	}
 	var fleet chan fleetResult
 	if !summarized {
+		fleetCtx, cancelFleet := context.WithCancel(ctx)
+		defer cancelFleet() // an early return stops the scan
 		fleet = make(chan fleetResult, 1)
 		fleetSQL := parser.BuildProvenanceTotalHostsSQL(opts)
 		go func() {
-			rows, err := h.db.QueryProvenance(ctx, fleetSQL)
+			rows, err := h.db.QueryProvenance(fleetCtx, fleetSQL)
 			fleet <- fleetResult{rows, err}
 		}()
 	}
@@ -94,11 +96,10 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 	// subtrees, and emit bridge edges for the rest. Bounded and rarity-pruned; see
 	// parser.BuildReconnectionSQL. Failure is non-fatal -- pgr still returns the base tree.
 	//
-	// The rarity-gate ceilings (totalHosts/totalImages) are fetched ONCE here and passed in as
-	// literals rather than live scalar subqueries -- computed fresh for this call only. On failure
-	// both stay 0, which only tightens the gate to its absolute floor
-	// (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax) -- fails toward under-reconnecting,
-	// never toward a wrong match.
+	// The rarity-gate ceilings (totalHosts/totalImages) are fetched once here and passed in as
+	// literals rather than live scalar subqueries. On failure both stay 0, which only tightens
+	// the gate to its absolute floor (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax):
+	// it fails toward under-reconnecting, never toward a wrong match.
 	var bridges []map[string]interface{}
 	var peers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
@@ -257,27 +258,39 @@ func (h *QueryHandler) readProvenanceSummary(ctx context.Context, opts parser.Qu
 		reconImages: reconInt64(r["recon_images"]), firstDay: day}, true
 }
 
-// provenanceSummaryCheckEvery bounds how often pgr re-reads the backfill's ready setting.
-const provenanceSummaryCheckEvery = time.Minute
+// provenanceSummaryCheckEvery bounds how often pgr re-reads whether the summary is filled,
+// and provenanceSummaryCheckTimeout how long one read may hold up a pgr call.
+const (
+	provenanceSummaryCheckEvery   = time.Minute
+	provenanceSummaryCheckTimeout = 2 * time.Second
+)
+
+// summaryFilledCheck is one cached answer to whether provenance_summary is filled.
+type summaryFilledCheck struct {
+	filled  bool
+	checked time.Time
+}
 
 // provenanceSummaryFilled reports whether the backfill has filled provenance_summary. The
-// setting is re-read at most once a minute, so neither state costs a Postgres read per call.
+// answer is re-read at most once a minute; a failed read counts as unfilled, so pgr scans.
 func (h *QueryHandler) provenanceSummaryFilled(ctx context.Context) bool {
 	if h.pg == nil {
 		return false
 	}
-	c := &h.summaryFilled
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.checked.IsZero() && time.Since(c.checked) < provenanceSummaryCheckEvery {
-		return c.value
+	if c := h.summaryFilled.Load(); c != nil && time.Since(c.checked) < provenanceSummaryCheckEvery {
+		return c.filled
 	}
-	v, err := h.pg.GetSetting(ctx, storage.ProvenanceSummaryReadySetting)
-	if err != nil && ctx.Err() != nil {
-		return false
+	readCtx, cancel := context.WithTimeout(ctx, provenanceSummaryCheckTimeout)
+	defer cancel()
+	filled, err := h.pg.ProvenanceSummaryFilled(readCtx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false // the caller gave up; nothing was learned
+		}
+		log.Printf("[pgr] provenance summary state unreadable, scanning instead: %v", err)
 	}
-	c.value, c.checked = err == nil && v == "true", time.Now()
-	return c.value
+	h.summaryFilled.Store(&summaryFilledCheck{filled: err == nil && filled, checked: time.Now()})
+	return err == nil && filled
 }
 
 // provenanceRowWarning says when rows were left out, and by which limit: limit= (kept < total)

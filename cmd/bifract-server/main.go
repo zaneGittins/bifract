@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -265,11 +264,15 @@ func main() {
 		if days := getEnvInt("BIFRACT_PROC_LINEAGE_TTL_DAYS", 0); days > 0 {
 			if err := db.ReconcileProcLineageTTL(ctx, days); err != nil {
 				log.Printf("Warning: proc_lineage TTL reconcile (%d days) failed: %v", days, err)
+			} else {
+				log.Printf("proc_lineage TTL set to %d days", days)
 			}
 		}
 		if days := getEnvInt("BIFRACT_PROC_FREQ_TTL_DAYS", 0); days > 0 {
 			if err := db.ReconcileProcFreqTTL(ctx, days); err != nil {
 				log.Printf("Warning: proc_freq TTL reconcile (%d days) failed: %v", days, err)
+			} else {
+				log.Printf("proc_freq TTL set to %d days", days)
 			}
 		}
 		if err := db.ReconcileProvenanceSummaryTTL(ctx); err != nil {
@@ -309,7 +312,8 @@ func main() {
 	// lock. Every replica retries until they report done, so a rolling deploy or a lost lock
 	// hands the work to whichever replica is left; each step resumes where it stopped.
 	go func() {
-		for wait := time.Minute; !convertAndBackfill(db, pg); wait = min(2*wait, 6*time.Hour) {
+		const firstRetry, maxRetry = time.Minute, 6 * time.Hour
+		for wait := firstRetry; !convertAndBackfill(db, pg); wait = min(2*wait, maxRetry) {
 			time.Sleep(wait)
 		}
 	}()
@@ -1333,13 +1337,13 @@ func (a *APIKeyValidatorAdapter) UpdateLastUsed(ctx context.Context, keyID strin
 // replica wins the lock, and reports whether both are done. Losing the lock's connection
 // cancels the work, since another replica may then take it.
 func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient) bool {
+	// Both steps compare tables against the migrated schema.
+	db.WaitForSchemaReady(context.Background())
 	ctx, unlock, ok := pg.HoldAdvisoryLock(context.Background(), storage.LockRepartition)
 	if !ok {
 		return false
 	}
 	defer unlock()
-	// Both steps compare tables against the migrated schema.
-	db.WaitForSchemaReady(ctx)
 	keep, err := pg.FractalIDSet(ctx)
 	if err != nil {
 		log.Printf("Warning: partition conversion: list fractals: %v", err)
@@ -1347,21 +1351,19 @@ func convertAndBackfill(db *storage.ClickHouseClient, pg *storage.PostgresClient
 	}
 	// Rows under an empty fractal_id belong to the default fractal.
 	keep[""] = true
+	converted := true
 	if err := db.ConvertPartitioning(ctx, keep); err != nil {
 		log.Printf("Warning: partition conversion incomplete, will resume: %v", err)
+		converted = false
+	}
+	// Rows a conversion still has to copy would bypass the summary views; a conversion that
+	// failed before copying anything does not hold the backfill up.
+	if pending, err := db.ConversionInProgress(ctx); err != nil || pending {
 		return false
 	}
-	filled, err := pg.GetSetting(ctx, storage.ProvenanceSummaryReadySetting)
-	if err != nil && !errors.Is(err, storage.ErrSettingNotFound) {
-		log.Printf("Warning: pgr access-path backfill: read summary state: %v", err)
-		return false
-	}
-	markFilled := func(ctx context.Context) error {
-		return pg.SetSetting(ctx, storage.ProvenanceSummaryReadySetting, "true")
-	}
-	if err := db.BackfillProvenancePaths(ctx, filled == "true", markFilled); err != nil {
+	if err := db.BackfillProvenancePaths(ctx, pg); err != nil {
 		log.Printf("Warning: pgr access-path backfill incomplete, will resume: %v", err)
 		return false
 	}
-	return true
+	return converted
 }

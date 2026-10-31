@@ -231,11 +231,6 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 // provenanceSummaryTable holds the fleet-wide facts pgr reads per call (see migration 019).
 const provenanceSummaryTable = "provenance_summary"
 
-// ProvenanceSummaryReadySetting is the Postgres setting the provenance backfill sets to
-// "true" once provenance_summary covers rows written before it existed. Until then pgr
-// computes the same facts by scanning.
-const ProvenanceSummaryReadySetting = "provenance_summary_ready"
-
 // ProvenanceSummaryReadTable returns the read table for pgr's fleet-wide facts. Each shard
 // summarizes its own rows, so readers count distinct values.
 func (c *ClickHouseClient) ProvenanceSummaryReadTable() string {
@@ -1587,7 +1582,6 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 	for _, t := range repartitionTargets {
 		tables = append(tables, t.table)
 	}
-	tables = append(tables, provenanceSummaryTable)
 	err := c.onEveryShard(ctx, "drop fractal partitions", func(conn driver.Conn) error {
 		// Before the live drop, so a conversion in progress cannot copy the rows back.
 		if err := markRepartitionSkip(ctx, conn, ids); err != nil {
@@ -1598,7 +1592,12 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 				return err
 			}
 		}
-		return markProvenanceFillClear(ctx, conn, ids)
+		// Between the two drops, so a summary fill that read the old rows either sees the
+		// clear or has what it wrote dropped with the summary.
+		if err := markProvenanceFillClear(ctx, conn, ids); err != nil {
+			return err
+		}
+		return dropFractalPartitions(ctx, conn, provenanceSummaryTable, ids)
 	})
 	if err != nil {
 		return fmt.Errorf("delete logs for fractal %s: %w", fractalID, err)

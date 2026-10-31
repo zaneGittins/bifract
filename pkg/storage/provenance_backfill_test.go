@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +20,7 @@ import (
 func fillFake(done []string, cleared func() uint64) (*ClickHouseClient, *fakedb.CH) {
 	c, f := newFakeClient()
 	f.On("SELECT hostName()", fakedb.Strs("h", "n1"))
-	f.On("FROM system.tables WHERE database = currentDatabase() AND name IN", fakedb.CHResult{Cols: []fakedb.Col{{Column: "c", Type: "UInt64"}}, Rows: [][]any{{uint64(2)}}})
+	f.On("FROM system.tables WHERE database = currentDatabase() AND has(?, name)", fakedb.CHResult{Cols: []fakedb.Col{{Column: "c", Type: "UInt64"}}, Rows: [][]any{{uint64(2)}}})
 	f.On("SELECT DISTINCT fractal_id", fakedb.Strs("fractal_id", "f1", "o'k"))
 	f.On("SELECT fractal_id FROM "+provenanceFillDone, fakedb.Strs("fractal_id", done...))
 	f.On("SELECT now64(3)", fakedb.CHResult{Cols: []fakedb.Col{{Column: "t", Type: "DateTime64(3)"}}, Rows: [][]any{{time.Unix(1, 0)}}})
@@ -31,26 +33,40 @@ func fillFake(done []string, cleared func() uint64) (*ClickHouseClient, *fakedb.
 	return c, f
 }
 
-func never() uint64 { return 0 }
+func noClears() uint64 { return 0 }
+
+// summaryState is a ProvenanceSummaryState in memory.
+type summaryState struct {
+	filled bool
+	marks  int
+	err    error
+}
+
+func (s *summaryState) ProvenanceSummaryFilled(context.Context) (bool, error) { return s.filled, s.err }
+func (s *summaryState) MarkProvenanceSummaryFilled(context.Context) error {
+	s.marks++
+	s.filled = true
+	return nil
+}
 
 // The summary fill replays the views' own SELECTs one fractal at a time, records each
 // fractal done, and records the summary filled only once every shard succeeded.
 func TestBackfillProvenanceSummary(t *testing.T) {
-	c, f := fillFake(nil, never)
-	marked := 0
-	if err := c.BackfillProvenancePaths(context.Background(), false, func(context.Context) error { marked++; return nil }); err != nil {
+	c, f := fillFake(nil, noClears)
+	state := &summaryState{}
+	if err := c.BackfillProvenancePaths(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
 	inserts := f.ExecutedMatching("INSERT INTO provenance_summary ")
-	if len(inserts) != 4 || marked != 1 {
-		t.Fatalf("%d inserts, marked %d times:\n%s", len(inserts), marked, strings.Join(inserts, "\n"))
+	if len(inserts) != 4 || state.marks != 1 {
+		t.Fatalf("%d inserts, marked %d times:\n%s", len(inserts), state.marks, strings.Join(inserts, "\n"))
 	}
 	for i, view := range provenanceSummaryViews {
 		sel, err := initViewSelect(view)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(inserts[i], "INSERT INTO provenance_summary "+sel+" SETTINGS ") {
+		if !strings.HasPrefix(inserts[i], "INSERT INTO provenance_summary "+sel+"\nSETTINGS ") {
 			t.Errorf("%s not replayed verbatim", view)
 		}
 	}
@@ -71,16 +87,16 @@ func TestBackfillProvenanceSummary(t *testing.T) {
 
 // A restarted fill skips fractals already done; a filled summary is not filled again.
 func TestBackfillProvenanceSummaryResumes(t *testing.T) {
-	c, f := fillFake([]string{"f1"}, never)
-	if err := c.BackfillProvenancePaths(context.Background(), false, func(context.Context) error { return nil }); err != nil {
+	c, f := fillFake([]string{"f1"}, noClears)
+	if err := c.BackfillProvenancePaths(context.Background(), &summaryState{}); err != nil {
 		t.Fatal(err)
 	}
 	if inserts := f.ExecutedMatching("INSERT INTO provenance_summary "); len(inserts) != 2 || !strings.Contains(inserts[0], "o''''k") {
 		t.Errorf("resume refilled a done fractal:\n%s", strings.Join(inserts, "\n"))
 	}
 
-	c, f = fillFake(nil, never)
-	if err := c.BackfillProvenancePaths(context.Background(), true, nil); err != nil || len(f.ExecutedMatching("INSERT")) != 0 {
+	c, f = fillFake(nil, noClears)
+	if err := c.BackfillProvenancePaths(context.Background(), &summaryState{filled: true}); err != nil || len(f.ExecutedMatching("INSERT")) != 0 {
 		t.Errorf("a filled summary is not refilled: err %v", err)
 	}
 }
@@ -96,7 +112,7 @@ func TestBackfillProvenanceSummaryRefillsClearedFractal(t *testing.T) {
 		}
 		return 0
 	})
-	if err := c.BackfillProvenancePaths(context.Background(), false, func(context.Context) error { return nil }); err != nil {
+	if err := c.BackfillProvenancePaths(context.Background(), &summaryState{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.ExecutedMatching("INSERT INTO provenance_summary ")); n != 4 {
@@ -108,24 +124,38 @@ func TestBackfillProvenanceSummaryRefillsClearedFractal(t *testing.T) {
 }
 
 func TestBackfillProvenanceSummaryFailures(t *testing.T) {
-	marked := 0
-	mark := func(context.Context) error { marked++; return nil }
+	// Unknown state: nothing runs.
+	c, f := fillFake(nil, noClears)
+	if err := c.BackfillProvenancePaths(context.Background(), &summaryState{err: errors.New("pg down")}); err == nil || len(f.Executed()) != 0 {
+		t.Errorf("unreadable state: err %v, executed %q", err, f.Executed())
+	}
 
 	// Missing views: rows from before them would never be summarized.
-	c, f := newFakeClient()
-	f.On("FROM system.tables WHERE database = currentDatabase() AND name IN", fakedb.CHResult{Cols: []fakedb.Col{{Column: "c", Type: "UInt64"}}, Rows: [][]any{{uint64(1)}}})
-	if err := c.BackfillProvenancePaths(context.Background(), false, mark); err == nil || marked != 0 {
-		t.Errorf("missing views: err %v, marked %d", err, marked)
+	c, f = newFakeClient()
+	f.On("FROM system.tables WHERE database = currentDatabase() AND has(?, name)", fakedb.CHResult{Cols: []fakedb.Col{{Column: "c", Type: "UInt64"}}, Rows: [][]any{{uint64(1)}}})
+	state := &summaryState{}
+	if err := c.BackfillProvenancePaths(context.Background(), state); err == nil || state.marks != 0 {
+		t.Errorf("missing views: err %v, marked %d", err, state.marks)
 	}
 
 	// A failed insert is not recorded, and stops before the projections.
-	c, f = fillFake(nil, never)
+	c, f = fillFake(nil, noClears)
 	f.FailExec("INSERT INTO provenance_summary", errors.New("memory"))
-	if err := c.BackfillProvenancePaths(context.Background(), false, mark); err == nil || marked != 0 {
-		t.Errorf("failed fill: err %v, marked %d", err, marked)
+	if err := c.BackfillProvenancePaths(context.Background(), state); err == nil || state.marks != 0 {
+		t.Errorf("failed fill: err %v, marked %d", err, state.marks)
 	}
 	if len(f.QueriedMatching("system.parts")) != 0 {
 		t.Error("projections must wait for the summary")
+	}
+
+	// A fractal cleared on every attempt is reported rather than retried forever.
+	c, _ = fillFake(nil, func() uint64 { return 1 })
+	if err := c.BackfillProvenancePaths(context.Background(), state); err == nil || !strings.Contains(err.Error(), "cleared during every attempt") || state.marks != 0 {
+		t.Errorf("endless clears: err %v, marked %d", err, state.marks)
+	}
+
+	if _, err := initViewSelect("no_such_mv"); err == nil {
+		t.Error("an unknown view must be an error")
 	}
 }
 
@@ -150,6 +180,10 @@ func TestMarkProvenanceFillClear(t *testing.T) {
 	f.FailExec("INSERT INTO "+provenanceFillCleared, &clickhouse.Exception{Code: 60, Message: "unknown table"})
 	if err := markProvenanceFillClear(context.Background(), f, []string{"a"}); err != nil {
 		t.Errorf("a fill that just finished must not fail the clear: %v", err)
+	}
+	f.FailExec("INSERT INTO "+provenanceFillCleared, errors.New("down"))
+	if err := markProvenanceFillClear(context.Background(), f, []string{"a"}); err == nil {
+		t.Error("any other failure must fail the clear, or a fill could keep stale rows")
 	}
 }
 
@@ -187,8 +221,8 @@ func (s *partState) respond(f *fakedb.CH) {
 		case strings.Contains(q, "FROM system.mutations"):
 			res := fakedb.CHResult{Cols: []fakedb.Col{{Column: "mutation_id", Type: "String"}, {Column: "table", Type: "String"},
 				{Column: "command", Type: "String"}, {Column: "fail", Type: "String"}, {Column: "todo", Type: "Int64"}}}
-			for key, left := range s.running {
-				if left <= 0 {
+			for _, key := range slices.Sorted(maps.Keys(s.running)) {
+				if s.running[key] <= 0 {
 					continue
 				}
 				table, part, _ := strings.Cut(key, " ")
@@ -206,11 +240,11 @@ func (s *partState) respond(f *fakedb.CH) {
 			}
 			return res, true
 		case strings.Contains(q, "FROM system.parts"):
-			table := args[0].(string)
+			table := args[len(args)-1].(string)
 			res := fakedb.CHResult{Cols: []fakedb.Col{{Column: "partition_id", Type: "String"}, {Column: "missing", Type: "Array(String)"}}}
-			for key, missing := range s.lacking {
+			for _, key := range slices.Sorted(maps.Keys(s.lacking)) {
 				if tbl, part, _ := strings.Cut(key, " "); tbl == table {
-					res.Rows = append(res.Rows, []any{part, missing})
+					res.Rows = append(res.Rows, []any{part, s.lacking[key]})
 				}
 			}
 			return res, true
@@ -226,7 +260,7 @@ func materialize(t *testing.T, ctx context.Context, s *partState) (*fakedb.CH, e
 	defer func() { provenanceBackfillMinPoll, provenanceBackfillPoll = oldMin, oldMax }()
 	c, f := newFakeClient()
 	s.respond(f)
-	err := c.BackfillProvenancePaths(ctx, true, nil)
+	err := c.BackfillProvenancePaths(ctx, &summaryState{filled: true})
 	return f, err
 }
 
@@ -268,8 +302,8 @@ func TestBackfillProvenanceProjectionsTransientFailure(t *testing.T) {
 	}
 }
 
-// A mutation still failing after the limit is killed, its partition skipped while the rest
-// proceed, and the run reports it so a later one retries.
+// A mutation still failing after the limit is killed and its partition skipped while the rest
+// proceed; the next start retries it.
 func TestBackfillProvenanceProjectionsPersistentFailure(t *testing.T) {
 	old := provenanceMutationFailLimit
 	provenanceMutationFailLimit = 0
@@ -285,8 +319,8 @@ func TestBackfillProvenanceProjectionsPersistentFailure(t *testing.T) {
 		},
 	}
 	f, err := materialize(t, context.Background(), s)
-	if err == nil || !strings.Contains(err.Error(), "1 partitions could not be materialized") {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatalf("a stuck partition is left for the next start, not retried: %v", err)
 	}
 	if kills := f.ExecutedMatching("KILL MUTATION"); len(kills) != 1 || !strings.Contains(kills[0], "table = 'process_edges' AND mutation_id = 'm-process_edges cc'") {
 		t.Errorf("kills %q", kills)
@@ -300,7 +334,7 @@ func TestBackfillProvenanceProjectionsPersistentFailure(t *testing.T) {
 func TestBackfillProvenanceProjectionsNoProgress(t *testing.T) {
 	s := &partState{lacking: map[string][]string{"proc_lineage aa": {"by_image"}}, running: map[string]int{}, sticky: true}
 	f, err := materialize(t, context.Background(), s)
-	if err == nil || !strings.Contains(err.Error(), "could not be materialized") {
+	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if n := len(f.ExecutedMatching("MATERIALIZE PROJECTION")); n != 1 {

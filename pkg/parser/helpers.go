@@ -120,8 +120,8 @@ var procTreeFieldOrder = []string{"timestamp", "process_guid", "parent_guid", "i
 
 // ptg() projected into pgr()'s edge shape for pgraph(). Column names, order, and expressions
 // mirror provenance spawn rows (see pkg/query/provenance.go) so pgraph stays a single-shape
-// renderer. command_line is capped like pgr's; proc_user is empty because ptg() rows do not
-// carry the user.
+// renderer. command_line is capped like pgr's; proc_user is empty because ptg() does not
+// read it.
 const procTreePgraphCols = "parent_guid AS parent, process_guid AS child, image AS label, 'spawn' AS event_type, " +
 	"log_id, timestamp, fractal_id, substring(commandline, 1, 300) AS command_line, " +
 	"'' AS proc_user, computer_name AS host, parent_image AS parent_label, group_size, group_first, group_last"

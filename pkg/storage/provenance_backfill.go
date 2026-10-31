@@ -11,8 +11,6 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-
-	dbsql "bifract/db"
 )
 
 // provenanceProjections are the lookup projections migration 019 adds, by table.
@@ -38,6 +36,17 @@ const (
 // provenanceFillAll in provenanceFillCleared stands for every fractal: a whole-table clear.
 const provenanceFillAll = "*"
 
+var provenanceFillTableDDL = []string{
+	"CREATE TABLE IF NOT EXISTS " + provenanceFillDone + " (fractal_id String) ENGINE = MergeTree ORDER BY fractal_id",
+	"CREATE TABLE IF NOT EXISTS " + provenanceFillCleared + " (fractal_id String, at DateTime64(3)) ENGINE = MergeTree ORDER BY fractal_id",
+}
+
+// provenanceFillAttempts bounds how often one fractal is refilled after clears.
+const provenanceFillAttempts = 3
+
+// provenanceProgressLogEvery spaces the log lines of a long-running projection mutation.
+const provenanceProgressLogEvery = 10 * time.Minute
+
 // The projection backfill checks on a mutation it just started after the shorter interval,
 // since a small partition's is done in moments, and backs off to the longer one while a large
 // partition's runs.
@@ -51,21 +60,29 @@ var provenanceMutationFailLimit = 30 * time.Minute
 // GROUP BY spill, so it cannot monopolise a node beside live ingest and queries.
 var provenanceFillSettings = "max_threads = 2, max_insert_threads = 1, max_execution_time = 0, " + SpillSettingsClause(1<<30)
 
-// BackfillProvenancePaths completes migration 019 for rows written before it, on every shard.
-// Unless summaryFilled, it first writes the summary rows of everything already in proc_lineage
-// and proc_freq, then calls markFilled, after which pgr reads the summary instead of scanning.
-// It then materializes the lookup projections of every partition whose parts lack them, one
-// mutation per node at a time, until none is left or ctx ends. Both steps resume where they
-// stopped, so callers retry until it succeeds, after the partition conversion: rows a
-// conversion moves in bypass the summary views.
-func (c *ClickHouseClient) BackfillProvenancePaths(ctx context.Context, summaryFilled bool, markFilled func(context.Context) error) error {
-	if !summaryFilled {
+// ProvenanceSummaryState records whether the backfill has filled provenance_summary.
+type ProvenanceSummaryState interface {
+	ProvenanceSummaryFilled(context.Context) (bool, error)
+	MarkProvenanceSummaryFilled(context.Context) error
+}
+
+// BackfillProvenancePaths completes migration 019 for rows written before it, on every shard:
+// it fills provenance_summary (then records it, so pgr stops scanning), then materializes the
+// lookup projections one partition per node at a time. Each step resumes where it stopped.
+// Run it once no partition conversion is copying rows, which bypass the summary views, and
+// retry until it returns nil.
+func (c *ClickHouseClient) BackfillProvenancePaths(ctx context.Context, state ProvenanceSummaryState) error {
+	filled, err := state.ProvenanceSummaryFilled(ctx)
+	if err != nil {
+		return fmt.Errorf("read provenance summary state: %w", err)
+	}
+	if !filled {
 		if err := c.onEveryShardPinned(ctx, "fill provenance summary", func(conn driver.Conn) error {
 			return fillProvenanceSummary(ctx, conn)
 		}); err != nil {
 			return fmt.Errorf("fill provenance summary: %w", err)
 		}
-		if err := markFilled(ctx); err != nil {
+		if err := state.MarkProvenanceSummaryFilled(ctx); err != nil {
 			return fmt.Errorf("record provenance summary filled: %w", err)
 		}
 		log.Printf("[ClickHouse] provenance summary filled")
@@ -84,8 +101,8 @@ func (c *ClickHouseClient) BackfillProvenancePaths(ctx context.Context, summaryF
 func fillProvenanceSummary(ctx context.Context, conn driver.Conn) error {
 	// Without the views, rows ingested before they existed would never be summarized.
 	var views uint64
-	if err := conn.QueryRow(ctx, "SELECT count() FROM system.tables WHERE database = currentDatabase() AND name IN (?, ?)",
-		provenanceSummaryViews[0], provenanceSummaryViews[1]).Scan(&views); err != nil {
+	if err := conn.QueryRow(ctx, "SELECT count() FROM system.tables WHERE database = currentDatabase() AND has(?, name)",
+		provenanceSummaryViews).Scan(&views); err != nil {
 		return err
 	}
 	if views != uint64(len(provenanceSummaryViews)) {
@@ -99,10 +116,7 @@ func fillProvenanceSummary(ctx context.Context, conn driver.Conn) error {
 		}
 		selects[i] = sel
 	}
-	for _, ddl := range []string{
-		"CREATE TABLE IF NOT EXISTS " + provenanceFillDone + " (fractal_id String) ENGINE = MergeTree ORDER BY fractal_id",
-		"CREATE TABLE IF NOT EXISTS " + provenanceFillCleared + " (fractal_id String, at DateTime64(3)) ENGINE = MergeTree ORDER BY fractal_id",
-	} {
+	for _, ddl := range provenanceFillTableDDL {
 		if err := conn.Exec(ctx, ddl); err != nil {
 			return err
 		}
@@ -137,13 +151,14 @@ func fillFractalSummary(ctx context.Context, conn driver.Conn, f string, selects
 	// The views' SELECTs stay verbatim; the filter scopes their reads to one partition.
 	cond := "'" + escCHLiteral("fractal_id = '"+escCHLiteral(f)+"'") + "'"
 	filters := "{'proc_lineage': " + cond + ", 'proc_freq': " + cond + "}"
-	for range 3 {
+	for range provenanceFillAttempts {
 		var start time.Time
 		if err := conn.QueryRow(ctx, "SELECT now64(3)").Scan(&start); err != nil {
 			return err
 		}
 		for _, sel := range selects {
-			if err := conn.Exec(ctx, "INSERT INTO "+provenanceSummaryTable+" "+sel+" SETTINGS additional_table_filters = "+filters+", "+provenanceFillSettings); err != nil {
+			// The newline keeps a trailing comment in a view's SELECT from swallowing the settings.
+			if err := conn.Exec(ctx, "INSERT INTO "+provenanceSummaryTable+" "+sel+"\nSETTINGS additional_table_filters = "+filters+", "+provenanceFillSettings); err != nil {
 				return err
 			}
 		}
@@ -172,8 +187,8 @@ func markProvenanceFillClear(ctx context.Context, conn driver.Conn, ids []string
 	for _, id := range ids {
 		err := conn.Exec(ctx, "INSERT INTO "+provenanceFillCleared+" SELECT ?, now64(3)", id)
 		var ex *clickhouse.Exception
-		if errors.As(err, &ex) && ex.Code == 60 {
-			return nil // the fill finished and dropped the table meanwhile
+		if errors.As(err, &ex) && ex.Code == 60 { // UNKNOWN_TABLE: the fill finished meanwhile
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("record cleared fractal for the provenance fill: %w", err)
@@ -184,15 +199,15 @@ func markProvenanceFillClear(ctx context.Context, conn driver.Conn, ids []string
 
 // initViewSelect returns a materialized view's SELECT from init-clickhouse.sql.
 func initViewSelect(view string) (string, error) {
-	header := "CREATE MATERIALIZED VIEW IF NOT EXISTS " + view + " "
-	for _, stmt := range splitClickHouseSQL(dbsql.ClickHouseSQL) {
-		if i := strings.Index(stmt, header); i >= 0 {
-			if j := strings.Index(stmt[i:], " AS\n"); j >= 0 {
-				return strings.TrimSpace(stmt[i+j+len(" AS\n"):]), nil
-			}
-		}
+	stmt, err := initStatement("CREATE MATERIALIZED VIEW IF NOT EXISTS " + view + " ")
+	if err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("no CREATE MATERIALIZED VIEW %s in init-clickhouse.sql", view)
+	_, sel, ok := strings.Cut(stmt, " AS\n")
+	if !ok {
+		return "", fmt.Errorf("view %s has no SELECT in init-clickhouse.sql", view)
+	}
+	return strings.TrimSpace(sel), nil
 }
 
 // projectionRun is the projection backfill's state across rounds, per node.
@@ -205,7 +220,7 @@ type projectionRun struct {
 
 // materializeProvenanceProjections runs rounds until no node has a partition left: each
 // round, a node whose last mutation finished starts the next. A partition that cannot be
-// materialized is skipped so the rest proceed, and reported once they are done.
+// materialized is skipped so the rest proceed, and left for the next start.
 func (c *ClickHouseClient) materializeProvenanceProjections(ctx context.Context) error {
 	run := &projectionRun{last: map[string]string{}, failing: map[string]time.Time{}, skipped: map[string]bool{}, logged: map[string]time.Time{}}
 	wait := provenanceBackfillMinPoll
@@ -227,7 +242,8 @@ func (c *ClickHouseClient) materializeProvenanceProjections(ctx context.Context)
 		}
 		if pending == 0 {
 			if len(run.skipped) > 0 {
-				return fmt.Errorf("%d partitions could not be materialized; retrying later", len(run.skipped))
+				log.Printf("[ClickHouse] provenance projections complete except %d partitions, which pgr reads without them; the next start retries them", len(run.skipped))
+				return nil
 			}
 			log.Printf("[ClickHouse] provenance projections complete")
 			return nil
@@ -260,12 +276,8 @@ func (r *projectionRun) next(ctx context.Context, conn driver.Conn, node string)
 	}
 	var todo []target
 	for _, p := range provenanceProjections {
-		quoted := make([]string, len(p.names))
-		for i, n := range p.names {
-			quoted[i] = "'" + n + "'"
-		}
-		rows, err := conn.Query(ctx, "SELECT partition_id, groupUniqArrayArray(arrayFilter(p -> NOT has(projections, p), ["+strings.Join(quoted, ", ")+"])) AS missing "+
-			"FROM system.parts WHERE database = currentDatabase() AND table = ? AND active GROUP BY partition_id HAVING length(missing) > 0 ORDER BY partition_id", p.table)
+		rows, err := conn.Query(ctx, "SELECT partition_id, groupUniqArrayArray(arrayFilter(p -> NOT has(projections, p), ?)) AS missing "+
+			"FROM system.parts WHERE database = currentDatabase() AND table = ? AND active GROUP BY partition_id HAVING length(missing) > 0 ORDER BY partition_id", p.names, p.table)
 		if err != nil {
 			return 0, err
 		}
@@ -315,12 +327,12 @@ func (r *projectionRun) next(ctx context.Context, conn driver.Conn, node string)
 func (r *projectionRun) watchRunning(ctx context.Context, conn driver.Conn, node string) (int, error) {
 	tables := make([]string, len(provenanceProjections))
 	for i, p := range provenanceProjections {
-		tables[i] = "'" + p.table + "'"
+		tables[i] = p.table
 	}
 	// One row per command, so a mutation materializing two projections has two.
 	rows, err := conn.Query(ctx, "SELECT mutation_id, table, any(command), any(latest_fail_reason), max(parts_to_do) FROM system.mutations "+
-		"WHERE database = currentDatabase() AND NOT is_done AND table IN ("+strings.Join(tables, ", ")+") AND command LIKE '%MATERIALIZE PROJECTION%' "+
-		"GROUP BY mutation_id, table")
+		"WHERE database = currentDatabase() AND NOT is_done AND has(?, table) AND command LIKE '%MATERIALIZE PROJECTION%' "+
+		"GROUP BY mutation_id, table", tables)
 	if err != nil {
 		return 0, err
 	}
@@ -345,7 +357,7 @@ func (r *projectionRun) watchRunning(ctx context.Context, conn driver.Conn, node
 		key := node + "/" + m.table + "/" + m.id
 		if m.fail == "" {
 			delete(r.failing, key)
-			if time.Since(r.logged[node]) >= 10*time.Minute {
+			if time.Since(r.logged[node]) >= provenanceProgressLogEvery {
 				log.Printf("[ClickHouse] still materializing projections on %s on %s (%d parts to do)", m.table, node, m.partsToDo)
 				r.logged[node] = time.Now()
 			}

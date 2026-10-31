@@ -984,3 +984,28 @@ func TestCommentWriteRefusalNamesTheLock(t *testing.T) {
 		t.Errorf("tags on locked evidence: err = %v", err)
 	}
 }
+
+// Only "true" means filled; a missing key is unfilled, and a failed read is not mistaken for either.
+func TestProvenanceSummaryFilled(t *testing.T) {
+	c, _ := newFakePostgres()
+	if filled, err := c.ProvenanceSummaryFilled(context.Background()); filled || err != nil {
+		t.Errorf("unset: %v %v", filled, err)
+	}
+	c, p := newFakePostgres()
+	p.On("FROM settings", fakedb.Row("true"))
+	if filled, err := c.ProvenanceSummaryFilled(context.Background()); !filled || err != nil {
+		t.Errorf("set: %v %v", filled, err)
+	}
+	c, p = newFakePostgres()
+	p.On("FROM settings", fakedb.PGResult{Err: errors.New("down")})
+	if _, err := c.ProvenanceSummaryFilled(context.Background()); err == nil {
+		t.Error("a failed read must not read as unfilled")
+	}
+	c, p = newFakePostgres()
+	if err := c.MarkProvenanceSummaryFilled(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Matching("INSERT INTO settings"); len(got) != 1 || got[0].Args[0] != provenanceSummaryFilledSetting || got[0].Args[1] != "true" {
+		t.Errorf("recorded %v", got)
+	}
+}

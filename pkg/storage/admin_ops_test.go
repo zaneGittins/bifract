@@ -18,6 +18,7 @@ import (
 func TestDeleteLogsByFractalID(t *testing.T) {
 	c, f := newFakeClient()
 	f.OnArg(describeQuery, "logs_histogram__skip", describes("", ""))
+	f.OnArg(describeQuery, provenanceFillCleared, describes("", ""))
 	f.OnArg(partsQuery, "logs", fakedb.Strs("partition_id", "l1", "l2"))
 	f.OnArg(partsQuery, "process_edges", fakedb.Strs("partition_id", "e1"))
 	f.OnArg(partsQuery, "logs_field_paths", fakedb.Strs("partition_id", "p1"))
@@ -38,8 +39,12 @@ func TestDeleteLogsByFractalID(t *testing.T) {
 	if indexOf(execs, "ALTER TABLE `logs_field_paths` DROP PARTITION ID 'p1'") < 0 {
 		t.Error("field path counts must leave with the fractal")
 	}
-	if indexOf(execs, "ALTER TABLE `provenance_summary` DROP PARTITION ID 's1'") < 0 {
-		t.Error("the provenance summary must leave with the fractal")
+	// A summary fill in progress hears of the clear after the source rows go and before the
+	// summary's do, so it can never write stale rows back unnoticed.
+	edges, cleared := indexOf(execs, "ALTER TABLE `process_edges` DROP PARTITION ID 'e1'"), indexOf(execs, "INSERT INTO "+provenanceFillCleared)
+	summary := indexOf(execs, "ALTER TABLE `provenance_summary` DROP PARTITION ID 's1'")
+	if !(edges < cleared && cleared < summary) {
+		t.Errorf("want source drops, then the fill marker, then the summary drop:\n%s", strings.Join(execs, "\n"))
 	}
 	// Both the fractal and the unscoped id were looked up and recorded.
 	if got := f.ExecArgs()[skip]; !reflect.DeepEqual(got, []any{"F1"}) {
@@ -259,6 +264,20 @@ func TestClearAllLogDataTruncatesEverything(t *testing.T) {
 		if !strings.Contains(execs, "TRUNCATE TABLE IF EXISTS `"+table+"` SETTINGS max_table_size_to_drop = 0") {
 			t.Errorf("%s not truncated", table)
 		}
+	}
+	if last := f.Executed()[len(f.Executed())-1]; !strings.Contains(last, "`"+provenanceSummaryTable+"`") {
+		t.Errorf("the summary must be truncated last, after the fill marker; last was %s", last)
+	}
+
+	// With a fill running, every fractal is marked cleared before the summary goes.
+	c, f = newFakeClient()
+	f.OnArg(describeQuery, provenanceFillCleared, describes("", ""))
+	if err := c.ClearEndpointAnalysisBaselines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	marked := indexOf(f.Executed(), "INSERT INTO "+provenanceFillCleared)
+	if marked < 0 || f.ExecArgs()[marked][0] != provenanceFillAll || marked != len(f.Executed())-2 {
+		t.Errorf("fill marker: %q", f.Executed())
 	}
 
 	c, f = newFakeClient()

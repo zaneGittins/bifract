@@ -573,9 +573,7 @@ func TestProcessGroupHopSQL(t *testing.T) {
 	sql := BuildProcessGroupHopSQL(reconOpts())
 	for _, want := range []string{
 		"f.node AS parent_node",
-		"c.child_image AS nimg",
-		"c.child_cmd_key AS ncmd",
-		"GROUP BY parent_node, nimg, ncmd",
+		"GROUP BY parent_node, c.child_image, c.child_cmd_key",
 		"uniqExact(c.process_guid) AS n",
 		"FROM proc_lineage AS c GLOBAL INNER JOIN _pgr_frontier AS f ON c.parent_guid = f.guid WHERE ",
 		"c.fractal_id = 'f1' AND c.parent_guid GLOBAL IN (SELECT guid FROM _pgr_frontier)",

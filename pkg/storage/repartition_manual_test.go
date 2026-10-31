@@ -251,8 +251,8 @@ func TestConvertPartitioningSkipsClearedFractal(t *testing.T) {
 }
 
 // An upgrade landing mid-conversion migrates the live table, but the stage and old tables
-// an earlier release created keep its columns. A copied-but-unmoved fractal is redone into
-// a rebuilt stage, and columns old lacks take their defaults.
+// an earlier release created keep its columns. The stage gains the new columns, so a
+// copied-but-unmoved fractal still moves, and columns old lacks take their defaults.
 func TestConvertPartitioningResumesAcrossMigration(t *testing.T) {
 	c, conn := repartClient(t)
 	ctx := context.Background()

@@ -318,12 +318,12 @@ func BuildProcessTreeHopSQL(guid string, opts QueryOptions) string {
 func BuildProcessGroupHopSQL(opts QueryOptions) string {
 	conds := append(procLineageWindow(opts, "c."),
 		"c.parent_guid GLOBAL IN (SELECT guid FROM "+ProvenanceFrontierTable+")")
-	return fmt.Sprintf("SELECT f.node AS parent_node, c.child_image AS nimg, c.child_cmd_key AS ncmd, "+
+	return fmt.Sprintf("SELECT f.node AS parent_node, "+
 		"argMin(c.process_guid, (c.timestamp, c.process_guid)) AS rep, uniqExact(c.process_guid) AS n, "+
 		"groupUniqArray(%[1]d)(c.process_guid) AS members, "+
 		"toUnixTimestamp64Milli(min(c.timestamp)) AS first_ms, toUnixTimestamp64Milli(max(c.timestamp)) AS last_ms "+
 		"FROM %[2]s AS c GLOBAL INNER JOIN %[3]s AS f ON c.parent_guid = f.guid WHERE %[4]s "+
-		"GROUP BY parent_node, nimg, ncmd ORDER BY first_ms, rep",
+		"GROUP BY parent_node, c.child_image, c.child_cmd_key ORDER BY first_ms, rep",
 		MaxProvenanceMembers, procLineageTable(opts), ProvenanceFrontierTable, strings.Join(conds, " AND "))
 }
 
@@ -339,6 +339,14 @@ func procFreqTable(opts QueryOptions) string {
 		return opts.ProcFreqTable
 	}
 	return "proc_freq"
+}
+
+// fractalWhere is a WHERE clause scoping a whole-table read to the query's fractals, or "".
+func fractalWhere(opts QueryOptions) string {
+	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
+		return " WHERE " + fractal
+	}
+	return ""
 }
 
 func provenanceSummaryTable(opts QueryOptions) string {
@@ -479,10 +487,7 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 // diffuse-fallback rebuild never rescans it; it is never cached across calls.
 func BuildProvenanceTotalHostsSQL(opts QueryOptions) string {
 	procLineage := procLineageTable(opts)
-	where := ""
-	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
-		where = " WHERE " + fractal
-	}
+	where := fractalWhere(opts)
 	return fmt.Sprintf("SELECT uniqExact(computer_name) AS total_hosts FROM %s%s", procLineage, where)
 }
 
@@ -492,10 +497,7 @@ func BuildProvenanceTotalHostsSQL(opts QueryOptions) string {
 // pgr() call (only when Reconnect is on) in one scan.
 func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 	procFreq := procFreqTable(opts)
-	where := ""
-	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
-		where = " WHERE " + fractal
-	}
+	where := fractalWhere(opts)
 	return fmt.Sprintf("SELECT length(groupUniqArrayMerge(%d)(hosts)) AS total_hosts, uniqExact(src_image) AS total_images FROM %s%s",
 		procFreqHostsCap, procFreq, where)
 }
@@ -506,10 +508,7 @@ func BuildReconnectionTotalsSQL(opts QueryOptions) string {
 // counts are of distinct values; recon_hosts keeps the 256 cap the baseline's host sets have.
 // first_day is 1970-01-01 for an empty baseline, which is what the scan yields too.
 func BuildProvenanceSummarySQL(opts QueryOptions) string {
-	where := ""
-	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
-		where = " WHERE " + fractal
-	}
+	where := fractalWhere(opts)
 	return fmt.Sprintf("SELECT uniqExactIf(value, kind = 'lineage_host') AS total_hosts, "+
 		"least(%[1]d, uniqExactIf(value, kind = 'freq_host')) AS recon_hosts, uniqExactIf(value, kind = 'freq_image') AS recon_images, "+
 		"toString(minIf(toDateOrZero(value), kind = 'freq_day')) AS first_day FROM %[2]s%[3]s",
@@ -661,7 +660,7 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	// ClickHouse INLINES a CTE at each reference, so each proc_freq CTE below is its own
 	// ReadFromMergeTree in the plan, and each carries its own key scope (see ProvenanceBaseline).
 	// fe, ft and outs restrict src_image, a PRIMARY-KEY prefix, so they prune granules; gf and ins
-	// restrict target_norm, which prunes none but collapses the GROUP BY. rel is inlined per CTE
+	// restrict target_norm, which the by_target projection indexes. rel is inlined per CTE
 	// rather than shared because ins and outs need different restrictions, and span reads
 	// first_day directly instead of through it.
 	//
@@ -879,9 +878,9 @@ func internalDomainExpr(col string) string {
 // peer_image, peer_log_id, peer_ts, peer_fractal). It is deliberately per-subgraph and
 // rarity-pruned so it never becomes an all-pairs join over the full table:
 //   - file: proc_lineage processes launched with image == a path THIS tree wrote (dropped
-//     then executed). proc_lineage is the small process skeleton; image is LowCardinality.
+//     then executed), looked up by image_lc.
 //   - net/dns: process_edges rows touching an external IP / domain THIS tree touched, but only
-//     for artifacts whose proc_freq host-prevalence is <= reconnectHostPrevalenceMax (rare), so
+//     for artifacts under the proc_freq host and image prevalence ceilings (rareGate), so
 //     shared CDNs/resolvers/update servers do not reconnect everything.
 //   - remote_thread/process_access: target guids this tree injected into / opened -- emitted
 //     already by pass-2, so returned only as expansion candidates (object_id empty).

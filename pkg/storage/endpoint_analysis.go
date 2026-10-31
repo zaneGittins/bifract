@@ -200,19 +200,35 @@ func (c *ClickHouseClient) ClearAllLogData(ctx context.Context, modelIDs []strin
 }
 
 // truncateOnEveryShard empties tables on every node. TRUNCATE removes whole parts
-// without rewriting data or running a mutation, so it is instant at any size. A
-// provenance summary fill in progress is told every fractal was cleared.
+// without rewriting data or running a mutation, so it is instant at any size. The
+// provenance summary goes last, after a fill in progress is told every fractal was
+// cleared (see DeleteLogsByFractalID).
 func (c *ClickHouseClient) truncateOnEveryShard(ctx context.Context, tables []string, what string) error {
-	for _, t := range tables {
+	truncate := func(t string) error {
 		// max_table_size_to_drop (50GB by default) otherwise refuses large tables with code 359.
 		stmt := "TRUNCATE TABLE IF EXISTS " + quoteCHIdent(t) + " SETTINGS max_table_size_to_drop = 0"
 		if err := c.execOnEveryShard(ctx, stmt, what); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
+		return nil
 	}
-	return c.onEveryShard(ctx, what, func(conn driver.Conn) error {
+	for _, t := range tables {
+		if t == provenanceSummaryTable {
+			continue
+		}
+		if err := truncate(t); err != nil {
+			return err
+		}
+	}
+	if !slices.Contains(tables, provenanceSummaryTable) {
+		return nil
+	}
+	if err := c.onEveryShard(ctx, what, func(conn driver.Conn) error {
 		return markProvenanceFillClear(ctx, conn, []string{provenanceFillAll})
-	})
+	}); err != nil {
+		return err
+	}
+	return truncate(provenanceSummaryTable)
 }
 
 // withConversionTables adds the copy-holding working tables of any table mid-conversion
