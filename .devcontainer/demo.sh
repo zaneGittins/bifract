@@ -82,6 +82,9 @@ load() {
 	wait_for "Bifract" 300 healthy
 	login
 	if [ -z "$(dataset_import)" ]; then
+		# pgr() baselines build only from logs that arrive after this.
+		log "Turning on endpoint analytics"
+		api --fail -X POST --data '{"enabled": true}' "$BASE/api/v1/system/endpoint-analysis" >/dev/null
 		log "Adding $DATASET from the Exchange"
 		api -X POST "$BASE/api/v1/exchange/datasets/$DATASET/import" | jq -r '.error // "Import queued"'
 	fi
@@ -134,8 +137,9 @@ Bifract is running at $url
   Username: admin
   Password: $(sudo cat "$PASSWORD_FILE")
 
-Lab 001 (Meridian workstation intrusion) loads into fractal $DATASET; Exchange
-shows its progress. Open the fractal and the time picker starts on the lab's range.
+Lab 001 (Meridian workstation intrusion) is in fractal $DATASET, or loading
+into it: Exchange shows progress. The time picker opens on the lab's range, and
+endpoint analytics is on, so pgr() works.
 Getting started: https://docs.bifract.io/getting-started/codespaces/
 EOF
 	)
