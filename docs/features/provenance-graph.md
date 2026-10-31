@@ -70,6 +70,12 @@ A process that runs the same command over and over, such as a remote-access tool
 
 `pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, so a wide tree cannot crowd them all out. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
 
+### After upgrading
+
+`pgr()` and `ptg()` look up only the rows a tree touches, so their cost follows the size of the tree, not of the fractal or its retention. Command lines come from the lineage table, so they stay visible after the logs behind them age out.
+
+Baselines written before the upgrade that added these lookups are indexed by a background job. Graphs are correct while it runs, just slower over older history. One server runs it, one fractal at a time; it logs `[ClickHouse] materializing ...` as it goes and `provenance projections complete` when done.
+
 ## Anomaly scoring
 
 Every action gets an `anomaly_score` from 0 (common everywhere) to 1 (never seen before). Scores also add up along the chain, so a sequence of individually common steps (living off the land) still stands out.
