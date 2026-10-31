@@ -70,7 +70,7 @@ A process that runs the same command over and over, such as a remote-access tool
 
 ### When the graph is incomplete
 
-`pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, so a wide tree cannot crowd them all out. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
+`pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, lateral leads first, then the most anomalous, so a wide tree cannot crowd them all out; the process each hangs off keeps its path from the seed. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
 
 ### After upgrading
 
