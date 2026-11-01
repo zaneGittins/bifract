@@ -14,11 +14,14 @@ import (
 	"bifract/pkg/egress"
 )
 
+// defaultURL is this host's ingest port, which only serves TLS.
+const defaultURL = "https://localhost:8443"
+
 // RunIngest parses ingest-specific flags and runs the ingestion pipeline.
 // It accepts the raw args slice after "--ingest" has been consumed.
 func RunIngest(args []string) error {
 	cfg := &Config{
-		URL: "http://localhost:8443",
+		URL: defaultURL,
 	}
 
 	var showHelp, recursive bool
@@ -262,14 +265,14 @@ func PrintIngestUsage() {
 
 %s
   --token, -t     Bifract ingest token (required)
-  --url, -u       Bifract server URL (default: http://localhost:8443)
+  --url, -u       Bifract server URL (default: %s)
   --batch-size, -b  Logs per batch (default: auto, 5000)
   --workers, -w   Concurrent workers (default: auto, based on CPU cores)
   --limit, -l     Max logs per file (default: unlimited)
   --recursive, -r Recursively find matching files in subdirectories
   --exchange      Exchange index for dataset:<id> (default: BIFRACT_EXCHANGE_URL,
                   else the Bifract repository)
-  --insecure, -k  Skip TLS certificate verification
+  --insecure, -k  Skip TLS certificate verification (self-signed installs)
   --help, -h      Show this help
 
   When --workers and --batch-size are omitted, bifract runs in auto
@@ -297,6 +300,7 @@ func PrintIngestUsage() {
 		title,
 		clistyle.BoldStyle.Render("Usage:"),
 		clistyle.BoldStyle.Render("Options:"),
+		defaultURL,
 		clistyle.BoldStyle.Render("Supported formats:"),
 		clistyle.BoldStyle.Render("Datasets:"),
 		clistyle.BoldStyle.Render("Examples:"),
