@@ -76,6 +76,11 @@ const Utils = {
         };
     },
 
+    // Only http(s) URLs may become links; javascript: and data: would run script.
+    isHttpUrl(url) {
+        return /^https?:\/\//i.test(url || '');
+    },
+
     // Escape HTML to prevent XSS
     escapeHtml(text) {
         if (text === null || text === undefined) return '';
@@ -88,6 +93,15 @@ const Utils = {
             "'": '&#039;'
         };
         return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+    },
+
+    // Escape for the inside of a double-quoted BQL string; the lexer reads backslash as an escape.
+    bqlEscape(text) {
+        return String(text == null ? '' : text).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    },
+
+    bqlQuote(text) {
+        return '"' + this.bqlEscape(text) + '"';
     },
 
     // Escape for use in HTML attributes (data-*, title, etc.)

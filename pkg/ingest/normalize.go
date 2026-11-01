@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
@@ -28,13 +28,17 @@ import (
 // fields. A float64 from json.Unmarshal is accepted but has already lost precision
 // past 2^53.
 func BuildLogEntry(obj map[string]interface{}, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) (storage.LogEntry, error) {
-	entry := storage.LogEntry{}
-
-	rawBytes, err := json.Marshal(obj)
+	rawBytes, err := jsonenc.Marshal(obj)
 	if err != nil {
-		return entry, fmt.Errorf("failed to marshal raw log: %w", err)
+		return storage.LogEntry{}, fmt.Errorf("failed to marshal raw log: %w", err)
 	}
-	entry.RawLog = string(rawBytes)
+	return buildLogEntry(obj, string(rawBytes), time.Time{}, norm, tsFields), nil
+}
+
+// buildLogEntry is BuildLogEntry for a caller that already has the raw log, and
+// optionally the event time (zero means extract it from the fields).
+func buildLogEntry(obj map[string]interface{}, rawLog string, ts time.Time, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) storage.LogEntry {
+	entry := storage.LogEntry{RawLog: rawLog}
 
 	// Build flat fields without any structural transforms.
 	built := normalizers.BuildFieldsWithNested(obj)
@@ -47,8 +51,10 @@ func BuildLogEntry(obj map[string]interface{}, norm *normalizers.CompiledNormali
 	entry.Normalizer = norm.Stamp()
 
 	ingestTime := time.Now()
-	entry.Timestamp = ExtractTimestamp(entry.Fields, tsFields, norm)
-
+	entry.Timestamp = ts
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = ExtractTimestamp(entry.Fields, tsFields, norm)
+	}
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = ingestTime
 	}
@@ -56,7 +62,7 @@ func BuildLogEntry(obj map[string]interface{}, norm *normalizers.CompiledNormali
 	entry.IngestTimestamp = ingestTime
 	entry.LogID = storage.GenerateLogID(entry.Timestamp, entry.RawLog)
 
-	return entry, nil
+	return entry
 }
 
 // ExtractTimestamp tries per-token fields, then normalizer fields, then global settings, then common field names.

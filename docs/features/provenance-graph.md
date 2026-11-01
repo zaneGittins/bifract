@@ -29,6 +29,8 @@ Bifract then maintains two baselines as logs arrive: process lineage (who spawne
 
 For just the spawn tree, without scoring or file, network and DNS activity, use `ptg(start="{GUID}") | pgraph()`. It reads only the lineage table, so it is faster. See [Graph Traversal](../bql/graph-traversal.md) for all arguments.
 
+Both look up only the rows a tree touches, so their cost follows the size of the tree, not of the fractal or its retention. Command lines come from the lineage table, so they stay visible after the logs behind them age out.
+
 ## Required fields
 
 Your [normalizer](normalizers.md) must set `bifract_category` and the fields below (under the `fields` column). Every event also needs `computer_name` and a `timestamp`. `process_creation` alone builds the tree; each extra category adds a layer.
@@ -68,7 +70,11 @@ A process that runs the same command over and over, such as a remote-access tool
 
 ### When the graph is incomplete
 
-`pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, so a wide tree cannot crowd them all out. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
+`pgr()` returns up to 500 edges by default (`limit=` raises it, up to 20,000) and walks up to 1,000 nodes standing for up to 500,000 processes. A quarter of the edge budget is kept for file, network, DNS and reconnection edges, lateral leads first, then the most anomalous, so a wide tree cannot crowd them all out; the process each hangs off keeps its path from the seed. When either limit cuts the graph, the stats bar shows **row limit reached** or **tree truncated**; hover it for the counts.
+
+### After upgrading
+
+Baselines written before the upgrade that added pgr's lookups are backfilled by a background job. Graphs are correct while it runs, just slower over older history. One server drives it: it first fills the fleet summary (logging `provenance summary filled`), then indexes one fractal per ClickHouse node at a time (logging `materializing ...`, and `provenance projections complete` when done).
 
 ## Anomaly scoring
 
@@ -91,7 +97,7 @@ Each action shows a **Why** sentence and fact chips in the drawer and on edge ho
     | `source_exec_host_days` | Other host-days on which this source binary ran |
     | `target_host_days` | Other host-days on which any process touched the target |
     | `target_hosts`, `total_hosts` | Hosts that touched the target (capped at 256) out of all hosts |
-    | `first_seen` | First day the relationship was observed |
+    | `first_seen` | Earliest event date of the relationship (never later than the day it was ingested) |
     | `group_size` | On a spawn edge, how many identical processes the child node stands for (1 for a single process) |
     | `group_first`, `group_last` | When the first and last of those processes started, for `group_size` above 1 |
     | `recon_role` | On a reconnection bridge: `lead`, `shared` (part of a wide family of shared artifacts), or `context` |
@@ -102,7 +108,7 @@ Each action shows a **Why** sentence and fact chips in the drawer and on edge ho
 
 - **Lateral leads** are drawn beside the tree: the shared artifact next to the process that touched it, and a **Lateral** column with each host reached through it. The stats bar shows them in red, for example **2 hosts reached via 203.0.113.87**; click it to jump there. A link is a lead when it reaches another host, the seed's own process had no business touching the artifact (its own score for that edge is high; a file it dropped that another host ran always counts), and that process does not share many artifacts with other hosts. Up to 3 artifacts are promoted, strongest first.
 - Every other link is context. When there are leads, or more than 3 links, it folds into one **Linked** summary below the tree, which says why: an agent sharing dozens of telemetry domains with the fleet reads as **shared software**. Click **show** to open it as the **Reconnected** section, grouped by the artifact that links them, strongest first; click a peer to expand its tree.
-- Up to 50 peers are admitted by default. Change it with `peers=` (max 500), or turn reconnection off with `reconnect=false`:
+- Up to 50 peers are admitted by default, those reached through the artifacts the fewest others share first, so one peer sharing a C2 outranks dozens sharing telemetry. Change it with `peers=` (max 500), or turn reconnection off with `reconnect=false`:
 
 ```
 pgr(start="{GUID}", peers=200) | pgraph()

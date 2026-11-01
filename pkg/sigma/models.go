@@ -41,5 +41,6 @@ type SelectionGroup struct {
 type FieldCondition struct {
 	Field     string   // original Sigma field name (e.g. "CommandLine")
 	Modifiers []string // e.g. ["contains"], ["endswith", "all"], ["re"]
-	Values    []string // one or more match values
+	Values    []string // match values, null excluded
+	Null      bool     // null was among the values: the field may be absent
 }

@@ -243,9 +243,12 @@ func havingToFilter(c parser.HavingCondition) (FilterCondition, bool) {
 }
 
 // minLengthFromHaving converts a `_len <op> n` comparison to a MinLength value.
-// `>= n` maps to n; `> n` maps to n+1. Any other shape is a filter the query
-// applies and the structured form does not carry.
+// `>= n` maps to n; `> n` maps to n+1. Any other shape, a negated one included,
+// is a filter the query applies and the structured form does not carry.
 func minLengthFromHaving(hv parser.HavingCondition) (int, bool) {
+	if hv.Negate {
+		return 0, false
+	}
 	n, err := strconv.Atoi(strings.TrimSpace(hv.Value))
 	if err != nil {
 		return 0, false

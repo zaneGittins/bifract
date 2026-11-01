@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
@@ -64,28 +67,55 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		return provenanceEmptyScoreSQL, nil, nil
 	}
 
+	// Fleet-wide inputs: the fleet size, the reconnection rarity-gate ceilings and the baseline's
+	// first day. Once the backfill has filled provenance_summary they are one lookup; until then,
+	// or when that lookup fails, each is a scan of the fractal, as below.
+	sum, summarized := h.readProvenanceSummary(ctx, opts)
+	if ctx.Err() != nil {
+		return "", nil, ctx.Err()
+	}
+
+	// Scanned, fleet size depends on nothing else, so it runs alongside reconnection and the edge
+	// keys. Buffered, so an early return never leaks the goroutine.
+	type fleetResult struct {
+		rows []map[string]interface{}
+		err  error
+	}
+	var fleet chan fleetResult
+	if !summarized {
+		fleetCtx, cancelFleet := context.WithCancel(ctx)
+		defer cancelFleet() // an early return stops the scan
+		fleet = make(chan fleetResult, 1)
+		fleetSQL := parser.BuildProvenanceTotalHostsSQL(opts)
+		go func() {
+			rows, err := h.db.QueryProvenance(fleetCtx, fleetSQL)
+			fleet <- fleetResult{rows, err}
+		}()
+	}
+
 	// Cross-tree reconnection (NoDoze object-mediated): find peer processes in OTHER trees
 	// that share a leaf with this subgraph, auto-expand the most anomalous ones into real
 	// subtrees, and emit bridge edges for the rest. Bounded and rarity-pruned; see
 	// parser.BuildReconnectionSQL. Failure is non-fatal -- pgr still returns the base tree.
 	//
-	// The rarity-gate ceilings (totalHosts/totalImages) are fetched ONCE here, in ONE scan, and
-	// passed in as literals rather than live scalar subqueries -- computed fresh for this call
-	// only. On failure both stay 0, which only tightens the gate to its absolute floor
-	// (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax) -- fails toward under-reconnecting,
-	// never toward a wrong match.
-	var bridges []map[string]interface{}
+	// The rarity-gate ceilings (totalHosts/totalImages) are fetched once here and passed in as
+	// literals rather than live scalar subqueries. On failure both stay 0, which only tightens
+	// the gate to its absolute floor (reconnectHostPrevalenceMax/reconnectImagePrevalenceMax):
+	// it fails toward under-reconnecting, never toward a wrong match.
 	var peers []parser.ReconnectPeer
 	if p.Reconnect && ctx.Err() == nil {
-		var reconTotalHosts, reconTotalImages int64
-		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts)); tErr != nil {
-			if ctx.Err() != nil {
+		reconTotalHosts, reconTotalImages := sum.reconHosts, sum.reconImages
+		if !summarized {
+			totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildReconnectionTotalsSQL(opts))
+			switch {
+			case tErr != nil && ctx.Err() != nil:
 				return "", nil, ctx.Err()
+			case tErr != nil:
+				log.Printf("[pgr] reconnection totals lookup failed, using rarity-gate floor only: %v", tErr)
+			case len(totRows) > 0:
+				reconTotalHosts = reconInt64(totRows[0]["total_hosts"])
+				reconTotalImages = reconInt64(totRows[0]["total_images"])
 			}
-			log.Printf("[pgr] reconnection totals lookup failed, using rarity-gate floor only: %v", tErr)
-		} else if len(totRows) > 0 {
-			reconTotalHosts = reconInt64(totRows[0]["total_hosts"])
-			reconTotalImages = reconInt64(totRows[0]["total_images"])
 		}
 		if reconSQL := parser.BuildReconnectionSQL(p, reconTotalHosts, reconTotalImages, opts); reconSQL != "" {
 			// The reconnection SQL uses explicit GLOBAL IN / GLOBAL JOIN on its cross-distributed-table
@@ -107,29 +137,13 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 					peers[i].SrcGUID = tree.node(peers[i].SrcGUID)
 					peers[i].PeerGUID = tree.node(peers[i].PeerGUID)
 				}
-				// Reconnection owns its bridge edges, so emit every peer: the emit logic decides
-				// shape (net/dns converge on the object node, file is writer->executor,
-				// injection/access are skipped -- pass-2 owns those).
-				bridges = parser.ReconnectionEdgeRows(peers)
 			}
 		}
 	}
 	treeTable := tree.table()
 
-	// Fleet size, reported as total_hosts. Fetched once per call and passed as a literal, never
-	// cached across calls. It is display only, so a failed lookup leaves it 0 and changes no score.
-	var baseline parser.ProvenanceBaseline
+	baseline := parser.ProvenanceBaseline{TotalHosts: sum.totalHosts, FirstDay: sum.firstDay}
 	baseline.NodeStart, baseline.NodeEnd = tree.span()
-	if ctx.Err() == nil {
-		if totRows, tErr := h.db.QueryProvenance(ctx, parser.BuildProvenanceTotalHostsSQL(opts)); tErr != nil {
-			if ctx.Err() != nil {
-				return "", nil, ctx.Err()
-			}
-			log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", tErr)
-		} else if len(totRows) > 0 {
-			baseline.TotalHosts = reconInt64(totRows[0]["total_hosts"])
-		}
-	}
 
 	// The tree's own edge keys, which scope every proc_freq CTE in the scoring SQL to the rows its
 	// joins can match (see parser.ProvenanceBaseline). Without them each CTE aggregates the
@@ -146,6 +160,20 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 			log.Printf("[pgr] tree has more than %d distinct edge keys; scoring against the unrestricted baseline", parser.MaxProvenanceEdgeKeys)
 		} else {
 			baseline.SrcKeys, baseline.TgtKeys = provenanceEdgeKeys(keyRows)
+		}
+	}
+
+	// Fleet size, reported as total_hosts: passed as a literal, never cached across calls. Display
+	// only, so a failed lookup leaves it 0 and changes no score.
+	if fleet != nil {
+		fs := <-fleet
+		switch {
+		case fs.err != nil && ctx.Err() != nil:
+			return "", nil, ctx.Err()
+		case fs.err != nil:
+			log.Printf("[pgr] total-hosts lookup failed, total_hosts will read 0: %v", fs.err)
+		case len(fs.rows) > 0:
+			baseline.TotalHosts = reconInt64(fs.rows[0]["total_hosts"])
 		}
 	}
 
@@ -173,7 +201,11 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		return "", nil, fmt.Errorf("pgr: scoring pass: %w", err)
 	}
 	scanned := len(rows)
-	rows = append(rows, bridges...)
+	// Reconnection owns its bridge edges, so emit every peer: the emit logic decides shape
+	// (net/dns converge on the object node, file is writer->executor, injection/access are
+	// skipped, pass 2 owns those). Built after the scan, which scores the tree's own edges.
+	pointBridgesAtSharpestToucher(peers, rows)
+	rows = append(rows, parser.ReconnectionEdgeRows(peers)...)
 	if diffuse {
 		rows = diffuseProvenanceRows(rows, p.Threshold, p.Lambda)
 		h.recordProvenanceScores(rows)
@@ -194,6 +226,72 @@ func (h *QueryHandler) provenanceScoreSQL(ctx context.Context, p parser.Provenan
 		warnings = append(warnings, w)
 	}
 	return sql, warnings, nil
+}
+
+// provenanceSummary is pgr's fleet-wide input read from provenance_summary.
+type provenanceSummary struct {
+	totalHosts, reconHosts, reconImages int64
+	firstDay                            time.Time
+}
+
+// readProvenanceSummary reads the fleet-wide inputs once the backfill has filled the summary.
+// It reports false when it has not, or the read fails, and the caller scans instead.
+func (h *QueryHandler) readProvenanceSummary(ctx context.Context, opts parser.QueryOptions) (provenanceSummary, bool) {
+	if !h.provenanceSummaryFilled(ctx) {
+		return provenanceSummary{}, false
+	}
+	rows, err := h.db.QueryProvenance(ctx, parser.BuildProvenanceSummarySQL(opts))
+	if err == nil && len(rows) == 0 {
+		err = errors.New("no rows")
+	}
+	var day time.Time
+	if err == nil {
+		day, err = time.Parse(time.DateOnly, reconString(rows[0]["first_day"]))
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[pgr] provenance summary read failed, scanning instead: %v", err)
+		}
+		return provenanceSummary{}, false
+	}
+	r := rows[0]
+	return provenanceSummary{totalHosts: reconInt64(r["total_hosts"]), reconHosts: reconInt64(r["recon_hosts"]),
+		reconImages: reconInt64(r["recon_images"]), firstDay: day}, true
+}
+
+// provenanceSummaryCheckEvery bounds how often pgr re-reads whether the summary is filled,
+// and provenanceSummaryCheckTimeout how long one read may hold up a pgr call.
+const (
+	provenanceSummaryCheckEvery   = time.Minute
+	provenanceSummaryCheckTimeout = 2 * time.Second
+)
+
+// summaryFilledCheck is one cached answer to whether provenance_summary is filled.
+type summaryFilledCheck struct {
+	filled  bool
+	checked time.Time
+}
+
+// provenanceSummaryFilled reports whether the backfill has filled provenance_summary. The
+// answer is re-read at most once a minute; a failed read counts as unfilled, so pgr scans.
+func (h *QueryHandler) provenanceSummaryFilled(ctx context.Context) bool {
+	if h.pg == nil {
+		return false
+	}
+	if c := h.summaryFilled.Load(); c != nil && time.Since(c.checked) < provenanceSummaryCheckEvery {
+		return c.filled
+	}
+	readCtx, cancel := context.WithTimeout(ctx, provenanceSummaryCheckTimeout)
+	defer cancel()
+	filled, err := h.pg.ProvenanceSummaryFilled(readCtx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false // the caller gave up; nothing was learned
+		}
+		log.Printf("[pgr] provenance summary state unreadable, scanning instead: %v", err)
+	}
+	h.summaryFilled.Store(&summaryFilledCheck{filled: err == nil && filled, checked: time.Now()})
+	return err == nil && filled
 }
 
 // provenanceRowWarning says when rows were left out, and by which limit: limit= (kept < total)
@@ -396,11 +494,13 @@ func emitProvenanceSource(rows []map[string]interface{}, maxBytes int) (sql stri
 	return sb.String(), emitted
 }
 
-// budgetProvenanceRows picks the rows that fit pgr's limit= when there are more. Structure is
-// kept in walk order (seed and ancestors, then the nearest descendants, then peers), but a quarter
-// of the budget is held for leaves and bridges, so a wide tree can never push every file, network
-// and DNS edge out. Bridges go before leaves, leaves by anomaly, and a leaf is kept only when its
-// process is drawn. Room left in either share goes to the other. The result is in emit priority.
+// budgetProvenanceRows picks the rows that fit pgr's limit= when there are more. A quarter of
+// the budget is held for leaves and bridges, so a wide tree can never push every file, network
+// and DNS edge out: lead bridges first, then other bridges, then leaves by anomaly, each kept
+// only when its process is drawn. Structure keeps the spawn rows on the path from the seed to
+// each process those rows hang off, then the rest in walk order (seed and ancestors, then the
+// nearest descendants, then peers). Room left in either share goes to the other. The result is
+// in emit priority.
 func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, limit int) []map[string]interface{} {
 	if limit <= 0 || len(rows) <= limit {
 		return rows
@@ -424,22 +524,70 @@ func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, l
 		}
 	}
 	sort.SliceStable(spawn, func(i, j int) bool { return rankOf(spawn[i]) < rankOf(spawn[j]) })
-	isBridge := func(r map[string]interface{}) bool { return reconString(r["score_basis"]) == "reconnect" }
+	heat := func(r map[string]interface{}) int {
+		switch {
+		case reconString(r["recon_role"]) == reconRoleLead:
+			return 2
+		case reconString(r["score_basis"]) == "reconnect":
+			return 1
+		}
+		return 0
+	}
 	sort.SliceStable(other, func(i, j int) bool {
-		if bi, bj := isBridge(other[i]), isBridge(other[j]); bi != bj {
-			return bi
+		if hi, hj := heat(other[i]), heat(other[j]); hi != hj {
+			return hi > hj
 		}
 		return reconFloat(other[i]["anomaly_score"]) > reconFloat(other[j]["anomaly_score"])
 	})
 
+	held := min(limit/4, len(other))
+	structure := limit - held
+
+	// The structure share holds the paths to the processes the held rows hang off, hottest
+	// first while they fit, filled up in walk order. Kept in walk order, a path the walk would
+	// have reached anyway changes nothing.
+	spawnOf := make(map[string]int, len(spawn)) // node -> the spawn row that draws it
+	for i, r := range spawn {
+		if _, ok := spawnOf[reconString(r["child"])]; !ok {
+			spawnOf[reconString(r["child"])] = i
+		}
+	}
+	chosen, nChosen := make([]bool, len(spawn)), 0
+	for _, r := range other[:held] {
+		var path []int
+		for n, seen := reconString(r["parent"]), map[string]bool{}; n != "" && !seen[n]; n = tree.parent[n] {
+			seen[n] = true
+			if i, ok := spawnOf[n]; ok && !chosen[i] {
+				path = append(path, i)
+			}
+		}
+		if nChosen+len(path) <= structure {
+			for _, i := range path {
+				chosen[i] = true
+			}
+			nChosen += len(path)
+		}
+	}
+	for i := 0; i < len(spawn) && nChosen < structure; i++ {
+		if !chosen[i] {
+			chosen[i] = true
+			nChosen++
+		}
+	}
+
 	out := make([]map[string]interface{}, 0, limit)
 	drawn := map[string]bool{}
-	nextSpawn := 0
-	takeSpawn := func(upTo int) {
-		for ; nextSpawn < len(spawn) && len(out) < upTo; nextSpawn++ {
-			r := spawn[nextSpawn]
-			drawn[reconString(r["parent"])], drawn[reconString(r["child"])] = true, true
-			out = append(out, r)
+	taken := make([]bool, len(spawn))
+	takeSpawn := func(pick func(int) bool) {
+		for i, r := range spawn {
+			if len(out) >= limit {
+				return
+			}
+			if !taken[i] && pick(i) {
+				taken[i] = true
+				drawn[reconString(r["parent"])], drawn[reconString(r["child"])] = true, true
+				out = append(out, r)
+			}
 		}
 	}
 	used := make([]bool, len(other))
@@ -455,9 +603,9 @@ func budgetProvenanceRows(rows []map[string]interface{}, tree *provenanceTree, l
 			}
 		}
 	}
-	takeSpawn(limit - min(limit/4, len(other)))
+	takeSpawn(func(i int) bool { return chosen[i] })
 	takeOther()
-	takeSpawn(limit)
+	takeSpawn(func(int) bool { return true })
 	takeOther()
 	return out
 }
@@ -551,17 +699,18 @@ func reconPeerArtifact(pe parser.ReconnectPeer) string {
 // root, its own tree. Uncapped, the per-type SQL limit allows 200 peers x 5 recon types = 1,000
 // extra trees, which is unreadable regardless of how the count is displayed.
 //
-// Rank is by how many DISTINCT rare artifacts a peer shares with the tree: a peer reached
-// through three rare IOCs is a far stronger bridge than one reached through a single IP. That
-// signal is free from the rows themselves and is the only discriminator available here --
-// ReconnectPeer.Anomaly is a per-type constant (file 1.0 > access 0.9 > net/dns 0.85), so it
-// only orders recon types, and on its own leaves the choice of WHICH 50 net peers to keep as
-// GUID-alphabetical. Ties fall back to anomaly, then guid, so the ordering stays deterministic.
+// Rank is by the distinct artifacts a peer shares with the tree, each weighted by how few
+// candidates share it (1 / peers sharing it): three IOCs only this peer touched beat one, and
+// a C2 one peer touched beats any number of peers sharing the same telemetry domains, which on
+// a small fleet pass the prevalence gate as easily. ReconnectPeer.Anomaly is a per-type
+// constant (file 1.0 > access 0.9 > net/dns 0.85), so it only breaks ties, then guid, keeping
+// the ordering deterministic.
 func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []parser.ReconnectPeer {
 	if maxPeers <= 0 {
 		maxPeers = parser.DefaultReconnectPeers
 	}
 	artifacts := map[string]map[string]bool{}
+	sharers := map[string]map[string]bool{}
 	best := map[string]float64{}
 	order := make([]string, 0, len(peers))
 	for _, pe := range peers {
@@ -569,7 +718,12 @@ func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []pars
 			order = append(order, pe.PeerGUID)
 			artifacts[pe.PeerGUID] = map[string]bool{}
 		}
-		artifacts[pe.PeerGUID][reconPeerArtifact(pe)] = true
+		a := reconPeerArtifact(pe)
+		artifacts[pe.PeerGUID][a] = true
+		if sharers[a] == nil {
+			sharers[a] = map[string]bool{}
+		}
+		sharers[a][pe.PeerGUID] = true
 		if pe.Anomaly > best[pe.PeerGUID] {
 			best[pe.PeerGUID] = pe.Anomaly
 		}
@@ -577,10 +731,16 @@ func rankAndCapReconnectPeers(peers []parser.ReconnectPeer, maxPeers int) []pars
 	if len(order) <= maxPeers {
 		return peers
 	}
+	weight := make(map[string]float64, len(order))
+	for g, arts := range artifacts {
+		for _, a := range slices.Sorted(maps.Keys(arts)) { // a fixed order keeps float sums equal
+			weight[g] += 1 / float64(len(sharers[a]))
+		}
+	}
 	sort.Slice(order, func(i, j int) bool {
 		a, b := order[i], order[j]
-		if len(artifacts[a]) != len(artifacts[b]) {
-			return len(artifacts[a]) > len(artifacts[b])
+		if weight[a] != weight[b] {
+			return weight[a] > weight[b]
 		}
 		if best[a] != best[b] {
 			return best[a] > best[b]
@@ -668,7 +828,12 @@ func (h *QueryHandler) expandReconnectionPeers(ctx context.Context, tree *proven
 			continue
 		}
 		for _, node := range sub.order {
-			tree.add(sub.members[node], sub.size[node], sub.firstMs[node], sub.lastMs[node], reconnectExpandMaxNodes)
+			// The subtree's parent links let a hot leaf in it keep its path (budgetProvenanceRows).
+			if tree.add(sub.members[node], sub.size[node], sub.firstMs[node], sub.lastMs[node], reconnectExpandMaxNodes) {
+				if up, ok := sub.parent[node]; ok && tree.has(up) {
+					tree.parent[tree.order[len(tree.order)-1]] = tree.node(up)
+				}
+			}
 			if len(tree.order) >= reconnectExpandMaxNodes {
 				log.Printf("[pgr] reconnection expansion hit node cap (%d)", reconnectExpandMaxNodes)
 				return

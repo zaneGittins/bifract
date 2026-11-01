@@ -17,6 +17,7 @@ import (
 )
 
 func TestContractErrors(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
 	cases := []struct {
@@ -80,6 +81,7 @@ func TestContractErrors(t *testing.T) {
 // envelope and that limit and offset actually move the window, rather than
 // being accepted and ignored.
 func TestContractPagination(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
 	var all struct {

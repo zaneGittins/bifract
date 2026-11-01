@@ -157,26 +157,27 @@ func TestNegatedExpressionLeaf(t *testing.T) {
 	}
 }
 
-// Without a connector, a condition starting with a field binds like AND, while
-// any other operand ANDs with everything written before it in the stage.
-func TestAdjacentOperandIsANewConjunct(t *testing.T) {
+// Without a connector, any operand binds like AND, whatever it starts with.
+func TestAdjacentOperandBindsLikeAnd(t *testing.T) {
 	a, b, c, d := "fields.`a`::String = '1'", "fields.`b`::String = '2'", "fields.`c`::String = '3'", "fields.`d`::String = '4'"
 	cNull, cNot := "fields.`c`::String IS NULL", "fields.`c`::String != '3'"
-	orThenAnd := func(v ...bool) bool { return (v[0] || v[1]) && v[2] }
-	orThenOr := func(v ...bool) bool { return (v[0] || v[1]) && (v[2] || v[3]) }
+	orAnd := func(v ...bool) bool { return v[0] || v[1] && v[2] }
+	orAndOr := func(v ...bool) bool { return v[0] || v[1] && (v[2] || v[3]) }
 	cases := []struct {
 		query string
 		atoms []string
 		want  func(v ...bool) bool
 	}{
-		{`a="1" OR b="2" NOT c="3"`, []string{a, b, cNull, cNot}, orThenOr},
-		{`a="1" OR b="2" lower(x)="y"`, []string{a, b, "lower(fields.`x`::String) = 'y'"}, orThenAnd},
-		{`a="1" OR b="2" "x"`, []string{a, b, "match(lower(norm_log), 'x')"}, orThenAnd},
-		{`a="1" OR b="2" (c="3" OR d="4")`, []string{a, b, c, d}, orThenOr},
-		{`a="1" OR b="2" c="3"`, []string{a, b, c}, func(v ...bool) bool { return v[0] || v[1] && v[2] }},
+		{`a="1" OR b="2" NOT c="3"`, []string{a, b, cNull, cNot}, orAndOr},
+		{`a="1" OR b="2" lower(x)="y"`, []string{a, b, "lower(fields.`x`::String) = 'y'"}, orAnd},
+		{`a="1" OR b="2" "x"`, []string{a, b, "match(lower(norm_log), 'x')"}, orAnd},
+		{`a="1" OR b="2" (c="3" OR d="4")`, []string{a, b, c, d}, orAndOr},
+		{`a="1" OR b="2" c="3"`, []string{a, b, c}, orAnd},
 		{`lower(x)="y" a="1" OR b="2"`, []string{"lower(fields.`x`::String) = 'y'", a, b}, func(v ...bool) bool { return v[0] && v[1] || v[2] }},
+		{`lower(x)="y" "x" OR b="2"`, []string{"lower(fields.`x`::String) = 'y'", "match(lower(norm_log), 'x')", b}, func(v ...bool) bool { return v[0] && v[1] || v[2] }},
+		{`lower(x)="y" (c="3" OR d="4") OR b="2"`, []string{"lower(fields.`x`::String) = 'y'", c, d, b}, func(v ...bool) bool { return v[0] && (v[1] || v[2]) || v[3] }},
 		{`a="1" OR b="2" NOT c="3" OR d="4"`, []string{a, b, cNull, cNot, d},
-			func(v ...bool) bool { return (v[0] || v[1]) && (v[2] || v[3] || v[4]) }},
+			func(v ...bool) bool { return v[0] || v[1] && (v[2] || v[3]) || v[4] }},
 	}
 	for _, tc := range cases {
 		for _, form := range []string{tc.query, "* | " + tc.query} {

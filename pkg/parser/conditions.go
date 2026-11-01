@@ -21,7 +21,7 @@ type condGroup struct {
 // Routing rules by FieldKind:
 //   - FieldKindAggregate  -> HAVING (when aggregation present), else WHERE
 //   - FieldKindWindow     -> DeferredWhere (post-window filter), or HAVING for traversal
-//   - FieldKindPerRow     -> WHERE (inlined expression; string-typed, needs toFloat64OrZero)
+//   - FieldKindPerRow     -> WHERE (inlined expression; string-typed, needs textToNumber)
 //   - FieldKindAssignment -> WHERE (inlined expression; already numeric, no coercion needed)
 //   - Base/JSON/unknown   -> WHERE
 //
@@ -313,16 +313,6 @@ func isAddressableAfterGroupBy(ref string) bool {
 // registry entry, which resolves to the numeric _count/_sum/_avg alias.
 func isBareAggregate(field string) bool {
 	return field == "count" || field == "sum" || field == "avg"
-}
-
-// sanitizedAlias is the alias a grouping key is projected under. A name carrying a
-// dot or dash is not a bare identifier, so it is quoted; sanitizeIdentifier already
-// makes that decision for every other alias.
-func sanitizedAlias(field string) string {
-	if safe, err := sanitizeIdentifier(field); err == nil {
-		return safe
-	}
-	return field
 }
 
 // isGroupKey reports whether a field is one of the plan's grouping keys, and so
@@ -631,7 +621,7 @@ func materializePostJoin(conds []HavingCondition, registry *FieldRegistry, plan 
 		// The run's connectors bind with SQL precedence, so it splits into
 		// conjuncts only when every one of them is AND.
 		units := [][]HavingCondition{run}
-		if !slices.ContainsFunc(run[:len(run)-1], func(c HavingCondition) bool { return strings.EqualFold(c.Logic, "OR") }) {
+		if allAnd(run) {
 			units = units[:0]
 			for k := range run {
 				units = append(units, run[k:k+1])
@@ -643,11 +633,42 @@ func materializePostJoin(conds []HavingCondition, registry *FieldRegistry, plan 
 			case clause == "":
 			case plan.ModelLookupStrict && !capBetween(at) && readsOnly(clause, isModelColumn):
 				plan.ModelLookupWhere = append(plan.ModelLookupWhere, clause)
+				if requiresNew(u, reg) {
+					plan.modelKeys.scoreOnlyNew()
+				}
 			default:
 				plan.PostJoinWhere = append(plan.PostJoinWhere, postJoinFilter{At: at, SQL: clause})
 			}
 		}
 	}
+}
+
+// requiresNew reports whether the AND-ed conditions hold only where the model's
+// is_new is '1'.
+func requiresNew(conds []HavingCondition, reg *FieldRegistry) bool {
+	if !allAnd(conds) {
+		return false
+	}
+	for _, c := range conds {
+		if c.IsCompound {
+			if !c.Negate && requiresNew(c.Children, reg) {
+				return true
+			}
+			continue
+		}
+		// Rendered, so an is_new reassigned after the lookup is not mistaken for it.
+		if c.Field == "is_new" {
+			if sql := materializeCondGroup([]HavingCondition{c}, reg, nil, false); sql == "is_new = '1'" || sql == "is_new != '0'" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// allAnd reports whether every connector between the conditions is AND.
+func allAnd(conds []HavingCondition) bool {
+	return len(conds) == 0 || !slices.ContainsFunc(conds[:len(conds)-1], func(c HavingCondition) bool { return strings.EqualFold(c.Logic, "OR") })
 }
 
 // condTouchesWindowField reports whether any leaf of the condition references a
@@ -794,14 +815,16 @@ func joinCondGroups(groups []condGroup) string {
 }
 
 // buildConditionSQL builds the SQL for a single HavingCondition using the registry,
-// with a norm_log index hint when it filters a stored field on the logs scan.
+// with a norm_log index hint when it filters a stored field or norm_log itself on
+// the logs scan.
 func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
 	fieldRef, isJSONField := resolveConditionField(cond, registry)
 	sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField)
-	if sql == "" || !atScan || !isJSONField || !registry.normLogIndexHints {
+	onNormLog := fieldRef == normLogColumn
+	if sql == "" || !atScan || !(isJSONField || onNormLog) || !registry.normLogIndexHints {
 		return sql
 	}
-	if hint := normLogHint(cond, registry.sourceMode); hint != "" {
+	if hint := normLogHint(cond, registry.sourceMode, onNormLog); hint != "" {
 		return "(" + sql + " AND " + hint + ")"
 	}
 	return sql
@@ -849,6 +872,16 @@ func resolveConditionField(cond HavingCondition, registry *FieldRegistry) (field
 
 // conditionSQL compiles a single HavingCondition, its field already resolved.
 func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, fieldRef string, isJSONField bool) string {
+	switch cond.Operator {
+	case ">", "<", ">=", "<=":
+		if cond.Negate {
+			cond.Negate = false
+			if sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField); sql != "" {
+				return "NOT (" + sql + ")"
+			}
+			return ""
+		}
+	}
 	entry := registry.Get(cond.Field)
 
 	// At a deferred layer a source expression must be read from its exported hidden
@@ -860,7 +893,7 @@ func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferred
 		rhs := resolveValueField(cond.ValueField, registry)
 		rhs.ref = scope.ref(rhs.ref, cond.ValueField)
 		// A bare count/sum/avg has no registry entry but resolves to the numeric
-		// _count/_sum/_avg alias, which toFloat64OrZero rejects (code 43). Same
+		// _count/_sum/_avg alias, which textToNumber rejects (code 43). Same
 		// carve-out the literal comparison path makes below.
 		computed := registry.bareAggregate(cond.Field) ||
 			(entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
@@ -925,20 +958,20 @@ func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferred
 		if err := validateNumeric(cond.Value); err != nil {
 			return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
 		}
-		// An assignment that compiles to a number needs no coercion; wrapping one
-		// in toFloat64OrZero is rejected by the server (illegal type UInt64).
+		// Text is read with textToNumber. A number needs no coercion; wrapping one
+		// is rejected by the server (illegal type UInt64).
 		isPerRow := entry != nil && entry.Kind == FieldKindPerRow && !entry.Numeric
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
-		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
+		// numeric _count/_sum/_avg aliases and must not be coerced.
 		isAggFallback := entry == nil && registry.bareAggregate(cond.Field)
 		isComputed := isAggFallback || (entry != nil && (entry.Numeric || entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
 		if isPerRow {
-			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
+			return fmt.Sprintf("%s %s %s", textToNumber(fieldRef), cond.Operator, cond.Value)
 		}
 		if isComputed {
 			return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, cond.Value)
 		}
-		return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
+		return fmt.Sprintf("%s %s %s", textToNumber(fieldRef), cond.Operator, cond.Value)
 	}
 	return ""
 }
@@ -1018,15 +1051,9 @@ func negateHavingCondition(h *HavingCondition) {
 		h.Operator = "!="
 	case "!=":
 		h.Operator = "="
-	case ">":
-		h.Operator = "<="
-	case "<":
-		h.Operator = ">="
-	case ">=":
-		h.Operator = "<"
-	case "<=":
-		h.Operator = ">"
-	case "=~", "=^", "=$":
+	case "=~", "=^", "=$", ">", "<", ">=", "<=":
+		// An ordering is negated whole, not flipped: a non-number fails both
+		// x < n and x >= n, and NOT has to match it.
 		h.Negate = !h.Negate
 	}
 }
@@ -1117,9 +1144,9 @@ func andJoin(parts []string) string {
 }
 
 // hasTopLevelOR reports whether the clause contains an OR outside every bracket
-// and string literal.
+// and string literal or backtick identifier.
 //
-// A string literal is skipped whole, honouring backslash escapes: escapeString
+// A quoted run is skipped whole, honouring backslash escapes: escapeString
 // doubles backslashes, so a Windows path ends 'C:\\' and a naive "is the
 // previous byte a backslash" test reads the closing quote as escaped, never
 // leaves the string, and misses every OR after it.
@@ -1127,14 +1154,14 @@ func hasTopLevelOR(clause string) bool {
 	depth := 0
 	for i := 0; i < len(clause); i++ {
 		c := clause[i]
-		if c == '\'' {
+		if c == '\'' || c == '`' {
 			i++
 			for ; i < len(clause); i++ {
 				if clause[i] == '\\' {
 					i++ // whatever follows is escaped, quote included
 					continue
 				}
-				if clause[i] == '\'' {
+				if clause[i] == c {
 					break
 				}
 			}
@@ -1151,9 +1178,8 @@ func hasTopLevelOR(clause string) bool {
 		case c == ')':
 			depth--
 			if depth < 0 {
-				// Unbalanced, so the clause is not shaped as expected (a backtick
-				// identifier can carry a stray paren). Bracket rather than let an
-				// OR past the scope guards.
+				// Unbalanced, so the clause is not shaped as expected. Bracket rather
+				// than let an OR past the scope guards.
 				return true
 			}
 		case depth == 0 && (c == 'O' || c == 'o') &&

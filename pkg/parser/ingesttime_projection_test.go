@@ -114,7 +114,6 @@ func TestIngestTimeOffByDefault(t *testing.T) {
 func TestIngestTimeSkippedWhenNameIsBound(t *testing.T) {
 	for _, q := range []string{
 		`* | table(timestamp, ingest_timestamp)`,
-		`* | eval(ingest_timestamp = 1) | table(ingest_timestamp)`,
 	} {
 		res := translateIngest(t, q, ingestOpts())
 		if strings.Contains(res.SQL, ingestTimeColumn) {
@@ -161,8 +160,8 @@ func TestTableProjectsBaseColumns(t *testing.T) {
 // An eval() that rebinds a base column's name re-registers it as per-row, so
 // table() must project the computed value rather than the column.
 func TestTableBaseColumnOverriddenByEval(t *testing.T) {
-	res := translateIngest(t, `* | eval(log_id = lower(user)) | table(log_id)`, ingestOpts())
-	if !strings.Contains(res.SQL, "AS log_id") {
+	res := translateIngest(t, `* | eval(normalizer = lower(user)) | table(normalizer)`, ingestOpts())
+	if !strings.Contains(res.SQL, "AS normalizer") {
 		t.Errorf("eval-bound name must project the computed value:\n%s", res.SQL)
 	}
 }

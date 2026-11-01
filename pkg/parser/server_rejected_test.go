@@ -130,14 +130,14 @@ func TestTopPercentUsesAFunctionThatExists(t *testing.T) {
 	}
 }
 
-// toFloat64OrZero and its siblings take a String. Applying one to an expression
+// toFloat64OrDefault and its siblings take a String. Applying one to an expression
 // that already compiles to a number was rejected as an illegal argument type.
 func TestNumericExpressionsAreNotCoercedFromString(t *testing.T) {
 	sql := translateForServer(t, `* | n := len(commandline) | n > 500`)
 	if !strings.Contains(sql, "length(fields.`commandline`::String) > 500") {
 		t.Errorf("want the length compared directly, got: %s", sql)
 	}
-	if strings.Contains(sql, "toFloat64OrZero(length(") {
+	if strings.Contains(sql, "toFloat64OrDefault(length(") {
 		t.Errorf("still casts a number as if it were a string: %s", sql)
 	}
 }

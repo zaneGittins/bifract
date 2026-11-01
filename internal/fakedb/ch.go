@@ -259,11 +259,11 @@ func (f *CH) QueryRow(ctx context.Context, query string, args ...any) driver.Row
 	return &chRow{vals: res.Rows[0]}
 }
 
-func (f *CH) PrepareBatch(_ context.Context, query string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
+func (f *CH) PrepareBatch(ctx context.Context, query string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	if f.PrepareErr != nil {
 		return nil, f.PrepareErr
 	}
-	b := &Batch{Query: query}
+	b := &Batch{Query: query, Ctx: ctx}
 	if f.OnBatch != nil {
 		f.OnBatch(b)
 	}
@@ -418,6 +418,11 @@ func assignRow(vals []any, dest []any) error {
 			target.Set(v)
 			continue
 		}
+		// A **T destination (a Nullable column) gets a fresh *T, as the driver does.
+		if target.Kind() == reflect.Pointer && v.Type().AssignableTo(target.Type().Elem()) {
+			target.Set(reflect.New(target.Type().Elem()))
+			target = target.Elem()
+		}
 		if !v.Type().AssignableTo(target.Type()) {
 			return fmt.Errorf("converting %s to %s is unsupported", v.Type(), dv.Type())
 		}
@@ -430,6 +435,7 @@ func assignRow(vals []any, dest []any) error {
 // to script a failure, and reads Appended, Sent and Aborted afterwards.
 type Batch struct {
 	Query     string
+	Ctx       context.Context
 	Appended  [][]any
 	AppendErr error
 	SendErr   error

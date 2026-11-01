@@ -1,8 +1,6 @@
 package archive
 
 import (
-	"bytes"
-	"encoding/json"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -11,6 +9,7 @@ import (
 	"github.com/apache/iceberg-go"
 	icetable "github.com/apache/iceberg-go/table"
 
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/parser"
 	"bifract/pkg/storage"
 )
@@ -156,12 +155,9 @@ func marshalFields(m map[string]string) string {
 	if len(m) == 0 {
 		return "{}"
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(m); err != nil {
+	b, err := jsonenc.Marshal(m)
+	if err != nil {
 		return "{}"
 	}
-	// Encoder.Encode appends a trailing newline; trim it.
-	return string(bytes.TrimRight(buf.Bytes(), "\n"))
+	return string(b)
 }

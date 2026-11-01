@@ -5,7 +5,7 @@ In a Docker Compose install, all traffic enters through the bundled Caddy. This 
 | Port | Serves |
 |------|--------|
 | 443 | UI and API |
-| 8443 | Ingest endpoints only (`/api/v1/ingest*`, `/_bulk`, `/v1/logs`) |
+| 8443 | Ingest endpoints only (`/api/v1/ingest*`, `/_bulk`, `/v1/logs`, `/services/collector*`) |
 | 80 | Let's Encrypt challenges and the HTTPS redirect (Let's Encrypt and custom modes) |
 
 PostgreSQL and ClickHouse are reachable only inside the Docker network. Caddy's access logs are shipped to the **system** fractal.
@@ -76,7 +76,7 @@ Import the `.p12` into the user's browser or OS keychain. Certificates are valid
 
 Bifract applies per-address sign-in and ingest rate limits and logs the client address, so it needs the real address behind a proxy. For a request from a trusted proxy, it reads `X-Forwarded-For` from the right and takes the first address that is not a trusted proxy, falling back to `X-Real-IP`. For any other request it ignores those headers and uses the connecting address.
 
-Edit the list in **Settings > Security > Trusted proxies**, one IP or CIDR range per line, and click **Save**. It applies to the next request; a separate ingest tier picks it up on restart.
+Edit the list in **Settings > Security > Trusted proxies**, one IP or CIDR range per line, and click **Save**. It applies to the next request on every app and ingest replica.
 
 ![Trusted proxies setting](../images/administration/trusted-proxies.png)
 

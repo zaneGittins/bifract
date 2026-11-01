@@ -95,7 +95,9 @@ func buildAnalyzeFieldsSQL(
 	}, nil
 }
 
-func procLineageFractalCond(opts QueryOptions, prefix string) string {
+// fractalScopeCond is the fractal isolation predicate on prefix+fractal_id, or ""
+// when the query is not fractal scoped.
+func fractalScopeCond(opts QueryOptions, prefix string) string {
 	col := prefix + "fractal_id"
 	if len(opts.FractalIDs) > 0 {
 		quoted := make([]string, 0, len(opts.FractalIDs)+1)
@@ -120,8 +122,8 @@ var procTreeFieldOrder = []string{"timestamp", "process_guid", "parent_guid", "i
 
 // ptg() projected into pgr()'s edge shape for pgraph(). Column names, order, and expressions
 // mirror provenance spawn rows (see pkg/query/provenance.go) so pgraph stays a single-shape
-// renderer. command_line is capped like pgr's; proc_user is empty because proc_lineage carries
-// no user column and ptg() deliberately does not join logs to get one.
+// renderer. command_line is capped like pgr's; proc_user is empty because ptg() does not
+// read it.
 const procTreePgraphCols = "parent_guid AS parent, process_guid AS child, image AS label, 'spawn' AS event_type, " +
 	"log_id, timestamp, fractal_id, substring(commandline, 1, 300) AS command_line, " +
 	"'' AS proc_user, computer_name AS host, parent_image AS parent_label, group_size, group_first, group_last"
@@ -892,11 +894,22 @@ func buildMatchExpr(fieldRef, pattern, literal string, mode SourceMode) string {
 		pattern = normLogLiteralPattern(literal, mode)
 	}
 	if fieldRef == normLogColumn && strings.HasPrefix(pattern, caseInsensitiveFlag) {
-		if lowered, ok := lowerRegexForLowercasedColumn(pattern[len(caseInsensitiveFlag):]); ok {
-			return fmt.Sprintf("match(lower(%s), %s)", normLogColumn, escapeRegexForClickHouse(lowered))
+		if expr, ok := indexedNormLogMatch(pattern[len(caseInsensitiveFlag):]); ok {
+			return expr
 		}
 	}
 	return fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
+}
+
+// indexedNormLogMatch renders a case-insensitive match of pattern (without its
+// (?i) flag) in the match(lower(norm_log), ...) form the n-gram index answers, or
+// ok=false when the pattern cannot be lowered safely.
+func indexedNormLogMatch(pattern string) (string, bool) {
+	lowered, ok := lowerRegexForLowercasedColumn(pattern)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("match(lower(%s), %s)", normLogColumn, escapeRegexForClickHouse(lowered)), true
 }
 
 // lowerRegexForLowercasedColumn lowercases the literal portions of an RE2 pattern
@@ -1107,23 +1120,24 @@ func numericCast(fieldName, resolvedExpr string, registry *FieldRegistry) string
 	return fmt.Sprintf("toFloat64OrNull(%s)", resolvedExpr)
 }
 
-// convertTimeFormat converts BQL time format to ClickHouse format
-func convertTimeFormat(bqlFormat string) string {
-	// Convert common format patterns to ClickHouse
-	format := bqlFormat
-	format = strings.ReplaceAll(format, "%Y", "%Y")    // Year (4 digits)
-	format = strings.ReplaceAll(format, "%m", "%m")    // Month (01-12)
-	format = strings.ReplaceAll(format, "%d", "%d")    // Day (01-31)
-	format = strings.ReplaceAll(format, "%H", "%H")    // Hour (00-23)
-	format = strings.ReplaceAll(format, "%M", "%M")    // Minute (00-59)
-	format = strings.ReplaceAll(format, "%S", "%S")    // Second (00-59)
-	format = strings.ReplaceAll(format, "%R", "%H:%M") // Hour:Minute
+// strftimeOnlySpecifiers are strftime spellings ClickHouse's formatDateTime lacks, mapped to
+// its own. Every other specifier is ClickHouse's, passed through as written.
+var strftimeOnlySpecifiers = map[byte]byte{'A': 'W', 'B': 'M'}
 
-	// Handle some common patterns
-	if format == "%A %d %B %Y, %R" {
-		return "%W %d %B %Y, %H:%M"
+// convertTimeFormat maps a strftime() format to formatDateTime. It walks specifiers so a
+// literal %% is never read as the start of one.
+func convertTimeFormat(format string) string {
+	out := []byte(format)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] != '%' {
+			continue
+		}
+		if ch, ok := strftimeOnlySpecifiers[out[i+1]]; ok {
+			out[i+1] = ch
+		}
+		i++ // past the specifier, including the second % of %%
 	}
-	return format
+	return string(out)
 }
 
 // parseBucketSpan parses spans like "1h", "30m", "5s" into a numeric value and unit.
@@ -1409,7 +1423,7 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
 		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
 		plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
-		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
+		plan.hasModelLookup() || len(plan.Stages) > 1 {
 		return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name))
 	}
 

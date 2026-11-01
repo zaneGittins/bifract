@@ -11,7 +11,7 @@ path and body.
 ## Running
 
 ```
-BIFRACT_API_KEY=bifract_... go test -tags integration ./test/integration/ -v
+BIFRACT_API_KEY=bifract_... go test -tags integration ./test/integration/ -v -parallel 32
 ```
 
 | Variable | Default | Meaning |
@@ -30,6 +30,8 @@ Mint a key under **Settings > API Keys > New key**, with **Tenant admin** ticked
 | Test | Covers |
 |------|--------|
 | `TestIngestAndQuery` | Create a fractal, mint an ingest token, send logs, read them back |
+| `TestFractalScopeHoldsAgainstAliases` | A query cannot name an output after `fractal_id` or `timestamp` to read another fractal |
+| `TestSplunkHEC` | Splunk HEC health, events, raw lines and the bare path with Basic auth, queried back by host and sourcetype |
 | `TestDetectionLifecycle` | Validate a query, create a rule disabled, enable it, read its executions |
 | `TestNotebookPortability` | Build a notebook, export it as YAML, import it back |
 | `TestInvestigation` | Record a finding against a log, tag it into a case, find it again |
@@ -44,9 +46,11 @@ Recipes create what they need and clean up after themselves, so the suite is
 safe to run against a development instance. It is not safe against production:
 it creates and deletes fractals.
 
-Ingestion is asynchronous and batched, so a recipe that writes and reads back
-waits for the queue rather than assuming. `TestIngestAndQuery` takes about
-30 seconds for that reason; the rest of the suite finishes in under three.
+Recipes run in parallel, each in a fractal of its own, so the suite takes as
+long as its slowest recipe. Most of that is waiting on asynchronous work: the
+ingest flush, model state cycles and backfills. `docker-compose.yml` here
+shortens those timings, and the suite takes under a minute against it. Against
+a stack on production timings it still passes, in four to six minutes.
 
 `TestInvestigation` needs a fractal with logs in it and skips otherwise, so set
 `BIFRACT_FRACTAL_ID` to one that has data.

@@ -81,6 +81,9 @@ func TestPrepareLiveUnsupportedShapes(t *testing.T) {
 		"* | count()",
 		"* | sort(user)",
 		"* | groupBy(user) | piechart()",
+		"* | dedup(user)",
+		"* | limit(5)",
+		"* | madoutlier(bytes)",
 	} {
 		prep := prepare(t, h, purposeLive, jsonBody(t, QueryRequest{Query: q, FractalID: "f1"}), adminCtx())
 		if prep.liveSupported {

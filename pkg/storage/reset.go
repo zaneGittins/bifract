@@ -22,6 +22,8 @@ var resetMaterializedViews = []string{
 	"proc_freq_rthread_mv",
 	"proc_freq_pacc_mv",
 	"process_edges_mv",
+	"provenance_summary_lineage_mv",
+	"provenance_summary_freq_mv",
 }
 
 // resetShardedTables are the log tables and everything derived from them. Each has a
@@ -37,6 +39,7 @@ var resetShardedTables = []string{
 	"proc_lineage",
 	"proc_freq",
 	"process_edges",
+	provenanceSummaryTable,
 }
 
 // resetBookkeepingTables carry the migration ledger, which is per-shard and never
@@ -112,6 +115,7 @@ func ResetLogDataStatements(extraViews, extraTables []string) []string {
 		names = append(names, t, t+"_distributed")
 	}
 	names = append(names, repartitionWorkingTables()...)
+	names = append(names, provenanceFillDone, provenanceFillCleared)
 	names = append(names, fieldPathsStage)
 	names = append(names, resetBookkeepingTables...)
 	for _, name := range names {

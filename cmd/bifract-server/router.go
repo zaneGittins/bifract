@@ -60,9 +60,9 @@ type routerDeps struct {
 	ddlMonitor      *storage.DDLMonitor
 	recallEstimator *archive.Estimator
 
-	// alertDeferThreshold is the ingest queue depth past which alert
-	// evaluation is deferred, reported by /system/pressure.
-	alertDeferThreshold int
+	// alertsDeferred reports whether alert evaluation is deferred for ingest
+	// pressure, shown by /system/pressure.
+	alertsDeferred func() bool
 
 	alertHandler          *alerts.Handler
 	apiKeyHandler         *apikeys.Handler
@@ -89,6 +89,7 @@ type routerDeps struct {
 	notificationHandler   *notifications.Handler
 	oidcHandler           *oidc.Handler
 	otlpHandler           *ingest.OTLPHandler
+	hecHandler            *ingest.HECHandler
 	performanceHandler    *query.PerformanceHandler
 	prismHandler          *prisms.Handler
 	queryHandler          *query.QueryHandler
@@ -818,7 +819,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/auth/change-password",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Request:  auth.ChangePasswordRequest{},
 				Response: auth.Response{},
 				Summary:  "Change the caller's own password.",
@@ -838,6 +839,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Method:   http.MethodPost,
 				Path:     "/auth/mfa/enroll",
 				Access:   api.AccessAuthenticated,
+				Request:  auth.MFAPasswordRequest{},
 				Response: auth.Response{},
 				Summary:  "Start two-factor enrollment and return the secret to scan.",
 				Handler:  d.authHandler.HandleMFAEnroll,
@@ -881,7 +883,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPatch,
 				Path:     "/auth/preferences",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Request:  auth.UpdatePreferencesRequest{},
 				Response: auth.Response{},
 				Summary:  "Update the caller's display preferences.",
@@ -2060,7 +2062,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/prisms",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.ListResponse[*prisms.Prism]{},
 				Summary:  "List the prisms the caller can reach.",
 				Handler:  d.prismHandler.HandleListPrisms,
@@ -2102,7 +2104,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/prisms/{id}/select",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.Response[prisms.SelectedPrism]{},
 				Summary:  "Set the session's selected prism.",
 				Handler:  d.prismHandler.HandleSelectPrism,
@@ -2163,7 +2165,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.Response[fractals.FractalListResponse]{},
 				Summary:  "List the fractals and prisms the caller can reach.",
 				Handler:  d.fractalHandler.HandleListFractals,
@@ -2204,7 +2206,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/select",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.Response[fractals.SelectedFractal]{},
 				Summary:  "Set the session's selected fractal.",
 				Handler:  d.fractalHandler.HandleSelectFractal,
@@ -2940,6 +2942,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Response: api.Response[*models.Model]{},
 				Summary:  "Start a one-time historical backfill for a model.",
 				Handler:  d.modelHandler.HandleStartBackfill,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     "/models/{id}/score-range",
+				Access:   api.AccessAnalyst,
+				Request:  models.ScoreRangeRequest{},
+				Response: api.Response[*models.ScoreRangeResult]{},
+				Summary:  "Score a network model over a past range and keep the scores.",
+				Handler:  d.modelHandler.HandleScoreRange,
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
@@ -4025,6 +4036,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			Handler:  d.otlpHandler.HandleLogs,
 		})
 	})
+	registerHECRoutes(r, d.hecHandler, d.rateLimiter)
+
 	// Deep links: the documented, hand-constructible entry point external tools
 	// use to drop an analyst into a specific query. Session-authenticated and
 	// resolved server-side, then redirected into the SPA.
@@ -4045,4 +4058,54 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 	})
 
 	return mux, reg
+}
+
+// registerHECRoutes mounts the Splunk HTTP Event Collector paths, with the
+// versioned and bare aliases Splunk clients use. Shared by the app and ingest tiers.
+func registerHECRoutes(r api.Router, h *ingest.HECHandler, rl *ingest.RateLimiter) {
+	r.Register(api.Route{
+		Method:   http.MethodGet,
+		Path:     "/services/collector/health",
+		Access:   api.AccessPublic,
+		Response: ingest.HECResponse{},
+		Summary:  "Report Splunk HEC health: 503 while ingestion is under backpressure.",
+		Handler:  h.HandleHealth,
+	})
+	r.Register(api.Route{
+		Method:   http.MethodGet,
+		Path:     "/services/collector/health/1.0",
+		Access:   api.AccessPublic,
+		Response: ingest.HECResponse{},
+		Summary:  "Report Splunk HEC health: 503 while ingestion is under backpressure.",
+		Handler:  h.HandleHealth,
+	})
+	// Defaults for the Splunk metadata an event does not carry itself.
+	metadata := []api.QueryParam{{Name: "host"}, {Name: "source"}, {Name: "sourcetype"}, {Name: "index"}}
+	r.Group(func(r api.Router) {
+		r.Use(ingest.RateLimitMiddleware(rl))
+		for _, path := range []string{"/services/collector", "/services/collector/event", "/services/collector/event/1.0"} {
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     path,
+				Consumes: "application/json",
+				Query:    metadata,
+				Access:   api.AccessIngestToken,
+				Response: ingest.HECResponse{},
+				Summary:  "Ingest Splunk HEC event envelopes.",
+				Handler:  h.HandleEvent,
+			})
+		}
+		for _, path := range []string{"/services/collector/raw", "/services/collector/raw/1.0"} {
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     path,
+				Consumes: "text/plain",
+				Query:    metadata,
+				Access:   api.AccessIngestToken,
+				Response: ingest.HECResponse{},
+				Summary:  "Ingest Splunk HEC raw events, one per line.",
+				Handler:  h.HandleRaw,
+			})
+		}
+	})
 }

@@ -137,7 +137,7 @@ func TestTranslateModifiers(t *testing.T) {
 		{"empty keyword matches everything", fc("", nil, ""), `*`, nil},
 
 		// null: the field must be absent or empty.
-		{"null", FieldCondition{Field: "ParentImage"}, `NOT ParentImage=*`, nil},
+		{"null", FieldCondition{Field: "ParentImage", Null: true}, `NOT ParentImage=*`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,7 +158,7 @@ func TestTranslateModifiers(t *testing.T) {
 	}
 }
 
-// A null keyword selection constrains nothing.
+// A keyword selection with no values constrains nothing.
 func TestTranslateNullKeyword(t *testing.T) {
 	got, err := Translate(singleSelection(FieldCondition{}), nil)
 	if err != nil || got != "*" {
@@ -258,7 +258,7 @@ func TestTranslateModifierValuesAreChecked(t *testing.T) {
 // The Sigma v2 modifiers, end to end through the parser and SQL translator.
 func TestTranslateV2Modifiers(t *testing.T) {
 	const num = `/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/`
-	sizeRef := "toFloat64OrZero(fields.`Size`::String)"
+	sizeRef := "toFloat64OrDefault(fields.`Size`::String, nan)"
 	cases := []struct {
 		name string
 		cond FieldCondition
@@ -283,8 +283,7 @@ func TestTranslateV2Modifiers(t *testing.T) {
 		{"fieldref list is any field", fc("TargetUserName", []string{"fieldref"}, "SubjectUserName", "User"),
 			`(TargetUserName=* AND (TargetUserName=field(SubjectUserName) OR TargetUserName=field(User)))`, nil},
 
-		// BQL compares text through toFloat64OrZero, so a missing or non-numeric value
-		// would compare as 0. The guard keeps |lt 5 from matching every event without one.
+		// The guard keeps a comparison to plain decimals; ClickHouse also reads inf and nan.
 		{"gt", fc("Size", []string{"gt"}, "5"), `(Size=` + num + ` AND Size>5)`, []string{sizeRef + " > 5", "match(fields.`Size`::String"}},
 		{"gte decimal", fc("Size", []string{"gte"}, "1.5"), `(Size=` + num + ` AND Size>=1.5)`, []string{sizeRef + " >= 1.5"}},
 		{"lt negative", fc("Size", []string{"lt"}, "-1"), `(Size=` + num + ` AND Size<-1)`, []string{sizeRef + " < -1"}},
@@ -443,7 +442,7 @@ detection:
 	want := map[string][]string{
 		"EventID": {"4688"},
 		"Ratio":   {"1.5"},
-		"Whole":   {"2"},
+		"Whole":   {"2.0"},
 		"Big":     {"4294967296"},
 		"Flag":    {"true"},
 		"Missing": nil,
@@ -690,7 +689,7 @@ func TestTranslateMapsFieldsThroughNormalizer(t *testing.T) {
 		Selections: map[string]SelectionGroup{
 			"img":    {FieldConditions: []FieldCondition{fc("Image", []string{"endswith"}, `\rundll32.exe`)}},
 			"cmd":    {FieldConditions: []FieldCondition{fc("CommandLine", []string{"contains"}, "javascript:")}},
-			"parent": {FieldConditions: []FieldCondition{{Field: "ParentImage"}}},
+			"parent": {FieldConditions: []FieldCondition{{Field: "ParentImage", Null: true}}},
 			"kw":     {FieldConditions: []FieldCondition{fc("", nil, "RunHTMLApplication")}},
 		},
 	}}

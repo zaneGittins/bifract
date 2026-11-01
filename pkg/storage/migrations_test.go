@@ -5,6 +5,8 @@ import (
 	"embed"
 	"errors"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +401,85 @@ func TestRewriteEngine(t *testing.T) {
 	single := &ClickHouseClient{}
 	if got := single.RewriteEngine("ENGINE = MergeTree()"); got != "ENGINE = MergeTree()" {
 		t.Errorf("single node rewrote the engine: %q", got)
+	}
+}
+
+// A retried logs insert is only dropped where the table keeps a dedup window, and its
+// materialized views re-run on the retry, so logs and every view target need one. Replicated
+// engines keep a window by default; this covers single node, fresh and upgraded.
+func TestInsertDedupWindowOnLogsAndViewTargets(t *testing.T) {
+	const setting = "non_replicated_deduplication_window"
+	viewTarget := regexp.MustCompile(`(?i)CREATE MATERIALIZED VIEW IF NOT EXISTS \S+ TO (\w+)`)
+	tables := map[string]bool{"logs": true}
+	for _, m := range viewTarget.FindAllStringSubmatch(dbsql.ClickHouseSQL, -1) {
+		tables[m[1]] = true
+	}
+	if len(tables) < 2 {
+		t.Fatal("found no materialized view targets in init-clickhouse.sql")
+	}
+	migs, err := loadClickHouseMigrations(dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated []string
+	for _, m := range migs {
+		migrated = append(migrated, splitClickHouseSQL(m.sql)...)
+	}
+	for table := range tables {
+		ddl, err := initTableDDL(table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ddl, setting) {
+			t.Errorf("init-clickhouse.sql: %s has no %s", table, setting)
+		}
+		upgraded := slices.ContainsFunc(migrated, func(stmt string) bool {
+			return strings.Contains(stmt, setting) && (strings.Contains(stmt, "ALTER TABLE "+table+" ") ||
+				strings.Contains(stmt, "CREATE TABLE IF NOT EXISTS "+table+" ("))
+		})
+		if !upgraded {
+			t.Errorf("no migration sets %s on %s for upgraded installs", setting, table)
+		}
+	}
+}
+
+// Endpoint-analysis views are permanently detached while the feature is off, and
+// ClickHouse cannot MODIFY QUERY a detached view. The runner attaches it around the
+// statement and detaches it again, so the upgrade applies whatever the toggle says.
+func TestMigrationModifiesDetachedViewQuery(t *testing.T) {
+	const stmt = "ALTER TABLE proc_freq_spawn_mv MODIFY QUERY\nSELECT 1 AS x FROM logs"
+	for _, c := range []struct {
+		name     string
+		detached bool
+		failOn   string
+		want     []string
+	}{
+		{"attached", false, "", []string{stmt}},
+		{"detached", true, "", []string{"ATTACH TABLE proc_freq_spawn_mv", stmt, "DETACH TABLE proc_freq_spawn_mv PERMANENTLY"}},
+		{"detached and failing", true, "MODIFY QUERY", []string{"ATTACH TABLE proc_freq_spawn_mv", stmt, "DETACH TABLE proc_freq_spawn_mv PERMANENTLY"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := fakedb.NewCH()
+			if c.detached {
+				f.On("FROM system.detached_tables", fakedb.One("table", "String", "proc_freq_spawn_mv"))
+			}
+			if c.failOn != "" {
+				f.FailExec(c.failOn, errors.New("boom"))
+			}
+			err := execMigrationStmt(context.Background(), f, stmt)
+			if (err != nil) != (c.failOn != "") {
+				t.Fatalf("err = %v", err)
+			}
+			if got := f.Executed(); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("executed %q, want %q", got, c.want)
+			}
+		})
+	}
+	f := fakedb.NewCH()
+	if err := execMigrationStmt(context.Background(), f, "ALTER TABLE proc_freq ADD COLUMN IF NOT EXISTS y String"); err != nil {
+		t.Fatal(err)
+	}
+	if q := f.Queried(); len(q) != 0 {
+		t.Errorf("only MODIFY QUERY needs the detached check, ran %q", q)
 	}
 }

@@ -121,7 +121,7 @@ func (t *provenanceTree) span() (start, end time.Time) {
 		if !ok {
 			continue
 		}
-		// pm reads the node's own row, which is its earliest member.
+		// The command-line lookup reads the node's own row, which is its earliest member.
 		if lo == 0 || f < lo {
 			lo = f
 		}

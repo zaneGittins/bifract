@@ -91,7 +91,7 @@ func TestApplyWorkloadTagging(t *testing.T) {
 		t.Errorf("unmarked context must not be tagged, got %v", got)
 	}
 
-	if got := c.applyQuerySettings(UserSearchContext(context.Background()), nil); got["workload"] != QuerySearchWorkload {
+	if got := c.applyQuerySettings(UserSearchContext(context.Background(), FractalScope{}), nil); got["workload"] != QuerySearchWorkload {
 		t.Errorf("search context should carry the search workload, got %v", got)
 	}
 	if got := c.applyQuerySettings(RecallContext(context.Background()), nil); got["workload"] != QueryRecallWorkload {
@@ -100,7 +100,7 @@ func TestApplyWorkloadTagging(t *testing.T) {
 
 	// Existing settings must survive: clickhouse-go replaces the settings map
 	// wholesale, so dropping a caller's budget here would silently unbound it.
-	got := c.applyQuerySettings(UserSearchContext(context.Background()), clickhouse.Settings{"max_query_size": 42})
+	got := c.applyQuerySettings(UserSearchContext(context.Background(), FractalScope{}), clickhouse.Settings{"max_query_size": 42})
 	if got["max_query_size"] != 42 || got["workload"] != QuerySearchWorkload {
 		t.Errorf("expected merged settings, got %v", got)
 	}
@@ -114,8 +114,8 @@ func TestApplyWorkloadTagging(t *testing.T) {
 
 	// Nothing provisioned at all: back to pre-workload behavior.
 	c.setActiveWorkloads(nil)
-	if got := c.applyQuerySettings(UserSearchContext(context.Background()), nil); got != nil {
-		t.Errorf("inactive workloads must not tag, got %v", got)
+	if _, tagged := c.applyQuerySettings(UserSearchContext(context.Background(), FractalScope{}), nil)["workload"]; tagged {
+		t.Error("inactive workloads must not tag")
 	}
 }
 
@@ -126,7 +126,7 @@ func TestApplyQuerySettingsBudget(t *testing.T) {
 	c := &ClickHouseClient{}
 	c.setActiveWorkloads(nil)
 
-	ctx := QueryBudgetContext(UserSearchContext(context.Background()), 60)
+	ctx := QueryBudgetContext(UserSearchContext(context.Background(), FractalScope{}), 60)
 	got := c.applyQuerySettings(ctx, nil)
 	if got["max_execution_time"] != 60 || got["timeout_overflow_mode"] != "throw" {
 		t.Errorf("expected a server-enforced ceiling, got %v", got)
@@ -152,7 +152,7 @@ func TestApplyQuerySettingsMemoryCap(t *testing.T) {
 	c.setQueryMemoryCaps(map[string]int64{QuerySearchWorkload: 4_000_000_000})
 	c.setActiveWorkloads(nil)
 
-	got := c.applyQuerySettings(UserSearchContext(context.Background()), nil)
+	got := c.applyQuerySettings(UserSearchContext(context.Background(), FractalScope{}), nil)
 	if got["max_memory_usage"] != int64(4_000_000_000) {
 		t.Errorf("search must carry its memory ceiling without a workload, got %v", got)
 	}
@@ -172,7 +172,7 @@ func TestApplyQuerySettingsMemoryCap(t *testing.T) {
 
 	// Ceiling, tag, and caller settings coexist once the workload is provisioned.
 	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
-	got = c.applyQuerySettings(UserSearchContext(context.Background()), clickhouse.Settings{"max_query_size": 42})
+	got = c.applyQuerySettings(UserSearchContext(context.Background(), FractalScope{}), clickhouse.Settings{"max_query_size": 42})
 	if got["max_memory_usage"] != int64(4_000_000_000) || got["workload"] != QuerySearchWorkload || got["max_query_size"] != 42 {
 		t.Errorf("expected merged settings, got %v", got)
 	}
@@ -184,10 +184,10 @@ func TestApplyQuerySettingsMemoryCap(t *testing.T) {
 func TestApplyQuerySettingsSkipsStatisticsForSearch(t *testing.T) {
 	c := &ClickHouseClient{}
 	c.setActiveWorkloads(nil)
-	search := UserSearchContext(context.Background())
+	search := UserSearchContext(context.Background(), FractalScope{})
 
-	if got := c.applyQuerySettings(search, nil); got != nil {
-		t.Errorf("unprobed server must not be sent use_statistics, got %v", got)
+	if _, sent := c.applyQuerySettings(search, nil)["use_statistics"]; sent {
+		t.Error("unprobed server must not be sent use_statistics")
 	}
 
 	c.caps.set(CapStatisticsSetting, CapAvailable, "")
@@ -203,8 +203,8 @@ func TestApplyQuerySettingsSkipsStatisticsForSearch(t *testing.T) {
 	}
 
 	c.caps.set(CapStatisticsSetting, CapUnavailable, "no such setting")
-	if got := c.applyQuerySettings(search, nil); got != nil {
-		t.Errorf("a server without the setting must not be sent it, got %v", got)
+	if _, sent := c.applyQuerySettings(search, nil)["use_statistics"]; sent {
+		t.Error("a server without the setting must not be sent it")
 	}
 }
 

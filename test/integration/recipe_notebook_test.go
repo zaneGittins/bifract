@@ -16,9 +16,9 @@ import (
 )
 
 func TestNotebookPortability(t *testing.T) {
+	t.Parallel()
 	c := New(t)
-	source := requireFractal(t, c)
-	scoped := c.InScope(source)
+	_, scoped := newFractal(t, c, "notebook")
 
 	// 1. A notebook holds an investigation: prose, queries, and their results.
 	name := fmt.Sprintf("api-suite-%d", time.Now().UnixNano())

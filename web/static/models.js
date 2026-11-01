@@ -8,6 +8,7 @@ const AnalyticsModels = {
     _queryController: null, // AbortController for the in-flight preview fetch
     _viewerPoll: null,     // interval: poll the open model while its backfill runs
     _listPoll: null,       // interval: poll the listing while any backfill runs
+    PREVIEW_MAX_DAYS: 90,  // matches previewMaxSpan in pkg/models/preview.go
     BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days'], ['custom', 'Custom range']],
 
     // Editor state (split-panel: BQL source query on the left, shape/alert on the right)
@@ -290,6 +291,7 @@ const AnalyticsModels = {
         rebuilding:   ['badge-rebuilding', 'Rebuilding'],
         backfilling:  ['badge-progress', 'Backfill'],
         stale:        ['badge-stale', 'Stale'],
+        scored:       ['badge-learning', 'Scored'],
         learning:     ['badge-learning', 'Learning'],
         healthy:      ['badge-healthy', 'Healthy'],
         checking:     ['badge-checking', 'Checking'],
@@ -307,6 +309,10 @@ const AnalyticsModels = {
         if (h.state === 'behind' && m.state_lag_seconds != null) label += ' ' + this._lagLabel(m.state_lag_seconds);
         if (h.state === 'backfilling') label += ` ${this._backfillPct(m)}%`;
         if (h.state === 'stale' && h.newest_data) label += ' ' + this._lagLabel((Date.now() - TZ.toEpoch(h.newest_data)) / 1000);
+        if (h.state === 'scored' && h.scored_through) {
+            const p = TZ.parts(h.scored_through);
+            if (p) label += ` ${TZ.MONTHS[p.month - 1]} ${p.day}`;
+        }
         if (h.state === 'learning' && h.history_needed) label += ` ${h.history || 0}/${h.history_needed}${h.history_unit === 'hour' ? 'h' : 'd'}`;
         const lines = [h.detail || ''];
         if (h.newest_data) lines.push(`Newest event: ${TZ.format(h.newest_data, 'friendly')}`);
@@ -471,7 +477,6 @@ const AnalyticsModels = {
             alertConfig: alertCfg,
             name: m.name,
             description: m.description || '',
-            timeRange: '24h',
             fieldOrder: null,
             resultFields: [],
             results: [],
@@ -479,9 +484,7 @@ const AnalyticsModels = {
             hasTimeline: false,
             ran: false,
             resultMode: 'logs',
-            previewWindow: '7d',
-            previewStart: '',
-            previewEnd: '',
+            ...this._rangeDefaults(),
             preview: null,
             previewCfg: null,
             showGallery: false,
@@ -1049,8 +1052,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             keyLabel = '';
         } else if (mt === 'beacon' || mt === 'long_connection') {
             keyLabel = 'Connection fields';
-            const n = def.network || {};
-            keys = [n.src_field || 'src_ip', n.dst_field || 'dst_ip', n.port_field || 'dst_port', n.duration_field || 'duration'];
+            keys = this._connectionFields(mt, def);
         } else {
             keys = Array.isArray(def.key_fields) ? def.key_fields.filter(Boolean) : [];
         }
@@ -1247,12 +1249,14 @@ ${m.description ? `<div class="me-sec">
         btn.className = 'btn-secondary';
         btn.onclick = null;
 
-        // Scheduled types are seeded by the scorer's rolling window and the API
-        // rejects a backfill outright, so the button does not offer one.
-        if (m.model_type === 'beacon' || m.model_type === 'long_connection') {
-            btn.disabled = true;
-            btn.textContent = 'Backfill';
-            btn.title = 'Not applicable: this model type is seeded by its rolling window';
+        // Scheduled types score their rolling window, so instead of a backfill
+        // they score a past range, such as an imported dataset's.
+        if (this._isNetworkType(m.model_type)) {
+            btn.disabled = m.status !== 'active' || this.viewer.scoring;
+            btn.textContent = this.viewer.scoring ? 'Scoring…' : 'Score range';
+            btn.title = btn.disabled ? 'Available once the model finishes initializing'
+                : 'Score a past range, such as an imported dataset, and keep the scores';
+            btn.onclick = () => this._openScoreRangeModal();
             return;
         }
 
@@ -1381,6 +1385,79 @@ ${m.description ? `<div class="me-sec">
             modal.remove();
             this._startBackfill(body);
         });
+    },
+
+    // A network model scores a past range on request: the fractal's dataset
+    // range when it has one, else the model's window up to now.
+    _openScoreRangeModal() {
+        document.getElementById('scoreRangeModal')?.remove();
+        const m = this.viewer.model;
+        if (!this.viewer.scoreFrom || !this.viewer.scoreTo) {
+            const d = this._rangeDefaults();
+            const end = d.previewEnd ? Date.parse(d.previewEnd) : Date.now();
+            const days = parseInt(m.definition?.window, 10) || 1;
+            const start = d.previewStart ? Date.parse(d.previewStart) : end - days * 86400000;
+            this.viewer.scoreFrom = TZ.formatInput(start);
+            this.viewer.scoreTo = TZ.formatInput(end);
+        }
+        const modal = document.createElement('div');
+        modal.id = 'scoreRangeModal';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+<div class="modal-content" style="width:440px;max-width:95vw;">
+    <div class="modal-header">
+        <h3>Score a past range</h3>
+        <button class="modal-close" onclick="document.getElementById('scoreRangeModal').remove()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+        <div class="form-group">
+            <label>Range</label>
+            <div class="custom-range-inputs">
+                <input type="text" placeholder="YYYY-MM-DD HH:mm" id="scoreRangeFrom" class="datetime-input" value="${_esc(this.viewer.scoreFrom)}" />
+                <span class="range-separator">to</span>
+                <input type="text" placeholder="YYYY-MM-DD HH:mm" id="scoreRangeTo" class="datetime-input" value="${_esc(this.viewer.scoreTo)}" />
+                <span class="tp-zone-tag">${_esc(TZ.abbrev())}</span>
+            </div>
+            <div class="form-hint">Up to 90 days of event time, scored in whole hours as the preview does. Per pair the newest score wins, so live scores replace these.</div>
+        </div>
+    </div>
+    <div class="modal-footer">
+        <button class="btn-secondary" onclick="document.getElementById('scoreRangeModal').remove()">Cancel</button>
+        <button class="btn-primary" id="scoreRangeStart">Score range</button>
+    </div>
+</div>`;
+        document.body.appendChild(modal);
+        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+        document.getElementById('scoreRangeStart').addEventListener('click', () => {
+            this.viewer.scoreFrom = document.getElementById('scoreRangeFrom').value.trim();
+            this.viewer.scoreTo = document.getElementById('scoreRangeTo').value.trim();
+            const from = TZ.parseWallClock(this.viewer.scoreFrom);
+            const to = TZ.parseWallClock(this.viewer.scoreTo);
+            if (isNaN(from) || isNaN(to)) { Toast.error('Enter the range as YYYY-MM-DD HH:mm'); return; }
+            if (from >= to) { Toast.error('The range must start before it ends'); return; }
+            modal.remove();
+            this._scoreRange({ from: new Date(from).toISOString(), to: new Date(to).toISOString() });
+        });
+    },
+
+    async _scoreRange(body) {
+        const viewer = this.viewer;
+        const id = viewer.model.id;
+        viewer.scoring = true;
+        this._renderBackfillButton();
+        try {
+            const data = await this._api('POST', `/models/${id}/score-range`, body);
+            const n = data?.data?.pairs_scored || 0;
+            Toast.success(`Scored ${n.toLocaleString()} pair${n === 1 ? '' : 's'}${data?.data?.truncated ? ' (capped)' : ''}`);
+            if (this.viewer.model?.id === id) {
+                this._loadViewerData();
+                this._loadStats();
+            }
+        } catch (e) {
+            Toast.error('Failed to score range: ' + (e?.message || 'error'));
+        }
+        viewer.scoring = false;
+        if (this.viewer === viewer) this._renderBackfillButton();
     },
 
     // body is ignored by a resume, which continues the stored range.
@@ -1569,7 +1646,7 @@ ${m.description ? `<div class="me-sec">
     _buildSourceQuery(def) {
         if (def && typeof def.source_bql === 'string' && def.source_bql.trim()) return def.source_bql.trim();
         const lines = [];
-        const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        const esc = s => Utils.bqlQuote(s);
         const relit = s => {
             // Wrap as /.../ regex literal, escaping unescaped forward slashes.
             let out = '/';
@@ -1609,7 +1686,7 @@ ${m.description ? `<div class="me-sec">
     _rowSearch(row, model, range) {
         const def = model.definition || {};
         const mt = model.model_type || 'rarity';
-        const esc = s => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        const esc = s => Utils.bqlQuote(s);
         const rowFilters = [];
         let from = '', to = '';
         if (mt === 'beacon' || mt === 'long_connection') {
@@ -1972,7 +2049,6 @@ ${m.description ? `<div class="me-sec">
             alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
             name: '',
             description: '',
-            timeRange: '24h',
             fieldOrder: null,
             resultFields: [],
             results: [],
@@ -1980,9 +2056,8 @@ ${m.description ? `<div class="me-sec">
             hasTimeline: false,
             ran: false,
             resultMode: 'logs',     // 'logs' (matching logs) | 'scores' (score preview)
-            previewWindow: '7d',    // score preview preset, or 'custom' for previewStart/End
-            previewStart: '',       // custom preview range, UTC ISO8601
-            previewEnd: '',
+            // timeRange and previewWindow: a preset, or the dataset/custom range.
+            ...this._rangeDefaults(),
             preview: null,          // last PreviewResult
             previewCfg: null,       // alertConfig the preview was scored with
             showGallery: true,      // starter templates until one is picked or the user starts blank
@@ -1997,7 +2072,7 @@ ${m.description ? `<div class="me-sec">
     _renderEditorView(container) {
         const e = this.editor;
         const scores = e.resultMode === 'scores';
-        const ranges = [['1h', 'Last 1 Hour'], ['6h', 'Last 6 Hours'], ['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        const ranges = this._editorRanges();
         const previews = [['1d', 'Last 1 Day'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days'], ['custom', 'Custom range']];
         const opts = (list, sel) => list.map(([v, l]) => `<option value="${v}" ${sel === v ? 'selected' : ''}>${l}</option>`).join('');
         container.innerHTML = `
@@ -2434,7 +2509,25 @@ ${m.description ? `<div class="me-sec">
         };
     },
 
+    // The editor opens on the fractal's own range, such as an imported dataset's.
+    // The score preview widens it to whole hours since network models score
+    // complete hours.
+    _rangeDefaults() {
+        const r = window.TimePicker?.fractalRange?.();
+        if (!r) return { timeRange: '24h', previewWindow: '7d', previewStart: '', previewEnd: '' };
+        const hour = 3600000;
+        const end = Math.ceil(Date.parse(r.customEnd) / hour) * hour;
+        const start = Math.max(Math.floor(Date.parse(r.customStart) / hour) * hour, end - this.PREVIEW_MAX_DAYS * 86400000);
+        return { timeRange: 'dataset', previewWindow: 'custom', previewStart: new Date(start).toISOString(), previewEnd: new Date(end).toISOString() };
+    },
+
     _isNetworkType(mt) { return mt === 'beacon' || mt === 'long_connection'; },
+
+    _connectionFields(mt, def) {
+        const n = def.network || {};
+        const measure = mt === 'beacon' ? n.bytes_field || 'orig_bytes' : n.duration_field || 'duration';
+        return [n.src_field || 'src_ip', n.dst_field || 'dst_ip', n.port_field || 'dst_port', measure];
+    },
 
     _typeLabel(mt) {
         return this.MODEL_TYPES.find(t => t.id === mt)?.label || mt;
@@ -2872,7 +2965,14 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
     },
 
     // ---- Time range ----
+    _editorRanges() {
+        const ranges = [['1h', 'Last 1 Hour'], ['6h', 'Last 6 Hours'], ['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        return window.TimePicker?.fractalRange?.() ? [...ranges, ['dataset', 'Dataset range']] : ranges;
+    },
+
     _editorTimeRange() {
+        const r = this.editor.timeRange === 'dataset' && window.TimePicker?.fractalRange?.();
+        if (r) return { start: r.customStart, end: r.customEnd };
         const now = Date.now();
         const map = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3, '30d': 30 * 24 * 3600e3 };
         const span = map[this.editor.timeRange] || map['24h'];
@@ -3190,7 +3290,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
             const start = parse('modelPreviewStart'), end = parse('modelPreviewEnd');
             if (!start || !end) { Toast.warning('Enter the range as YYYY-MM-DD HH:MM'); return; }
             if (Date.parse(end) <= Date.parse(start)) { Toast.warning('The range must end after it starts'); return; }
-            if (Date.parse(end) - Date.parse(start) > 90 * 86400000) { Toast.warning('A preview range is limited to 90 days'); return; }
+            if (Date.parse(end) - Date.parse(start) > this.PREVIEW_MAX_DAYS * 86400000) { Toast.warning(`A preview range is limited to ${this.PREVIEW_MAX_DAYS} days`); return; }
             e.previewStart = start;
             e.previewEnd = end;
             this._runScorePreview();
@@ -3273,7 +3373,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
         const body = { model_type: e.modelType, definition: def, window: e.previewWindow };
         if (e.previewWindow === 'custom') {
             if (!e.previewStart || !e.previewEnd) {
-                panel.innerHTML = this._benchEmpty('Pick a range', 'Enter a start and end (up to 90 days) to score the model over a past window.');
+                panel.innerHTML = this._benchEmpty('Pick a range', `Enter a start and end (up to ${this.PREVIEW_MAX_DAYS} days) to score the model over a past window.`);
                 return;
             }
             body.window = '';

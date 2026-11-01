@@ -13,6 +13,7 @@ import (
 )
 
 func TestOperations(t *testing.T) {
+	t.Parallel()
 	c := New(t)
 
 	// 1. What am I running against. Deployment shape and the capability probes
@@ -46,28 +47,28 @@ func TestOperations(t *testing.T) {
 	}
 	c.Do(t, "GET", "/fractals", nil, &listed)
 	if len(listed.Fractals) == 0 {
-		t.Skip("the credential can reach no fractal")
+		t.Fatal("the fractal list is empty")
 	}
 
-	target := listed.Fractals[0]
+	// The rest changes settings, so it works on a fractal of its own.
+	targetID, scoped := newFractal(t, c, "operations")
 	var stats map[string]any
-	c.InScope(target.ID).Do(t, "GET", "/fractals/"+target.ID+"/stats", nil, &stats)
+	scoped.Do(t, "GET", "/fractals/"+targetID+"/stats", nil, &stats)
 
 	// 4. Retention is per fractal, so noisy data can be aged out sooner than the
 	//    data worth keeping. Read the current value before changing it, and put
-	//    it back: this runs against a real instance.
+	//    it back, as a change against a real fractal should.
 	var before struct {
 		RetentionDays *int `json:"retention_days"`
 	}
-	c.Do(t, "GET", "/fractals/"+target.ID, nil, &before)
+	c.Do(t, "GET", "/fractals/"+targetID, nil, &before)
 
-	scoped := c.InScope(target.ID)
-	scoped.Do(t, "PUT", "/fractals/"+target.ID+"/retention", map[string]any{"retention_days": 30}, nil)
+	scoped.Do(t, "PUT", "/fractals/"+targetID+"/retention", map[string]any{"retention_days": 30}, nil)
 
 	var after struct {
 		RetentionDays *int `json:"retention_days"`
 	}
-	c.Do(t, "GET", "/fractals/"+target.ID, nil, &after)
+	c.Do(t, "GET", "/fractals/"+targetID, nil, &after)
 	if after.RetentionDays == nil || *after.RetentionDays != 30 {
 		t.Errorf("retention did not take: %v", after.RetentionDays)
 	}
@@ -76,5 +77,5 @@ func TestOperations(t *testing.T) {
 	if before.RetentionDays != nil {
 		restore["retention_days"] = *before.RetentionDays
 	}
-	scoped.Do(t, "PUT", "/fractals/"+target.ID+"/retention", restore, nil)
+	scoped.Do(t, "PUT", "/fractals/"+targetID+"/retention", restore, nil)
 }

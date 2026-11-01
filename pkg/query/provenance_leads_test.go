@@ -124,3 +124,32 @@ func TestClassifyReconnectionsCapsLeads(t *testing.T) {
 		t.Errorf("lead artifacts %v; want the %d strongest", leads, reconLeadMaxBridges)
 	}
 }
+
+// The reverse lookup names any tree process that touched a shared artifact. The bridge is drawn
+// from, and judged by, the one whose own edge to it is most anomalous: an implant beaconing to
+// its C2, not a browser that resolved the same name.
+func TestPointBridgesAtSharpestToucher(t *testing.T) {
+	rows := []map[string]interface{}{
+		spawnOn("root", "edge", "WS02"), spawnOn("root", "implant", "WS02"),
+		leafOf("edge", "net:203.0.113.87", "WS02", 0.5), leafOf("implant", "net:203.0.113.87", "WS02", 1),
+		leafOf("edge", "dns:login.example", "WS02", 1),
+	}
+	peers := []parser.ReconnectPeer{
+		leadPeer("edge", "p3", "WS03", "203.0.113.87"),
+		{ReconType: "dns", SrcGUID: "edge", PeerGUID: "p4", PeerHost: "WS04", ObjectID: "dns:login.example", Label: "login.example", Anomaly: 0.85},
+		{ReconType: "file", SrcGUID: "edge", PeerGUID: "x", PeerHost: "WS05", Label: `C:\t\a.exe`, Anomaly: 1},
+	}
+	pointBridgesAtSharpestToucher(peers, rows)
+	for i, want := range []string{"implant", "edge", "edge"} {
+		if peers[i].SrcGUID != want {
+			t.Errorf("peer %d drawn from %s, want %s", i, peers[i].SrcGUID, want)
+		}
+	}
+
+	// Classified after re-pointing, the C2 is a lead even though the lookup named the browser.
+	rows = append(rows, parser.ReconnectionEdgeRows(peers[:1])...)
+	classifyReconnections(rows, peers[:1])
+	if got := roles(rows); fmt.Sprint(got) != "[implant>net:203.0.113.87=lead p3>net:203.0.113.87=lead]" {
+		t.Errorf("roles %v", got)
+	}
+}

@@ -214,13 +214,13 @@ func shardUint(t *testing.T, addr, query string) uint64 {
 func TestClusterFieldPaths(t *testing.T) {
 	dropEverything(t)
 	initialize(t)
-	// An install from before 018: no rollup, migration not recorded.
+	// An install from before 018: no rollup, neither it nor any later migration recorded.
 	for _, addr := range chTestHosts {
 		for _, q := range []string{
 			"DROP VIEW IF EXISTS logs.logs_field_paths_mv SYNC",
 			"DROP TABLE IF EXISTS logs.logs_field_paths_distributed SYNC",
 			"DROP TABLE IF EXISTS logs.logs_field_paths SYNC",
-			"DELETE FROM logs._bifract_migrations WHERE number = 18",
+			"DELETE FROM logs._bifract_migrations WHERE number >= 18",
 		} {
 			execOnShard(t, addr, q)
 		}

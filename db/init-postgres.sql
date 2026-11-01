@@ -194,6 +194,12 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS "references" TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity VARCHAR(20) NOT NULL DEFAULT 'medium';
 -- The alert editor used to save 'info', which nothing ranks or filters on.
 UPDATE alerts SET severity = 'informational' WHERE severity = 'info';
+-- The UI renders severity into markup, so only the known values may be stored.
+UPDATE alerts SET severity = 'medium'
+    WHERE severity NOT IN ('critical', 'high', 'medium', 'low', 'informational');
+ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_severity_check;
+ALTER TABLE alerts ADD CONSTRAINT alerts_severity_check
+    CHECK (severity IN ('critical', 'high', 'medium', 'low', 'informational'));
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_execution_time_ms INTEGER;
 -- Ignore matches whose event time trails their arrival by more than this many
 -- seconds (0 = off), so a backlog flush from a reconnected agent does not alert
@@ -321,6 +327,15 @@ CREATE TABLE IF NOT EXISTS system_metrics (
     value      DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_system_metrics_metric_ts ON system_metrics (metric, ts);
+
+-- Each writing process's committed-through point: every row it stamped before
+-- watermark is visible in ClickHouse. Alerts and model state never read past the
+-- oldest. heartbeat_at is Postgres time so staleness ignores pod clock skew.
+CREATE TABLE IF NOT EXISTS ingest_watermarks (
+    node_id      TEXT        PRIMARY KEY,
+    watermark    TIMESTAMPTZ NOT NULL,
+    heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Triggers for updated_at on alert tables
 DROP TRIGGER IF EXISTS update_alerts_updated_at ON alerts;

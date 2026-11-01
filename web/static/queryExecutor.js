@@ -5714,7 +5714,7 @@ const QueryExecutor = {
         const cur = this.currentQuery || qi.value || '';
         // Escape for a BQL double-quoted string, and use a function replacement so a "$" in the
         // guid is not treated as a String.replace token (guids are braced hex, but be bulletproof).
-        const q = String(guid).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const q = Utils.bqlEscape(guid);
         const re = /(\b(?:pgr|ptg)\s*\([^)]*?\bstart\s*=\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,)\s]+)/i;
         // Preserve whichever traversal the analyst is already using: ptg() has no anomaly scoring
         // or leaf activity, so silently promoting it to pgr() changes what the query means.

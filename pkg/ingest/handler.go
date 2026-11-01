@@ -13,6 +13,7 @@ import (
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 )
 
 // IngestHandler handles log ingestion via HTTP.
@@ -93,6 +94,10 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
+
 	logs, err := h.parseLogsWithToken(body, tokenData)
 	if errors.Is(err, errLineTooLong) {
 		respondJSON(w, http.StatusRequestEntityTooLarge, IngestResponse{
@@ -117,32 +122,14 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assign fractal from token to all log entries
-	for i := range logs {
-		logs[i].FractalID = tokenData.FractalID
-	}
-
-	// Per-fractal disk quota check (reject action only; rollover is handled post-insert).
-	if h.quotaManager != nil {
-		var batchBytes int64
-		for i := range logs {
-			batchBytes += int64(len(logs[i].RawLog))
-		}
-		if !h.quotaManager.CheckQuota(tokenData.FractalID, batchBytes) {
-			w.Header().Set("Retry-After", "30")
-			respondJSON(w, http.StatusTooManyRequests, IngestResponse{
-				Success: false,
-				Error:   "Fractal disk quota exceeded. Clear old logs or increase quota.",
-			})
-			return
-		}
-	}
-
-	// Push onto the ingestion queue (non-blocking).
-	// Enqueue returns false if the queue is full, workers are unhealthy,
-	// or ClickHouse CPU backpressure is active.
-	if !h.queue.Enqueue(logs) {
-		w.Header().Set("Retry-After", "2")
+	switch err := h.submit(w, tokenData, logs); {
+	case errors.Is(err, errQuotaExceeded):
+		respondJSON(w, http.StatusTooManyRequests, IngestResponse{
+			Success: false,
+			Error:   "Fractal disk quota exceeded. Clear old logs or increase quota.",
+		})
+		return
+	case err != nil:
 		respondJSON(w, http.StatusTooManyRequests, IngestResponse{
 			Success: false,
 			Error:   "Ingestion queue full. Retry after backoff.",
@@ -150,21 +137,54 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update token usage stats asynchronously.
-	// Use a detached context since r.Context() is cancelled after the handler returns.
+	respondJSON(w, http.StatusOK, IngestResponse{
+		Success: true,
+		Count:   len(logs),
+		Message: fmt.Sprintf("Accepted %d log(s) for ingestion", len(logs)),
+	})
+}
+
+var (
+	errQuotaExceeded = errors.New("fractal disk quota exceeded")
+	errQueueFull     = errors.New("ingestion queue full")
+)
+
+// submit routes logs to the token's fractal, checks the fractal's disk quota and
+// queues them, then records token usage. A rejection is errQuotaExceeded or
+// errQueueFull, both retryable 429s, with Retry-After already set on w.
+func (h *IngestHandler) submit(w http.ResponseWriter, token *ingesttokens.ValidatedToken, logs []storage.LogEntry) error {
+	for i := range logs {
+		logs[i].FractalID = token.FractalID
+	}
+
+	// Reject action only; rollover is handled post-insert.
+	if h.quotaManager != nil {
+		var batchBytes int64
+		for i := range logs {
+			batchBytes += int64(len(logs[i].RawLog))
+		}
+		if !h.quotaManager.CheckQuota(token.FractalID, batchBytes) {
+			w.Header().Set("Retry-After", "30")
+			return errQuotaExceeded
+		}
+	}
+
+	// Enqueue fails when the queue is full, workers are unhealthy, or ClickHouse
+	// CPU backpressure is active.
+	if !h.queue.Enqueue(logs) {
+		w.Header().Set("Retry-After", "2")
+		return errQueueFull
+	}
+
+	// Detached context: r.Context() is cancelled once the handler returns.
 	go func(tokenID string, count int) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := h.tokenStorage.UpdateUsageStats(ctx, tokenID, count); err != nil {
 			log.Printf("[Ingest] failed to update token usage: %v", err)
 		}
-	}(tokenData.TokenID, len(logs))
-
-	respondJSON(w, http.StatusOK, IngestResponse{
-		Success: true,
-		Count:   len(logs),
-		Message: fmt.Sprintf("Accepted %d log(s) for ingestion", len(logs)),
-	})
+	}(token.TokenID, len(logs))
+	return nil
 }
 
 // tokenErrorStatus maps a validateIngestToken error to a response. A token that
@@ -179,43 +199,46 @@ func tokenErrorStatus(w http.ResponseWriter, err error) (int, string) {
 }
 
 // validateIngestToken extracts and validates a bearer token from the request.
-// Accepts "Bearer <token>" and "APIKey <token>" prefixes for compatibility
-// with Elasticsearch clients (e.g. Velociraptor's go-elasticsearch).
+// Accepts "Bearer <token>", plus "APIKey <token>" for Elasticsearch clients (e.g.
+// Velociraptor's go-elasticsearch) and "Splunk <token>" for HEC clients.
 func (h *IngestHandler) validateIngestToken(r *http.Request) (*ingesttokens.ValidatedToken, error) {
-	authHeader := r.Header.Get("Authorization")
-	var rawToken string
-	upperAuth := strings.ToUpper(authHeader)
-	switch {
-	case strings.HasPrefix(upperAuth, "BEARER "):
-		rawToken = authHeader[len("Bearer "):]
-	case strings.HasPrefix(upperAuth, "APIKEY "):
-		rawToken = authHeader[len("APIKey "):]
-	}
+	return h.lookupIngestToken(r.Context(), ingestTokenFromHeader(r))
+}
 
+// ingestTokenFromHeader returns the token of a recognised Authorization scheme, or "".
+func ingestTokenFromHeader(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	upperAuth := strings.ToUpper(authHeader)
+	for _, scheme := range []string{"BEARER ", "APIKEY ", "SPLUNK "} {
+		if strings.HasPrefix(upperAuth, scheme) {
+			return authHeader[len(scheme):]
+		}
+	}
+	return ""
+}
+
+// lookupIngestToken validates a raw token, through the cache when there is one.
+func (h *IngestHandler) lookupIngestToken(ctx context.Context, rawToken string) (*ingesttokens.ValidatedToken, error) {
 	if rawToken == "" {
-		return nil, fmt.Errorf("%w: set Authorization: Bearer <token> or ApiKey <token>", ingesttokens.ErrTokenRejected)
+		return nil, fmt.Errorf("%w: set Authorization: Bearer <token>, ApiKey <token> or Splunk <token>", ingesttokens.ErrTokenRejected)
 	}
 
 	tokenHash := ingesttokens.HashToken(rawToken)
-
-	// Check cache first
+	var gen uint64
 	if h.tokenCache != nil {
 		if cached, ok := h.tokenCache.Get(tokenHash); ok {
 			return cached, nil
 		}
+		gen = h.tokenCache.Generation()
 	}
 
-	// Cache miss: DB lookup
-	validated, err := h.tokenStorage.ValidateToken(r.Context(), rawToken)
+	validated, err := h.tokenStorage.ValidateToken(ctx, rawToken)
 	if err != nil {
 		return nil, err
 	}
-
-	// Populate cache
 	if h.tokenCache != nil {
-		h.tokenCache.Set(tokenHash, validated)
+		h.tokenCache.Set(tokenHash, validated, gen)
 	}
-
 	return validated, nil
 }
 

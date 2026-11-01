@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,27 @@ func endpointMVInList() string {
 
 // AdvancedEndpointAnalysisSetting is the Postgres settings key backing the toggle.
 const AdvancedEndpointAnalysisSetting = "advanced_endpoint_analysis"
+
+// SetEndpointAnalysis applies the toggle and then saves it, under a lock shared by every
+// replica, so concurrent toggles cannot interleave their ATTACH/DETACH or leave the saved
+// flag disagreeing with ClickHouse.
+func SetEndpointAnalysis(ctx context.Context, pg *PostgresClient, ch *ClickHouseClient, enabled bool) error {
+	return pg.WithAdvisoryLock(ctx, LockEndpointAnalysis, func() error {
+		if err := ch.ReconcileEndpointAnalysisMVs(ctx, enabled); err != nil {
+			return err
+		}
+		return pg.SetSetting(ctx, AdvancedEndpointAnalysisSetting, strconv.FormatBool(enabled))
+	})
+}
+
+// SyncEndpointAnalysis reconciles the MVs to the saved toggle. The flag is read under the
+// lock so a replica starting mid-toggle applies the toggle's outcome rather than undoing it.
+func SyncEndpointAnalysis(ctx context.Context, pg *PostgresClient, ch *ClickHouseClient) error {
+	return pg.WithAdvisoryLock(ctx, LockEndpointAnalysis, func() error {
+		v, _ := pg.GetSetting(ctx, AdvancedEndpointAnalysisSetting)
+		return ch.ReconcileEndpointAnalysisMVs(ctx, v == "true")
+	})
+}
 
 // ReconcileEndpointAnalysisMVs attaches (enabled) or permanently detaches (disabled)
 // the endpoint-analysis MVs to match the setting. A detached MV does not receive
@@ -153,11 +175,21 @@ func reconcileEndpointMVsOnConn(ctx context.Context, conn driver.Conn, enabled b
 			continue
 		}
 		execErr := execEndpointToggle(ctx, conn, stmt)
-		if execErr != nil {
+		if execErr != nil && !endpointToggleAlreadyApplied(execErr) {
 			return fmt.Errorf("%s: %w", stmt, execErr)
 		}
 	}
 	return nil
+}
+
+// endpointToggleAlreadyApplied reports a peer having made the same change since the state
+// was read: ATTACH of an attached view, or DETACH of one already gone.
+func endpointToggleAlreadyApplied(err error) bool {
+	var ex *proto.Exception
+	if !errors.As(err, &ex) {
+		return false
+	}
+	return ex.Code == 60 || ex.Code == 57 && strings.Contains(ex.Message, "already exists")
 }
 
 // loadEndpointMVSet runs a single-string-column query and returns the values as a set.
@@ -178,8 +210,9 @@ func loadEndpointMVSet(ctx context.Context, conn driver.Conn, query string) (map
 	return set, rows.Err()
 }
 
-// endpointAnalysisTables hold the baselines the endpoint-analysis MVs accumulate.
-var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges"}
+// endpointAnalysisTables hold the baselines the endpoint-analysis MVs accumulate, and the
+// summary derived from them.
+var endpointAnalysisTables = []string{"proc_lineage", "proc_freq", "process_edges", provenanceSummaryTable}
 
 // ClearEndpointAnalysisBaselines empties the baseline tables on every node. The MVs
 // stay attached, so the baselines rebuild from the next insert.
@@ -199,16 +232,35 @@ func (c *ClickHouseClient) ClearAllLogData(ctx context.Context, modelIDs []strin
 }
 
 // truncateOnEveryShard empties tables on every node. TRUNCATE removes whole parts
-// without rewriting data or running a mutation, so it is instant at any size.
+// without rewriting data or running a mutation, so it is instant at any size. The
+// provenance summary goes last, after a fill in progress is told every fractal was
+// cleared (see DeleteLogsByFractalID).
 func (c *ClickHouseClient) truncateOnEveryShard(ctx context.Context, tables []string, what string) error {
-	for _, t := range tables {
+	truncate := func(t string) error {
 		// max_table_size_to_drop (50GB by default) otherwise refuses large tables with code 359.
 		stmt := "TRUNCATE TABLE IF EXISTS " + quoteCHIdent(t) + " SETTINGS max_table_size_to_drop = 0"
 		if err := c.execOnEveryShard(ctx, stmt, what); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
 		}
+		return nil
 	}
-	return nil
+	for _, t := range tables {
+		if t == provenanceSummaryTable {
+			continue
+		}
+		if err := truncate(t); err != nil {
+			return err
+		}
+	}
+	if !slices.Contains(tables, provenanceSummaryTable) {
+		return nil
+	}
+	if err := c.onEveryShard(ctx, what, func(conn driver.Conn) error {
+		return markProvenanceFillClear(ctx, conn, []string{provenanceFillAll})
+	}); err != nil {
+		return err
+	}
+	return truncate(provenanceSummaryTable)
 }
 
 // withConversionTables adds the copy-holding working tables of any table mid-conversion

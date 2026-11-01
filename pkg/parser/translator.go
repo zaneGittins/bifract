@@ -87,14 +87,15 @@ type QueryOptions struct {
 	//
 	// All three are keyed by ClickHouse object name, not list name: a secondary
 	// key column on any list resolves to an ordinary HASHED dictionary.
-	PatternPrefilters  map[string]string
-	DictionaryDatabase string       // ClickHouse database holding the dictionary objects; qualifies every dictGet
-	TableName          string       // Override source table (default "logs", use "logs_distributed" in cluster mode)
-	ProcLineageTable   string       // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
-	ProcessTree        *ProcessTree // ptg()'s tree, walked by the query layer before translation; nil = not resolved
-	ProcFreqTable      string       // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
-	ProcEdgesTable     string       // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
-	IncludeShardNum    bool         // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
+	PatternPrefilters      map[string]string
+	DictionaryDatabase     string       // ClickHouse database holding the dictionary objects; qualifies every dictGet
+	TableName              string       // Override source table (default "logs", use "logs_distributed" in cluster mode)
+	ProcLineageTable       string       // Process-lineage read table for ptg() ("proc_lineage" or "proc_lineage_distributed")
+	ProcessTree            *ProcessTree // ptg()'s tree, walked by the query layer before translation; nil = not resolved
+	ProcFreqTable          string       // Frequency-baseline read table for pgr() ("proc_freq" or "proc_freq_distributed")
+	ProcEdgesTable         string       // Edge-rollup read table for pgr() leaf edges ("process_edges" or "process_edges_distributed")
+	ProvenanceSummaryTable string       // Fleet-totals read table for pgr() ("provenance_summary" or "provenance_summary_distributed")
+	IncludeShardNum        bool         // Include _shard_num virtual column for direct-shard detail lookup (cluster mode only)
 	// IncludeIngestTime projects ingest_timestamp as the hidden _ingest_timestamp
 	// column for the detail panel. Set by the paths feeding it (search, recall); off
 	// for alerts and the rule tester, whose rows are matched rather than displayed.
@@ -179,6 +180,11 @@ type TranslationResult struct {
 	// rows whose join partner sits outside the window, so the caller must not
 	// slice the range.
 	TimeScopedSubquery bool
+	// RangeDependentRows is true when a row's presence or values depend on the
+	// other rows in range (a command's row cap or dedup, a window score such as
+	// madoutlier), so reading the range in time slices or sliding windows would
+	// compute them over each slice instead of the whole range.
+	RangeDependentRows bool
 	// RowCapped is true when an embedded subquery (join, result-set binding) is
 	// truncated at a row cap, so the rows the query selects may be incomplete.
 	RowCapped bool
@@ -200,7 +206,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	if err != nil {
 		return nil, err
 	}
-	return finalizePlan(q.ctx, q.assignmentFields, q.deferredAssignments)
+	return q.finalize()
 }
 
 // plannedQuery is a pipeline planned up to final assembly.
@@ -208,6 +214,11 @@ type plannedQuery struct {
 	ctx                 *CommandContext
 	assignmentFields    []string
 	deferredAssignments []deferredAssignment
+}
+
+// finalize assembles the planned query into its SQL.
+func (q *plannedQuery) finalize() (*TranslationResult, error) {
+	return finalizePlan(q.ctx, q.assignmentFields, q.deferredAssignments)
 }
 
 // scanWhere is the predicate the pipeline puts on its source scan beyond the time
@@ -230,7 +241,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	registry.normLogIndexHints = opts.NormLogIndexHints && opts.SourceMode != SourceIceberg && opts.SourceSubquery == ""
 	// A subquery source (a resolved source command) exposes flat columns; register them so
 	// bare references resolve to the column name (not fields.`x` JSON access). Numeric columns
-	// register as Assignment (already numeric -> no toFloat64OrZero coercion, which errors on a
+	// register as Assignment (already numeric -> no textToNumber coercion, which errors on a
 	// non-String); string columns as Base (coerce on numeric compare, harmless for strings).
 	if opts.SourceSubquery != "" {
 		numeric := make(map[string]bool, len(opts.SourceNumericColumns))
@@ -285,6 +296,9 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	}
 
 	if err := validateCommandSchemas(pipeline); err != nil {
+		return nil, err
+	}
+	if err := validateProcessTreeTail(pipeline); err != nil {
 		return nil, err
 	}
 
@@ -398,7 +412,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 				assignmentFields = append(assignmentFields, fmt.Sprintf("%s AS %s", sqlExpr, safeField))
 				return nil
 			}
-			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, SQL: sqlExpr})
+			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, Alias: safeField, SQL: sqlExpr})
 		}
 		return nil
 	}
@@ -835,22 +849,26 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 			fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds))
 	}
 
-	if len(opts.FractalIDs) > 0 {
-		quoted := make([]string, len(opts.FractalIDs))
-		for i, id := range opts.FractalIDs {
-			quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
-		}
-		if opts.IncludeEmptyFractalID {
-			quoted = append(quoted, "''")
-		}
-		source.Layer.Where = append(source.Layer.Where, "fractal_id IN ("+strings.Join(quoted, ", ")+")")
-	} else if opts.FractalID != "" {
-		if opts.IncludeEmptyFractalID {
-			source.Layer.Where = append(source.Layer.Where, fmt.Sprintf("fractal_id IN ('%s', '')", escapeString(opts.FractalID)))
-		} else {
-			source.Layer.Where = append(source.Layer.Where, fmt.Sprintf("fractal_id = '%s'", escapeString(opts.FractalID)))
+	if scope := fractalScopeCond(opts, ""); scope != "" {
+		source.Layer.Where = append(source.Layer.Where, scope)
+	}
+}
+
+// scopeColumns are the columns the scan's scope guards read.
+var scopeColumns = []string{"fractal_id", "timestamp", "ingest_timestamp", "log_id"}
+
+// checkScopeNotShadowed refuses a scan projection named after a scope column.
+// ClickHouse binds a WHERE identifier to a SELECT alias before the table column,
+// so `'x' AS fractal_id` would turn the fractal guard into a test of that alias.
+func checkScopeNotShadowed(selects []SelectExpr) error {
+	for _, sel := range selects {
+		s := strings.TrimSpace(sel.String())
+		name := selectName(s)
+		if slices.Contains(scopeColumns, name) && strings.Trim(s, "`") != name {
+			return fmt.Errorf("%s is a built-in column and cannot name an output; choose another name", name)
 		}
 	}
+	return nil
 }
 
 // finalizePlan assembles the final SQL from structured plan data using the
@@ -869,6 +887,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		readThrough = readThrough || plan.readsThroughCap(source.Layer.Caps[n-1])
 	}
 	source.Layer.foldLastCap(readThrough)
+	if source.Layer.LimitBy != "" || source.Layer.ScanLimitBy != "" {
+		plan.rowLimitByCommand = true
+	}
 	if len(source.Layer.Caps) > 0 {
 		if plan.IsProcessTree || plan.IsAnalyze {
 			return nil, fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
@@ -1087,8 +1108,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		ChartType:           plan.ChartType,
 		ChartConfig:         plan.ChartConfig,
 		DefaultTimeOrder:    defaultTimeOrder,
-		TimeScopedSubquery:  plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
+		TimeScopedSubquery:  plan.IsJoin || plan.hasModelLookup() || plan.usesBindingSet,
 		RowCapped:           plan.IsJoin || plan.usesBindingSet,
+		RangeDependentRows:  plan.rowLimitByCommand || len(plan.WindowLayers) > 0,
 		Chain:               plan.Chain,
 	}, nil
 }
@@ -1232,7 +1254,10 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 
 		// Check registry for per-row transforms or assignments registered during Execute
 		if entry := ctx.Registry.Get(gf); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
-			safeName, _ := sanitizeIdentifier(gf)
+			safeName, err := sanitizeIdentifier(gf)
+			if err != nil {
+				return fmt.Errorf("groupBy: %w", err)
+			}
 			resolveExpr := ctx.Registry.Resolve(gf)
 			selects = append(selects, fmt.Sprintf("%s AS %s", resolveExpr, safeName))
 			addedAliases[safeName] = true
@@ -1493,7 +1518,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		}
 		// The scan-level model join's columns, after the log's own. An explicit
 		// table() projects the ones it names itself.
-		if plan.ModelLookupSQL != "" && plan.ModelLookupAtScan && !plan.TableHasExplicitColumns {
+		if plan.hasModelLookup() && plan.ModelLookupAtScan && !plan.TableHasExplicitColumns {
 			for _, f := range plan.ModelLookupFields {
 				source.Layer.project(f)
 			}
@@ -1545,6 +1570,8 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	}
 
 	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0)
+	// Without a key prefilter the scan would cap rows the inner join then drops.
+	liftLimit = liftLimit || (plan.innerJoinWrap() && plan.joinPrefilter(source, ctx.Opts) == "")
 	if liftLimit && hasJoinWrap {
 		// The ordering must follow the filter, so it moves out with the LIMIT.
 		deferredOrder = append(deferredOrder, innerOrder...)
@@ -1552,6 +1579,17 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	}
 
 	source.Layer.OrderBy = innerOrder
+	if hasJoinWrap && !liftLimit {
+		// The scan already selects the rows the join keeps (see joinPrefilter), so
+		// its cap stays where the scan can stop early. A join's output order is
+		// unspecified and a key the subquery repeats multiplies rows, so the joined
+		// rows are ordered and capped again.
+		for _, ob := range innerOrder {
+			plan.DeferredOrder = append(plan.DeferredOrder, scopeOrderByExpr(ob, plan.deferredScope()))
+		}
+		plan.DeferredLimit = source.Layer.Limit
+		return
+	}
 	if liftLimit {
 		// Relocated ORDER BY expressions face the same scope limit as relocated
 		// filters: a `sort(image)` carried past the join must read the exported
@@ -1736,7 +1774,7 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 // deferredAssignment is a computed assignment evaluated in the outer formatter,
 // over the limited rows, as compiled where it is written.
 type deferredAssignment struct {
-	Field, SQL string
+	Field, Alias, SQL string
 }
 
 // buildFormatters creates the outer SELECT expressions for timestamp formatting
@@ -1779,8 +1817,7 @@ func buildFormatters(selectFields []string, deferredAssignments []deferredAssign
 			if projected[da.Field] {
 				continue
 			}
-			safeName, _ := sanitizeIdentifier(da.Field)
-			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", da.SQL, safeName)})
+			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", da.SQL, da.Alias)})
 		}
 	}
 

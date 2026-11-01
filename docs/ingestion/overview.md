@@ -21,6 +21,8 @@ curl -X POST https://bifract.example.com:8443/api/v1/ingest \
 
 Caddy serves ingestion on port **8443** and refuses every other path there. A missing or wrong token returns `401`.
 
+With the installer's default self-signed certificate, add `-k` (`--insecure`) to these curl commands and to the [CLI tool](cli-tool.md).
+
 ## Create a token for a new source
 
 Give each log source its own token so it can be parsed, normalized and revoked separately.
@@ -33,7 +35,7 @@ Give each log source its own token so it can be parsed, normalized and revoked s
 
 ![Create ingest token dialog](../images/ingestion/create-token.png)
 
-Each row has a switch to disable the token, plus **Edit token** and **Delete token** icons. The default token cannot be deleted.
+Each row has a switch to disable the token, plus **Edit token** and **Delete token** icons. Changes apply at once on every app and ingest replica. The default token cannot be deleted.
 
 ## Endpoints
 
@@ -42,8 +44,9 @@ Each row has a switch to disable the token, plus **Edit token** and **Delete tok
 | `POST /api/v1/ingest` | JSON array, single JSON object, or NDJSON |
 | `POST` or `PUT /_bulk` | Elasticsearch bulk clients (Velociraptor and similar) |
 | `POST /v1/logs` | OpenTelemetry OTLP/HTTP, protobuf or JSON |
+| `POST /services/collector/event`, `/raw` | Splunk HEC senders. See [Splunk HEC](splunk-hec.md) |
 
-All three take `Authorization: Bearer <token>` (`ApiKey <token>` also works) and accept `Content-Encoding: gzip`.
+All take `Authorization: Bearer <token>` (`ApiKey <token>` and `Splunk <token>` also work) and accept `Content-Encoding: gzip`.
 
 ### NDJSON example
 
@@ -97,4 +100,4 @@ Step 3 runs only when neither the token nor its normalizer defines timestamp fie
 
 ## Parse upstream
 
-Bifract parses structured formats (JSON, key=value, syslog) and normalizes field names. It does not do grok patterns, multi-line assembly or other free-text extraction. Use Logstash, Cribl, Fluent Bit or Vector upstream for that, and send Bifract structured events.
+Bifract parses structured formats (JSON, key=value, syslog) and normalizes field names. It does not do grok patterns, multi-line assembly or other free-text extraction. Use Logstash, Cribl, Fluent Bit or Vector upstream for that, and send Bifract structured events. For CEF devices such as UniFi, see [CEF over Syslog with Vector](vector-cef.md).

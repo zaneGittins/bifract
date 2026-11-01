@@ -1264,6 +1264,27 @@ func (c *PostgresClient) BulkDeleteComments(ctx context.Context, commentIDs []st
 
 // Settings methods
 
+// errSettingNotFound is GetSetting's error for a key that was never set.
+var errSettingNotFound = errors.New("setting not found")
+
+// provenanceSummaryFilledSetting is "true" once the provenance backfill has filled
+// provenance_summary; until then pgr computes the same facts by scanning.
+const provenanceSummaryFilledSetting = "provenance_summary_filled"
+
+// ProvenanceSummaryFilled reports whether the backfill has filled provenance_summary.
+func (c *PostgresClient) ProvenanceSummaryFilled(ctx context.Context) (bool, error) {
+	v, err := c.GetSetting(ctx, provenanceSummaryFilledSetting)
+	if errors.Is(err, errSettingNotFound) {
+		return false, nil
+	}
+	return v == "true", err
+}
+
+// MarkProvenanceSummaryFilled records that the backfill has filled provenance_summary.
+func (c *PostgresClient) MarkProvenanceSummaryFilled(ctx context.Context) error {
+	return c.SetSetting(ctx, provenanceSummaryFilledSetting, "true")
+}
+
 func (c *PostgresClient) GetSetting(ctx context.Context, key string) (string, error) {
 	var value string
 	err := c.db.QueryRowContext(ctx, `
@@ -1271,13 +1292,35 @@ func (c *PostgresClient) GetSetting(ctx context.Context, key string) (string, er
 	`, key).Scan(&value)
 
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("setting not found")
+		return "", errSettingNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to get setting: %w", err)
 	}
 
 	return value, nil
+}
+
+// GetAllSettings reads the whole settings table in one statement, so a caller
+// sees every value from the same moment or an error, never a partial set.
+func (c *PostgresClient) GetAllSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read settings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("failed to read settings: %w", err)
+		}
+		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read settings: %w", err)
+	}
+	return out, nil
 }
 
 func (c *PostgresClient) SetSetting(ctx context.Context, key string, value string) error {
@@ -1382,11 +1425,32 @@ const (
 	// an AggregatingMergeTree sums rather than deduplicates.
 	LockModelState int64 = 0x6269667261637405
 	// LockRepartition elects the replica that converts tables to their per-fractal
-	// partition keys. Two converters copying the same fractal would duplicate its rows.
+	// partition keys, then backfills pgr's access paths. Two converters copying the same
+	// fractal would duplicate its rows.
 	LockRepartition int64 = 0x6269667261637406
 	// LockFieldPathReconcile elects the replica that repairs the field path rollup.
 	LockFieldPathReconcile int64 = 0x6269667261637407
+	// LockEndpointAnalysis serializes endpoint-analysis toggles across replicas.
+	LockEndpointAnalysis int64 = 0x6269667261637408
 )
+
+// WithAdvisoryLock runs fn holding lockID, first waiting for any other holder.
+func (c *PostgresClient) WithAdvisoryLock(ctx context.Context, lockID int64, fn func() error) error {
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, lockID); err != nil {
+		return fmt.Errorf("advisory lock %d: %w", lockID, err)
+	}
+	defer func() {
+		if err := UnlockAdvisory(conn, lockID); err != nil {
+			log.Printf("Warning: failed to release advisory lock %d: %v", lockID, err)
+		}
+	}()
+	return fn()
+}
 
 func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unlock func(), acquired bool) {
 	conn, err := c.db.Conn(ctx)

@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,8 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/spool"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 )
 
 const (
@@ -247,6 +250,8 @@ type IngestQueue struct {
 	notifWriter notifWriterIface
 
 	retry retryPolicy
+	// tracker, when set, replaces the process watermark tracker (tests).
+	tracker *watermark.Tracker
 	// retrying counts workers inside a failing retry loop; while any is, the
 	// health gate stays shut even if one hung attempt outlasts the cooldown.
 	retrying atomic.Int64
@@ -530,21 +535,19 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		return false
 	}
 
-	// Settle ingest_timestamp before anything consumes the batch. It is the logs
-	// and logs_raw partition key and the archive's ingest_date, so the spool tee
-	// below and the ClickHouse insert must agree on one value; stamping later would
-	// let them disagree across a UTC midnight. Every real ingest path already sets
-	// it at parse time, so this is the fallback for one that does not.
-	for i := range logs {
-		logs[i].IngestTimestamp = logs[i].IngestTime()
-	}
-
 	q.closeMu.RLock()
 	defer q.closeMu.RUnlock()
 	if q.closed {
 		q.Metrics.QueueDrops.Add(int64(len(logs)))
 		return false
 	}
+
+	// Settle ingest_timestamp before anything consumes the batch. It is the logs
+	// and logs_raw partition key and the archive's ingest_date, so the spool tee
+	// below and the ClickHouse insert must agree on one value; stamping later would
+	// let them disagree across a UTC midnight. Every row is now pending against the
+	// process watermark until a worker inserts or finally drops it.
+	q.track(logs)
 
 	// Archive tee (fail-closed, spool-before-ack): when archiving is enabled,
 	// durably append the batch to the spool BEFORE it is queued for ClickHouse.
@@ -560,6 +563,7 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 			// Counted against the spool condition for reporting only: this is a
 			// write failure, not the spool-capacity backpressure state.
 			q.spoolState.pendingDrops.Add(n)
+			q.untrack(logs)
 			return false
 		}
 	}
@@ -577,6 +581,7 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 			// Should not happen given the capacity check above, but
 			// guard against races with concurrent Enqueue calls.
 			q.Metrics.QueueDrops.Add(int64(total))
+			q.untrack(logs)
 			return false
 		}
 	}
@@ -587,8 +592,43 @@ func (q *IngestQueue) Enqueue(logs []storage.LogEntry) bool {
 		return true
 	default:
 		q.Metrics.QueueDrops.Add(int64(total))
+		q.untrack(logs)
 		return false
 	}
+}
+
+// track stamps unstamped rows and registers every row with the process watermark.
+// The hold covers the stamping, so no row lands below a watermark already handed out.
+func (q *IngestQueue) track(logs []storage.LogEntry) {
+	t := q.watermark()
+	hold := t.Hold()
+	defer t.Done(hold)
+	var b watermark.Batch
+	for i := range logs {
+		if logs[i].IngestTimestamp.IsZero() {
+			logs[i].IngestTimestamp = hold.At()
+		}
+		b.Add(logs[i].IngestTimestamp)
+	}
+	t.Track(&b)
+}
+
+// untrack releases rows that were inserted, finally dropped, or never queued.
+func (q *IngestQueue) untrack(logs []storage.LogEntry) {
+	var b watermark.Batch
+	for i := range logs {
+		b.Add(logs[i].IngestTimestamp)
+	}
+	q.watermark().Release(&b)
+}
+
+// watermark is the tracker rows are registered with: the process's, unless a test
+// supplies its own.
+func (q *IngestQueue) watermark() *watermark.Tracker {
+	if q.tracker != nil {
+		return q.tracker
+	}
+	return watermark.Local
 }
 
 // rejectFor records a rejected batch against the condition that caused it and
@@ -1011,12 +1051,14 @@ func (q *IngestQueue) writeSystemEvent(event string, fields map[string]string) {
 		return
 	}
 	fields["event"] = event
-	rawBytes, err := json.Marshal(fields)
+	rawBytes, err := jsonenc.Marshal(fields)
 	if err != nil {
 		return
 	}
 	rawLog := string(rawBytes)
-	now := time.Now()
+	// Stamped under a watermark hold, released once the insert returns.
+	hold := q.watermark().Hold()
+	now := hold.At()
 	entry := storage.LogEntry{
 		Timestamp:       now,
 		IngestTimestamp: now,
@@ -1026,6 +1068,7 @@ func (q *IngestQueue) writeSystemEvent(event string, fields map[string]string) {
 		FractalID:       fractalID,
 	}
 	go func() {
+		defer q.watermark().Done(hold)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := q.db.InsertLogs(ctx, []storage.LogEntry{entry}); err != nil {
@@ -1130,6 +1173,7 @@ func (q *IngestQueue) worker(id int) {
 				"batch_size": fmt.Sprintf("%d", len(buf)),
 			})
 		}
+		q.untrack(buf)
 
 		// Release the bucket's backing array before waiting on the next one.
 		bucket.entries = nil
@@ -1138,10 +1182,12 @@ func (q *IngestQueue) worker(id int) {
 
 // insertWithRetry inserts a bucket, retrying with backoff until the retry window
 // closes. Every failed attempt counts toward the health gate, so Enqueue sheds
-// load while ClickHouse is down instead of acking logs it cannot write.
+// load while ClickHouse is down instead of acking logs it cannot write. Attempts
+// share one dedup token.
 func (q *IngestQueue) insertWithRetry(id int, bucket *partBucket) bool {
 	p := q.retry
 	buf := bucket.entries
+	token := uuid.NewString()
 	window := time.Now().Add(p.window)
 	delay := p.initialDelay
 	stop := q.stop
@@ -1161,7 +1207,7 @@ func (q *IngestQueue) insertWithRetry(id int, bucket *partBucket) bool {
 		}
 
 		ctx, cancel := q.attemptContext(window)
-		err := q.db.InsertLogs(ctx, buf)
+		err := q.db.InsertLogs(storage.InsertTokenContext(ctx, token), buf)
 		cancel()
 
 		if err == nil {

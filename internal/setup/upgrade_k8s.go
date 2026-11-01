@@ -522,7 +522,7 @@ func parseK8sSettings(dir string) (*k8sSettings, error) {
 	// Parse image tag, domain, imagePullSecrets, and PVC settings from bifract deployment
 	if data, err := os.ReadFile(filepath.Join(dir, "bifract", "deployment.yaml")); err == nil {
 		content := string(data)
-		s.imageTag = extractValue(content, `image: ghcr.io/zanegittins/bifract:(.+)`)
+		s.imageTag = extractValue(content, `image: ghcr\.io/zanegittins/bifract:(.+)`)
 		s.domain = strings.TrimSpace(extractValue(content, `BIFRACT_DOMAIN\s*\n\s*value:\s*"?([^"\n]+)"?`))
 		s.bifractResources = extractResources(content, "bifract")
 		s.imagePullSecrets = extractImagePullSecrets(content)

@@ -3,6 +3,7 @@ package parser
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -16,8 +17,8 @@ const bindingSetMaxRows = 50000
 
 // bindingSubquerySQL renders a result-set binding as a single-column subquery for
 // an IN test. The column is the one named after the field being tested, matching
-// how a join() block names its key; a binding that returns exactly one column
-// needs no name at all.
+// how a join() block names its key; a binding that returns exactly one column,
+// or one besides its aggregates, needs no name at all.
 func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (string, error) {
 	if b == nil || b.Pipe == nil {
 		return "", fmt.Errorf("%s is not a result set", bindingName(b))
@@ -25,7 +26,11 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 	if err := chargeBindingWork(&ctx.Opts); err != nil {
 		return "", err
 	}
-	result, err := TranslateToSQLWithOrder(b.Pipe, subqueryOptions(ctx, bindingSetMaxRows))
+	q, err := planQuery(b.Pipe, subqueryOptions(ctx, bindingSetMaxRows))
+	var result *TranslationResult
+	if err == nil {
+		result, err = q.finalize()
+	}
 	if err != nil {
 		// The budget error names the whole query's problem, not this binding's, so
 		// it travels unwrapped rather than accreting a prefix per level.
@@ -35,7 +40,7 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 		return "", fmt.Errorf("%s: %w", b.Name, err)
 	}
 	ctx.Plan.usesBindingSet = true
-	column, err := bindingSetColumn(b, result.FieldOrder, field)
+	column, err := bindingSetColumn(b, result.FieldOrder, field, q.ctx.Registry.IsAggregate)
 	if err != nil {
 		return "", err
 	}
@@ -44,12 +49,14 @@ func bindingSubquerySQL(b *BindingNode, ctx *CommandContext, field string) (stri
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("SELECT %s FROM %s", column, ctx.Plan.addBindingCTE(name, result.SQL)), nil
+		return fmt.Sprintf("SELECT %s FROM %s", quoteIdent(column), ctx.Plan.addBindingCTE(name, result.SQL)), nil
 	}
-	return fmt.Sprintf("SELECT %s FROM (%s)", column, result.SQL), nil
+	return fmt.Sprintf("SELECT %s FROM (%s)", quoteIdent(column), result.SQL), nil
 }
 
-func bindingSetColumn(b *BindingNode, outputs []string, field string) (string, error) {
+// bindingSetColumn picks the column an IN test reads. An aggregate such as the
+// _count groupby() adds is never a membership key, so it does not compete.
+func bindingSetColumn(b *BindingNode, outputs []string, field string, isAggregate func(string) bool) (string, error) {
 	if field != "" && contains(outputs, field) {
 		return field, nil
 	}
@@ -58,6 +65,9 @@ func bindingSetColumn(b *BindingNode, outputs []string, field string) (string, e
 	}
 	if len(outputs) == 0 {
 		return "", fmt.Errorf("%s returns no columns", b.Name)
+	}
+	if keys := slices.DeleteFunc(slices.Clone(outputs), isAggregate); len(keys) == 1 {
+		return keys[0], nil
 	}
 	return "", fmt.Errorf("%s returns [%s]; name the column to test by making the binding return only it, or test a field one of them is named after",
 		b.Name, strings.Join(outputs, ", "))

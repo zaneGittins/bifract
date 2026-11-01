@@ -72,10 +72,6 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 	fractalID, prismID := scope.FractalID, scope.PrismID
 	start, end := scope.Start, scope.End
 
-	// Dashboard widgets and shared-link wallboards are user-facing query work, so they
-	// share the search workload's budget rather than getting an unbounded one of their
-	// own: a dashboard is one page that happens to issue many queries at once.
-	ctx = storage.UserSearchContext(ctx)
 	if scope.Tag.Source != "" {
 		ctx = storage.TagContext(ctx, scope.Tag)
 	}
@@ -119,6 +115,16 @@ func (h *QueryHandler) ExecuteBQL(ctx context.Context, queryStr string, scope Ex
 			}
 		}
 	}
+
+	// Dashboard widgets and shared-link wallboards are user-facing query work, so they
+	// share the search workload's budget rather than getting an unbounded one of their
+	// own: a dashboard is one page that happens to issue many queries at once.
+	scopeFractalID := fractalID
+	if isPrismContext {
+		scopeFractalID = ""
+	}
+	chScope, _ := fractalScope(scopeFractalID, prismFractalIDs, includeEmptyFractalID)
+	ctx = storage.UserSearchContext(ctx, chScope)
 
 	// Dictionary mappings for match() resolution.
 	var dictScope dictionaries.Scope

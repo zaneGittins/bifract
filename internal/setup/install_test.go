@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,17 +19,35 @@ func writeInstallFile(t *testing.T, installDir string) string {
 	return path
 }
 
+// stubPortCheck replaces the host port preflight, so install tests do not depend
+// on what happens to be listening on the machine running them.
+func stubPortCheck(t *testing.T, err error) {
+	t.Helper()
+	orig := checkHostPorts
+	checkHostPorts = func([]string) error { return err }
+	t.Cleanup(func() { checkHostPorts = orig })
+}
+
 // Reinstalling over an existing .env would replace every credential the running
 // databases were initialised with.
 func TestRunInstallRefusesExistingInstall(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, ".env"), []byte("POSTGRES_PASSWORD=keep\n"), 0600)
 	fake := newFakeExec(t)
+	// A previous run's stack may hold the ports; the existing install is the
+	// more useful thing to report.
+	stubPortCheck(t, errors.New("port 443 is already in use"))
 
 	var err error
 	captureStdout(t, func() { err = RunInstall(InstallOptions{ConfigPath: writeInstallFile(t, dir)}) })
 	if err == nil || !strings.Contains(err.Error(), "existing installation") {
 		t.Fatalf("err = %v", err)
+	}
+	// Removing .env would regenerate passwords that no longer match the volumes.
+	for _, hint := range []string{"--start --dir " + dir, "docker compose down -v"} {
+		if !strings.Contains(err.Error(), hint) {
+			t.Errorf("err does not suggest %q: %v", hint, err)
+		}
 	}
 	if got := readFile(t, dir, ".env"); got != "POSTGRES_PASSWORD=keep\n" {
 		t.Errorf(".env overwritten: %q", got)
@@ -46,6 +65,7 @@ func TestRunInstallRefusesExistingInstall(t *testing.T) {
 func TestRunInstallDeliversPasswordBeforeDeploy(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bifract")
 	fake := newFakeExec(t, composeUpFails)
+	stubPortCheck(t, nil)
 
 	var err error
 	captureStdout(t, func() { err = RunInstall(InstallOptions{ConfigPath: writeInstallFile(t, dir)}) })
@@ -70,6 +90,35 @@ func TestRunInstallDeliversPasswordBeforeDeploy(t *testing.T) {
 	}
 	if calls := dockerCalls(fake); !strings.HasPrefix(calls, "compose pull") {
 		t.Errorf("docker calls:\n%s", calls)
+	}
+}
+
+// A busy port is caught before anything is written, so fixing it and rerunning
+// is a clean install rather than one blocked by half-initialised volumes.
+func TestRunInstallChecksPortsBeforeWriting(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bifract")
+	fake := newFakeExec(t)
+	var checked []string
+	orig := checkHostPorts
+	checkHostPorts = func(addrs []string) error {
+		checked = addrs
+		return errors.New("port 80 is already in use")
+	}
+	t.Cleanup(func() { checkHostPorts = orig })
+
+	var err error
+	captureStdout(t, func() { err = RunInstall(InstallOptions{ConfigPath: writeInstallFile(t, dir)}) })
+	if err == nil || !strings.Contains(err.Error(), "port 80") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Join(checked, ",") != ":80,:443,:8443" {
+		t.Errorf("checked %v", checked)
+	}
+	if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+		t.Errorf("install dir created before the port check: %v", statErr)
+	}
+	if len(fake.calls()) != 0 {
+		t.Errorf("ran docker: %s", dockerCalls(fake))
 	}
 }
 

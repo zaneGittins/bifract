@@ -58,7 +58,7 @@ const HttpUtils = {
         } catch (error) {
             // Re-throw with context about the request
             const method = options.method || 'GET';
-            console.error(`[HttpUtils] ${method} ${url} failed:`, error.message);
+            console.error('[HttpUtils] %s %s failed:', method, url, error.message);
             throw error;
         }
     }

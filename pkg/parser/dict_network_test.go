@@ -93,13 +93,16 @@ func TestPatternDictionaryMembershipAvoidsDictHas(t *testing.T) {
 	if !strings.Contains(sql, "= '1'") {
 		t.Errorf("want the marker compared to its set value, got: %s", sql)
 	}
+	if strings.Contains(sql, "tupleElement") {
+		t.Errorf("a lone marker lookup needs no tuple: %s", sql)
+	}
 }
 
 // A pattern is matched against the string as the log carries it, so the probe is
 // unchanged. Only membership differs from a value list.
 func TestPatternDictionaryProbesWithAString(t *testing.T) {
 	sql := networkSQL(t, `* | match(dict="tools", field=commandline, column=pattern, include=[tool])`)
-	if !strings.Contains(sql, "dictGetOrDefault('bifract.dict_tools_pattern', 'tool', toString(fields.`commandline`::String)") {
+	if !strings.Contains(sql, "dictGetOrDefault('bifract.dict_tools_pattern', ('_match', 'tool'), toString(fields.`commandline`::String)") {
 		t.Errorf("want a plain string probe, got: %s", sql)
 	}
 	if strings.Contains(sql, "toIPv6") {
@@ -115,7 +118,7 @@ func TestPatternStrictDoesNotUseDictHas(t *testing.T) {
 	if strings.Contains(sql, "dictHas(") {
 		t.Errorf("a pattern list cannot take dictHas anywhere: %s", sql)
 	}
-	if !strings.Contains(sql, `dictGetOrDefault('bifract.dict_tools_pattern', '_match'`) {
+	if !strings.Contains(sql, "tupleElement(identity(dictGetOrDefault('bifract.dict_tools_pattern', ('_match', 'tool'), toString(fields.`commandline`::String), ('', ''))), 1) = '1'") {
 		t.Errorf("want strict to test the marker, got: %s", sql)
 	}
 }
@@ -243,9 +246,10 @@ func TestPatternPrefilterGuardsEveryLookup(t *testing.T) {
 	}
 	probe := "toString(fields.`commandline`::String)"
 	guard := "multiMatchAny(" + probe + ", (SELECT pats))"
+	row := "if(" + guard + ", dictGetOrDefault('bifract.dict_tools_pattern', ('_match', 'tool'), " + probe + ", ('', '')), ('', ''))"
 	for _, want := range []string{
-		"(" + guard + " AND dictGetOrDefault('bifract.dict_tools_pattern', '_match', " + probe + ", '') = '1')",
-		"if(" + guard + ", dictGetOrDefault('bifract.dict_tools_pattern', 'tool', " + probe + ", ''), '')",
+		"tupleElement(" + row + ", 1) = '1'",
+		"tupleElement(" + row + ", 2) AS tool",
 	} {
 		if !strings.Contains(res.SQL, want) {
 			t.Errorf("want %s in:\n%s", want, res.SQL)
@@ -256,8 +260,45 @@ func TestPatternPrefilterGuardsEveryLookup(t *testing.T) {
 	}
 }
 
+// A REGEXP_TREE walks its expressions on every dictGet, so match() reads the
+// marker and every include column in one tuple lookup. ClickHouse computes an
+// identical expression once per row, so the lookup must be spelled the same in
+// the select list, the require filter and a later filter on an include column.
+func TestPatternMatchLooksUpOncePerRow(t *testing.T) {
+	sql := networkSQL(t, `* | match(dict="tools", field=commandline, column=pattern, include=[tool, pattern, family, tool], require=true) | family="x"`)
+	probe := "toString(fields.`commandline`::String)"
+	row := "identity(dictGetOrDefault('bifract.dict_tools_pattern', ('_match', 'tool', 'family'), " + probe + ", ('', '', '')))"
+	if lookups, rows := strings.Count(sql, "dictGetOrDefault("), strings.Count(sql, row); rows != lookups {
+		t.Errorf("%d lookups, %d of them the shared row:\n%s", lookups, rows, sql)
+	}
+	for _, want := range []string{
+		"tupleElement(" + row + ", 2) AS tool",
+		"tupleElement(" + row + ", 3) AS family",
+		"if(tupleElement(" + row + ", 1) = '1', " + probe + ", '') AS pattern",
+		"tupleElement(" + row + ", 1) = '1'",
+		"tupleElement(" + row + ", 3) = 'x'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("want %s in:\n%s", want, sql)
+		}
+	}
+}
+
+// Ordinary lists gain little from a tuple lookup and keep one dictGet per column.
+func TestHashedMatchKeepsPerColumnLookups(t *testing.T) {
+	sql := networkSQL(t, `* | match(dict="names", field=user, column=name, include=[a, b])`)
+	if strings.Contains(sql, "tupleElement") {
+		t.Errorf("a hashed list is read per column: %s", sql)
+	}
+	for _, col := range []string{"a", "b"} {
+		if !strings.Contains(sql, "dictGetOrDefault('bifract.dict_names_name', '"+col+"', ") {
+			t.Errorf("want a lookup of %s, got: %s", col, sql)
+		}
+	}
+}
+
 // A list ClickHouse has not compiled for Hyperscan has no prefilter, and its
-// lookups are exactly as before.
+// lookups run unscreened.
 func TestPatternWithoutPrefilterIsUnguarded(t *testing.T) {
 	sql := networkSQL(t, `* | match(dict="tools", field=commandline, column=pattern, include=[tool, pattern], require=true)`)
 	if strings.Contains(sql, "multiMatchAny") {

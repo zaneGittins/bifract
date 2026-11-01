@@ -9,12 +9,13 @@ import (
 func TestMaintainWindowBounds(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
 
-	// A current model advances to the lag cutoff, never to now: a row can commit
-	// with an ingest_timestamp slightly in the past, and reading up to now would
-	// step over it while the watermark moved past.
-	from, to := maintainWindow(now.Add(-time.Minute), now)
-	if want := now.Add(-stateMaintLag); !to.Equal(want) {
-		t.Errorf("cutoff = %v, want %v", to, want)
+	// A current model reads up to the ingest watermark and no further: a row
+	// stamped at or after it may not be written yet. The window includes its end,
+	// so it stops one millisecond (the column's precision) short.
+	cutoff := now.Add(-20 * time.Second)
+	from, to := maintainWindow(now.Add(-time.Minute), cutoff)
+	if want := cutoff.Add(-time.Millisecond); !to.Equal(want) {
+		t.Errorf("end = %v, want %v", to, want)
 	}
 	if !from.Equal(now.Add(-time.Minute)) {
 		t.Errorf("from = %v, want the watermark", from)
@@ -178,7 +179,7 @@ func TestStateLagReporting(t *testing.T) {
 	}
 
 	// Steady state sits a whole cycle behind by design and must not read as a fault.
-	steady := now.Add(-(stateMaintLag + StateMaintInterval()))
+	steady := now.Add(-(ingestLagAllowance + StateMaintInterval()))
 	m = Model{StateWatermark: &steady}
 	m.SetStateLag(now)
 	if m.StateBehind {
@@ -214,7 +215,7 @@ func TestStateLagBudgetCoversSteadyState(t *testing.T) {
 		if got := StateMaintInterval(); got != interval {
 			t.Fatalf("interval not read back: got %v want %v", got, interval)
 		}
-		steady := stateMaintLag + interval
+		steady := ingestLagAllowance + interval
 		if budget := StateLagBudget(); budget <= steady {
 			t.Errorf("interval %v: budget %v does not clear steady-state lag %v, so a healthy model reports behind",
 				interval, budget, steady)

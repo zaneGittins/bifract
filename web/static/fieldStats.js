@@ -345,7 +345,7 @@ const FieldStats = {
         const op = exclude ? '!=' : '=';
         const filter = /^-?\d+(\.\d+)?$/.test(value)
             ? `${field}${op}${value}`
-            : `${field}${op}"${value.replace(/"/g, '\\"')}"`;
+            : `${field}${op}${Utils.bqlQuote(value)}`;
         const current = input.value.trim();
         input.value = current ? `${current} ${filter}` : filter;
         input.dispatchEvent(new Event('input', { bubbles: true }));

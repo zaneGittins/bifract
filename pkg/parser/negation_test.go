@@ -49,3 +49,20 @@ func TestNegatedFilterCommandsStillNegate(t *testing.T) {
 		}
 	}
 }
+
+// !=~, !=^ and !=$ are the negated forms of =~, =^ and =$, written the way != is.
+func TestNegatedMatchOperators(t *testing.T) {
+	for neg, plain := range map[string]string{
+		`image!=~cmd,pwsh`:                                  `NOT image=~cmd,pwsh`,
+		`image!=^"C:\\Windows"`:                             `NOT image=^"C:\\Windows"`,
+		`image!=$".exe"`:                                    `NOT image=$".exe"`,
+		`lower(image) !=$ ".exe",".dll"`:                    `NOT lower(image) =$ ".exe",".dll"`,
+		`a="1" AND image!=$".exe" OR b="2"`:                 `a="1" AND NOT image=$".exe" OR b="2"`,
+		`NOT image!=~cmd`:                                   `image=~cmd`,
+		`* | case { image!=$".exe" | x:="y"; * | x:="z"; }`: `* | case { NOT image=$".exe" | x:="y"; * | x:="z"; }`,
+	} {
+		if got, want := translateML(t, neg), translateML(t, plain); got != want {
+			t.Errorf("%s: want the same SQL as %s\n got: %s\nwant: %s", neg, plain, got, want)
+		}
+	}
+}

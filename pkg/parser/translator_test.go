@@ -323,7 +323,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Numeric comparison",
 			query: "status_code>=500",
 			wantContain: []string{
-				"toFloat64OrZero(fields.`status_code`::String) >= 500",
+				"toFloat64OrDefault(fields.`status_code`::String, nan) >= 500",
 			},
 		},
 		{
@@ -4908,13 +4908,28 @@ func TestJoinFunction(t *testing.T) {
 				"= _join_sub.user",
 				"fractal_id = 'test-fractal-123'",
 			},
+			wantNotContain: []string{"join_use_nulls"},
 		},
 		{
 			name:  "Left join with type parameter",
 			query: `* | join(src_ip, type=left) { * | groupby(src_ip, function=count()) }`,
+			// The setting rides a subquery: callers append ORDER BY and LIMIT to the
+			// outermost SELECT, which must not end in SETTINGS.
 			wantContain: []string{
+				"SELECT * FROM (SELECT _outer.*",
 				"LEFT JOIN",
-				"= _join_sub.src_ip",
+				"= _join_sub.src_ip SETTINGS join_use_nulls = 1)",
+			},
+		},
+		{
+			// Unmatched rows must read NULL, not 0, or `_join__count < 5` keeps every
+			// row the subquery never saw. The filter sits outside the joined SELECT
+			// that carries the setting.
+			name:  "Left join reads unmatched subquery columns as NULL",
+			query: `* | join(user, type=left) { * | groupby(user) } | _join__count < 5`,
+			wantContain: []string{
+				"= _join_sub.user SETTINGS join_use_nulls = 1)",
+				"_join__count < 5",
 			},
 		},
 		{
@@ -5024,8 +5039,8 @@ func TestJoinFunction(t *testing.T) {
 // multi-stage groupby pipelines and multi()/bare aggregate aliases. These
 // regression-guard two classes of bug:
 //  1. A carried/redefined aggregate (e.g. _count after a second groupby) must
-//     NOT be wrapped in toFloat64OrZero() -- it is already a numeric UInt64, and
-//     toFloat64OrZero only accepts String (ClickHouse type mismatch otherwise).
+//     NOT be wrapped in toFloat64OrDefault() -- it is already a numeric UInt64, and
+//     toFloat64OrDefault only accepts String (ClickHouse type mismatch otherwise).
 //  2. The HAVING must bind to the OUTER (final) groupby stage, and aggregate
 //     aliases produced during Execute (multi(), bare count) must route to HAVING,
 //     not WHERE.
@@ -5049,7 +5064,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"GROUP BY user HAVING _count > 5",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_count)",
+				"toFloat64OrDefault(_count",
 			},
 		},
 		{
@@ -5059,7 +5074,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"HAVING _count > 5",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_count)",
+				"toFloat64OrDefault(_count",
 			},
 		},
 		{
@@ -5069,7 +5084,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"HAVING _count > 5",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_count)",
+				"toFloat64OrDefault(_count",
 			},
 		},
 		{
@@ -5089,7 +5104,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"HAVING _sum > 100",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_sum)",
+				"toFloat64OrDefault(_sum",
 			},
 		},
 	}
@@ -5152,8 +5167,8 @@ func TestCaseAllStages(t *testing.T) {
 			name:  "N per-row assignments per branch",
 			query: `* | case { status>=500 | sev:="crit" | team:="oncall"; * | sev:="ok" | team:="none"; } | table(sev, team)`,
 			wantContain: []string{
-				"WHEN toFloat64OrZero(fields.`status`::String) >= 500 THEN 'crit'",
-				"WHEN toFloat64OrZero(fields.`status`::String) >= 500 THEN 'oncall'",
+				"WHEN toFloat64OrDefault(fields.`status`::String, nan) >= 500 THEN 'crit'",
+				"WHEN toFloat64OrDefault(fields.`status`::String, nan) >= 500 THEN 'oncall'",
 				"AS sev",
 				"AS team",
 			},
@@ -5501,6 +5516,50 @@ func TestSourceWhereComplete(t *testing.T) {
 	}
 }
 
+// RangeDependentRows tells a caller that slices the range (stream chunks, live
+// polls) that a row's presence or values depend on the other rows in range, so
+// each slice would compute them over different rows. The caller's MaxRows does
+// not count.
+func TestRangeDependentRows(t *testing.T) {
+	cases := map[string]bool{
+		`event_id="1"`:                         false,
+		`* | sort(user)`:                       false,
+		`risk := 1 | risk > 0`:                 false,
+		`* | dedup(user)`:                      true,
+		`* | dedup(user, host)`:                true,
+		`event_id="1" | dedup(user)`:           true,
+		`* | dedup(user) | event_id="1"`:       true,
+		`risk := 1 | dedup(risk)`:              true,
+		`* | dedup(user) | groupby(host)`:      true,
+		`* | limit(10)`:                        true,
+		`* | limit(10) | event_id="1"`:         true,
+		`* | head(5)`:                          true,
+		`* | table(user, limit=5)`:             true,
+		`* | modifiedzscore(bytes)`:            true,
+		`* | madoutlier(bytes)`:                true,
+		`* | outlier(bytes) | _is_outlier="1"`: true,
+	}
+	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for query, want := range cases {
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Errorf("%s: parse: %v", query, err)
+			continue
+		}
+		res, err := TranslateToSQLWithOrder(pipeline, QueryOptions{
+			StartTime: start, EndTime: end, FractalID: "f1", MaxRows: 100,
+		})
+		if err != nil {
+			t.Errorf("%s: translate: %v", query, err)
+			continue
+		}
+		if res.RangeDependentRows != want {
+			t.Errorf("%s: RangeDependentRows = %v, want %v", query, res.RangeDependentRows, want)
+		}
+	}
+}
+
 // A command may write its alias into the expression rather than the Alias field,
 // so the projection list has to read both spellings and must not mangle an
 // expression that contains the separator itself.
@@ -5562,10 +5621,11 @@ func TestModelLookupKeyResolvesAComputedColumn(t *testing.T) {
 		t.Errorf("the join key reads tool as a stored field, which is empty on every row:\n%s", res.SQL)
 	}
 	// Both the join key and the strict prefilter must carry the lookup.
-	if !strings.Contains(res.SQL, "ifNull(toString(dictGetOrDefault('logs.dict_rmm', 'tool', toString(fields.`image`::String), '')), '')) = _mlookup.entity_key") {
+	row := "identity(dictGetOrDefault('logs.dict_rmm', ('_match', 'tool'), toString(fields.`image`::String), ('', '')))"
+	if !strings.Contains(res.SQL, "ifNull(toString(tupleElement("+row+", 2)), '')) = _mlookup.entity_key") {
 		t.Errorf("the join key does not carry the lookup:\n%s", res.SQL)
 	}
-	if n := strings.Count(res.SQL, "dictGetOrDefault('logs.dict_rmm', 'tool'"); n < 2 {
+	if n := strings.Count(res.SQL, row); n < 2 {
 		t.Errorf("the prefilter and the join key should both use the lookup, found %d uses:\n%s", n, res.SQL)
 	}
 }

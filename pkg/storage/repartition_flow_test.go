@@ -273,13 +273,20 @@ func TestDropFractalPartitionsBatches(t *testing.T) {
 }
 
 func TestColumnListRequiresColumns(t *testing.T) {
-	if _, err := columnList(context.Background(), fakedb.NewCH(), "t"); err == nil {
+	if _, err := columnList(context.Background(), fakedb.NewCH(), "t", "src"); err == nil {
 		t.Error("an empty column list must be an error, not an empty INSERT")
 	}
 	f := fakedb.NewCH()
 	f.On(positionsQuery, fakedb.Strs("name", "a`b"))
-	if got, _ := columnList(context.Background(), f, "t"); got != "`a``b`" {
+	if got, _ := columnList(context.Background(), f, "t", "src"); got != "`a``b`" {
 		t.Errorf("columnList = %q", got)
+	}
+	// Computed columns cannot be inserted, and a column the source lacks takes its default.
+	q := f.Queried()[0]
+	for _, want := range []string{"default_kind NOT IN ('MATERIALIZED', 'ALIAS', 'EPHEMERAL')", "AND name IN (SELECT name FROM system.columns"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("column query missing %q: %s", want, q)
+		}
 	}
 }
 

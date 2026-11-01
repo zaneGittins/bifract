@@ -18,6 +18,7 @@ import (
 	"bifract/pkg/metrics"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/notifications"
+	"bifract/pkg/pgnotify"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 
@@ -196,6 +197,15 @@ func waitForWriteTable(dbIngest *storage.ClickHouseClient) {
 	}
 }
 
+// startChangeBus shares ingest token revocations and settings saves with every
+// other API and ingest process, so none keeps serving stale ones.
+func startChangeBus(pg *storage.PostgresClient) *pgnotify.Bus {
+	bus := pgnotify.New(pg.DB())
+	settings.Watch(bus)
+	bus.Listen(pg.ConnString())
+	return bus
+}
+
 // runIngestServer runs the data-plane-only ingest tier (invoked by `bifract-server
 // ingest`). It constructs only the ingest queue, spool tee, backpressure monitors, and
 // the ingest HTTP surface -- no migrations, alerts, models, dashboards, query, or UI.
@@ -216,6 +226,10 @@ func runIngestServer() {
 
 	notifWriter := notifications.New(pg)
 
+	// Readers must see this node before it stamps a row. The app tier grants access
+	// to the watermark table, so wait as long as for the database identities.
+	wmPublisher := startWatermarkPublisher(pg, "ingest", 5*time.Minute)
+
 	// Ingest mode never runs migrations. Wait (bounded) for the schema so cold starts
 	// after a fresh deploy don't drop the first burst.
 	waitForWriteTable(dbIngest)
@@ -230,12 +244,14 @@ func runIngestServer() {
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: failed to initialize settings: %v", err)
 	}
+	changeBus := startChangeBus(pg)
 
 	fractalManager := fractals.NewManager(pg, db)
 	normalizerManager := normalizers.NewManager(pg)
 
 	ingestTokenStorage := ingesttokens.NewStorage(pg)
 	tokenCache := ingesttokens.NewTokenCache(60 * time.Second)
+	tokenCache.Watch(changeBus)
 	quotaManager := ingest.NewQuotaManager(pg, dbIngest)
 
 	ingestQueue := ingest.NewIngestQueue(dbIngest, config.IngestQueueSize, config.IngestWorkers)
@@ -254,6 +270,7 @@ func runIngestServer() {
 	ingestHandler.SetQuotaManager(quotaManager)
 	elasticHandler := ingest.NewElasticBulkHandler(ingestHandler)
 	otlpHandler := ingest.NewOTLPHandler(ingestHandler)
+	hecHandler := ingest.NewHECHandler(ingestHandler)
 	internalIngestHandler := ingest.NewInternalIngestHandler(ingestQueue, config.MaxBodySize, fractalManager, normalizerManager)
 
 	// The distribution-queue and DDL-queue monitors are NOT run here. They observe
@@ -273,6 +290,7 @@ func runIngestServer() {
 		internalIngestHandler: internalIngestHandler,
 		elasticHandler:        elasticHandler,
 		otlpHandler:           otlpHandler,
+		hecHandler:            hecHandler,
 	})
 
 	// Prometheus metrics (own surface; no alert engine to attach).
@@ -309,6 +327,9 @@ func runIngestServer() {
 		log.Printf("Ingest server forced to shutdown: %v", err)
 	}
 	ingestQueue.Shutdown() // drains pending inserts + the spool tee
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	wmPublisher.Stop(stopCtx) // after the drain, so nothing it stamped is pending
+	stopCancel()
 	quotaManager.Stop()
 	if metricsServer != nil {
 		metricsServer.Shutdown()
@@ -324,6 +345,7 @@ type ingestRouterDeps struct {
 	internalIngestHandler *ingest.InternalIngestHandler
 	elasticHandler        *ingest.ElasticBulkHandler
 	otlpHandler           *ingest.OTLPHandler
+	hecHandler            *ingest.HECHandler
 }
 
 // buildIngestRouter mounts the ingest data plane and the health probe. No
@@ -393,6 +415,7 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 			Handler: d.otlpHandler.HandleLogs,
 		})
 	})
+	registerHECRoutes(r, d.hecHandler, d.rateLimiter)
 
 	return mux, reg
 }

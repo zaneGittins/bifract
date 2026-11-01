@@ -2,6 +2,7 @@ package settings
 
 import (
 	"database/sql/driver"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"bifract/internal/fakedb"
 	"bifract/pkg/clientip"
+	"bifract/pkg/pgnotify"
 	"bifract/pkg/storage/storagetest"
 )
 
@@ -30,6 +32,9 @@ func TestClampRecallConcurrency(t *testing.T) {
 	}
 }
 
+// readErr, when set, fails kvSettings' whole-table read.
+var readErr error
+
 // kvSettings backs settings.Init and Update with an in-memory settings table.
 func kvSettings(t *testing.T, initial map[string]string) map[string]string {
 	t.Helper()
@@ -43,6 +48,15 @@ func kvSettings(t *testing.T, initial map[string]string) map[string]string {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
+		case strings.Contains(q, "SELECT key, value FROM settings"):
+			if readErr != nil {
+				return fakedb.PGResult{Err: readErr}, true
+			}
+			var all [][]driver.Value
+			for k, v := range rows {
+				all = append(all, []driver.Value{k, v})
+			}
+			return fakedb.RowsOf(all...), true
 		case strings.Contains(q, "SELECT value FROM settings"):
 			if v, ok := rows[args[0].(string)]; ok {
 				return fakedb.Row(v), true
@@ -142,4 +156,51 @@ func TestTrustedProxiesSetting(t *testing.T) {
 			t.Errorf("unrelated save changed trusted proxies to %s", got)
 		}
 	})
+}
+
+// Settings saved by another process take effect here when it announces them,
+// trusted proxies included, and a failed read keeps what is in force.
+func TestReloadPicksUpAnotherProcessesSave(t *testing.T) {
+	rows := kvSettings(t, map[string]string{"require_mfa": "false"})
+	notices := fakedb.NewPG()
+	notices.On("pg_notify", fakedb.Row(""))
+	b := pgnotify.New(notices.DB())
+	Watch(b)
+	t.Cleanup(func() { bus = nil })
+
+	rows["require_mfa"] = "true"
+	rows["trusted_proxy_cidrs"] = `["203.0.113.10/32"]`
+	b.Deliver(pgnotify.TopicSettings)
+	if !Get().RequireMFA {
+		t.Error("require_mfa saved elsewhere not picked up")
+	}
+	if got := clientip.FromRequest(peerWithXFF("203.0.113.10", "198.51.100.4")); got != "198.51.100.4" {
+		t.Errorf("reloaded proxy not trusted: %q", got)
+	}
+
+	readErr = errors.New("pq: connection reset")
+	t.Cleanup(func() { readErr = nil })
+	rows["require_mfa"] = "false"
+	b.Deliver(pgnotify.TopicSettings)
+	if !Get().RequireMFA {
+		t.Error("a failed reload changed the settings in force")
+	}
+}
+
+// Saving announces the change so every other process reloads.
+func TestUpdateAnnouncesTheSave(t *testing.T) {
+	kvSettings(t, nil)
+	notices := fakedb.NewPG()
+	notices.On("pg_notify", fakedb.Row(""))
+	Watch(pgnotify.New(notices.DB()))
+	t.Cleanup(func() { bus = nil })
+
+	s := Get()
+	s.RequireMFA = false
+	if err := Update(&s); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(notices.Matching("pg_notify")); n != 1 {
+		t.Errorf("%d notices after a save, want 1", n)
+	}
 }

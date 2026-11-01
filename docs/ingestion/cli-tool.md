@@ -31,6 +31,9 @@ bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN -r /var/l
 # Fixed concurrency instead of auto mode
 bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN \
   --workers 8 --batch-size 2000 *.json
+
+# Self-signed certificate (the installer's default)
+bifract --ingest --url https://bifract.example.com:8443 --token $TOKEN -k file.json
 ```
 
 ## Load an Exchange dataset
@@ -47,7 +50,7 @@ The verified file is kept in your user cache directory (`bifract/datasets`), so 
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--url`, `-u` | `http://localhost:8443` | Bifract server URL |
+| `--url`, `-u` | `https://localhost:8443` | Bifract server URL |
 | `--token`, `-t` | (required) | Ingest token |
 | `--batch-size`, `-b` | auto (5000) | Logs per batch |
 | `--workers`, `-w` | auto (CPU cores, 2 to 32) | Concurrent upload workers |

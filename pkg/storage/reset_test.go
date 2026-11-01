@@ -1,8 +1,12 @@
 package storage
 
 import (
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	dbsql "bifract/db"
 )
 
 // The reset drops by explicit name. Matching system.tables by pattern instead would
@@ -94,6 +98,25 @@ func TestModelIDOfMVNameInvertsModelCHMVName(t *testing.T) {
 	for _, name := range []string{"model_mv_", "model_x", "logs"} {
 		if _, ok := ModelIDOfMVName(name); ok {
 			t.Errorf("%q read as a model view", name)
+		}
+	}
+}
+
+// Every table and view init-clickhouse.sql provisions is log data or derived from it, so
+// the reset must name each one; a view left out keeps feeding a table that is gone.
+func TestResetCoversInitSchema(t *testing.T) {
+	re := regexp.MustCompile(`CREATE (TABLE|MATERIALIZED VIEW) IF NOT EXISTS (\w+)`)
+	found := re.FindAllStringSubmatch(dbsql.ClickHouseSQL, -1)
+	if len(found) == 0 {
+		t.Fatal("no CREATE statements found in init-clickhouse.sql")
+	}
+	for _, m := range found {
+		list := resetShardedTables
+		if m[1] == "MATERIALIZED VIEW" {
+			list = resetMaterializedViews
+		}
+		if !slices.Contains(list, m[2]) {
+			t.Errorf("reset does not drop %s %s", strings.ToLower(m[1]), m[2])
 		}
 	}
 }

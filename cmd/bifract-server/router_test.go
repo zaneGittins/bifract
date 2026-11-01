@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"bifract/pkg/api"
+	"bifract/pkg/auth"
 	"bifract/pkg/oidc"
 
 	"github.com/go-chi/chi/v5"
@@ -179,6 +180,22 @@ func TestEveryRouteDeclaresAccess(t *testing.T) {
 	}
 }
 
+// TestScopeExemptRoutesAreUnscoped: a scope-exempt path ignores the request's
+// scope header, so a scoped access level there would be judged against whatever
+// scope the session last held, or none. Such routes must check their own target.
+func TestScopeExemptRoutesAreUnscoped(t *testing.T) {
+	mux, registry := buildRouter(testDeps())
+	for _, route := range walkRouter(t, mux, registry) {
+		if !auth.ScopeHeaderExempt(route.path) {
+			continue
+		}
+		switch api.Access(route.access) {
+		case api.AccessViewer, api.AccessAnalyst, api.AccessFractalAdmin:
+			t.Errorf("%s is scope-exempt but declares scoped access %q", route.key(), route.access)
+		}
+	}
+}
+
 // TestEveryRouteIsRegistered is the completeness invariant: every route the
 // router serves is described in the api registry. It walks the live router, so
 // no document can satisfy it, and it has no exemptions, so a route added with
@@ -204,6 +221,13 @@ var ingestRouteTable = []string{
 	"GET /api/v1/health 2 public public",
 	"POST /api/v1/ingest 3 public ingest_token",
 	"POST /api/v1/internal/ingest/{fractal} 4 public internal",
+	"POST /services/collector 3 public body resp ingest_token",
+	"POST /services/collector/event 3 public body resp ingest_token",
+	"POST /services/collector/event/1.0 3 public body resp ingest_token",
+	"GET /services/collector/health 2 public resp public",
+	"GET /services/collector/health/1.0 2 public resp public",
+	"POST /services/collector/raw 3 public body resp ingest_token",
+	"POST /services/collector/raw/1.0 3 public body resp ingest_token",
 	"POST /v1/logs 3 public ingest_token",
 }
 

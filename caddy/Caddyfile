@@ -39,7 +39,7 @@
 		}
 	}
 
-	@ingest path /api/v1/ingest* /_bulk /v1/logs
+	@ingest path /api/v1/ingest* /_bulk /v1/logs /services/collector*
 	@sse path */events */stream
 
 	# Ordered routing so the internal-endpoint 403 wins before the catch-all proxy
@@ -99,7 +99,7 @@
 	}
 
 	# Only ingest endpoints are allowed on this port
-	@ingest path /api/v1/ingest* /_bulk /v1/logs
+	@ingest path /api/v1/ingest* /_bulk /v1/logs /services/collector*
 	handle @ingest {
 		reverse_proxy bifract-ingest:8080 {
 			header_up X-Real-IP {remote_host}

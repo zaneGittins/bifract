@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -187,7 +188,7 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
 		source.Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(name, expr)
-		// A filter coerces text with toFloat64OrZero, which rejects a number.
+		// A filter coerces text with textToNumber, which rejects a number.
 		if exprType == TypeNumber {
 			ctx.Registry.SetNumeric(name)
 		}
@@ -639,7 +640,7 @@ func lenArgs(cmd CommandNode) (field Argument, outName string, ok bool) {
 
 func (h *lenHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	// The numeric SELECT alias is registered as FieldKindAssignment so condition
-	// routing can reference it by name without wrapping in toFloat64OrZero.
+	// routing can reference it by name without wrapping in textToNumber.
 	_, outName, _ := lenArgs(cmd)
 	if outName != "" {
 		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)
@@ -688,7 +689,7 @@ func logSizeArgs(cmd CommandNode) (field Argument, outName string) {
 
 func (h *logSizeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	// Numeric SELECT alias, registered like _len so condition/aggregation routing
-	// can reference it by name without re-wrapping in toFloat64OrZero.
+	// can reference it by name without re-wrapping in textToNumber.
 	_, outName := logSizeArgs(cmd)
 	if outName != "" {
 		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)
@@ -1107,7 +1108,10 @@ type lookupRef struct {
 	// prefilter is the pattern list's expressions as an array, or "" when it is
 	// not screened (see QueryOptions.PatternPrefilters).
 	prefilter string
-	opts      QueryOptions
+	// attrs, when set, are the attributes read together in one tuple lookup,
+	// the marker first (see reading).
+	attrs []string
+	opts  QueryOptions
 }
 
 // resolveLookup resolves a lookup and key column in opts' scope.
@@ -1142,8 +1146,50 @@ func (l lookupRef) screen(probeRef string) string {
 	return fmt.Sprintf("multiMatchAny(%s, %s)", probeRef, l.prefilter)
 }
 
+// reading returns l set to read cols. A REGEXP_TREE walks its expressions on
+// every dictGet, so a pattern list reads the marker and every include column
+// in one tuple lookup, spelled identically at each use so ClickHouse computes
+// it once per row. A hashed lookup is cheap enough to keep per column.
+func (l lookupRef) reading(cols []string, keyColumn string) lookupRef {
+	if !l.pattern {
+		return l
+	}
+	attrs := []string{PatternMatchAttr}
+	for _, c := range cols {
+		if c != keyColumn && !slices.Contains(attrs, c) {
+			attrs = append(attrs, c)
+		}
+	}
+	if len(attrs) > 1 {
+		l.attrs = attrs
+	}
+	return l
+}
+
+// row is the tuple lookup of l.attrs. The screen wraps the whole tuple, since
+// screening inside each tupleElement would run the lookup once per column.
+// Without one, identity() stops optimize_dictget_tuple_element splitting the
+// lookup back into one dictGet per column.
+func (l lookupRef) row(probeRef string) string {
+	names := make([]string, len(l.attrs))
+	empty := make([]string, len(l.attrs))
+	for i, a := range l.attrs {
+		names[i] = "'" + escapeString(a) + "'"
+		empty[i] = "''"
+	}
+	def := "(" + strings.Join(empty, ", ") + ")"
+	get := fmt.Sprintf("dictGetOrDefault('%s', (%s), %s, %s)", l.ref, strings.Join(names, ", "), probeRef, def)
+	if s := l.screen(probeRef); s != "" {
+		return fmt.Sprintf("if(%s, %s, %s)", s, get, def)
+	}
+	return "identity(" + get + ")"
+}
+
 // membership tests whether probeRef hits the lookup.
 func (l lookupRef) membership(probeRef string) string {
+	if l.attrs != nil {
+		return fmt.Sprintf("tupleElement(%s, 1) = '1'", l.row(probeRef))
+	}
 	hit := dictMembershipSQL(l.ref, probeRef, l.pattern)
 	if s := l.screen(probeRef); s != "" {
 		return fmt.Sprintf("(%s AND %s)", s, hit)
@@ -1156,6 +1202,9 @@ func (l lookupRef) membership(probeRef string) string {
 func (l lookupRef) value(col, keyColumn, probeRef, displayRef string) string {
 	if col == keyColumn {
 		return fmt.Sprintf("if(%s, %s, '')", l.membership(probeRef), displayRef)
+	}
+	if i := slices.Index(l.attrs, col); i >= 0 {
+		return fmt.Sprintf("tupleElement(%s, %d)", l.row(probeRef), i+1)
 	}
 	get := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", l.ref, escapeString(col), probeRef)
 	if s := l.screen(probeRef); s != "" {
@@ -1194,6 +1243,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	// Execute reports an unresolved lookup; here it only leaves the columns plain.
 	lk, lkErr := resolveLookup(dictName, keyColumn, ctx.Opts)
+	lk = lk.reading(includeColumns, keyColumn)
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 
 	for _, c := range includeColumns {
@@ -1238,6 +1288,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
+	lk = lk.reading(includeColumns, keyColumn)
 
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
@@ -1287,16 +1338,6 @@ func geoipDictName(field string) string {
 	return "geoip_city_lookup"
 }
 
-func geoipDefaultValue(field string) string {
-	if t, ok := geoIPASNFields[field]; ok && t == "UInt32" {
-		return "toUInt32(0)"
-	}
-	if t, ok := geoIPCityFields[field]; ok && t == "Float64" {
-		return "toFloat64(0)"
-	}
-	return "''"
-}
-
 // geoipIsNumeric returns true if the field type is not String and needs toString() wrapping.
 func geoipIsNumeric(field string) bool {
 	if t, ok := geoIPASNFields[field]; ok && t != "String" {
@@ -1308,17 +1349,15 @@ func geoipIsNumeric(field string) bool {
 	return false
 }
 
-// geoipLookupExpr builds the full dictGetOrDefault expression, wrapping numeric
-// results in toString() so the query handler can scan them as strings.
+// geoipLookupExpr builds the lookup as a string. A numeric miss reads empty (not a
+// number) instead of 0, so asn < 1000 does not match private or non-IPv4 addresses.
 func geoipLookupExpr(db, field, fieldRef string) string {
-	dictName := dictRef(db, geoipDictName(field))
-	defVal := geoipDefaultValue(field)
-	inner := fmt.Sprintf("dictGetOrDefault('%s', '%s', toIPv4OrDefault(%s), %s)",
-		escapeString(dictName), escapeString(field), fieldRef, defVal)
+	dictName := escapeString(dictRef(db, geoipDictName(field)))
+	key := fmt.Sprintf("toIPv4OrDefault(%s)", fieldRef)
 	if geoipIsNumeric(field) {
-		return fmt.Sprintf("toString(%s)", inner)
+		return fmt.Sprintf("ifNull(toString(dictGetOrNull('%s', '%s', %s)), '')", dictName, escapeString(field), key)
 	}
-	return inner
+	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictName, escapeString(field), key)
 }
 
 func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {

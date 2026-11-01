@@ -42,7 +42,7 @@ func TestDictionaryNamesAreDatabaseQualified(t *testing.T) {
 		{
 			name:  "lookupIP city and asn",
 			query: `* | lookupIP(field=src_ip, include=[country,asn])`,
-			want:  []string{"dictGetOrDefault('logs.geoip_city_lookup'", "dictGetOrDefault('logs.geoip_asn_lookup'"},
+			want:  []string{"dictGetOrDefault('logs.geoip_city_lookup'", "dictGetOrNull('logs.geoip_asn_lookup'"},
 		},
 	}
 	for _, tc := range cases {
@@ -53,7 +53,7 @@ func TestDictionaryNamesAreDatabaseQualified(t *testing.T) {
 					t.Fatalf("missing %q in SQL:\n%s", w, sql)
 				}
 			}
-			if strings.Contains(sql, "dictGetOrDefault('lookup_") || strings.Contains(sql, "dictGetOrDefault('geoip_") ||
+			if strings.Contains(sql, "dictGetOrDefault('lookup_") || strings.Contains(sql, "dictGetOrDefault('geoip_") || strings.Contains(sql, "dictGetOrNull('geoip_") ||
 				strings.Contains(sql, "dictHas('lookup_") {
 				t.Fatalf("unqualified dictionary name in SQL:\n%s", sql)
 			}

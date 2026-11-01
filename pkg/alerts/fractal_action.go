@@ -2,12 +2,12 @@ package alerts
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
 	"time"
 
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/storage"
 )
 
@@ -123,7 +123,7 @@ func (f *FractalActionClient) transformLogsForFractal(ctx context.Context, actio
 			// "what fired" being comparable or not. Encoded as a JSON array string,
 			// the same shape every other detection source ships tags in.
 			if len(alert.Labels) > 0 {
-				if labels, err := json.Marshal(alert.Labels); err == nil {
+				if labels, err := jsonenc.Marshal(alert.Labels); err == nil {
 					logData["alert_labels"] = string(labels)
 				}
 			}
@@ -134,7 +134,7 @@ func (f *FractalActionClient) transformLogsForFractal(ctx context.Context, actio
 		}
 
 		// Convert the complete log data to JSON (preserving all fields + context)
-		logJSON, err := json.Marshal(logData)
+		logJSON, err := jsonenc.Marshal(logData)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal log data: %w", err)
 		}
@@ -252,7 +252,7 @@ func fieldString(value interface{}) string {
 		// default formatting renders nested values as unparseable map[k:v] text.
 		switch reflect.ValueOf(v).Kind() {
 		case reflect.Slice, reflect.Array, reflect.Map:
-			if b, err := json.Marshal(v); err == nil {
+			if b, err := jsonenc.Marshal(v); err == nil {
 				return string(b)
 			}
 		}

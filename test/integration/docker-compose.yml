@@ -107,6 +107,11 @@ services:
       MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
       MAXMIND_ACCOUNT_ID: ${MAXMIND_ACCOUNT_ID:-}
       MAXMIND_EDITION_IDS: ${MAXMIND_EDITION_IDS:-GeoLite2-City-CSV,GeoLite2-ASN-CSV}
+      # Test timings, so the suite waits seconds rather than minutes on async work.
+      BIFRACT_INGEST_FLUSH_SECONDS: 1
+      BIFRACT_MODEL_STATE_INTERVAL: 5
+      BIFRACT_MODEL_BACKFILL_CONCURRENCY: 4
+      BIFRACT_MODEL_BACKFILL_CHUNK_SLEEP_MS: 0
     volumes:
       - bifract-maxmind:/data/maxmind
     depends_on:

@@ -3241,7 +3241,7 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         item.className = 'selected-action-item';
         item.dataset.id = id;
         item.dataset.type = type;
-        item.innerHTML = `<span class="selected-action-name">${Utils.escapeHtml(name)}</span><button type="button" class="selected-action-remove" data-id="${id}" data-type="${type}">&times;</button>`;
+        item.innerHTML = `<span class="selected-action-name">${Utils.escapeHtml(name)}</span><button type="button" class="selected-action-remove" data-id="${Utils.escapeHtml(id)}" data-type="${Utils.escapeHtml(type)}">&times;</button>`;
         container.appendChild(item);
         this.updateActionCountBadge();
     },

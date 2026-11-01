@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -24,8 +26,10 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+	"github.com/google/uuid"
 
 	dbsql "bifract/db"
+	"bifract/pkg/watermark"
 )
 
 type ClickHouseClient struct {
@@ -227,6 +231,42 @@ func (c *ClickHouseClient) ReconcileProcLineageTTL(ctx context.Context, days int
 	)
 	return c.conn.Exec(ctx, stmt)
 }
+
+// provenanceSummaryTable holds the fleet-wide facts pgr reads per call (see migration 019).
+const provenanceSummaryTable = "provenance_summary"
+
+// ProvenanceSummaryReadTable returns the read table for pgr's fleet-wide facts. Each shard
+// summarizes its own rows, so readers count distinct values.
+func (c *ClickHouseClient) ProvenanceSummaryReadTable() string {
+	return c.topo.Table(provenanceSummaryTable)
+}
+
+// ReconcileProvenanceSummaryTTL keeps each provenance_summary row as long as the rows it
+// summarizes, reading the retention proc_lineage and proc_freq actually have. A lineage
+// row's last_day rounds its ingest time down, so that kind keeps one extra day.
+// Metadata-only, and skipped when already in step.
+func (c *ClickHouseClient) ReconcileProvenanceSummaryTTL(ctx context.Context) error {
+	var days [2]int
+	for i, table := range []string{"proc_lineage", "proc_freq"} {
+		info, err := describeTable(ctx, c.conn, table)
+		if err != nil {
+			return err
+		}
+		m := ttlDaysRe.FindStringSubmatch(info.ttl)
+		if m == nil {
+			return fmt.Errorf("%s TTL %q is not a day interval", table, info.ttl)
+		}
+		days[i], _ = strconv.Atoi(m[1])
+	}
+	ttl := fmt.Sprintf("last_day + toIntervalDay(if(kind = 'lineage_host', %d, %d))", days[0]+1, days[1])
+	if cur, err := describeTable(ctx, c.conn, provenanceSummaryTable); err != nil || cur.ttl == ttl {
+		return err
+	}
+	return c.conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s%s MODIFY TTL %s SETTINGS materialize_ttl_after_modify = 0",
+		provenanceSummaryTable, c.OnClusterSQL(), ttl))
+}
+
+var ttlDaysRe = regexp.MustCompile(`\+ toIntervalDay\((\d+)\)$`)
 
 // ProcFreqReadTable returns the read table for the pgr() frequency baseline. In cluster
 // mode this fans out to all shards via proc_freq_distributed; the scoring join re-aggregates
@@ -626,6 +666,40 @@ func loadCompletedSteps(ctx context.Context, conn driver.Conn, number int) (map[
 	return done, rows.Err()
 }
 
+var modifyQueryRe = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([A-Za-z0-9_]+)\s+MODIFY\s+QUERY\b`)
+
+// execMigrationStmt runs one migration statement. ClickHouse cannot MODIFY QUERY a view
+// that is permanently detached (the endpoint-analysis views while that feature is off),
+// so such a view is attached for the statement and detached again. A crash in between
+// leaves it attached until SyncEndpointAnalysis re-detaches it at startup.
+func execMigrationStmt(ctx context.Context, conn driver.Conn, stmt string) error {
+	m := modifyQueryRe.FindStringSubmatch(stmt)
+	if m == nil {
+		return conn.Exec(ctx, stmt)
+	}
+	view := m[1]
+	rows, err := conn.Query(ctx, "SELECT table FROM system.detached_tables WHERE database = currentDatabase() AND table = ?", view)
+	if err != nil {
+		return err
+	}
+	detached := rows.Next()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !detached {
+		return conn.Exec(ctx, stmt)
+	}
+	if err := conn.Exec(ctx, "ATTACH TABLE "+view); err != nil {
+		return err
+	}
+	execErr := conn.Exec(ctx, stmt)
+	if err := conn.Exec(ctx, "DETACH TABLE "+view+" PERMANENTLY"); err != nil && execErr == nil {
+		return err
+	}
+	return execErr
+}
+
 // createMigrationBookkeeping creates the migration tracking tables. Both are created on
 // every path, including the baseline stamp: a shard's table count is the cheapest way to
 // spot a half-provisioned cluster, and it is only comparable across shards when every
@@ -735,7 +809,7 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 				}))
 			}
 			stmtCtx, cancel := context.WithTimeout(execCtx, stmtTimeout)
-			execErr := conn.Exec(stmtCtx, stmt)
+			execErr := execMigrationStmt(stmtCtx, conn, stmt)
 			cancel()
 			if execErr != nil {
 				return applied, fmt.Errorf("migration %s (statement %d): %w", m.name, i, execErr)
@@ -1381,6 +1455,16 @@ func getenvFloat(key string, def float64) float64 {
 }
 
 func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) error {
+	// Unstamped rows are stamped under a hold, so the process watermark stays below
+	// them until they are written. Rows stamped earlier are tracked by their caller.
+	hold := watermark.Local.Hold()
+	defer watermark.Local.Done(hold)
+	for i := range logs {
+		if logs[i].IngestTimestamp.IsZero() {
+			logs[i].IngestTimestamp = hold.At()
+		}
+	}
+
 	if err := c.InsertLogsInto(ctx, c.WriteTable(), logs); err != nil {
 		return err
 	}
@@ -1429,10 +1513,7 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 		return nil
 	}
 
-	// Apply the per-insert relief settings (group-by spill, optional async_insert).
-	if len(c.insertSettings) > 0 {
-		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.insertSettings))
-	}
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.logsInsertSettings(ctx, table)))
 
 	// raw_log is omitted: it lives in the separate logs_raw table. norm_log is a
 	// ClickHouse DEFAULT toString(fields) column, auto-populated at insert. normalizer
@@ -1461,6 +1542,42 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 	}
 
 	return nil
+}
+
+// insertTokenKey carries a logs insert dedup token on a context.
+type insertTokenKey struct{}
+
+// InsertTokenContext sets the dedup token for logs inserts made with ctx. A caller that
+// retries a batch passes the same token on every attempt, so an attempt that committed
+// but reported an error is dropped by ClickHouse instead of written twice.
+func InsertTokenContext(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, insertTokenKey{}, token)
+}
+
+// ContextInsertToken returns the dedup token ctx carries, or "".
+func ContextInsertToken(ctx context.Context) string {
+	token, _ := ctx.Value(insertTokenKey{}).(string)
+	return token
+}
+
+// logsInsertSettings adds a dedup token to the per-insert settings: the caller's, or a
+// fresh one so a tokenless insert is never deduplicated by its content. Inserts through
+// the Distributed logs table get none: rand() sharding splits each retry differently,
+// so a shard holding part of an earlier attempt would drop rows it never stored.
+func (c *ClickHouseClient) logsInsertSettings(ctx context.Context, table string) clickhouse.Settings {
+	s := maps.Clone(c.insertSettings)
+	if c.topo.DistributedTables && table == c.WriteTable() {
+		return s
+	}
+	token := ContextInsertToken(ctx)
+	if token == "" {
+		token = uuid.NewString()
+	}
+	if s == nil {
+		s = clickhouse.Settings{}
+	}
+	s["insert_deduplication_token"] = token
+	return s
 }
 
 // IngestTime returns the entry's ingest_timestamp, defaulting to now when unset. It is
@@ -1556,7 +1673,12 @@ func (c *ClickHouseClient) DeleteLogsByFractalID(ctx context.Context, fractalID 
 				return err
 			}
 		}
-		return nil
+		// Between the two drops, so a summary fill that read the old rows either sees the
+		// clear or has what it wrote dropped with the summary.
+		if err := markProvenanceFillClear(ctx, conn, ids); err != nil {
+			return err
+		}
+		return dropFractalPartitions(ctx, conn, provenanceSummaryTable, ids)
 	})
 	if err != nil {
 		return fmt.Errorf("delete logs for fractal %s: %w", fractalID, err)
@@ -1657,7 +1779,8 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	stats := func() QueryStats {
 		return QueryStats{ReadRows: readRows.Load(), ReadBytes: readBytes.Load()}
 	}
-	opts := []clickhouse.QueryOption{clickhouse.WithQueryID(queryID)}
+	ctx = withQueryID(ctx, queryID)
+	var opts []clickhouse.QueryOption
 	// Recall's workload tag rides the ctx marker (see RecallContext). It is the only
 	// enforcement an archive scan has, since max_bytes_to_read does not apply to
 	// iceberg table functions.
@@ -1673,7 +1796,11 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	}))
 	ctx = clickhouse.Context(ctx, opts...)
 
-	rows, err := c.connFor(ctx).Query(ctx, query)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return stats(), err
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return stats(), fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -1839,7 +1966,7 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 // wholesale, which would drop the budgets that QueryProvenance and QueryLowPriority
 // put there.
 func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
+	ctx = withQueryID(ctx, queryID)
 	return c.query(ctx, query, c.applyQuerySettings(ctx, nil))
 }
 
@@ -1848,7 +1975,11 @@ func (c *ClickHouseClient) query(ctx context.Context, query string, settings cli
 	if len(settings) > 0 {
 		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 	}
-	rows, err := c.connFor(ctx).Query(ctx, query)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -1878,6 +2009,7 @@ func collectRowMaps(rows driver.Rows) ([]map[string]interface{}, error) {
 // Settings maps arrive here already built by applyQuerySettings or a caller's own
 // literal, so this merges rather than replacing; an existing log_comment wins.
 func (c *ClickHouseClient) taggedSettings(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
+	settings = scopeCacheSettings(ctx, settings)
 	comment := ContextTag(ctx).String()
 	if comment == "" {
 		return settings
@@ -1960,34 +2092,39 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	values := make([]interface{}, len(columnTypes))
 	for i, col := range columnTypes {
 		typeName := unwrapLowCardinality(unwrapSimpleAggregateFunction(col.DatabaseTypeName()))
+		inner, nullable := strings.CutPrefix(typeName, "Nullable(")
+		if nullable {
+			inner = strings.TrimSuffix(inner, ")")
+		}
 		switch {
-		case typeName == "String" || typeName == "Nullable(String)":
+		// A NULL string reads as "", the same as an empty field.
+		case inner == "String":
 			values[i] = new(string)
-		case typeName == "UInt64" || typeName == "Nullable(UInt64)":
-			values[i] = new(uint64)
-		case typeName == "Int64" || typeName == "Nullable(Int64)":
-			values[i] = new(int64)
-		case typeName == "Float64" || typeName == "Nullable(Float64)":
-			values[i] = new(float64)
+		case inner == "UInt64":
+			values[i] = numDest[uint64](nullable)
+		case inner == "Int64":
+			values[i] = numDest[int64](nullable)
+		case inner == "Float64":
+			values[i] = numDest[float64](nullable)
 		// The narrower fixed-width types. Without these they fall through to the
 		// *string default below and the whole query fails on the first row with
 		// "converting Int32 to *string is unsupported". A system table column is
 		// routinely Int32 or UInt8, so the trap is easy to walk into and the
 		// failure names the scanner rather than the query.
-		case typeName == "Int8" || typeName == "Nullable(Int8)":
-			values[i] = new(int8)
-		case typeName == "Int16" || typeName == "Nullable(Int16)":
-			values[i] = new(int16)
-		case typeName == "Int32" || typeName == "Nullable(Int32)":
-			values[i] = new(int32)
-		case typeName == "UInt8" || typeName == "Nullable(UInt8)":
-			values[i] = new(uint8)
-		case typeName == "UInt16" || typeName == "Nullable(UInt16)":
-			values[i] = new(uint16)
-		case typeName == "UInt32" || typeName == "Nullable(UInt32)":
-			values[i] = new(uint32)
-		case typeName == "Float32" || typeName == "Nullable(Float32)":
-			values[i] = new(float32)
+		case inner == "Int8":
+			values[i] = numDest[int8](nullable)
+		case inner == "Int16":
+			values[i] = numDest[int16](nullable)
+		case inner == "Int32":
+			values[i] = numDest[int32](nullable)
+		case inner == "UInt8":
+			values[i] = numDest[uint8](nullable)
+		case inner == "UInt16":
+			values[i] = numDest[uint16](nullable)
+		case inner == "UInt32":
+			values[i] = numDest[uint32](nullable)
+		case inner == "Float32":
+			values[i] = numDest[float32](nullable)
 		case isCHDateTimeType(typeName):
 			values[i] = new(time.Time)
 		case strings.HasPrefix(typeName, "Array("):
@@ -2024,6 +2161,13 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	row := make(map[string]interface{})
 	for i, col := range columnTypes {
 		colName := col.Name()
+		if p, ok := nullableNum(values[i]); ok {
+			if p == nil {
+				row[colName] = nil
+				continue
+			}
+			values[i] = p
+		}
 		switch v := values[i].(type) {
 		case *string:
 			val := *v
@@ -2077,6 +2221,28 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	}
 
 	return row, nil
+}
+
+// numDest is the scan destination for a number column. A Nullable one scans
+// into a **T so NULL arrives as nil rather than 0.
+func numDest[T any](nullable bool) any {
+	if nullable {
+		return new(*T)
+	}
+	return new(T)
+}
+
+// nullableNum unwraps a numDest **T: ok reports whether dest was one, and p is
+// its *T, nil for NULL.
+func nullableNum(dest any) (p any, ok bool) {
+	v := reflect.ValueOf(dest).Elem()
+	if v.Kind() != reflect.Pointer {
+		return nil, false
+	}
+	if v.IsNil() {
+		return nil, true
+	}
+	return v.Interface(), true
 }
 
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
@@ -2138,10 +2304,7 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 			onProgress(readSoFar, p.TotalRows)
 		}))
 	}
-	if queryID != "" {
-		opts = append(opts, clickhouse.WithQueryID(queryID))
-	}
-	return c.streamRows(clickhouse.Context(ctx, opts...), query, onRow)
+	return c.streamRows(clickhouse.Context(withQueryID(ctx, queryID), opts...), query, onRow)
 }
 
 // StreamLowPriority streams a bulk read such as an export. It yields to
@@ -2152,13 +2315,17 @@ func (c *ClickHouseClient) StreamLowPriority(ctx context.Context, queryID, query
 		"priority":       5,
 		"max_block_size": 8192,
 	})
-	return c.streamRows(clickhouse.Context(ctx, clickhouse.WithSettings(settings), clickhouse.WithQueryID(queryID)), query, onRow)
+	return c.streamRows(clickhouse.Context(withQueryID(ctx, queryID), clickhouse.WithSettings(settings)), query, onRow)
 }
 
 // streamRows runs query and hands each row to onRow as it arrives. An onRow
 // error stops the read and is returned as-is.
 func (c *ClickHouseClient) streamRows(ctx context.Context, query string, onRow func(map[string]interface{}) error) error {
-	rows, err := c.connFor(ctx).Query(ctx, query)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)
 	}

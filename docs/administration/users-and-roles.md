@@ -44,7 +44,7 @@ Other actions are in the row's **⋮** menu:
 | Action | What it does |
 |--------|--------------|
 | **Resend Invite** | Issues a new invite link for a user who has not signed in yet |
-| **Reset Password** | Clears the password and gives you a new invite link to send |
+| **Reset Password** | Clears the password and gives you a new invite link to send. Until the user opens it, sign in only says the password is wrong |
 | **Disable** / **Enable** | Signs the user out and blocks sign in, keeping their comments, notebooks and dashboards |
 | **Reset Two-Factor** | Clears their authenticator after they lose both device and recovery codes; they enroll again at next sign in |
 | **Download mTLS Cert** | Only in `mtls-app` mode. Asks for a password, then downloads a `.p12` client certificate. See [mTLS client certificates](reverse-proxy.md#mtls-client-certificates) |
@@ -80,7 +80,7 @@ Bifract uses standard TOTP (Google Authenticator, 1Password, Authy, Bitwarden an
 To enroll yourself:
 
 1. Click your name at the bottom of the sidebar and choose **Two-Factor Authentication**.
-2. Click **Set up authenticator**, scan the QR code, enter a code and click **Confirm**.
+2. Enter your current password, click **Set up authenticator**, scan the QR code, enter a code and click **Confirm**. Confirming signs out your other sessions.
 3. Save the ten single-use recovery codes, then click **I have saved these codes**.
 
 Each recovery code replaces an authenticator code once. **New recovery codes** in the same dialog replaces the whole set.

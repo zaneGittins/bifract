@@ -7,6 +7,7 @@ Store Bifract's logs in [ClickHouse Cloud](https://clickhouse.com/cloud) (or ano
 
 ## Requirements
 
+- **ClickHouse 25.12 or later.** Bifract refuses to start against an older self-managed server.
 - **Scale tier or higher.** The Basic tier caps storage at 1 TB and 500 tables.
 - **Idling disabled.** Bifract writes continuously; a service that scales to zero adds cold starts to ingest.
 - **An IP access list** that allows the egress addresses of your Bifract hosts.

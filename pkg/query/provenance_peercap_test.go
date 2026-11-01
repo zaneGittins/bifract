@@ -44,7 +44,7 @@ func TestRankAndCapReconnectPeers_KeepsAllRowsOfAdmittedPeers(t *testing.T) {
 	}
 }
 
-func TestRankAndCapReconnectPeers_RanksByArtifactCountThenAnomaly(t *testing.T) {
+func TestRankAndCapReconnectPeers_RanksByArtifactWeightThenAnomaly(t *testing.T) {
 	in := []parser.ReconnectPeer{
 		netPeer("weak", "net:9"),
 		{ReconType: "file", PeerGUID: "dropped", SrcGUID: "T1", Label: "c:\\t\\x.exe", Anomaly: 1.0},
@@ -96,5 +96,21 @@ func TestRankAndCapReconnectPeers_ZeroCapUsesDefault(t *testing.T) {
 	}
 	if got := rankAndCapReconnectPeers(in, 0); len(got) != parser.DefaultReconnectPeers {
 		t.Fatalf("zero cap should fall back to %d, got %d", parser.DefaultReconnectPeers, len(got))
+	}
+}
+
+// Admission weighs each shared artifact by how few candidates share it: one peer reached only
+// through a C2 nobody else touched outranks dozens of peers sharing the same telemetry domains,
+// which on a small fleet pass the prevalence gate as easily as the C2 does.
+func TestRankAndCapReconnectPeers_RareArtifactOutranksPopularOnes(t *testing.T) {
+	var in []parser.ReconnectPeer
+	for i := 0; i < 40; i++ {
+		p := fmt.Sprintf("tel%02d", i)
+		in = append(in, netPeer(p, "dns:g.live.com"), netPeer(p, "dns:oneclient.sfx.ms"))
+	}
+	in = append(in, netPeer("implant", "net:203.0.113.87"))
+	counts := peerGUIDs(rankAndCapReconnectPeers(in, 10))
+	if _, ok := counts["implant"]; !ok {
+		t.Errorf("the peer reached through the unique artifact was not admitted: %v", counts)
 	}
 }

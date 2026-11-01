@@ -187,8 +187,8 @@ type QueryPlan struct {
 	AnalyzeFieldsList      []string
 	AnalyzeFieldsScanLimit int
 
-	// rowLimitByCommand records that a command (head, limit, a viz command's
-	// limit=) bounded the row set, rather than the caller's MaxRows.
+	// rowLimitByCommand records that a command (head, limit, dedup, a
+	// limit= option) bounded the row set, rather than the caller's MaxRows.
 	rowLimitByCommand bool
 
 	// usesBindingSet records that a result-set binding was rendered. Like join(),
@@ -230,9 +230,9 @@ type QueryPlan struct {
 	JoinInclude []string // fields to include from subquery (empty = all)
 	JoinOutputs []string // subquery output columns, surfaced as _join_<col>
 	JoinMaxRows int      // max rows for subquery safety limit
+	JoinCmd     int      // index of the join command
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
-	ModelLookupSQL      string   // pre-built scoring subquery SQL
 	ModelLookupFields   []string // output field names added to outer SELECT
 	ModelLookupKeyExprs []string // key expressions over the log scan: the scan-level ON's left side and the prefilter's
 	ModelLookupStrict   bool     // true (default) = INNER JOIN: keep only rows the model scored
@@ -241,8 +241,8 @@ type QueryPlan struct {
 	// strict join (and so to its scan prefilter) rather than to the joined rows. Each
 	// is a property of the key, so the join keeps exactly the rows it would have kept.
 	ModelLookupWhere []string
-	// modelKeys is the model's key set: its key columns, its topology and the set
-	// the strict scan prefilter tests.
+	// modelKeys is the model's key set: its key columns, its topology, its scoring
+	// subquery and the set the strict scan prefilter tests. nil without a lookup.
 	modelKeys *modelKeySet
 	// ModelLookupOutputs: the model's declared output column names. Set at Declare
 	// (unlike ModelLookupFields, set at Execute) so commands that run before
@@ -480,6 +480,9 @@ func (p *QueryPlan) addBindingCTE(name, sql string) string {
 
 func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	source := p.SourceStage()
+	if err := checkScopeNotShadowed(source.Layer.Selects); err != nil {
+		return "", err
+	}
 
 	// Build SELECT clause
 	var selectClause string
@@ -514,6 +517,16 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 			return "", fmt.Errorf("join() is applied to the aggregated rows, so the aggregation must keep the key %[1]s: group by it, or to count or aggregate only the rows the subquery matches, filter first with let &keys := <subquery>; ... | in(%[1]s, &keys)", p.JoinKey)
 		}
 		selectClause += fmt.Sprintf(", %s AS %s", p.JoinKeyExpr, joinHiddenKeyCol)
+	}
+	// An inner join keeps only rows whose key the subquery returns, so filter the
+	// scan by those keys at the join's position: a row cap after it then counts
+	// only rows the join keeps, rather than the newest rows of any key.
+	if pf := p.joinPrefilter(source, opts); pf != "" {
+		if after := source.Layer.capAfter(p.JoinCmd); after != nil {
+			*after = append(*after, pf)
+		} else {
+			source.Layer.Where = append(source.Layer.Where, pf)
+		}
 	}
 
 	// The row source this SELECT reads, plus any wrapper that must collapse rows
@@ -556,7 +569,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// the filters after the last one are this SELECT's. A scan-level model join sits
 	// among the caps at its position (see scanJoinPosition).
 	joinAt, joined := -1, false
-	if p.ModelLookupSQL != "" && p.ModelLookupAtScan {
+	if p.hasModelLookup() && p.ModelLookupAtScan {
 		joinAt = p.scanJoinPosition(&source.Layer)
 	}
 	for i, c := range source.Layer.Caps {
@@ -628,7 +641,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// its rows carry the model columns. Filters on those columns go in this SELECT's
 	// WHERE; scan-only predicates stay wherever they already are (the same WHERE, or
 	// inside a dedup wrap), where ClickHouse pushes them into the scan.
-	if p.ModelLookupSQL != "" && p.ModelLookupAtScan && !joined {
+	if p.hasModelLookup() && p.ModelLookupAtScan && !joined {
 		joinedWhere := pending
 		if p.selectsRowsBelowModelJoin(source, opts) {
 			// Nothing after the join selects rows, so this SELECT returns the rows the
@@ -961,7 +974,62 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	sql.WriteString(" = _join_sub.")
 	sql.WriteString(p.JoinKey)
 
-	return sql.String()
+	if joinType == "INNER" {
+		return sql.String()
+	}
+	// Unmatched rows read NULL instead of the column default, so 0 is not a count
+	// a filter can match. Wrapped because callers append ORDER BY and LIMIT.
+	return "SELECT * FROM (" + sql.String() + " SETTINGS join_use_nulls = 1)"
+}
+
+// innerJoinWrap reports whether a join() INNER JOINs the outer rows.
+func (p *QueryPlan) innerJoinWrap() bool {
+	return p.IsJoin && p.JoinSubSQL != "" && p.JoinType != "left"
+}
+
+// joinPrefilter is the scan predicate that keeps only rows whose join key the
+// subquery returns, or "" when the key has no scan-level expression. GLOBAL so a
+// cluster scan of logs_distributed reads the subquery once rather than per shard.
+func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) string {
+	if !p.innerJoinWrap() || len(p.Stages) != 1 || opts.SourceSubquery != "" || p.IsChain {
+		return ""
+	}
+	// Same resolution as renderStandard's hidden _join_k projection.
+	keyExpr := groupableCast(jsonFieldRef(p.JoinKey))
+	if p.outerHasColumn(p.JoinKey) {
+		keyExpr = p.outerKeyScanExpr(source)
+	}
+	if keyExpr == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s GLOBAL IN (SELECT %s FROM (%s))", keyExpr, p.JoinKey, p.JoinSubSQL)
+}
+
+// outerKeyScanExpr returns the per-row expression the outer SELECT names the join
+// key after. An aggregating scan qualifies only when it groups by the key, so
+// every row of a group shares it and the group is kept or dropped whole.
+func (p *QueryPlan) outerKeyScanExpr(source *QueryStage) string {
+	for _, sel := range source.Layer.Selects {
+		s := sel.String()
+		idx := strings.LastIndex(s, " AS ")
+		if idx < 0 || strings.Trim(extractFieldAlias(s), "`") != p.JoinKey {
+			continue
+		}
+		expr := strings.TrimSpace(s[:idx])
+		if strings.Contains(strings.ToUpper(expr), " OVER ") {
+			return ""
+		}
+		if len(source.Layer.GroupBy) > 0 || p.IsAggregated {
+			if !slices.ContainsFunc(source.Layer.GroupBy, func(g string) bool {
+				g = strings.Trim(strings.TrimSpace(g), "`")
+				return g == p.JoinKey || g == expr
+			}) {
+				return ""
+			}
+		}
+		return expr
+	}
+	return ""
 }
 
 // validateJoinKeysSurviveAggregation rejects a join whose keys cannot be projected
@@ -1070,17 +1138,20 @@ func modelJoinLayer(innerSQL, join string, fields []string) string {
 // the filters that read only its columns.
 func (p *QueryPlan) modelJoinSource() string {
 	if len(p.ModelLookupWhere) == 0 {
-		return p.ModelLookupSQL
+		return p.modelKeys.scoringSQL
 	}
-	return "SELECT * FROM (" + p.ModelLookupSQL + ") WHERE " + andJoin(p.ModelLookupWhere)
+	return "SELECT * FROM (" + p.modelKeys.scoringSQL + ") WHERE " + andJoin(p.ModelLookupWhere)
 }
+
+// hasModelLookup reports whether a model_lookup() joins the model's scores.
+func (p *QueryPlan) hasModelLookup() bool { return p.modelKeys != nil }
 
 // modelPrefilter is a strict join's semi-join pushed down into the source scan:
 // only logs whose key the model scores can survive the INNER JOIN, and the scan is
 // the one place the key sub-columns' skip indexes can prune on that set. Filters on
 // model columns narrow the set exactly as they narrow the model side.
 func (p *QueryPlan) modelPrefilter() string {
-	if p.ModelLookupSQL == "" || !p.ModelLookupStrict || p.modelKeys == nil || len(p.ModelLookupKeyExprs) == 0 {
+	if !p.hasModelLookup() || !p.ModelLookupStrict || len(p.ModelLookupKeyExprs) == 0 {
 		return ""
 	}
 	return p.modelKeys.membership(p.ModelLookupKeyExprs, p.ModelLookupWhere)
@@ -1091,7 +1162,10 @@ func (p *QueryPlan) modelPrefilter() string {
 // limit select if they are applied in the same SELECT: a strict join drops rows,
 // and a post-join filter is written after it.
 func (p *QueryPlan) readsThroughCap(c RowCap) bool {
-	if p.ModelLookupSQL == "" || !p.ModelLookupAtScan {
+	if p.innerJoinWrap() && c.At < p.JoinCmd {
+		return true
+	}
+	if !p.hasModelLookup() || !p.ModelLookupAtScan {
 		return false
 	}
 	if len(p.postJoinSQL(c.At, -1)) > 0 {
@@ -1217,7 +1291,7 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	if p.IsAggregated || p.HasGroupBy || p.IsAnalyze || p.IsChain || p.IsProcessTree {
 		return false
 	}
-	if p.IsJoin || p.ModelLookupSQL != "" || p.usesBindingSet || p.rowLimitByCommand {
+	if p.IsJoin || p.hasModelLookup() || p.usesBindingSet || p.rowLimitByCommand {
 		return false
 	}
 	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == "" && len(p.ChartLayers) == 0

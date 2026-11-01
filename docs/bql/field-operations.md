@@ -76,9 +76,11 @@ An expression that yields a condition is a filter on its own:
 * | startsWith(image, "C:\\Windows") AND len(commandline) > 500
 ```
 
+An expression is one leaf of a filter chain. The leaves around it stay ordinary filters, so `lower(image)="cmd.exe" AND pid=4` compares `pid` as text in either order. A bracket followed by a comparison or arithmetic operator is an expression, not a group: `(bytes_in + bytes_out) > 1000000`.
+
 An expression that yields a value, such as `| lower(image)` alone, is an error. Expression filters are computed per row and cannot use a skip index, so put a selective filter in front.
 
-A name that is also a command (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`) runs as the command unless a comparison follows:
+A name that is also a command (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`) runs as the command unless a comparison or arithmetic operator follows:
 
 ```
 * | len(commandline) | _len > 500    the command, which adds _len
@@ -190,6 +192,8 @@ Both `field=` and `include=` are required. `include=` takes any of:
 | `postal_code` | string | Postal code |
 | `asn` | integer | Autonomous System Number |
 | `as_org` | string | AS organization name |
+
+An address with no match (private, missing, IPv6 or not an IP) leaves every column empty, so `asn < 1000` does not match it.
 
 !!! note "Setup"
     `lookupIP()` needs MaxMind GeoLite2. Get a free license key at [maxmind.com](https://www.maxmind.com/en/geolite2/signup), then set `MAXMIND_LICENSE_KEY` and `MAXMIND_ACCOUNT_ID` in `.env` (or the container environment). The databases download on startup and refresh daily. Without them the query fails with an error naming these variables.

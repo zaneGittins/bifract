@@ -1084,7 +1084,8 @@ const Chat = {
 
     renderPresentation(contentEl, args) {
         if (!args) return;
-        const severity = args.severity || 'info';
+        // The model picks this, so only the styled values may reach the markup.
+        const severity = ['warning', 'critical'].includes(args.severity) ? args.severity : 'info';
         const summary = args.summary || '';
         const findings = args.findings || [];
 
@@ -1094,7 +1095,7 @@ const Chat = {
         let html = '';
 
         // Severity bubble
-        if (severity && severity !== 'info') {
+        if (severity !== 'info') {
             html += `<div class="chat-severity-bubble chat-severity-${severity}">${Utils.escapeHtml(severity)}</div>`;
         }
 

@@ -86,7 +86,7 @@ func (h *QueryHandler) HandleQueryLive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	searchID := newSearchID()
-	ctx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds)
+	ctx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds, prep.fractalScope())
 	defer func() {
 		abandoned := ctx.Err() != nil
 		cancel()

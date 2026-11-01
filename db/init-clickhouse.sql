@@ -104,7 +104,9 @@ CREATE TABLE IF NOT EXISTS logs (
 -- ingest_timestamp needs no minmax index: as a partition-key column it already has one.
 PARTITION BY (fractal_id, toDate(ingest_timestamp))
 ORDER BY (timestamp, log_id)
-SETTINGS index_granularity = 8192;
+-- The dedup window drops a retried insert batch (same insert_deduplication_token); its
+-- view targets keep one too. 10000 matches the replicated engines' default.
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000;
 
 -- Pre-normalization original log text, split out of the logs table into its own
 -- daily-partitioned table so its 7-day retention is a metadata-only DROP PARTITION
@@ -149,7 +151,7 @@ CREATE TABLE IF NOT EXISTS logs_histogram (
 ) ENGINE = SummingMergeTree(cnt)
 PARTITION BY (fractal_id, ingest_day)
 ORDER BY (fractal_id, ingest_day, minute)
-SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
+SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000, non_replicated_deduplication_window = 10000;
 
 -- Feeds logs_histogram from every insert into the local logs table.
 -- The MV writes to the local logs_histogram. The distributed table handles cross-shard reads.
@@ -176,7 +178,7 @@ CREATE TABLE IF NOT EXISTS logs_field_paths (
 ) ENGINE = SummingMergeTree(cnt)
 PARTITION BY (fractal_id, ingest_day)
 ORDER BY (fractal_id, ingest_day, path)
-SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
+SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000, non_replicated_deduplication_window = 10000;
 
 -- Field names are sender controlled, so each insert block keeps at most 1024 paths per
 -- fractal and day (FieldPathCap). Keys are read as the schema sample reads them, up to
@@ -253,7 +255,7 @@ CREATE TABLE IF NOT EXISTS logs_hot (
 PARTITION BY toStartOfFiveMinutes(ingest_timestamp)
 ORDER BY (fractal_id, ingest_timestamp, log_id)
 TTL toDateTime(ingest_timestamp) + INTERVAL 4 HOUR DELETE
-SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 -- Feeds logs_hot from every insert into the local logs table.
 -- The MV writes to local logs_hot on each shard — it fires per-shard when distributed
@@ -288,8 +290,17 @@ CREATE TABLE IF NOT EXISTS proc_lineage (
     image            LowCardinality(String),
     parent_image     LowCardinality(String),
     commandline      String,
+    -- '\0' marks a row written before the column existed (see migration 019).
+    proc_user        String DEFAULT '\0',
     computer_name    LowCardinality(String),
-    INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1
+    -- pgr/ptg lookup keys (see migration 019): the sibling-collapse key, computed once per row,
+    -- and the lowercased image the dropped-then-ran reconnection matches on.
+    child_image      LowCardinality(String) MATERIALIZED lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(image, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')),
+    child_cmd_key    UInt64 MATERIALIZED cityHash64(lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(commandline, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*'))),
+    image_lc         LowCardinality(String) MATERIALIZED lower(image),
+    INDEX idx_parent_guid parent_guid TYPE bloom_filter(0.001) GRANULARITY 1,
+    PROJECTION by_parent (SELECT fractal_id, parent_guid, process_guid, timestamp, child_image, child_cmd_key ORDER BY (fractal_id, parent_guid)),
+    PROJECTION by_image (SELECT _part_offset ORDER BY (fractal_id, image_lc))
 ) ENGINE = ReplacingMergeTree(timestamp)
 -- Per fractal so clearing or deleting one drops its rows without a mutation (the same
 -- for proc_freq and process_edges). Converted in place by pkg/storage/repartition.go.
@@ -298,7 +309,7 @@ ORDER BY (fractal_id, process_guid)
 -- Retention on the ingest axis, matching logs. On event time a source with a skewed
 -- clock (an event dated years back) has its lineage row deleted at the first merge.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192;
+SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 -- Populates proc_lineage from process-create events, keyed on the normalized
 -- category (Phase A). ::String is safe whether or not the type hint is applied yet.
@@ -314,6 +325,7 @@ SELECT
     fields.image::String               AS image,
     fields.parent_image::String        AS parent_image,
     fields.commandline::String         AS commandline,
+    fields.user::String                AS proc_user,
     fields.computer_name::String       AS computer_name
 FROM logs
 WHERE fields.bifract_category = 'process_creation' AND fields.process_guid != '';
@@ -334,13 +346,17 @@ CREATE TABLE IF NOT EXISTS proc_freq (
     -- the value survives the day bucket and is the basis for NoDoze's IN/OUT node-stability terms
     -- (Eq.4/Eq.5): a node's stability is the share of days on which it gained NO new edge.
     first_day   SimpleAggregateFunction(min, Date),
+    -- Display only (pgr's first_seen): the earliest event date, never later than the ingest
+    -- day. Scoring, TTL and leave-one-out stay on ingest days.
+    first_event_day SimpleAggregateFunction(min, Date) DEFAULT if(first_day = toDate(0), day, first_day),
     event_count SimpleAggregateFunction(sum, UInt64),
-    hosts       AggregateFunction(groupUniqArray(256), String)
+    hosts       AggregateFunction(groupUniqArray(256), String),
+    PROJECTION by_target (SELECT _part_offset ORDER BY (fractal_id, event_type, target_norm))
 ) ENGINE = AggregatingMergeTree()
 PARTITION BY fractal_id
 ORDER BY (fractal_id, src_image, event_type, target_norm, day)
 TTL day + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192;
+SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_spawn_mv TO proc_freq
 DEFINER = default SQL SECURITY DEFINER AS
@@ -351,6 +367,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -366,6 +383,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_file::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -381,6 +399,7 @@ SELECT
     multiIf(match(fields.dst_ip::String, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.)'), concat(replaceRegexpOne(fields.dst_ip::String, '\\.[0-9]{1,3}$', ''), '.0/24'), match(fields.dst_ip::String, '^(::1$|fe80:|fc|fd)'), 'internal', fields.dst_ip::String) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -396,6 +415,7 @@ SELECT
     lower(replaceRegexpOne(fields.query::String, '\\.$', '')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -411,6 +431,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -426,6 +447,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -453,13 +475,14 @@ CREATE TABLE IF NOT EXISTS process_edges (
     timestamp        SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     ingest_timestamp SimpleAggregateFunction(max, DateTime64(3, 'UTC')),
     computer_name    SimpleAggregateFunction(anyLast, String),
-    cnt              SimpleAggregateFunction(sum, UInt64)
+    cnt              SimpleAggregateFunction(sum, UInt64),
+    PROJECTION by_target (SELECT _part_offset ORDER BY (fractal_id, event_type, fkey_tgt))
 ) ENGINE = AggregatingMergeTree()
 PARTITION BY fractal_id
 ORDER BY (fractal_id, process_guid, event_type, dst_node)
 -- Ingest axis (see proc_lineage). max() means an edge lives 730 days past its last ingest.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192;
+SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 -- Single MV feeding process_edges for the three default pgr leaf categories. One pass over each
 -- insert block (WHERE category IN (...)), per-category projection via multiIf. Abstraction regexes
@@ -500,3 +523,33 @@ WHERE fields.bifract_category::String IN ('file_write', 'network_connect', 'dns_
               fields.bifract_category = 'network_connect', fields.dst_ip::String != '',
               fields.query::String != '' AND NOT match(fields.query::String, '^([0-9]{1,3}\\.){3}[0-9]{1,3}$'))
 GROUP BY fractal_id, process_guid, event_type, dst_node;
+
+-- Fleet-wide facts pgr reads per call, one row per (fractal, kind, value): lineage hosts,
+-- baseline hosts and source images, baseline days. Each row lives as long as the newest row
+-- behind it; storage.ReconcileProvenanceSummaryTTL tracks the configured retentions.
+CREATE TABLE IF NOT EXISTS provenance_summary (
+    fractal_id LowCardinality(String),
+    kind       LowCardinality(String),
+    value      String,
+    last_day   SimpleAggregateFunction(max, Date)
+) ENGINE = AggregatingMergeTree()
+PARTITION BY fractal_id
+ORDER BY (fractal_id, kind, value)
+TTL last_day + toIntervalDay(if(kind = 'lineage_host', 731, 730))
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS provenance_summary_lineage_mv TO provenance_summary
+DEFINER = default SQL SECURITY DEFINER AS
+SELECT fractal_id, 'lineage_host' AS kind, computer_name AS value, max(toDate(ingest_timestamp)) AS last_day
+FROM proc_lineage
+GROUP BY fractal_id, value;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS provenance_summary_freq_mv TO provenance_summary
+DEFINER = default SQL SECURITY DEFINER AS
+SELECT fractal_id, kind, value, max(day) AS last_day
+FROM (
+    SELECT fractal_id, 'freq_image' AS kind, src_image AS value, day FROM proc_freq
+    UNION ALL SELECT fractal_id, 'freq_day', toString(day), day FROM proc_freq
+    UNION ALL SELECT fractal_id, 'freq_host', arrayJoin(finalizeAggregation(hosts)), day FROM proc_freq
+)
+GROUP BY fractal_id, kind, value;

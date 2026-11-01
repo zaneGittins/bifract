@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"bifract/pkg/storage"
@@ -225,5 +226,27 @@ func TestFieldStringSerializesCollectionsAsJSON(t *testing.T) {
 	}
 	if got := fieldString("plain"); got != "plain" {
 		t.Errorf("string: got %s, want plain", got)
+	}
+}
+
+// Forwarded logs keep '<', '>' and '&' literal, as ingest stores them, so the
+// same search matches the source and the forwarded copy.
+func TestTransformLogsForFractalKeepsHTMLCharacters(t *testing.T) {
+	f := &FractalActionClient{}
+	rows := []map[string]interface{}{{"timestamp": "2026-08-03 10:00:00.000", "log_id": "src-1", "cmd": "a<b && c>d"}}
+	alert := &Alert{Name: "x", Labels: []string{"a&b"}}
+	entries, err := f.transformLogsForFractal(context.Background(),
+		FractalAction{TargetFractalID: "f2", AddAlertContext: true}, alert, alert.Name, rows)
+	if err != nil {
+		t.Fatalf("transform failed: %v", err)
+	}
+	if !strings.Contains(entries[0].RawLog, `"cmd":"a<b && c>d"`) {
+		t.Errorf("raw log escapes html characters: %s", entries[0].RawLog)
+	}
+	if got, want := entries[0].Fields["alert_labels"], `["a&b"]`; got != want {
+		t.Errorf("alert_labels = %q, want %q", got, want)
+	}
+	if got, want := fieldString([]string{"x>y"}), `["x>y"]`; got != want {
+		t.Errorf("fieldString = %q, want %q", got, want)
 	}
 }

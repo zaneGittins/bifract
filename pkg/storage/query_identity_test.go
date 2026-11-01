@@ -24,7 +24,7 @@ func TestConnForRoutesOnlyTaggedWork(t *testing.T) {
 	if got := c.connFor(context.Background()); got == marker {
 		t.Error("unmarked context must not run on a class identity")
 	}
-	if got := c.connFor(UserSearchContext(context.Background())); got != marker {
+	if got := c.connFor(UserSearchContext(context.Background(), FractalScope{})); got != marker {
 		t.Error("search context must run on the search identity")
 	}
 	// A class with no provisioned identity falls back rather than borrowing another's.
@@ -37,11 +37,11 @@ func TestConnForRoutesOnlyTaggedWork(t *testing.T) {
 // class uncapped) every query must fall back to the default connection.
 func TestConnForFallsBackWithoutIdentities(t *testing.T) {
 	c := &ClickHouseClient{}
-	if got := c.connFor(UserSearchContext(context.Background())); got != nil {
+	if got := c.connFor(UserSearchContext(context.Background(), FractalScope{})); got != nil {
 		t.Errorf("expected the default connection, got %v", got)
 	}
 	c.queryConns.Store(&map[string]*queryIdentity{})
-	if got := c.connFor(UserSearchContext(context.Background())); got != nil {
+	if got := c.connFor(UserSearchContext(context.Background(), FractalScope{})); got != nil {
 		t.Errorf("expected the default connection, got %v", got)
 	}
 }

@@ -35,6 +35,7 @@ type fakeLineage struct {
 	calls      []string
 
 	reconTotals func() ([]map[string]interface{}, error)
+	summary     func() ([]map[string]interface{}, error)
 	recon       func(sql string, tree storage.ExternalTable) ([]map[string]interface{}, error)
 	totalHosts  func() ([]map[string]interface{}, error)
 	edgeKeys    func(sql string) ([]map[string]interface{}, error)
@@ -200,7 +201,7 @@ func (f *fakeLineage) groupHop(frontier storage.ExternalTable) ([]map[string]int
 	for _, gr := range groups {
 		sort.Slice(gr.members, func(i, j int) bool { return f.createMs[gr.members[i]] < f.createMs[gr.members[j]] })
 		rows = append(rows, map[string]interface{}{
-			"parent_node": gr.node, "nimg": gr.image, "ncmd": gr.cmd, "rep": gr.members[0],
+			"parent_node": gr.node, "rep": gr.members[0],
 			"n": uint64(len(gr.members)), "members": gr.members,
 			"first_ms": f.createMs[gr.members[0]], "last_ms": f.createMs[gr.members[len(gr.members)-1]],
 		})
@@ -248,6 +249,8 @@ func (f *fakeLineage) query(sql string, tables map[string]storage.ExternalTable)
 	switch {
 	case strings.HasPrefix(sql, "SELECT length(groupUniqArrayMerge("):
 		return call("recon_totals", f.reconTotals)
+	case strings.HasPrefix(sql, "SELECT uniqExactIf(value, kind = 'lineage_host')"):
+		return call("summary", f.summary)
 	case strings.HasPrefix(sql, "SELECT uniqExact(computer_name) AS total_hosts"):
 		return call("total_hosts", f.totalHosts)
 	case strings.HasPrefix(sql, "SELECT DISTINCT fkey_src, fkey_tgt FROM"):
@@ -482,6 +485,10 @@ func TestExpandReconnectionPeers(t *testing.T) {
 		want := []string{"root", "a", "p1", "p1c", "p3", "p2", "p4", "p5"}
 		if fmt.Sprint(tree.order) != fmt.Sprint(want) {
 			t.Errorf("got %v, want %v (p2's child a is already in the tree)", tree.order, want)
+		}
+		// Merged subtrees keep their parent links; a process already in the tree keeps its own.
+		if tree.parent["p1c"] != "p1" || tree.parent["a"] != "" {
+			t.Errorf("parents p1c=%q a=%q", tree.parent["p1c"], tree.parent["a"])
 		}
 	})
 
@@ -797,6 +804,23 @@ func TestProvenanceScoreSQLReconnectionFailures(t *testing.T) {
 		}
 	})
 
+	// Fleet size runs alongside reconnection; a request cancelled while it runs fails, it does
+	// not score with a fleet size of 0.
+	t.Run("cancellation during the fleet-size lookup is surfaced", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		f := newFakeLineage(">root", "root>a")
+		f.totalHosts = func() ([]map[string]interface{}, error) {
+			cancel()
+			return nil, context.Canceled
+		}
+		if _, _, err := f.handler().provenanceScoreSQL(ctx, p, pgrOpts()); !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want the cancellation", err)
+		}
+		if f.kinds()["scan"] != 0 {
+			t.Error("a cancelled request must not score")
+		}
+	})
+
 	t.Run("cancellation is surfaced", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		f := newFakeLineage(">root", "root>a")
@@ -832,10 +856,11 @@ func TestProvenanceScoreSQLLimitKeepsLeaves(t *testing.T) {
 	if !strings.Contains(got, "'net:203.0.113.9'") {
 		t.Error("a leaf of a drawn process must survive the row limit")
 	}
-	if strings.Contains(got, "'file:x'") {
-		t.Error("a leaf of a process that is not drawn must not be emitted")
+	// Walk order alone would stop before c59; its hot leaf brings its spawn row in.
+	if !strings.Contains(got, "'file:x'") || !strings.Contains(got, "('root', 'c59'") {
+		t.Error("the hottest leaf must keep the process it hangs off")
 	}
-	if n := strings.Count(got, "'spawn'"); n != 39 {
+	if n := strings.Count(got, "'spawn'"); n != 38 {
 		t.Errorf("%d spawn rows; the rest of the budget goes back to structure", n)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "showing 40 of 62 edges") {
@@ -992,5 +1017,171 @@ func TestProvenanceScoreSQLScanBoundWarns(t *testing.T) {
 	_, warnings, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
 	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "scored more edges than") {
 		t.Errorf("err=%v warnings=%v", err, warnings)
+	}
+}
+
+// Once the backfill has filled the summary, one read of it replaces the fleet-size,
+// reconnection-totals and baseline-span scans. Until then, or when it fails, they run as before.
+func TestProvenanceScoreSQLReadsSummary(t *testing.T) {
+	p := pgrParams(false, true)
+	opts := pgrOpts()
+	type run struct {
+		f           *fakeLineage
+		h           *QueryHandler
+		pg          *fakedb.PG
+		recon, scan string
+	}
+	// setup scripts a handler whose filled setting reads setting ("" for unset).
+	setup := func(setting string, summary func() ([]map[string]interface{}, error)) *run {
+		r := &run{f: newFakeLineage(">root", "root>a")}
+		r.f.summary = summary
+		r.f.reconTotals = func() ([]map[string]interface{}, error) {
+			return []map[string]interface{}{{"total_hosts": uint64(99), "total_images": uint64(98)}}, nil
+		}
+		r.f.totalHosts = func() ([]map[string]interface{}, error) {
+			return []map[string]interface{}{{"total_hosts": uint64(97)}}, nil
+		}
+		r.f.recon = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
+			r.recon = sql
+			return nil, nil
+		}
+		r.f.scan = func(sql string, _ storage.ExternalTable) ([]map[string]interface{}, error) {
+			r.scan = sql
+			return nil, nil
+		}
+		r.h = r.f.handler()
+		var pgc *storage.PostgresClient
+		pgc, r.pg = storagetest.Postgres()
+		if setting != "" {
+			r.pg.On("FROM settings", fakedb.Row(setting))
+		}
+		r.h.pg = pgc
+		return r
+	}
+	score := func(t *testing.T, r *run) {
+		t.Helper()
+		if _, _, err := r.h.provenanceScoreSQL(context.Background(), p, opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary := func() ([]map[string]interface{}, error) {
+		return []map[string]interface{}{{"total_hosts": uint64(40), "recon_hosts": uint64(12), "recon_images": uint64(7), "first_day": "2026-09-01"}}, nil
+	}
+	scanned := func(t *testing.T, r *run) {
+		t.Helper()
+		if k := r.f.kinds(); k["recon_totals"] != 1 || k["total_hosts"] != 1 ||
+			r.recon != parser.BuildReconnectionSQL(p, 99, 98, opts) || !strings.Contains(r.scan, "toFloat64(97) AS total_hosts") {
+			t.Errorf("must score from the scans, ran %v", k)
+		}
+	}
+
+	t.Run("filled", func(t *testing.T) {
+		r := setup("true", summary)
+		score(t, r)
+		if k := r.f.kinds(); k["summary"] != 1 || k["recon_totals"]+k["total_hosts"] != 0 {
+			t.Errorf("ran %v", k)
+		}
+		if r.recon != parser.BuildReconnectionSQL(p, 12, 7, opts) {
+			t.Error("rarity gate not built from the summary")
+		}
+		for _, want := range []string{"toFloat64(40) AS total_hosts", "span AS (SELECT dateDiff('day', toDate('2026-09-01'), "} {
+			if !strings.Contains(r.scan, want) {
+				t.Errorf("scan missing %q", want)
+			}
+		}
+	})
+	t.Run("not yet filled", func(t *testing.T) {
+		r := setup("", summary)
+		score(t, r)
+		scanned(t, r)
+		if r.f.kinds()["summary"] != 0 || !strings.Contains(r.scan, "FROM proc_freq") {
+			t.Error("an unfilled summary must not be read")
+		}
+	})
+	t.Run("only true means filled", func(t *testing.T) {
+		r := setup("false", summary)
+		score(t, r)
+		if r.f.kinds()["summary"] != 0 {
+			t.Error(`"false" read the summary`)
+		}
+	})
+	t.Run("unreadable state scans", func(t *testing.T) {
+		r := setup("", summary)
+		r.pg.On("FROM settings", fakedb.PGResult{Err: errors.New("pg down")})
+		score(t, r)
+		scanned(t, r)
+	})
+	t.Run("read fails", func(t *testing.T) {
+		r := setup("true", func() ([]map[string]interface{}, error) { return nil, errors.New("down") })
+		score(t, r)
+		scanned(t, r)
+	})
+	t.Run("unusable first day", func(t *testing.T) {
+		for _, day := range []string{"", "soon"} {
+			r := setup("true", func() ([]map[string]interface{}, error) {
+				return []map[string]interface{}{{"total_hosts": uint64(40), "recon_hosts": uint64(12), "recon_images": uint64(7), "first_day": day}}, nil
+			})
+			score(t, r)
+			scanned(t, r)
+		}
+	})
+	t.Run("cancelled during the summary read", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		r := setup("true", func() ([]map[string]interface{}, error) { cancel(); return nil, context.Canceled })
+		if _, _, err := r.h.provenanceScoreSQL(ctx, p, opts); !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want the cancellation", err)
+		}
+		if k := r.f.kinds(); k["scan"]+k["total_hosts"] != 0 {
+			t.Errorf("a cancelled request must not go on to scan, ran %v", k)
+		}
+	})
+	t.Run("filled is remembered", func(t *testing.T) {
+		r := setup("true", summary)
+		score(t, r)
+		score(t, r)
+		if n := len(r.pg.Matching("FROM settings")); n != 1 {
+			t.Errorf("setting read %d times, want once", n)
+		}
+	})
+}
+
+// A small fleet: dozens of peers share the tree's telemetry domains, and one peer on another
+// host shares only its C2, which the lookup names through a browser that resolved it too. The
+// C2 peer is admitted ahead of the telemetry and drawn from the implant as a lead.
+func TestProvenanceScoreSQLSurfacesRareC2(t *testing.T) {
+	p := pgrParams(false, true)
+	f := newFakeLineage(">root", "root>browser", "root>implant")
+	f.recon = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+		var rows []map[string]interface{}
+		for i := 0; i < parser.DefaultReconnectPeers+10; i++ {
+			for _, d := range []string{"g.live.com", "oneclient.sfx.ms"} {
+				rows = append(rows, map[string]interface{}{"recon_type": "dns", "peer_guid": fmt.Sprintf("tel%02d", i), "src_guid": "browser",
+					"object_id": "dns:" + d, "label": d, "anomaly": 0.85, "peer_image": "onedrive.exe", "peer_host": "WS01"})
+			}
+		}
+		return append(rows, map[string]interface{}{"recon_type": "net", "peer_guid": "c2peer", "src_guid": "browser",
+			"object_id": "net:203.0.113.87", "label": "203.0.113.87", "anomaly": 0.85, "peer_image": "qcsvc.exe", "peer_host": "WS03"}), nil
+	}
+	f.scan = func(string, storage.ExternalTable) ([]map[string]interface{}, error) {
+		return []map[string]interface{}{
+			spawnRow("root", "browser"), spawnRow("root", "implant"),
+			leafRow("browser", "net:203.0.113.87", 0.5), leafRow("implant", "net:203.0.113.87", 1),
+			leafRow("browser", "dns:g.live.com", 0.5),
+		}, nil
+	}
+	got, _, err := f.handler().provenanceScoreSQL(context.Background(), p, pgrOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"('implant', 'net:203.0.113.87', '203.0.113.87', 'reconnect_net'", "('c2peer', 'net:203.0.113.87'"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(got, "('browser', 'net:203.0.113.87', '203.0.113.87', 'reconnect_net'") {
+		t.Error("the C2 bridge must hang off the implant, not the browser")
+	}
+	if !regexp.MustCompile(`\('implant', 'net:203\.0\.113\.87', [^)]*'lead'\)`).MatchString(got) {
+		t.Errorf("the C2 bridge is not a lead:\n%.2000s", got)
 	}
 }

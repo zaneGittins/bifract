@@ -12,7 +12,7 @@ type condOperand struct {
 	// computed marks a reference whose ClickHouse type is not String (a pipeline
 	// output), so text comparison must go through toString().
 	computed bool
-	// dateTime marks a DateTime column. Neither toString() nor toFloat64OrZero()
+	// dateTime marks a DateTime column. Neither toString() nor textToNumber()
 	// alone compares two of them meaningfully, so each gets its own coercion.
 	dateTime bool
 }
@@ -26,20 +26,26 @@ func (o condOperand) text() string {
 }
 
 // num renders the operand for an ordering comparison. A DateTime becomes epoch
-// milliseconds, which orders correctly against another DateTime; toFloat64OrZero
-// on its text form would silently read 0.
+// milliseconds, which orders correctly against another DateTime.
 func (o condOperand) num() string {
 	if o.dateTime {
 		return "toUnixTimestamp64Milli(" + o.ref + ")"
 	}
 	if o.computed {
-		return "toFloat64OrZero(toString(" + o.ref + "))"
+		return textToNumber("toString(" + o.ref + ")")
 	}
-	return "toFloat64OrZero(" + o.ref + ")"
+	return textToNumber(o.ref)
+}
+
+// textToNumber reads text for an ordering comparison. A non-number becomes NaN,
+// which every comparison rejects. OrZero would match it as 0; OrNull makes the
+// condition Nullable, and sequenceMatch then skips the row for every chain step.
+func textToNumber(ref string) string {
+	return "toFloat64OrDefault(" + ref + ", nan)"
 }
 
 // dateTimeColumns are base columns typed DateTime rather than String. ClickHouse
-// refuses to compare one with a String (code 386) and refuses toFloat64OrZero on
+// refuses to compare one with a String (code 386) and refuses textToNumber on
 // it (code 43), so both sides of a comparison have to know.
 func isDateTimeColumn(field string) bool {
 	return field == "timestamp" || field == "ingest_timestamp"

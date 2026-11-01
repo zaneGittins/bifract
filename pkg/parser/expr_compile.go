@@ -181,6 +181,9 @@ func compileBinary(e *ExprNode, ctx exprCtx) (string, ExprType, error) {
 			}
 			return join(l, r, e.Value), TypeBool, nil
 		}
+		if (leftType == TypeBool && rightType == TypeString) || (leftType == TypeString && rightType == TypeBool) {
+			return "", TypeAny, fmt.Errorf("%s compares a condition with text; compare a condition to true or false", e.String())
+		}
 		return join(asString(leftSQL, leftType), asString(rightSQL, rightType), e.Value), TypeBool, nil
 
 	case "AND", "and", "OR", "or":

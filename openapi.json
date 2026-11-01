@@ -6294,7 +6294,7 @@
       "post": {
         "operationId": "post_api_v1_auth_change_password",
         "summary": "Change the caller's own password.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "auth"
         ],
@@ -6348,7 +6348,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/invite/accept": {
@@ -6695,6 +6695,16 @@
             "session": []
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/auth.MFAPasswordRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success.",
@@ -6988,7 +6998,7 @@
       "patch": {
         "operationId": "patch_api_v1_auth_preferences",
         "summary": "Update the caller's display preferences.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "auth"
         ],
@@ -7042,7 +7052,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/register": {
@@ -15613,7 +15623,7 @@
       "get": {
         "operationId": "get_api_v1_fractals",
         "summary": "List the fractals and prisms the caller can reach.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "fractals"
         ],
@@ -15677,7 +15687,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       },
       "post": {
         "operationId": "post_api_v1_fractals",
@@ -17533,7 +17543,7 @@
       "post": {
         "operationId": "post_api_v1_fractals_byId_select",
         "summary": "Set the session's selected fractal.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "fractals"
         ],
@@ -17607,7 +17617,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/fractals/{id}/stats": {
@@ -21770,6 +21780,97 @@
         "x-bifract-access": "viewer"
       }
     },
+    "/api/v1/models/{id}/score-range": {
+      "post": {
+        "operationId": "post_api_v1_models_byId_score_range",
+        "summary": "Score a network model over a past range and keep the scores.",
+        "description": "Requires the analyst role on the fractal or prism in scope.",
+        "tags": [
+          "models"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "apiKey": []
+          },
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/models.ScoreRangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/models.ScoreRangeResult"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "analyst"
+      }
+    },
     "/api/v1/models/{id}/stats": {
       "get": {
         "operationId": "get_api_v1_models_byId_stats",
@@ -25293,7 +25394,7 @@
       "get": {
         "operationId": "get_api_v1_prisms",
         "summary": "List the prisms the caller can reach.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "prisms"
         ],
@@ -25355,7 +25456,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       },
       "post": {
         "operationId": "post_api_v1_prisms",
@@ -26739,7 +26840,7 @@
       "post": {
         "operationId": "post_api_v1_prisms_byId_select",
         "summary": "Set the session's selected prism.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "prisms"
         ],
@@ -26813,7 +26914,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/query": {
@@ -30883,6 +30984,474 @@
           }
         },
         "x-bifract-access": "public"
+      }
+    },
+    "/services/collector": {
+      "post": {
+        "operationId": "post_services_collector",
+        "summary": "Ingest Splunk HEC event envelopes.",
+        "description": "Authenticated by an ingest token, not a session.",
+        "tags": [
+          "services"
+        ],
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourcetype",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "ingest_token"
+      }
+    },
+    "/services/collector/event": {
+      "post": {
+        "operationId": "post_services_collector_event",
+        "summary": "Ingest Splunk HEC event envelopes.",
+        "description": "Authenticated by an ingest token, not a session.",
+        "tags": [
+          "services"
+        ],
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourcetype",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "ingest_token"
+      }
+    },
+    "/services/collector/event/1.0": {
+      "post": {
+        "operationId": "post_services_collector_event_1_0",
+        "summary": "Ingest Splunk HEC event envelopes.",
+        "description": "Authenticated by an ingest token, not a session.",
+        "tags": [
+          "services"
+        ],
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourcetype",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "ingest_token"
+      }
+    },
+    "/services/collector/health": {
+      "get": {
+        "operationId": "get_services_collector_health",
+        "summary": "Report Splunk HEC health: 503 while ingestion is under backpressure.",
+        "description": "No authentication required.",
+        "tags": [
+          "services"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "public"
+      }
+    },
+    "/services/collector/health/1.0": {
+      "get": {
+        "operationId": "get_services_collector_health_1_0",
+        "summary": "Report Splunk HEC health: 503 while ingestion is under backpressure.",
+        "description": "No authentication required.",
+        "tags": [
+          "services"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "public"
+      }
+    },
+    "/services/collector/raw": {
+      "post": {
+        "operationId": "post_services_collector_raw",
+        "summary": "Ingest Splunk HEC raw events, one per line.",
+        "description": "Authenticated by an ingest token, not a session.",
+        "tags": [
+          "services"
+        ],
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourcetype",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "ingest_token"
+      }
+    },
+    "/services/collector/raw/1.0": {
+      "post": {
+        "operationId": "post_services_collector_raw_1_0",
+        "summary": "Ingest Splunk HEC raw events, one per line.",
+        "description": "Authenticated by an ingest token, not a session.",
+        "tags": [
+          "services"
+        ],
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourcetype",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ingestToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "text/plain": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ingest.HECResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.Response_interface{}"
+                }
+              }
+            }
+          }
+        },
+        "x-bifract-access": "ingest_token"
       }
     },
     "/v1/logs": {
@@ -35121,7 +35690,13 @@
           "description": {
             "type": "string"
           },
+          "editable": {
+            "type": "boolean"
+          },
           "fractal_id": {
+            "type": "string"
+          },
+          "home_name": {
             "type": "string"
           },
           "id": {
@@ -35169,7 +35744,9 @@
           "kind",
           "created_by",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "home_name",
+          "editable"
         ]
       },
       "dictionaries.DictionaryAction": {
@@ -36493,6 +37070,24 @@
           "reason"
         ]
       },
+      "ingest.HECResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "invalid-event-number": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "code"
+        ]
+      },
       "ingest.IngestResponse": {
         "type": "object",
         "properties": {
@@ -37688,6 +38283,10 @@
             "type": "string",
             "format": "date-time"
           },
+          "scored_through": {
+            "type": "string",
+            "format": "date-time"
+          },
           "state": {
             "type": "string"
           }
@@ -37990,6 +38589,54 @@
           "steps",
           "bins",
           "cells"
+        ]
+      },
+      "models.ScoreRangeRequest": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "models.ScoreRangeResult": {
+        "type": "object",
+        "properties": {
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pairs_scored": {
+            "type": "integer"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "pairs_scored",
+          "truncated"
         ]
       },
       "models.TestExtractionRequest": {

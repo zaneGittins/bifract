@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bifract/pkg/bqlvars"
@@ -50,6 +51,8 @@ type QueryHandler struct {
 	pgrRecorder *pgrcal.Recorder
 	// observedFields caches each scope's field list for autocomplete and get_fields.
 	observedFields *observedFieldsCache
+	// summaryFilled caches whether the provenance backfill has filled provenance_summary.
+	summaryFilled atomic.Pointer[summaryFilledCheck]
 }
 
 // tlshSkipWarnings explains, per reason, which fractals tlsh() did not search.
@@ -96,13 +99,38 @@ func newSearchID() string {
 	return "bif-search-" + uuid.NewString()
 }
 
+// FractalScope is the ClickHouse-side backstop for the fractal predicate the
+// translator builds from opts (see storage.FractalScope). ok is false when opts carry
+// no fractal predicate, so the query is not fractal-scoped at all.
+func FractalScope(opts parser.QueryOptions) (storage.FractalScope, bool) {
+	return fractalScope(opts.FractalID, opts.FractalIDs, opts.IncludeEmptyFractalID)
+}
+
+// fractalScope mirrors the translator: a prism's member list wins over a single fractal.
+func fractalScope(fractalID string, fractalIDs []string, includeEmpty bool) (storage.FractalScope, bool) {
+	switch {
+	case len(fractalIDs) > 0:
+		return storage.FractalScope{FractalIDs: fractalIDs, Unassigned: includeEmpty}, true
+	case fractalID != "":
+		return storage.FractalScope{FractalIDs: []string{fractalID}, Unassigned: includeEmpty}, true
+	}
+	return storage.FractalScope{}, false
+}
+
+// fractalScope is the scope every ClickHouse read for this query runs under. A
+// query with no fractal predicate gets the empty scope, which reads nothing.
+func (p *preparedQuery) fractalScope() storage.FractalScope {
+	s, _ := FractalScope(p.translationOpts)
+	return s
+}
+
 // searchContext builds the context a search's ClickHouse queries run on: tagged as
 // an interactive user search (CPU/memory limits) and carrying the query timeout
 // both as a Go deadline and as a ClickHouse-enforced ceiling. A Go deadline alone
 // only stops this process reading; the server keeps scanning what nobody is
 // listening to.
-func searchContext(parent context.Context, timeoutSec int) (context.Context, context.CancelFunc) {
-	ctx := storage.UserSearchContext(parent)
+func searchContext(parent context.Context, timeoutSec int, scope storage.FractalScope) (context.Context, context.CancelFunc) {
+	ctx := storage.UserSearchContext(parent, scope)
 	if timeoutSec <= 0 {
 		return context.WithCancel(ctx)
 	}
@@ -137,15 +165,16 @@ func (h *QueryHandler) SetGeoIPEnabled(enabled bool) {
 // from the handler rather than the request.
 func (h *QueryHandler) logsQueryOptions() parser.QueryOptions {
 	return parser.QueryOptions{
-		GeoIPEnabled:       h.geoIPEnabled,
-		DictionaryDatabase: h.dictDatabase(),
-		TableName:          h.queryTableName(),
-		ProcLineageTable:   h.procLineageTableName(),
-		ProcFreqTable:      h.procFreqTableName(),
-		ProcEdgesTable:     h.procEdgesTableName(),
-		IncludeShardNum:    h.db != nil && h.db.Topology().DistributedTables,
-		IncludeIngestTime:  true,
-		NormLogIndexHints:  true,
+		GeoIPEnabled:           h.geoIPEnabled,
+		DictionaryDatabase:     h.dictDatabase(),
+		TableName:              h.queryTableName(),
+		ProcLineageTable:       h.procLineageTableName(),
+		ProcFreqTable:          h.procFreqTableName(),
+		ProcEdgesTable:         h.procEdgesTableName(),
+		ProvenanceSummaryTable: h.provenanceSummaryTableName(),
+		IncludeShardNum:        h.db != nil && h.db.Topology().DistributedTables,
+		IncludeIngestTime:      true,
+		NormLogIndexHints:      true,
 	}
 }
 
@@ -191,6 +220,14 @@ func (h *QueryHandler) procEdgesTableName() string {
 		return h.db.ProcEdgesReadTable()
 	}
 	return "process_edges"
+}
+
+// provenanceSummaryTableName returns the read table for pgr()'s fleet-wide facts.
+func (h *QueryHandler) provenanceSummaryTableName() string {
+	if h.db != nil {
+		return h.db.ProvenanceSummaryReadTable()
+	}
+	return "provenance_summary"
 }
 
 // SetRBACResolver injects the RBAC resolver for access filtering.
@@ -742,17 +779,6 @@ func parseNewestScan(row map[string]interface{}) ([]uint64, []time.Time, error) 
 	return counts, times, nil
 }
 
-// projectsTimestamp reports whether the scan computes a column named timestamp,
-// which shadows the event time in the row query's own predicates.
-func projectsTimestamp(projections []parser.SourceProjection) bool {
-	for _, p := range projections {
-		if p.Alias == "timestamp" {
-			return true
-		}
-	}
-	return false
-}
-
 // logScope is the set of fractals a request reads, resolved and authorized.
 type logScope struct {
 	fractalID    string   // the single fractal read, when no prism is
@@ -1233,13 +1259,15 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	streamable := translationResult.DefaultTimeOrder && !isAggregated && chartType == "" && !hasSubquerySource
 
 	// Chunking re-translates the query per time slice, so it is only valid when
-	// no embedded subquery carries its own copy of the range (join /
-	// model_lookup), and only for a whole-range first page.
-	chunkable := streamable && !translationResult.TimeScopedSubquery && req.Cursor == ""
+	// each row stands on its own: no embedded subquery carrying its own copy of
+	// the range (join / model_lookup), no row cap, dedup or window score computed
+	// across the range, and only for a whole-range first page.
+	rowwise := !translationResult.TimeScopedSubquery && !translationResult.RangeDependentRows
+	chunkable := streamable && rowwise && req.Cursor == ""
 
 	// A live poll re-reads a sliding arrival window, so it needs the same plain
-	// newest-first row selection, with no subquery carrying a range of its own.
-	liveSupported := purpose == purposeLive && streamable && !translationResult.TimeScopedSubquery
+	// newest-first, row-by-row selection.
+	liveSupported := purpose == purposeLive && streamable && rowwise
 
 	// Add LIMIT to queries that don't already have one
 	if purpose == purposeSearch && !sqlLimitRE.MatchString(sql) {
@@ -1324,7 +1352,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// When the scan filter is the whole row selection, an older chunk's rows are the
 	// newest matches its histogram scan already reads, given a bounded row budget.
 	singleScan := chunkable && needsHistogram && histRollupTable == "" && len(histChunks) > 1 &&
-		translationResult.SourceWhereComplete && !projectsTimestamp(translationResult.SourceProjections) &&
+		translationResult.SourceWhereComplete &&
 		opts.SourceMode != parser.SourceIceberg && !opts.UseIngestTimestamp &&
 		(queryMaxRows > 0 || appliedCursorPaging)
 
@@ -1612,7 +1640,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	// Execute main query (and histogram if needed) with timeout
 	queryStart := time.Now()
 
-	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, req)), settings.Get().QueryTimeoutSeconds)
+	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, req)), settings.Get().QueryTimeoutSeconds, prep.fractalScope())
 	// A query left running server-side is the expensive kind of leak: cancel the
 	// client side first, then kill anything that outlived the request.
 	searchClean := true
@@ -1986,7 +2014,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	// client that navigated away mid-scan -- gets killed instead of running unowned.
 	searchID := newSearchID()
 	searchClean := false
-	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds)
+	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds, prep.fractalScope())
 	defer func() {
 		cancel()
 		if !searchClean {
@@ -3203,8 +3231,8 @@ func (h *QueryHandler) fetchProfileData(queryID string) *ProfileData {
 			return nil
 		}
 		rows, err := h.db.Query(ctx, fmt.Sprintf(
-			`SELECT count() AS cnt FROM system.query_log WHERE query_id = '%s' AND type IN ('QueryFinish','ExceptionWhileProcessing')`,
-			escCHStr(queryID)))
+			`SELECT count() AS cnt FROM system.query_log WHERE %s AND type IN ('QueryFinish','ExceptionWhileProcessing')`,
+			storage.QueryIDMatchSQL("query_id", queryID)))
 		if err == nil && len(rows) > 0 {
 			if cnt, ok := rows[0]["cnt"].(uint64); ok && cnt > 0 {
 				found = true
@@ -3237,9 +3265,9 @@ SELECT
     toUInt64(ProfileEvents['NetworkReceiveElapsedMicroseconds'] / 1000)         AS net_wait_ms,
     formatReadableSize(ProfileEvents['ReadBufferFromFileDescriptorReadBytes'])   AS bytes_from_disk
 FROM %s
-WHERE initial_query_id = '%s'
+WHERE %s
   AND type = 'QueryFinish'
-ORDER BY coordinator DESC, duration_ms DESC`, shardSource, escCHStr(queryID))
+ORDER BY coordinator DESC, duration_ms DESC`, shardSource, storage.QueryIDMatchSQL("initial_query_id", queryID))
 
 	shardRows, err := h.db.Query(ctx, shardSQL)
 	if err != nil {
@@ -3277,10 +3305,10 @@ SELECT
              ProfileEvents['SelectedMarksTotal'], 1),
        toFloat64(0))                                                            AS pct_marks_surviving
 FROM %s
-WHERE initial_query_id = '%s'
+WHERE %s
   AND is_initial_query = 0
   AND type = 'QueryFinish'
-ORDER BY shard`, h.db.Topology().ShardSystemTable("system.query_log"), escCHStr(queryID))
+ORDER BY shard`, h.db.Topology().ShardSystemTable("system.query_log"), storage.QueryIDMatchSQL("initial_query_id", queryID))
 
 		skipRows, err := h.db.Query(ctx, skipSQL)
 		if err != nil {

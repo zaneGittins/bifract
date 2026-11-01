@@ -98,7 +98,7 @@ func (d routerDeps) handleTopology(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d routerDeps) handlePressure(w http.ResponseWriter, r *http.Request) {
-	alertsDeferred := d.ingestQueue.Depth() > d.alertDeferThreshold
+	alertsDeferred := d.alertsDeferred != nil && d.alertsDeferred()
 	resp := map[string]interface{}{
 		"alerts_deferred": alertsDeferred,
 	}
@@ -428,19 +428,9 @@ func (d routerDeps) handleSetEndpointAnalysis(w http.ResponseWriter, r *http.Req
 		api.WriteError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
-	// Attach/detach the MVs first; only persist the setting if that succeeds,
-	// so the stored flag always matches the actual ClickHouse state.
-	if err := d.db.ReconcileEndpointAnalysisMVs(r.Context(), body.Enabled); err != nil {
-		log.Printf("endpoint-analysis reconcile failed: %v", err)
-		api.WriteError(w, http.StatusInternalServerError, "Failed to apply change to ClickHouse")
-		return
-	}
-	val := "false"
-	if body.Enabled {
-		val = "true"
-	}
-	if err := d.pg.SetSetting(r.Context(), storage.AdvancedEndpointAnalysisSetting, val); err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "Failed to save")
+	if err := storage.SetEndpointAnalysis(r.Context(), d.pg, d.db, body.Enabled); err != nil {
+		log.Printf("endpoint-analysis toggle failed: %v", err)
+		api.WriteError(w, http.StatusInternalServerError, "Failed to apply endpoint analysis change")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

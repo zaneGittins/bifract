@@ -253,8 +253,8 @@ func TestFirstSeenRecordedStamp(t *testing.T) {
 // The data view shows when the model recorded a first_seen entity; a tlsh table
 // has no such column and must not be asked for it.
 func TestFirstSeenAggRecordedColumn(t *testing.T) {
-	mustContain(t, firstSeenAgg("`t` FINAL", fidScope("f1"), "entity_key", 0, true, true), "min(first_recorded) AS recorded_at", "first_seen view")
-	mustNotContain(t, firstSeenAgg("`t` FINAL", fidScope("f1"), "digest", 0, false, true), "first_recorded", "tlsh view")
+	mustContain(t, firstSeenAgg("`t`", fidScope("f1"), "entity_key", 0, true, true), "min(first_recorded) AS recorded_at", "first_seen view")
+	mustNotContain(t, firstSeenAgg("`t`", fidScope("f1"), "digest", 0, false, true), "first_recorded", "tlsh view")
 }
 
 func TestBackfillRequestSpan(t *testing.T) {

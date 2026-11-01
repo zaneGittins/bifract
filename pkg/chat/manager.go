@@ -88,6 +88,12 @@ func (m *Manager) CreateConversation(ctx context.Context, fractalID, prismID, ti
 		title = "New conversation"
 	}
 
+	if m.instructionManager != nil && len(libraryIDs) > 0 {
+		if err := m.instructionManager.CheckLibrariesInScope(ctx, fractalID, prismID, libraryIDs); err != nil {
+			return nil, err
+		}
+	}
+
 	var fractalIDPtr, prismIDPtr interface{}
 	if fractalID != "" {
 		fractalIDPtr = fractalID
@@ -110,7 +116,7 @@ func (m *Manager) CreateConversation(ctx context.Context, fractalID, prismID, ti
 
 	// Link libraries to the conversation
 	if m.instructionManager != nil && len(libraryIDs) > 0 {
-		if err := m.instructionManager.SetConversationLibraries(ctx, conv.ID, libraryIDs); err != nil {
+		if err := m.instructionManager.SetConversationLibraries(ctx, conv.ID, conv.FractalID, conv.PrismID, libraryIDs); err != nil {
 			log.Printf("[Chat] Failed to set conversation libraries: %v", err)
 		}
 	}
@@ -204,11 +210,11 @@ func (m *Manager) DeleteAllConversations(ctx context.Context, fractalID, prismID
 	return err
 }
 
-func (m *Manager) SetConversationLibraries(ctx context.Context, conversationID string, libraryIDs []string) error {
+func (m *Manager) SetConversationLibraries(ctx context.Context, conv *Conversation, libraryIDs []string) error {
 	if m.instructionManager == nil {
 		return fmt.Errorf("instruction manager not configured")
 	}
-	return m.instructionManager.SetConversationLibraries(ctx, conversationID, libraryIDs)
+	return m.instructionManager.SetConversationLibraries(ctx, conv.ID, conv.FractalID, conv.PrismID, libraryIDs)
 }
 
 func (m *Manager) GetConversationLibraries(ctx context.Context, conversationID string) ([]*instructions.Library, error) {

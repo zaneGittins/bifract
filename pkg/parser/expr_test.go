@@ -337,14 +337,14 @@ func TestExprEvalCommand(t *testing.T) {
 		}
 	})
 
-	// toFloat64OrZero takes a String, so wrapping a numeric result failed server side.
+	// toFloat64OrDefault takes a String, so wrapping a numeric result failed server side.
 	t.Run("numeric eval output filters without coercion", func(t *testing.T) {
 		for _, q := range []string{
 			`* | eval("x = len(commandline) * 2") | x > 10`,
 			`* | eval(x = len(commandline) * 2) | x > 10`,
 		} {
 			sql := translateExpr(t, q)
-			if !strings.Contains(sql, "length(fields.`commandline`::String) * 2 > 10") || strings.Contains(sql, "toFloat64OrZero(length") {
+			if !strings.Contains(sql, "length(fields.`commandline`::String) * 2 > 10") || strings.Contains(sql, "toFloat64OrDefault(length") {
 				t.Errorf("%s: want the numeric expression compared directly, got: %s", q, sql)
 			}
 		}
@@ -489,8 +489,16 @@ func TestExprFilterOverDeferredColumns(t *testing.T) {
 		}
 	})
 
-	t.Run("mixed with a log field above a join wrap exports the source leaf", func(t *testing.T) {
+	t.Run("a source-only leaf above a join wrap filters the scan", func(t *testing.T) {
 		sql := translateWith(t, `* | join(dst_ip) { * | groupby(dst_ip) } | round(_join__count,2) > 9 AND lower(image) = "chrome.exe"`, modelOpts())
+		leaf := strings.Index(sql, "lower(fields.`image`::String) = 'chrome.exe'")
+		if leaf < 0 || leaf > strings.Index(sql, "AS _outer") || strings.Contains(sql, "_dfr_") {
+			t.Errorf("want the image leaf in the outer scan, nothing exported: %s", sql)
+		}
+	})
+
+	t.Run("mixed with a log field above a join wrap exports the source leaf", func(t *testing.T) {
+		sql := translateWith(t, `* | join(dst_ip) { * | groupby(dst_ip) } | if(lower(image) = "chrome.exe", _join__count, 0) > 9`, modelOpts())
 		if !strings.Contains(sql, "fields.`image`::String AS _dfr_0") {
 			t.Errorf("source leaf not exported into the scan: %s", sql)
 		}

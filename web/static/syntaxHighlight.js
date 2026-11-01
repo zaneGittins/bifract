@@ -379,6 +379,7 @@ const SyntaxHighlight = {
 
         while (i < line.length) {
             let matched = false;
+            let opMatch;
 
             // Check for strings first (highest priority)
             if (line[i] === '"') {
@@ -479,14 +480,10 @@ const SyntaxHighlight = {
                 result.push({ t: ':=', c: 'hl-assignment' });
                 i += 2;
                 matched = true;
-            } else if (line.substring(i, i + 2) === '!=' ||
-                       line.substring(i, i + 2) === '<=' ||
-                       line.substring(i, i + 2) === '>=' ||
-                       line.substring(i, i + 2) === '=~' ||
-                       line.substring(i, i + 2) === '=^' ||
-                       line.substring(i, i + 2) === '=$') {
-                result.push({ t: line.substring(i, i + 2), c: 'hl-operator' });
-                i += 2;
+            } else if ((opMatch = line.substring(i, i + 3).match(/^(!=[~^$]?|[<>]=|=[~^$])/))) {
+                const op = opMatch[0];
+                result.push({ t: op, c: 'hl-operator' });
+                i += op.length;
                 matched = true;
             }
             // Single character tokens

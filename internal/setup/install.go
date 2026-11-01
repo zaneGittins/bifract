@@ -32,6 +32,27 @@ func RunInstall(opts InstallOptions) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// Nothing is written until these pass: once docker has initialised the volumes,
+	// a new .env with new passwords can no longer open them.
+	envPath := filepath.Join(cfg.InstallDir, ".env")
+	if _, err := os.Stat(envPath); err == nil {
+		return fmt.Errorf("existing installation found at %s (.env exists)\n"+
+			"  If an earlier install failed, fix the cause and run: bifract --start --dir %s\n"+
+			"  To update, use --upgrade. To reinstall from scratch, run docker compose down -v in %s (deletes all data), then remove .env",
+			cfg.InstallDir, cfg.InstallDir, cfg.InstallDir)
+	}
+	compose, err := RenderDockerCompose(cfg)
+	if err != nil {
+		return fmt.Errorf("render docker-compose: %w", err)
+	}
+	ports, err := composeHostPorts(compose)
+	if err != nil {
+		return err
+	}
+	if err := checkHostPorts(ports); err != nil {
+		return fmt.Errorf("%w\n  Stop the service holding it (for example nginx or apache), then rerun the install", err)
+	}
+
 	if err := cfg.GeneratePasswords(); err != nil {
 		return fmt.Errorf("generate passwords: %w", err)
 	}
@@ -61,12 +82,6 @@ func RunInstall(opts InstallOptions) error {
 		return fmt.Errorf("create install dir: %w", err)
 	}
 	printDone("Directory created")
-
-	// Check for existing .env to prevent accidental credential loss
-	envPath := filepath.Join(cfg.InstallDir, ".env")
-	if _, err := os.Stat(envPath); err == nil {
-		return fmt.Errorf("existing installation found at %s (.env exists)\n  Use --upgrade to update, or remove %s to reinstall", cfg.InstallDir, envPath)
-	}
 
 	// Verify the Bifract image is available on the registry
 	if cfg.ImageTag != "dev" {

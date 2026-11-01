@@ -1,7 +1,9 @@
 package parser
 
 import (
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,13 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 		{"fields.dst_ip::String", AbstractIP},         // net target
 		{"fields.target_image::String", AbstractPath}, // remote_thread/process_access target
 		{"fields.query::String", AbstractDomain},      // dns target
+		{"image", AbstractPath},                       // proc_lineage.child_image (sibling collapse)
+		{"commandline", AbstractPath},                 // proc_lineage.child_cmd_key
+	}
+	// migration 019 adds the proc_lineage collapse keys pgr's forward hop groups by.
+	delta019 := []use{
+		{"image", AbstractPath},
+		{"commandline", AbstractPath},
 	}
 	// migration 009 introduces/repairs these MVs (image src, file target, p2p target, dns query).
 	delta009 := []use{
@@ -49,6 +58,7 @@ func TestAbstractExprMatchesMVs(t *testing.T) {
 		{"../../db/init-clickhouse.sql", all},
 		{"../../db/migrations/clickhouse/009_proc_freq_events.sql", delta009},
 		{"../../db/migrations/clickhouse/011_process_edges.sql", delta011},
+		{"../../db/migrations/clickhouse/019_provenance_access_paths.sql", delta019},
 	}
 	// Compare whitespace-insensitively: ClickHouse ignores SQL whitespace, so the abstracted VALUE
 	// (what must match proc_freq) is identical regardless of spacing between args. The abstraction
@@ -311,11 +321,11 @@ func scoringSQL(t *testing.T, edgeTypes map[string]bool, bl ProvenanceBaseline) 
 	return sql
 }
 
-// logs is ordered by (timestamp, log_id), so pm must find the tree's process_creation rows by the
-// keys proc_lineage already holds. Filtering by guid leaves only the bloom index, which a large
-// tree defeats, and the read then grows with the time window instead of the tree.
-// Both sides carry the same fractal scope, so a prism never pairs one fractal's keys with another's logs.
-func TestScoringSQLReadsCommandLinesByLogKey(t *testing.T) {
+// Command lines and users come from the nodes' own lineage rows, a primary-key lookup. Only a
+// node whose row predates the user column ('\0') reads logs, by the (timestamp, log_id) keys its
+// lineage row holds: a guid filter leaves only the bloom index, which a large tree defeats.
+// Every read carries the fractal scope, so a prism never pairs one fractal's keys with another's logs.
+func TestScoringSQLReadsCommandLinesFromLineage(t *testing.T) {
 	prism := reconOpts()
 	prism.FractalID, prism.FractalIDs, prism.IncludeEmptyFractalID = "", []string{"f1", "f2"}, true
 	for _, c := range []struct {
@@ -329,17 +339,34 @@ func TestScoringSQLReadsCommandLinesByLogKey(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			c.opts.MaxRows = 100
 			sql := BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{TotalHosts: 10}, c.opts)
-			pm := cteBody(t, sql, "pm")
+			pl := cteBody(t, sql, "pl")
 			for _, want := range []string{
-				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE process_guid IN (SELECT guid FROM _pgr_tree WHERE guid = node) AND " + c.scope + ")",
-				"' AND " + c.scope + " AND (timestamp, log_id)",
+				"any(substring(commandline, 1, 300)) AS command_line, max(proc_user) AS lineage_user FROM proc_lineage WHERE ",
+				"' AND " + c.scope + " AND process_guid GLOBAL IN (SELECT guid FROM _pgr_tree WHERE guid = node) GROUP BY guid",
 			} {
-				if !strings.Contains(pm, want) {
-					t.Errorf("want %q in:\n%s", want, pm)
+				if !strings.Contains(pl, want) {
+					t.Errorf("want %q in pl:\n%s", want, pl)
 				}
 			}
-			if strings.Contains(pm, "fields.process_guid::String IN") {
-				t.Errorf("pm must not filter logs by guid:\n%s", pm)
+			pu := cteBody(t, sql, "pu")
+			for _, want := range []string{
+				"(timestamp, log_id) GLOBAL IN (SELECT timestamp, log_id FROM proc_lineage WHERE process_guid GLOBAL IN (SELECT guid FROM _pgr_tree WHERE guid = node) AND " + c.scope + " AND proc_user = '\\0')",
+				"' AND " + c.scope + " AND (timestamp, log_id)",
+			} {
+				if !strings.Contains(pu, want) {
+					t.Errorf("want %q in pu:\n%s", want, pu)
+				}
+			}
+			if strings.Contains(pu, "fields.process_guid::String IN") || strings.Contains(pu, "commandline") {
+				t.Errorf("pu reads logs for the user only, by log key:\n%s", pu)
+			}
+			// '\0' is a row from before the column; an empty user is a known empty one.
+			if pm := cteBody(t, sql, "pm"); !strings.Contains(pm, "if(pl.lineage_user = '\\0', pu.proc_user, pl.lineage_user) AS proc_user FROM pl LEFT JOIN pu ON pu.guid = pl.guid") {
+				t.Errorf("pm must prefer the lineage user:\n%s", pm)
+			}
+			// The tree's own spawn targets read the stored abstraction.
+			if sx := cteBody(t, sql, "sx"); !strings.HasPrefix(sx, "SELECT child_image AS node,") || !strings.Contains(sql, "child_image AS fkey_tgt") {
+				t.Errorf("sx and spawn edges must use child_image:\n%s", sx)
 			}
 		})
 	}
@@ -539,23 +566,30 @@ func TestReconnectionEdgeRowsCarryProvenanceColumns(t *testing.T) {
 	}
 }
 
-// The forward hop collapses identical siblings with proc_freq's own normalization, keyed on the
-// parent's node so a group's children are grouped across all of its members, and reads the
-// frontier from external data rather than a literal list.
+// The hop groups by the collapse keys proc_lineage stores, so it runs no regex per child,
+// keyed on the parent's node so a group's children are grouped across all of its members, and
+// reads the frontier from external data rather than a literal list.
 func TestProcessGroupHopSQL(t *testing.T) {
 	sql := BuildProcessGroupHopSQL(reconOpts())
 	for _, want := range []string{
 		"f.node AS parent_node",
-		abstractExpr("c.image", AbstractPath) + " AS nimg",
-		abstractExpr("c.commandline", AbstractPath) + " AS ncmd",
-		"GROUP BY parent_node, nimg, ncmd",
+		"GROUP BY parent_node, c.child_image, c.child_cmd_key",
 		"uniqExact(c.process_guid) AS n",
-		"c.parent_guid GLOBAL IN (SELECT guid FROM _pgr_frontier)",
-		"GLOBAL INNER JOIN _pgr_frontier AS f ON c.parent_guid = f.guid",
-		"c.fractal_id = 'f1'",
+		"FROM proc_lineage AS c GLOBAL INNER JOIN _pgr_frontier AS f ON c.parent_guid = f.guid WHERE ",
+		"c.fractal_id = 'f1' AND c.parent_guid GLOBAL IN (SELECT guid FROM _pgr_frontier)",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("hop SQL missing %q:\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, "replaceRegexpAll") {
+		t.Errorf("hop SQL abstracts per row:\n%s", sql)
+	}
+	// Only the by_parent projection's columns, or ClickHouse reads the table instead.
+	byParent := map[string]bool{"fractal_id": true, "parent_guid": true, "process_guid": true, "timestamp": true, "child_image": true, "child_cmd_key": true}
+	for _, m := range regexp.MustCompile(`\bc\.(\w+)`).FindAllStringSubmatch(sql, -1) {
+		if !byParent[m[1]] {
+			t.Errorf("hop reads c.%s, which by_parent does not hold", m[1])
 		}
 	}
 }
@@ -580,18 +614,124 @@ func TestScoringSQLMapsMembersOntoNodes(t *testing.T) {
 	}
 }
 
-// pm looks up command lines only inside the span the nodes were created in.
+// Command lines and users are looked up only inside the span the nodes were created in.
 func TestScoringSQLNarrowsCommandLineWindow(t *testing.T) {
 	opts := reconOpts()
 	opts.StartTime = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	opts.EndTime = time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
 	bl := ProvenanceBaseline{NodeStart: time.Date(2026, 10, 27, 8, 0, 0, 0, time.UTC), NodeEnd: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)}
-	pm := cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, bl, opts), "pm")
-	if !strings.Contains(pm, "timestamp >= '2026-10-27 08:00:00.000' AND timestamp <= '2026-10-27 09:00:00.000'") {
-		t.Errorf("pm not narrowed to the node span:\n%s", pm)
+	sql := BuildProvenanceScoringSQL(0.7, nil, false, bl, opts)
+	for _, cte := range []string{"pl", "pu"} {
+		if !strings.Contains(cteBody(t, sql, cte), "timestamp >= '2026-10-27 08:00:00.000' AND timestamp <= '2026-10-27 09:00:00.000'") {
+			t.Errorf("%s not narrowed to the node span:\n%s", cte, cteBody(t, sql, cte))
+		}
 	}
-	pm = cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, opts), "pm")
-	if !strings.Contains(pm, "timestamp >= '2026-10-01 00:00:00.000' AND timestamp <= '2026-10-31 00:00:00.000'") {
-		t.Errorf("without a span pm reads the query window:\n%s", pm)
+	sql = BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, opts)
+	for _, cte := range []string{"pl", "pu"} {
+		if !strings.Contains(cteBody(t, sql, cte), "timestamp >= '2026-10-01 00:00:00.000' AND timestamp <= '2026-10-31 00:00:00.000'") {
+			t.Errorf("without a span %s reads the query window:\n%s", cte, cteBody(t, sql, cte))
+		}
+	}
+}
+
+// The baseline's age comes from the summary when the caller has it, instead of a pass over
+// the fractal's whole baseline.
+func TestScoringSQLBaselineSpan(t *testing.T) {
+	opts := reconOpts()
+	opts.EndTime = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	span := cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{FirstDay: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)}, opts), "span")
+	if want := "SELECT dateDiff('day', toDate('2026-09-02'), toDate('2026-10-31')) + 1 AS days"; span != want {
+		t.Errorf("span = %q, want %q", span, want)
+	}
+	if span = cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, opts), "span"); !strings.Contains(span, "FROM proc_freq WHERE fractal_id = 'f1'") {
+		t.Errorf("without a first day span reads the baseline:\n%s", span)
+	}
+}
+
+// first_seen is display only and reads the event-date column, while the stability terms and
+// the baseline span stay on ingest days: moving them would change every score.
+func TestScoringSQLFirstSeenUsesEventDay(t *testing.T) {
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
+	if fe := cteBody(t, sql, "fe"); !strings.Contains(fe, "min(if(first_event_day = toDate(0), day, first_event_day)) AS first_seen") {
+		t.Errorf("fe does not read first_seen from the event day:\n%s", fe)
+	}
+	for _, cte := range []string{"outs", "ins"} {
+		if body := cteBody(t, sql, cte); strings.Contains(body, "first_event_day") || !strings.Contains(body, "first_day") {
+			t.Errorf("%s stability must stay on the ingest-day first_day:\n%s", cte, body)
+		}
+	}
+	span := cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, reconOpts()), "span")
+	if strings.Contains(span, "first_event_day") {
+		t.Errorf("span must stay on ingest days:\n%s", span)
+	}
+}
+
+// One read of the summary yields every fleet-wide input. Shards each hold their own copy of a
+// row, so counts are distinct values. The baseline's host ceiling keeps proc_freq's 256 cap.
+func TestProvenanceSummarySQL(t *testing.T) {
+	opts := reconOpts()
+	opts.ProvenanceSummaryTable = "provenance_summary_distributed"
+	want := "SELECT uniqExactIf(value, kind = 'lineage_host') AS total_hosts, " +
+		"least(256, uniqExactIf(value, kind = 'freq_host')) AS recon_hosts, uniqExactIf(value, kind = 'freq_image') AS recon_images, " +
+		"toString(minIf(toDateOrZero(value), kind = 'freq_day')) AS first_day FROM provenance_summary_distributed WHERE fractal_id = 'f1'"
+	if got := BuildProvenanceSummarySQL(opts); got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+// The rarity gate is evaluated only for the tree's own artifacts of that type, never by
+// grouping every target in the fractal's baseline; the result for the tree is the same.
+func TestReconnectionRarityGateScopedToTree(t *testing.T) {
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}, 100, 50, reconOpts())
+	for _, et := range []string{"net_connect", "dns_query"} {
+		want := "FROM proc_freq WHERE event_type = '" + et + "' AND fractal_id = 'f1' AND target_norm GLOBAL IN (SELECT fkey_tgt FROM process_edges WHERE fractal_id = 'f1' AND event_type = '" + et + "' AND process_guid GLOBAL IN (SELECT guid FROM _pgr_tree)) GROUP BY target_norm"
+		if !strings.Contains(sql, want) {
+			t.Errorf("%s gate not scoped to the tree:\n%s", et, sql)
+		}
+	}
+}
+
+// Each candidate list is read twice (as a filter and as a join), so a capped list must be the
+// same list both times: ordered before its LIMIT.
+func TestReconnectionCandidateCapsAreDeterministic(t *testing.T) {
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{}}, 100, 50, reconOpts())
+	for _, k := range []string{"p", "ip", "q"} {
+		if want := fmt.Sprintf("GROUP BY %s ORDER BY %s LIMIT %d", k, k, maxReconnectCandidateArtifacts); !strings.Contains(sql, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}
+
+// Executors of a dropped file are found among the processes running a written path, scoped to
+// the query's fractals and outside the tree, latest row per process, without FINAL over the
+// whole lineage table.
+func TestReconnectionFileExecutorsWithoutFinal(t *testing.T) {
+	prism := reconOpts()
+	prism.FractalID, prism.FractalIDs = "", []string{"f1", "f2"}
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true, EdgeTypes: map[string]bool{"file_write": true}}, 100, 50, prism)
+	if strings.Contains(sql, "FINAL") {
+		t.Errorf("file branch must not FINAL the lineage table:\n%s", sql)
+	}
+	for _, want := range []string{
+		"FROM proc_lineage WHERE fractal_id IN ('f1', 'f2') AND image_lc GLOBAL IN (SELECT p FROM (",
+		"AND process_guid GLOBAL NOT IN (SELECT guid FROM _pgr_tree) ORDER BY process_guid, timestamp DESC, log_id DESC LIMIT 1 BY process_guid",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("missing %q in:\n%s", want, sql)
+		}
+	}
+}
+
+// Each branch's peer limit keeps the rows of the least-shared artifacts first, so a C2 one
+// other process touched is never cut for a telemetry domain dozens share.
+func TestReconnectionPeerLimitPrefersRareArtifacts(t *testing.T) {
+	sql := BuildReconnectionSQL(ProvenanceParams{Reconnect: true}, 100, 50, reconOpts())
+	for want, n := range map[string]int{
+		"GROUP BY peer_guid, object_id ORDER BY count() OVER (PARTITION BY object_id), peer_guid LIMIT": 2, // net, dns
+		"ORDER BY count() OVER (PARTITION BY wp.p), pl.process_guid LIMIT":                              1, // file
+	} {
+		if got := strings.Count(sql, want); got != n {
+			t.Errorf("%q appears %d times, want %d", want, got, n)
+		}
 	}
 }

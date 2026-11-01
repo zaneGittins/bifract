@@ -1,20 +1,20 @@
 package ingest
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 
 	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -74,6 +74,10 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
+
 	// Parse the OTLP request based on content type
 	req := &collectorlogs.ExportLogsServiceRequest{}
 	contentType := r.Header.Get("Content-Type")
@@ -108,39 +112,14 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assign fractal from token
-	for i := range logs {
-		logs[i].FractalID = tokenData.FractalID
-	}
-
-	// Per-fractal disk quota check
-	if h.handler.quotaManager != nil {
-		var batchBytes int64
-		for i := range logs {
-			batchBytes += int64(len(logs[i].RawLog))
-		}
-		if !h.handler.quotaManager.CheckQuota(tokenData.FractalID, batchBytes) {
-			w.Header().Set("Retry-After", "30")
-			h.respondError(w, r, http.StatusTooManyRequests, "Fractal disk quota exceeded")
-			return
-		}
-	}
-
-	// Push onto the shared ingestion queue
-	if !h.handler.queue.Enqueue(logs) {
-		w.Header().Set("Retry-After", "2")
+	switch err := h.handler.submit(w, tokenData, logs); {
+	case errors.Is(err, errQuotaExceeded):
+		h.respondError(w, r, http.StatusTooManyRequests, "Fractal disk quota exceeded")
+		return
+	case err != nil:
 		h.respondError(w, r, http.StatusTooManyRequests, "Ingestion queue full")
 		return
 	}
-
-	// Update token usage stats asynchronously
-	go func(tokenID string, count int) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := h.handler.tokenStorage.UpdateUsageStats(ctx, tokenID, count); err != nil {
-			log.Printf("[Ingest] failed to update token usage: %v", err)
-		}
-	}(tokenData.TokenID, len(logs))
 
 	h.respondSuccess(w, r, len(logs))
 }
@@ -319,7 +298,7 @@ func (h *OTLPHandler) buildRawLog(lr *logspb.LogRecord, resource *resourcepb.Res
 		}
 	}
 
-	b, _ := json.Marshal(raw)
+	b, _ := jsonenc.Marshal(raw)
 	return string(b)
 }
 
@@ -380,10 +359,10 @@ func anyValueToString(v *commonpb.AnyValue) string {
 	case *commonpb.AnyValue_BytesValue:
 		return hex.EncodeToString(val.BytesValue)
 	case *commonpb.AnyValue_ArrayValue:
-		b, _ := json.Marshal(anyValueArrayToInterface(val.ArrayValue))
+		b, _ := jsonenc.Marshal(anyValueArrayToInterface(val.ArrayValue))
 		return string(b)
 	case *commonpb.AnyValue_KvlistValue:
-		b, _ := json.Marshal(kvListValToInterface(val.KvlistValue))
+		b, _ := jsonenc.Marshal(kvListValToInterface(val.KvlistValue))
 		return string(b)
 	default:
 		return ""

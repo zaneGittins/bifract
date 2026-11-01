@@ -649,13 +649,14 @@ func setRequireMFA(t *testing.T, on bool) {
 	load := func(values map[string]string) {
 		client, pg := storagetest.Postgres()
 		pg.Respond(func(q string, args []driver.Value) (fakedb.PGResult, bool) {
-			if !strings.Contains(q, "FROM settings") || len(args) != 1 {
+			if !strings.Contains(q, "SELECT key, value FROM settings") {
 				return fakedb.PGResult{}, false
 			}
-			if v, ok := values[args[0].(string)]; ok {
-				return fakedb.Row(v), true
+			var rows [][]driver.Value
+			for k, v := range values {
+				rows = append(rows, []driver.Value{k, v})
 			}
-			return fakedb.PGResult{}, true
+			return fakedb.RowsOf(rows...), true
 		})
 		if err := settings.Init(client); err != nil {
 			t.Fatal(err)

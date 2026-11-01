@@ -14,6 +14,7 @@ import (
 
 	"bifract/pkg/clientip"
 	"bifract/pkg/mfa"
+	"bifract/pkg/pgnotify"
 	"bifract/pkg/storage"
 )
 
@@ -181,8 +182,52 @@ func validationErrorf(format string, args ...interface{}) error {
 // Global settings instance
 var globalSettings *Settings
 
-// Initialize settings from database
+// Init loads settings from the database. If they cannot be read the defaults
+// apply, so the process can start.
 func Init(pg *storage.PostgresClient) error {
+	s, err := load(pg)
+	if err != nil {
+		log.Printf("[Settings] Using defaults, could not read settings: %v", err)
+		s = defaults()
+	}
+	s.pg = pg
+	globalSettings = s
+	if err := clientip.SetTrustedProxies(s.TrustedProxyCIDRs); err != nil {
+		log.Printf("[Settings] Failed to apply trusted proxies: %v", err)
+	}
+	return nil
+}
+
+// Reload re-reads settings saved by another process. On a read error the
+// current settings stay, rather than falling back to defaults.
+func Reload() {
+	if globalSettings == nil {
+		return
+	}
+	s, err := load(globalSettings.pg)
+	if err != nil {
+		log.Printf("[Settings] Keeping current settings, reload failed: %v", err)
+		return
+	}
+	globalSettings.mu.Lock()
+	defer globalSettings.mu.Unlock()
+	if err := globalSettings.assignLocked(s); err != nil {
+		log.Printf("[Settings] Failed to apply trusted proxies: %v", err)
+	}
+}
+
+// Watch reloads settings when any process saves them, and announces this
+// process's own saves.
+func Watch(b *pgnotify.Bus) {
+	bus = b
+	b.Subscribe(pgnotify.TopicSettings, Reload)
+}
+
+// bus announces saves to other processes; nil when not watching.
+var bus *pgnotify.Bus
+
+// defaults returns settings with nothing loaded.
+func defaults() *Settings {
 	// Default timestamp fields - system_time is checked first
 	defaultTimestampFields := []TimestampField{
 		{Field: "system_time", Format: "2006-01-02T15:04:05.999999999Z07:00"},
@@ -191,7 +236,7 @@ func Init(pg *storage.PostgresClient) error {
 		{Field: "time", Format: time.RFC3339Nano},
 	}
 
-	globalSettings = &Settings{
+	return &Settings{
 		TimestampFields:            defaultTimestampFields,
 		AlertTimeoutSeconds:        5,  // 5s default for alert queries
 		QueryTimeoutSeconds:        60, // 60s default for search queries
@@ -208,150 +253,151 @@ func Init(pg *storage.PostgresClient) error {
 		APIKeyRateLimit:            defaultAPIKeyRateLimit,
 		PgrSensitivityPercent:      defaultPgrSensitivityPercent,
 		TrustedProxyCIDRs:          append([]string(nil), clientip.DefaultTrustedProxies...),
-		pg:                         pg,
 	}
+}
 
-	// Load from database
-	ctx := context.Background()
+// load reads every setting in one statement over defaults. Unset or invalid
+// values keep their default.
+func load(pg *storage.PostgresClient) (*Settings, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rows, err := pg.GetAllSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s := defaults()
 
 	// Load timestamp_fields setting
-	timestampFieldsJSON, err := pg.GetSetting(ctx, "timestamp_fields")
-	if err == nil && timestampFieldsJSON != "" {
+	if timestampFieldsJSON := rows["timestamp_fields"]; timestampFieldsJSON != "" {
 		var fields []TimestampField
 		if err := json.Unmarshal([]byte(timestampFieldsJSON), &fields); err == nil {
-			globalSettings.TimestampFields = fields
+			s.TimestampFields = fields
 		}
 	}
 
 	// Load alert_timeout_seconds
-	alertTimeout, err := pg.GetSetting(ctx, "alert_timeout_seconds")
-	if err == nil && alertTimeout != "" {
+	if alertTimeout := rows["alert_timeout_seconds"]; alertTimeout != "" {
 		if v, err := strconv.Atoi(alertTimeout); err == nil && v > 0 {
-			globalSettings.AlertTimeoutSeconds = v
+			s.AlertTimeoutSeconds = v
 		}
 	}
 
 	// Load query_timeout_seconds (0 = unlimited)
-	queryTimeout, err := pg.GetSetting(ctx, "query_timeout_seconds")
-	if err == nil && queryTimeout != "" {
+	if queryTimeout := rows["query_timeout_seconds"]; queryTimeout != "" {
 		if v, err := strconv.Atoi(queryTimeout); err == nil && v >= 0 {
-			globalSettings.QueryTimeoutSeconds = v
+			s.QueryTimeoutSeconds = v
 		}
 	}
 
 	// Load alert_eval_interval_seconds
-	alertEvalInterval, err := pg.GetSetting(ctx, "alert_eval_interval_seconds")
-	if err == nil && alertEvalInterval != "" {
+	if alertEvalInterval := rows["alert_eval_interval_seconds"]; alertEvalInterval != "" {
 		if v, err := strconv.Atoi(alertEvalInterval); err == nil && v >= minAlertEvalIntervalSeconds {
-			globalSettings.AlertEvalIntervalSeconds = v
+			s.AlertEvalIntervalSeconds = v
 		}
 	}
 
 	// Load recall_timeout_seconds
-	if v, err := pg.GetSetting(ctx, "recall_timeout_seconds"); err == nil && v != "" {
+	if v := rows["recall_timeout_seconds"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= minRecallTimeoutSeconds {
-			globalSettings.RecallTimeoutSeconds = n
+			s.RecallTimeoutSeconds = n
 		}
 	}
 
 	// Load recall_max_bytes_read (0 = unlimited)
-	if v, err := pg.GetSetting(ctx, "recall_max_bytes_read"); err == nil && v != "" {
+	if v := rows["recall_max_bytes_read"]; v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
-			globalSettings.RecallMaxBytesRead = n
+			s.RecallMaxBytesRead = n
 		}
 	}
 
 	// Load recall_concurrency
-	if v, err := pg.GetSetting(ctx, "recall_concurrency"); err == nil && v != "" {
+	if v := rows["recall_concurrency"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			globalSettings.RecallConcurrency = clampRecallConcurrency(n)
+			s.RecallConcurrency = clampRecallConcurrency(n)
 		}
 	}
 
 	// Load alert_revision_retention
-	if v, err := pg.GetSetting(ctx, "alert_revision_retention"); err == nil && v != "" {
+	if v := rows["alert_revision_retention"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			globalSettings.AlertRevisionRetention = clampAlertRevisionRetention(n)
+			s.AlertRevisionRetention = clampAlertRevisionRetention(n)
 		}
 	}
 
 	// Load schema_sweep_interval_minutes
-	if v, err := pg.GetSetting(ctx, "schema_sweep_interval_minutes"); err == nil && v != "" {
+	if v := rows["schema_sweep_interval_minutes"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= minSchemaSweepIntervalMinutes {
-			globalSettings.SchemaSweepIntervalMinutes = n
+			s.SchemaSweepIntervalMinutes = n
 		}
 	}
 
 	// Load require_mfa
-	if v, err := pg.GetSetting(ctx, "require_mfa"); err == nil && v != "" {
-		globalSettings.RequireMFA = v == "true"
+	if v := rows["require_mfa"]; v != "" {
+		s.RequireMFA = v == "true"
 	}
 
-	if v, err := pg.GetSetting(ctx, DictionarySourcesAllowPrivateKey); err == nil && v != "" {
-		globalSettings.DictionarySourcesAllowPrivate = v == "true"
+	if v := rows[DictionarySourcesAllowPrivateKey]; v != "" {
+		s.DictionarySourcesAllowPrivate = v == "true"
 	}
-	if v, err := pg.GetSetting(ctx, OutboundAllowPrivateKey); err == nil && v != "" {
-		globalSettings.OutboundAllowPrivate = v == "true"
+	if v := rows[OutboundAllowPrivateKey]; v != "" {
+		s.OutboundAllowPrivate = v == "true"
 	}
 
 	// Load trusted_proxy_cidrs. Stored as a JSON array; an empty array is a
 	// deliberate "trust no proxy". A row that does not parse keeps the defaults
 	// rather than silently trusting nothing or everything.
-	if v, err := pg.GetSetting(ctx, "trusted_proxy_cidrs"); err == nil && v != "" {
+	if v := rows["trusted_proxy_cidrs"]; v != "" {
 		var list []string
 		if err := json.Unmarshal([]byte(v), &list); err != nil {
 			log.Printf("[Settings] Ignoring unreadable trusted_proxy_cidrs: %v", err)
 		} else if norm, err := clientip.Normalize(list); err != nil {
 			log.Printf("[Settings] Ignoring invalid trusted_proxy_cidrs: %v", err)
 		} else {
-			globalSettings.TrustedProxyCIDRs = norm
+			s.TrustedProxyCIDRs = norm
 		}
-	}
-	if err := clientip.SetTrustedProxies(globalSettings.TrustedProxyCIDRs); err != nil {
-		log.Printf("[Settings] Failed to apply trusted proxies: %v", err)
 	}
 
 	// Load api_key_rate_limit (0 = uncapped)
-	if v, err := pg.GetSetting(ctx, "api_key_rate_limit"); err == nil && v != "" {
+	if v := rows["api_key_rate_limit"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			globalSettings.APIKeyRateLimit = n
+			s.APIKeyRateLimit = n
 		}
 	}
 
 	// Load pgr_sensitivity_percent
-	if v, err := pg.GetSetting(ctx, "pgr_sensitivity_percent"); err == nil && v != "" {
+	if v := rows["pgr_sensitivity_percent"]; v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			globalSettings.PgrSensitivityPercent = ClampPgrSensitivity(f)
+			s.PgrSensitivityPercent = ClampPgrSensitivity(f)
 		}
 	}
 
 	// Load query_cpu_percent (0 = uncapped)
-	if v, err := pg.GetSetting(ctx, "query_cpu_percent"); err == nil && v != "" {
+	if v := rows["query_cpu_percent"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			globalSettings.QueryCPUPercent = storage.ClampQueryLimitPercent(n)
+			s.QueryCPUPercent = storage.ClampQueryLimitPercent(n)
 		}
 	}
 
 	// Load query_memory_percent (0 = uncapped)
-	if v, err := pg.GetSetting(ctx, "query_memory_percent"); err == nil && v != "" {
+	if v := rows["query_memory_percent"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			globalSettings.QueryMemoryPercent = storage.ClampQueryLimitPercent(n)
+			s.QueryMemoryPercent = storage.ClampQueryLimitPercent(n)
 		}
 	}
 
 	// Load recall workload shares (0 = uncapped)
-	if v, err := pg.GetSetting(ctx, "recall_cpu_percent"); err == nil && v != "" {
+	if v := rows["recall_cpu_percent"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			globalSettings.RecallCPUPercent = storage.ClampQueryLimitPercent(n)
+			s.RecallCPUPercent = storage.ClampQueryLimitPercent(n)
 		}
 	}
-	if v, err := pg.GetSetting(ctx, "recall_memory_percent"); err == nil && v != "" {
+	if v := rows["recall_memory_percent"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			globalSettings.RecallMemoryPercent = storage.ClampQueryLimitPercent(n)
+			s.RecallMemoryPercent = storage.ClampQueryLimitPercent(n)
 		}
 	}
 
-	return nil
+	return s, nil
 }
 
 // ClampPgrSensitivity bounds the pgr severity share. A zero value means "unset" (an older client
@@ -443,6 +489,31 @@ func Get() Settings {
 	}
 }
 
+// assignLocked copies every value from s and applies its trusted proxies, under
+// the lock so the proxies in force always match the settings. The caller holds g.mu.
+func (g *Settings) assignLocked(s *Settings) error {
+	g.QueryCPUPercent = s.QueryCPUPercent
+	g.QueryMemoryPercent = s.QueryMemoryPercent
+	g.RecallCPUPercent = s.RecallCPUPercent
+	g.RecallMemoryPercent = s.RecallMemoryPercent
+	g.TimestampFields = s.TimestampFields
+	g.AlertTimeoutSeconds = s.AlertTimeoutSeconds
+	g.QueryTimeoutSeconds = s.QueryTimeoutSeconds
+	g.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
+	g.AlertRevisionRetention = s.AlertRevisionRetention
+	g.APIKeyRateLimit = s.APIKeyRateLimit
+	g.PgrSensitivityPercent = s.PgrSensitivityPercent
+	g.RequireMFA = s.RequireMFA
+	g.DictionarySourcesAllowPrivate = s.DictionarySourcesAllowPrivate
+	g.OutboundAllowPrivate = s.OutboundAllowPrivate
+	g.TrustedProxyCIDRs = s.TrustedProxyCIDRs
+	g.RecallTimeoutSeconds = s.RecallTimeoutSeconds
+	g.RecallMaxBytesRead = s.RecallMaxBytesRead
+	g.RecallConcurrency = s.RecallConcurrency
+	g.SchemaSweepIntervalMinutes = s.SchemaSweepIntervalMinutes
+	return clientip.SetTrustedProxies(s.TrustedProxyCIDRs)
+}
+
 // Update updates the global settings and persists to database
 func Update(s *Settings) error {
 	if globalSettings == nil {
@@ -496,35 +567,17 @@ func Update(s *Settings) error {
 	}
 
 	globalSettings.mu.Lock()
-	globalSettings.QueryCPUPercent = s.QueryCPUPercent
-	globalSettings.QueryMemoryPercent = s.QueryMemoryPercent
-	globalSettings.RecallCPUPercent = s.RecallCPUPercent
-	globalSettings.RecallMemoryPercent = s.RecallMemoryPercent
-	globalSettings.TimestampFields = s.TimestampFields
-	globalSettings.AlertTimeoutSeconds = s.AlertTimeoutSeconds
-	globalSettings.QueryTimeoutSeconds = s.QueryTimeoutSeconds
-	globalSettings.AlertEvalIntervalSeconds = s.AlertEvalIntervalSeconds
-	globalSettings.AlertRevisionRetention = s.AlertRevisionRetention
-	globalSettings.APIKeyRateLimit = s.APIKeyRateLimit
-	globalSettings.PgrSensitivityPercent = s.PgrSensitivityPercent
-	globalSettings.RequireMFA = s.RequireMFA
-	globalSettings.DictionarySourcesAllowPrivate = s.DictionarySourcesAllowPrivate
-	globalSettings.OutboundAllowPrivate = s.OutboundAllowPrivate
-	globalSettings.TrustedProxyCIDRs = s.TrustedProxyCIDRs
-	globalSettings.RecallTimeoutSeconds = s.RecallTimeoutSeconds
-	globalSettings.RecallMaxBytesRead = s.RecallMaxBytesRead
-	globalSettings.RecallConcurrency = s.RecallConcurrency
-	globalSettings.SchemaSweepIntervalMinutes = s.SchemaSweepIntervalMinutes
+	err = globalSettings.assignLocked(s)
 	// Unlocked before persisting: the ClickHouse workload DDL below can take seconds
 	// on a cluster, and every search reads Get() under this lock.
 	globalSettings.mu.Unlock()
-	// Already validated above, so this cannot fail; it takes effect for the
-	// next request.
-	if err := clientip.SetTrustedProxies(s.TrustedProxyCIDRs); err != nil {
+	if err != nil {
 		return err
 	}
 
-	// Persist to database
+	// Persist to database. Other processes reload whatever was saved, even if a
+	// later write fails.
+	defer bus.Publish(pgnotify.TopicSettings)
 	ctx := context.Background()
 
 	// Save timestamp_fields as JSON

@@ -211,7 +211,7 @@ var bqlFunctionDocs = []FunctionDoc{
 		Syntax:      "| join(key, type=inner|left, max=N, include=[fields]) { subquery }",
 		Parameters: []Param{
 			{Name: "key", Type: "string", Required: true, Description: "Field to join on. Must be produced by the subquery, and must survive any aggregation in the outer query (i.e. be one of its group columns)"},
-			{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default, keeps only matching rows) or left (keeps all outer rows)"},
+			{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default, keeps only matching rows) or left (keeps all outer rows; an unmatched row's _join_ columns are empty, so a filter on them drops it)"},
 			{Name: "max", Type: "number", Required: false, Description: "Max rows the subquery can return (default: 10000, hard max: 100000)"},
 			{Name: "include", Type: "array", Required: false, Description: "Subquery columns to bring back, named exactly as the subquery outputs them (default: all). Each arrives prefixed with _join_"},
 		},
@@ -225,7 +225,7 @@ var bqlFunctionDocs = []FunctionDoc{
 	{
 		Name:        "case",
 		Category:    "Transformation",
-		Description: "Conditional branches evaluated in order, each written as 'condition | commands' and separated by ';' (with '*' as the default branch). Conditions accept any filter operator (=, !=, =~, =^, =$, >, <, >=, <=, regex) plus in() and cidr(). A branch may run several pipe commands: field assignments (field:=value), per-row transforms (regex, eval, lowercase, ...), and aggregations (count, sum, avg, ...) which compile to single-pass conditional (-If) aggregates. Structural commands (groupby, sort, limit, join, chain, window functions, charts) are not allowed inside a branch; place them after the case.",
+		Description: "Conditional branches evaluated in order, each written as 'condition | commands' and separated by ';' (with '*' as the default branch). Conditions accept any filter operator (=, !=, =~, =^, =$, !=~, !=^, !=$, >, <, >=, <=, regex) plus in() and cidr(). A branch may run several pipe commands: field assignments (field:=value), per-row transforms (regex, eval, lowercase, ...), and aggregations (count, sum, avg, ...) which compile to single-pass conditional (-If) aggregates. Structural commands (groupby, sort, limit, join, chain, window functions, charts) are not allowed inside a branch; place them after the case.",
 		Syntax:      "| case { condition | field:=\"value\"; condition | command(...); * | field:=\"default\"; }",
 		Parameters: []Param{
 			{Name: "branches", Type: "expression", Required: true, Description: "Semicolon-separated branches; each is 'condition | command(s)', with '*' as the default branch"},
@@ -1066,7 +1066,7 @@ var bqlFunctionDocs = []FunctionDoc{
 	{
 		Name:        "ptg",
 		Category:    "Traversal",
-		Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). The tree is walked one indexed hop per level rather than scanning logs, so it holds up on large graphs and long timeframes. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path, group_size, group_first, group_last. Siblings with the same parent, image and command line are returned once (the earliest) with group_size counting them, so a polling loop is one row; a child only one of them started still appears under it. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`. Pipe to pgraph() for the process map (spawn edges only: no anomaly scoring, no file/network/DNS activity, no reconnection -- use pgr() for those). NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~365 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
+		Description: "Process Tree Graph: fast, MV-backed traversal of process lineage over the proc_lineage table (one row per process-create event). The tree is walked one indexed hop per level rather than scanning logs, so it holds up on large graphs and long timeframes. Seed on a process_guid; direction selects descendants, ancestors, or both. Always returns process_guid, parent_guid, image, parent_image, commandline, computer_name, log_id, _depth, _path, group_size, group_first, group_last. Siblings with the same parent, image and command line are returned once (the earliest) with group_size counting them, so a polling loop is one row; a child only one of them started still appears under it. Requires an EDR source normalized to bifract_category='process_creation'. Prune with a post-filter, e.g. `| _depth <= 3`; after ptg() only _depth/_path filters, pgraph() and graph() are allowed, anything else is an error. Pipe to pgraph() for the process map (spawn edges only: no anomaly scoring, no file/network/DNS activity, no reconnection -- use pgr() for those). NOTE: the tree is scoped ONLY by start=, the time range, and the fractal -- any filter placed before ptg() (e.g. computer_name=\"host\") is ignored. Set the query time range to cover the whole investigation window: proc_lineage is retained ~730 days, but ptg() only sees events within the selected time range, so a narrow range will silently omit older ancestors/descendants.",
 		Syntax:      `| ptg(start="<process_guid>", depth=N, direction=forward|backward|both)`,
 		Parameters: []Param{
 			{Name: "start", Type: "string", Required: true, Description: "process_guid of the seed node"},
@@ -1323,7 +1323,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Operator:    "=~",
-				Description: "Contains-any (case-insensitive substring). Matches if the field contains any of the comma-separated terms. Translated to multiSearchAnyCaseInsensitive(), which uses SIMD multi-pattern search and is accelerated by text skip indexes. Faster than equivalent regex for multi-term searches.",
+				Description: "Contains-any (case-insensitive substring). Matches if the field contains any of the comma-separated terms. Translated to multiSearchAnyCaseInsensitive(), which uses SIMD multi-pattern search and is accelerated by text skip indexes. Faster than equivalent regex for multi-term searches. Negate with !=~, which also matches rows missing the field.",
 				Examples: []string{
 					"image=~powershell,pwsh,cmd",
 					"commandline=~encodedcommand,bypass,hidden",
@@ -1332,7 +1332,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Operator:    "=^",
-				Description: "Starts-with-any (case-insensitive prefix). Matches if the field starts with any of the comma-separated terms. Translated to startsWith(lower(field), term). Accelerated by text skip indexes.",
+				Description: "Starts-with-any (case-insensitive prefix). Matches if the field starts with any of the comma-separated terms. Translated to startsWith(lower(field), term). Accelerated by text skip indexes. Negate with !=^, which also matches rows missing the field.",
 				Examples: []string{
 					"image=^mimikatz,impacket",
 					"commandline=^powershell -enc",
@@ -1341,7 +1341,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Operator:    "=$",
-				Description: "Ends-with-any (case-insensitive suffix). Matches if the field ends with any of the comma-separated terms. Translated to endsWith(lower(field), term). Accelerated by text skip indexes.",
+				Description: "Ends-with-any (case-insensitive suffix). Matches if the field ends with any of the comma-separated terms. Translated to endsWith(lower(field), term). Accelerated by text skip indexes. Negate with !=$, which also matches rows missing the field.",
 				Examples: []string{
 					"image=$exe,dll,bat",
 					"commandline=$bypass",

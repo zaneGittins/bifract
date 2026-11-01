@@ -960,3 +960,16 @@ func TestFieldMappingCollisionDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildFieldsWithNested_KeepsHTMLCharacters(t *testing.T) {
+	fields := BuildFieldsWithNested(map[string]interface{}{
+		"args": []interface{}{"x>y", "a&b"},
+		"proc": map[string]interface{}{"cl": "p<q"},
+	}).Fields
+	if got, want := fields["args"], `["x>y","a&b"]`; got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	if got, want := fields["proc"], `{"cl":"p<q"}`; got != want {
+		t.Errorf("proc = %q, want %q", got, want)
+	}
+}

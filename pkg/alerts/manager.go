@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"bifract/pkg/attack"
+	"bifract/pkg/egress"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/sigma"
@@ -453,10 +454,16 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 	if err := validateAlertType(c.AlertType); err != nil {
 		return nil, err
 	}
+	if err := validateSeverity(c.Severity); err != nil {
+		return nil, err
+	}
 	if err := validateThrottleField(c.ThrottleField); err != nil {
 		return nil, err
 	}
 	if err := validateMaxEventLag(c.MaxEventLagSeconds); err != nil {
+		return nil, err
+	}
+	if err := validateReferences(c.References); err != nil {
 		return nil, err
 	}
 
@@ -490,6 +497,27 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 		}
 	}
 	return parsed, nil
+}
+
+// validateReferences refuses any reference the UI could not safely link, such as javascript: URLs.
+func validateReferences(refs []string) error {
+	for i, ref := range refs {
+		if err := egress.ValidateURL(ref); err != nil {
+			return fmt.Errorf("%w: reference %d: %v", ErrInvalidAlert, i+1, err)
+		}
+	}
+	return nil
+}
+
+// httpReferences keeps only the references validateReferences accepts.
+func httpReferences(refs []string) []string {
+	out := []string{}
+	for _, ref := range refs {
+		if egress.ValidateURL(ref) == nil {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
@@ -2156,6 +2184,10 @@ func (m *Manager) DeleteFractalAction(ctx context.Context, fractalActionID strin
 // CreateFeedAlert creates an alert that belongs to a feed.
 func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryString, alertType string, severity Severity,
 	labels, references []string, feedID, rulePath, ruleHash, fractalID, prismID, createdBy string) (*Alert, error) {
+	if err := validateSeverity(string(severity)); err != nil {
+		return nil, err
+	}
+	references = httpReferences(references)
 
 	parsedQuery, err := parser.ParseQuery(queryString)
 	if err != nil {
@@ -2230,6 +2262,10 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 // from the parent feed and exactly one must be set.
 func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, description, queryString, alertType string, severity Severity,
 	labels, references []string, ruleHash, updatedBy, fractalID, prismID string) error {
+	if err := validateSeverity(string(severity)); err != nil {
+		return err
+	}
+	references = httpReferences(references)
 
 	if (fractalID == "") == (prismID == "") {
 		return fmt.Errorf("exactly one of fractal_id or prism_id must be set")

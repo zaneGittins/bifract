@@ -11,7 +11,7 @@
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `key` (required) | | Field to join on. The subquery must output it, so aggregate with `groupby(key)`, not a bare `count()`. |
-| `type` | `inner` | `inner` keeps only outer rows with a match. `left` keeps every outer row; non-matches get empty values (`0` for counts). |
+| `type` | `inner` | `inner` keeps only outer rows with a match. `left` keeps every outer row; non-matches get empty values, counts included, so `_join__count < 5` drops them. |
 | `max` | 10000 | Most rows the subquery may return. Capped at 100000. |
 | `include` | all | Subquery columns to bring back. Each must exist in the subquery output. |
 
@@ -45,7 +45,7 @@ Sort by a joined column, with a larger subquery cap:
 
 ## Limitations
 
-- **One key, one join.** A second key is an error. Use one `join()` per query.
+- **One key, one join.** A second key, or a second `join()`, is an error.
 - **No nested joins.** The subquery cannot contain `join()`.
 - **No `modelLookup()`** in the same query as `join()`.
 - **Aggregation runs first.** An aggregation after `join()` runs on the outer rows before the join, and is rejected if it drops the key. To count only rows another query matches, filter with a [result-set binding](basics.md#result-sets) instead: `let &keys := <subquery>; ... | in(field, &keys) | count()`.

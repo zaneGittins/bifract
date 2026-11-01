@@ -43,7 +43,7 @@ func TestGetDataRarityFindingsPage(t *testing.T) {
 	if len(qs) != 2 {
 		t.Fatalf("queries: %v", qs)
 	}
-	dist := "`" + chModelDistName(mo.ID) + "` FINAL"
+	dist := "`" + chModelDistName(mo.ID) + "`"
 	for _, q := range qs {
 		if !strings.Contains(q, dist) || !strings.Contains(q, "fractal_id = '"+fracA+"'") {
 			t.Errorf("not the fractal's distributed read: %s", q)

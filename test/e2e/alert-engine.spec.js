@@ -22,7 +22,7 @@ test.describe('Alert engine health', () => {
   test('renders the tiles, both charts and the table', async ({ page }) => {
     await openAlertEngine(page);
 
-    for (const id of ['aeTileEvaluating', 'aeTileFires', 'aeTileDisabled', 'aeTileActions']) {
+    for (const id of ['aeTileEvaluating', 'aeTileIngest', 'aeTileFires', 'aeTileDisabled', 'aeTileActions']) {
       await expect(page.locator('#' + id)).not.toHaveText('--');
     }
     // Either a drawn chart or its placeholder: both mean the endpoint answered.

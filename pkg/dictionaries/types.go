@@ -94,6 +94,11 @@ type Dictionary struct {
 	Source       *Source       `json:"source,omitempty"`
 	SourceStatus *SourceStatus `json:"source_status,omitempty"`
 
+	// HomeName names the fractal or prism the list belongs to.
+	HomeName string `json:"home_name"`
+	// Editable says whether the caller may change the list from the scope it was read in.
+	Editable bool `json:"editable"`
+
 	// CHTableName is the ClickHouse backing table name (not stored in PG).
 	CHTableName string `json:"ch_table_name,omitempty"`
 	// CHDictName is the ClickHouse dictionary object name (not stored in PG).

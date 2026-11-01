@@ -24,6 +24,10 @@ func (h *joinHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 }
 
 func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
+	if ctx.Plan.JoinSubSQL != "" {
+		// The plan holds one join; a second would silently replace the first.
+		return fmt.Errorf("only one join() per query is supported")
+	}
 	b, err := BindCommand(cmd)
 	if err != nil {
 		return err
@@ -60,7 +64,8 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	// Validate join key identifier
-	if _, err := sanitizeIdentifier(joinKey); err != nil {
+	safeKey, err := sanitizeIdentifier(joinKey)
+	if err != nil {
 		return fmt.Errorf("join() invalid join key: %w", err)
 	}
 
@@ -100,7 +105,6 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Resolve the join key reference for the outer query
 	// The outer query uses the field as it appears in its SELECT (alias or JSON ref).
 	// The subquery must also produce a column with this name.
-	safeKey, _ := sanitizeIdentifier(joinKey)
 
 	ctx.Plan.IsJoin = true
 	ctx.Plan.JoinType = joinType
@@ -109,6 +113,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.JoinInclude = includeFields
 	ctx.Plan.JoinOutputs = subResult.FieldOrder
 	ctx.Plan.JoinMaxRows = maxRows
+	ctx.Plan.JoinCmd = ctx.CmdIndex
 
 	// Register the joined-in columns so a filter or sort on one is deferred to a
 	// post-join layer instead of the source scan, where it does not exist yet.

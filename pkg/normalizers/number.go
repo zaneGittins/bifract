@@ -56,6 +56,12 @@ func DecodeJSON[T map[string]any | []map[string]any](data []byte, v *T) error {
 	return nil
 }
 
+// DecodeValue reads the next value from a stream of JSON values as DecodeJSON
+// decodes one, so a caller reading concatenated objects parses each only once.
+func DecodeValue(dec *jsontext.Decoder) (any, error) {
+	return decodeValue(dec)
+}
+
 var (
 	errTrailingJSON = errors.New("invalid character after top-level JSON value")
 	errNotObject    = errors.New("JSON value is not an object")
@@ -114,13 +120,13 @@ const (
 	maxDecimalPoint = 309
 )
 
-// plainNumber renders a JSON number literal as an exact plain decimal: no exponent,
+// PlainNumber renders a JSON number literal as an exact plain decimal: no exponent,
 // no trailing fractional zeros ("1.5e3" -> "1500", "2.50" -> "2.5", "5.0" -> "5").
 // This is the form float64 decoding produced for every number it held exactly, so
 // stored values, value maps and equality search are unchanged for those, while
 // numbers a float64 cannot hold now keep all their digits. Text that is not a
 // number literal is returned unchanged.
-func plainNumber(s string) string {
+func PlainNumber(s string) string {
 	if !strings.ContainsAny(s, ".eE") {
 		return s // an integer literal is already exact and plain
 	}

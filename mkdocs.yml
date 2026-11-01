@@ -89,6 +89,7 @@ nav:
     - Sizing Guide: getting-started/sizing.md
     - ClickHouse Cloud: getting-started/clickhouse-cloud.md
     - Configuration: getting-started/configuration.md
+    - Verifying Releases: getting-started/verifying-releases.md
     - Navigating Bifract: getting-started/navigation.md
   - Administration:
     - Users & Roles: administration/users-and-roles.md
@@ -105,6 +106,8 @@ nav:
   - Ingestion:
     - Sending Logs: ingestion/overview.md
     - CLI Tool: ingestion/cli-tool.md
+    - CEF with Vector: ingestion/vector-cef.md
+    - Splunk HEC: ingestion/splunk-hec.md
     - Tuning: ingestion/tuning.md
   - BQL (Bifract Query Language):
     - Basics & Filtering: bql/basics.md

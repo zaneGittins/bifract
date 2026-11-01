@@ -101,6 +101,18 @@ Progress shows per day and can be cancelled. A failed or cancelled backfill resu
 
 API: `POST /models/{id}/backfill` with either `window` or `from` and `to` (RFC 3339).
 
+### Score a past range (Beacon, Long Connection)
+
+Network models score their rolling window, so they have no backfill. To score older data, such as an imported dataset:
+
+1. Open the model and click **Score range**.
+2. Keep the prefilled range (the fractal's dataset range when it has one) or enter another, up to 90 days.
+3. Click **Score range**.
+
+The range is scored as the editor's preview scores it and the scores are kept, dated at the range's end. For each pair the newest date wins: a live score replaces a range score, and a range that ends later replaces one that ends earlier. Scoring runs within the request, about a minute; if a range is too large it writes nothing and asks for a shorter one.
+
+API: `POST /models/{id}/score-range` with `from` and `to` (RFC 3339).
+
 ## View results
 
 Click a model name to open it.
@@ -131,6 +143,7 @@ The **State** column shows the worst state that applies; hover for the reason.
 | **Rebuilding** | Its tables are being created |
 | **Backfill n%** | History is being seeded |
 | **Stale** | Newest recorded event is over 2 days old (3 hours for an hourly Volume Baseline) |
+| **Scored date** | A network model whose rolling state is empty but holds scores from **Score range**, through that date |
 | **Learning k/n** | Not enough history yet: Rarity its learning period per group, Volume Baseline its min history, First / Last Seen 7 days, network models one full window |
 | **Healthy** | Recording and scoring normally |
 

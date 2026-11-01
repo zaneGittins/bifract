@@ -375,3 +375,38 @@ func TestHandleQueryStreamCarriesWarnings(t *testing.T) {
 		t.Errorf("meta = %v", frames[0])
 	}
 }
+
+// A query whose rows depend on the others in range (dedup, limit, a median-based
+// score) reads it in one scan: per-chunk copies would each repeat the selection,
+// returning a dedup key once per chunk or limit(n) rows per chunk, or score each
+// chunk against its own median.
+func TestHandleQueryStreamRangeDependentRowsScanOnce(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"* | dedup(user)", 2},
+		{"* | limit(2)", 2},
+		{"* | madoutlier(bytes)", 2},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			e := newTestEnv(t, 1000)
+			e.respond(func(sql string) ([]map[string]interface{}, error) {
+				if isHistogramSQL(sql) {
+					return []map[string]interface{}{}, nil
+				}
+				rows := logRows(2, testEndTime, "f1")
+				rows[0]["user"], rows[1]["user"] = "alice", "bob"
+				return rows, nil
+			})
+
+			rows := streamedRows(runStream(t, e, QueryRequest{Query: tc.query, FractalID: "f1"}))
+			if scans := rowScans(e.ch); len(scans) != 1 {
+				t.Fatalf("%d row scans, want 1: %v", len(scans), scans)
+			}
+			if len(rows) != tc.want {
+				t.Errorf("streamed %d rows, want %d: %v", len(rows), tc.want, rows)
+			}
+		})
+	}
+}

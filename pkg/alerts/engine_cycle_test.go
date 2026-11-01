@@ -11,6 +11,7 @@ import (
 
 	"bifract/internal/fakedb"
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
 func parsedAlert(t *testing.T, a *Alert) *Alert {
@@ -58,7 +59,7 @@ func TestCursorCatchesUpInAbuttingSlices(t *testing.T) {
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: start})
 
 	for tick := 0; tick < 2; tick++ {
-		if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+		if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
 	}
@@ -110,7 +111,7 @@ func chTime(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05.000
 func TestOldCursorReadsTheFullTable(t *testing.T) {
 	e, _, ch := newTestEngine(t)
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: time.Now().Add(-3 * time.Hour)})
-	if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	q := alertQueries(ch)
@@ -125,7 +126,7 @@ func TestZeroCursorStartsFiveMinutesBack(t *testing.T) {
 	e, _, ch := newTestEngine(t)
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1"})
 	before := time.Now()
-	if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	q := alertQueries(ch)
@@ -150,7 +151,7 @@ func TestCursorHoldsWhenTheQueryFails(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: start})
 
-	err := e.evaluateAlertCursor(context.Background(), alert, nil)
+	err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold)
 	if err == nil || !strings.Contains(err.Error(), "query failed") {
 		t.Fatalf("err = %v", err)
 	}
@@ -174,7 +175,7 @@ func TestCursorWriteFailureDeliversAndRereads(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: start})
 
-	if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	if !alert.LastEvaluatedAt.Equal(start) {
@@ -188,7 +189,7 @@ func TestCursorWriteFailureDeliversAndRereads(t *testing.T) {
 func TestShortWindowIsNotEvaluated(t *testing.T) {
 	e, pg, ch := newTestEngine(t)
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: time.Now().Add(-20 * time.Second)})
-	if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	if len(alertQueries(ch)) != 0 || len(pg.Matching(sqlLastEvaluated)) != 0 {
@@ -229,7 +230,7 @@ func TestModelWatermarkCapsTheWindow(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
 	pg.answer("FROM analytics_models WHERE name = ANY", fakedb.Row(start.Add(30*time.Second)))
 	alert = parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: start, QueryString: alert.QueryString})
-	if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	if len(ch.Queried()) != 0 || !alert.LastEvaluatedAt.Equal(start) {
@@ -247,7 +248,7 @@ func TestUnrecoverableErrorDisablesWithReason(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "Bad BQL", FractalID: "f1", LastEvaluatedAt: start})
 
-	err := e.evaluateAlertCursor(context.Background(), alert, nil)
+	err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold)
 	if err == nil || !strings.Contains(err.Error(), "code 46") {
 		t.Fatalf("err = %v", err)
 	}
@@ -282,7 +283,7 @@ func TestUnrecoverableErrorWithFailedDisableDoesNotNotify(t *testing.T) {
 	ch.On("ingest_timestamp", fakedb.CHResult{Err: fakedb.Exception(62, "Syntax error")})
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: time.Now().Add(-10 * time.Minute)})
 
-	if err := e.evaluateAlertCursor(context.Background(), alert, nil); err == nil {
+	if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err == nil {
 		t.Fatal("want the query error")
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -353,7 +354,7 @@ func TestCompoundAlertAdvancesByOneWindow(t *testing.T) {
 	alert := parsedAlert(t, &Alert{ID: "c1", Name: "c", AlertType: "compound", FractalID: "f1",
 		QueryString: `status=500 | groupby(host)`, WindowDuration: &window, LastEvaluatedAt: start})
 
-	if err := e.evaluateCompoundAlert(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateCompoundAlert(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	q := alertQueries(ch)
@@ -374,7 +375,7 @@ func TestCompoundAlertAdvancesByOneWindow(t *testing.T) {
 	// A compound alert's failure surfaces without moving the cursor.
 	ch.On("ingest_timestamp", fakedb.CHResult{Err: errors.New("down")})
 	before := alert.LastEvaluatedAt
-	if err := e.evaluateCompoundAlert(context.Background(), alert, nil); err == nil {
+	if err := e.evaluateCompoundAlert(context.Background(), alert, nil, noHold); err == nil {
 		t.Fatal("want the query error")
 	}
 	if !alert.LastEvaluatedAt.Equal(before) {
@@ -395,7 +396,7 @@ func TestScheduledAlertReadsItsQueryWindow(t *testing.T) {
 		LastEvaluatedAt: time.Now().Add(-11 * time.Minute)})
 
 	before := time.Now()
-	if err := e.evaluateScheduledAlert(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateScheduledAlert(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	q := alertQueries(ch)
@@ -413,7 +414,7 @@ func TestScheduledAlertReadsItsQueryWindow(t *testing.T) {
 	}
 
 	// Not due again until the next cron tick.
-	if err := e.evaluateScheduledAlert(context.Background(), alert, nil); err != nil {
+	if err := e.evaluateScheduledAlert(context.Background(), alert, nil, noHold); err != nil {
 		t.Fatal(err)
 	}
 	if len(alertQueries(ch)) != 1 {
@@ -428,7 +429,7 @@ func TestPrismAlertResolvesMembersOncePerCycle(t *testing.T) {
 	cache := &prismResolveCache{entries: map[string][]string{}}
 	for i, id := range []string{"p-a1", "p-a2"} {
 		alert := parsedAlert(t, &Alert{ID: id, Name: id, PrismID: "p1", LastEvaluatedAt: time.Now().Add(-time.Duration(10+i) * time.Minute)})
-		if err := e.evaluateAlertCursor(context.Background(), alert, cache); err != nil {
+		if err := e.evaluateAlertCursor(context.Background(), alert, cache, noHold); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -447,7 +448,7 @@ func TestPrismAlertResolvesMembersOncePerCycle(t *testing.T) {
 func TestEmptyPrismRefusesToEvaluate(t *testing.T) {
 	e, _, ch := newTestEngine(t)
 	alert := parsedAlert(t, &Alert{ID: "a", Name: "a", PrismID: "p-empty", LastEvaluatedAt: time.Now().Add(-10 * time.Minute)})
-	err := e.evaluateAlertCursor(context.Background(), alert, &prismResolveCache{entries: map[string][]string{}})
+	err := e.evaluateAlertCursor(context.Background(), alert, &prismResolveCache{entries: map[string][]string{}}, noHold)
 	if err == nil || !strings.Contains(err.Error(), "no member fractals") {
 		t.Fatalf("err = %v", err)
 	}
@@ -740,7 +741,7 @@ func TestBoundaryRowIsDeliveredOnce(t *testing.T) {
 	alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: start})
 
 	for tick := 0; tick < 2; tick++ {
-		if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+		if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 			t.Fatalf("tick %d: %v", tick, err)
 		}
 	}
@@ -769,7 +770,7 @@ func TestWindowEndIsAWholeMillisecondAndExclusive(t *testing.T) {
 	t.Run("event", func(t *testing.T) {
 		e, pg, ch := newTestEngine(t)
 		alert := parsedAlert(t, &Alert{ID: "a1", Name: "n", FractalID: "f1", LastEvaluatedAt: cursor})
-		if err := e.evaluateAlertCursor(context.Background(), alert, nil); err != nil {
+		if err := e.evaluateAlertCursor(context.Background(), alert, nil, noHold); err != nil {
 			t.Fatal(err)
 		}
 		q := alertQueries(ch)
@@ -805,7 +806,7 @@ func TestWindowEndIsAWholeMillisecondAndExclusive(t *testing.T) {
 		window := 300
 		alert := parsedAlert(t, &Alert{ID: "c1", Name: "c", AlertType: "compound", FractalID: "f1",
 			QueryString: `status=500 | groupby(host)`, WindowDuration: &window, LastEvaluatedAt: cursor})
-		if err := e.evaluateCompoundAlert(context.Background(), alert, nil); err != nil {
+		if err := e.evaluateCompoundAlert(context.Background(), alert, nil, noHold); err != nil {
 			t.Fatal(err)
 		}
 		q := alertQueries(ch)
@@ -827,7 +828,7 @@ func TestWindowEndIsAWholeMillisecondAndExclusive(t *testing.T) {
 		}
 		alert := parsedAlert(t, &Alert{ID: "s1", Name: "s", AlertType: "scheduled", FractalID: "f1",
 			QueryString: `status=500 | count()`, QueryWindowSeconds: &qw, CronSchedule: sched, LastEvaluatedAt: cursor})
-		if err := e.evaluateScheduledAlert(context.Background(), alert, nil); err != nil {
+		if err := e.evaluateScheduledAlert(context.Background(), alert, nil, noHold); err != nil {
 			t.Fatal(err)
 		}
 		q := alertQueries(ch)
@@ -853,5 +854,24 @@ func TestRecentIngestProbeIncludesTheCursor(t *testing.T) {
 	}
 	if want := "ingest_timestamp >= toDateTime64('" + chTime(cursor) + "'"; !strings.Contains(q[0], want) {
 		t.Errorf("probe %s, want %s", q[0], want)
+	}
+}
+
+// Alert queries run on the privileged connection, so the fractal scope is what
+// keeps a rule that loses its predicate inside its own fractal or prism.
+func TestAlertQueryCarriesFractalScope(t *testing.T) {
+	e, _, ch := newTestEngine(t)
+	var sent []string
+	ch.CtxArgs = func(ctx context.Context) []any {
+		sent = append(sent, storage.SentQueryIDOf(ctx))
+		return nil
+	}
+	alert := parsedAlert(t, &Alert{ID: "a1", Name: "Scoped", PrismID: "p1"})
+	opts := parser.QueryOptions{StartTime: time.Now().Add(-time.Minute), EndTime: time.Now(), FractalIDs: []string{"f1", "f2"}, TableName: "logs"}
+	if _, err := e.runAlertQuery(context.Background(), alert, opts, 5, opts.StartTime); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || !strings.HasSuffix(sent[0], "~bfscope~f1,f2,") {
+		t.Errorf("alert reads sent as %q", sent)
 	}
 }

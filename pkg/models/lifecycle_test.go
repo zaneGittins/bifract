@@ -826,7 +826,12 @@ func TestReconcileStateViewsKeepsModelsWhoseViewSurvived(t *testing.T) {
 		}
 		return nil
 	})
+	// Ingest is visible only up to each handover, so no freed model has a window
+	// however long the test takes between handover and cycle.
+	var visible atomic.Int64
+	s.SetIngestWatermark(func(context.Context) (time.Time, error) { return time.UnixMilli(visible.Load()), nil })
 
+	visible.Store(time.Now().UnixMilli())
 	env.mgr.ReconcileStateViews(context.Background())
 
 	if got, _ := env.db.get(stuck.id); got.chMV != stuck.chMV || got.watermark != nil {
@@ -851,6 +856,7 @@ func TestReconcileStateViewsKeepsModelsWhoseViewSurvived(t *testing.T) {
 	// count that stretch twice.
 	failing.Store(false)
 	handover := time.Now().UTC()
+	visible.Store(handover.UnixMilli())
 	env.mgr.ReconcileStateViews(context.Background())
 	if got, _ := env.db.get(stuck.id); got.chMV != "" || got.watermark == nil {
 		t.Errorf("not handed over once its view dropped: %+v", got)

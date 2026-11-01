@@ -40,8 +40,10 @@ event_id=4625 | groupBy(src_ip) | sort(_count, order=desc)
 | `=~` | Contains any of the terms, case-insensitive | `image=~powershell,pwsh,cmd` |
 | `=^` | Starts with any of the terms, case-insensitive | `image=^mimikatz,impacket` |
 | `=$` | Ends with any of the terms, case-insensitive | `image=$exe,dll,bat` |
+| `!=~` `!=^` `!=$` | None of the terms; also rows missing the field | `image!=$exe,dll` |
 | `=*` | Field is present and not empty | `user=*` |
-| `>` `<` `>=` `<=` | Numeric comparison | `status_code>=500` |
+| `!=*` | Field is missing or empty | `user!=*` |
+| `>` `<` `>=` `<=` | Numeric comparison; a missing or non-numeric value never matches, so `NOT` matches it | `status_code>=500` |
 | `"text"` or `/regex/` | Case-insensitive search of `norm_log`, the normalized event text | `"authentication failed"` |
 
 `=~` is faster than an equivalent regex for multi-term searches. Quote a term that contains a space: `commandline=^"powershell -enc"`.
@@ -74,7 +76,7 @@ Works with `=`, `!=`, `>`, `<`, `>=` and `<=`. `=` and `!=` compare as text, the
 
 - `AND` binds tighter than `OR`. Use parentheses to group.
 - Conditions with no operator between them are ANDed: `event_id=1 image=/powershell/i`.
-- A field condition without an operator binds like `AND` (`a=1 OR b=2 c=3` is `a=1 OR (b=2 AND c=3)`). Any other term (NOT, a search string, a function, a group) ANDs with everything before it, so a new line starting with `NOT` applies to the whole query above it.
+- Any term without an operator before it binds like `AND`, whether it is a field condition, `NOT`, a search string, a function or a group: `a=1 OR b=2 NOT c=3` is `a=1 OR (b=2 AND NOT c=3)`. To filter everything before it, start a stage with `|`: `a=1 OR b=2 | NOT c=3`.
 - `in()`, `cidr()` and other condition functions group and negate like any filter: `cidr(dst_ip, "10.0.0.0/8") OR cidr(dst_ip, "192.168.0.0/16")`.
 
 ## Variables
@@ -122,7 +124,7 @@ event_id="4624"
   | groupby(user, computer_name) | count()
 ```
 
-`in()` tests the column with the same name as the field; a subquery returning a single column needs no name match. The subquery uses the same fractal and time range as the outer query and runs once even if referenced twice. This is how to test two subquery memberships, since `join()` cannot nest.
+`in()` tests the column with the same name as the field; a subquery returning a single column, or ending in a one-key `groupby()`, needs no name match. The subquery uses the same fractal and time range as the outer query and runs once even if referenced twice. This is how to test two subquery memberships, since `join()` cannot nest.
 
 ## Boolean parameters
 
