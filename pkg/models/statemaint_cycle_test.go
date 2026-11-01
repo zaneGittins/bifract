@@ -20,7 +20,7 @@ func testMaintainer() *StateMaintainer {
 func TestMaintainCaughtUpDoesNothing(t *testing.T) {
 	r := maintainRow{id: "a", fractalID: "f", modelType: ModelTypeRarity, table: "t",
 		def: ModelDefinition{PartitionKey: "p", ValueKey: "v"}, watermark: time.Now().UTC()}
-	if err := testMaintainer().maintain(context.Background(), r); err != nil {
+	if err := testMaintainer().maintain(context.Background(), r, r.watermark); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -33,12 +33,12 @@ func TestMaintainFailsBeforeInsert(t *testing.T) {
 
 	bad := maintainRow{id: "a", fractalID: "f", modelType: ModelTypeFirstSeen, table: "t", watermark: old,
 		def: ModelDefinition{KeyFields: []string{"u"}, SourceBQL: `level = "a" | sort(host)`}}
-	if err := s.maintain(context.Background(), bad); err == nil || !strings.HasPrefix(err.Error(), "source query") {
+	if err := s.maintain(context.Background(), bad, time.Now()); err == nil || !strings.HasPrefix(err.Error(), "source query") {
 		t.Errorf("uncompilable source: %v", err)
 	}
 
 	unscoped := maintainRow{id: "b", fractalID: "", modelType: ModelTypeBeacon, table: "t", watermark: old}
-	if err := s.maintain(context.Background(), unscoped); err == nil || !strings.HasPrefix(err.Error(), "build") {
+	if err := s.maintain(context.Background(), unscoped, time.Now()); err == nil || !strings.HasPrefix(err.Error(), "build") {
 		t.Errorf("unscoped network model: %v", err)
 	}
 }

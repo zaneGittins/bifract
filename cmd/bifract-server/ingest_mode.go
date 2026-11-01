@@ -226,6 +226,10 @@ func runIngestServer() {
 
 	notifWriter := notifications.New(pg)
 
+	// Readers must see this node before it stamps a row. The app tier grants access
+	// to the watermark table, so wait as long as for the database identities.
+	wmPublisher := startWatermarkPublisher(pg, "ingest", 5*time.Minute)
+
 	// Ingest mode never runs migrations. Wait (bounded) for the schema so cold starts
 	// after a fresh deploy don't drop the first burst.
 	waitForWriteTable(dbIngest)
@@ -323,6 +327,9 @@ func runIngestServer() {
 		log.Printf("Ingest server forced to shutdown: %v", err)
 	}
 	ingestQueue.Shutdown() // drains pending inserts + the spool tee
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	wmPublisher.Stop(stopCtx) // after the drain, so nothing it stamped is pending
+	stopCancel()
 	quotaManager.Stop()
 	if metricsServer != nil {
 		metricsServer.Shutdown()

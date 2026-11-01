@@ -131,13 +131,13 @@ func TestEvaluatorsWaitForACompleteWindow(t *testing.T) {
 	ctx := context.Background()
 
 	recent := &Alert{Name: "recent", FractalID: "f1", QueryString: `a=1`, LastEvaluatedAt: time.Now().Add(-10 * time.Second)}
-	if err := e.evaluateAlertCursor(ctx, recent, nil); err != nil {
+	if err := e.evaluateAlertCursor(ctx, recent, nil, noHold); err != nil {
 		t.Errorf("a cursor inside the minimum window waits: %v", err)
 	}
 
 	window := 600
 	compound := &Alert{Name: "c", AlertType: "compound", WindowDuration: &window, LastEvaluatedAt: time.Now().Add(-time.Minute)}
-	if err := e.evaluateCompoundAlert(ctx, compound, nil); err != nil {
+	if err := e.evaluateCompoundAlert(ctx, compound, nil, noHold); err != nil {
 		t.Errorf("an incomplete tumbling window waits: %v", err)
 	}
 
@@ -147,7 +147,7 @@ func TestEvaluatorsWaitForACompleteWindow(t *testing.T) {
 	}
 	qw := 3600
 	scheduled := &Alert{Name: "s", AlertType: "scheduled", CronSchedule: hourly, QueryWindowSeconds: &qw, LastEvaluatedAt: time.Now()}
-	if err := e.evaluateScheduledAlert(ctx, scheduled, nil); err != nil {
+	if err := e.evaluateScheduledAlert(ctx, scheduled, nil, noHold); err != nil {
 		t.Errorf("a scheduled alert before its next run waits: %v", err)
 	}
 }
@@ -157,17 +157,17 @@ func TestEvaluatorsRefuseIncompleteDefinitions(t *testing.T) {
 	ctx := context.Background()
 	zero := 0
 
-	if err := e.evaluateCompoundAlert(ctx, &Alert{Name: "c"}, nil); err == nil {
+	if err := e.evaluateCompoundAlert(ctx, &Alert{Name: "c"}, nil, noHold); err == nil {
 		t.Error("a compound alert with no window cannot be evaluated")
 	}
-	if err := e.evaluateCompoundAlert(ctx, &Alert{Name: "c", WindowDuration: &zero}, nil); err == nil {
+	if err := e.evaluateCompoundAlert(ctx, &Alert{Name: "c", WindowDuration: &zero}, nil, noHold); err == nil {
 		t.Error("a zero window cannot be evaluated")
 	}
-	if err := e.evaluateScheduledAlert(ctx, &Alert{Name: "s"}, nil); err == nil {
+	if err := e.evaluateScheduledAlert(ctx, &Alert{Name: "s"}, nil, noHold); err == nil {
 		t.Error("a scheduled alert whose cron did not parse cannot be evaluated")
 	}
 	hourly, _ := cron.ParseStandard("@hourly")
-	if err := e.evaluateScheduledAlert(ctx, &Alert{Name: "s", CronSchedule: hourly, QueryWindowSeconds: &zero}, nil); err == nil {
+	if err := e.evaluateScheduledAlert(ctx, &Alert{Name: "s", CronSchedule: hourly, QueryWindowSeconds: &zero}, nil, noHold); err == nil {
 		t.Error("a scheduled alert needs a positive query window")
 	}
 }

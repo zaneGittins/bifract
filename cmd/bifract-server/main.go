@@ -331,6 +331,11 @@ func main() {
 		log.Printf("Warning: failed to ensure ingest Postgres role: %v", err)
 	}
 
+	// Report how far this process's own log writes (audit, alert actions, imports)
+	// are committed, alongside the ingest tier's reports.
+	wmPublisher := startWatermarkPublisher(pg, "app", time.Minute)
+	ingestWatermark := ingestWatermarkSource(pg)
+
 	// Bound each query class (interactive search, archive recall) to a share of each
 	// node's CPU and memory so no one class can consume the machine and stall
 	// ingestion. Non-fatal: on failure queries run unscheduled, as they did before.
@@ -504,6 +509,7 @@ func main() {
 	alertEngine := alerts.NewEngineWithDicts(pg, db, dictionaryManager, alertBaseURL)
 	alertEngine.SetModelManager(modelManager)
 	alertEngine.SetNotificationWriter(notifWriter)
+	alertEngine.SetIngestWatermark(ingestWatermark)
 	alertManager := alerts.NewManager(pg, alertEngine, normalizerManager)
 	// Let models own a backing alert (their detection query) via the alerts manager.
 	modelManager.SetAlertManager(alertManager)
@@ -615,21 +621,18 @@ func main() {
 
 	// Wire ingest pressure signal to the alert engine so it defers evaluation
 	// during heavy ingestion. Cursor-based tracking ensures no logs are missed.
-	alertEngine.SetIngestPressureFunc(func() bool {
-		return ingestQueue.Depth() > alertDeferThreshold
-	})
+	backlogged := ingestBacklogged(pg, ingestQueue, alertDeferThreshold)
+	alertEngine.SetIngestPressureFunc(backlogged)
 	// The scorer yields to ingest pressure the same way the alert engine does, so a
 	// scoring pass never competes with heavy ingestion for ClickHouse resources.
-	scorerEngine.SetIngestPressureFunc(func() bool {
-		return ingestQueue.Depth() > alertDeferThreshold
-	})
+	scorerEngine.SetIngestPressureFunc(backlogged)
 
 	// Model state is maintained here rather than by an insert-time view, so it
-	// yields to ingest pressure like every other background reader.
+	// yields to ingest pressure like every other background reader, and reads no
+	// further than the ingest watermark.
 	stateMaintainer := models.NewStateMaintainer(pg, db, modelManager)
-	stateMaintainer.SetIngestPressureFunc(func() bool {
-		return ingestQueue.Depth() > alertDeferThreshold
-	})
+	stateMaintainer.SetIngestPressureFunc(backlogged)
+	stateMaintainer.SetIngestWatermark(ingestWatermark)
 	stateMaintainer.Start(models.StateMaintInterval())
 	defer stateMaintainer.Stop()
 
@@ -843,7 +846,7 @@ func main() {
 		ddlMonitor:      ddlMonitor,
 		recallEstimator: recallEstimator,
 
-		alertDeferThreshold: alertDeferThreshold,
+		alertsDeferred: backlogged,
 
 		alertHandler:          alertHandler,
 		apiKeyHandler:         apiKeyHandler,
@@ -967,6 +970,11 @@ func main() {
 	if metricsServer != nil {
 		metricsServer.Shutdown()
 	}
+
+	// Last, once every writer above has drained, so no stamped row is left uncovered.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	wmPublisher.Stop(stopCtx)
+	stopCancel()
 
 	log.Println("Server stopped gracefully")
 }

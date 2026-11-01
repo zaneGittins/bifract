@@ -30,6 +30,8 @@ The health checks (failures, CPU, memory, disk, spool) run before the body is re
 
 A `200` means the logs are in the ingest buffer (and in the archive spool, when it is on). They are written to ClickHouse within the flush interval (30 seconds by default, `BIFRACT_INGEST_FLUSH_SECONDS`). A failed insert is retried with backoff for about 2 minutes, which rides out a ClickHouse restart, and new requests get `429` meanwhile. Except on sharded clusters, every attempt carries the same deduplication token, so a retry after an insert that committed but reported an error writes no duplicate rows. An error a retry cannot fix, such as a type mismatch, gets 3 attempts. On shutdown, buffered logs are flushed; if ClickHouse is failing, the flush gives up after about 15 seconds. Logs are dropped only when retries run out or a batch cannot be encoded. Each drop is logged, counted in the insert error metrics and raises the Ingest Insert Errors notification. A crash or forced kill loses logs still in the buffer; with the archive on they remain in the spool.
 
+Alerts and model state never read past logs that are still buffered or retrying. Each ingest and app process reports, every 5 seconds, the oldest receive time it has not yet written, and readers stop there. Normally that trails real time by at most the flush interval. While inserts are retrying it holds back, and alerts fire late rather than miss the logs. A process that stops reporting holds readers for up to 5 minutes, then is dropped. **System > Alert engine** shows how far it trails and which process is holding it.
+
 ## Settings
 
 | Variable | Default | Change when |

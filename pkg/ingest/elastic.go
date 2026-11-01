@@ -11,6 +11,7 @@ import (
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 )
 
 // ElasticBulkHandler handles Elasticsearch bulk API format.
@@ -117,6 +118,10 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 		respondElasticError(w, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
+
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
 
 	logs, items, err := h.parseBulkRequest(body, tokenData.Normalizer, tokenData.TimestampFields)
 	if errors.Is(err, errLineTooLong) {

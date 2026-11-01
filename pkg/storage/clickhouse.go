@@ -28,6 +28,7 @@ import (
 	"github.com/google/uuid"
 
 	dbsql "bifract/db"
+	"bifract/pkg/watermark"
 )
 
 type ClickHouseClient struct {
@@ -1419,6 +1420,16 @@ func getenvFloat(key string, def float64) float64 {
 }
 
 func (c *ClickHouseClient) InsertLogs(ctx context.Context, logs []LogEntry) error {
+	// Unstamped rows are stamped under a hold, so the process watermark stays below
+	// them until they are written. Rows stamped earlier are tracked by their caller.
+	hold := watermark.Local.Hold()
+	defer watermark.Local.Done(hold)
+	for i := range logs {
+		if logs[i].IngestTimestamp.IsZero() {
+			logs[i].IngestTimestamp = hold.At()
+		}
+	}
+
 	if err := c.InsertLogsInto(ctx, c.WriteTable(), logs); err != nil {
 		return err
 	}

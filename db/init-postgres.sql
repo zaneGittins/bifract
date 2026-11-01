@@ -322,6 +322,15 @@ CREATE TABLE IF NOT EXISTS system_metrics (
 );
 CREATE INDEX IF NOT EXISTS idx_system_metrics_metric_ts ON system_metrics (metric, ts);
 
+-- Each writing process's committed-through point: every row it stamped before
+-- watermark is visible in ClickHouse. Alerts and model state never read past the
+-- oldest. heartbeat_at is Postgres time so staleness ignores pod clock skew.
+CREATE TABLE IF NOT EXISTS ingest_watermarks (
+    node_id      TEXT        PRIMARY KEY,
+    watermark    TIMESTAMPTZ NOT NULL,
+    heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Triggers for updated_at on alert tables
 DROP TRIGGER IF EXISTS update_alerts_updated_at ON alerts;
 CREATE TRIGGER update_alerts_updated_at BEFORE UPDATE ON alerts

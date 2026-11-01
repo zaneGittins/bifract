@@ -456,12 +456,11 @@ func (m *Model) SetStateLag(now time.Time) {
 }
 
 // StateLagBudget is the lag a healthy model is expected to sit at: a cycle reads
-// up to StateMaintLag() back from now and advances once per interval, so steady
-// state is already that much behind before anything is wrong. Four cycles of head
-// room keeps a slow pass or one skipped for ingest pressure from reading as a
-// fault.
+// up to the ingest watermark and advances once per interval, so steady state is
+// already that much behind before anything is wrong. Four cycles of head room
+// keeps a slow pass or one skipped for ingest pressure from reading as a fault.
 func StateLagBudget() time.Duration {
-	return StateMaintLag() + 4*StateMaintInterval()
+	return ingestLagAllowance + 4*StateMaintInterval()
 }
 
 // ModelInfo is a lightweight representation used in QueryOptions for BQL model_lookup().

@@ -13,6 +13,7 @@ import (
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 )
 
 // IngestHandler handles log ingestion via HTTP.
@@ -92,6 +93,10 @@ func (h *IngestHandler) HandleIngest(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
 
 	logs, err := h.parseLogsWithToken(body, tokenData)
 	if errors.Is(err, errLineTooLong) {

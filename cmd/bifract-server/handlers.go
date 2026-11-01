@@ -98,7 +98,7 @@ func (d routerDeps) handleTopology(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d routerDeps) handlePressure(w http.ResponseWriter, r *http.Request) {
-	alertsDeferred := d.ingestQueue.Depth() > d.alertDeferThreshold
+	alertsDeferred := d.alertsDeferred != nil && d.alertsDeferred()
 	resp := map[string]interface{}{
 		"alerts_deferred": alertsDeferred,
 	}

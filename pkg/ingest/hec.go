@@ -14,6 +14,7 @@ import (
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 )
 
 // HECHandler accepts the Splunk HTTP Event Collector protocol, so the OTel
@@ -191,6 +192,10 @@ func (h *HECHandler) handleBatch(w http.ResponseWriter, r *http.Request, parse h
 		respondJSON(w, http.StatusBadRequest, HECResponse{Text: "Failed to read request body", Code: hecInvalidFormat})
 		return
 	}
+
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
 
 	q := r.URL.Query()
 	meta := hecMeta{host: q.Get("host"), source: q.Get("source"), sourcetype: q.Get("sourcetype"), index: q.Get("index")}
