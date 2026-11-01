@@ -109,7 +109,7 @@ const AlertDetail = {
                 </div>
                 <div class="alert-meta-cell">
                     <span class="alert-detail-label">Severity</span>
-                    <span class="severity-pill severity-${sev}" style="cursor:default">${Utils.escapeHtml(sev.charAt(0).toUpperCase() + sev.slice(1))}</span>
+                    <span class="severity-pill severity-${Utils.escapeHtml(sev)}" style="cursor:default">${Utils.escapeHtml(sev.charAt(0).toUpperCase() + sev.slice(1))}</span>
                 </div>
                 <div class="alert-meta-cell">
                     <span class="alert-detail-label">Type</span>

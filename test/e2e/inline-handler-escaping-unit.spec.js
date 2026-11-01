@@ -121,6 +121,23 @@ test.describe('Inline handler escaping', () => {
       expect(tags(html).map(t => t.name)).toEqual(['td', 'span']);
     });
 
+    test(`alert detail severity pill stays one element: ${JSON.stringify(value)}`, () => {
+      const w = load(['utils.js', 'alertDetail.js'], { TZ: { format: () => '' } });
+      const html = w.AlertDetail.renderBody({ id: 'a1', name: 'n', severity: value, actions: [] });
+      const pill = tags(html).find(t => (t.attrs.class || '').startsWith('severity-pill'));
+      expect(Object.keys(pill.attrs)).toEqual(['class', 'style']);
+      expect(tags(html).map(t => t.name)).not.toContain('img');
+    });
+
+    test(`chat presentation severity stays one element: ${JSON.stringify(value)}`, () => {
+      const div = {};
+      const doc = { addEventListener() {}, getElementById() { return null; }, createElement: () => div };
+      const w = load(['utils.js', 'chat.js'], { document: doc });
+      w.Chat.renderPresentation({ appendChild() {} }, { severity: value, summary: 's' });
+      expect(tags(div.innerHTML).map(t => t.name)).toEqual(['div']);
+      expect(Object.keys(tags(div.innerHTML)[0].attrs)).toEqual(['class']);
+    });
+
     test(`alert test toggles open the exact test: ${JSON.stringify(value)}`, () => {
       const w = load(['utils.js', 'alertTests.js']);
       Object.assign(w.AlertTests, { _selected: new Set(), _open: null });
@@ -226,5 +243,15 @@ test.describe('Format panel and query reference', () => {
     });
     const copy = tags(html).find(t => t.attrs.class === 'ref-copy-btn');
     expect(fire(copy.attrs.onclick)).toEqual([['QueryReference.copyToQuery', ex]]);
+  });
+});
+
+test.describe('Severity styling', () => {
+  test('a known chat severity keeps its bubble class', () => {
+    const div = {};
+    const doc = { addEventListener() {}, getElementById() { return null; }, createElement: () => div };
+    const w = load(['utils.js', 'chat.js'], { document: doc });
+    w.Chat.renderPresentation({ appendChild() {} }, { severity: 'critical', summary: 's' });
+    expect(tags(div.innerHTML)[0].attrs.class).toBe('chat-severity-bubble chat-severity-critical');
   });
 });

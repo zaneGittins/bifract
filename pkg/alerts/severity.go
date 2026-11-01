@@ -1,13 +1,13 @@
 package alerts
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
-// Severity is how urgent an alert's findings are.
-//
-// Unlike AlertType it is not enforced on write: alerts imported from Sigma feeds
-// arrive with whatever level the rule declared, and rejecting those would drop
-// real detections. These are the values the product ranks, colours and filters
-// on, and anything else sorts as unknown.
+// Severity is how urgent an alert's findings are. Writes are held to these
+// values because the UI renders them into markup; Sigma levels go through
+// SeverityFromLevel, which never fails, so feed rules are not dropped.
 type Severity string
 
 const (
@@ -27,6 +27,25 @@ func (Severity) EnumValues() []string {
 		string(SeverityLow),
 		string(SeverityInformational),
 	}
+}
+
+// Valid reports whether this is a severity the product ranks and styles.
+func (s Severity) Valid() bool {
+	switch s {
+	case SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow, SeverityInformational:
+		return true
+	}
+	return false
+}
+
+func validateSeverity(severity string) error {
+	if severity == "" {
+		return nil // the caller's default applies
+	}
+	if !Severity(severity).Valid() {
+		return fmt.Errorf("%w: unknown severity %q, expected one of %v", ErrInvalidAlert, severity, Severity("").EnumValues())
+	}
+	return nil
 }
 
 // SeverityFromLevel maps a Sigma rule's level onto a Severity.
