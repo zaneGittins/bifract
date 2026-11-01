@@ -120,8 +120,8 @@ func TestEnsureFractalScopePolicies(t *testing.T) {
 		t.Fatalf("executed %q, want both policies", got)
 	}
 	tables := "`logs`.`logs`, `logs`.`logs_hot`, `logs`.`logs_raw`"
-	if want := "CREATE ROW POLICY IF NOT EXISTS bifract_fractal_scope_v1 ON CLUSTER 'c1' ON " + tables +
-		" AS RESTRICTIVE FOR SELECT USING NOT position(initialQueryID(), '~bfscope~') > 0 OR has(arrayPopBack(splitByChar(',', splitByString('~bfscope~', initialQueryID())[2])), fractal_id) TO ALL"; got[0] != want {
+	if want := "CREATE ROW POLICY IF NOT EXISTS bifract_fractal_scope_v2 ON CLUSTER 'c1' ON " + tables +
+		" AS RESTRICTIVE FOR SELECT USING NOT position(initialQueryID(), '~bfscope~') > 0 OR fractal_id IN (SELECT arrayJoin(arrayPopBack(splitByChar(',', splitByString('~bfscope~', initialQueryID())[2])))) TO ALL"; got[0] != want {
 		t.Errorf("scope policy:\n%s\nwant:\n%s", got[0], want)
 	}
 	if want := "CREATE ROW POLICY IF NOT EXISTS bifract_scope_required_v1 ON CLUSTER 'c1' ON " + tables +
@@ -142,6 +142,26 @@ func TestEnsureFractalScopePolicies(t *testing.T) {
 	c.ensureFractalScopePolicies(context.Background(), false)
 	if got := f.Executed(); len(got) != 1 || !strings.Contains(got[0], fractalScopePolicy) {
 		t.Errorf("executed %q, want only the scope policy", got)
+	}
+
+	// The retired v1 policy is dropped once v2 covers every table, never before.
+	c, f = newFakeClient()
+	c.topo.DDLCluster = "c1"
+	f.On("system.row_policies", policyRows([]any{"bifract_fractal_scope_v1", all}))
+	c.ensureFractalScopePolicies(context.Background(), false)
+	got = f.Executed()
+	if len(got) != 2 || !strings.Contains(got[0], fractalScopePolicy) ||
+		got[1] != "DROP ROW POLICY IF EXISTS bifract_fractal_scope_v1 ON "+tables+" ON CLUSTER 'c1'" {
+		t.Errorf("executed %q, want v2 created then v1 dropped", got)
+	}
+	c, f = newFakeClient()
+	f.On("system.row_policies", policyRows([]any{"bifract_fractal_scope_v1", all}))
+	f.FailExec("CREATE ROW POLICY", fakedb.Exception(497, "denied"))
+	c.ensureFractalScopePolicies(context.Background(), false)
+	for _, stmt := range f.Executed() {
+		if strings.HasPrefix(stmt, "DROP") {
+			t.Errorf("dropped v1 without v2 in place: %q", stmt)
+		}
 	}
 
 	// A server that refuses row policies is logged, not fatal.

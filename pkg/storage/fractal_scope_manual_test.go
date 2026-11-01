@@ -55,11 +55,16 @@ func TestFractalScopeLive(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		root.Exec(ctx, "DROP DATABASE IF EXISTS "+db+" SYNC")
-		for _, p := range []string{fractalScopePolicy, scopeRequiredPolicy} {
+		for _, p := range []string{fractalScopePolicy, retiredScopePolicy, scopeRequiredPolicy} {
 			root.Exec(ctx, "DROP ROW POLICY IF EXISTS "+p+" ON "+db+".logs, "+db+".logs_hot, "+db+".logs_raw")
 		}
 		root.Close()
 	})
+
+	// An install from before v2 carries the retired policy; reconcile replaces it.
+	if err := root.Exec(ctx, "CREATE ROW POLICY "+retiredScopePolicy+" ON "+db+".logs, "+db+".logs_hot, "+db+".logs_raw AS RESTRICTIVE FOR SELECT USING 1 TO ALL"); err != nil {
+		t.Fatalf("seed retired policy: %v", err)
+	}
 
 	c := NewClickHouseClientFromConn(root, db, Topology{Kind: DeploymentSingleNode})
 	c.addrs = []string{addr}
@@ -128,7 +133,8 @@ func TestFractalScopeLive(t *testing.T) {
 
 	// Idempotent: a second reconcile finds the policies and issues no DDL for them.
 	c.ensureFractalScopePolicies(ctx, true)
-	if present := c.presentScopePolicies(ctx); !present[fractalScopePolicy] || !present[scopeRequiredPolicy] {
-		t.Errorf("policies present = %v", present)
+	all := uint64(len(fractalScopeTables))
+	if n := c.scopePolicyCounts(ctx); n[fractalScopePolicy] != all || n[scopeRequiredPolicy] != all || n[retiredScopePolicy] != 0 {
+		t.Errorf("policy table counts = %v", n)
 	}
 }
