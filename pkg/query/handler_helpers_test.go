@@ -356,14 +356,14 @@ func TestParseTimeRange(t *testing.T) {
 // The query timeout must reach ClickHouse as well as Go: a Go deadline alone
 // stops this process reading while the server keeps scanning.
 func TestSearchContext(t *testing.T) {
-	ctx, cancel := searchContext(context.Background(), 30)
+	ctx, cancel := searchContext(context.Background(), 30, storage.FractalScope{})
 	defer cancel()
 	dl, ok := ctx.Deadline()
 	if !ok || time.Until(dl) > 30*time.Second || time.Until(dl) < 29*time.Second {
 		t.Errorf("deadline = %v (set=%v), want ~30s", dl, ok)
 	}
 
-	ctx, cancel = searchContext(context.Background(), 0)
+	ctx, cancel = searchContext(context.Background(), 0, storage.FractalScope{})
 	if _, ok := ctx.Deadline(); ok {
 		t.Error("timeout 0 means unbounded, but a deadline was set")
 	}

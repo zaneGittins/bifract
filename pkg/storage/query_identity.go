@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
@@ -137,6 +138,9 @@ func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps
 		}
 	}
 
+	// After the identities: the policy that requires a scope names the search user.
+	c.ensureFractalScopePolicies(ctx, next[QuerySearchWorkload] != nil)
+
 	// Swap first, then close only what this reconcile actually replaced, so a reused
 	// identity never loses the connection underneath an in-flight query.
 	c.queryConns.Store(&next)
@@ -204,15 +208,6 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		fmt.Sprintf("GRANT%s SELECT, dictGet ON %s.* TO %s", onCluster, db, user),
 		fmt.Sprintf("GRANT%s SELECT ON system.* TO %s", onCluster, user),
 	}
-	if memCapBytes > 0 {
-		// Applied only when the class is capped. The identity exists regardless: it
-		// is a privilege boundary first and a memory accounting unit second.
-		required = append(required,
-			fmt.Sprintf("ALTER USER %s%s SETTINGS max_memory_usage_for_user = %d", user, onCluster, memCapBytes))
-	} else {
-		required = append(required,
-			fmt.Sprintf("ALTER USER %s%s SETTINGS NONE", user, onCluster))
-	}
 	// Nothing granted below is a capability an injected query should inherit:
 	// SOURCES (file/url/s3/remote -- local file reads and an outbound exfiltration
 	// channel), INTROSPECTION (addressToLine/demangle), ACCESS MANAGEMENT, SYSTEM,
@@ -225,6 +220,22 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		if err != nil {
 			c.recordCapability(CapQueryIdentity, err)
 			return nil, fmt.Errorf("%s: %w", user, err)
+		}
+	}
+	if err := c.applyIdentitySettings(ctx, user, memCapBytes); err != nil {
+		c.recordCapability(CapQueryIdentity, err)
+		return nil, fmt.Errorf("%s: %w", user, err)
+	}
+
+	// Query text names other fractals' values and carries their scopes, and no
+	// query path reads these on a class identity. Best effort: failing leaves the
+	// identity as broad as the release before, not broken.
+	for _, t := range queryTextSystemTables {
+		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+		err := c.conn.Exec(sctx, fmt.Sprintf("REVOKE%s SELECT ON system.%s FROM %s", onCluster, t, user))
+		cancel()
+		if err != nil {
+			log.Printf("[ClickHouse] %s: could not revoke system.%s: %v", user, t, err)
 		}
 	}
 
@@ -269,6 +280,39 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		return nil, fmt.Errorf("probe as %s: %w", user, err)
 	}
 	return conn, nil
+}
+
+// queryTextSystemTables expose other queries' text to whoever can read them.
+var queryTextSystemTables = []string{"query_log", "query_thread_log", "query_views_log", "processes"}
+
+// applyIdentitySettings sets the class's memory ceiling and pins what an injected
+// SETTINGS clause could otherwise use to escape it. Constraints bind a query's own
+// SETTINGS clause exactly as they bind the client, so the ceiling is CONST rather
+// than a default. serialize_query_plan is pinned because a plan shipped to a shard
+// bypasses the row policies there. A server that predates that setting rejects the
+// whole statement, so it is retried without it.
+func (c *ClickHouseClient) applyIdentitySettings(ctx context.Context, user string, memCapBytes int64) error {
+	var base []string
+	if memCapBytes > 0 {
+		// Applied only when the class is capped. The identity exists regardless: it
+		// is a privilege boundary first and a memory accounting unit second.
+		base = append(base, fmt.Sprintf("max_memory_usage_for_user = %d CONST", memCapBytes))
+	}
+	attempts := [][]string{append(append([]string(nil), base...), "serialize_query_plan = 0 CONST"), base}
+	var err error
+	for _, settings := range attempts {
+		clause := "NONE"
+		if len(settings) > 0 {
+			clause = strings.Join(settings, ", ")
+		}
+		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+		err = c.conn.Exec(sctx, fmt.Sprintf("ALTER USER %s%s SETTINGS %s", user, c.OnClusterSQL(), clause))
+		cancel()
+		if err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // revokeStaleGrants narrows an identity provisioned by an earlier, broader release.
@@ -325,7 +369,7 @@ func (c *ClickHouseClient) staleGrantsFor(ctx context.Context, user string) []st
 		return nil
 	}
 
-	return staleInstanceWideGrants(held)
+	return staleInstanceWideGrants(held, user)
 }
 
 // staleInstanceWideGrants parses SHOW GRANTS output and returns the instance-wide
@@ -336,11 +380,16 @@ func (c *ClickHouseClient) staleGrantsFor(ctx context.Context, user string) []st
 // "SELECT, CREATE TEMPORARY TABLE ON *.*" the next, and a substring check silently
 // misses the second form -- leaving the broad grant in place, which is the whole
 // thing this is here to remove.
-func staleInstanceWideGrants(showGrants string) []string {
+func staleInstanceWideGrants(showGrants, user string) []string {
 	// Forms an earlier release granted instance-wide that no identity needs now.
 	// URL was granted for "recall over URL-addressed archives", which no backend
 	// uses; SELECT/dictGet ON *.* predate scoping them to the logs database.
 	unwanted := map[string]bool{"SELECT": true, "dictGet": true, "URL": true}
+	// Search reads Distributed tables, which need no REMOTE grant. REMOTE only adds
+	// remote()/cluster(): an outbound channel and a way around the cluster's routing.
+	if user == SearchCHUser {
+		unwanted["REMOTE"] = true
+	}
 
 	var stale []string
 	seen := map[string]bool{}
@@ -366,20 +415,35 @@ func staleInstanceWideGrants(showGrants string) []string {
 
 // queryIdentityOptionalGrants is what a class may additionally reach. Per class,
 // because an object-store grant is also the one outbound channel an injected query
-// could exfiltrate through: only recall reads archives, so only recall gets S3/AZURE.
-// URL is granted to neither, since no archive backend addresses data by URL
-// (see objstore.Backend) and it would be reach with no use.
+// could exfiltrate through: only recall reads archives, so only recall gets S3/AZURE,
+// and only recall keeps REMOTE (see staleInstanceWideGrants). URL is granted to
+// neither, since no archive backend addresses data by URL (see objstore.Backend) and
+// it would be reach with no use.
 func queryIdentityOptionalGrants(user string) []struct{ priv, covers string } {
 	optional := []struct{ priv, covers string }{
-		{"REMOTE", "cross-shard fan-out"},
 		{"CREATE TEMPORARY TABLE", "GLOBAL IN"},
 	}
 	if user == RecallCHUser {
 		optional = append(optional,
+			struct{ priv, covers string }{"REMOTE", "cross-shard fan-out"},
 			struct{ priv, covers string }{"S3", "recall over S3-backed archives"},
 			struct{ priv, covers string }{"AZURE", "recall over Azure-backed archives"})
 	}
 	return optional
+}
+
+// readConn resolves the connection a read on ctx runs on and applies its query id,
+// carrying the fractal scope when ctx has one. Every read helper goes through here,
+// so no path can run a scoped query without the scope reaching ClickHouse.
+func (c *ClickHouseClient) readConn(ctx context.Context) (driver.Conn, context.Context, error) {
+	id, err := scopedQueryID(ctx)
+	if err != nil {
+		return nil, ctx, err
+	}
+	if id != "" {
+		ctx = clickhouse.Context(context.WithValue(ctx, sentQueryIDKey{}, id), clickhouse.WithQueryID(id))
+	}
+	return c.connFor(ctx), ctx, nil
 }
 
 // connFor returns the connection a query on ctx must run on: the class identity when

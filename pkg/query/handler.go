@@ -99,13 +99,38 @@ func newSearchID() string {
 	return "bif-search-" + uuid.NewString()
 }
 
+// FractalScope is the ClickHouse-side backstop for the fractal predicate the
+// translator builds from opts (see storage.FractalScope). ok is false when opts carry
+// no fractal predicate, so the query is not fractal-scoped at all.
+func FractalScope(opts parser.QueryOptions) (storage.FractalScope, bool) {
+	return fractalScope(opts.FractalID, opts.FractalIDs, opts.IncludeEmptyFractalID)
+}
+
+// fractalScope mirrors the translator: a prism's member list wins over a single fractal.
+func fractalScope(fractalID string, fractalIDs []string, includeEmpty bool) (storage.FractalScope, bool) {
+	switch {
+	case len(fractalIDs) > 0:
+		return storage.FractalScope{FractalIDs: fractalIDs, Unassigned: includeEmpty}, true
+	case fractalID != "":
+		return storage.FractalScope{FractalIDs: []string{fractalID}, Unassigned: includeEmpty}, true
+	}
+	return storage.FractalScope{}, false
+}
+
+// fractalScope is the scope every ClickHouse read for this query runs under. A
+// query with no fractal predicate gets the empty scope, which reads nothing.
+func (p *preparedQuery) fractalScope() storage.FractalScope {
+	s, _ := FractalScope(p.translationOpts)
+	return s
+}
+
 // searchContext builds the context a search's ClickHouse queries run on: tagged as
 // an interactive user search (CPU/memory limits) and carrying the query timeout
 // both as a Go deadline and as a ClickHouse-enforced ceiling. A Go deadline alone
 // only stops this process reading; the server keeps scanning what nobody is
 // listening to.
-func searchContext(parent context.Context, timeoutSec int) (context.Context, context.CancelFunc) {
-	ctx := storage.UserSearchContext(parent)
+func searchContext(parent context.Context, timeoutSec int, scope storage.FractalScope) (context.Context, context.CancelFunc) {
+	ctx := storage.UserSearchContext(parent, scope)
 	if timeoutSec <= 0 {
 		return context.WithCancel(ctx)
 	}
@@ -1626,7 +1651,7 @@ func (h *QueryHandler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	// Execute main query (and histogram if needed) with timeout
 	queryStart := time.Now()
 
-	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, req)), settings.Get().QueryTimeoutSeconds)
+	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, req)), settings.Get().QueryTimeoutSeconds, prep.fractalScope())
 	// A query left running server-side is the expensive kind of leak: cancel the
 	// client side first, then kill anything that outlived the request.
 	searchClean := true
@@ -2000,7 +2025,7 @@ func (h *QueryHandler) HandleQueryStream(w http.ResponseWriter, r *http.Request)
 	// client that navigated away mid-scan -- gets killed instead of running unowned.
 	searchID := newSearchID()
 	searchClean := false
-	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds)
+	queryCtx, cancel := searchContext(storage.TagContext(r.Context(), requestTag(r, prep.req)), settings.Get().QueryTimeoutSeconds, prep.fractalScope())
 	defer func() {
 		cancel()
 		if !searchClean {
@@ -3217,8 +3242,8 @@ func (h *QueryHandler) fetchProfileData(queryID string) *ProfileData {
 			return nil
 		}
 		rows, err := h.db.Query(ctx, fmt.Sprintf(
-			`SELECT count() AS cnt FROM system.query_log WHERE query_id = '%s' AND type IN ('QueryFinish','ExceptionWhileProcessing')`,
-			escCHStr(queryID)))
+			`SELECT count() AS cnt FROM system.query_log WHERE %s AND type IN ('QueryFinish','ExceptionWhileProcessing')`,
+			storage.QueryIDMatchSQL("query_id", queryID)))
 		if err == nil && len(rows) > 0 {
 			if cnt, ok := rows[0]["cnt"].(uint64); ok && cnt > 0 {
 				found = true
@@ -3251,9 +3276,9 @@ SELECT
     toUInt64(ProfileEvents['NetworkReceiveElapsedMicroseconds'] / 1000)         AS net_wait_ms,
     formatReadableSize(ProfileEvents['ReadBufferFromFileDescriptorReadBytes'])   AS bytes_from_disk
 FROM %s
-WHERE initial_query_id = '%s'
+WHERE %s
   AND type = 'QueryFinish'
-ORDER BY coordinator DESC, duration_ms DESC`, shardSource, escCHStr(queryID))
+ORDER BY coordinator DESC, duration_ms DESC`, shardSource, storage.QueryIDMatchSQL("initial_query_id", queryID))
 
 	shardRows, err := h.db.Query(ctx, shardSQL)
 	if err != nil {
@@ -3291,10 +3316,10 @@ SELECT
              ProfileEvents['SelectedMarksTotal'], 1),
        toFloat64(0))                                                            AS pct_marks_surviving
 FROM %s
-WHERE initial_query_id = '%s'
+WHERE %s
   AND is_initial_query = 0
   AND type = 'QueryFinish'
-ORDER BY shard`, h.db.Topology().ShardSystemTable("system.query_log"), escCHStr(queryID))
+ORDER BY shard`, h.db.Topology().ShardSystemTable("system.query_log"), storage.QueryIDMatchSQL("initial_query_id", queryID))
 
 		skipRows, err := h.db.Query(ctx, skipSQL)
 		if err != nil {

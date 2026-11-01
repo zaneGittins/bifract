@@ -780,6 +780,10 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 		Fractal: alert.FractalID,
 		Label:   alert.Name,
 	})
+	// Alerts run on the privileged connection; the scope still binds what they read.
+	if scope, ok := query.FractalScope(opts); ok {
+		alertCtx = storage.ScopeContext(alertCtx, scope)
+	}
 
 	results, err := e.ch.QueryLowPriority(alertCtx, sql)
 	if err != nil {

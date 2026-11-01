@@ -202,7 +202,7 @@ func TestStreamQueryRoutesAndStopsOnCallbackError(t *testing.T) {
 
 	stop := errors.New("enough")
 	var seen []uint64
-	err := c.StreamQuery(UserSearchContext(context.Background()), "q1", "SELECT n", func(row map[string]interface{}) error {
+	err := c.StreamQuery(UserSearchContext(context.Background(), FractalScope{}), "q1", "SELECT n", func(row map[string]interface{}) error {
 		seen = append(seen, row["n"].(uint64))
 		if len(seen) == 2 {
 			return stop

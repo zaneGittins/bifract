@@ -1733,7 +1733,8 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	stats := func() QueryStats {
 		return QueryStats{ReadRows: readRows.Load(), ReadBytes: readBytes.Load()}
 	}
-	opts := []clickhouse.QueryOption{clickhouse.WithQueryID(queryID)}
+	ctx = withQueryID(ctx, queryID)
+	var opts []clickhouse.QueryOption
 	// Recall's workload tag rides the ctx marker (see RecallContext). It is the only
 	// enforcement an archive scan has, since max_bytes_to_read does not apply to
 	// iceberg table functions.
@@ -1749,7 +1750,11 @@ func (c *ClickHouseClient) QueryStream(ctx context.Context, queryID, query strin
 	}))
 	ctx = clickhouse.Context(ctx, opts...)
 
-	rows, err := c.connFor(ctx).Query(ctx, query)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return stats(), err
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return stats(), fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -1915,7 +1920,7 @@ func (c *ClickHouseClient) Query(ctx context.Context, query string) ([]map[strin
 // wholesale, which would drop the budgets that QueryProvenance and QueryLowPriority
 // put there.
 func (c *ClickHouseClient) QueryUserSearchWithID(ctx context.Context, queryID, query string) ([]map[string]interface{}, error) {
-	ctx = clickhouse.Context(ctx, clickhouse.WithQueryID(queryID))
+	ctx = withQueryID(ctx, queryID)
 	return c.query(ctx, query, c.applyQuerySettings(ctx, nil))
 }
 
@@ -1924,7 +1929,11 @@ func (c *ClickHouseClient) query(ctx context.Context, query string, settings cli
 	if len(settings) > 0 {
 		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(settings))
 	}
-	rows, err := c.connFor(ctx).Query(ctx, query)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -1954,6 +1963,7 @@ func collectRowMaps(rows driver.Rows) ([]map[string]interface{}, error) {
 // Settings maps arrive here already built by applyQuerySettings or a caller's own
 // literal, so this merges rather than replacing; an existing log_comment wins.
 func (c *ClickHouseClient) taggedSettings(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
+	settings = scopeCacheSettings(ctx, settings)
 	comment := ContextTag(ctx).String()
 	if comment == "" {
 		return settings
@@ -2214,10 +2224,7 @@ func (c *ClickHouseClient) StreamQuery(ctx context.Context, queryID, query strin
 			onProgress(readSoFar, p.TotalRows)
 		}))
 	}
-	if queryID != "" {
-		opts = append(opts, clickhouse.WithQueryID(queryID))
-	}
-	return c.streamRows(clickhouse.Context(ctx, opts...), query, onRow)
+	return c.streamRows(clickhouse.Context(withQueryID(ctx, queryID), opts...), query, onRow)
 }
 
 // StreamLowPriority streams a bulk read such as an export. It yields to
@@ -2228,13 +2235,17 @@ func (c *ClickHouseClient) StreamLowPriority(ctx context.Context, queryID, query
 		"priority":       5,
 		"max_block_size": 8192,
 	})
-	return c.streamRows(clickhouse.Context(ctx, clickhouse.WithSettings(settings), clickhouse.WithQueryID(queryID)), query, onRow)
+	return c.streamRows(clickhouse.Context(withQueryID(ctx, queryID), clickhouse.WithSettings(settings)), query, onRow)
 }
 
 // streamRows runs query and hands each row to onRow as it arrives. An onRow
 // error stops the read and is returned as-is.
 func (c *ClickHouseClient) streamRows(ctx context.Context, query string, onRow func(map[string]interface{}) error) error {
-	rows, err := c.connFor(ctx).Query(ctx, query)
+	conn, ctx, err := c.readConn(ctx)
+	if err != nil {
+		return err
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)
 	}

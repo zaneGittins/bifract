@@ -88,8 +88,12 @@ func TestStaleInstanceWideGrantsParsesPrivilegeLists(t *testing.T) {
 		{"wanted instance-wide grants are kept", "GRANT REMOTE, CREATE TEMPORARY TABLE, S3, AZURE ON *.* TO u\n", nil},
 		{"empty", "", nil},
 	}
+	// Search reads Distributed tables without REMOTE, so an earlier grant is narrowed.
+	if got := staleInstanceWideGrants("GRANT REMOTE, CREATE TEMPORARY TABLE ON *.* TO u\n", SearchCHUser); len(got) != 1 || got[0] != "REMOTE" {
+		t.Errorf("search: got %v, want [REMOTE]", got)
+	}
 	for _, tc := range cases {
-		got := staleInstanceWideGrants(tc.show)
+		got := staleInstanceWideGrants(tc.show, RecallCHUser)
 		if len(got) != len(tc.want) {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 			continue

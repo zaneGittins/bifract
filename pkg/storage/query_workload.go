@@ -442,9 +442,10 @@ func WorkloadContext(ctx context.Context, name string) context.Context {
 	return context.WithValue(ctx, workloadKey{}, name)
 }
 
-// UserSearchContext marks ctx as an interactive user search.
-func UserSearchContext(ctx context.Context) context.Context {
-	return WorkloadContext(ctx, QuerySearchWorkload)
+// UserSearchContext marks ctx as an interactive user search confined to scope. The
+// scope is required: ClickHouse enforces it on the log tables (see FractalScope).
+func UserSearchContext(ctx context.Context, scope FractalScope) context.Context {
+	return ScopeContext(WorkloadContext(ctx, QuerySearchWorkload), scope)
 }
 
 // RecallContext marks ctx as an archive (Iceberg) scan. This is the only enforcement
@@ -512,6 +513,7 @@ func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clic
 	budget := contextQueryBudget(ctx)
 	comment := ContextTag(ctx).String()
 	skipStats := name == QuerySearchWorkload && c.canSkipStatistics()
+	settings = scopeCacheSettings(ctx, settings)
 	if !tag && budget <= 0 && memCap <= 0 && comment == "" && !skipStats {
 		return settings
 	}

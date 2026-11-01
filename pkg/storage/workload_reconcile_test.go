@@ -244,9 +244,13 @@ func TestEnsureQueryIdentityStatementOrder(t *testing.T) {
 		"REVOKE ON CLUSTER 'c1' SELECT ON *.* FROM bifract_recall",
 		"GRANT ON CLUSTER 'c1' SELECT, dictGet ON `logs`.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' SELECT ON system.* TO bifract_recall",
-		"ALTER USER bifract_recall ON CLUSTER 'c1' SETTINGS max_memory_usage_for_user = 1234",
-		"GRANT ON CLUSTER 'c1' REMOTE ON *.* TO bifract_recall",
+		"ALTER USER bifract_recall ON CLUSTER 'c1' SETTINGS max_memory_usage_for_user = 1234 CONST, serialize_query_plan = 0 CONST",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_log FROM bifract_recall",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_thread_log FROM bifract_recall",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.query_views_log FROM bifract_recall",
+		"REVOKE ON CLUSTER 'c1' SELECT ON system.processes FROM bifract_recall",
 		"GRANT ON CLUSTER 'c1' CREATE TEMPORARY TABLE ON *.* TO bifract_recall",
+		"GRANT ON CLUSTER 'c1' REMOTE ON *.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' S3 ON *.* TO bifract_recall",
 		"GRANT ON CLUSTER 'c1' AZURE ON *.* TO bifract_recall",
 	}
@@ -254,20 +258,32 @@ func TestEnsureQueryIdentityStatementOrder(t *testing.T) {
 		t.Errorf("executed:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 
-	// Search: uncapped clears the setting, and gets no object-storage reach.
+	// Search: uncapped replaces a previous ceiling, and gets no object-storage or
+	// remote() reach.
 	c, f = newWorkloadClient()
 	c.ensureQueryIdentity(context.Background(), SearchCHUser, 0)
 	execs := strings.Join(f.Executed(), "\n")
-	if !strings.Contains(execs, "ALTER USER bifract_search SETTINGS NONE") {
+	if !strings.Contains(execs, "ALTER USER bifract_search SETTINGS serialize_query_plan = 0 CONST\n") {
 		t.Error("an uncapped identity must clear a previous ceiling")
 	}
-	for _, forbidden := range []string{" S3 ", " AZURE ", " URL "} {
+	for _, forbidden := range []string{" S3 ", " AZURE ", " URL ", " REMOTE "} {
 		if strings.Contains(execs, forbidden) {
 			t.Errorf("search identity granted%s", forbidden)
 		}
 	}
-	if len(f.ExecutedMatching("REVOKE")) != 0 {
+	if len(f.ExecutedMatching("ON *.* FROM")) != 0 {
 		t.Error("nothing stale to revoke on a fresh identity")
+	}
+
+	// A server without serialize_query_plan still gets the memory ceiling.
+	c, f = newWorkloadClient()
+	f.FailExec("serialize_query_plan", fakedb.Exception(115, "Unknown setting"))
+	c.ensureQueryIdentity(context.Background(), SearchCHUser, 99)
+	if len(f.ExecutedMatching("SETTINGS max_memory_usage_for_user = 99 CONST")) != 2 {
+		t.Errorf("executed %q, want the ceiling retried without the unknown setting", f.ExecutedMatching("ALTER USER bifract_search SETTINGS"))
+	}
+	if c.Capabilities()[CapQueryIdentity].State != CapAvailable {
+		t.Error("an unknown optional setting must not cost the identity")
 	}
 }
 
@@ -311,6 +327,10 @@ func TestReconcileQueryIdentities(t *testing.T) {
 	c, f := newWorkloadClient()
 	live := fakedb.NewCH()
 	c.queryConns.Store(&map[string]*queryIdentity{QuerySearchWorkload: {conn: live, memCapBytes: 1000}})
+	f.On("system.row_policies", fakedb.CHResult{
+		Cols: []fakedb.Col{{Column: "short_name", Type: "String"}, {Column: "n", Type: "UInt64"}},
+		Rows: [][]any{{fractalScopePolicy, uint64(len(fractalScopeTables))}, {scopeRequiredPolicy, uint64(len(fractalScopeTables))}},
+	})
 
 	c.reconcileQueryIdentities(context.Background(), map[string]int64{QuerySearchWorkload: 1050, QueryRecallWorkload: 500})
 
