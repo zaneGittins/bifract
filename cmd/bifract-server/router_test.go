@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"bifract/pkg/api"
+	"bifract/pkg/auth"
 	"bifract/pkg/oidc"
 
 	"github.com/go-chi/chi/v5"
@@ -175,6 +176,22 @@ func TestEveryRouteDeclaresAccess(t *testing.T) {
 			if route.access == "" {
 				t.Errorf("%s declares no Access; every route must state who may reach it", route.key())
 			}
+		}
+	}
+}
+
+// TestScopeExemptRoutesAreUnscoped: a scope-exempt path ignores the request's
+// scope header, so a scoped access level there would be judged against whatever
+// scope the session last held, or none. Such routes must check their own target.
+func TestScopeExemptRoutesAreUnscoped(t *testing.T) {
+	mux, registry := buildRouter(testDeps())
+	for _, route := range walkRouter(t, mux, registry) {
+		if !auth.ScopeHeaderExempt(route.path) {
+			continue
+		}
+		switch api.Access(route.access) {
+		case api.AccessViewer, api.AccessAnalyst, api.AccessFractalAdmin:
+			t.Errorf("%s is scope-exempt but declares scoped access %q", route.key(), route.access)
 		}
 	}
 }

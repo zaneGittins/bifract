@@ -55,10 +55,7 @@ test.describe('Scope opened by URL as a non-admin', () => {
   });
 
   test('a prism link shows the prism name', async ({ page, browser, baseURL }) => {
-    // Login only seeds a fractal into the session, so a prism-only user cannot sign in usefully yet.
-    const fractal = await create(page, '/api/v1/fractals', { name: `e2e-nonadmin-${username}` });
-    cleanup.push(`/api/v1/fractals/${fractal.id}`);
-    await create(page, `/api/v1/fractals/${fractal.id}/permissions`, { username, role: 'viewer' });
+    // The prism is the user's only grant: no fractal grant to fall back on.
     const prism = await create(page, '/api/v1/prisms', { name: `e2e-nonadmin-${username}` });
     cleanup.push(`/api/v1/prisms/${prism.id}`);
     await create(page, `/api/v1/prisms/${prism.id}/permissions`, { username, role: 'analyst' });
