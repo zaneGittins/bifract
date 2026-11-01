@@ -76,9 +76,11 @@ An expression that yields a condition is a filter on its own:
 * | startsWith(image, "C:\\Windows") AND len(commandline) > 500
 ```
 
+An expression is one leaf of a filter chain. The leaves around it stay ordinary filters, so `lower(image)="cmd.exe" AND pid=4` compares `pid` as text in either order. A bracket followed by a comparison or arithmetic operator is an expression, not a group: `(bytes_in + bytes_out) > 1000000`.
+
 An expression that yields a value, such as `| lower(image)` alone, is an error. Expression filters are computed per row and cannot use a skip index, so put a selective filter in front.
 
-A name that is also a command (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`) runs as the command unless a comparison follows:
+A name that is also a command (`len`, `entropy`, `substr`, `concat`, `hash`, `coalesce`, `base64Decode`, `urlDecode`, `levenshtein`) runs as the command unless a comparison or arithmetic operator follows:
 
 ```
 * | len(commandline) | _len > 500    the command, which adds _len

@@ -368,62 +368,17 @@ func (p *Parser) Parse() (*PipelineNode, error) {
 				}
 				pipeline.HavingConditions = append(pipeline.HavingConditions, having)
 			}
-		} else if p.current().Type == TokenLParen {
-			// Parenthesized condition group in pipeline, e.g.:
-			//   * | (status="200" OR status="201")
-			//   * | (status="200" OR status="201") AND service="web"
+		} else if p.current().Type == TokenLParen || p.current().Type == TokenBinding || p.atExprFilter() {
+			// A chain led by a group, an expression or a binding, e.g.
+			// (status="200" OR status="201") AND service="web" or lower(image)="x" AND pid=4.
+			// Each expression is one leaf, so the leaves around it compile as filters.
 			conditions, err := p.parseCompoundHavingConditions()
 			if err != nil {
 				return nil, err
 			}
-			// NOT binds to the first element (the parenthesized group).
-			if pipelineNegate && len(conditions) > 0 {
-				if conditions[0].IsCompound {
-					conditions[0].Negate = !conditions[0].Negate
-				} else {
-					negateHavingCondition(&conditions[0])
-				}
-			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
-		} else if p.current().Type == TokenBinding && !p.atBindingChain() && !p.atBindingExpr() {
-			cond, err := p.parseBindingCondition(pipelineNegate)
-			if err != nil {
-				return nil, err
-			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, *cond)
-		} else if p.current().Type == TokenBinding && p.atBindingChain() {
-			conditions, err := p.parseCompoundHavingConditions()
-			if err != nil {
-				return nil, err
-			}
+			// NOT binds to the first leaf.
 			if pipelineNegate && len(conditions) > 0 {
 				negateHavingCondition(&conditions[0])
-			}
-			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
-		} else if p.atExprFilter() || p.atBindingExpr() {
-			// A whole stage that is one expression stays one expression, brackets and
-			// all. Only when the expression grammar cannot take the stage on its own
-			// does the chain parser split it into leaves: `lower(a)="x" AND b=/foo/`
-			// mixes expression and filter syntax, and `lower(x) =~ "a","b"` ends on a
-			// filter operator the expression grammar does not have.
-			saved := p.pos
-			expr, exprErr := p.parseExprFilter()
-			if exprErr == nil && !p.atExprMatchOperator() {
-				pipeline.HavingConditions = append(pipeline.HavingConditions,
-					HavingCondition{Expr: expr, Negate: pipelineNegate})
-				continue
-			}
-			p.pos = saved
-			conditions, err := p.parseCompoundHavingConditions()
-			if err != nil {
-				return nil, err
-			}
-			if pipelineNegate && len(conditions) > 0 {
-				if conditions[0].IsCompound {
-					conditions[0].Negate = !conditions[0].Negate
-				} else {
-					negateHavingCondition(&conditions[0])
-				}
 			}
 			pipeline.HavingConditions = append(pipeline.HavingConditions, conditions...)
 		} else if p.current().Type == TokenField && !sawPipe {
@@ -565,8 +520,9 @@ func (p *Parser) parseCondition() (*HavingCondition, error) {
 	cond := &HavingCondition{}
 
 	// A condition function or an expression is an operand like any other leaf,
-	// e.g. a="x" OR cidr(ip, "10.0.0.0/8"), lower(image)="cmd.exe" or &n > 5.
-	if p.atBindingExpr() || (p.current().Type == TokenFunction && p.atExprFilter()) {
+	// e.g. a="x" OR cidr(ip, "10.0.0.0/8"), lower(image)="cmd.exe", &n > 5 or
+	// (len(a) + 1) > 2.
+	if p.atBindingExpr() || p.atBracketExpr() || (p.current().Type == TokenFunction && p.atExprFilter()) {
 		// The expression ends at AND/OR, which join leaves, and a filter
 		// operator the expression grammar lacks may follow it:
 		// lower(image) =~ "cmd","ps".
@@ -619,6 +575,9 @@ func (p *Parser) parseCondition() (*HavingCondition, error) {
 		cond.Operator = "<="
 		p.advance()
 	default:
+		if p.arithmeticLeafAt(p.pos - 1) {
+			return nil, newPosError(opTok, "arithmetic on a field is an expression; bracket it, for example (bytes_in + bytes_out) > 1000000")
+		}
 		if !p.atExprMatchOperator() {
 			return nil, newPosError(opTok, "expected comparison operator (=, !=, >, <, >=, <=, =~, =^, =$, !=~, !=^, !=$), got %s", describeToken(opTok))
 		}
@@ -683,6 +642,10 @@ func (p *Parser) parseCondition() (*HavingCondition, error) {
 			cond.Value = "*"
 		}
 	} else {
+		if fn, ok := exprFuncs[strings.ToLower(valTok.Value)]; ok && valTok.Type == TokenFunction && fn.Returns != TypeBool {
+			return nil, newPosError(valTok, "expected value, got call %s(); to compare with an expression, write the expression first, for example %s(...) %s %s",
+				valTok.Value, valTok.Value, mirroredComparison[cond.Operator], cond.Field)
+		}
 		return nil, newPosError(valTok, "expected value, got %s", describeToken(valTok))
 	}
 
@@ -821,7 +784,8 @@ func (p *Parser) isHavingCondition() bool {
 		return false
 	}
 
-	return isComparisonOperator(p.peek().Type)
+	// Arithmetic is let through so the condition parser can say how to write it.
+	return isComparisonOperator(p.peek().Type) || p.arithmeticLeafAt(p.pos)
 }
 
 func (p *Parser) isCompoundHavingCondition() bool {
@@ -847,8 +811,8 @@ func (p *Parser) isCompoundHavingCondition() bool {
 				}
 			case p.atValueWord() && p.afterValueSeparator():
 				p.advance()
-			case p.atConditionCall() && p.callEndIndex() > p.pos:
-				p.pos = p.callEndIndex()
+			case p.atConditionCall() && p.groupEndIndex(p.pos+1) > p.pos:
+				p.pos = p.groupEndIndex(p.pos + 1)
 			default:
 				p.pos = savedPos
 				return false
@@ -907,7 +871,7 @@ func (p *Parser) parseHavingConditionsWithPrecedence(minPrecedence int) ([]Havin
 		var currentConditions []HavingCondition
 
 		// Handle parentheses
-		if p.current().Type == TokenLParen {
+		if p.current().Type == TokenLParen && !p.atBracketExpr() {
 			p.advance() // consume (
 			p.havingDepth++
 			innerConditions, err := p.parseHavingConditionsWithPrecedence(0)
@@ -1076,13 +1040,13 @@ var matchOperators = map[TokenType]struct {
 
 // isComparisonOperator reports whether t joins a field to a value in a filter.
 func isComparisonOperator(t TokenType) bool {
-	switch t {
-	case TokenEqual, TokenNotEqual, TokenGreater, TokenLess, TokenGreaterEqual, TokenLessEqual:
-		return true
-	}
 	_, ok := matchOperators[t]
-	return ok
+	return ok || isScalarComparison(t)
 }
+
+// mirroredComparison is the operator that keeps a comparison's meaning when its
+// sides are swapped.
+var mirroredComparison = map[string]string{"=": "=", "!=": "!=", ">": "<", "<": ">", ">=": "<=", "<=": ">="}
 
 // atExprMatchOperator reports whether the current token is a multi-value match
 // operator.

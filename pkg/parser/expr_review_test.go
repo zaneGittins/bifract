@@ -32,9 +32,13 @@ func revSQL(t *testing.T, query string) string {
 // time guards. Unbracketed, a top-level OR re-associated with that chain and the
 // right disjunct read every fractal at any time.
 func TestExprPredicateCannotEscapeGuards(t *testing.T) {
-	sql := revSQL(t, `* | lower(image) = "cmd.exe" OR lower(image) = "powershell.exe"`)
+	sql := revSQL(t, `let &c := lower(image) = "cmd.exe" OR lower(image) = "powershell.exe"; * | &c`)
 	if !strings.Contains(sql, "AND (lower(fields.`image`::String) = 'cmd.exe' OR lower(fields.`image`::String) = 'powershell.exe')") {
 		t.Errorf("predicate not bracketed inside the guard chain: %s", sql)
+	}
+	sql = revSQL(t, `* | lower(image) = "cmd.exe" OR lower(image) = "powershell.exe"`)
+	if !strings.Contains(sql, "AND ((lower(fields.`image`::String) = 'cmd.exe') OR (lower(fields.`image`::String) = 'powershell.exe'))") {
+		t.Errorf("chain of expression leaves not bracketed inside the guard chain: %s", sql)
 	}
 }
 
