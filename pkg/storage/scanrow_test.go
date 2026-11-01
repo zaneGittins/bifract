@@ -85,6 +85,29 @@ func TestScanRowMapValueShapes(t *testing.T) {
 // object. Only the two field columns get that treatment: a user column that
 // happens to hold JSON text stays text, and unparseable field text is passed
 // through rather than dropped.
+// A NULL number is no value, not 0: a left join() row with no match must not
+// show a count of 0. A non-NULL value keeps the plain number shape.
+func TestScanRowMapNullableNumbers(t *testing.T) {
+	for _, typ := range []string{"Nullable(UInt64)", "Nullable(Int32)", "Nullable(Float64)", "LowCardinality(Nullable(UInt32))"} {
+		t.Run(typ, func(t *testing.T) {
+			got, err := scanOne(t, []fakedb.Col{{Column: "v", Type: typ}}, []any{nil})
+			if err != nil {
+				t.Fatalf("scanRowMap: %v", err)
+			}
+			if v, ok := got["v"]; !ok || v != nil {
+				t.Errorf("v = %#v, want nil", v)
+			}
+		})
+	}
+	got, err := scanOne(t, []fakedb.Col{{Column: "v", Type: "Nullable(UInt64)"}}, []any{uint64(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["v"] != uint64(3) {
+		t.Errorf("v = %#v, want uint64(3)", got["v"])
+	}
+}
+
 func TestScanRowMapParsesFieldColumnsOnly(t *testing.T) {
 	cols := []fakedb.Col{{Column: "fields", Type: "String"}, {Column: "_all_fields", Type: "String"}, {Column: "note", Type: "String"}}
 	got, err := scanOne(t, cols, []any{`{"user":"alice"}`, `{"n":1}`, `{"x":1}`})

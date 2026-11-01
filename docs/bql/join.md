@@ -11,7 +11,7 @@
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `key` (required) | | Field to join on. The subquery must output it, so aggregate with `groupby(key)`, not a bare `count()`. |
-| `type` | `inner` | `inner` keeps only outer rows with a match. `left` keeps every outer row; non-matches get empty values (`0` for counts). |
+| `type` | `inner` | `inner` keeps only outer rows with a match. `left` keeps every outer row; non-matches get empty values, counts included, so `_join__count < 5` drops them. |
 | `max` | 10000 | Most rows the subquery may return. Capped at 100000. |
 | `include` | all | Subquery columns to bring back. Each must exist in the subquery output. |
 

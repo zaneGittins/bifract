@@ -974,7 +974,12 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	sql.WriteString(" = _join_sub.")
 	sql.WriteString(p.JoinKey)
 
-	return sql.String()
+	if joinType == "INNER" {
+		return sql.String()
+	}
+	// Unmatched rows read NULL instead of the column default, so 0 is not a count
+	// a filter can match. Wrapped because callers append ORDER BY and LIMIT.
+	return "SELECT * FROM (" + sql.String() + " SETTINGS join_use_nulls = 1)"
 }
 
 // innerJoinWrap reports whether a join() INNER JOINs the outer rows.

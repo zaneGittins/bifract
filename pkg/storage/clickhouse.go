@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -2057,34 +2058,39 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	values := make([]interface{}, len(columnTypes))
 	for i, col := range columnTypes {
 		typeName := unwrapLowCardinality(unwrapSimpleAggregateFunction(col.DatabaseTypeName()))
+		inner, nullable := strings.CutPrefix(typeName, "Nullable(")
+		if nullable {
+			inner = strings.TrimSuffix(inner, ")")
+		}
 		switch {
-		case typeName == "String" || typeName == "Nullable(String)":
+		// A NULL string reads as "", the same as an empty field.
+		case inner == "String":
 			values[i] = new(string)
-		case typeName == "UInt64" || typeName == "Nullable(UInt64)":
-			values[i] = new(uint64)
-		case typeName == "Int64" || typeName == "Nullable(Int64)":
-			values[i] = new(int64)
-		case typeName == "Float64" || typeName == "Nullable(Float64)":
-			values[i] = new(float64)
+		case inner == "UInt64":
+			values[i] = numDest[uint64](nullable)
+		case inner == "Int64":
+			values[i] = numDest[int64](nullable)
+		case inner == "Float64":
+			values[i] = numDest[float64](nullable)
 		// The narrower fixed-width types. Without these they fall through to the
 		// *string default below and the whole query fails on the first row with
 		// "converting Int32 to *string is unsupported". A system table column is
 		// routinely Int32 or UInt8, so the trap is easy to walk into and the
 		// failure names the scanner rather than the query.
-		case typeName == "Int8" || typeName == "Nullable(Int8)":
-			values[i] = new(int8)
-		case typeName == "Int16" || typeName == "Nullable(Int16)":
-			values[i] = new(int16)
-		case typeName == "Int32" || typeName == "Nullable(Int32)":
-			values[i] = new(int32)
-		case typeName == "UInt8" || typeName == "Nullable(UInt8)":
-			values[i] = new(uint8)
-		case typeName == "UInt16" || typeName == "Nullable(UInt16)":
-			values[i] = new(uint16)
-		case typeName == "UInt32" || typeName == "Nullable(UInt32)":
-			values[i] = new(uint32)
-		case typeName == "Float32" || typeName == "Nullable(Float32)":
-			values[i] = new(float32)
+		case inner == "Int8":
+			values[i] = numDest[int8](nullable)
+		case inner == "Int16":
+			values[i] = numDest[int16](nullable)
+		case inner == "Int32":
+			values[i] = numDest[int32](nullable)
+		case inner == "UInt8":
+			values[i] = numDest[uint8](nullable)
+		case inner == "UInt16":
+			values[i] = numDest[uint16](nullable)
+		case inner == "UInt32":
+			values[i] = numDest[uint32](nullable)
+		case inner == "Float32":
+			values[i] = numDest[float32](nullable)
 		case isCHDateTimeType(typeName):
 			values[i] = new(time.Time)
 		case strings.HasPrefix(typeName, "Array("):
@@ -2121,6 +2127,13 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	row := make(map[string]interface{})
 	for i, col := range columnTypes {
 		colName := col.Name()
+		if p, ok := nullableNum(values[i]); ok {
+			if p == nil {
+				row[colName] = nil
+				continue
+			}
+			values[i] = p
+		}
 		switch v := values[i].(type) {
 		case *string:
 			val := *v
@@ -2174,6 +2187,28 @@ func scanRowMap(columnTypes []driver.ColumnType, rows driver.Rows) (map[string]i
 	}
 
 	return row, nil
+}
+
+// numDest is the scan destination for a number column. A Nullable one scans
+// into a **T so NULL arrives as nil rather than 0.
+func numDest[T any](nullable bool) any {
+	if nullable {
+		return new(*T)
+	}
+	return new(T)
+}
+
+// nullableNum unwraps a numDest **T: ok reports whether dest was one, and p is
+// its *T, nil for NULL.
+func nullableNum(dest any) (p any, ok bool) {
+	v := reflect.ValueOf(dest).Elem()
+	if v.Kind() != reflect.Pointer {
+		return nil, false
+	}
+	if v.IsNil() {
+		return nil, true
+	}
+	return v.Interface(), true
 }
 
 func (c *ClickHouseClient) CountLogs(ctx context.Context, startTime, endTime time.Time) (uint64, error) {
