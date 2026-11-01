@@ -65,17 +65,17 @@ func ResolvePreviewRange(window string, start, end *time.Time, now time.Time) (P
 	now = now.UTC()
 	if start != nil || end != nil {
 		if start == nil || end == nil {
-			return PreviewRange{}, fmt.Errorf("preview range needs both start and end")
+			return PreviewRange{}, fmt.Errorf("a range needs both a start and an end")
 		}
 		s, e := start.UTC(), end.UTC()
 		if e.After(now) {
 			e = now
 		}
 		if !s.Before(e) {
-			return PreviewRange{}, fmt.Errorf("preview range start must be before its end")
+			return PreviewRange{}, fmt.Errorf("the range must start before it ends")
 		}
 		if e.Sub(s) > previewMaxSpan {
-			return PreviewRange{}, fmt.Errorf("preview range is limited to 90 days")
+			return PreviewRange{}, fmt.Errorf("the range is limited to 90 days")
 		}
 		return PreviewRange{Start: s, End: e}, nil
 	}
@@ -512,58 +512,7 @@ const previewNetworkPairCap = 20000
 func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt ModelType, def ModelDefinition, rng PreviewRange) (*PreviewResult, error) {
 	// Scored over the range's complete hours, as the model scores its window.
 	w := netPreviewWindow(rng)
-	windowSecs := int64(w.Days) * 86400
-	source := m.ch.ReadTable()
-	cfg := loadPreviewConfig()
-
-	bp := def.Beacon.WithDefaults(windowSecs)
-	lc := def.LongConn.WithDefaults()
-	mp := def.Modifiers.WithDefaults()
 	threshold := networkScoreThreshold(def, mt)
-
-	// Prevalence context over the same window (all sources, not just qualifying).
-	var networkSize uint64
-	sizeSQL, err := BuildNetPreviewNetworkSize(def, source, fractalID, w)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.ch.QueryRow(ctx, sizeSQL+cfg.settings()).Scan(&networkSize); err != nil {
-		return nil, fmt.Errorf("preview network size: %w", err)
-	}
-	prevalence := make(map[string]uint64)
-	if networkSize > 0 {
-		prevSQL, err := BuildNetPreviewPrevalence(def, source, fractalID, w)
-		if err != nil {
-			return nil, err
-		}
-		if err := m.ch.StreamQuery(ctx, "", prevSQL+cfg.settings(),
-			func(row map[string]interface{}) error {
-				prevalence[getString(row, "dst")] = getUint64(row, "prev_total")
-				return nil
-			}, nil); err != nil {
-			return nil, fmt.Errorf("preview prevalence: %w", err)
-		}
-	}
-	// Modifier context, aged from the window's end, the model's "now" for it.
-	var fs firstSeenContext
-	var warnings []string
-	if networkSize > 0 {
-		pairsSQL, err := BuildNetPreviewPairs(def, mt, source, fractalID, w)
-		if err != nil {
-			return nil, err
-		}
-		fs, warnings = m.loadFirstSeen(ctx, fractalID, def, pairsSQL, cfg.settings(), rng.End)
-	}
-	ti, tiWarnings := m.threatIntelColumn(ctx, fractalID, def)
-	warnings = append(warnings, tiWarnings...)
-	if networkSize == 0 {
-		networkSize = 1 // avoid div-by-zero; no data yields an empty preview below
-	}
-
-	aggSQL, err := BuildNetPreviewAgg(def, mt, source, fractalID, w, ti)
-	if err != nil {
-		return nil, err
-	}
 
 	var scored, scanned int
 	var maxScore float64
@@ -582,23 +531,13 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 	}
 	var top []scoredPair
 
-	blockRows := fmt.Sprintf("max_block_size=%d", netReadBlockRows)
-	streamErr := m.ch.StreamQuery(ctx, "", aggSQL+cfg.settings(blockRows), func(row map[string]interface{}) error {
+	pass, err := m.scoreNetRaw(ctx, fractalID, mt, def, w, rng.End, loadPreviewConfig().settings(), func(s netScored) error {
 		scanned++
 		if scored >= previewNetworkPairCap {
 			return nil // keep counting scanned; stop scoring past the cap
 		}
 		scored++
-		p := pairFromRow(row)
-		var rs RegularityScore
-		if mt == ModelTypeLongConnection {
-			rs = RegularityScore{Score: ScoreLongConn(p.TotalDuration, lc)}
-		} else {
-			rs = ScoreBeacon(p, bp, windowSecs)
-		}
-		prevRatio := float64(prevalence[p.Dst]) / float64(networkSize)
-		final, mods := ApplyPairModifiers(rs.Score, fs.context(p, prevRatio, rng.End, mp), mp)
-
+		final := s.final
 		band := int(final * 10)
 		if band > 9 {
 			band = 9
@@ -621,11 +560,11 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 		if final > maxScore {
 			maxScore = final
 		}
-		top = append(top, scoredPair{src: p.Src, dst: p.Dst, port: p.Port, cnt: p.Count, final: final, rs: rs, prev: round3(prevRatio), mods: mods})
+		top = append(top, scoredPair{src: s.p.Src, dst: s.p.Dst, port: s.p.Port, cnt: s.p.Count, final: final, rs: s.rs, prev: round3(s.prevRatio), mods: s.mods})
 		return nil
-	}, nil)
-	if streamErr != nil {
-		return nil, fmt.Errorf("preview aggregation: %w", streamErr)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("preview %w", err)
 	}
 
 	// Top 25 by final score.
@@ -685,8 +624,8 @@ func (m *Manager) previewNetwork(ctx context.Context, fractalID string, mt Model
 			"pairs_scanned":    uint64(scanned),
 			"pairs_scored":     uint64(scored),
 			"max_score":        round3(maxScore),
-			"network_size":     networkSize,
-			"modifier_warning": strings.Join(warnings, "; "),
+			"network_size":     pass.networkSize,
+			"modifier_warning": strings.Join(pass.warnings, "; "),
 		}),
 	}, nil
 }
