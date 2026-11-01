@@ -291,8 +291,8 @@ func TestEmailActionCRUD(t *testing.T) {
 func TestCreateFeedAlert(t *testing.T) {
 	m, pg := newTestManager(t)
 	pg.answer("INSERT INTO alerts (name, description, query_string, alert_type, severity, enabled", fakedb.Row("fa-1"))
-	a, err := m.CreateFeedAlert(context.Background(), "Rule", "d", `status=500`, "", "", []string{"sigma:high"}, nil,
-		"feed-1", "rules/a.yml", "hash-1", "f1", "", "owner")
+	a, err := m.CreateFeedAlert(context.Background(), "Rule", "d", `status=500`, "", "", []string{"sigma:high"},
+		[]string{"https://ok.example/a", "javascript:alert(1)"}, "feed-1", "rules/a.yml", "hash-1", "f1", "", "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +302,9 @@ func TestCreateFeedAlert(t *testing.T) {
 	ins := pg.args("INSERT INTO alerts (name, description, query_string, alert_type, severity, enabled")[0]
 	if ins[3] != "event" || ins[4] != "medium" || ins[8] != "f1" || ins[9] != nil || ins[10] != "feed-1" {
 		t.Errorf("insert = %v", ins)
+	}
+	if ins[6] != `{"https://ok.example/a"}` {
+		t.Errorf("references = %v, want only the http(s) one", ins[6])
 	}
 	rev := pg.args(sqlRevisionInsert)[0]
 	if rev[4] != "created" || rev[5] != "owner" || rev[6] != feedAuthorLabel {
@@ -333,7 +336,7 @@ func TestUpdateFeedAlert(t *testing.T) {
 	pg.answer("SELECT webhook_id::text FROM alert_webhook_actions", rowsOf(1, "w1"))
 	pg.answer("UPDATE alerts\n\t\tSET name = $2, description = $3, query_string = $4, alert_type = $5", fakedb.Affected(1))
 
-	if err := m.UpdateFeedAlert(ctx, "a1", "Rule v2", "desc", `status=500`, "", "high", []string{"b", "a"}, nil, "hash-2", "owner", "", "p1"); err != nil {
+	if err := m.UpdateFeedAlert(ctx, "a1", "Rule v2", "desc", `status=500`, "", "high", []string{"b", "a"}, []string{"javascript:alert(1)"}, "hash-2", "owner", "", "p1"); err != nil {
 		t.Fatal(err)
 	}
 	revs := pg.args(sqlRevisionInsert)
@@ -344,6 +347,9 @@ func TestUpdateFeedAlert(t *testing.T) {
 		t.Errorf("the update keeps the operator's wiring: %s", revs[1][2])
 	}
 	upd := pg.args("UPDATE alerts\n\t\tSET name = $2, description = $3")[0]
+	if upd[7] != `{}` {
+		t.Errorf("references = %v, want the javascript: one dropped", upd[7])
+	}
 	if upd[10] != nil || upd[11] != "p1" {
 		t.Errorf("scope = %v/%v, want the feed's prism", upd[10], upd[11])
 	}
