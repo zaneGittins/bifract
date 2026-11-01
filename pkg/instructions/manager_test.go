@@ -3,6 +3,7 @@ package instructions
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +130,79 @@ func TestGetLibraryStripsLegacyURLCredentials(t *testing.T) {
 	}
 	if lib.RepoURL != "https://github.com/x/y" {
 		t.Errorf("RepoURL = %q", lib.RepoURL)
+	}
+}
+
+const scopeCount = "SELECT COUNT(*) FROM instruction_libraries"
+
+// Library IDs from another fractal or prism must never reach a conversation:
+// their metadata and pinned pages would be served to the caller.
+func TestSetConversationLibrariesRejectsOutOfScope(t *testing.T) {
+	m, fake := newTestManager(t)
+	fake.On(scopeCount, fakedb.Row(int64(1)))
+	err := m.SetConversationLibraries(context.Background(), "c1", "f1", "", []string{"mine", "theirs"})
+	if !errors.Is(err, ErrLibraryOutOfScope) {
+		t.Fatalf("err = %v, want ErrLibraryOutOfScope", err)
+	}
+	if n := len(fake.Matching("conversation_libraries")); n != 0 {
+		t.Errorf("%d writes to conversation_libraries after a refused set", n)
+	}
+}
+
+func TestSetConversationLibrariesChecksCallerScope(t *testing.T) {
+	tests := []struct{ name, fractal, prism, column, scope string }{
+		{"fractal", "f1", "", "fractal_id = $2", "f1"},
+		{"prism", "", "p1", "prism_id = $2", "p1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, fake := newTestManager(t)
+			fake.On(scopeCount, fakedb.Row(int64(1)))
+			// A repeated ID is one library, not a second one to find.
+			if err := m.SetConversationLibraries(context.Background(), "c1", tt.fractal, tt.prism, []string{"lib-1", "lib-1"}); err != nil {
+				t.Fatal(err)
+			}
+			check := fake.Matching(scopeCount)[0]
+			if !strings.Contains(check.Query, tt.column) || check.Args[1] != tt.scope {
+				t.Errorf("scope check %q args %v, want %s with %s", check.Query, check.Args, tt.column, tt.scope)
+			}
+			inserts := fake.Matching("INSERT INTO conversation_libraries")
+			if len(inserts) != 1 || inserts[0].Args[1] != "lib-1" || !inserts[0].InTx {
+				t.Errorf("inserts = %+v, want lib-1 once in a transaction", inserts)
+			}
+		})
+	}
+}
+
+func TestSetConversationLibrariesWithoutScope(t *testing.T) {
+	m, fake := newTestManager(t)
+	err := m.SetConversationLibraries(context.Background(), "c1", "", "", []string{"lib-1"})
+	if !errors.Is(err, ErrLibraryOutOfScope) {
+		t.Fatalf("err = %v, want ErrLibraryOutOfScope", err)
+	}
+	if len(fake.Calls()) != 0 {
+		t.Errorf("ran %d statements with no scope", len(fake.Calls()))
+	}
+}
+
+// Rows attached before the write check existed must not load either, so every
+// read of a conversation's libraries keeps only those in the conversation's scope.
+func TestConversationLibraryReadsKeepConversationScope(t *testing.T) {
+	m, fake := newTestManager(t)
+	ctx := context.Background()
+	if _, err := m.GetConversationLibraries(ctx, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ResolveLibraryIDs(ctx, "c1", "f1"); err != nil {
+		t.Fatal(err)
+	}
+	reads := fake.Matching("FROM conversation_libraries")
+	if len(reads) != 2 {
+		t.Fatalf("got %d conversation library reads, want 2", len(reads))
+	}
+	for _, c := range reads {
+		if !strings.Contains(c.Query, conversationScopeJoin) {
+			t.Errorf("read does not keep the conversation's scope:\n%s", c.Query)
+		}
 	}
 }
