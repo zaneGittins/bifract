@@ -62,3 +62,15 @@ test('progress reads in logs while importing and in bytes while downloading', ()
     .toBe('Downloading: 1.0 MB of 112.8 MB');
   expect(ex.importProgress(imp({ status: 'downloading', bytes_done: 59118443, bytes_total: 118236887 })).pct).toBe(49);
 });
+
+test('an item links its website by address, and never a script URL', () => {
+  const { ex } = load();
+  const lab = {
+    id: 'lab', kind: 'dataset', name: 'Lab', author: 'Bifract Labs', homepage: 'https://labs.bifract.io/001/',
+    dataset: { logs: 1, bytes: 1, start: '2026-10-27T00:00:00Z', end: '2026-10-28T00:00:00Z' },
+  };
+  ex.items = [lab];
+  expect(ex.mainHtml(lab)).toContain(
+    '<dt>Website</dt><dd><a href="https://labs.bifract.io/001/" target="_blank" rel="noopener noreferrer">labs.bifract.io/001</a></dd>');
+  expect(ex.mainHtml({ ...lab, homepage: 'javascript:alert(1)' })).not.toContain('Website');
+});
