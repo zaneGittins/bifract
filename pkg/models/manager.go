@@ -1019,7 +1019,7 @@ func (m *Manager) getRarityData(ctx context.Context, tableName, fractalID string
 		return nil, 0, nil
 	}
 
-	baseQuery := buildRarityScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), historyDays)
+	baseQuery := buildRarityScoredSQL("`"+tableName+"`", storage.EscCHStr(fractalID), historyDays)
 
 	if q.Search != "" {
 		baseQuery += fmt.Sprintf(" AND (partition_val ILIKE '%%%s%%' OR value_val ILIKE '%%%s%%')",
@@ -1052,7 +1052,7 @@ func (m *Manager) getFirstSeenData(ctx context.Context, tableName, fractalID str
 	if extra != "" {
 		scope += " AND " + extra
 	}
-	baseQuery := firstSeenAgg("`"+tableName+"` FINAL", scope, keyCol, historyDays, recorded, true)
+	baseQuery := firstSeenAgg("`"+tableName+"`", scope, keyCol, historyDays, recorded, true)
 	return m.runPage(ctx, "first_seen", baseQuery, where, order, q.Limit, q.Offset)
 }
 
@@ -1075,7 +1075,7 @@ func (m *Manager) getVolumeBaselineData(ctx context.Context, tableName, fractalI
 		return nil, 0, nil
 	}
 
-	baseQuery := buildVolumeScoredSQL("`"+tableName+"` FINAL", storage.EscCHStr(fractalID), def, "")
+	baseQuery := buildVolumeScoredSQL("`"+tableName+"`", storage.EscCHStr(fractalID), def, "")
 	if q.Search != "" {
 		baseQuery += fmt.Sprintf("\nAND entity_val ILIKE '%%%s%%'", storage.EscCHStr(q.Search))
 	}
@@ -1228,7 +1228,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 		result["total_rows"] = rows[0]["total_rows"]
 		result["distinct_partitions"] = rows[0]["distinct_partitions"]
 	}
-	topQ := fmt.Sprintf(`SELECT partition_val, sum(event_count) AS cnt FROM %s FINAL WHERE %s GROUP BY partition_val ORDER BY cnt DESC LIMIT 5`, qt, scope)
+	topQ := fmt.Sprintf(`SELECT partition_val, sum(event_count) AS cnt FROM %s WHERE %s GROUP BY partition_val ORDER BY cnt DESC LIMIT 5`, qt, scope)
 	topRows, err := m.ch.QuerySchema(ctx, topQ)
 	if err == nil {
 		result["top_partitions"] = topRows
@@ -1236,7 +1236,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 
 	// Findings and new pairs per day in one pass: each pair's first day comes from
 	// its stored day set, so this reads the state and never the logs.
-	dRows, err := m.ch.QuerySchema(ctx, rarityDiscoverySQL(buildRarityScoredSQL(qt+" FINAL", fid, historyDays), rule.Where))
+	dRows, err := m.ch.QuerySchema(ctx, rarityDiscoverySQL(buildRarityScoredSQL(qt, fid, historyDays), rule.Where))
 	if err != nil {
 		return nil, fmt.Errorf("rarity discovery: %w", err)
 	}
@@ -1254,7 +1254,7 @@ func (m *Manager) getRarityStats(ctx context.Context, qt, fid string, rule findi
 }
 
 func (m *Manager) getFirstSeenStats(ctx context.Context, qt, fid, keyCol string, historyDays int) (map[string]interface{}, error) {
-	agg := firstSeenAgg(qt+" FINAL", fidScope(fid), keyCol, historyDays, false, false)
+	agg := firstSeenAgg(qt, fidScope(fid), keyCol, historyDays, false, false)
 	q := fmt.Sprintf(`
 SELECT count() AS total_entities,
        min(first_seen) AS oldest_seen,
@@ -1277,7 +1277,7 @@ FROM (%s
 }
 
 func (m *Manager) getVolumeBaselineStats(ctx context.Context, tableName string, def ModelDefinition, fid string, rule findingsRule) (map[string]interface{}, error) {
-	scoring := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
+	scoring := buildVolumeScoredSQL("`"+tableName+"`", fid, def, "")
 	q := fmt.Sprintf(`SELECT count() AS total_entities,
        countIf(abs(z_score) > %g) AS anomalous,
        countIf(%s) AS findings,
@@ -1413,7 +1413,7 @@ func firstSeenCountInner(source, fidEsc, keyCol string) string {
 func (m *Manager) getRarityHistogram(ctx context.Context, qt, fid string, def ModelDefinition) (map[string]interface{}, error) {
 	preds := rarityFlagPredicates(def)
 	q := fmt.Sprintf(`SELECT toUInt64(count()) AS total, toUInt64(countIf(%s)) AS flagged FROM (%s)`,
-		preds.SQL(), buildRarityScoredSQL(qt+" FINAL", fid, def.HistoryDaysFor(ModelTypeRarity)))
+		preds.SQL(), buildRarityScoredSQL(qt, fid, def.HistoryDaysFor(ModelTypeRarity)))
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("rarity flag counts: %w", err)
@@ -1486,7 +1486,7 @@ func (m *Manager) getFirstSeenHistogram(ctx context.Context, qt, fid, keyCol str
 	q := fmt.Sprintf(`SELECT toString(since) AS day, toUInt64(count()) AS cnt
 FROM (%s)
 WHERE since >= today() - %d
-GROUP BY day ORDER BY day`, firstSeenAgg(qt+" FINAL", fidScope(fid), keyCol, historyDays, false, false), firstSeenDiscoveryDays)
+GROUP BY day ORDER BY day`, firstSeenAgg(qt, fidScope(fid), keyCol, historyDays, false, false), firstSeenDiscoveryDays)
 	rows, err := m.ch.QuerySchema(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("first_seen discovery series: %w", err)
@@ -1499,7 +1499,7 @@ GROUP BY day ORDER BY day`, firstSeenAgg(qt+" FINAL", fidScope(fid), keyCol, his
 }
 
 func (m *Manager) getVolumeBaselineHistogram(ctx context.Context, tableName string, def ModelDefinition, fid string) (map[string]interface{}, error) {
-	inner := buildVolumeScoredSQL("`"+tableName+"` FINAL", fid, def, "")
+	inner := buildVolumeScoredSQL("`"+tableName+"`", fid, def, "")
 	buckets, err := m.runHistogram(ctx, inner, volumeHistBucketExpr, volumeHistLabels)
 	if err != nil {
 		return nil, fmt.Errorf("volume_baseline histogram: %w", err)

@@ -136,7 +136,7 @@ func harvestSegment(segText string, opts QueryOptions, parentReg *FieldRegistry)
 	// sort, limit, join, chain, window layers, extra stages).
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" || src.LimitBy != "" ||
 		plan.IsJoin || plan.IsChain || len(plan.WindowLayers) > 0 ||
-		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
+		plan.hasModelLookup() || len(plan.Stages) > 1 {
 		return eff, fmt.Errorf("structural command (groupby/sort/limit/join/chain/window) cannot be used inside a case branch")
 	}
 

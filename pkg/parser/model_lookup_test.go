@@ -444,6 +444,70 @@ func TestModelLookup_FirstSeenIsNewCoversAlertWindow(t *testing.T) {
 	}
 }
 
+// The scoring subqueries regroup every key, which already merges the parts FINAL
+// would, so they read the state as it lies.
+func TestModelLookup_ScoringSkipsFinal(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["vol"] = AnalyticsModelInfo{ID: "5", TableName: "model_vol", ModelType: "volume_baseline", MinSample: 7, TimeBucket: "day", FractalID: "f1"}
+	opts.Models["fsw"] = AnalyticsModelInfo{ID: "6", TableName: "model_fsw", ModelType: "first_seen", HistoryDays: 7, FractalID: "f1"}
+	for _, q := range []string{
+		`* | model_lookup(model="rare", key=[image, hash])`,
+		`* | model_lookup(model="fs", key=[user])`,
+		`* | model_lookup(model="fsw", key=[user]) | is_new="1"`,
+		`* | model_lookup(model="vol", key=[user])`,
+	} {
+		if sql := translateMLWith(t, q, opts); strings.Contains(sql, "FINAL") {
+			t.Errorf("%s: scoring reads FINAL:\n%s", q, sql)
+		}
+	}
+}
+
+// is_new="1" can only hold for a key with a state row recorded since the horizon,
+// so only those keys are scored, by the join and its prefilter alike.
+func TestModelLookup_IsNewScoresOnlyRecentKeys(t *testing.T) {
+	opts := mlookupOpts()
+	opts.Models["fsw"] = AnalyticsModelInfo{ID: "6", TableName: "model_fs", ModelType: "first_seen", HistoryDays: 7, FractalID: "f1"}
+	const narrow = "entity_key IN (SELECT entity_key FROM `model_fs` WHERE fractal_id IN ('f1') AND first_recorded >= now() - INTERVAL 1 HOUR - INTERVAL 1 MINUTE)"
+	for _, q := range []string{
+		`* | model_lookup(model="fs", key=[user]) | is_new="1"`,
+		`* | model_lookup(model="fs", key=[user]) | is_new!="0"`,
+		`* | model_lookup(model="fs", key=[user]) | is_new="1" event_count>2`,
+		`* | model_lookup(model="fs", key=[user]) | (is_new="1" event_count>2)`,
+		`* | model_lookup(model="fs", key=[user]) | is_new="1" | groupby(user)`,
+		`* | model_lookup(model="fsw", key=[user]) | is_new="1"`,
+	} {
+		sql := translateMLWith(t, q, opts)
+		if n := strings.Count(sql, narrow); n != 2 {
+			t.Errorf("%s: want the join and prefilter narrowed to recent keys, %d of 2 are:\n%s", q, n, sql)
+		}
+	}
+	for _, q := range []string{
+		`* | model_lookup(model="fs", key=[user])`,
+		`* | model_lookup(model="fs", key=[user]) | is_new="0"`,
+		`* | model_lookup(model="fs", key=[user]) | is_new="1" OR event_count>2`,
+		`* | model_lookup(model="fs", key=[user]) | event_count>2 OR is_new="1" user="a"`,
+		`* | model_lookup(model="fs", key=[user]) | NOT (is_new="1" event_count>2)`,
+		`* | model_lookup(model="fs", key=[user], require=false) | is_new="1"`,
+		`* | model_lookup(model="fs", key=[user]) | head(5) | is_new="1"`,
+		`* | model_lookup(model="fs", key=[user]) | is_new := "1" | is_new="1"`,
+	} {
+		if sql := translateMLWith(t, q, opts); strings.Contains(sql, "first_recorded >=") {
+			t.Errorf("%s: scores only recent keys, but is_new=\"1\" does not bound it:\n%s", q, sql)
+		}
+	}
+
+	// An alert's horizon bounds the narrowing as it bounds is_new.
+	opts.ModelNewSince = time.Date(2026, 1, 1, 6, 30, 0, 0, time.UTC)
+	sql := translateMLWith(t, `* | model_lookup(model="fs", key=[user]) | is_new="1"`, opts)
+	mustHaveML(t, sql, "first_recorded >= least(now() - INTERVAL 1 HOUR, toDateTime64('2026-01-01 06:30:00.000', 3, 'UTC')) - INTERVAL 1 MINUTE)")
+
+	opts = mlookupOpts()
+	opts.TableName = "logs_distributed"
+	opts.Models["fs"] = AnalyticsModelInfo{ID: "2", TableName: "model_fs_dist", ModelType: "first_seen", FractalID: "f1", Distributed: true}
+	sql = translateMLWith(t, `* | model_lookup(model="fs", key=[user]) | is_new="1"`, opts)
+	mustHaveML(t, sql, "entity_key GLOBAL IN (SELECT entity_key FROM `model_fs_dist` WHERE")
+}
+
 // ---- strict mode (model_lookup default) ----
 
 // translateMLWith is translateML against caller-supplied options (prism, cluster).

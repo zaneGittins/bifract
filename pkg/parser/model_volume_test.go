@@ -117,7 +117,7 @@ func TestModelLookup_VolumeUsesSharedScoring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("translate error: %v", err)
 	}
-	want := VolumeScoredSQL("`model_vol` FINAL", "fractal_id IN ('f1')", "hour", 5, "", false)
+	want := VolumeScoredSQL("`model_vol`", "fractal_id IN ('f1')", "hour", 5, "", false)
 	if !strings.Contains(res.SQL, want) {
 		t.Errorf("expected the shared scoring subquery, got:\n%s", res.SQL)
 	}

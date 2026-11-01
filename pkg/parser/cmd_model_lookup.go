@@ -74,7 +74,7 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 	if ctx.Plan.IsJoin {
 		return fmt.Errorf("modelLookup() cannot be combined with join()")
 	}
-	if ctx.Plan.ModelLookupSQL != "" {
+	if ctx.Plan.hasModelLookup() {
 		return fmt.Errorf("modelLookup() cannot be used more than once")
 	}
 
@@ -87,7 +87,6 @@ func (h *modelLookupHandler) Execute(cmd CommandNode, ctx *CommandContext) error
 		return err
 	}
 
-	ctx.Plan.ModelLookupSQL = ks.scoringSQL
 	ctx.Plan.ModelLookupFields = ks.fields
 	ctx.Plan.modelKeys = ks
 	ctx.Plan.ModelLookupCmd = ctx.CmdIndex
@@ -184,6 +183,8 @@ type modelKeySet struct {
 	rawWhere string
 	exact    bool
 	global   bool // the model table is Distributed: emit GLOBAL IN/JOIN
+	// firstSeen holds a first_seen model's scoring inputs, nil for other types.
+	firstSeen *firstSeenScoring
 }
 
 // resolveModelKeySet validates a modelLookup() against its model and builds the
@@ -217,7 +218,7 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 		if len(keyFields) != 2 {
 			return nil, fmt.Errorf("modelLookup() for rarity models requires exactly 2 key fields: [partition_key, value_key]")
 		}
-		ks.scoringSQL = RarityScoredSQL("`"+info.TableName+"` FINAL",
+		ks.scoringSQL = RarityScoredSQL("`"+info.TableName+"`",
 			fractalIDInClause(fractalIDs), info.MinSample, info.HistoryDays, false)
 		ks.rightCols = []string{"partition_val", "value_val"}
 		ks.rawWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
@@ -225,14 +226,15 @@ func resolveModelKeySet(cmd CommandNode, ctx *CommandContext) (*modelKeySet, err
 		ks.exact = info.MinSample <= 1
 
 	case "first_seen":
-		ks.scoringSQL = buildFirstSeenScoringSQL(info.TableName, fractalIDs, info.HistoryDays, ctx.Opts.ModelNewSince)
+		ks.firstSeen = &firstSeenScoring{historyDays: info.HistoryDays, newSince: ctx.Opts.ModelNewSince}
+		ks.scoringSQL = ks.firstSeenScoringSQL(false)
 		ks.rightCols = []string{"entity_key"}
 		// A key whose days have all left the window is no longer in the model.
 		ks.rawWhere = HistoryPredicate(info.HistoryDays, modelPrefilterAlias+".")
 		ks.exact = true // the scoring subquery drops no key
 
 	case "volume_baseline":
-		ks.scoringSQL = VolumeScoredSQL("`"+info.TableName+"` FINAL", fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
+		ks.scoringSQL = VolumeScoredSQL("`"+info.TableName+"`", fractalIDInClause(fractalIDs), info.TimeBucket, info.MinSample, "", false)
 		ks.rightCols = []string{"entity_val"}
 		ks.rawWhere = volumeScoredKeysPredicate(modelPrefilterAlias, info.TimeBucket, info.MinSample)
 		ks.exact = true // the predicate admits exactly the entities with enough history
@@ -287,11 +289,15 @@ func (k *modelKeySet) membership(keys, modelWhere []string) string {
 	case len(keys) > 1:
 		lhs = "(" + strings.Join(keys, ", ") + ")"
 	}
-	op := "IN"
+	return fmt.Sprintf("%s %s (%s)", lhs, k.inOp(), set)
+}
+
+// inOp is the IN operator for a subquery over the model table.
+func (k *modelKeySet) inOp() string {
 	if k.global {
-		op = "GLOBAL IN"
+		return "GLOBAL IN"
 	}
-	return fmt.Sprintf("%s %s (%s)", lhs, op, set)
+	return "IN"
 }
 
 // keyColumns renders the model-side key columns the way the log side compares them.
@@ -447,20 +453,37 @@ FROM (
 WHERE days_observed >= %d`, daysCol, sinceMid, inner, minHistory)
 }
 
-// buildFirstSeenScoringSQL returns the scoring subquery for a first_seen model.
+// firstSeenScoring is what a first_seen model's scoring subquery depends on
+// beyond its table: its window and an alert's window start.
+type firstSeenScoring struct {
+	historyDays int
+	newSince    time.Time
+}
+
+// firstSeenScoringSQL returns the scoring subquery for a first_seen model.
 // is_new reads when the model recorded the entity, not its event time, so a late
 // or replayed log is still new to it and seeded history never is; newSince, an
 // alert's window start, widens the hour for a backlogged alert.
-func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, historyDays int, newSince time.Time) string {
+//
+// newOnly scores only keys with a state row recorded since the horizon, which
+// is_new = '1' needs; those keys score the same.
+func (k *modelKeySet) firstSeenScoringSQL(newOnly bool) string {
 	horizon := "now() - INTERVAL 1 HOUR"
-	if !newSince.IsZero() {
-		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(newSince.UTC()))
+	if since := k.firstSeen.newSince; !since.IsZero() {
+		horizon = fmt.Sprintf("least(%s, toDateTime64('%s', 3, 'UTC'))", horizon, chTimeLiteral(since.UTC()))
+	}
+	table := "`" + k.table + "`"
+	scope := fractalIDInClause(k.fractalIDs)
+	if newOnly {
+		// A minute early, so the set stays a superset however each now() is read.
+		scope += fmt.Sprintf(" AND entity_key %s (SELECT entity_key FROM %s WHERE %s AND first_recorded >= %s - INTERVAL 1 MINUTE)",
+			k.inOp(), table, scope, horizon)
 	}
 	agg := FirstSeenAggSQL(FirstSeenAgg{
-		Source:      "`" + tableName + "` FINAL",
-		Scope:       fractalIDInClause(fractalIDs),
+		Source:      table,
+		Scope:       scope,
 		KeyCol:      "entity_key",
-		HistoryDays: historyDays,
+		HistoryDays: k.firstSeen.historyDays,
 		Recorded:    true,
 	})
 	return fmt.Sprintf(`SELECT entity_key,
@@ -470,6 +493,14 @@ func buildFirstSeenScoringSQL(tableName string, fractalIDs []string, historyDays
     if(recorded_at >= %s, '1', '0') AS is_new
 FROM (%s
 )`, horizon, agg)
+}
+
+// scoreOnlyNew narrows a first_seen model's scoring to the keys is_new = '1' can
+// hold for, once a strict filter requires it.
+func (k *modelKeySet) scoreOnlyNew() {
+	if k.firstSeen != nil {
+		k.scoringSQL = k.firstSeenScoringSQL(true)
+	}
 }
 
 // parseModelLookupArgs parses the model=, key=[] and strict= arguments.

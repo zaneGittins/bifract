@@ -1410,7 +1410,7 @@ func harvestChainCommands(pl *PipelineNode, opts QueryOptions, parentReg *FieldR
 	if len(src.GroupBy) > 0 || len(src.OrderBy) > 0 || src.Limit != "" ||
 		src.LimitBy != "" || len(src.Having) > 0 || plan.IsAggregated || plan.IsJoin ||
 		plan.IsChain || plan.IsProcessTree || len(plan.WindowLayers) > 0 ||
-		plan.ModelLookupSQL != "" || len(plan.Stages) > 1 {
+		plan.hasModelLookup() || len(plan.Stages) > 1 {
 		return nil, nil, notConditionError(fmt.Sprintf("only row conditions are allowed; %s() changes the shape of the result", pl.Commands[0].Name))
 	}
 

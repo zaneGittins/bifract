@@ -631,7 +631,7 @@ func materializePostJoin(conds []HavingCondition, registry *FieldRegistry, plan 
 		// The run's connectors bind with SQL precedence, so it splits into
 		// conjuncts only when every one of them is AND.
 		units := [][]HavingCondition{run}
-		if !slices.ContainsFunc(run[:len(run)-1], func(c HavingCondition) bool { return strings.EqualFold(c.Logic, "OR") }) {
+		if allAnd(run) {
 			units = units[:0]
 			for k := range run {
 				units = append(units, run[k:k+1])
@@ -643,11 +643,42 @@ func materializePostJoin(conds []HavingCondition, registry *FieldRegistry, plan 
 			case clause == "":
 			case plan.ModelLookupStrict && !capBetween(at) && readsOnly(clause, isModelColumn):
 				plan.ModelLookupWhere = append(plan.ModelLookupWhere, clause)
+				if requiresNew(u, reg) {
+					plan.modelKeys.scoreOnlyNew()
+				}
 			default:
 				plan.PostJoinWhere = append(plan.PostJoinWhere, postJoinFilter{At: at, SQL: clause})
 			}
 		}
 	}
+}
+
+// requiresNew reports whether the AND-ed conditions hold only where the model's
+// is_new is '1'.
+func requiresNew(conds []HavingCondition, reg *FieldRegistry) bool {
+	if !allAnd(conds) {
+		return false
+	}
+	for _, c := range conds {
+		if c.IsCompound {
+			if !c.Negate && requiresNew(c.Children, reg) {
+				return true
+			}
+			continue
+		}
+		// Rendered, so an is_new reassigned after the lookup is not mistaken for it.
+		if c.Field == "is_new" {
+			if sql := materializeCondGroup([]HavingCondition{c}, reg, nil, false); sql == "is_new = '1'" || sql == "is_new != '0'" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// allAnd reports whether every connector between the conditions is AND.
+func allAnd(conds []HavingCondition) bool {
+	return len(conds) == 0 || !slices.ContainsFunc(conds[:len(conds)-1], func(c HavingCondition) bool { return strings.EqualFold(c.Logic, "OR") })
 }
 
 // condTouchesWindowField reports whether any leaf of the condition references a

@@ -1091,7 +1091,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		ChartType:           plan.ChartType,
 		ChartConfig:         plan.ChartConfig,
 		DefaultTimeOrder:    defaultTimeOrder,
-		TimeScopedSubquery:  plan.IsJoin || plan.ModelLookupSQL != "" || plan.usesBindingSet,
+		TimeScopedSubquery:  plan.IsJoin || plan.hasModelLookup() || plan.usesBindingSet,
 		RowCapped:           plan.IsJoin || plan.usesBindingSet,
 		Chain:               plan.Chain,
 	}, nil
@@ -1497,7 +1497,7 @@ func assembleNonGroupBySelects(ctx *CommandContext, source *QueryStage, assignme
 		}
 		// The scan-level model join's columns, after the log's own. An explicit
 		// table() projects the ones it names itself.
-		if plan.ModelLookupSQL != "" && plan.ModelLookupAtScan && !plan.TableHasExplicitColumns {
+		if plan.hasModelLookup() && plan.ModelLookupAtScan && !plan.TableHasExplicitColumns {
 			for _, f := range plan.ModelLookupFields {
 				source.Layer.project(f)
 			}
