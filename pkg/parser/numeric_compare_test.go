@@ -51,3 +51,21 @@ func TestNumericComparisonSkipsNonNumbers(t *testing.T) {
 		})
 	}
 }
+
+// A geoip miss (private, missing or non-IPv4 address) must read empty like any
+// other non-number, not a real 0 that asn < 1000 or latitude < 10 would match.
+func TestGeoipNumericMissIsNotZero(t *testing.T) {
+	for _, col := range []string{"asn", "latitude", "longitude"} {
+		t.Run(col, func(t *testing.T) {
+			sql := mustTranslate(t, `* | geoip(field=src_ip, include=[`+col+`]) | `+col+` < 1000`, dictOpts())
+			if !strings.Contains(sql, "ifNull(toString(dictGetOrNull(") {
+				t.Errorf("miss should read as '':\n%s", sql)
+			}
+			for _, bad := range []string{"toUInt32(0)", "toFloat64(0)"} {
+				if strings.Contains(sql, bad) {
+					t.Errorf("SQL should not default to %s:\n%s", bad, sql)
+				}
+			}
+		})
+	}
+}
