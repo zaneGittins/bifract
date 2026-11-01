@@ -58,3 +58,64 @@ func TestEscapeCHBacktickIdent(t *testing.T) {
 		}
 	}
 }
+
+// A field name that is not a safe identifier must never reach SQL as a raw alias:
+// translation either rejects it or the payload stays inside a quoted identifier.
+func TestHostileAliasRejected(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		FractalID: "f1", MaxRows: 100,
+	}
+	const payload = "x, norm_log FROM logs --"
+	queries := []string{
+		`* | scatter(x="` + payload + `", y=b)`,
+		`* | scatter(x=a, y="` + payload + `")`,
+		`* | scatter(x=a, y=b, label="` + payload + `")`,
+		`* | groupby("` + payload + `")`,
+		`* | groupby("` + payload + `") | scatter(x="` + payload + `", y=_count)`,
+		`* | groupby("` + payload + `", function=sum(bytes))`,
+		`* | groupby("` + payload + `") | _count > 1`,
+		`* | groupby("` + payload + `") | boxplot(_count)`,
+		`* | groupby("` + payload + `") | histogram(_count)`,
+	}
+	for _, q := range queries {
+		p, err := ParseQuery(q)
+		if err != nil {
+			continue
+		}
+		res, err := TranslateToSQLWithOrder(p, opts)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(res.SQL, "AS "+payload) || strings.Contains(res.SQL, " "+payload) {
+			t.Errorf("raw alias emitted for %q:\n%s", q, res.SQL)
+		}
+	}
+}
+
+// Dotted and dashed names are legitimate fields and are quoted, not rejected.
+func TestDottedAliasQuoted(t *testing.T) {
+	opts := QueryOptions{
+		StartTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
+		FractalID: "f1", MaxRows: 100,
+	}
+	cases := map[string]string{
+		`* | scatter(x=a.b, y=c-d, label=e.f)`:        "AS `a.b`",
+		`* | groupby(a.b) | scatter(x=a.b, y=_count)`: "`a.b`",
+	}
+	for q, want := range cases {
+		p, err := ParseQuery(q)
+		if err != nil {
+			t.Fatalf("parse %q: %v", q, err)
+		}
+		res, err := TranslateToSQLWithOrder(p, opts)
+		if err != nil {
+			t.Fatalf("translate %q: %v", q, err)
+		}
+		if !strings.Contains(res.SQL, want) {
+			t.Errorf("%q: want %s in:\n%s", q, want, res.SQL)
+		}
+	}
+}

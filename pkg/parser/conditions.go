@@ -315,16 +315,6 @@ func isBareAggregate(field string) bool {
 	return field == "count" || field == "sum" || field == "avg"
 }
 
-// sanitizedAlias is the alias a grouping key is projected under. A name carrying a
-// dot or dash is not a bare identifier, so it is quoted; sanitizeIdentifier already
-// makes that decision for every other alias.
-func sanitizedAlias(field string) string {
-	if safe, err := sanitizeIdentifier(field); err == nil {
-		return safe
-	}
-	return field
-}
-
 // isGroupKey reports whether a field is one of the plan's grouping keys, and so
 // still addressable after the aggregation.
 func isGroupKey(registry *FieldRegistry, field string) bool {

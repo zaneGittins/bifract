@@ -13,14 +13,15 @@ func chartColumn(arg Argument, ctx *CommandContext, cmdName, scanAlias string) (
 	if field == "" {
 		return "", "", fmt.Errorf("%s(): expected a field name, got %s", cmdName, arg)
 	}
-	if _, ok := ctx.Plan.aggregationOutputs[field]; ok {
-		return sanitizedAlias(field), "", nil
-	}
 	if alias, ok := ctx.Registry.GroupKeyAlias(field); ok {
-		return sanitizedAlias(alias), "", nil
+		return alias, "", nil
 	}
-	if ctx.Registry.IsComputed(field) {
-		return sanitizedAlias(field), "", nil
+	if _, ok := ctx.Plan.aggregationOutputs[field]; ok || ctx.Registry.IsComputed(field) {
+		col, err := sanitizeIdentifier(field)
+		if err != nil {
+			return "", "", fmt.Errorf("%s(): %w", cmdName, err)
+		}
+		return col, "", nil
 	}
 	source := ctx.Plan.CurrentStage()
 	if len(source.Layer.GroupBy) > 0 || ctx.Plan.HasGroupBy || ctx.Plan.IsAggregated {
@@ -181,9 +182,17 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
+	xAlias, err := sanitizeIdentifier(xName)
+	if err != nil {
+		return fmt.Errorf("scatter(): x=: %w", err)
+	}
+	yAlias, err := sanitizeIdentifier(yName)
+	if err != nil {
+		return fmt.Errorf("scatter(): y=: %w", err)
+	}
 	selects := []SelectExpr{
-		{Expr: fmt.Sprintf("%s AS %s", chartNumeric(xCol), sanitizedAlias(xName))},
-		{Expr: fmt.Sprintf("%s AS %s", chartNumeric(yCol), sanitizedAlias(yName))},
+		{Expr: fmt.Sprintf("%s AS %s", chartNumeric(xCol), xAlias)},
+		{Expr: fmt.Sprintf("%s AS %s", chartNumeric(yCol), yAlias)},
 	}
 	order := []string{xName, yName}
 	labelName := ""
@@ -196,7 +205,11 @@ func (h *scatterHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if labelName == xName || labelName == yName {
 			return fmt.Errorf("scatter(): label= must differ from x= and y=")
 		}
-		selects = append([]SelectExpr{{Expr: fmt.Sprintf("toString(%s) AS %s", col, sanitizedAlias(labelName))}}, selects...)
+		labelAlias, err := sanitizeIdentifier(labelName)
+		if err != nil {
+			return fmt.Errorf("scatter(): label=: %w", err)
+		}
+		selects = append([]SelectExpr{{Expr: fmt.Sprintf("toString(%s) AS %s", col, labelAlias)}}, selects...)
 		order = append([]string{labelName}, order...)
 	}
 
