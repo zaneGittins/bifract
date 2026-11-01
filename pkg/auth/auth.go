@@ -1308,9 +1308,9 @@ const ScopeNone = "none"
 // drop its stale context instead of surfacing a generic permission error.
 const ScopeInvalidHeader = "X-Bifract-Scope-Invalid"
 
-// scopeHeaderExempt lists paths that must stay reachable while a client still
+// ScopeHeaderExempt lists paths that must stay reachable while a client still
 // holds a scope it can no longer use, otherwise a stale tab can never recover.
-func scopeHeaderExempt(path string) bool {
+func ScopeHeaderExempt(path string) bool {
 	return strings.HasPrefix(path, "/api/v1/auth/") ||
 		path == "/api/v1/fractals" || path == "/api/v1/prisms" ||
 		strings.HasSuffix(path, "/select")
@@ -1415,7 +1415,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					// different fractals/prisms. The override is authorized here,
 					// never trusted blindly.
 					scopeFractal, scopePrism := session.SelectedFractal, session.SelectedPrism
-					if hdr := r.Header.Get(ScopeHeader); hdr != "" && !scopeHeaderExempt(r.URL.Path) {
+					if hdr := r.Header.Get(ScopeHeader); hdr != "" && !ScopeHeaderExempt(r.URL.Path) {
 						hdrFractal, hdrPrism, err := parseScopeHeader(hdr)
 						if err != nil {
 							writeScopeError(w, http.StatusBadRequest, "Malformed scope header")
@@ -1535,7 +1535,7 @@ func (h *AuthHandler) AuthMiddleware(next http.Handler) http.Handler {
 					// header, and is admin on whichever it names.
 					switch {
 					case keyData.TenantAdmin:
-						if hdr := r.Header.Get(ScopeHeader); hdr != "" && !scopeHeaderExempt(r.URL.Path) {
+						if hdr := r.Header.Get(ScopeHeader); hdr != "" && !ScopeHeaderExempt(r.URL.Path) {
 							hdrFractal, hdrPrism, err := parseScopeHeader(hdr)
 							if err != nil {
 								writeScopeError(w, http.StatusBadRequest, "Malformed scope header")

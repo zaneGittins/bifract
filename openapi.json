@@ -6294,7 +6294,7 @@
       "post": {
         "operationId": "post_api_v1_auth_change_password",
         "summary": "Change the caller's own password.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "auth"
         ],
@@ -6348,7 +6348,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/invite/accept": {
@@ -6988,7 +6988,7 @@
       "patch": {
         "operationId": "patch_api_v1_auth_preferences",
         "summary": "Update the caller's display preferences.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "auth"
         ],
@@ -7042,7 +7042,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/auth/register": {
@@ -15613,7 +15613,7 @@
       "get": {
         "operationId": "get_api_v1_fractals",
         "summary": "List the fractals and prisms the caller can reach.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "fractals"
         ],
@@ -15677,7 +15677,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       },
       "post": {
         "operationId": "post_api_v1_fractals",
@@ -17533,7 +17533,7 @@
       "post": {
         "operationId": "post_api_v1_fractals_byId_select",
         "summary": "Set the session's selected fractal.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "fractals"
         ],
@@ -17607,7 +17607,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/fractals/{id}/stats": {
@@ -25384,7 +25384,7 @@
       "get": {
         "operationId": "get_api_v1_prisms",
         "summary": "List the prisms the caller can reach.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "prisms"
         ],
@@ -25446,7 +25446,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       },
       "post": {
         "operationId": "post_api_v1_prisms",
@@ -26830,7 +26830,7 @@
       "post": {
         "operationId": "post_api_v1_prisms_byId_select",
         "summary": "Set the session's selected prism.",
-        "description": "Requires the viewer role on the fractal or prism in scope.",
+        "description": "Any authenticated principal.",
         "tags": [
           "prisms"
         ],
@@ -26904,7 +26904,7 @@
             }
           }
         },
-        "x-bifract-access": "viewer"
+        "x-bifract-access": "authenticated"
       }
     },
     "/api/v1/query": {

@@ -819,7 +819,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/auth/change-password",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Request:  auth.ChangePasswordRequest{},
 				Response: auth.Response{},
 				Summary:  "Change the caller's own password.",
@@ -882,7 +882,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPatch,
 				Path:     "/auth/preferences",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Request:  auth.UpdatePreferencesRequest{},
 				Response: auth.Response{},
 				Summary:  "Update the caller's display preferences.",
@@ -2061,7 +2061,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/prisms",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.ListResponse[*prisms.Prism]{},
 				Summary:  "List the prisms the caller can reach.",
 				Handler:  d.prismHandler.HandleListPrisms,
@@ -2103,7 +2103,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/prisms/{id}/select",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.Response[prisms.SelectedPrism]{},
 				Summary:  "Set the session's selected prism.",
 				Handler:  d.prismHandler.HandleSelectPrism,
@@ -2164,7 +2164,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodGet,
 				Path:     "/fractals",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.Response[fractals.FractalListResponse]{},
 				Summary:  "List the fractals and prisms the caller can reach.",
 				Handler:  d.fractalHandler.HandleListFractals,
@@ -2205,7 +2205,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			r.Register(api.Route{
 				Method:   http.MethodPost,
 				Path:     "/fractals/{id}/select",
-				Access:   api.AccessViewer,
+				Access:   api.AccessAuthenticated,
 				Response: api.Response[fractals.SelectedFractal]{},
 				Summary:  "Set the session's selected fractal.",
 				Handler:  d.fractalHandler.HandleSelectFractal,

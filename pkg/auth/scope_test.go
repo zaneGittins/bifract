@@ -70,8 +70,8 @@ func TestScopeHeaderExempt(t *testing.T) {
 		"/api/v1/prisms/abc-123/select",
 	}
 	for _, path := range exempt {
-		if !scopeHeaderExempt(path) {
-			t.Errorf("scopeHeaderExempt(%q) = false, want true", path)
+		if !ScopeHeaderExempt(path) {
+			t.Errorf("ScopeHeaderExempt(%q) = false, want true", path)
 		}
 	}
 
@@ -84,8 +84,8 @@ func TestScopeHeaderExempt(t *testing.T) {
 		"/api/v1/fractals/abc-123/retention",
 	}
 	for _, path := range enforced {
-		if scopeHeaderExempt(path) {
-			t.Errorf("scopeHeaderExempt(%q) = true, want false", path)
+		if ScopeHeaderExempt(path) {
+			t.Errorf("ScopeHeaderExempt(%q) = true, want false", path)
 		}
 	}
 }
