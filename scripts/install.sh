@@ -66,7 +66,19 @@ for f in "$ASSET" checksums.txt checksums.txt.sigstore.json; do
 done
 
 if command -v cosign >/dev/null 2>&1; then
-    if ! cosign verify-blob \
+    # Releases are signed with cosign v3; v2.4.1+ reads that bundle with a flag, older can't.
+    COSIGN_VER=$(cosign version 2>&1 | sed -n 's/^GitVersion:[[:space:]]*v\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
+    COSIGN_NUM=$(echo "${COSIGN_VER:-0.0.0}" | awk -F. '{ print $1 * 1000000 + $2 * 1000 + $3 }')
+    COSIGN_FLAGS=""
+    if [ -n "$COSIGN_VER" ] && [ "$COSIGN_NUM" -lt 3000000 ]; then
+        COSIGN_FLAGS="--new-bundle-format"
+    fi
+fi
+
+if [ -n "$COSIGN_VER" ] && [ "$COSIGN_NUM" -lt 2004001 ]; then
+    echo "cosign v${COSIGN_VER} cannot read this release's signature; skipping signature check (cosign v2.4.1 or newer verifies it)."
+elif command -v cosign >/dev/null 2>&1; then
+    if ! cosign verify-blob $COSIGN_FLAGS \
         --bundle "${TMP_DIR}/checksums.txt.sigstore.json" \
         --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}" \
         --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
