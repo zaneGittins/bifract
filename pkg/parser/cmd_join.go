@@ -64,7 +64,8 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	}
 
 	// Validate join key identifier
-	if _, err := sanitizeIdentifier(joinKey); err != nil {
+	safeKey, err := sanitizeIdentifier(joinKey)
+	if err != nil {
 		return fmt.Errorf("join() invalid join key: %w", err)
 	}
 
@@ -104,7 +105,6 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	// Resolve the join key reference for the outer query
 	// The outer query uses the field as it appears in its SELECT (alias or JSON ref).
 	// The subquery must also produce a column with this name.
-	safeKey, _ := sanitizeIdentifier(joinKey)
 
 	ctx.Plan.IsJoin = true
 	ctx.Plan.JoinType = joinType

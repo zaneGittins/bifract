@@ -412,7 +412,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 				assignmentFields = append(assignmentFields, fmt.Sprintf("%s AS %s", sqlExpr, safeField))
 				return nil
 			}
-			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, SQL: sqlExpr})
+			deferredAssignments = append(deferredAssignments, deferredAssignment{Field: assignment.Field, Alias: safeField, SQL: sqlExpr})
 		}
 		return nil
 	}
@@ -1250,7 +1250,10 @@ func assembleGroupBySelects(ctx *CommandContext, source *QueryStage, assignmentF
 
 		// Check registry for per-row transforms or assignments registered during Execute
 		if entry := ctx.Registry.Get(gf); entry != nil && (entry.Kind == FieldKindPerRow || entry.Kind == FieldKindAssignment) {
-			safeName, _ := sanitizeIdentifier(gf)
+			safeName, err := sanitizeIdentifier(gf)
+			if err != nil {
+				return fmt.Errorf("groupBy: %w", err)
+			}
 			resolveExpr := ctx.Registry.Resolve(gf)
 			selects = append(selects, fmt.Sprintf("%s AS %s", resolveExpr, safeName))
 			addedAliases[safeName] = true
@@ -1754,7 +1757,7 @@ func buildHistogramLayers(plan *QueryPlan, ctx *CommandContext) {
 // deferredAssignment is a computed assignment evaluated in the outer formatter,
 // over the limited rows, as compiled where it is written.
 type deferredAssignment struct {
-	Field, SQL string
+	Field, Alias, SQL string
 }
 
 // buildFormatters creates the outer SELECT expressions for timestamp formatting
@@ -1797,8 +1800,7 @@ func buildFormatters(selectFields []string, deferredAssignments []deferredAssign
 			if projected[da.Field] {
 				continue
 			}
-			safeName, _ := sanitizeIdentifier(da.Field)
-			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", da.SQL, safeName)})
+			formatters = append(formatters, SelectExpr{Expr: fmt.Sprintf("%s AS %s", da.SQL, da.Alias)})
 		}
 	}
 

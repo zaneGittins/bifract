@@ -711,7 +711,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		if e := ctx.Registry.Get(arg); e == nil && isMultiStage && contains(ctx.Plan.ModelLookupOutputs, arg) {
 			return fmt.Errorf("groupby(): model column %q was not carried out of the previous aggregation; group by it there or aggregate it first", arg)
 		}
-		var fieldRef string
+		var fieldRef, keyAlias string
 		if keyArg.FieldName() == "" {
 			// An expression key is projected under a derived name and grouped by
 			// that alias, so the rest of the pipeline sees an ordinary column.
@@ -729,16 +729,19 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 			source.Layer.UpsertSelect(SelectExpr{Expr: fmt.Sprintf("%s AS %s", sql, alias)})
 			ctx.Registry.Register(alias, FieldKindPerRow, alias, ctx.CmdIndex)
 			ctx.Registry.SetResolveExpr(alias, alias)
-			fieldRef = alias
-		} else if computedFields[arg] {
-			fieldRef = arg
+			fieldRef, keyAlias = alias, alias
 		} else {
+			safe, err := sanitizeIdentifier(arg)
+			if err != nil {
+				return fmt.Errorf("groupby(): %w", err)
+			}
+			keyAlias = safe
 			switch arg {
 			case "timestamp", normLogColumn, "log_id", "normalizer":
 				fieldRef = arg
 			default:
-				if isMultiStage {
-					// In multi-stage, fields reference previous stage output by alias
+				// Computed fields, and in multi-stage every field, are read by alias.
+				if computedFields[arg] || isMultiStage {
 					fieldRef = arg
 				} else {
 					fieldRef = ctx.Registry.fieldRef(arg)
@@ -752,7 +755,7 @@ func (h *groupbyHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		// projected under. Recorded here, where the name the query used is still
 		// known: by classify time the plan holds only the alias or the expression
 		// depending on what else ran, which is not enough to recover the name.
-		ctx.Registry.SetGroupKeyAlias(arg, sanitizedAlias(arg), ctx.CmdIndex)
+		ctx.Registry.SetGroupKeyAlias(arg, keyAlias, ctx.CmdIndex)
 	}
 
 	if counted != nil {
