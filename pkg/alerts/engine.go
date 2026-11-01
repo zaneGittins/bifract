@@ -72,6 +72,10 @@ type Engine struct {
 	// Evaluation is fully deferred during active ingestion.
 	ingestActive func() bool
 
+	// ingestWatermark returns the time before which every stamped log is visible.
+	// No window reads past it. Nil leaves windows uncapped (tests only).
+	ingestWatermark func(ctx context.Context) (time.Time, error)
+
 	// recentIngest holds the newest ingest_timestamp per fractal, refreshed
 	// once per cycle from logs_hot. Read from shared storage rather than a
 	// process-local counter so the signal is correct when ingestion runs in a
@@ -221,6 +225,12 @@ func NewEngineWithDicts(pg *storage.PostgresClient, ch *storage.ClickHouseClient
 // each evaluation cycle. When it returns true, evaluation is fully deferred.
 func (e *Engine) SetIngestPressureFunc(f func() bool) {
 	e.ingestActive = f
+}
+
+// SetIngestWatermark registers the source of the ingest watermark. A cycle that
+// cannot read it does not run, so no cursor advances past unwritten logs.
+func (e *Engine) SetIngestWatermark(f func(ctx context.Context) (time.Time, error)) {
+	e.ingestWatermark = f
 }
 
 // refreshRecentIngest reloads the newest ingest_timestamp per fractal from
@@ -430,6 +440,13 @@ func (e *Engine) evaluateAllAlerts() {
 	if len(alerts) == 0 {
 		return
 	}
+	ingestW := time.Now()
+	if e.ingestWatermark != nil {
+		if ingestW, err = e.ingestWatermark(context.Background()); err != nil {
+			log.Printf("[Alert Engine] Skipping cycle, ingest watermark unknown: %v", err)
+			return
+		}
+	}
 	e.refreshRecentIngest(context.Background(), skipFloor(alerts))
 	log.Printf("[Alert Engine] Evaluating %d alert(s)", len(alerts))
 
@@ -473,11 +490,11 @@ func (e *Engine) evaluateAllAlerts() {
 			var evalErr error
 			switch a.AlertType {
 			case "compound":
-				evalErr = e.evaluateCompoundAlert(ctx, a, prismCache)
+				evalErr = e.evaluateCompoundAlert(ctx, a, prismCache, ingestW)
 			case "scheduled":
-				evalErr = e.evaluateScheduledAlert(ctx, a, prismCache)
+				evalErr = e.evaluateScheduledAlert(ctx, a, prismCache, ingestW)
 			default:
-				evalErr = e.evaluateAlertCursor(ctx, a, prismCache)
+				evalErr = e.evaluateAlertCursor(ctx, a, prismCache, ingestW)
 			}
 			if evalErr != nil {
 				log.Printf("[Alert Engine] Alert '%s' error: %v", a.Name, evalErr)
@@ -862,14 +879,22 @@ func (e *Engine) advanceCursor(ctx context.Context, alert *Alert, t time.Time, e
 // Postgres and in memory.
 func windowBound(t time.Time) time.Time { return t.Truncate(time.Millisecond) }
 
+func earliest(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
 // ---------------------------------------------------------------------------
 // Alert type evaluators
 // ---------------------------------------------------------------------------
 
 // evaluateAlertCursor evaluates an event alert from its cursor forward.
 // The cursor advances only after a successful query. If the process
-// crashes between runs, the window is re-scanned (no missed logs).
-func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *prismResolveCache) error {
+// crashes between runs, the window is re-scanned (no missed logs). The window
+// ends at the ingest watermark, so it never passes a log not yet written.
+func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *prismResolveCache, ingestW time.Time) error {
 	start := time.Now()
 
 	fromTime := alert.LastEvaluatedAt
@@ -877,7 +902,7 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 		fromTime = time.Now().Add(-5 * time.Minute)
 	}
 	fromTime = windowBound(fromTime)
-	toTime := time.Now()
+	toTime := earliest(time.Now(), ingestW)
 
 	if toTime.Sub(fromTime) < minEvalWindow {
 		return nil
@@ -906,8 +931,8 @@ func (e *Engine) evaluateAlertCursor(ctx context.Context, alert *Alert, cache *p
 }
 
 // evaluateCompoundAlert evaluates a compound alert using tumbling windows.
-// The alert only evaluates when the current window is complete.
-func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache *prismResolveCache) error {
+// The alert only evaluates when the current window is complete and written.
+func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache *prismResolveCache, ingestW time.Time) error {
 	if alert.WindowDuration == nil || *alert.WindowDuration <= 0 {
 		return fmt.Errorf("compound alert %s has no valid window_duration", alert.Name)
 	}
@@ -920,7 +945,7 @@ func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache 
 	fromTime = windowBound(fromTime)
 
 	windowEnd := fromTime.Add(windowDuration)
-	if time.Now().Before(windowEnd) {
+	if earliest(time.Now(), ingestW).Before(windowEnd) {
 		return nil
 	}
 
@@ -943,7 +968,7 @@ func (e *Engine) evaluateCompoundAlert(ctx context.Context, alert *Alert, cache 
 
 // evaluateScheduledAlert evaluates a scheduled alert based on its cron
 // expression. The cron schedule is parsed once at cache load time.
-func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache *prismResolveCache) error {
+func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache *prismResolveCache, ingestW time.Time) error {
 	if alert.CronSchedule == nil {
 		return fmt.Errorf("scheduled alert %s has no parsed cron schedule", alert.Name)
 	}
@@ -961,7 +986,7 @@ func (e *Engine) evaluateScheduledAlert(ctx context.Context, alert *Alert, cache
 
 	start := time.Now()
 	queryWindow := time.Duration(*alert.QueryWindowSeconds) * time.Second
-	toTime := windowBound(time.Now())
+	toTime := windowBound(earliest(time.Now(), ingestW))
 	fromTime := toTime.Add(-queryWindow)
 
 	opts, err := e.buildQueryOpts(ctx, alert, fromTime, toTime, cache)

@@ -18,12 +18,13 @@ const IngestPGRole = "bifract_ingest"
 
 // ingestPGGrants is the curated grant set (see EnsureIngestRole). SELECT-only except
 // where the ingest path writes: token usage counters, settings (spool status upsert),
-// health notifications, and the monitors' system_metrics samples.
+// health notifications, the monitors' system_metrics samples, and its ingest watermark.
 var ingestPGGrants = []string{
 	"GRANT USAGE ON SCHEMA public TO " + IngestPGRole,
 	"GRANT SELECT ON ingest_tokens, normalizers, fractals, settings, health_notifications, system_metrics TO " + IngestPGRole,
 	"GRANT INSERT ON settings, health_notifications, system_metrics TO " + IngestPGRole,
 	"GRANT UPDATE ON ingest_tokens, settings TO " + IngestPGRole,
+	"GRANT SELECT, INSERT, UPDATE, DELETE ON ingest_watermarks TO " + IngestPGRole,
 }
 
 // EnsureIngestRole creates/updates the least-privilege Postgres ingest role and its

@@ -252,6 +252,24 @@ const AlertEngine = {
             : 'nothing being evaluated');
         this.flag('aeTileLagCard', lag > warnAt);
 
+        // Alerts never read past the ingest watermark, so its lag delays every
+        // alert, and while it is unknown no alert evaluates.
+        const held = sum.ingest_wm_held || [];
+        const wmLag = Number(sum.ingest_wm_lag_sec || 0);
+        if (sum.ingest_wm_error) {
+            this.setText('aeTileIngest', '--');
+            this.setText('aeTileIngestSub', 'unknown, evaluation paused');
+        } else {
+            this.setText('aeTileIngest', this.duration(wmLag * 1000));
+            this.setText('aeTileIngestSub', held.length
+                ? held[0] + (held.length > 1 ? ` (+${held.length - 1} more)` : '')
+                : 'all writers reporting');
+        }
+        const ingestSub = document.getElementById('aeTileIngestSub');
+        if (ingestSub) ingestSub.title = held.join('\n');
+        this.flag('aeTileIngestCard', !!sum.ingest_wm_error || held.length > 0 ||
+            wmLag > Number(sum.ingest_wm_warn_sec || 120));
+
         this.setText('aeTileFires', this.number(sum.fires));
         const span = this.interval(Number(sum.window_minutes || 60) * 60);
         this.setText('aeTileFiresSub', Number(sum.fires)

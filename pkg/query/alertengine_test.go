@@ -1,12 +1,19 @@
 package query
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"bifract/internal/fakedb"
+	"bifract/pkg/storage/storagetest"
 )
 
 // Both charts on the row have to describe the same span, and that span has to
@@ -114,5 +121,40 @@ func TestAlertHandlersWithoutPostgres(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("%s: status %d, want 503", name, rec.Code)
 		}
+	}
+}
+
+// The page shows how far the ingest watermark trails and which writer holds it,
+// and says so when it cannot be read, since then no alert evaluates.
+func TestAlertStatsReportsTheIngestWatermark(t *testing.T) {
+	pgc, fake := storagetest.Postgres()
+	defer pgc.Close()
+	h := &PerformanceHandler{pg: pgc}
+	stats := func() map[string]interface{} {
+		rec := httptest.NewRecorder()
+		h.HandleAlertStats(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		var out map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out["summary"].(map[string]interface{})
+	}
+
+	fake.On("FROM ingest_watermarks", fakedb.RowsOf(
+		[]driver.Value{"ingest@a", time.Now().Add(-40 * time.Second), 1.0},
+		[]driver.Value{"ingest@b", time.Now(), 30.0},
+	))
+	sum := stats()
+	if lag := sum["ingest_wm_lag_sec"].(float64); lag < 39 || lag > 42 {
+		t.Errorf("lag = %v, want about 40s", lag)
+	}
+	held := sum["ingest_wm_held"].([]interface{})
+	if len(held) != 1 || !strings.Contains(held[0].(string), "ingest@b") {
+		t.Errorf("held = %v, want the node with a stale heartbeat", held)
+	}
+
+	fake.ClearRules().On("FROM ingest_watermarks", fakedb.PGResult{Err: errors.New("down")})
+	if sum := stats(); sum["ingest_wm_error"] != true {
+		t.Errorf("an unreadable watermark must be reported, got %v", sum)
 	}
 }

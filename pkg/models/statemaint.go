@@ -35,19 +35,15 @@ const (
 	// times as often therefore cost four times the IO for the same coverage.
 	//
 	// What the interval buys is freshness. An alert that consults a model is held
-	// at that model's watermark, so this plus the read lag is the worst case lag
-	// of a model-backed detection. BIFRACT_MODEL_STATE_INTERVAL trades the two.
+	// at that model's watermark, so this plus the ingest watermark's lag is the
+	// worst case lag of a model-backed detection. BIFRACT_MODEL_STATE_INTERVAL
+	// trades the two.
 	stateMaintDefaultInterval = 60 * time.Second
 
-	// stateMaintDefaultLag holds the cutoff back from now so a cycle never reads a
-	// window that inserts are still landing in. ingest_timestamp is stamped when
-	// a log is received, and the ingest queue holds a quiet partition for up to
-	// its 30s flush interval before inserting (longer with retries, and a
-	// cluster's Distributed insert forwards to shards after that). Reading closer
-	// than that would advance the watermark past rows not yet committed, which
-	// are then never counted. BIFRACT_MODEL_STATE_LAG shortens it only where the
-	// ingest flush is shortened to match.
-	stateMaintDefaultLag = 2 * time.Minute
+	// ingestLagAllowance is how far the ingest watermark normally trails now (a
+	// quiet partition's flush interval plus the insert). It only sizes the health
+	// budget; reads stop at the watermark itself.
+	ingestLagAllowance = 2 * time.Minute
 
 	// stateMaintMaxWindow caps one cycle's read. After downtime the watermark can
 	// be far behind, and a single unbounded read would scan every partition since;
@@ -66,6 +62,10 @@ type StateMaintainer struct {
 	// maintenance never competes with the write path it was moved off.
 	ingestActive func() bool
 
+	// ingestWatermark bounds every read: rows stamped before it are visible, rows
+	// after it may still be landing. Nil reads up to now (tests only).
+	ingestWatermark func(ctx context.Context) (time.Time, error)
+
 	// lastErr is the message each model last reported, so the Postgres write
 	// happens when it changes rather than on every cycle. A failing model retries
 	// its window forever, which is right, but it would otherwise do so with nothing
@@ -80,6 +80,12 @@ func NewStateMaintainer(pg *storage.PostgresClient, ch *storage.ClickHouseClient
 // SetIngestPressureFunc registers a callback checked before each cycle.
 func (s *StateMaintainer) SetIngestPressureFunc(f func() bool) { s.ingestActive = f }
 
+// SetIngestWatermark registers the ingest watermark source. A cycle that cannot
+// read it does not run, so no model's state advances past unwritten logs.
+func (s *StateMaintainer) SetIngestWatermark(f func(ctx context.Context) (time.Time, error)) {
+	s.ingestWatermark = f
+}
+
 // StateMaintInterval is the configured cycle period.
 func StateMaintInterval() time.Duration {
 	if v := os.Getenv("BIFRACT_MODEL_STATE_INTERVAL"); v != "" {
@@ -91,22 +97,10 @@ func StateMaintInterval() time.Duration {
 	return stateMaintDefaultInterval
 }
 
-// StateMaintLag is how far behind now a cycle stops reading. It must exceed the
-// ingest tier's flush interval, or rows that commit late are never counted.
-func StateMaintLag() time.Duration {
-	if v := os.Getenv("BIFRACT_MODEL_STATE_LAG"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
-		log.Printf("[Model State] ignoring BIFRACT_MODEL_STATE_LAG=%q: want whole seconds", v)
-	}
-	return stateMaintDefaultLag
-}
-
 func (s *StateMaintainer) Start(interval time.Duration) {
 	s.stopCh = make(chan struct{})
 	go s.loop(interval)
-	log.Printf("[Model State] Started (interval: %v, lag: %v)", interval, StateMaintLag())
+	log.Printf("[Model State] Started (interval: %v)", interval)
 }
 
 func (s *StateMaintainer) Stop() {
@@ -189,6 +183,17 @@ func (s *StateMaintainer) cycle(ctx context.Context) {
 		log.Printf("[Model State] list models: %v", err)
 		return
 	}
+	cutoff := time.Now().UTC()
+	if s.ingestWatermark != nil && len(rows) > 0 {
+		w, err := s.ingestWatermark(ctx)
+		if err != nil {
+			log.Printf("[Model State] skipping cycle, ingest watermark unknown: %v", err)
+			return
+		}
+		if w.Before(cutoff) {
+			cutoff = w.UTC()
+		}
+	}
 	live := make(map[string]bool, len(rows))
 	for _, r := range rows {
 		live[r.id] = true
@@ -198,7 +203,7 @@ func (s *StateMaintainer) cycle(ctx context.Context) {
 			// would double every aggregate, so the model waits for the next startup
 			// to retry the drop.
 			msg = fmt.Sprintf("insert-time view %s could not be dropped; state maintenance resumes once a restart drops it", chModelMVName(r.id))
-		} else if err := s.maintain(ctx, r); err != nil {
+		} else if err := s.maintain(ctx, r, cutoff); err != nil {
 			msg = err.Error()
 		}
 		s.recordOutcome(ctx, r, msg)
@@ -284,9 +289,9 @@ func (s *StateMaintainer) dueModels(ctx context.Context) ([]maintainRow, error) 
 	return out, pgRows.Err()
 }
 
-// maintain advances one model's state by a single window.
-func (s *StateMaintainer) maintain(ctx context.Context, r maintainRow) error {
-	from, to := maintainWindow(r.watermark, time.Now().UTC())
+// maintain advances one model's state by a single window, ending before cutoff.
+func (s *StateMaintainer) maintain(ctx context.Context, r maintainRow, cutoff time.Time) error {
+	from, to := maintainWindow(r.watermark, cutoff)
 	if !to.After(from) {
 		return nil
 	}
@@ -320,10 +325,12 @@ func (s *StateMaintainer) maintain(ctx context.Context, r maintainRow) error {
 }
 
 // maintainWindow is the half-open range a cycle reads, capped so a watermark far
-// behind is caught up over several cycles rather than in one unbounded scan.
-func maintainWindow(watermark, now time.Time) (from, to time.Time) {
+// behind is caught up over several cycles rather than in one unbounded scan. The
+// window includes its end, and only rows stamped before cutoff are known to be
+// written, so it stops a millisecond (the column's precision) short of it.
+func maintainWindow(watermark, cutoff time.Time) (from, to time.Time) {
 	from = watermark
-	to = now.Add(-StateMaintLag())
+	to = cutoff.Truncate(time.Millisecond).Add(-time.Millisecond)
 	if max := from.Add(stateMaintMaxWindow); to.After(max) {
 		to = max
 	}

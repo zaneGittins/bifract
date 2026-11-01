@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/settings"
+	"bifract/pkg/watermark"
 )
 
 // The System > Alerts view reports on the alert *engine*: is it keeping up, what
@@ -147,6 +148,17 @@ func (h *PerformanceHandler) HandleAlertStats(w http.ResponseWriter, r *http.Req
 		log.Printf("[AlertEngine] worst lag: %v", err)
 	}
 	summary["lag_max_alert"] = worstName
+
+	// No alert reads past the ingest watermark, so its lag delays every alert, and
+	// an unreadable one pauses them all.
+	if wm, err := watermark.Read(ctx, h.pg.DB(), time.Now()); err != nil {
+		log.Printf("[AlertEngine] ingest watermark: %v", err)
+		summary["ingest_wm_error"] = true
+	} else {
+		summary["ingest_wm_lag_sec"] = int64(math.Round(wm.Lag.Seconds()))
+		summary["ingest_wm_held"] = append([]string{}, wm.Held...)
+	}
+	summary["ingest_wm_warn_sec"] = int64(watermark.BacklogLag.Seconds())
 
 	// What actually fired in the range.
 	var fires, firingAlerts, throttled int64

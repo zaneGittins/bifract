@@ -60,9 +60,9 @@ type routerDeps struct {
 	ddlMonitor      *storage.DDLMonitor
 	recallEstimator *archive.Estimator
 
-	// alertDeferThreshold is the ingest queue depth past which alert
-	// evaluation is deferred, reported by /system/pressure.
-	alertDeferThreshold int
+	// alertsDeferred reports whether alert evaluation is deferred for ingest
+	// pressure, shown by /system/pressure.
+	alertsDeferred func() bool
 
 	alertHandler          *alerts.Handler
 	apiKeyHandler         *apikeys.Handler

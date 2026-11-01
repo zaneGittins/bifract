@@ -41,14 +41,18 @@ func maintEnv(t *testing.T, cluster bool) (*fakeEnv, *StateMaintainer) {
 
 func ms(t time.Time) time.Time { return t.UTC().Truncate(time.Millisecond) }
 
-// Each cycle reads (watermark, now-lag] and only then moves the watermark to the
-// window's end, so consecutive cycles tile ingest time with no gap and no overlap.
+// Each cycle reads (watermark, ingest watermark) and only then moves the model's
+// watermark to the window's end, so consecutive cycles tile ingest time with no
+// gap and no overlap.
 func TestStateCyclesTileIngestTime(t *testing.T) {
 	env, s := maintEnv(t, false)
 	wm := ms(time.Now().Add(-time.Hour))
 	r := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) { r.watermark = &wm })
+	ingestW := ms(time.Now().Add(-10 * time.Minute))
+	s.SetIngestWatermark(func(context.Context) (time.Time, error) { return ingestW, nil })
 
 	s.cycle(context.Background())
+	ingestW = ingestW.Add(5 * time.Minute)
 	s.cycle(context.Background())
 
 	inserts := env.ch.ExecutedMatching("INSERT INTO")
@@ -63,8 +67,8 @@ func TestStateCyclesTileIngestTime(t *testing.T) {
 	if !from2.Equal(to1) {
 		t.Errorf("second window starts %v, want where the first ended (%v)", from2, to1)
 	}
-	if lag := time.Since(to2); lag < StateMaintLag() || lag > StateMaintLag()+time.Minute {
-		t.Errorf("window ends %v behind now, want about %v", lag, StateMaintLag())
+	if want := ingestW.Add(-time.Millisecond); !to2.Equal(want) {
+		t.Errorf("window ends %v, want just before the ingest watermark %v", to2, ingestW)
 	}
 	got, _ := env.db.get(r.id)
 	if !ms(*got.watermark).Equal(to2) {
@@ -146,7 +150,7 @@ func TestStateCycleCatchesUpInCappedWindows(t *testing.T) {
 		}
 		prev = to
 	}
-	if lag := time.Since(prev); lag > StateMaintLag()+time.Minute {
+	if lag := time.Since(prev); lag > time.Minute {
 		t.Errorf("caught up to %v behind now", lag)
 	}
 }
@@ -247,4 +251,20 @@ func TestStateMaintainerLoop(t *testing.T) {
 	}
 	pressured.Store(false)
 	waitFor(t, "a cycle", func() bool { return len(env.ch.ExecutedMatching("INSERT INTO")) > 0 })
+}
+
+// An unreadable ingest watermark skips the cycle: no model reads or advances.
+func TestStateCycleSkipsWhenTheIngestWatermarkIsUnknown(t *testing.T) {
+	env, s := maintEnv(t, false)
+	wm := ms(time.Now().Add(-time.Hour))
+	r := seedModel(env, ModelTypeRarity, rarityDef, func(r *modelRow) { r.watermark = &wm })
+	s.SetIngestWatermark(func(context.Context) (time.Time, error) { return time.Time{}, errors.New("pg down") })
+
+	s.cycle(context.Background())
+	if n := len(env.ch.ExecutedMatching("INSERT INTO")); n != 0 {
+		t.Errorf("%d state inserts without a watermark", n)
+	}
+	if got, _ := env.db.get(r.id); !got.watermark.Equal(wm) {
+		t.Errorf("model watermark moved to %v", got.watermark)
+	}
 }

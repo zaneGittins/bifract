@@ -10,6 +10,7 @@ import (
 
 	"bifract/pkg/fractals"
 	"bifract/pkg/normalizers"
+	"bifract/pkg/watermark"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -75,6 +76,10 @@ func (h *InternalIngestHandler) HandleInternalIngest(w http.ResponseWriter, r *h
 		return
 	}
 	defer r.Body.Close()
+
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
 
 	// Parse using the default normalizer
 	var compiled *normalizers.CompiledNormalizer

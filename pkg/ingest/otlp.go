@@ -13,6 +13,7 @@ import (
 	"bifract/pkg/ingesttokens"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
+	"bifract/pkg/watermark"
 
 	collectorlogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -71,6 +72,10 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		h.respondError(w, r, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
+
+	// Rows are stamped from here on, so hold the watermark until they are queued.
+	stampHold := watermark.Local.Hold()
+	defer watermark.Local.Done(stampHold)
 
 	// Parse the OTLP request based on content type
 	req := &collectorlogs.ExportLogsServiceRequest{}
