@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
@@ -28,7 +28,7 @@ import (
 // fields. A float64 from json.Unmarshal is accepted but has already lost precision
 // past 2^53.
 func BuildLogEntry(obj map[string]interface{}, norm *normalizers.CompiledNormalizer, tsFields []ingesttokens.TsField) (storage.LogEntry, error) {
-	rawBytes, err := json.Marshal(obj)
+	rawBytes, err := jsonenc.Marshal(obj)
 	if err != nil {
 		return storage.LogEntry{}, fmt.Errorf("failed to marshal raw log: %w", err)
 	}

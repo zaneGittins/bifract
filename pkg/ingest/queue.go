@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/spool"
 	"bifract/pkg/storage"
 	"bifract/pkg/watermark"
@@ -1051,7 +1051,7 @@ func (q *IngestQueue) writeSystemEvent(event string, fields map[string]string) {
 		return
 	}
 	fields["event"] = event
-	rawBytes, err := json.Marshal(fields)
+	rawBytes, err := jsonenc.Marshal(fields)
 	if err != nil {
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/settings"
 )
 
@@ -284,7 +285,7 @@ func stringifyValue(v interface{}) string {
 	case nil:
 		return ""
 	default:
-		b, _ := json.Marshal(val)
+		b, _ := jsonenc.Marshal(val)
 		return string(b)
 	}
 }
@@ -307,11 +308,11 @@ func BuildFieldsWithNested(obj map[string]interface{}) FieldsWithNested {
 	for key, value := range obj {
 		switch v := value.(type) {
 		case map[string]interface{}:
-			b, _ := json.Marshal(v)
+			b, _ := jsonenc.Marshal(v)
 			fields[key] = string(b)
 			nested[key] = true
 		case []interface{}:
-			b, _ := json.Marshal(v)
+			b, _ := jsonenc.Marshal(v)
 			fields[key] = string(b)
 		default:
 			fields[key] = stringifyValue(v)
