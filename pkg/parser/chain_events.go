@@ -113,7 +113,7 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 	}
 
 	where := []string{fmt.Sprintf("timestamp IN (%s)", strings.Join(tsLits, ", "))}
-	if scope := fractalScopePredicate(opts); scope != "" {
+	if scope := fractalScopeCond(opts, ""); scope != "" {
 		where = append(where, scope)
 	}
 	// The anchors are event timestamps, which only prune on a table sorted by them.
@@ -156,25 +156,6 @@ func BuildChainEventsSQL(meta *ChainMeta, entities []string, anchors [][]int64, 
 		entitySelect, normLogColumn, table, andJoin(where))
 
 	return &ChainEventFetch{SQL: sql, Truncated: truncated}
-}
-
-// fractalScopePredicate mirrors the source scan's fractal scoping so the fetch
-// cannot read across fractals.
-func fractalScopePredicate(opts QueryOptions) string {
-	if len(opts.FractalIDs) > 0 {
-		quoted := make([]string, len(opts.FractalIDs))
-		for i, id := range opts.FractalIDs {
-			quoted[i] = "'" + escapeString(id) + "'"
-		}
-		return "fractal_id IN (" + strings.Join(quoted, ", ") + ")"
-	}
-	if opts.FractalID != "" {
-		if opts.IncludeEmptyFractalID {
-			return fmt.Sprintf("fractal_id IN ('%s', '')", escapeString(opts.FractalID))
-		}
-		return fmt.Sprintf("fractal_id = '%s'", escapeString(opts.FractalID))
-	}
-	return ""
 }
 
 // ForEachCommand visits every command in a pipeline, including condition

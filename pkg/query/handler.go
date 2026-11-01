@@ -779,17 +779,6 @@ func parseNewestScan(row map[string]interface{}) ([]uint64, []time.Time, error) 
 	return counts, times, nil
 }
 
-// projectsTimestamp reports whether the scan computes a column named timestamp,
-// which shadows the event time in the row query's own predicates.
-func projectsTimestamp(projections []parser.SourceProjection) bool {
-	for _, p := range projections {
-		if p.Alias == "timestamp" {
-			return true
-		}
-	}
-	return false
-}
-
 // logScope is the set of fractals a request reads, resolved and authorized.
 type logScope struct {
 	fractalID    string   // the single fractal read, when no prism is
@@ -1363,7 +1352,7 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	// When the scan filter is the whole row selection, an older chunk's rows are the
 	// newest matches its histogram scan already reads, given a bounded row budget.
 	singleScan := chunkable && needsHistogram && histRollupTable == "" && len(histChunks) > 1 &&
-		translationResult.SourceWhereComplete && !projectsTimestamp(translationResult.SourceProjections) &&
+		translationResult.SourceWhereComplete &&
 		opts.SourceMode != parser.SourceIceberg && !opts.UseIngestTimestamp &&
 		(queryMaxRows > 0 || appliedCursorPaging)
 

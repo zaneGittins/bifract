@@ -95,7 +95,9 @@ func buildAnalyzeFieldsSQL(
 	}, nil
 }
 
-func procLineageFractalCond(opts QueryOptions, prefix string) string {
+// fractalScopeCond is the fractal isolation predicate on prefix+fractal_id, or ""
+// when the query is not fractal scoped.
+func fractalScopeCond(opts QueryOptions, prefix string) string {
 	col := prefix + "fractal_id"
 	if len(opts.FractalIDs) > 0 {
 		quoted := make([]string, 0, len(opts.FractalIDs)+1)

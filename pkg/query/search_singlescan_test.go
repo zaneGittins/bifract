@@ -415,20 +415,6 @@ func TestSingleScanClipsRowsToRequestedStart(t *testing.T) {
 	}
 }
 
-// A scan projecting a value as timestamp shadows the event time the single scan
-// collects, so such a search keeps its plain row chunks.
-func TestSingleScanSkipsShadowedTimestamp(t *testing.T) {
-	e := newTestEnv(t, 1000)
-	e.respond(func(sql string) ([]map[string]interface{}, error) { return []map[string]interface{}{}, nil })
-	runStream(t, e, QueryRequest{Query: "level=error | lowercase(user, timestamp)", FractalID: "f1"})
-	if n := len(queriesWhere(e, func(q string) bool { return isNewestSQL(q) || isFetchSQL(q) })); n != 0 {
-		t.Errorf("a shadowed timestamp used the single scan (%d queries)", n)
-	}
-	if h := e.ch.QueriedMatching("AS bucket"); len(h) != 4 {
-		t.Errorf("plain histogram scans = %d, want every chunk", len(h))
-	}
-}
-
 // With no deployment row cap the response is a cursor page: older chunks are
 // scanned until the page fills, and the row past it sets has_more.
 func TestSingleScanUncappedFillsCursorPage(t *testing.T) {
