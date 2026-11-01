@@ -276,10 +276,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 	ti, tiWarnings := e.mgr.threatIntelColumn(ctx, m.fractalID, m.def)
 	e.warnModifiers(m.id, append(warnings, tiWarnings...))
 
-	bp := m.def.Beacon.WithDefaults(windowSecs)
-	lc := m.def.LongConn.WithDefaults()
-	mp := m.def.Modifiers.WithDefaults()
-
+	sc := newPairScorer(m.modelType, m.def, windowSecs, fs, prevalence, networkSize, now)
 	buf := newResultBuffer(e.ch, m.tableName)
 	var count int
 	truncated := false
@@ -291,25 +288,7 @@ func (e *ScorerEngine) scoreModel(ctx context.Context, m scheduledModelRow) erro
 			return errPairCapReached
 		}
 		count++
-
-		p := pairFromRow(row)
-		prevTotal := prevalence[p.Dst]
-		prevRatio := float64(prevTotal) / float64(networkSize)
-
-		var rs RegularityScore
-		if m.modelType == ModelTypeLongConnection {
-			rs = RegularityScore{Score: ScoreLongConn(p.TotalDuration, lc)}
-		} else {
-			rs = ScoreBeacon(p, bp, windowSecs)
-		}
-		final, mods := ApplyPairModifiers(rs.Score, fs.context(p, prevRatio, now, mp), mp)
-
-		buf.add(resultRow{
-			fractalID: m.fractalID, src: p.Src, dst: p.Dst, port: p.Port,
-			rs: rs, prevalence: round3(prevRatio), prevalenceTotal: prevTotal,
-			mods: mods, final: final, connCount: p.Count, totalDuration: p.TotalDuration,
-			firstSeen: unixToTime(p.FirstTs), lastSeen: unixToTime(p.LastTs), scoredAt: now,
-		})
+		buf.add(sc.score(pairFromRow(row)).row(m.fractalID, now))
 		if buf.len() >= scorerResultFlushRows {
 			return buf.flush(ctx)
 		}
@@ -351,6 +330,61 @@ func (e *ScorerEngine) readPrevalence(ctx context.Context, stateRead, fractalID 
 			return nil
 		}, nil)
 	return out, err
+}
+
+// pairScorer scores pairs with one model's parameters and modifier context,
+// shared by the scheduled scorer and the raw-log passes so they cannot drift.
+type pairScorer struct {
+	mt          ModelType
+	windowSecs  int64
+	bp          BeaconParams
+	lc          LongConnParams
+	mp          ModifierParams
+	fs          firstSeenContext
+	prevalence  map[string]uint64
+	networkSize uint64
+	asOf        time.Time
+}
+
+func newPairScorer(mt ModelType, def ModelDefinition, windowSecs int64, fs firstSeenContext, prevalence map[string]uint64, networkSize uint64, asOf time.Time) pairScorer {
+	return pairScorer{
+		mt: mt, windowSecs: windowSecs,
+		bp: def.Beacon.WithDefaults(windowSecs), lc: def.LongConn.WithDefaults(), mp: def.Modifiers.WithDefaults(),
+		fs: fs, prevalence: prevalence, networkSize: networkSize, asOf: asOf,
+	}
+}
+
+// netScored is one scored pair.
+type netScored struct {
+	p         PairAgg
+	rs        RegularityScore
+	prevRatio float64
+	prevTotal uint64
+	final     float64
+	mods      Modifiers
+}
+
+func (sc pairScorer) score(p PairAgg) netScored {
+	var rs RegularityScore
+	if sc.mt == ModelTypeLongConnection {
+		rs = RegularityScore{Score: ScoreLongConn(p.TotalDuration, sc.lc)}
+	} else {
+		rs = ScoreBeacon(p, sc.bp, sc.windowSecs)
+	}
+	prevTotal := sc.prevalence[p.Dst]
+	prevRatio := float64(prevTotal) / float64(sc.networkSize)
+	final, mods := ApplyPairModifiers(rs.Score, sc.fs.context(p, prevRatio, sc.asOf, sc.mp), sc.mp)
+	return netScored{p: p, rs: rs, prevRatio: prevRatio, prevTotal: prevTotal, final: final, mods: mods}
+}
+
+// row is the results-table row for a scored pair.
+func (s netScored) row(fractalID string, scoredAt time.Time) resultRow {
+	return resultRow{
+		fractalID: fractalID, src: s.p.Src, dst: s.p.Dst, port: s.p.Port,
+		rs: s.rs, prevalence: round3(s.prevRatio), prevalenceTotal: s.prevTotal,
+		mods: s.mods, final: s.final, connCount: s.p.Count, totalDuration: s.p.TotalDuration,
+		firstSeen: unixToTime(s.p.FirstTs), lastSeen: unixToTime(s.p.LastTs), scoredAt: scoredAt,
+	}
 }
 
 // ---- result buffering / insert ----

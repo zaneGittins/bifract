@@ -73,6 +73,13 @@ func loadBackfillConfig() backfillConfig {
 	return cfg
 }
 
+// settings bounds a backfill-priority query to execSec seconds.
+func (c backfillConfig) settings(execSec int) string {
+	return fmt.Sprintf(
+		" SETTINGS max_threads=%d, max_execution_time=%d, max_bytes_before_external_group_by=%d, priority=10, os_thread_priority=%d",
+		c.maxThreads, execSec, c.maxGroupByBytes, c.osThreadPriority)
+}
+
 func envInt(key string) (int, bool) {
 	s := os.Getenv(key)
 	if s == "" {
@@ -356,9 +363,7 @@ func (m *Manager) runBackfill(ctx context.Context, run *backfillRun) {
 	// this is what keeps the platform responsive while a backfill runs, since the
 	// health check only pauses *between* chunks and a single chunk can run for
 	// minutes. priority is the in-ClickHouse scheduler hint (secondary).
-	settings := fmt.Sprintf(
-		" SETTINGS max_threads=%d, max_execution_time=%d, max_bytes_before_external_group_by=%d, priority=10, os_thread_priority=%d",
-		m.bfCfg.maxThreads, m.bfCfg.chunkTimeoutSec, m.bfCfg.maxGroupByBytes, m.bfCfg.osThreadPriority)
+	settings := m.bfCfg.settings(m.bfCfg.chunkTimeoutSec)
 	anchorLit := anchor.UTC().Format(chTimeLayout)
 
 	for i, ch := range chunks {

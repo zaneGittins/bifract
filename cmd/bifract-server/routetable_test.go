@@ -298,6 +298,7 @@ var routeTable = []string{
 	"PUT /api/v1/models/{id} 8 auth body resp analyst",
 	"POST /api/v1/models/{id}/backfill 8 auth body resp analyst",
 	"POST /api/v1/models/{id}/backfill/cancel 8 auth resp analyst",
+	"POST /api/v1/models/{id}/score-range 8 auth body resp analyst",
 	"GET /api/v1/models/{id}/data 8 auth resp viewer",
 	"POST /api/v1/models/{id}/disable-alert 8 auth resp analyst",
 	"POST /api/v1/models/{id}/enable-alert 8 auth resp analyst",

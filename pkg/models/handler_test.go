@@ -124,8 +124,8 @@ func TestPreviewValidation(t *testing.T) {
 		want string
 	}{
 		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"window":"2d"}`, "invalid preview window"},
-		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"start":"2026-01-01T00:00:00Z"}`, "needs both start and end"},
-		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"start":"2026-01-02T00:00:00Z","end":"2026-01-01T00:00:00Z"}`, "start must be before"},
+		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"start":"2026-01-01T00:00:00Z"}`, "needs both a start and an end"},
+		{`{"model_type":"first_seen","definition":{"key_fields":["u"]},"start":"2026-01-02T00:00:00Z","end":"2026-01-01T00:00:00Z"}`, "must start before it ends"},
 		{`{"model_type":"rarity","definition":{},"window":"1d"}`, "Preview failed: partition_key is required"},
 	}
 	for _, c := range cases {

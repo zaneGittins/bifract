@@ -2944,6 +2944,15 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			})
 			r.Register(api.Route{
 				Method:   http.MethodPost,
+				Path:     "/models/{id}/score-range",
+				Access:   api.AccessAnalyst,
+				Request:  models.ScoreRangeRequest{},
+				Response: api.Response[*models.ScoreRangeResult]{},
+				Summary:  "Score a network model over a past range and keep the scores.",
+				Handler:  d.modelHandler.HandleScoreRange,
+			})
+			r.Register(api.Route{
+				Method:   http.MethodPost,
 				Path:     "/models/{id}/backfill/cancel",
 				Access:   api.AccessAnalyst,
 				Response: api.Response[map[string]bool]{},

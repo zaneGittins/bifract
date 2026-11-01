@@ -69,7 +69,8 @@ func TestHandlersHideOtherFractalsModels(t *testing.T) {
 	for name, ep := range map[string]http.HandlerFunc{
 		"get": h.HandleGet, "data": h.HandleGetData, "stats": h.HandleGetStats, "histogram": h.HandleGetHistogram,
 		"export": h.HandleExport, "update": h.HandleUpdate, "delete": h.HandleDelete, "backfill": h.HandleStartBackfill,
-		"enable": h.HandleEnableAlert,
+		"score-range": h.HandleScoreRange,
+		"enable":      h.HandleEnableAlert,
 	} {
 		if w := callModel(t, ep, "/", `{}`, other.id, analystA); w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d", name, w.Code)

@@ -252,6 +252,29 @@ func (h *Handler) HandleStartBackfill(w http.ResponseWriter, r *http.Request) {
 	h.respondSuccess(w, updated)
 }
 
+// HandleScoreRange scores a network model over a past range and writes the
+// scores, so an imported or replayed dataset shows results. Returns the pass.
+func (h *Handler) HandleScoreRange(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAnalyst(w, r) {
+		return
+	}
+	model := h.getModelScoped(w, r)
+	if model == nil {
+		return
+	}
+	var req ScoreRangeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	res, err := h.manager.ScoreRange(r.Context(), model, req)
+	if err != nil {
+		h.respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to score range: %v", err))
+		return
+	}
+	h.respondSuccess(w, res)
+}
+
 // HandleCancelBackfill stops an in-flight backfill. Partial data is kept.
 func (h *Handler) HandleCancelBackfill(w http.ResponseWriter, r *http.Request) {
 	if !h.requireAnalyst(w, r) {
