@@ -15,7 +15,7 @@
   },
   "containerEnv": {
     // A release tag, or "source" to build this checkout instead.
-    "BIFRACT_DEMO_VERSION": "source"
+    "BIFRACT_DEMO_VERSION": "v0.0.9"
   },
   "onCreateCommand": "bash .devcontainer/demo.sh install",
   "updateContentCommand": "bash .devcontainer/demo.sh load",
