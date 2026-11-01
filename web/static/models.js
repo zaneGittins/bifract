@@ -8,6 +8,7 @@ const AnalyticsModels = {
     _queryController: null, // AbortController for the in-flight preview fetch
     _viewerPoll: null,     // interval: poll the open model while its backfill runs
     _listPoll: null,       // interval: poll the listing while any backfill runs
+    PREVIEW_MAX_DAYS: 90,  // matches previewMaxSpan in pkg/models/preview.go
     BACKFILL_WINDOWS: [['24h', 'Last 24h'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days'], ['90d', 'Last 90 days'], ['custom', 'Custom range']],
 
     // Editor state (split-panel: BQL source query on the left, shape/alert on the right)
@@ -471,7 +472,6 @@ const AnalyticsModels = {
             alertConfig: alertCfg,
             name: m.name,
             description: m.description || '',
-            timeRange: '24h',
             fieldOrder: null,
             resultFields: [],
             results: [],
@@ -479,9 +479,7 @@ const AnalyticsModels = {
             hasTimeline: false,
             ran: false,
             resultMode: 'logs',
-            previewWindow: '7d',
-            previewStart: '',
-            previewEnd: '',
+            ...this._rangeDefaults(),
             preview: null,
             previewCfg: null,
             showGallery: false,
@@ -1972,7 +1970,6 @@ ${m.description ? `<div class="me-sec">
             alertConfig: { severity: 'medium', action_ids: [], coverage_threshold: 0.9, percent_threshold: 10.0, alert_on_new: true, z_threshold: 3.5, beacon_threshold: 0.8, longconn_threshold: 0.5 },
             name: '',
             description: '',
-            timeRange: '24h',
             fieldOrder: null,
             resultFields: [],
             results: [],
@@ -1980,9 +1977,8 @@ ${m.description ? `<div class="me-sec">
             hasTimeline: false,
             ran: false,
             resultMode: 'logs',     // 'logs' (matching logs) | 'scores' (score preview)
-            previewWindow: '7d',    // score preview preset, or 'custom' for previewStart/End
-            previewStart: '',       // custom preview range, UTC ISO8601
-            previewEnd: '',
+            // timeRange and previewWindow: a preset, or the dataset/custom range.
+            ...this._rangeDefaults(),
             preview: null,          // last PreviewResult
             previewCfg: null,       // alertConfig the preview was scored with
             showGallery: true,      // starter templates until one is picked or the user starts blank
@@ -1997,7 +1993,7 @@ ${m.description ? `<div class="me-sec">
     _renderEditorView(container) {
         const e = this.editor;
         const scores = e.resultMode === 'scores';
-        const ranges = [['1h', 'Last 1 Hour'], ['6h', 'Last 6 Hours'], ['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        const ranges = this._editorRanges();
         const previews = [['1d', 'Last 1 Day'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days'], ['custom', 'Custom range']];
         const opts = (list, sel) => list.map(([v, l]) => `<option value="${v}" ${sel === v ? 'selected' : ''}>${l}</option>`).join('');
         container.innerHTML = `
@@ -2432,6 +2428,18 @@ ${m.description ? `<div class="me-sec">
             duration_field: n.duration_field || 'duration',
             bytes_field: n.bytes_field || 'orig_bytes',
         };
+    },
+
+    // The editor opens on the fractal's own range, such as an imported dataset's.
+    // The score preview widens it to whole hours since network models score
+    // complete hours.
+    _rangeDefaults() {
+        const r = window.TimePicker?.fractalRange?.();
+        if (!r) return { timeRange: '24h', previewWindow: '7d', previewStart: '', previewEnd: '' };
+        const hour = 3600000;
+        const end = Math.ceil(Date.parse(r.customEnd) / hour) * hour;
+        const start = Math.max(Math.floor(Date.parse(r.customStart) / hour) * hour, end - this.PREVIEW_MAX_DAYS * 86400000);
+        return { timeRange: 'dataset', previewWindow: 'custom', previewStart: new Date(start).toISOString(), previewEnd: new Date(end).toISOString() };
     },
 
     _isNetworkType(mt) { return mt === 'beacon' || mt === 'long_connection'; },
@@ -2872,7 +2880,14 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
     },
 
     // ---- Time range ----
+    _editorRanges() {
+        const ranges = [['1h', 'Last 1 Hour'], ['6h', 'Last 6 Hours'], ['24h', 'Last 24 Hours'], ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days']];
+        return window.TimePicker?.fractalRange?.() ? [...ranges, ['dataset', 'Dataset range']] : ranges;
+    },
+
     _editorTimeRange() {
+        const r = this.editor.timeRange === 'dataset' && window.TimePicker?.fractalRange?.();
+        if (r) return { start: r.customStart, end: r.customEnd };
         const now = Date.now();
         const map = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3, '30d': 30 * 24 * 3600e3 };
         const span = map[this.editor.timeRange] || map['24h'];
@@ -3190,7 +3205,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
             const start = parse('modelPreviewStart'), end = parse('modelPreviewEnd');
             if (!start || !end) { Toast.warning('Enter the range as YYYY-MM-DD HH:MM'); return; }
             if (Date.parse(end) <= Date.parse(start)) { Toast.warning('The range must end after it starts'); return; }
-            if (Date.parse(end) - Date.parse(start) > 90 * 86400000) { Toast.warning('A preview range is limited to 90 days'); return; }
+            if (Date.parse(end) - Date.parse(start) > this.PREVIEW_MAX_DAYS * 86400000) { Toast.warning(`A preview range is limited to ${this.PREVIEW_MAX_DAYS} days`); return; }
             e.previewStart = start;
             e.previewEnd = end;
             this._runScorePreview();
@@ -3273,7 +3288,7 @@ ${this._historyWindowHTML(e, 'An entity absent for the whole window alerts as ne
         const body = { model_type: e.modelType, definition: def, window: e.previewWindow };
         if (e.previewWindow === 'custom') {
             if (!e.previewStart || !e.previewEnd) {
-                panel.innerHTML = this._benchEmpty('Pick a range', 'Enter a start and end (up to 90 days) to score the model over a past window.');
+                panel.innerHTML = this._benchEmpty('Pick a range', `Enter a start and end (up to ${this.PREVIEW_MAX_DAYS} days) to score the model over a past window.`);
                 return;
             }
             body.window = '';
