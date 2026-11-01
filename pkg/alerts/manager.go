@@ -453,6 +453,9 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 	if err := validateAlertType(c.AlertType); err != nil {
 		return nil, err
 	}
+	if err := validateSeverity(c.Severity); err != nil {
+		return nil, err
+	}
 	if err := validateThrottleField(c.ThrottleField); err != nil {
 		return nil, err
 	}
@@ -2156,6 +2159,9 @@ func (m *Manager) DeleteFractalAction(ctx context.Context, fractalActionID strin
 // CreateFeedAlert creates an alert that belongs to a feed.
 func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryString, alertType string, severity Severity,
 	labels, references []string, feedID, rulePath, ruleHash, fractalID, prismID, createdBy string) (*Alert, error) {
+	if err := validateSeverity(string(severity)); err != nil {
+		return nil, err
+	}
 
 	parsedQuery, err := parser.ParseQuery(queryString)
 	if err != nil {
@@ -2230,6 +2236,9 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 // from the parent feed and exactly one must be set.
 func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, description, queryString, alertType string, severity Severity,
 	labels, references []string, ruleHash, updatedBy, fractalID, prismID string) error {
+	if err := validateSeverity(string(severity)); err != nil {
+		return err
+	}
 
 	if (fractalID == "") == (prismID == "") {
 		return fmt.Errorf("exactly one of fractal_id or prism_id must be set")

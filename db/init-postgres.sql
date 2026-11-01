@@ -194,6 +194,12 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS "references" TEXT[] DEFAULT '{}';
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS severity VARCHAR(20) NOT NULL DEFAULT 'medium';
 -- The alert editor used to save 'info', which nothing ranks or filters on.
 UPDATE alerts SET severity = 'informational' WHERE severity = 'info';
+-- The UI renders severity into markup, so only the known values may be stored.
+UPDATE alerts SET severity = 'medium'
+    WHERE severity NOT IN ('critical', 'high', 'medium', 'low', 'informational');
+ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_severity_check;
+ALTER TABLE alerts ADD CONSTRAINT alerts_severity_check
+    CHECK (severity IN ('critical', 'high', 'medium', 'low', 'informational'));
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS last_execution_time_ms INTEGER;
 -- Ignore matches whose event time trails their arrival by more than this many
 -- seconds (0 = off), so a backlog flush from a reconnected agent does not alert
