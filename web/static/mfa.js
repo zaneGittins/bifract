@@ -90,6 +90,13 @@ const MFA = {
                 </div>
             ` : ''}
             <div id="mfaError" class="error-message" style="display: none;"></div>
+            ${unavailable ? '' : `
+                <div class="form-group">
+                    <label for="mfaPassword">Confirm your password to continue</label>
+                    <input type="password" id="mfaPassword" placeholder="Current password" autocomplete="current-password"
+                        onkeydown="if (event.key === 'Enter') MFA.startEnrollment()">
+                </div>
+            `}
             <div class="form-actions">
                 <button class="btn-secondary" onclick="MFA.close()">Close</button>
                 <button class="btn-primary" id="mfaStartBtn" onclick="MFA.startEnrollment()" ${unavailable ? 'disabled' : ''}>Set up authenticator</button>
@@ -200,12 +207,19 @@ const MFA = {
     },
 
     async startEnrollment() {
+        const password = document.getElementById('mfaPassword')?.value;
+        if (!password) {
+            this.error('Confirm your password first');
+            return;
+        }
         const btn = document.getElementById('mfaStartBtn');
         if (btn) btn.disabled = true;
         try {
             const response = await fetch('/api/v1/auth/mfa/enroll', {
                 method: 'POST',
-                credentials: 'include'
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ password })
             });
             const data = await response.json();
             if (!data.success) {

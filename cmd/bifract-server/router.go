@@ -839,6 +839,7 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 				Method:   http.MethodPost,
 				Path:     "/auth/mfa/enroll",
 				Access:   api.AccessAuthenticated,
+				Request:  auth.MFAPasswordRequest{},
 				Response: auth.Response{},
 				Summary:  "Start two-factor enrollment and return the secret to scan.",
 				Handler:  d.authHandler.HandleMFAEnroll,

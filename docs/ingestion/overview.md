@@ -33,7 +33,7 @@ Give each log source its own token so it can be parsed, normalized and revoked s
 
 ![Create ingest token dialog](../images/ingestion/create-token.png)
 
-Each row has a switch to disable the token, plus **Edit token** and **Delete token** icons. The default token cannot be deleted.
+Each row has a switch to disable the token, plus **Edit token** and **Delete token** icons. Changes apply at once on every app and ingest replica. The default token cannot be deleted.
 
 ## Endpoints
 

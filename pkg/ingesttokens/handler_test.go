@@ -185,7 +185,7 @@ func TestMutationsInvalidateCache(t *testing.T) {
 			db := newTokenDB()
 			seedTokens(db)
 			cache := NewTokenCache(time.Hour)
-			cache.Set(HashToken("bifract_ingest_x"), &ValidatedToken{TokenID: "a2", FractalID: fractalA})
+			cache.Set(HashToken("bifract_ingest_x"), &ValidatedToken{TokenID: "a2", FractalID: fractalA}, cache.Generation())
 			rec := call(rt.fn(newTestHandler(db, cache)), rt.method, rt.body, asUser(tenantAdmin), "id", fractalA, "tokenId", "a2")
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())

@@ -284,6 +284,7 @@ func main() {
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: Failed to initialize settings: %v", err)
 	}
+	changeBus := startChangeBus(pg)
 	log.Println("Settings initialized")
 
 	// Reconcile the "Advanced endpoint analysis" MVs (proc_lineage/proc_freq) to the
@@ -525,6 +526,7 @@ func main() {
 	log.Println("Initializing ingest token system...")
 	ingestTokenStorage := ingesttokens.NewStorage(pg)
 	tokenCache := ingesttokens.NewTokenCache(60 * time.Second)
+	tokenCache.Watch(changeBus)
 	ingestTokenHandler := ingesttokens.NewHandler(ingestTokenStorage, fractalManager, tokenCache)
 
 	// Wire fractal create hook to auto-create default ingest token

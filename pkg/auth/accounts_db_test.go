@@ -61,7 +61,7 @@ func TestInviteLifecycle(t *testing.T) {
 	}
 
 	// The pending account cannot sign in.
-	if rec := login(h, "carol", "!invite", "203.0.113.5"); rec.Code != http.StatusBadRequest {
+	if rec := login(h, "carol", "!invite", "203.0.113.5"); rec.Code != http.StatusUnauthorized {
 		t.Errorf("pending account login: %d", rec.Code)
 	}
 

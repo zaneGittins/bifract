@@ -1301,6 +1301,28 @@ func (c *PostgresClient) GetSetting(ctx context.Context, key string) (string, er
 	return value, nil
 }
 
+// GetAllSettings reads the whole settings table in one statement, so a caller
+// sees every value from the same moment or an error, never a partial set.
+func (c *PostgresClient) GetAllSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read settings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("failed to read settings: %w", err)
+		}
+		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read settings: %w", err)
+	}
+	return out, nil
+}
+
 func (c *PostgresClient) SetSetting(ctx context.Context, key string, value string) error {
 	_, err := c.db.ExecContext(ctx, `
 		INSERT INTO settings (key, value, updated_at)

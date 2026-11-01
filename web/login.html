@@ -879,12 +879,23 @@
                     return true;
                 }
                 if (user.mfa_enrollment_required) {
+                    // Enrollment re-confirms the password, which only exists in
+                    // memory right after a sign in.
+                    if (!this.currentPassword) return false;
                     await this.showMFAEnroll();
                     return true;
                 }
 
                 window.location.href = consumePendingLink();
                 return true;
+            },
+
+            // continueAfterAuth moves on after a step that needs a live session,
+            // and goes back to sign in if that session is gone.
+            async continueAfterAuth(password) {
+                if (await this.routeAfterAuth(password)) return;
+                this.showCard('loginCard');
+                this.showError('Your session ended. Please sign in again.');
             },
 
             showCard(id) {
@@ -942,7 +953,7 @@
                         const data = await response.json();
 
                         if (data.success) {
-                            await this.routeAfterAuth(this.currentPassword);
+                            await this.continueAfterAuth(this.currentPassword);
                         } else {
                             this.showMFAVerifyError(data.error || 'Verification failed');
                         }
@@ -963,7 +974,9 @@
                 try {
                     const response = await fetch('/api/v1/auth/mfa/enroll', {
                         method: 'POST',
-                        credentials: 'include'
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ password: this.currentPassword })
                     });
                     const data = await response.json();
 
@@ -1006,7 +1019,7 @@
                 });
 
                 document.getElementById('mfaRecoveryDoneBtn').addEventListener('click', () => {
-                    this.routeAfterAuth(this.currentPassword);
+                    this.continueAfterAuth(this.currentPassword);
                 });
 
                 form.addEventListener('submit', async (e) => {
@@ -1130,7 +1143,7 @@
                             successDiv.textContent = 'Password updated. Continuing...';
                             successDiv.style.display = 'block';
 
-                            setTimeout(() => this.routeAfterAuth(newPassword), 1200);
+                            setTimeout(() => this.continueAfterAuth(newPassword), 1200);
                         } else {
                             this.showForceChangeError(data.error || 'Failed to change password');
                         }

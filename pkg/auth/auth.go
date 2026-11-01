@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +58,10 @@ const (
 	loginBlockDuration        = 15 * time.Minute
 	loginAccountBlockDuration = 5 * time.Minute
 	loginIPMaxFailures        = 20
-	loginWindowDuration       = 15 * time.Minute
+	// loginUnknownBuckets is how many buckets usernames that do not exist are
+	// counted in, which bounds the memory they can take.
+	loginUnknownBuckets = 1 << 16
+	loginWindowDuration = 15 * time.Minute
 
 	knownAddressTTL     = 30 * 24 * time.Hour
 	knownAddressPerUser = 8
@@ -82,6 +87,14 @@ type loginRateLimiter struct {
 	attempts      map[string]*loginAttempt
 	maxFailures   int
 	blockDuration time.Duration
+}
+
+// unknownUserSeed keys the bucket hash, so names cannot be picked to share one.
+var unknownUserSeed = maphash.MakeSeed()
+
+// unknownUserKey buckets unknown usernames so every one is limited like a real account, in bounded memory.
+func unknownUserKey(username string) string {
+	return strconv.FormatUint(maphash.String(unknownUserSeed, username)%loginUnknownBuckets, 10)
 }
 
 // newLoginRateLimiter returns a limiter with the account defaults: blocked for
@@ -329,6 +342,28 @@ func hashPassword(password string) (string, error) {
 	return string(hash), nil
 }
 
+var (
+	dummyHashOnce sync.Once
+	dummyHash     string
+	// dummyHashCost matches real hashes so the timing does too. Tests lower it.
+	dummyHashCost = bcryptCost
+)
+
+// dummyPasswordHash is checked in place of a real hash when there is none, so a
+// login for an unknown or password-less account takes as long as a real one.
+func dummyPasswordHash() string {
+	dummyHashOnce.Do(func() {
+		b := make([]byte, 32)
+		rand.Read(b)
+		h, err := bcrypt.GenerateFromPassword([]byte(hex.EncodeToString(b)), dummyHashCost)
+		if err != nil {
+			log.Printf("[Auth] Failed to build the dummy password hash: %v", err)
+		}
+		dummyHash = string(h)
+	})
+	return dummyHash
+}
+
 // verifyPassword checks a plaintext password against a bcrypt hash,
 // applying the pepper if configured.
 func verifyPassword(storedHash, password string) error {
@@ -379,6 +414,9 @@ type AuthHandler struct {
 	// could interleave correct logins to keep guessing at someone else's.
 	loginLimiter   *loginRateLimiter
 	accountLimiter *loginRateLimiter
+	// unknownLimiter blocks usernames that do not exist exactly as
+	// accountLimiter blocks real ones, so a block does not confirm an account.
+	unknownLimiter *loginRateLimiter
 	knownAddrs     *knownAddresses
 	// mfaLimiter is keyed by username, not IP: an attacker who already has the
 	// password is otherwise free to walk the six digit space from new addresses.
@@ -429,6 +467,7 @@ func NewAuthHandlerWithAPIKeys(pg *storage.PostgresClient, ch *storage.ClickHous
 		secureCookies:   os.Getenv("BIFRACT_SECURE_COOKIES") == "true",
 		loginLimiter:    newLoginRateLimiterWith(loginIPMaxFailures, loginBlockDuration),
 		accountLimiter:  newLoginRateLimiterWith(loginMaxFailures, loginAccountBlockDuration),
+		unknownLimiter:  newLoginRateLimiterWith(loginMaxFailures, loginAccountBlockDuration),
 		knownAddrs:      newKnownAddresses(),
 		mfaLimiter:      newLoginRateLimiter(),
 		rbacResolver:    rbac.NewResolver(pg),
@@ -648,6 +687,24 @@ func (h *AuthHandler) createSessionWithMFA(username string, mfaPending bool) (st
 	return sessionID, nil
 }
 
+// setNewSessionCookie starts a full session for username and hands it to the browser.
+func (h *AuthHandler) setNewSessionCookie(w http.ResponseWriter, username string) error {
+	sessionID, err := h.createSession(username)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(sessionDuration.Seconds()),
+	})
+	return nil
+}
+
 // CreateSessionForUser creates a session for the given username (exported for OIDC handler).
 func (h *AuthHandler) CreateSessionForUser(username string) (string, error) {
 	return h.createSession(username)
@@ -744,56 +801,56 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user from database. An unknown username counts against the address
-	// only: keying the account limiter on whatever was typed would let anyone
-	// grow it without bound.
+	// Until the password is right, every refusal answers and costs the same, so login cannot list usernames.
 	user, err := h.pg.GetUser(r.Context(), req.Username)
-	if err != nil {
-		addrTry.fail()
-		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
-		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
+	if errors.Is(err, storage.ErrUserNotFound) {
+		user = nil
+	} else if err != nil {
+		writeAuthUnavailable(w, err)
 		return
 	}
 
 	// Checked before the password, so a blocked account answers the same
-	// whether or not this guess was right.
-	acctTry, ok := h.accountLimiter.begin(user.Username)
+	// whether or not this guess was right. Unknown names have a limiter of their
+	// own, so garbage names cannot crowd out real accounts.
+	limiter, key := h.unknownLimiter, unknownUserKey(req.Username)
+	if user != nil {
+		limiter, key = h.accountLimiter, user.Username
+	}
+	acctTry, ok := limiter.begin(key)
 	defer acctTry.end()
-	if !ok && !h.knownAddrs.known(user.Username, ip) {
-		h.logAuthEvent("login_failed", user.Username, ip, "account rate limited")
+	if !ok && (user == nil || !h.knownAddrs.known(user.Username, ip)) {
+		h.logAuthEvent("login_failed", req.Username, ip, "account rate limited")
 		api.WriteError(w, http.StatusTooManyRequests, "Too many failed login attempts. Please try again later.")
 		return
 	}
 
-	// Block login for disabled accounts
-	if !user.Enabled {
-		h.logAuthEvent("login_failed", req.Username, ip, "account disabled")
-		api.WriteError(w, http.StatusForbidden, "This account has been disabled. Please contact an administrator.")
-		return
+	reason := "invalid username or password"
+	hash, usable := dummyPasswordHash(), false
+	switch {
+	case user == nil:
+	case user.AuthProvider == "oidc":
+		reason = "sso account"
+	case user.PasswordHash == "!invite":
+		reason = "pending invite"
+	default:
+		hash, usable = user.PasswordHash, true
 	}
-
-	// Block password login for OIDC-provisioned users
-	if user.AuthProvider == "oidc" {
-		api.WriteError(w, http.StatusBadRequest, "This account uses SSO. Please sign in with SSO.")
-		return
-	}
-
-	// Check if user has a pending invite (password not yet set)
-	if user.PasswordHash == "!invite" {
-		h.logAuthEvent("login_failed", req.Username, ip, "pending invite")
-		api.WriteError(w, http.StatusBadRequest, "Account setup pending. Please use your invite link to set a password.")
-		return
-	}
-
-	// Verify password (applies pepper if configured)
-	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
+	if err := verifyPassword(hash, req.Password); err != nil || !usable {
 		addrTry.fail()
-		h.logAuthEvent("login_failed", req.Username, ip, "invalid username or password")
-		if acctTry.fail() {
+		h.logAuthEvent("login_failed", req.Username, ip, reason)
+		if acctTry.fail() && user != nil {
 			h.logAuthEvent("login_account_blocked", user.Username, ip,
 				fmt.Sprintf("%d failed passwords; sign in blocked for %s", loginMaxFailures, loginAccountBlockDuration))
 		}
 		api.WriteError(w, http.StatusUnauthorized, "Invalid username or password")
+		return
+	}
+
+	// Only someone who knows the password learns the account is disabled.
+	if !user.Enabled {
+		h.logAuthEvent("login_failed", user.Username, ip, "account disabled")
+		api.WriteError(w, http.StatusForbidden, "This account has been disabled. Please contact an administrator.")
 		return
 	}
 
@@ -1195,27 +1252,12 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 	// Invalidate all existing sessions so compromised sessions cannot be reused.
 	h.invalidateUserSessions(user.Username)
 
-	// Create a fresh session for the current user so they stay logged in.
-	newSessionID, err := h.createSession(user.Username)
-	if err != nil {
+	// A fresh session for the current user so they stay logged in.
+	if err := h.setNewSessionCookie(w, user.Username); err != nil {
 		log.Printf("[Auth] Failed to create new session after password change for %s: %v", user.Username, err)
 	}
 
-	ip := clientIP(r)
-	h.logAuthEvent("password_changed", user.Username, ip, "")
-
-	// Set the new session cookie so the user is not logged out.
-	if newSessionID != "" {
-		http.SetCookie(w, &http.Cookie{
-			Name:     sessionCookieName,
-			Value:    newSessionID,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   h.secureCookies,
-			SameSite: http.SameSiteStrictMode,
-			MaxAge:   int(sessionDuration.Seconds()),
-		})
-	}
+	h.logAuthEvent("password_changed", user.Username, clientIP(r), "")
 
 	api.WriteJSON(w, http.StatusOK, Response{
 		Success: true,

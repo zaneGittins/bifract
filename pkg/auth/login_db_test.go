@@ -142,9 +142,11 @@ func TestHandleLoginRefusals(t *testing.T) {
 	}{
 		{name: "wrong password", password: "nope", want: http.StatusUnauthorized, counted: true},
 		{name: "unknown user", username: "mallory", password: userPassword, want: http.StatusUnauthorized, counted: true},
+		// Only the right password learns the account is disabled.
 		{name: "disabled", mod: disabled, password: userPassword, want: http.StatusForbidden},
-		{name: "sso account", mod: viaSSO, password: userPassword, want: http.StatusBadRequest},
-		{name: "pending invite", mod: func(r row) { r["password_hash"] = "!invite" }, password: "!invite", want: http.StatusBadRequest},
+		{name: "disabled, wrong password", mod: disabled, password: "nope", want: http.StatusUnauthorized, counted: true},
+		{name: "sso account", mod: viaSSO, password: userPassword, want: http.StatusUnauthorized, counted: true},
+		{name: "pending invite", mod: func(r row) { r["password_hash"] = "!invite" }, password: "!invite", want: http.StatusUnauthorized, counted: true},
 		// Hashed before the pepper existed: the plain password no longer verifies.
 		{name: "pepper changed", mod: func(r row) { r["password_hash"] = mustHash(t, userPassword) }, password: userPassword, want: http.StatusUnauthorized, counted: true},
 	}
@@ -174,6 +176,84 @@ func TestHandleLoginRefusals(t *testing.T) {
 				t.Errorf("failure counted = %v, want %v", counted, tc.counted)
 			}
 		})
+	}
+}
+
+// A wrong password gets the same answer whatever state the account is in, or
+// whether it exists at all, so login cannot be used to list usernames.
+func TestHandleLoginDoesNotRevealAccounts(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	db.addUser("dora", disabled)
+	db.addUser("sam", viaSSO)
+	db.addUser("ivy", func(r row) { r["password_hash"] = "!invite" })
+
+	want := login(h, "alice", "nope", "198.51.100.30")
+	for i, name := range []string{"dora", "sam", "ivy", "mallory"} {
+		rec := login(h, name, "nope", fmt.Sprintf("198.51.100.%d", 31+i))
+		if rec.Code != want.Code || rec.Body.String() != want.Body.String() {
+			t.Errorf("%s: %d %s, want %d %s", name, rec.Code, rec.Body.String(), want.Code, want.Body.String())
+		}
+	}
+}
+
+// An unknown username is blocked after as many failures as a real one, so the
+// account block does not tell the two apart.
+func TestHandleLoginBlocksUnknownUsersLikeAccounts(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+
+	codes := map[string][]int{}
+	for _, name := range []string{"alice", "mallory"} {
+		for i := 0; i <= loginMaxFailures; i++ {
+			rec := login(h, name, "guess", fmt.Sprintf("192.0.2.%d", 100+i))
+			codes[name] = append(codes[name], rec.Code)
+		}
+	}
+	if fmt.Sprint(codes["alice"]) != fmt.Sprint(codes["mallory"]) {
+		t.Errorf("real account %v, unknown %v", codes["alice"], codes["mallory"])
+	}
+	if last := codes["mallory"][loginMaxFailures]; last != http.StatusTooManyRequests {
+		t.Errorf("unknown user after %d failures: %d, want 429", loginMaxFailures, last)
+	}
+}
+
+// Unknown names share a fixed set of buckets: memory is bounded however many
+// are tried, and no name ever goes untracked, which would tell it apart from a
+// real account that blocks.
+func TestUnknownUserBuckets(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 4*loginUnknownBuckets; i++ {
+		k := unknownUserKey(fmt.Sprintf("name%d", i))
+		if unknownUserKey(fmt.Sprintf("name%d", i)) != k {
+			t.Fatal("bucket is not stable for a name")
+		}
+		seen[k] = true
+	}
+	if len(seen) > loginUnknownBuckets {
+		t.Errorf("%d buckets, want at most %d", len(seen), loginUnknownBuckets)
+	}
+}
+
+// A database failure is not a wrong password: it answers 503 and costs the
+// address nothing.
+func TestHandleLoginUserLookupFailure(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	db.failOn("COALESCE(force_password_change, FALSE)", errors.New("pq: connection reset"))
+
+	rec := login(h, "alice", userPassword, "198.51.100.90")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	h.loginLimiter.mu.Lock()
+	a := h.loginLimiter.attempts["198.51.100.90"]
+	h.loginLimiter.mu.Unlock()
+	if a != nil && a.failures != 0 {
+		t.Error("a lookup failure counted against the address")
 	}
 }
 
@@ -292,9 +372,12 @@ func TestHandleLoginForwardedForSpoofing(t *testing.T) {
 	h, db := newDBHandler(t)
 	db.addUser("alice")
 
+	// A new name each guess, so only the address limit is in play.
+	n := 0
 	guess := func(peer, xff string) int {
+		n++
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
-			strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"wrong"}`, "nobody")))
+			strings.NewReader(fmt.Sprintf(`{"username":"nobody%d","password":"wrong"}`, n)))
 		r.RemoteAddr = peer + ":40000"
 		r.Header.Set("X-Forwarded-For", xff)
 		rec := httptest.NewRecorder()
@@ -409,9 +492,9 @@ func TestHandleLoginSuccessDoesNotResetAddress(t *testing.T) {
 	}
 }
 
-// Unknown usernames count against the address only, so garbage names cannot
-// grow the per-account table.
-func TestHandleLoginUnknownUsersNotTrackedPerAccount(t *testing.T) {
+// Unknown usernames stay out of the per-account table, so garbage names cannot
+// grow it or crowd out real accounts.
+func TestHandleLoginUnknownUsersStayOutOfAccountTable(t *testing.T) {
 	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
 	h, _ := newDBHandler(t)
 	for i := 0; i < 10; i++ {

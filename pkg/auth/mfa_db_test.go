@@ -37,11 +37,14 @@ func currentCode(t *testing.T, secret string) string {
 	return totpAt(t, secret, mfa.Counter(time.Now().Unix()))
 }
 
+// enrollBody re-confirms the test user's password to start enrollment.
+var enrollBody = `{"password":"` + userPassword + `"}`
+
 // enroll runs enrollment for name end to end and returns the secret and the
 // recovery codes handed back.
 func enroll(t *testing.T, h *AuthHandler, db *authDB, name string) (string, []string) {
 	t.Helper()
-	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, name), false, "", "")
+	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, name), false, "", enrollBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("enroll: %d %s", rec.Code, rec.Body.String())
 	}
@@ -64,7 +67,7 @@ func TestMFAEnrollAndConfirm(t *testing.T) {
 	h, db := newDBHandler(t)
 	db.addUser("alice")
 
-	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", "")
+	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", enrollBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("enroll: %d %s", rec.Code, rec.Body.String())
 	}
@@ -129,7 +132,7 @@ func TestMFAEnrollAndConfirm(t *testing.T) {
 	if status["enrolled"] != true || status["recovery_codes_remaining"] != float64(recoveryCodeCount) {
 		t.Errorf("status = %v", status)
 	}
-	if rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", ""); rec.Code != http.StatusConflict {
+	if rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", enrollBody); rec.Code != http.StatusConflict {
 		t.Errorf("re-enroll over an authenticator: %d", rec.Code)
 	}
 }
@@ -140,14 +143,14 @@ func TestMFAEnrollStoreFailures(t *testing.T) {
 	db.addUser("alice")
 
 	db.failOn("SET totp_secret = $2", errors.New("pq: connection reset"))
-	if rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", ""); rec.Code != http.StatusInternalServerError {
+	if rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", enrollBody); rec.Code != http.StatusInternalServerError {
 		t.Errorf("enroll with a failing store: %d", rec.Code)
 	}
 
 	db.mu.Lock()
 	delete(db.fail, "SET totp_secret = $2")
 	db.mu.Unlock()
-	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", "")
+	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", enrollBody)
 	secret := decodeBody(t, rec)["data"].(map[string]any)["secret"].(string)
 
 	db.failOn("INSERT INTO user_recovery_codes", errors.New("pq: disk full"))
@@ -164,6 +167,103 @@ func TestMFAEnrollStoreFailures(t *testing.T) {
 	}
 	if _, _, commits, rollbacks := db.pg.Stats(); rollbacks == 0 || commits != 0 {
 		t.Errorf("commits %d, rollbacks %d; want the failed replace rolled back", commits, rollbacks)
+	}
+}
+
+// Starting enrollment needs the password, so a hijacked session cannot put its
+// own authenticator on the account.
+func TestMFAEnrollNeedsPassword(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+
+	for _, body := range []string{"", `{}`, `{"password":"wrong"}`} {
+		rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", body)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("enroll with body %q: %d, want 401", body, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "secret") {
+			t.Errorf("enroll with body %q issued a secret", body)
+		}
+	}
+	if db.user("alice")["totp_secret"] != nil {
+		t.Error("a refused enrollment stored a secret")
+	}
+	// Only the wrong password is a guess toward the per-user limit.
+	if n := mfaStrikes(h, "alice"); n != 1 {
+		t.Errorf("strikes = %d, want 1", n)
+	}
+}
+
+// Confirming enrollment signs out every other session, so one opened before the
+// account had a second factor cannot outlive it. The confirming browser gets a
+// fresh session and stays signed in.
+func TestMFAConfirmRevokesOtherSessions(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+
+	other := sessionCookie(login(h, "alice", userPassword, "203.0.113.4"))
+	mine := sessionCookie(login(h, "alice", userPassword, "203.0.113.3"))
+
+	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, mine.Value, enrollBody)
+	secret := decodeBody(t, rec)["data"].(map[string]any)["secret"].(string)
+	rec = mfaPost(h.HandleMFAConfirm, loadUser(t, db, "alice"), false, mine.Value, `{"code":"`+currentCode(t, secret)+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", rec.Code, rec.Body.String())
+	}
+
+	fresh := sessionCookie(rec)
+	if fresh == nil || fresh.Value == mine.Value || fresh.Value == other.Value || !fresh.HttpOnly {
+		t.Fatalf("cookie after confirm = %+v", fresh)
+	}
+	for name, id := range map[string]string{"other": other.Value, "confirming": mine.Value} {
+		if len(db.rows("sessions", row{"session_id": id})) != 0 {
+			t.Errorf("%s session survived enrollment", name)
+		}
+	}
+	if _, next := throughMiddleware(h, http.MethodGet, "/api/v1/query", fresh.Value, nil); !next.called {
+		t.Error("the confirming browser was signed out")
+	}
+}
+
+// Once the authenticator is on, older sessions go even if storing the recovery
+// codes then fails.
+func TestMFAConfirmRevokesSessionsWhenCodesFail(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	other := sessionCookie(login(h, "alice", userPassword, "203.0.113.4"))
+
+	rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", enrollBody)
+	secret := decodeBody(t, rec)["data"].(map[string]any)["secret"].(string)
+	db.failOn("INSERT INTO user_recovery_codes", errors.New("pq: disk full"))
+	rec = mfaPost(h.HandleMFAConfirm, loadUser(t, db, "alice"), false, "", `{"code":"`+currentCode(t, secret)+`"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("confirm with codes unstorable: %d", rec.Code)
+	}
+	if db.user("alice")["totp_enrolled_at"] == nil {
+		t.Fatal("expected the authenticator to be on")
+	}
+	if len(db.rows("sessions", row{"session_id": other.Value})) != 0 {
+		t.Error("a session from before the second factor survived it")
+	}
+}
+
+// A correct password forgives earlier typos, so they do not use up the tries
+// left for the code that follows.
+func TestMFAEnrollPasswordTyposDoNotCostCodeTries(t *testing.T) {
+	t.Setenv("BIFRACT_PASSWORD_PEPPER", testPepper)
+	h, db := newDBHandler(t)
+	db.addUser("alice")
+	for i := 0; i < loginMaxFailures-1; i++ {
+		mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", `{"password":"typo"}`)
+	}
+	if rec := mfaPost(h.HandleMFAEnroll, loadUser(t, db, "alice"), false, "", enrollBody); rec.Code != http.StatusOK {
+		t.Fatalf("enroll: %d", rec.Code)
+	}
+	if n := mfaStrikes(h, "alice"); n != 0 {
+		t.Errorf("strikes after the right password = %d, want 0", n)
 	}
 }
 

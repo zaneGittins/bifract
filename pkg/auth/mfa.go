@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -173,7 +174,8 @@ func (h *AuthHandler) HandleMFAStatus(w http.ResponseWriter, r *http.Request) {
 
 // HandleMFAEnroll issues a new secret and the QR code to scan. The secret is
 // stored unenrolled: it does nothing until the user proves they can produce a
-// code, so an abandoned setup cannot lock anyone out.
+// code, so an abandoned setup cannot lock anyone out. It needs the password, so
+// a hijacked session cannot put its own authenticator on the account.
 func (h *AuthHandler) HandleMFAEnroll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -193,6 +195,31 @@ func (h *AuthHandler) HandleMFAEnroll(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusConflict, "This account already has an authenticator. Remove it before enrolling a new one.")
 		return
 	}
+
+	var req MFAPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		api.WriteError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if req.Password == "" {
+		api.WriteError(w, http.StatusUnauthorized, "Confirm your password to set up an authenticator")
+		return
+	}
+	try, ok := h.mfaLimiter.begin(user.Username)
+	defer try.end()
+	if !ok {
+		api.WriteError(w, http.StatusTooManyRequests, "Too many incorrect attempts. Please wait and try again.")
+		return
+	}
+	if err := verifyPassword(user.PasswordHash, req.Password); err != nil {
+		try.fail()
+		h.logAuthEvent("mfa_enroll_failed", user.Username, clientIP(r), "invalid password")
+		api.WriteError(w, http.StatusUnauthorized, "Password is incorrect")
+		return
+	}
+	// Typos before the right password must not use up the tries for the code.
+	// An enrolled account never gets here, so this forgives no code guesses.
+	h.mfaLimiter.reset(user.Username)
 
 	secret, err := mfa.GenerateSecret()
 	if err != nil {
@@ -288,6 +315,12 @@ func (h *AuthHandler) HandleMFAConfirm(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to complete enrollment")
 		return
 	}
+	// Sessions opened before the account had a second factor must not outlive
+	// it. This browser gets a fresh one and stays signed in.
+	h.invalidateUserSessions(user.Username)
+	if err := h.setNewSessionCookie(w, user.Username); err != nil {
+		log.Printf("[Auth] Failed to create session after enrollment for %s: %v", user.Username, err)
+	}
 	if err := h.pg.ReplaceRecoveryCodes(r.Context(), user.Username, hashes); err != nil {
 		log.Printf("[Auth] Failed to store recovery codes for %s: %v", user.Username, err)
 		api.WriteError(w, http.StatusInternalServerError, "Enrollment saved but recovery codes could not be stored. Regenerate them from your account settings.")
@@ -351,20 +384,10 @@ func (h *AuthHandler) HandleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	if cookie, cerr := r.Cookie(sessionCookieName); cerr == nil {
 		h.deleteSession(cookie.Value)
 	}
-	sessionID, err := h.createSession(user.Username)
-	if err != nil {
+	if err := h.setNewSessionCookie(w, user.Username); err != nil {
 		api.WriteError(w, http.StatusInternalServerError, "Failed to create session")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sessionID,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   h.secureCookies,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(sessionDuration.Seconds()),
-	})
 
 	h.mfaLimiter.reset(user.Username)
 	h.knownAddrs.remember(user.Username, ip)

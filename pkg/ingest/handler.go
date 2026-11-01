@@ -219,10 +219,12 @@ func (h *IngestHandler) lookupIngestToken(ctx context.Context, rawToken string) 
 	}
 
 	tokenHash := ingesttokens.HashToken(rawToken)
+	var gen uint64
 	if h.tokenCache != nil {
 		if cached, ok := h.tokenCache.Get(tokenHash); ok {
 			return cached, nil
 		}
+		gen = h.tokenCache.Generation()
 	}
 
 	validated, err := h.tokenStorage.ValidateToken(ctx, rawToken)
@@ -230,7 +232,7 @@ func (h *IngestHandler) lookupIngestToken(ctx context.Context, rawToken string) 
 		return nil, err
 	}
 	if h.tokenCache != nil {
-		h.tokenCache.Set(tokenHash, validated)
+		h.tokenCache.Set(tokenHash, validated, gen)
 	}
 	return validated, nil
 }
