@@ -148,7 +148,7 @@ func (m *Manager) GetDictionary(ctx context.Context, id string) (*Dictionary, er
 // dictColumns is the column list EVERY dictionary read selects, in the order
 // scanDictionary expects. One constant and one scanner, so a new column cannot
 // reach one read and miss another.
-const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, key_column, columns, row_count, case_insensitive_keys, COALESCE(kind, 'value'), COALESCE(created_by, ''), created_at, updated_at, source, source_status`
+const dictColumns = `id, name, description, COALESCE(fractal_id::text, ''), COALESCE(prism_id::text, ''), is_global, COALESCE((SELECT f.name FROM fractals f WHERE f.id = dictionaries.fractal_id), (SELECT p.name FROM prisms p WHERE p.id = dictionaries.prism_id), ''), key_column, columns, row_count, case_insensitive_keys, COALESCE(kind, 'value'), COALESCE(created_by, ''), created_at, updated_at, source, source_status`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -158,7 +158,7 @@ type rowScanner interface {
 func scanDictionary(row rowScanner) (*Dictionary, error) {
 	d := &Dictionary{}
 	var colsJSON, sourceJSON, statusJSON []byte
-	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.KeyColumn,
+	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.FractalID, &d.PrismID, &d.IsGlobal, &d.HomeName, &d.KeyColumn,
 		&colsJSON, &d.RowCount, &d.CaseInsensitiveKeys, &d.Kind, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt,
 		&sourceJSON, &statusJSON); err != nil {
 		return nil, err

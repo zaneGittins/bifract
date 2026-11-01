@@ -50,6 +50,9 @@ func (h *Handler) HandleListDictionaries(w http.ResponseWriter, r *http.Request)
 	if dicts == nil {
 		dicts = []*Dictionary{}
 	}
+	for _, d := range dicts {
+		d.Editable = d.changeableFrom(r, fractalID, prismID)
+	}
 	api.WriteList(w, dicts)
 }
 
@@ -788,21 +791,26 @@ func (h *Handler) dictionaryInScope(w http.ResponseWriter, r *http.Request, writ
 		h.respondError(w, http.StatusBadRequest, "Failed to determine fractal context")
 		return nil
 	}
+	dict.Editable = dict.changeableFrom(r, fractalID, prismID)
 	switch {
-	case dict.ownedBy(fractalID, prismID):
-		return dict
-	case !dict.IsGlobal:
+	case !dict.IsGlobal && !dict.ownedBy(fractalID, prismID):
 		h.respondError(w, http.StatusNotFound, "Dictionary not found")
-	case !write || api.Granted(r, api.AccessTenantAdmin):
-		return dict
-	default:
+	case write && !dict.Editable:
 		h.respondError(w, http.StatusForbidden, "A global lookup can only be changed from the fractal or prism it was created in")
+	default:
+		return dict
 	}
 	return nil
 }
 
 func (d *Dictionary) ownedBy(fractalID, prismID string) bool {
 	return (d.FractalID != "" && d.FractalID == fractalID) || (d.PrismID != "" && d.PrismID == prismID)
+}
+
+// changeableFrom reports whether r may change d from the given scope: its own
+// lists, and a global from elsewhere only as a tenant admin.
+func (d *Dictionary) changeableFrom(r *http.Request, fractalID, prismID string) bool {
+	return d.ownedBy(fractalID, prismID) || (d.IsGlobal && api.Granted(r, api.AccessTenantAdmin))
 }
 
 func (h *Handler) getScope(r *http.Request) (fractalID, prismID string, err error) {
