@@ -11,6 +11,7 @@ import (
 
 	"bifract/pkg/auth"
 	"bifract/pkg/fractals"
+	"bifract/pkg/instructions"
 	"bifract/pkg/storage"
 
 	"github.com/go-chi/chi/v5"
@@ -122,6 +123,10 @@ func (h *Handler) HandleCreateConversation(w http.ResponseWriter, r *http.Reques
 	}
 
 	conv, err := h.manager.CreateConversation(r.Context(), fractalID, prismID, req.Title, username, req.LibraryIDs)
+	if errors.Is(err, instructions.ErrLibraryOutOfScope) {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err != nil {
 		log.Printf("[Chat] Failed to create conversation: %v", err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to create conversation")
@@ -251,7 +256,8 @@ type SetConversationLibrariesRequest struct {
 
 func (h *Handler) HandleSetConversationLibraries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if h.verifyConversationOwner(w, r, id) == nil {
+	conv := h.verifyConversationOwner(w, r, id)
+	if conv == nil {
 		return
 	}
 
@@ -261,7 +267,12 @@ func (h *Handler) HandleSetConversationLibraries(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if err := h.manager.SetConversationLibraries(r.Context(), id, req.LibraryIDs); err != nil {
+	err := h.manager.SetConversationLibraries(r.Context(), conv, req.LibraryIDs)
+	if errors.Is(err, instructions.ErrLibraryOutOfScope) {
+		h.respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
 		log.Printf("[Chat] Failed to set libraries for %s: %v", id, err)
 		h.respondError(w, http.StatusInternalServerError, "Failed to update conversation libraries")
 		return

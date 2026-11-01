@@ -3,6 +3,7 @@ package instructions
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"bifract/pkg/egress"
 	"bifract/pkg/feeds"
 	"bifract/pkg/storage"
+
+	"github.com/lib/pq"
 )
 
 // wikilinkRe matches [[Page Name]] references in page content.
@@ -653,6 +656,14 @@ func (m *Manager) UpdateSyncedPage(ctx context.Context, id, name, description, c
 
 // --- Conversation Library Association ---
 
+// ErrLibraryOutOfScope means a library does not exist in the caller's fractal or prism.
+var ErrLibraryOutOfScope = errors.New("library not found in this scope")
+
+// conversationScopeJoin keeps only libraries in the conversation's own fractal or
+// prism, so a link made before scope was checked on write never loads.
+const conversationScopeJoin = `JOIN chat_conversations c ON c.id = cl.conversation_id
+		  AND (l.fractal_id = c.fractal_id OR l.prism_id = c.prism_id)`
+
 // GetConversationLibraries returns libraries linked to a conversation.
 func (m *Manager) GetConversationLibraries(ctx context.Context, conversationID string) ([]*Library, error) {
 	query := `
@@ -662,8 +673,9 @@ func (m *Manager) GetConversationLibraries(ctx context.Context, conversationID s
 		       l.sync_schedule, l.last_synced_at, l.last_sync_status, l.last_sync_page_count,
 		       COALESCE(l.created_by, ''), l.created_at, l.updated_at,
 		       (SELECT COUNT(*) FROM instruction_pages p WHERE p.library_id = l.id) as page_count
-		FROM instruction_libraries l
-		JOIN conversation_libraries cl ON cl.library_id = l.id
+		FROM conversation_libraries cl
+		JOIN instruction_libraries l ON l.id = cl.library_id
+		` + conversationScopeJoin + `
 		WHERE cl.conversation_id = $1
 		ORDER BY l.is_default DESC, l.name ASC
 	`
@@ -687,7 +699,10 @@ func (m *Manager) GetConversationLibraries(ctx context.Context, conversationID s
 // GetConversationLibraryIDs returns just the library IDs linked to a conversation.
 func (m *Manager) GetConversationLibraryIDs(ctx context.Context, conversationID string) ([]string, error) {
 	rows, err := m.pg.Query(ctx, `
-		SELECT library_id FROM conversation_libraries WHERE conversation_id = $1
+		SELECT l.id FROM conversation_libraries cl
+		JOIN instruction_libraries l ON l.id = cl.library_id
+		`+conversationScopeJoin+`
+		WHERE cl.conversation_id = $1
 	`, conversationID)
 	if err != nil {
 		return nil, err
@@ -705,23 +720,68 @@ func (m *Manager) GetConversationLibraryIDs(ctx context.Context, conversationID 
 	return ids, nil
 }
 
-// SetConversationLibraries replaces the library associations for a conversation.
-func (m *Manager) SetConversationLibraries(ctx context.Context, conversationID string, libraryIDs []string) error {
-	// Delete existing associations
-	if _, err := m.pg.Exec(ctx, `DELETE FROM conversation_libraries WHERE conversation_id = $1`, conversationID); err != nil {
+// CheckLibrariesInScope returns ErrLibraryOutOfScope unless every ID names a
+// library in the given fractal or prism.
+func (m *Manager) CheckLibrariesInScope(ctx context.Context, fractalID, prismID string, libraryIDs []string) error {
+	column, scope := "fractal_id", fractalID
+	if prismID != "" {
+		column, scope = "prism_id", prismID
+	}
+	if scope == "" {
+		return ErrLibraryOutOfScope
+	}
+	ids := uniqueIDs(libraryIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+	// id::text so a malformed ID simply does not match.
+	var found int
+	err := m.pg.QueryRow(ctx, `SELECT COUNT(*) FROM instruction_libraries
+		WHERE id::text = ANY($1) AND `+column+` = $2`, pq.Array(ids), scope).Scan(&found)
+	if err != nil {
+		return fmt.Errorf("check library scope: %w", err)
+	}
+	if found != len(ids) {
+		return ErrLibraryOutOfScope
+	}
+	return nil
+}
+
+// SetConversationLibraries replaces a conversation's libraries, refusing any
+// outside the conversation's fractal or prism.
+func (m *Manager) SetConversationLibraries(ctx context.Context, conversationID, fractalID, prismID string, libraryIDs []string) error {
+	if err := m.CheckLibrariesInScope(ctx, fractalID, prismID, libraryIDs); err != nil {
+		return err
+	}
+	tx, err := m.pg.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM conversation_libraries WHERE conversation_id = $1`, conversationID); err != nil {
 		return fmt.Errorf("clear conversation libraries: %w", err)
 	}
-
-	// Insert new associations
-	for _, libID := range libraryIDs {
-		if _, err := m.pg.Exec(ctx, `
+	for _, libID := range uniqueIDs(libraryIDs) {
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO conversation_libraries (conversation_id, library_id) VALUES ($1, $2)
-			ON CONFLICT DO NOTHING
 		`, conversationID, libID); err != nil {
 			return fmt.Errorf("set conversation library: %w", err)
 		}
 	}
-	return nil
+	return tx.Commit(ctx)
+}
+
+func uniqueIDs(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // --- AI Context Resolution ---
