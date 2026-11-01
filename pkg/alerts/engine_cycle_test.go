@@ -11,6 +11,7 @@ import (
 
 	"bifract/internal/fakedb"
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
 func parsedAlert(t *testing.T, a *Alert) *Alert {
@@ -853,5 +854,24 @@ func TestRecentIngestProbeIncludesTheCursor(t *testing.T) {
 	}
 	if want := "ingest_timestamp >= toDateTime64('" + chTime(cursor) + "'"; !strings.Contains(q[0], want) {
 		t.Errorf("probe %s, want %s", q[0], want)
+	}
+}
+
+// Alert queries run on the privileged connection, so the fractal scope is what
+// keeps a rule that loses its predicate inside its own fractal or prism.
+func TestAlertQueryCarriesFractalScope(t *testing.T) {
+	e, _, ch := newTestEngine(t)
+	var sent []string
+	ch.CtxArgs = func(ctx context.Context) []any {
+		sent = append(sent, storage.SentQueryIDOf(ctx))
+		return nil
+	}
+	alert := parsedAlert(t, &Alert{ID: "a1", Name: "Scoped", PrismID: "p1"})
+	opts := parser.QueryOptions{StartTime: time.Now().Add(-time.Minute), EndTime: time.Now(), FractalIDs: []string{"f1", "f2"}, TableName: "logs"}
+	if _, err := e.runAlertQuery(context.Background(), alert, opts, 5, opts.StartTime); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || !strings.HasSuffix(sent[0], "~bfscope~f1,f2,") {
+		t.Errorf("alert reads sent as %q", sent)
 	}
 }

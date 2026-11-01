@@ -69,7 +69,7 @@ func (h *QueryHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	queryID := newSearchID()
-	ctx, cancel := context.WithCancel(storage.TagContext(r.Context(), tag))
+	ctx, cancel := context.WithCancel(storage.ScopeContext(storage.TagContext(r.Context(), tag), prep.fractalScope()))
 	defer func() {
 		cancel()
 		if outcome != "complete" {

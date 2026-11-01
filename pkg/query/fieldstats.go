@@ -11,6 +11,7 @@ import (
 
 	"bifract/pkg/parser"
 	"bifract/pkg/settings"
+	"bifract/pkg/storage"
 )
 
 // fieldStatsSampleSize bounds how many (most-recent) matching rows the field-stats
@@ -79,7 +80,7 @@ func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx := r.Context()
+	ctx := storage.ScopeContext(r.Context(), prep.fractalScope())
 	if timeoutSec := settings.Get().QueryTimeoutSeconds; timeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
