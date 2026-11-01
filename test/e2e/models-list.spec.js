@@ -52,7 +52,7 @@ test.describe('Models listing', () => {
     })));
     for (const c of cells) {
       expect(c.count, `${c.name}: cells vs header`).toBe(headers.length);
-      expect(c.state, `${c.name}: state`).toMatch(/^(Error|Not updating|Not started|Behind|Rebuilding|Backfill|Stale|Learning|Healthy|Unknown)/);
+      expect(c.state, `${c.name}: state`).toMatch(/^(Error|Not updating|Not started|Behind|Rebuilding|Backfill|Stale|Scored|Learning|Healthy|Unknown)/);
       expect(c.findings, `${c.name}: findings`).toMatch(/^(\d[\d,.KMB]*|n\/a)$/);
       expect([0, 7], `${c.name}: sparkline is one bar per day`).toContain(c.sparkBars);
       expect(c.lastAlert, `${c.name}: last alert`).toMatch(/^(Never|n\/a|today|\d+(s|m|h|d|mo) ago)$/);

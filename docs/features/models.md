@@ -143,6 +143,7 @@ The **State** column shows the worst state that applies; hover for the reason.
 | **Rebuilding** | Its tables are being created |
 | **Backfill n%** | History is being seeded |
 | **Stale** | Newest recorded event is over 2 days old (3 hours for an hourly Volume Baseline) |
+| **Scored date** | A network model whose rolling state is empty but holds scores from **Score range**, through that date |
 | **Learning k/n** | Not enough history yet: Rarity its learning period per group, Volume Baseline its min history, First / Last Seen 7 days, network models one full window |
 | **Healthy** | Recording and scoring normally |
 

@@ -291,6 +291,7 @@ const AnalyticsModels = {
         rebuilding:   ['badge-rebuilding', 'Rebuilding'],
         backfilling:  ['badge-progress', 'Backfill'],
         stale:        ['badge-stale', 'Stale'],
+        scored:       ['badge-learning', 'Scored'],
         learning:     ['badge-learning', 'Learning'],
         healthy:      ['badge-healthy', 'Healthy'],
         checking:     ['badge-checking', 'Checking'],
@@ -308,6 +309,10 @@ const AnalyticsModels = {
         if (h.state === 'behind' && m.state_lag_seconds != null) label += ' ' + this._lagLabel(m.state_lag_seconds);
         if (h.state === 'backfilling') label += ` ${this._backfillPct(m)}%`;
         if (h.state === 'stale' && h.newest_data) label += ' ' + this._lagLabel((Date.now() - TZ.toEpoch(h.newest_data)) / 1000);
+        if (h.state === 'scored' && h.scored_through) {
+            const p = TZ.parts(h.scored_through);
+            if (p) label += ` ${TZ.MONTHS[p.month - 1]} ${p.day}`;
+        }
         if (h.state === 'learning' && h.history_needed) label += ` ${h.history || 0}/${h.history_needed}${h.history_unit === 'hour' ? 'h' : 'd'}`;
         const lines = [h.detail || ''];
         if (h.newest_data) lines.push(`Newest event: ${TZ.format(h.newest_data, 'friendly')}`);
