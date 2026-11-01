@@ -1338,16 +1338,6 @@ func geoipDictName(field string) string {
 	return "geoip_city_lookup"
 }
 
-func geoipDefaultValue(field string) string {
-	if t, ok := geoIPASNFields[field]; ok && t == "UInt32" {
-		return "toUInt32(0)"
-	}
-	if t, ok := geoIPCityFields[field]; ok && t == "Float64" {
-		return "toFloat64(0)"
-	}
-	return "''"
-}
-
 // geoipIsNumeric returns true if the field type is not String and needs toString() wrapping.
 func geoipIsNumeric(field string) bool {
 	if t, ok := geoIPASNFields[field]; ok && t != "String" {
@@ -1359,17 +1349,15 @@ func geoipIsNumeric(field string) bool {
 	return false
 }
 
-// geoipLookupExpr builds the full dictGetOrDefault expression, wrapping numeric
-// results in toString() so the query handler can scan them as strings.
+// geoipLookupExpr builds the lookup as a string. A numeric miss reads empty (not a
+// number) instead of 0, so asn < 1000 does not match private or non-IPv4 addresses.
 func geoipLookupExpr(db, field, fieldRef string) string {
-	dictName := dictRef(db, geoipDictName(field))
-	defVal := geoipDefaultValue(field)
-	inner := fmt.Sprintf("dictGetOrDefault('%s', '%s', toIPv4OrDefault(%s), %s)",
-		escapeString(dictName), escapeString(field), fieldRef, defVal)
+	dictName := escapeString(dictRef(db, geoipDictName(field)))
+	key := fmt.Sprintf("toIPv4OrDefault(%s)", fieldRef)
 	if geoipIsNumeric(field) {
-		return fmt.Sprintf("toString(%s)", inner)
+		return fmt.Sprintf("ifNull(toString(dictGetOrNull('%s', '%s', %s)), '')", dictName, escapeString(field), key)
 	}
-	return inner
+	return fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", dictName, escapeString(field), key)
 }
 
 func (h *lookupIPHandler) Declare(cmd CommandNode, ctx *CommandContext) error {

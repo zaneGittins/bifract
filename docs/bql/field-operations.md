@@ -193,6 +193,8 @@ Both `field=` and `include=` are required. `include=` takes any of:
 | `asn` | integer | Autonomous System Number |
 | `as_org` | string | AS organization name |
 
+An address with no match (private, missing, IPv6 or not an IP) leaves every column empty, so `asn < 1000` does not match it.
+
 !!! note "Setup"
     `lookupIP()` needs MaxMind GeoLite2. Get a free license key at [maxmind.com](https://www.maxmind.com/en/geolite2/signup), then set `MAXMIND_LICENSE_KEY` and `MAXMIND_ACCOUNT_ID` in `.env` (or the container environment). The databases download on startup and refresh daily. Without them the query fails with an error naming these variables.
 
