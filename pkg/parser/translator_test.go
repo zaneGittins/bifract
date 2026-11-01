@@ -4908,13 +4908,28 @@ func TestJoinFunction(t *testing.T) {
 				"= _join_sub.user",
 				"fractal_id = 'test-fractal-123'",
 			},
+			wantNotContain: []string{"join_use_nulls"},
 		},
 		{
 			name:  "Left join with type parameter",
 			query: `* | join(src_ip, type=left) { * | groupby(src_ip, function=count()) }`,
+			// The setting rides a subquery: callers append ORDER BY and LIMIT to the
+			// outermost SELECT, which must not end in SETTINGS.
 			wantContain: []string{
+				"SELECT * FROM (SELECT _outer.*",
 				"LEFT JOIN",
-				"= _join_sub.src_ip",
+				"= _join_sub.src_ip SETTINGS join_use_nulls = 1)",
+			},
+		},
+		{
+			// Unmatched rows must read NULL, not 0, or `_join__count < 5` keeps every
+			// row the subquery never saw. The filter sits outside the joined SELECT
+			// that carries the setting.
+			name:  "Left join reads unmatched subquery columns as NULL",
+			query: `* | join(user, type=left) { * | groupby(user) } | _join__count < 5`,
+			wantContain: []string{
+				"= _join_sub.user SETTINGS join_use_nulls = 1)",
+				"_join__count < 5",
 			},
 		},
 		{

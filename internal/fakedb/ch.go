@@ -418,6 +418,11 @@ func assignRow(vals []any, dest []any) error {
 			target.Set(v)
 			continue
 		}
+		// A **T destination (a Nullable column) gets a fresh *T, as the driver does.
+		if target.Kind() == reflect.Pointer && v.Type().AssignableTo(target.Type().Elem()) {
+			target.Set(reflect.New(target.Type().Elem()))
+			target = target.Elem()
+		}
 		if !v.Type().AssignableTo(target.Type()) {
 			return fmt.Errorf("converting %s to %s is unsupported", v.Type(), dv.Type())
 		}
