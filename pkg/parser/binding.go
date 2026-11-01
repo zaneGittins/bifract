@@ -275,29 +275,11 @@ func (p *Parser) declaredBindings() string {
 	return " (declared: " + strings.Join(names, ", ") + ")"
 }
 
-// atBindingChain reports whether the binding at the current position is one leaf
-// of a boolean chain rather than a whole stage on its own.
-func (p *Parser) atBindingChain() bool {
-	switch p.peek().Type {
-	case TokenAnd, TokenOr:
-		return true
-	}
-	return false
-}
-
 // atBindingExpr reports whether the binding at the current position continues
 // into an expression, as `&cmdlen > 500` does, rather than standing alone as a
-// filter. The operator set mirrors atExprFilter's.
+// filter.
 func (p *Parser) atBindingExpr() bool {
-	if p.current().Type != TokenBinding {
-		return false
-	}
-	switch p.peek().Type {
-	case TokenEqual, TokenNotEqual, TokenGreater, TokenLess, TokenGreaterEqual, TokenLessEqual,
-		TokenPlus, TokenMinus, TokenMultiply, TokenDivide:
-		return true
-	}
-	return false
+	return p.current().Type == TokenBinding && p.continuesExpr(p.pos+1)
 }
 
 // parseBindingCondition reads a binding used as a filter leaf.

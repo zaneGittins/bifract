@@ -17,6 +17,9 @@ import (
 //   - the name is an expression function the command registry does not have, or
 //   - the call is immediately followed by a comparison or arithmetic operator.
 //
+// A bracket followed by one of those operators is an expression too, so
+// `(len(a) + 1) > 2` is a leaf rather than a condition group.
+//
 // AND/OR deliberately do not qualify. `cidr(a) OR cidr(b)` is a chain of boolean
 // command operands today, and rerouting it through the expression compiler would
 // change how every such query is built.
@@ -37,22 +40,77 @@ func (p *Parser) atExprFilter() bool {
 	if getCommandHandler(name) == nil {
 		return true
 	}
-	end := p.callEndIndex()
-	if end < 0 || end >= len(p.tokens) {
+	return p.continuesExpr(p.groupEndIndex(p.pos + 1))
+}
+
+// atBracketExpr reports whether the bracket at the current position opens an
+// expression, `(len(a) + 1) > 2`, rather than a condition group.
+func (p *Parser) atBracketExpr() bool {
+	return p.current().Type == TokenLParen && p.continuesExpr(p.groupEndIndex(p.pos))
+}
+
+// continuesExpr reports whether the token at index i is a comparison, or an
+// arithmetic operator with an operand after it, which only the expression
+// grammar can continue with.
+func (p *Parser) continuesExpr(i int) bool {
+	if i < 0 || i+1 >= len(p.tokens) {
 		return false
 	}
-	switch p.tokens[end].Type {
-	case TokenEqual, TokenNotEqual, TokenGreater, TokenLess, TokenGreaterEqual, TokenLessEqual,
-		TokenPlus, TokenMinus, TokenMultiply, TokenDivide:
+	t := p.tokens[i].Type
+	if isScalarComparison(t) {
+		return true
+	}
+	if !isArithmeticOperator(t) {
+		return false
+	}
+	switch p.tokens[i+1].Type {
+	case TokenField, TokenValue, TokenFunction, TokenString, TokenBinding, TokenLParen, TokenMinus:
 		return true
 	}
 	return false
 }
 
-// callEndIndex returns the token index just past the call starting at the
-// current position, or -1 when the call is malformed.
-func (p *Parser) callEndIndex() int {
-	i := p.pos + 1
+// arithmeticLeafAt reports whether the operand at index i starts unbracketed
+// arithmetic that a comparison closes, `n + 1 > 2`, as opposed to bare words
+// such as `cmd /c tasklist`.
+func (p *Parser) arithmeticLeafAt(i int) bool {
+	j := i + 1
+	for j+1 < len(p.tokens) && isArithmeticOperator(p.tokens[j].Type) {
+		switch p.tokens[j+1].Type {
+		case TokenField, TokenValue:
+			j += 2
+		case TokenFunction:
+			if j = p.groupEndIndex(j + 2); j < 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return j > i+1 && j < len(p.tokens) && isScalarComparison(p.tokens[j].Type)
+}
+
+// isScalarComparison reports whether t compares two values, as opposed to the
+// multi-value match operators.
+func isScalarComparison(t TokenType) bool {
+	switch t {
+	case TokenEqual, TokenNotEqual, TokenGreater, TokenLess, TokenGreaterEqual, TokenLessEqual:
+		return true
+	}
+	return false
+}
+
+func isArithmeticOperator(t TokenType) bool {
+	switch t {
+	case TokenPlus, TokenMinus, TokenMultiply, TokenDivide:
+		return true
+	}
+	return false
+}
+
+// groupEndIndex returns the token index just past the bracket opened at index
+// i, or -1 when there is no bracket there or it is never closed.
+func (p *Parser) groupEndIndex(i int) int {
 	if i >= len(p.tokens) || p.tokens[i].Type != TokenLParen {
 		return -1
 	}
@@ -71,17 +129,6 @@ func (p *Parser) callEndIndex() int {
 		}
 	}
 	return -1
-}
-
-// parseExprFilter parses the expression at the current position and advances the
-// main token stream past it.
-func (p *Parser) parseExprFilter() (*ExprNode, error) {
-	expr, end, err := p.parseExprHere()
-	if err != nil {
-		return nil, err
-	}
-	p.syncTo(end)
-	return expr, nil
 }
 
 // parseExprFilterPrec parses an expression filter bounded to operators binding
