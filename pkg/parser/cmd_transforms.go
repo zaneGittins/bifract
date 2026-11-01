@@ -188,7 +188,7 @@ func (h *evalHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 		expr := fmt.Sprintf("%s AS %s", sqlExpr, safeFieldName)
 		source.Layer.UpsertSelect(SelectExpr{Expr: expr})
 		ctx.Registry.SetResolveExpr(name, expr)
-		// A filter coerces text with toFloat64OrZero, which rejects a number.
+		// A filter coerces text with textToNumber, which rejects a number.
 		if exprType == TypeNumber {
 			ctx.Registry.SetNumeric(name)
 		}
@@ -640,7 +640,7 @@ func lenArgs(cmd CommandNode) (field Argument, outName string, ok bool) {
 
 func (h *lenHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	// The numeric SELECT alias is registered as FieldKindAssignment so condition
-	// routing can reference it by name without wrapping in toFloat64OrZero.
+	// routing can reference it by name without wrapping in textToNumber.
 	_, outName, _ := lenArgs(cmd)
 	if outName != "" {
 		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)
@@ -689,7 +689,7 @@ func logSizeArgs(cmd CommandNode) (field Argument, outName string) {
 
 func (h *logSizeHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 	// Numeric SELECT alias, registered like _len so condition/aggregation routing
-	// can reference it by name without re-wrapping in toFloat64OrZero.
+	// can reference it by name without re-wrapping in textToNumber.
 	_, outName := logSizeArgs(cmd)
 	if outName != "" {
 		ctx.Registry.Register(outName, FieldKindAssignment, outName, ctx.CmdIndex)

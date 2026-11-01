@@ -43,7 +43,7 @@ event_id=4625 | groupBy(src_ip) | sort(_count, order=desc)
 | `!=~` `!=^` `!=$` | None of the terms; also rows missing the field | `image!=$exe,dll` |
 | `=*` | Field is present and not empty | `user=*` |
 | `!=*` | Field is missing or empty | `user!=*` |
-| `>` `<` `>=` `<=` | Numeric comparison | `status_code>=500` |
+| `>` `<` `>=` `<=` | Numeric comparison; a missing or non-numeric value never matches, so `NOT` matches it | `status_code>=500` |
 | `"text"` or `/regex/` | Case-insensitive search of `norm_log`, the normalized event text | `"authentication failed"` |
 
 `=~` is faster than an equivalent regex for multi-term searches. Quote a term that contains a space: `commandline=^"powershell -enc"`.

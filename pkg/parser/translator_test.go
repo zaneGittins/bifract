@@ -323,7 +323,7 @@ func TestBasicQueries(t *testing.T) {
 			name:  "Numeric comparison",
 			query: "status_code>=500",
 			wantContain: []string{
-				"toFloat64OrZero(fields.`status_code`::String) >= 500",
+				"toFloat64OrDefault(fields.`status_code`::String, nan) >= 500",
 			},
 		},
 		{
@@ -5024,8 +5024,8 @@ func TestJoinFunction(t *testing.T) {
 // multi-stage groupby pipelines and multi()/bare aggregate aliases. These
 // regression-guard two classes of bug:
 //  1. A carried/redefined aggregate (e.g. _count after a second groupby) must
-//     NOT be wrapped in toFloat64OrZero() -- it is already a numeric UInt64, and
-//     toFloat64OrZero only accepts String (ClickHouse type mismatch otherwise).
+//     NOT be wrapped in toFloat64OrDefault() -- it is already a numeric UInt64, and
+//     toFloat64OrDefault only accepts String (ClickHouse type mismatch otherwise).
 //  2. The HAVING must bind to the OUTER (final) groupby stage, and aggregate
 //     aliases produced during Execute (multi(), bare count) must route to HAVING,
 //     not WHERE.
@@ -5049,7 +5049,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"GROUP BY user HAVING _count > 5",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_count)",
+				"toFloat64OrDefault(_count",
 			},
 		},
 		{
@@ -5059,7 +5059,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"HAVING _count > 5",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_count)",
+				"toFloat64OrDefault(_count",
 			},
 		},
 		{
@@ -5069,7 +5069,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"HAVING _count > 5",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_count)",
+				"toFloat64OrDefault(_count",
 			},
 		},
 		{
@@ -5089,7 +5089,7 @@ func TestChainedGroupByAndAggregateFilters(t *testing.T) {
 				"HAVING _sum > 100",
 			},
 			wantNotContain: []string{
-				"toFloat64OrZero(_sum)",
+				"toFloat64OrDefault(_sum",
 			},
 		},
 	}
@@ -5152,8 +5152,8 @@ func TestCaseAllStages(t *testing.T) {
 			name:  "N per-row assignments per branch",
 			query: `* | case { status>=500 | sev:="crit" | team:="oncall"; * | sev:="ok" | team:="none"; } | table(sev, team)`,
 			wantContain: []string{
-				"WHEN toFloat64OrZero(fields.`status`::String) >= 500 THEN 'crit'",
-				"WHEN toFloat64OrZero(fields.`status`::String) >= 500 THEN 'oncall'",
+				"WHEN toFloat64OrDefault(fields.`status`::String, nan) >= 500 THEN 'crit'",
+				"WHEN toFloat64OrDefault(fields.`status`::String, nan) >= 500 THEN 'oncall'",
 				"AS sev",
 				"AS team",
 			},

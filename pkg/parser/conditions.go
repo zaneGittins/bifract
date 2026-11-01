@@ -21,7 +21,7 @@ type condGroup struct {
 // Routing rules by FieldKind:
 //   - FieldKindAggregate  -> HAVING (when aggregation present), else WHERE
 //   - FieldKindWindow     -> DeferredWhere (post-window filter), or HAVING for traversal
-//   - FieldKindPerRow     -> WHERE (inlined expression; string-typed, needs toFloat64OrZero)
+//   - FieldKindPerRow     -> WHERE (inlined expression; string-typed, needs textToNumber)
 //   - FieldKindAssignment -> WHERE (inlined expression; already numeric, no coercion needed)
 //   - Base/JSON/unknown   -> WHERE
 //
@@ -882,6 +882,16 @@ func resolveConditionField(cond HavingCondition, registry *FieldRegistry) (field
 
 // conditionSQL compiles a single HavingCondition, its field already resolved.
 func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, fieldRef string, isJSONField bool) string {
+	switch cond.Operator {
+	case ">", "<", ">=", "<=":
+		if cond.Negate {
+			cond.Negate = false
+			if sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField); sql != "" {
+				return "NOT (" + sql + ")"
+			}
+			return ""
+		}
+	}
 	entry := registry.Get(cond.Field)
 
 	// At a deferred layer a source expression must be read from its exported hidden
@@ -893,7 +903,7 @@ func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferred
 		rhs := resolveValueField(cond.ValueField, registry)
 		rhs.ref = scope.ref(rhs.ref, cond.ValueField)
 		// A bare count/sum/avg has no registry entry but resolves to the numeric
-		// _count/_sum/_avg alias, which toFloat64OrZero rejects (code 43). Same
+		// _count/_sum/_avg alias, which textToNumber rejects (code 43). Same
 		// carve-out the literal comparison path makes below.
 		computed := registry.bareAggregate(cond.Field) ||
 			(entry != nil && entry.Kind != FieldKindBase && entry.Kind != FieldKindJSON)
@@ -958,20 +968,20 @@ func conditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferred
 		if err := validateNumeric(cond.Value); err != nil {
 			return fmt.Sprintf("%s %s '%s'", fieldRef, cond.Operator, escapeString(cond.Value))
 		}
-		// An assignment that compiles to a number needs no coercion; wrapping one
-		// in toFloat64OrZero is rejected by the server (illegal type UInt64).
+		// Text is read with textToNumber. A number needs no coercion; wrapping one
+		// is rejected by the server (illegal type UInt64).
 		isPerRow := entry != nil && entry.Kind == FieldKindPerRow && !entry.Numeric
 		// Bare aggregate names (count/sum/avg with no registry entry) resolve to the
-		// numeric _count/_sum/_avg aliases and must not be coerced via toFloat64OrZero.
+		// numeric _count/_sum/_avg aliases and must not be coerced.
 		isAggFallback := entry == nil && registry.bareAggregate(cond.Field)
 		isComputed := isAggFallback || (entry != nil && (entry.Numeric || entry.Kind == FieldKindAggregate || entry.Kind == FieldKindAssignment || entry.Kind == FieldKindWindow || entry.Kind == FieldKindJoined))
 		if isPerRow {
-			return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
+			return fmt.Sprintf("%s %s %s", textToNumber(fieldRef), cond.Operator, cond.Value)
 		}
 		if isComputed {
 			return fmt.Sprintf("%s %s %s", fieldRef, cond.Operator, cond.Value)
 		}
-		return fmt.Sprintf("toFloat64OrZero(%s) %s %s", fieldRef, cond.Operator, cond.Value)
+		return fmt.Sprintf("%s %s %s", textToNumber(fieldRef), cond.Operator, cond.Value)
 	}
 	return ""
 }
@@ -1051,15 +1061,9 @@ func negateHavingCondition(h *HavingCondition) {
 		h.Operator = "!="
 	case "!=":
 		h.Operator = "="
-	case ">":
-		h.Operator = "<="
-	case "<":
-		h.Operator = ">="
-	case ">=":
-		h.Operator = "<"
-	case "<=":
-		h.Operator = ">"
-	case "=~", "=^", "=$":
+	case "=~", "=^", "=$", ">", "<", ">=", "<=":
+		// An ordering is negated whole, not flipped: a non-number fails both
+		// x < n and x >= n, and NOT has to match it.
 		h.Negate = !h.Negate
 	}
 }
@@ -1150,9 +1154,9 @@ func andJoin(parts []string) string {
 }
 
 // hasTopLevelOR reports whether the clause contains an OR outside every bracket
-// and string literal.
+// and string literal or backtick identifier.
 //
-// A string literal is skipped whole, honouring backslash escapes: escapeString
+// A quoted run is skipped whole, honouring backslash escapes: escapeString
 // doubles backslashes, so a Windows path ends 'C:\\' and a naive "is the
 // previous byte a backslash" test reads the closing quote as escaped, never
 // leaves the string, and misses every OR after it.
@@ -1160,14 +1164,14 @@ func hasTopLevelOR(clause string) bool {
 	depth := 0
 	for i := 0; i < len(clause); i++ {
 		c := clause[i]
-		if c == '\'' {
+		if c == '\'' || c == '`' {
 			i++
 			for ; i < len(clause); i++ {
 				if clause[i] == '\\' {
 					i++ // whatever follows is escaped, quote included
 					continue
 				}
-				if clause[i] == '\'' {
+				if clause[i] == c {
 					break
 				}
 			}
@@ -1184,9 +1188,8 @@ func hasTopLevelOR(clause string) bool {
 		case c == ')':
 			depth--
 			if depth < 0 {
-				// Unbalanced, so the clause is not shaped as expected (a backtick
-				// identifier can carry a stray paren). Bracket rather than let an
-				// OR past the scope guards.
+				// Unbalanced, so the clause is not shaped as expected. Bracket rather
+				// than let an OR past the scope guards.
 				return true
 			}
 		case depth == 0 && (c == 'O' || c == 'o') &&

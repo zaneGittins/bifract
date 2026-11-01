@@ -433,8 +433,8 @@ func checkEncoding(fc FieldCondition, fail func(string, ...any) error) error {
 	return nil
 }
 
-// numericPattern accepts the decimal forms ClickHouse toFloat64OrZero reads as a
-// number, and none it reads as 0 (padded text, hex, inf, nan). It checks both a
+// numericPattern accepts plain decimals only: BQL also reads inf and nan as
+// numbers, which a Sigma comparison must not match. It checks both a
 // comparison's field, in the guard, and its Sigma value.
 const numericPattern = `^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$`
 
@@ -499,8 +499,7 @@ func translateStandalone(fc FieldCondition, field string, fieldMapper func(strin
 		// BQL reads 1e300 but not 1e+300.
 		parts = append(parts, field+comparisonOps[mod]+strings.Replace(strconv.FormatFloat(n, 'g', -1, 64), "e+", "e", 1))
 	}
-	// BQL compares text through toFloat64OrZero, which reads a missing or
-	// non-numeric value as 0; the guard keeps |lt 5 from matching those.
+	// The guard keeps |lt 5 from matching inf, nan or other text BQL might read.
 	return fmt.Sprintf("(%s=/%s/ AND %s)", field, numericPattern, joinExprs(parts, " OR ")), true, nil
 }
 

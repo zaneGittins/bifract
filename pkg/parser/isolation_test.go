@@ -149,6 +149,13 @@ func TestHasTopLevelOr(t *testing.T) {
 		// A stray paren from a backtick identifier must fail safe, not silently
 		// mark the rest of the clause as nested.
 		{"fields.`a)b`::String = '1' OR b = '2'", true},
+		// A backtick identifier is skipped whole, like a string literal.
+		{"fields.`a(b`::String = '1' OR b = '2'", true},
+		{"fields.`a'b`::String = 'x' AND (c = 'y' OR d = 'z')", false},
+		{"fields.`a'b`::String = 'x' OR fields.`c'd`::String = 'y'", true},
+		{"fields.`a OR b`::String = '1'", false},
+		{"fields.`a`` OR b`::String = '1'", false},
+		{"fields.`a\\\\`::String = '1' OR b = '2'", true},
 	}
 	for _, c := range cases {
 		if got := hasTopLevelOR(c.clause); got != c.want {
