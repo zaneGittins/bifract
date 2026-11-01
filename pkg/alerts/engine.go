@@ -564,8 +564,9 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 	// the data. Falls back to logs/logs_distributed for older cursors (catch-up
 	// beyond the 2-hour hot window) — self-heals as the cursor advances.
 	var tableName string
+	hot := e.ch != nil && time.Since(from) < hotTableLookbackThreshold
 	switch {
-	case e.ch != nil && time.Since(from) < hotTableLookbackThreshold:
+	case hot:
 		tableName = e.ch.HotReadTable()
 	case e.ch != nil:
 		tableName = e.ch.ReadTable()
@@ -584,6 +585,8 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 		ModelNewSince:      newSince,
 		MaxEventLagSeconds: alert.MaxEventLagSeconds,
 		TableName:          tableName,
+		// Only logs carries the norm_log n-gram index; logs_hot does not.
+		NormLogIndexHints: !hot,
 	}
 	if alert.PrismID != "" {
 		ids, err := e.resolvePrismFractalIDs(ctx, alert.PrismID, cache)
