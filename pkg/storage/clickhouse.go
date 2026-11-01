@@ -666,6 +666,40 @@ func loadCompletedSteps(ctx context.Context, conn driver.Conn, number int) (map[
 	return done, rows.Err()
 }
 
+var modifyQueryRe = regexp.MustCompile(`(?is)^ALTER\s+TABLE\s+([A-Za-z0-9_]+)\s+MODIFY\s+QUERY\b`)
+
+// execMigrationStmt runs one migration statement. ClickHouse cannot MODIFY QUERY a view
+// that is permanently detached (the endpoint-analysis views while that feature is off),
+// so such a view is attached for the statement and detached again. A crash in between
+// leaves it attached until SyncEndpointAnalysis re-detaches it at startup.
+func execMigrationStmt(ctx context.Context, conn driver.Conn, stmt string) error {
+	m := modifyQueryRe.FindStringSubmatch(stmt)
+	if m == nil {
+		return conn.Exec(ctx, stmt)
+	}
+	view := m[1]
+	rows, err := conn.Query(ctx, "SELECT table FROM system.detached_tables WHERE database = currentDatabase() AND table = ?", view)
+	if err != nil {
+		return err
+	}
+	detached := rows.Next()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !detached {
+		return conn.Exec(ctx, stmt)
+	}
+	if err := conn.Exec(ctx, "ATTACH TABLE "+view); err != nil {
+		return err
+	}
+	execErr := conn.Exec(ctx, stmt)
+	if err := conn.Exec(ctx, "DETACH TABLE "+view+" PERMANENTLY"); err != nil && execErr == nil {
+		return err
+	}
+	return execErr
+}
+
 // createMigrationBookkeeping creates the migration tracking tables. Both are created on
 // every path, including the baseline stamp: a shard's table count is the cheapest way to
 // spot a half-provisioned cluster, and it is only comparable across shards when every
@@ -775,7 +809,7 @@ func runMigrationsOnConn(ctx context.Context, conn driver.Conn, transformStmt fu
 				}))
 			}
 			stmtCtx, cancel := context.WithTimeout(execCtx, stmtTimeout)
-			execErr := conn.Exec(stmtCtx, stmt)
+			execErr := execMigrationStmt(stmtCtx, conn, stmt)
 			cancel()
 			if execErr != nil {
 				return applied, fmt.Errorf("migration %s (statement %d): %w", m.name, i, execErr)
