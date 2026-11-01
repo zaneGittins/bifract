@@ -259,11 +259,11 @@ func (f *CH) QueryRow(ctx context.Context, query string, args ...any) driver.Row
 	return &chRow{vals: res.Rows[0]}
 }
 
-func (f *CH) PrepareBatch(_ context.Context, query string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
+func (f *CH) PrepareBatch(ctx context.Context, query string, _ ...driver.PrepareBatchOption) (driver.Batch, error) {
 	if f.PrepareErr != nil {
 		return nil, f.PrepareErr
 	}
-	b := &Batch{Query: query}
+	b := &Batch{Query: query, Ctx: ctx}
 	if f.OnBatch != nil {
 		f.OnBatch(b)
 	}
@@ -430,6 +430,7 @@ func assignRow(vals []any, dest []any) error {
 // to script a failure, and reads Appended, Sent and Aborted afterwards.
 type Batch struct {
 	Query     string
+	Ctx       context.Context
 	Appended  [][]any
 	AppendErr error
 	SendErr   error

@@ -104,7 +104,9 @@ CREATE TABLE IF NOT EXISTS logs (
 -- ingest_timestamp needs no minmax index: as a partition-key column it already has one.
 PARTITION BY (fractal_id, toDate(ingest_timestamp))
 ORDER BY (timestamp, log_id)
-SETTINGS index_granularity = 8192;
+-- The dedup window drops a retried insert batch (same insert_deduplication_token); its
+-- view targets keep one too. 10000 matches the replicated engines' default.
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000;
 
 -- Pre-normalization original log text, split out of the logs table into its own
 -- daily-partitioned table so its 7-day retention is a metadata-only DROP PARTITION
@@ -149,7 +151,7 @@ CREATE TABLE IF NOT EXISTS logs_histogram (
 ) ENGINE = SummingMergeTree(cnt)
 PARTITION BY (fractal_id, ingest_day)
 ORDER BY (fractal_id, ingest_day, minute)
-SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
+SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000, non_replicated_deduplication_window = 10000;
 
 -- Feeds logs_histogram from every insert into the local logs table.
 -- The MV writes to the local logs_histogram. The distributed table handles cross-shard reads.
@@ -176,7 +178,7 @@ CREATE TABLE IF NOT EXISTS logs_field_paths (
 ) ENGINE = SummingMergeTree(cnt)
 PARTITION BY (fractal_id, ingest_day)
 ORDER BY (fractal_id, ingest_day, path)
-SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000;
+SETTINGS index_granularity = 256, parts_to_delay_insert = 3000, parts_to_throw_insert = 10000, non_replicated_deduplication_window = 10000;
 
 -- Field names are sender controlled, so each insert block keeps at most 1024 paths per
 -- fractal and day (FieldPathCap). Keys are read as the schema sample reads them, up to
@@ -253,7 +255,7 @@ CREATE TABLE IF NOT EXISTS logs_hot (
 PARTITION BY toStartOfFiveMinutes(ingest_timestamp)
 ORDER BY (fractal_id, ingest_timestamp, log_id)
 TTL toDateTime(ingest_timestamp) + INTERVAL 4 HOUR DELETE
-SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1;
+SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1, non_replicated_deduplication_window = 10000;
 
 -- Feeds logs_hot from every insert into the local logs table.
 -- The MV writes to local logs_hot on each shard — it fires per-shard when distributed
@@ -307,7 +309,7 @@ ORDER BY (fractal_id, process_guid)
 -- Retention on the ingest axis, matching logs. On event time a source with a skewed
 -- clock (an event dated years back) has its lineage row deleted at the first merge.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild';
+SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 -- Populates proc_lineage from process-create events, keyed on the normalized
 -- category (Phase A). ::String is safe whether or not the type hint is applied yet.
@@ -351,7 +353,7 @@ CREATE TABLE IF NOT EXISTS proc_freq (
 PARTITION BY fractal_id
 ORDER BY (fractal_id, src_image, event_type, target_norm, day)
 TTL day + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild';
+SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS proc_freq_spawn_mv TO proc_freq
 DEFINER = default SQL SECURITY DEFINER AS
@@ -471,7 +473,7 @@ PARTITION BY fractal_id
 ORDER BY (fractal_id, process_guid, event_type, dst_node)
 -- Ingest axis (see proc_lineage). max() means an edge lives 730 days past its last ingest.
 TTL toDateTime(ingest_timestamp) + INTERVAL 730 DAY
-SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild';
+SETTINGS index_granularity = 8192, deduplicate_merge_projection_mode = 'rebuild', non_replicated_deduplication_window = 10000;
 
 -- Single MV feeding process_edges for the three default pgr leaf categories. One pass over each
 -- insert block (WHERE category IN (...)), per-category projection via multiIf. Abstraction regexes
@@ -525,7 +527,7 @@ CREATE TABLE IF NOT EXISTS provenance_summary (
 PARTITION BY fractal_id
 ORDER BY (fractal_id, kind, value)
 TTL last_day + toIntervalDay(if(kind = 'lineage_host', 731, 730))
-SETTINGS index_granularity = 8192;
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS provenance_summary_lineage_mv TO provenance_summary
 DEFINER = default SQL SECURITY DEFINER AS

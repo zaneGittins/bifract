@@ -141,6 +141,37 @@ func TestWorkerRetriesThroughShortOutage(t *testing.T) {
 	}
 }
 
+// TestWorkerRetriesReuseDedupToken: every retry of a bucket carries the same
+// dedup token, and separate buckets carry different ones.
+func TestWorkerRetriesReuseDedupToken(t *testing.T) {
+	client, ch := storagetest.ClickHouse()
+	failLogsInserts(ch, func(a int32) bool { return a <= 2 }, connReset)
+	q := &IngestQueue{db: client, retry: fastRetry(time.Minute)}
+
+	runWorker(q,
+		&partBucket{key: partKey{fractalID: "f1"}, entries: entries(2, "f1")},
+		&partBucket{key: partKey{fractalID: "f1"}, entries: entries(2, "f1")})
+
+	bs := logsBatches(ch)
+	if len(bs) != 4 {
+		t.Fatalf("%d logs inserts, want 3 attempts for the first bucket and 1 for the second", len(bs))
+	}
+	var tokens []string
+	for _, b := range bs {
+		tok := storage.ContextInsertToken(b.Ctx)
+		if tok == "" {
+			t.Fatalf("logs insert carried no dedup token")
+		}
+		tokens = append(tokens, tok)
+	}
+	if tokens[0] != tokens[1] || tokens[1] != tokens[2] {
+		t.Errorf("retries of one bucket used tokens %v, want one stable token", tokens[:3])
+	}
+	if tokens[3] == tokens[0] {
+		t.Errorf("a second bucket reused the first bucket's token %q", tokens[0])
+	}
+}
+
 // TestWorkerGivesUpAfterRetryWindow: once the window closes the bucket is
 // dropped, the queue reports unhealthy, and the drop is notified and recorded.
 func TestWorkerGivesUpAfterRetryWindow(t *testing.T) {
