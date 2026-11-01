@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+
 	"bifract/internal/fakedb"
 )
 
@@ -639,6 +641,34 @@ func TestInsertLogs(t *testing.T) {
 	f.PrepareErr = errors.New("down")
 	if err := c.InsertLogs(context.Background(), logs); err == nil {
 		t.Error("a failed logs insert must fail")
+	}
+}
+
+// Every logs insert carries a dedup token: the caller's when it will retry, else a
+// fresh one, so a tokenless insert is never deduplicated by content.
+func TestLogsInsertSettingsDedupToken(t *testing.T) {
+	c, _ := newFakeClient()
+	c.insertSettings = clickhouse.Settings{"async_insert": 1}
+
+	s := c.logsInsertSettings(InsertTokenContext(context.Background(), "bucket-1"), "logs")
+	if s["insert_deduplication_token"] != "bucket-1" || s["async_insert"] != 1 {
+		t.Errorf("settings = %v", s)
+	}
+
+	a := c.logsInsertSettings(context.Background(), "logs")["insert_deduplication_token"]
+	b := c.logsInsertSettings(context.Background(), "logs")["insert_deduplication_token"]
+	if a == "" || a == b {
+		t.Errorf("tokenless inserts got tokens %q and %q, want a fresh one each", a, b)
+	}
+
+	// rand() sharding splits a retry differently, so a token would drop the wrong rows.
+	c.topo = Topology{DistributedTables: true}
+	s = c.logsInsertSettings(InsertTokenContext(context.Background(), "bucket-1"), c.WriteTable())
+	if _, ok := s["insert_deduplication_token"]; ok || s["async_insert"] != 1 {
+		t.Errorf("settings through %s = %v, want no token", c.WriteTable(), s)
+	}
+	if s := c.logsInsertSettings(context.Background(), "scratch"); s["insert_deduplication_token"] == "" {
+		t.Error("a local table on a cluster lost its token")
 	}
 }
 

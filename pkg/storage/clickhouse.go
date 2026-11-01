@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +25,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+	"github.com/google/uuid"
 
 	dbsql "bifract/db"
 )
@@ -1465,10 +1467,7 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 		return nil
 	}
 
-	// Apply the per-insert relief settings (group-by spill, optional async_insert).
-	if len(c.insertSettings) > 0 {
-		ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.insertSettings))
-	}
+	ctx = clickhouse.Context(ctx, clickhouse.WithSettings(c.logsInsertSettings(ctx, table)))
 
 	// raw_log is omitted: it lives in the separate logs_raw table. norm_log is a
 	// ClickHouse DEFAULT toString(fields) column, auto-populated at insert. normalizer
@@ -1497,6 +1496,42 @@ func (c *ClickHouseClient) InsertLogsInto(ctx context.Context, table string, log
 	}
 
 	return nil
+}
+
+// insertTokenKey carries a logs insert dedup token on a context.
+type insertTokenKey struct{}
+
+// InsertTokenContext sets the dedup token for logs inserts made with ctx. A caller that
+// retries a batch passes the same token on every attempt, so an attempt that committed
+// but reported an error is dropped by ClickHouse instead of written twice.
+func InsertTokenContext(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, insertTokenKey{}, token)
+}
+
+// ContextInsertToken returns the dedup token ctx carries, or "".
+func ContextInsertToken(ctx context.Context) string {
+	token, _ := ctx.Value(insertTokenKey{}).(string)
+	return token
+}
+
+// logsInsertSettings adds a dedup token to the per-insert settings: the caller's, or a
+// fresh one so a tokenless insert is never deduplicated by its content. Inserts through
+// the Distributed logs table get none: rand() sharding splits each retry differently,
+// so a shard holding part of an earlier attempt would drop rows it never stored.
+func (c *ClickHouseClient) logsInsertSettings(ctx context.Context, table string) clickhouse.Settings {
+	s := maps.Clone(c.insertSettings)
+	if c.topo.DistributedTables && table == c.WriteTable() {
+		return s
+	}
+	token := ContextInsertToken(ctx)
+	if token == "" {
+		token = uuid.NewString()
+	}
+	if s == nil {
+		s = clickhouse.Settings{}
+	}
+	s["insert_deduplication_token"] = token
+	return s
 }
 
 // IngestTime returns the entry's ingest_timestamp, defaulting to now when unset. It is

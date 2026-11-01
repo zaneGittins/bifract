@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"bifract/pkg/spool"
 	"bifract/pkg/storage"
 )
@@ -1138,10 +1140,12 @@ func (q *IngestQueue) worker(id int) {
 
 // insertWithRetry inserts a bucket, retrying with backoff until the retry window
 // closes. Every failed attempt counts toward the health gate, so Enqueue sheds
-// load while ClickHouse is down instead of acking logs it cannot write.
+// load while ClickHouse is down instead of acking logs it cannot write. Attempts
+// share one dedup token.
 func (q *IngestQueue) insertWithRetry(id int, bucket *partBucket) bool {
 	p := q.retry
 	buf := bucket.entries
+	token := uuid.NewString()
 	window := time.Now().Add(p.window)
 	delay := p.initialDelay
 	stop := q.stop
@@ -1161,7 +1165,7 @@ func (q *IngestQueue) insertWithRetry(id int, bucket *partBucket) bool {
 		}
 
 		ctx, cancel := q.attemptContext(window)
-		err := q.db.InsertLogs(ctx, buf)
+		err := q.db.InsertLogs(storage.InsertTokenContext(ctx, token), buf)
 		cancel()
 
 		if err == nil {

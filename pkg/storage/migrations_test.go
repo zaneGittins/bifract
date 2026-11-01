@@ -5,6 +5,8 @@ import (
 	"embed"
 	"errors"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -399,5 +401,44 @@ func TestRewriteEngine(t *testing.T) {
 	single := &ClickHouseClient{}
 	if got := single.RewriteEngine("ENGINE = MergeTree()"); got != "ENGINE = MergeTree()" {
 		t.Errorf("single node rewrote the engine: %q", got)
+	}
+}
+
+// A retried logs insert is only dropped where the table keeps a dedup window, and its
+// materialized views re-run on the retry, so logs and every view target need one. Replicated
+// engines keep a window by default; this covers single node, fresh and upgraded.
+func TestInsertDedupWindowOnLogsAndViewTargets(t *testing.T) {
+	const setting = "non_replicated_deduplication_window"
+	viewTarget := regexp.MustCompile(`(?i)CREATE MATERIALIZED VIEW IF NOT EXISTS \S+ TO (\w+)`)
+	tables := map[string]bool{"logs": true}
+	for _, m := range viewTarget.FindAllStringSubmatch(dbsql.ClickHouseSQL, -1) {
+		tables[m[1]] = true
+	}
+	if len(tables) < 2 {
+		t.Fatal("found no materialized view targets in init-clickhouse.sql")
+	}
+	migs, err := loadClickHouseMigrations(dbsql.ClickHouseMigrations, dbsql.ClickHouseMigrationsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrated []string
+	for _, m := range migs {
+		migrated = append(migrated, splitClickHouseSQL(m.sql)...)
+	}
+	for table := range tables {
+		ddl, err := initTableDDL(table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ddl, setting) {
+			t.Errorf("init-clickhouse.sql: %s has no %s", table, setting)
+		}
+		upgraded := slices.ContainsFunc(migrated, func(stmt string) bool {
+			return strings.Contains(stmt, setting) && (strings.Contains(stmt, "ALTER TABLE "+table+" ") ||
+				strings.Contains(stmt, "CREATE TABLE IF NOT EXISTS "+table+" ("))
+		})
+		if !upgraded {
+			t.Errorf("no migration sets %s on %s for upgraded installs", setting, table)
+		}
 	}
 }
