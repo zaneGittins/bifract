@@ -6,10 +6,17 @@ set -e
 #   curl -sfL https://docs.bifract.io/install.sh | sh
 #   curl -sfL https://docs.bifract.io/install.sh | sh -s -- --upgrade
 #   curl -sfL https://docs.bifract.io/install.sh | sh -s -- --install --dir /opt/bifract
+#   curl -sfL https://docs.bifract.io/install.sh | BIFRACT_VERSION=v1.2.3 sh
 
 REPO="zaneGittins/bifract"
 BINARY="bifract"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${BIFRACT_INSTALL_DIR:-/usr/local/bin}"
+
+# Root-only hosts (LXC, minimal Debian) often have no sudo.
+SUDO="sudo"
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+fi
 
 # Detect OS
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -90,7 +97,7 @@ if [ -w "$INSTALL_DIR" ]; then
     mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 else
     echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-    sudo mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+    $SUDO mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 fi
 
 echo ""
@@ -98,14 +105,18 @@ echo "bifract ${TAG} installed to ${INSTALL_DIR}/${BINARY}"
 
 # Run bifract with provided args, defaulting to --install
 if [ $# -eq 0 ]; then
+    if [ "$OS" = "darwin" ]; then
+        echo "The server install runs on Linux only; the CLI is ready for other commands."
+        exit 0
+    fi
     set -- --install
 fi
 
-echo "Running: sudo ${BINARY} $*"
+echo "Running: ${SUDO:+$SUDO }${BINARY} $*"
 echo ""
 # Under `curl | sh` stdin is this script, so hand the wizard the terminal when there is one.
 if [ ! -t 0 ] && (: < /dev/tty) 2>/dev/null; then
-    sudo "${INSTALL_DIR}/${BINARY}" "$@" < /dev/tty
+    $SUDO "${INSTALL_DIR}/${BINARY}" "$@" < /dev/tty
 else
-    sudo "${INSTALL_DIR}/${BINARY}" "$@"
+    $SUDO "${INSTALL_DIR}/${BINARY}" "$@"
 fi

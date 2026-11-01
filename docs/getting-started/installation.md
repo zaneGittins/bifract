@@ -28,7 +28,11 @@ For disk, ClickHouse typically compresses structured logs 7 to 10 times, so 10 G
     curl -sfL https://docs.bifract.io/install.sh | sh
     ```
 
-    This installs `bifract` to `/usr/local/bin` and runs `sudo bifract --install`. Set `BIFRACT_VERSION` (for example `BIFRACT_VERSION=v1.2.3`) to pin a release. The script checks the binary against the release's signed checksums; see [Verifying Releases](verifying-releases.md).
+    This installs `bifract` to `/usr/local/bin` and runs `sudo bifract --install` (without `sudo` when already root). The script checks the binary against the release's signed checksums; see [Verifying Releases](verifying-releases.md). To pin a release:
+
+    ```bash
+    curl -sfL https://docs.bifract.io/install.sh | BIFRACT_VERSION=v1.2.3 sh
+    ```
 
 2. Answer the wizard steps:
 
