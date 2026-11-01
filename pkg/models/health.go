@@ -23,6 +23,7 @@ const (
 	HealthRebuilding  = "rebuilding"   // ClickHouse objects are being (re)created
 	HealthBackfilling = "backfilling"  // history is being seeded
 	HealthStale       = "stale"        // the source stopped producing events
+	HealthScored      = "scored"       // the rolling state is empty but Score range wrote scores
 	HealthLearning    = "learning"     // too little history for scores to mean much
 	HealthHealthy     = "healthy"
 	HealthChecking    = "checking" // the state summary has not been read yet
@@ -53,6 +54,10 @@ type ModelHealth struct {
 	// NewestData is the newest event time the model's state holds.
 	NewestData *time.Time `json:"newest_data,omitempty"`
 
+	// ScoredThrough is a network model's newest score time, which Score range
+	// sets to the end of the range it scored.
+	ScoredThrough *time.Time `json:"scored_through,omitempty"`
+
 	// Findings counts what the model surfaced over the last findingsDays days, or
 	// is nil for a type with nothing to find (tlsh). FindingsSeries, when set,
 	// is the per-day breakdown, oldest first and ending today (UTC).
@@ -64,6 +69,7 @@ type ModelHealth struct {
 // stateSummary is what one cheap read of a model's state table says.
 type stateSummary struct {
 	oldest, newest time.Time // zero when the state holds nothing
+	scored         time.Time // a network model's newest scored_at, zero when none
 	findings       *uint64
 	series         []uint64
 }
@@ -124,9 +130,10 @@ FROM (
 FROM %s WHERE %s`, epoch("toDateTime(min(bucket), 'UTC')"), epoch("toDateTime(max(bucket), 'UTC')"),
 			flagged(scored), qt, fid)
 	case ModelTypeBeacon, ModelTypeLongConnection:
-		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s
+		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest%s,
+    toUInt64(ifNull((SELECT %s FROM %s WHERE %s), 0)) AS scored
 FROM %s WHERE %s`, epoch("min(hour)"), epoch("max(last_ts)"),
-			flagged(fmt.Sprintf("SELECT * FROM %s FINAL WHERE %s", qt, fid)), "`"+stateTable+"`", fid)
+			flagged(fmt.Sprintf("SELECT * FROM %s FINAL WHERE %s", qt, fid)), epoch("max(scored_at)"), qt, fid, "`"+stateTable+"`", fid)
 	case ModelTypeTLSH:
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest FROM %s WHERE %s`,
 			epoch("min(first_seen)"), epoch("max(last_seen)"), qt, fid)
@@ -224,6 +231,10 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 			t := sum.newest
 			h.NewestData = &t
 		}
+		if !sum.scored.IsZero() {
+			t := sum.scored
+			h.ScoredThrough = &t
+		}
 		h.History = historySpan(sum.oldest, sum.newest, m.ModelType)
 		h.Findings = sum.findings
 		h.FindingsSeries = sum.series
@@ -269,6 +280,16 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 			if n := m.Definition.HistoryDaysFor(m.ModelType); n > 0 {
 				h.Detail = fmt.Sprintf("No events recorded in the last %d days, the model's history window. Check that the source query matches current logs.", n)
 			}
+			if h.ScoredThrough != nil {
+				h.Detail += " " + scoredThroughText(*h.ScoredThrough)
+			}
+			return h
+		}
+		// The live scorer writes nothing from an empty state, so these scores came
+		// from Score range over a past dataset.
+		if h.ScoredThrough != nil {
+			h.State = HealthScored
+			h.Detail = scoredThroughText(*h.ScoredThrough) + " The rolling state has no events yet, so live scoring starts once matching logs arrive."
 			return h
 		}
 		if need > 0 {
@@ -294,6 +315,10 @@ func deriveHealth(m *Model, sum *stateSummary, sumErr error, now time.Time) *Mod
 	}
 	h.State, h.Detail = HealthHealthy, "Recording and scoring normally."
 	return h
+}
+
+func scoredThroughText(t time.Time) string {
+	return "Scores from Score range run through " + t.UTC().Format("2006-01-02 15:04") + " UTC."
 }
 
 func learningReason(m *Model) string {
@@ -521,6 +546,9 @@ func parseStateSummary(mt ModelType, rows []map[string]interface{}) *stateSummar
 		return time.Unix(int64(sec), 0).UTC()
 	}
 	s.oldest, s.newest = toTime(r["oldest"]), toTime(r["newest"])
+	if v, ok := r["scored"]; ok {
+		s.scored = toTime(v)
+	}
 	if series, ok := r["series"].([]uint64); ok && len(series) == findingsDays {
 		s.series = series
 	}
