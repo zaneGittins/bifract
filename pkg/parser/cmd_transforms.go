@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -1107,7 +1108,10 @@ type lookupRef struct {
 	// prefilter is the pattern list's expressions as an array, or "" when it is
 	// not screened (see QueryOptions.PatternPrefilters).
 	prefilter string
-	opts      QueryOptions
+	// attrs, when set, are the attributes read together in one tuple lookup,
+	// the marker first (see reading).
+	attrs []string
+	opts  QueryOptions
 }
 
 // resolveLookup resolves a lookup and key column in opts' scope.
@@ -1142,8 +1146,50 @@ func (l lookupRef) screen(probeRef string) string {
 	return fmt.Sprintf("multiMatchAny(%s, %s)", probeRef, l.prefilter)
 }
 
+// reading returns l set to read cols. A REGEXP_TREE walks its expressions on
+// every dictGet, so a pattern list reads the marker and every include column
+// in one tuple lookup, spelled identically at each use so ClickHouse computes
+// it once per row. A hashed lookup is cheap enough to keep per column.
+func (l lookupRef) reading(cols []string, keyColumn string) lookupRef {
+	if !l.pattern {
+		return l
+	}
+	attrs := []string{PatternMatchAttr}
+	for _, c := range cols {
+		if c != keyColumn && !slices.Contains(attrs, c) {
+			attrs = append(attrs, c)
+		}
+	}
+	if len(attrs) > 1 {
+		l.attrs = attrs
+	}
+	return l
+}
+
+// row is the tuple lookup of l.attrs. The screen wraps the whole tuple, since
+// screening inside each tupleElement would run the lookup once per column.
+// Without one, identity() stops optimize_dictget_tuple_element splitting the
+// lookup back into one dictGet per column.
+func (l lookupRef) row(probeRef string) string {
+	names := make([]string, len(l.attrs))
+	empty := make([]string, len(l.attrs))
+	for i, a := range l.attrs {
+		names[i] = "'" + escapeString(a) + "'"
+		empty[i] = "''"
+	}
+	def := "(" + strings.Join(empty, ", ") + ")"
+	get := fmt.Sprintf("dictGetOrDefault('%s', (%s), %s, %s)", l.ref, strings.Join(names, ", "), probeRef, def)
+	if s := l.screen(probeRef); s != "" {
+		return fmt.Sprintf("if(%s, %s, %s)", s, get, def)
+	}
+	return "identity(" + get + ")"
+}
+
 // membership tests whether probeRef hits the lookup.
 func (l lookupRef) membership(probeRef string) string {
+	if l.attrs != nil {
+		return fmt.Sprintf("tupleElement(%s, 1) = '1'", l.row(probeRef))
+	}
 	hit := dictMembershipSQL(l.ref, probeRef, l.pattern)
 	if s := l.screen(probeRef); s != "" {
 		return fmt.Sprintf("(%s AND %s)", s, hit)
@@ -1156,6 +1202,9 @@ func (l lookupRef) membership(probeRef string) string {
 func (l lookupRef) value(col, keyColumn, probeRef, displayRef string) string {
 	if col == keyColumn {
 		return fmt.Sprintf("if(%s, %s, '')", l.membership(probeRef), displayRef)
+	}
+	if i := slices.Index(l.attrs, col); i >= 0 {
+		return fmt.Sprintf("tupleElement(%s, %d)", l.row(probeRef), i+1)
 	}
 	get := fmt.Sprintf("dictGetOrDefault('%s', '%s', %s, '')", l.ref, escapeString(col), probeRef)
 	if s := l.screen(probeRef); s != "" {
@@ -1194,6 +1243,7 @@ func (h *matchHandler) Declare(cmd CommandNode, ctx *CommandContext) error {
 
 	// Execute reports an unresolved lookup; here it only leaves the columns plain.
 	lk, lkErr := resolveLookup(dictName, keyColumn, ctx.Opts)
+	lk = lk.reading(includeColumns, keyColumn)
 	fieldRef := matchFieldRef(fieldArg, ctx.Registry)
 
 	for _, c := range includeColumns {
@@ -1238,6 +1288,7 @@ func (h *matchHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	if err != nil {
 		return err
 	}
+	lk = lk.reading(includeColumns, keyColumn)
 
 	// Resolve through the registry so an earlier command that rewrote this field
 	// (lowercase, eval, regex...) is what gets looked up, not the raw stored value.
