@@ -97,4 +97,4 @@ Step 3 runs only when neither the token nor its normalizer defines timestamp fie
 
 ## Parse upstream
 
-Bifract parses structured formats (JSON, key=value, syslog) and normalizes field names. It does not do grok patterns, multi-line assembly or other free-text extraction. Use Logstash, Cribl, Fluent Bit or Vector upstream for that, and send Bifract structured events.
+Bifract parses structured formats (JSON, key=value, syslog) and normalizes field names. It does not do grok patterns, multi-line assembly or other free-text extraction. Use Logstash, Cribl, Fluent Bit or Vector upstream for that, and send Bifract structured events. For CEF devices such as UniFi, see [CEF over Syslog with Vector](vector-cef.md).
