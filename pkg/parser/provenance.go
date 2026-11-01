@@ -172,7 +172,7 @@ var ProvenanceOrderBy = []string{"(event_type = 'spawn') DESC", "anomaly_score D
 //   - target_host_days: other host-days the target was touched from any source.
 //   - target_hosts / total_hosts: distinct hosts that touched the target (state-capped at 256),
 //     including this one, out of the fleet.
-//   - first_seen: the first day the relationship was ever observed.
+//   - first_seen: the earliest event date of the relationship, never later than its ingest day.
 //
 // group_size is how many identical sibling processes a spawn row's child node stands for (1 for
 // a single process); group_first / group_last span their creation times when it is more than one.
@@ -665,13 +665,16 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 	// rather than shared because ins and outs need different restrictions, and span reads
 	// first_day directly instead of through it.
 	//
-	// first_seen is the earliest day a relationship was ever observed. Rows written before
-	// proc_freq gained first_day carry the column default (1970-01-01); day is what a backfill
-	// would have set, so substitute it and let the value self-correct as new rows arrive.
+	// firstSeen is the earliest ingest day a relationship was observed, which the stability
+	// terms and span use. Rows written before proc_freq gained first_day carry the column
+	// default (1970-01-01); day is what a backfill would have set, so substitute it.
 	firstSeen := "min(if(first_day = toDate(0), day, first_day))"
+	// The displayed first_seen is the earliest event date instead (first_event_day, clamped to
+	// the ingest day at write). An epoch event timestamp falls back to the ingest day.
+	firstEvent := "min(if(first_event_day = toDate(0), day, first_event_day))"
 	// fe: host-days per relationship. Only the tree's own (source, target) keys can join it.
 	b.WriteString(fmt.Sprintf("WITH fe AS (SELECT src_image, event_type, target_norm, %[3]s AS hd, %[4]s AS first_seen FROM %[1]s%[2]s GROUP BY src_image, event_type, target_norm), ",
-		procFreq, freqWhere(srcOnSrc, tgtOnTgt), hostDays, firstSeen))
+		procFreq, freqWhere(srcOnSrc, tgtOnTgt), hostDays, firstEvent))
 	// ft: Freq(src,rel,*) per Eq.8, the host-days on which the source made this relationship with
 	// ANY target (the wildcard event counted once per host-day). So M is the share of the source's
 	// active host-days that included this target, and a target it always reaches scores near 0.

@@ -442,3 +442,44 @@ func TestInsertDedupWindowOnLogsAndViewTargets(t *testing.T) {
 		}
 	}
 }
+
+// Endpoint-analysis views are permanently detached while the feature is off, and
+// ClickHouse cannot MODIFY QUERY a detached view. The runner attaches it around the
+// statement and detaches it again, so the upgrade applies whatever the toggle says.
+func TestMigrationModifiesDetachedViewQuery(t *testing.T) {
+	const stmt = "ALTER TABLE proc_freq_spawn_mv MODIFY QUERY\nSELECT 1 AS x FROM logs"
+	for _, c := range []struct {
+		name     string
+		detached bool
+		failOn   string
+		want     []string
+	}{
+		{"attached", false, "", []string{stmt}},
+		{"detached", true, "", []string{"ATTACH TABLE proc_freq_spawn_mv", stmt, "DETACH TABLE proc_freq_spawn_mv PERMANENTLY"}},
+		{"detached and failing", true, "MODIFY QUERY", []string{"ATTACH TABLE proc_freq_spawn_mv", stmt, "DETACH TABLE proc_freq_spawn_mv PERMANENTLY"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := fakedb.NewCH()
+			if c.detached {
+				f.On("FROM system.detached_tables", fakedb.One("table", "String", "proc_freq_spawn_mv"))
+			}
+			if c.failOn != "" {
+				f.FailExec(c.failOn, errors.New("boom"))
+			}
+			err := execMigrationStmt(context.Background(), f, stmt)
+			if (err != nil) != (c.failOn != "") {
+				t.Fatalf("err = %v", err)
+			}
+			if got := f.Executed(); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("executed %q, want %q", got, c.want)
+			}
+		})
+	}
+	f := fakedb.NewCH()
+	if err := execMigrationStmt(context.Background(), f, "ALTER TABLE proc_freq ADD COLUMN IF NOT EXISTS y String"); err != nil {
+		t.Fatal(err)
+	}
+	if q := f.Queried(); len(q) != 0 {
+		t.Errorf("only MODIFY QUERY needs the detached check, ran %q", q)
+	}
+}

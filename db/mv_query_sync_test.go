@@ -10,6 +10,12 @@ import (
 func TestModifyQueryMatchesInit(t *testing.T) {
 	for _, c := range []struct{ migration, view string }{
 		{"019_provenance_access_paths.sql", "proc_lineage_mv"},
+		{"021_proc_freq_first_event_day.sql", "proc_freq_spawn_mv"},
+		{"021_proc_freq_first_event_day.sql", "proc_freq_file_mv"},
+		{"021_proc_freq_first_event_day.sql", "proc_freq_net_mv"},
+		{"021_proc_freq_first_event_day.sql", "proc_freq_dns_mv"},
+		{"021_proc_freq_first_event_day.sql", "proc_freq_rthread_mv"},
+		{"021_proc_freq_first_event_day.sql", "proc_freq_pacc_mv"},
 	} {
 		mig, err := ClickHouseMigrations.ReadFile(ClickHouseMigrationsDir + "/" + c.migration)
 		if err != nil {

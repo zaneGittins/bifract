@@ -346,6 +346,9 @@ CREATE TABLE IF NOT EXISTS proc_freq (
     -- the value survives the day bucket and is the basis for NoDoze's IN/OUT node-stability terms
     -- (Eq.4/Eq.5): a node's stability is the share of days on which it gained NO new edge.
     first_day   SimpleAggregateFunction(min, Date),
+    -- Display only (pgr's first_seen): the earliest event date, never later than the ingest
+    -- day. Scoring, TTL and leave-one-out stay on ingest days.
+    first_event_day SimpleAggregateFunction(min, Date) DEFAULT if(first_day = toDate(0), day, first_day),
     event_count SimpleAggregateFunction(sum, UInt64),
     hosts       AggregateFunction(groupUniqArray(256), String),
     PROJECTION by_target (SELECT _part_offset ORDER BY (fractal_id, event_type, target_norm))
@@ -364,6 +367,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -379,6 +383,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_file::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -394,6 +399,7 @@ SELECT
     multiIf(match(fields.dst_ip::String, '^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.|127\\.|169\\.254\\.)'), concat(replaceRegexpOne(fields.dst_ip::String, '\\.[0-9]{1,3}$', ''), '.0/24'), match(fields.dst_ip::String, '^(::1$|fe80:|fc|fd)'), 'internal', fields.dst_ip::String) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -409,6 +415,7 @@ SELECT
     lower(replaceRegexpOne(fields.query::String, '\\.$', '')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -424,6 +431,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs
@@ -439,6 +447,7 @@ SELECT
     lower(replaceRegexpAll(replaceRegexpAll(replaceRegexpAll(fields.target_image::String, '(?i)((users|home)[\\\\/])[^\\\\/]+', '\\1*'), '\\{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\\}?', '*'), '[0-9]{6,}', '*')) AS target_norm,
     toDate(ingest_timestamp) AS day,
     toDate(ingest_timestamp) AS first_day,
+    least(min(toDate(timestamp)), toDate(ingest_timestamp)) AS first_event_day,
     toUInt64(count()) AS event_count,
     groupUniqArrayState(256)(fields.computer_name::String) AS hosts
 FROM logs

@@ -97,7 +97,7 @@ Each action shows a **Why** sentence and fact chips in the drawer and on edge ho
     | `source_exec_host_days` | Other host-days on which this source binary ran |
     | `target_host_days` | Other host-days on which any process touched the target |
     | `target_hosts`, `total_hosts` | Hosts that touched the target (capped at 256) out of all hosts |
-    | `first_seen` | First day the relationship was observed |
+    | `first_seen` | Earliest event date of the relationship (never later than the day it was ingested) |
     | `group_size` | On a spawn edge, how many identical processes the child node stands for (1 for a single process) |
     | `group_first`, `group_last` | When the first and last of those processes started, for `group_size` above 1 |
     | `recon_role` | On a reconnection bridge: `lead`, `shared` (part of a wide family of shared artifacts), or `context` |
