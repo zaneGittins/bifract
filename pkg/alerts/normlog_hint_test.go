@@ -7,22 +7,42 @@ import (
 	"time"
 
 	"bifract/pkg/parser"
+	"bifract/pkg/storage"
 )
 
-// Alerts read logs_hot, which has no norm_log n-gram index, so their queries never
+// logs_hot has no norm_log n-gram index, so only catch-up reads routed to logs
 // carry norm_log index hints.
-func TestAlertQueriesCarryNoNormLogIndexHints(t *testing.T) {
-	from := time.Date(2026, 1, 1, 6, 0, 0, 0, time.UTC)
-	alert := &Alert{ID: "a", FractalID: "f1", QueryString: `computer_name=~"MAvi01"`}
-	opts, err := (&Engine{}).buildQueryOpts(context.Background(), alert, from, from.Add(time.Minute), nil)
-	if err != nil {
-		t.Fatal(err)
+func TestAlertNormLogIndexHintsFollowTableRouting(t *testing.T) {
+	now := time.Now()
+	cases := map[string]struct {
+		from     time.Time
+		lookback int
+		table    string
+		hint     bool
+	}{
+		"hot":      {now.Add(-time.Minute), 0, "logs_hot", false},
+		"catch-up": {now.Add(-3 * time.Hour), 0, "logs", true},
+		"lookback": {now.Add(-time.Minute), 3 * 3600, "logs", true},
 	}
-	sql, err := parser.TranslateToSQL(mustParse(t, alert.QueryString), opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opts.NormLogIndexHints || strings.Contains(sql, "indexHint(") {
-		t.Errorf("alert query hinted:\n%s", sql)
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			alert := &Alert{ID: "a", FractalID: "f1", QueryString: `computer_name=~"MAvi01"`, LookbackSeconds: c.lookback}
+			e := &Engine{ch: &storage.ClickHouseClient{}}
+			opts, err := e.buildQueryOpts(context.Background(), alert, c.from, now, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if opts.TableName != c.table {
+				t.Fatalf("table %q, want %q", opts.TableName, c.table)
+			}
+			sql, err := parser.TranslateToSQL(mustParse(t, alert.QueryString), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hinted := strings.Contains(sql, "indexHint(")
+			if opts.NormLogIndexHints != c.hint || hinted != c.hint {
+				t.Errorf("hint=%v hinted=%v, want %v:\n%s", opts.NormLogIndexHints, hinted, c.hint, sql)
+			}
+		})
 	}
 }
