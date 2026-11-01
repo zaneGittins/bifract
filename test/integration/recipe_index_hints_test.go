@@ -66,13 +66,22 @@ func TestIndexHintsKeepEveryMatch(t *testing.T) {
 		{"user": "QN14", "kind": "neg"},
 		{"flag": true, "user": "QO15"},
 		{"user": "日本語-QP16"},
+		{"commandline": "powershell -nop -w hidden -QR17x"},
+		{"image": `C:\Tools\QS18\run.exe`},
+		{"note": `say "QT19" now`},
+		{"answers": "209.146.77.20"},
+		{"image": "QU20-Invoke-Mimikatz.ps1"},
+		{"user": "kQV21"},
 	})
-	// A second insert lands in a block of its own. Its rows match only through an
-	// OR branch or a negation whose hinted value is absent from that block, so a
-	// hint pruning there as if it were required would drop them.
+	// A second insert lands in a block of its own. Its rows match through an OR
+	// branch, a negation, or case folding lower() does not reproduce, so a hint
+	// pruning there as if its text were required would drop them.
 	ship([]map[string]any{
 		{"user": "svc_QL12:1"},
 		{"user": "other", "kind": "neg"},
+		// (?i)k also matches the Kelvin sign and (?i)s the long s.
+		{"user": "\u212AQV21"},
+		{"user": "\u017FQW22x"},
 	})
 
 	for _, tc := range []struct {
@@ -95,6 +104,16 @@ func TestIndexHintsKeepEveryMatch(t *testing.T) {
 		{`computer_name=~"qaz1mix" OR user="svc_QL12:1"`, 3},
 		{`kind="neg" AND !(user="QN14")`, 1},
 		{`flag="true" AND user=~"qo15"`, 1},
+		// Values with characters JSON escapes are hinted by their other runs.
+		{`commandline=~"-nop -w hidden -qr17x"`, 1},
+		{`image=~"\\qs18\\run"`, 1},
+		{`note=~"\"qt19\" now"`, 1},
+		{`answers="209.146.77.20"`, 1},
+		// Regexes are hinted by the literals every match contains.
+		{`image=/qu20-invoke-mimikatz\.ps1/i`, 1},
+		{`image=/QU20-(Invoke)+-Mimikatz/`, 1},
+		{`user=/kqv21/i`, 2},
+		{`user=/sqw22x/i`, 1},
 		// norm_log itself, as Sigma keyword rules search it.
 		{`norm_log=~"qaz1mix"`, 2},
 		{`norm_log=~"qk11a","qk11b"`, 2},
