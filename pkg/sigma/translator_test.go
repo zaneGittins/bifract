@@ -137,7 +137,7 @@ func TestTranslateModifiers(t *testing.T) {
 		{"empty keyword matches everything", fc("", nil, ""), `*`, nil},
 
 		// null: the field must be absent or empty.
-		{"null", FieldCondition{Field: "ParentImage"}, `NOT ParentImage=*`, nil},
+		{"null", FieldCondition{Field: "ParentImage", Null: true}, `NOT ParentImage=*`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,7 +158,7 @@ func TestTranslateModifiers(t *testing.T) {
 	}
 }
 
-// A null keyword selection constrains nothing.
+// A keyword selection with no values constrains nothing.
 func TestTranslateNullKeyword(t *testing.T) {
 	got, err := Translate(singleSelection(FieldCondition{}), nil)
 	if err != nil || got != "*" {
@@ -442,7 +442,7 @@ detection:
 	want := map[string][]string{
 		"EventID": {"4688"},
 		"Ratio":   {"1.5"},
-		"Whole":   {"2"},
+		"Whole":   {"2.0"},
 		"Big":     {"4294967296"},
 		"Flag":    {"true"},
 		"Missing": nil,
@@ -689,7 +689,7 @@ func TestTranslateMapsFieldsThroughNormalizer(t *testing.T) {
 		Selections: map[string]SelectionGroup{
 			"img":    {FieldConditions: []FieldCondition{fc("Image", []string{"endswith"}, `\rundll32.exe`)}},
 			"cmd":    {FieldConditions: []FieldCondition{fc("CommandLine", []string{"contains"}, "javascript:")}},
-			"parent": {FieldConditions: []FieldCondition{{Field: "ParentImage"}}},
+			"parent": {FieldConditions: []FieldCondition{{Field: "ParentImage", Null: true}}},
 			"kw":     {FieldConditions: []FieldCondition{fc("", nil, "RunHTMLApplication")}},
 		},
 	}}

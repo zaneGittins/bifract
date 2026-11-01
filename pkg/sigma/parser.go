@@ -36,19 +36,27 @@ func ParseSigmaRule(content string) (*SigmaRule, error) {
 		return nil, fmt.Errorf("failed to parse Sigma YAML: %w", err)
 	}
 
-	// Second pass: parse detection block with custom logic
+	// Second pass: the detection block as YAML nodes, so each value keeps the text
+	// the author wrote instead of YAML's typed reading of it (2020-01-01 is a date).
 	var raw struct {
-		Detection map[string]interface{} `yaml:"detection"`
+		Detection yaml.Node `yaml:"detection"`
 	}
 	if err := yaml.Unmarshal([]byte(content), &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse detection block: %w", err)
 	}
-
-	if raw.Detection == nil {
+	if raw.Detection.Kind == 0 || isNull(&raw.Detection) {
 		return nil, fmt.Errorf("Sigma rule missing detection block")
 	}
+	detectionVal, err := nodeValue(&raw.Detection)
+	if err != nil {
+		return nil, fmt.Errorf("detection: %w", err)
+	}
+	detectionMap, ok := detectionVal.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("detection must be a map")
+	}
 
-	detection, err := parseDetection(raw.Detection)
+	detection, err := parseDetection(detectionMap)
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +141,9 @@ func parseSelectionGroup(val interface{}) (*SelectionGroup, error) {
 			//   - 'value2'
 			values := make([]string, 0, len(v))
 			for _, item := range v {
+				if item == nil {
+					return nil, fmt.Errorf("null is not a keyword")
+				}
 				values = append(values, fmt.Sprintf("%v", item))
 			}
 			sg.FieldConditions = []FieldCondition{{
@@ -140,6 +151,9 @@ func parseSelectionGroup(val interface{}) (*SelectionGroup, error) {
 				Values: values,
 			}}
 		}
+
+	case nil:
+		return nil, fmt.Errorf("null is not a keyword")
 
 	default:
 		// Single value - treat as keyword match
@@ -175,8 +189,14 @@ func parseFieldConditions(m map[string]interface{}) ([]FieldCondition, error) {
 		switch v := val.(type) {
 		case []interface{}:
 			for _, item := range v {
+				if item == nil {
+					fc.Null = true
+					continue
+				}
 				fc.Values = append(fc.Values, fmt.Sprintf("%v", item))
 			}
+			// An empty list has always read as null.
+			fc.Null = fc.Null || len(v) == 0
 		case string:
 			fc.Values = []string{v}
 		case int:
@@ -193,7 +213,7 @@ func parseFieldConditions(m map[string]interface{}) ([]FieldCondition, error) {
 		case bool:
 			fc.Values = []string{fmt.Sprintf("%t", v)}
 		case nil:
-			fc.Values = nil // null value - field should be empty/absent
+			fc.Null = true
 		default:
 			fc.Values = []string{fmt.Sprintf("%v", v)}
 		}
@@ -213,4 +233,53 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func isNull(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null"
+}
+
+// nodeValue converts a YAML node into maps, lists, strings and nil. A scalar keeps
+// its source text; only null keeps a meaning of its own.
+func nodeValue(n *yaml.Node) (interface{}, error) {
+	switch n.Kind {
+	case yaml.AliasNode:
+		return nodeValue(n.Alias)
+	case yaml.ScalarNode:
+		if isNull(n) {
+			return nil, nil
+		}
+		return n.Value, nil
+	case yaml.SequenceNode:
+		out := make([]interface{}, len(n.Content))
+		for i, c := range n.Content {
+			v, err := nodeValue(c)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = v
+		}
+		return out, nil
+	case yaml.MappingNode:
+		out := make(map[string]interface{}, len(n.Content)/2)
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k := n.Content[i]
+			if k.Kind != yaml.ScalarNode {
+				return nil, fmt.Errorf("line %d: map keys must be plain values", k.Line)
+			}
+			if k.Value == "<<" {
+				return nil, fmt.Errorf("line %d: YAML merge keys are not supported", k.Line)
+			}
+			if _, dup := out[k.Value]; dup {
+				return nil, fmt.Errorf("line %d: duplicate key %q", k.Line, k.Value)
+			}
+			v, err := nodeValue(n.Content[i+1])
+			if err != nil {
+				return nil, err
+			}
+			out[k.Value] = v
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("line %d: unsupported YAML node", n.Line)
 }

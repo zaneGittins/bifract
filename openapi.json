@@ -38283,6 +38283,10 @@
             "type": "string",
             "format": "date-time"
           },
+          "scored_through": {
+            "type": "string",
+            "format": "date-time"
+          },
           "state": {
             "type": "string"
           }

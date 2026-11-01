@@ -94,6 +94,32 @@ func TestDeriveHealthStale(t *testing.T) {
 	}
 }
 
+// Score range writes scores without touching the rolling state, so a network
+// model over an imported dataset has scores while its state holds nothing.
+func TestDeriveHealthRangeScored(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	rangeEnd := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
+	young := healthModel(ModelTypeBeacon, ModelDefinition{Window: "7d"})
+	young.CreatedAt = now.Add(-time.Hour)
+
+	h := deriveHealth(young, &stateSummary{scored: rangeEnd}, nil, now)
+	if h.State != HealthScored || h.ScoredThrough == nil || !h.ScoredThrough.Equal(rangeEnd) || !strings.Contains(h.Detail, "2026-10-31 00:00 UTC") {
+		t.Errorf("empty state with range scores: %+v", h)
+	}
+
+	// A source that stopped is still stale, whatever scores linger.
+	old := healthModel(ModelTypeBeacon, ModelDefinition{})
+	if h := deriveHealth(old, &stateSummary{scored: rangeEnd}, nil, now); h.State != HealthStale || h.ScoredThrough == nil {
+		t.Errorf("old model with range scores: %+v", h)
+	}
+
+	// Once the state records events the live scorer writes too, so learning stays learning.
+	h = deriveHealth(young, &stateSummary{oldest: now.Add(-2 * 24 * time.Hour), newest: now.Add(-time.Hour), scored: now}, nil, now)
+	if h.State != HealthLearning {
+		t.Errorf("learning state with live scores: state %q", h.State)
+	}
+}
+
 func TestDeriveHealthLearning(t *testing.T) {
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	day := 24 * time.Hour
@@ -174,7 +200,8 @@ func TestHealthSummarySQL(t *testing.T) {
 	}
 
 	net := healthSummarySQL(ModelTypeBeacon, ModelDefinition{}, "model_b", "model_state_b", "f", today)
-	for _, want := range []string{"WHERE final_score > 0.8), 0)) AS flagged", "`model_b` FINAL", "max(last_ts)", "FROM `model_state_b`"} {
+	for _, want := range []string{"WHERE final_score > 0.8), 0)) AS flagged", "`model_b` FINAL", "max(last_ts)", "FROM `model_state_b`",
+		"max(scored_at))) FROM `model_b` WHERE fractal_id = 'f'), 0)) AS scored"} {
 		if !strings.Contains(net, want) {
 			t.Errorf("beacon summary missing %q", want)
 		}
@@ -199,6 +226,9 @@ func TestParseStateSummary(t *testing.T) {
 	empty := parseStateSummary(ModelTypeVolumeBaseline, []map[string]interface{}{{"oldest": uint64(0), "newest": uint64(0), "flagged": uint64(0)}})
 	if !empty.newest.IsZero() || !empty.oldest.IsZero() || empty.findings == nil || *empty.findings != 0 || empty.series != nil {
 		t.Errorf("empty volume summary parsed as %+v", empty)
+	}
+	if b := parseStateSummary(ModelTypeBeacon, []map[string]interface{}{{"oldest": uint64(0), "newest": uint64(0), "flagged": uint64(2), "scored": uint64(1792972800)}}); b.scored.Unix() != 1792972800 {
+		t.Errorf("beacon newest score parsed as %v", b.scored)
 	}
 	if tl := parseStateSummary(ModelTypeTLSH, []map[string]interface{}{{"oldest": uint64(1788000000), "newest": uint64(1788000000)}}); tl.findings != nil {
 		t.Errorf("tlsh has findings: %+v", tl)
