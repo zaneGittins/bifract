@@ -325,10 +325,8 @@ func (p *Parser) parseBindingCondition(negate bool) (*HavingCondition, error) {
 		cond = HavingCondition{Expr: clone}
 		// `&susp =~ "a","b"`: the match operators are filter syntax, so they
 		// follow the substituted expression exactly as they follow a written one.
-		if p.atExprMatchOperator() {
-			if err := p.readExprMatchOperator(&cond); err != nil {
-				return nil, err
-			}
+		if err := p.readExprMatchOperator(&cond); err != nil {
+			return nil, err
 		}
 	}
 	if negate {

@@ -39,10 +39,13 @@ const (
 	TokenMinus
 	TokenMultiply
 	TokenDivide
-	TokenContainsAny   // =~ (substring match any, case-insensitive)
-	TokenStartsWithAny // =^ (prefix match any, case-insensitive)
-	TokenEndsWithAny   // =$ (suffix match any, case-insensitive)
-	TokenBinding       // &name, a reference to a let binding
+	TokenContainsAny      // =~ (substring match any, case-insensitive)
+	TokenStartsWithAny    // =^ (prefix match any, case-insensitive)
+	TokenEndsWithAny      // =$ (suffix match any, case-insensitive)
+	TokenBinding          // &name, a reference to a let binding
+	TokenNotContainsAny   // !=~ (negated =~)
+	TokenNotStartsWithAny // !=^ (negated =^)
+	TokenNotEndsWithAny   // !=$ (negated =$)
 )
 
 type Token struct {
@@ -238,7 +241,19 @@ func (l *Lexer) NextToken() Token {
 	case '!':
 		if l.peekChar() == '=' {
 			l.readChar()
-			tok = Token{Type: TokenNotEqual, Value: "!="}
+			switch l.peekChar() {
+			case '~':
+				l.readChar()
+				tok = Token{Type: TokenNotContainsAny, Value: "!=~"}
+			case '^':
+				l.readChar()
+				tok = Token{Type: TokenNotStartsWithAny, Value: "!=^"}
+			case '$':
+				l.readChar()
+				tok = Token{Type: TokenNotEndsWithAny, Value: "!=$"}
+			default:
+				tok = Token{Type: TokenNotEqual, Value: "!="}
+			}
 			l.readChar()
 		} else {
 			tok = Token{Type: TokenNot, Value: "!"}
@@ -409,40 +424,43 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 // String names the token kind as a user would read it in an error message.
 func (t TokenType) String() string {
 	names := map[TokenType]string{
-		TokenEOF:           "end of query",
-		TokenError:         "invalid character",
-		TokenPipe:          "'|'",
-		TokenField:         "field name",
-		TokenValue:         "value",
-		TokenString:        "string",
-		TokenRegex:         "regex",
-		TokenEqual:         "'='",
-		TokenNotEqual:      "'!='",
-		TokenAssign:        "':='",
-		TokenAnd:           "AND",
-		TokenOr:            "OR",
-		TokenNot:           "NOT",
-		TokenLParen:        "'('",
-		TokenRParen:        "')'",
-		TokenLBracket:      "'['",
-		TokenRBracket:      "']'",
-		TokenLBrace:        "'{'",
-		TokenRBrace:        "'}'",
-		TokenComma:         "','",
-		TokenSemicolon:     "';'",
-		TokenFunction:      "function name",
-		TokenGreater:       "'>'",
-		TokenLess:          "'<'",
-		TokenGreaterEqual:  "'>='",
-		TokenLessEqual:     "'<='",
-		TokenPlus:          "'+'",
-		TokenMinus:         "'-'",
-		TokenMultiply:      "'*'",
-		TokenDivide:        "'/'",
-		TokenContainsAny:   "'=~'",
-		TokenStartsWithAny: "'=^'",
-		TokenEndsWithAny:   "'=$'",
-		TokenBinding:       "binding",
+		TokenEOF:              "end of query",
+		TokenError:            "invalid character",
+		TokenPipe:             "'|'",
+		TokenField:            "field name",
+		TokenValue:            "value",
+		TokenString:           "string",
+		TokenRegex:            "regex",
+		TokenEqual:            "'='",
+		TokenNotEqual:         "'!='",
+		TokenAssign:           "':='",
+		TokenAnd:              "AND",
+		TokenOr:               "OR",
+		TokenNot:              "NOT",
+		TokenLParen:           "'('",
+		TokenRParen:           "')'",
+		TokenLBracket:         "'['",
+		TokenRBracket:         "']'",
+		TokenLBrace:           "'{'",
+		TokenRBrace:           "'}'",
+		TokenComma:            "','",
+		TokenSemicolon:        "';'",
+		TokenFunction:         "function name",
+		TokenGreater:          "'>'",
+		TokenLess:             "'<'",
+		TokenGreaterEqual:     "'>='",
+		TokenLessEqual:        "'<='",
+		TokenPlus:             "'+'",
+		TokenMinus:            "'-'",
+		TokenMultiply:         "'*'",
+		TokenDivide:           "'/'",
+		TokenContainsAny:      "'=~'",
+		TokenStartsWithAny:    "'=^'",
+		TokenEndsWithAny:      "'=$'",
+		TokenBinding:          "binding",
+		TokenNotContainsAny:   "'!=~'",
+		TokenNotStartsWithAny: "'!=^'",
+		TokenNotEndsWithAny:   "'!=$'",
 	}
 	if name, ok := names[t]; ok {
 		return name

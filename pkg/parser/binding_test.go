@@ -228,7 +228,7 @@ func TestResultSetBindingBuildsOnAnother(t *testing.T) {
 // The column tested is the one named after the field, matching how a join block
 // names its key. Anything else is an error rather than a guess.
 func TestResultSetBindingColumnSelection(t *testing.T) {
-	pipeline, err := ParseQuery(`let &admins := user_type="admin" | groupby(user); * | in(nothere, &admins)`)
+	pipeline, err := ParseQuery(`let &admins := user_type="admin" | groupby(user, host); * | in(nothere, &admins)`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestResultSetBindingColumnSelection(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error naming the columns")
 	}
-	if !strings.Contains(err.Error(), "returns [user, _count]") {
+	if !strings.Contains(err.Error(), "returns [user, host, _count]") {
 		t.Errorf("want the columns named, got: %v", err)
 	}
 	// A binding returning exactly one column needs no name match.
@@ -485,6 +485,33 @@ func TestBindingValueIsEscaped(t *testing.T) {
 		}
 		if strings.Count(sql, "SELECT") != strings.Count(bindingSQL(t, `* | user = "x"`), "SELECT") {
 			t.Errorf("%s: the value changed the query's shape: %s", q, sql)
+		}
+	}
+}
+
+// groupby() adds an implicit _count, which is never a membership key, so a
+// one-key groupby binding is a single-column set whatever field tests it.
+func TestResultSetBindingIgnoresAggregateColumns(t *testing.T) {
+	for _, q := range []string{
+		`let &w := image=x | groupby(image); * | in(parent_image, &w)`,
+		`let &w := image=x | groupby(image, function=[count(), sum(bytes)]); * | in(parent_image, &w)`,
+	} {
+		if sql := bindingSQL(t, q); !strings.Contains(sql, "fields.`parent_image`::String IN (SELECT image FROM (") {
+			t.Errorf("%s: want the groupby key tested, got: %s", q, sql)
+		}
+	}
+}
+
+// The tested column is read as an identifier, so a dotted or hyphenated key is
+// one column rather than an expression.
+func TestResultSetBindingQuotesColumn(t *testing.T) {
+	for q, want := range map[string]string{
+		`let &w := * | groupby(a-b); * | in(c, &w)`:             "IN (SELECT `a-b` FROM (",
+		`let &w := * | groupby(a.b); * | in(a.b, &w)`:           "IN (SELECT `a.b` FROM (",
+		`let &w := * | groupby(a-b); * | in(c, &w) | in(d, &w)`: "IN (SELECT `a-b` FROM _b_w)",
+	} {
+		if sql := bindingSQL(t, q); !strings.Contains(sql, want) {
+			t.Errorf("%s: want %s, got: %s", q, want, sql)
 		}
 	}
 }
