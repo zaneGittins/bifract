@@ -849,22 +849,26 @@ func addBaseConditions(plan *QueryPlan, opts QueryOptions) {
 			fmt.Sprintf("dateDiff('second', timestamp, ingest_timestamp) <= %d", opts.MaxEventLagSeconds))
 	}
 
-	if len(opts.FractalIDs) > 0 {
-		quoted := make([]string, len(opts.FractalIDs))
-		for i, id := range opts.FractalIDs {
-			quoted[i] = fmt.Sprintf("'%s'", escapeString(id))
-		}
-		if opts.IncludeEmptyFractalID {
-			quoted = append(quoted, "''")
-		}
-		source.Layer.Where = append(source.Layer.Where, "fractal_id IN ("+strings.Join(quoted, ", ")+")")
-	} else if opts.FractalID != "" {
-		if opts.IncludeEmptyFractalID {
-			source.Layer.Where = append(source.Layer.Where, fmt.Sprintf("fractal_id IN ('%s', '')", escapeString(opts.FractalID)))
-		} else {
-			source.Layer.Where = append(source.Layer.Where, fmt.Sprintf("fractal_id = '%s'", escapeString(opts.FractalID)))
+	if scope := fractalScopeCond(opts, ""); scope != "" {
+		source.Layer.Where = append(source.Layer.Where, scope)
+	}
+}
+
+// scopeColumns are the columns the scan's scope guards read.
+var scopeColumns = []string{"fractal_id", "timestamp", "ingest_timestamp", "log_id"}
+
+// checkScopeNotShadowed refuses a scan projection named after a scope column.
+// ClickHouse binds a WHERE identifier to a SELECT alias before the table column,
+// so `'x' AS fractal_id` would turn the fractal guard into a test of that alias.
+func checkScopeNotShadowed(selects []SelectExpr) error {
+	for _, sel := range selects {
+		s := strings.TrimSpace(sel.String())
+		name := selectName(s)
+		if slices.Contains(scopeColumns, name) && strings.Trim(s, "`") != name {
+			return fmt.Errorf("%s is a built-in column and cannot name an output; choose another name", name)
 		}
 	}
+	return nil
 }
 
 // finalizePlan assembles the final SQL from structured plan data using the

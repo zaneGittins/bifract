@@ -40,7 +40,7 @@ Every event has these columns besides its own fields. They can be selected, sort
 * | table(timestamp, ingest_timestamp, image)
 ```
 
-An assignment or `eval()` that uses one of these names replaces the column for the rest of the query.
+`timestamp`, `ingest_timestamp`, `log_id` and `fractal_id` scope every search, so no command can write an output under those names; pick another name, such as `as=event_time`. `norm_log` and `normalizer` can be replaced by an assignment or `eval()` for the rest of the query.
 
 ## Sort
 

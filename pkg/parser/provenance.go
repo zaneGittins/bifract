@@ -344,7 +344,7 @@ func procFreqTable(opts QueryOptions) string {
 
 // fractalWhere is a WHERE clause scoping a whole-table read to the query's fractals, or "".
 func fractalWhere(opts QueryOptions) string {
-	if fractal := procLineageFractalCond(opts, ""); fractal != "" {
+	if fractal := fractalScopeCond(opts, ""); fractal != "" {
 		return " WHERE " + fractal
 	}
 	return ""
@@ -370,7 +370,7 @@ func procLineageWindow(opts QueryOptions, prefix string) []string {
 		fmt.Sprintf("%stimestamp >= '%s'", prefix, chTimeLiteral(opts.StartTime)),
 		fmt.Sprintf("%stimestamp <= '%s'", prefix, chTimeLiteral(opts.EndTime)),
 	}
-	if fc := procLineageFractalCond(opts, prefix); fc != "" {
+	if fc := fractalScopeCond(opts, prefix); fc != "" {
 		conds = append(conds, fc)
 	}
 	return conds
@@ -392,7 +392,7 @@ func buildProvenanceEdgeUnion(edgeTypes map[string]bool, opts QueryOptions) stri
 	// + p2p logs scan). No probe is needed anymore: the edge/p2p reads scope by guid, so the window
 	// only trims which of the tree's edges are in range, not the scan cost.
 	userWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
-	fractal := procLineageFractalCond(opts, "")
+	fractal := fractalScopeCond(opts, "")
 	frac := func() string {
 		if fractal == "" {
 			return ""
@@ -600,7 +600,7 @@ func BuildProvenanceScoringSQL(threshold float64, edgeTypes map[string]bool, dif
 		pmEnd = bl.NodeEnd
 	}
 	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", chTimeLiteral(pmStart), chTimeLiteral(pmEnd))
-	fractal := procLineageFractalCond(opts, "")
+	fractal := fractalScopeCond(opts, "")
 	frac := func() string {
 		if fractal == "" {
 			return ""
@@ -910,7 +910,7 @@ func BuildReconnectionSQL(p ProvenanceParams, totalHosts, totalImages int64, opt
 	tsStart := chTimeLiteral(opts.StartTime)
 	tsEnd := chTimeLiteral(opts.EndTime)
 	timeWin := fmt.Sprintf("timestamp >= '%s' AND timestamp <= '%s'", tsStart, tsEnd)
-	fractal := procLineageFractalCond(opts, "")
+	fractal := fractalScopeCond(opts, "")
 	fracAnd := ""
 	if fractal != "" {
 		fracAnd = " AND " + fractal

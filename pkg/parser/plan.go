@@ -479,6 +479,9 @@ func (p *QueryPlan) addBindingCTE(name, sql string) string {
 
 func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	source := p.SourceStage()
+	if err := checkScopeNotShadowed(source.Layer.Selects); err != nil {
+		return "", err
+	}
 
 	// Build SELECT clause
 	var selectClause string
