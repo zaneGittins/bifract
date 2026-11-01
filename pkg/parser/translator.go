@@ -236,7 +236,7 @@ func planQuery(pipeline *PipelineNode, opts QueryOptions) (*plannedQuery, error)
 	registry.normLogIndexHints = opts.NormLogIndexHints && opts.SourceMode != SourceIceberg && opts.SourceSubquery == ""
 	// A subquery source (a resolved source command) exposes flat columns; register them so
 	// bare references resolve to the column name (not fields.`x` JSON access). Numeric columns
-	// register as Assignment (already numeric -> no toFloat64OrZero coercion, which errors on a
+	// register as Assignment (already numeric -> no textToNumber coercion, which errors on a
 	// non-String); string columns as Base (coerce on numeric compare, harmless for strings).
 	if opts.SourceSubquery != "" {
 		numeric := make(map[string]bool, len(opts.SourceNumericColumns))

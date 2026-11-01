@@ -34,7 +34,7 @@ func TestConditionSeesFieldsAtItsPosition(t *testing.T) {
 		{"later transform does not apply", `* | level="a" | lowercase(level)`,
 			"fields.`level`::String = 'a'", "lower(fields.`level`::String) = 'a'"},
 		{"count before any aggregation is a field", `* | count > 5`,
-			"toFloat64OrZero(fields.`count`::String) > 5", "_count"},
+			"toFloat64OrDefault(fields.`count`::String, nan) > 5", "_count"},
 		{"later grouping key is still the raw field", `* | event_id=* | groupby(event_id)`,
 			"fields.`event_id`::String != ''", ""},
 		{"later grouping key past a scoped stage", `* | event_id=* | groupby(event_id) | count()`,

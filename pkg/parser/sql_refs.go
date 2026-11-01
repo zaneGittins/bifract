@@ -12,7 +12,8 @@ type sqlRef struct {
 }
 
 // sqlRefs lists the identifiers in SQL the translator generated, skipping string
-// literals and numbers. A backticked identifier is reported by its name.
+// literals and numbers, nan and inf included. A backticked identifier is
+// reported by its name.
 func sqlRefs(sql string) []sqlRef {
 	var out []sqlRef
 	for i := 0; i < len(sql); {
@@ -33,6 +34,9 @@ func sqlRefs(sql string) []sqlRef {
 					i++
 				}
 				name = sql[start:i]
+				if strings.EqualFold(name, "nan") || strings.EqualFold(name, "inf") {
+					continue // ClickHouse reads both unquoted as Float64 literals
+				}
 			}
 			next := i
 			for next < len(sql) && sql[next] == ' ' {

@@ -66,7 +66,7 @@ func TestIcebergSourceMode(t *testing.T) {
 		{
 			name:           "numeric comparison casts norm_log extraction",
 			query:          `duration>5`,
-			wantContain:    []string{"toFloat64OrZero(JSONExtractString(norm_log, 'duration')) > 5"},
+			wantContain:    []string{"toFloat64OrDefault(JSONExtractString(norm_log, 'duration'), nan) > 5"},
 			wantNotContain: []string{"fields.`duration`::String", "fields['duration']"},
 		},
 		{

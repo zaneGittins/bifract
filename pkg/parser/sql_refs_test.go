@@ -7,9 +7,11 @@ import (
 
 func TestColumnRefs(t *testing.T) {
 	for sql, want := range map[string][]string{
-		"fields.`query`::String = 'a b' AND is_new = '1'":      {"fields", "is_new"},
-		"dateDiff('second', first_seen, _now) > 3600":          {"first_seen", "_now"},
-		"toFloat64OrZero(percent) < 0.1e3":                     {"percent"},
+		"fields.`query`::String = 'a b' AND is_new = '1'": {"fields", "is_new"},
+		"dateDiff('second', first_seen, _now) > 3600":     {"first_seen", "_now"},
+		"toFloat64OrDefault(percent, nan) < 0.1e3":        {"percent"},
+		// Unquoted nan and inf are Float64 literals; backticked, a column.
+		"x < NaN OR x > -inf OR `nan` > 0":                     {"x", "x", "nan"},
 		"timestamp - INTERVAL 1 HOUR > hour":                   {"timestamp", "hour"},
 		"`odd name` IS NOT NULL AND x IN ('it''s', 'a\\'b')":   {"odd name", "x"},
 		"fields.`a`.`b` != '' OR now() - INTERVAL 1 HOUR > ts": {"fields", "ts"},

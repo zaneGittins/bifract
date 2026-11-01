@@ -723,7 +723,7 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "bytes>1000",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`bytes`::String) > 1000")
+				return containsSubstr([]string{sql}, "toFloat64OrDefault(fields.`bytes`::String, nan) > 1000")
 			},
 		},
 		{
@@ -733,7 +733,7 @@ func TestComparisonOperators(t *testing.T) {
 			checkSQL: func(sql string) bool {
 				// duration is a promoted, type-hinted field, so it is referenced as a
 				// bare String sub-column (no ::String cast).
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`duration`::String) < 100")
+				return containsSubstr([]string{sql}, "toFloat64OrDefault(fields.`duration`::String, nan) < 100")
 			},
 		},
 		{
@@ -741,7 +741,7 @@ func TestComparisonOperators(t *testing.T) {
 			query:   "count>=10",
 			wantErr: false,
 			checkSQL: func(sql string) bool {
-				return containsSubstr([]string{sql}, "toFloat64OrZero(fields.`count`::String) >= 10")
+				return containsSubstr([]string{sql}, "toFloat64OrDefault(fields.`count`::String, nan) >= 10")
 			},
 		},
 		{

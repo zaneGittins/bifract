@@ -161,6 +161,12 @@ func TestParseSourceQueryRefinements(t *testing.T) {
 		t.Fatalf("len > 4 should map to MinLength 5, got %d", res2.Extractions[0].MinLength)
 	}
 
+	// A negated comparison is a maximum, not a minimum: it is not carried.
+	res4 := ParseSourceQuery(`level = "a" | regex(field=norm_log, regex="([a-z]+)", as=t) | len(t) | NOT _len > 4`)
+	if res4.Extractions[0].MinLength != 0 || res4.FilterComplete {
+		t.Fatalf("NOT _len > 4 must not set MinLength: %+v complete=%v", res4.Extractions[0], res4.FilterComplete)
+	}
+
 	// Multiple length filters with named len outputs stay independent (no collision,
 	// no warning) and map to the correct extraction.
 	res3 := ParseSourceQuery(`level = "a" | regex(field=norm_log, regex="(\\S+)", as=a) | len(a, as=a_len) | a_len >= 2 | regex(field=norm_log, regex="(\\d+)", as=b) | len(b, as=b_len) | b_len >= 3`)

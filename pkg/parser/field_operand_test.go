@@ -36,7 +36,7 @@ func TestFieldOperandSQL(t *testing.T) {
 		{
 			name:        "ordering coerces both sides to Float64",
 			query:       `src_bytes > field(dst_bytes)`,
-			wantContain: []string{"toFloat64OrZero(fields.`src_bytes`::String) > toFloat64OrZero(fields.`dst_bytes`::String)"},
+			wantContain: []string{"toFloat64OrDefault(fields.`src_bytes`::String, nan) > toFloat64OrDefault(fields.`dst_bytes`::String, nan)"},
 		},
 		{
 			name:  "inequality guards both sides against an absent field",
@@ -73,7 +73,7 @@ func TestFieldOperandSQL(t *testing.T) {
 		{
 			name:        "a pipeline-produced column is coerced, not read as a log field",
 			query:       `* | levenshtein(a, b) | _distance > field(threshold)`,
-			wantContain: []string{"toFloat64OrZero(toString(damerauLevenshteinDistance("},
+			wantContain: []string{"toFloat64OrDefault(toString(damerauLevenshteinDistance("},
 		},
 		{
 			// A grouping key is stored as its alias or as the expression it resolved
@@ -81,21 +81,21 @@ func TestFieldOperandSQL(t *testing.T) {
 			// so recognising it must not depend on that order.
 			name:        "group key is recognised without an explicit aggregate",
 			query:       `* | groupby(host) | count > field(host)`,
-			wantContain: []string{"toFloat64OrZero(host)"},
+			wantContain: []string{"toFloat64OrDefault(host, nan)"},
 		},
 		{
 			name:        "a dotted group key resolves to its quoted alias",
 			query:       `* | groupBy(winlog.user) | count() | count > field(winlog.user)`,
-			wantContain: []string{"toFloat64OrZero(`winlog.user`)"},
+			wantContain: []string{"toFloat64OrDefault(`winlog.user`, nan)"},
 		},
 		{
-			// _count is UInt64: toFloat64OrZero on it is a code 43, so the bare
+			// _count is UInt64: toFloat64OrDefault on it is a code 43, so the bare
 			// aggregate has to be coerced through toString like any other
 			// pipeline output.
 			name:           "an aggregate may be compared with a group key",
 			query:          `* | groupBy(user) | count() | count > field(user)`,
-			wantContain:    []string{"HAVING toFloat64OrZero(toString(_count)) > toFloat64OrZero(user)"},
-			wantNotContain: []string{"toFloat64OrZero(_count)"},
+			wantContain:    []string{"HAVING toFloat64OrDefault(toString(_count), nan) > toFloat64OrDefault(user, nan)"},
+			wantNotContain: []string{"toFloat64OrDefault(_count"},
 		},
 		{
 			name:        "a DateTime operand is compared as text, not as a string column",
@@ -103,11 +103,11 @@ func TestFieldOperandSQL(t *testing.T) {
 			wantContain: []string{"fields.`seen_at`::String = toString(timestamp)"},
 		},
 		{
-			// toFloat64OrZero(toString(datetime)) silently reads 0; epoch millis order.
+			// The text form of a DateTime is not a number; epoch millis order.
 			name:           "two DateTime operands order by epoch millis",
 			query:          `* | ingest_timestamp > field(timestamp)`,
 			wantContain:    []string{"toUnixTimestamp64Milli(ingest_timestamp) > toUnixTimestamp64Milli(timestamp)"},
-			wantNotContain: []string{"toFloat64OrZero(toString(timestamp))"},
+			wantNotContain: []string{"toFloat64OrDefault(toString(timestamp)"},
 		},
 		{
 			name:        "a bare aggregate on the right resolves to its alias",

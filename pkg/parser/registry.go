@@ -16,7 +16,7 @@ const (
 	FieldKindWindow                     // _modified_z, _is_outlier (from window wrappers)
 	// FieldKindAssignment: per-row scalar already numeric (len, levenshtein, := assignments).
 	// Always routes to WHERE — it is computed before aggregation, never after.
-	// Differs from FieldKindPerRow only in that no toFloat64OrZero() coercion is needed.
+	// Differs from FieldKindPerRow only in that no textToNumber() coercion is needed.
 	FieldKindAssignment
 	// FieldKindJoined: a column a join adds, modelLookup() (beacon_score,
 	// coverage, z_score, ...) or join() (_join_<col>). It exists only after the
@@ -34,7 +34,7 @@ type FieldEntry struct {
 	ResolveAs  string // Override for Resolve(); when set, returned instead of Expr
 	Inline     bool   // when true, references are folded in as the expression, never an alias
 	// Numeric marks an expression that already compiles to a number. The string
-	// coercions a filter applies (toFloat64OrZero) take a String, so applying one
+	// coercions a filter applies (textToNumber) take a String, so applying one
 	// to an already-numeric expression is rejected by the server.
 	Numeric bool
 	// OriginKind preserves the field's identity BEFORE any stage-scoping downgrade.
@@ -476,7 +476,7 @@ func (r *FieldRegistry) FieldsOfKind(kind FieldKind) []string {
 // Crucially, the transition is TYPE-PRESERVING. A column that was numeric in the
 // prior stage (an aggregate output such as _count/_sum, a numeric assignment, or a
 // window value) is re-registered as FieldKindAssignment so that downstream numeric
-// comparisons reference it bare. Wrapping such a column in toFloat64OrZero() (which
+// comparisons reference it bare. Wrapping such a column in textToNumber() (which
 // only accepts String) would raise a ClickHouse type error. String-typed columns
 // (carried group keys) stay FieldKindBase, which still coerces on numeric compare.
 // In both cases ResolveAs is the bare alias so references resolve to the column,

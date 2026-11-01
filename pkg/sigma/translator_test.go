@@ -258,7 +258,7 @@ func TestTranslateModifierValuesAreChecked(t *testing.T) {
 // The Sigma v2 modifiers, end to end through the parser and SQL translator.
 func TestTranslateV2Modifiers(t *testing.T) {
 	const num = `/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/`
-	sizeRef := "toFloat64OrZero(fields.`Size`::String)"
+	sizeRef := "toFloat64OrDefault(fields.`Size`::String, nan)"
 	cases := []struct {
 		name string
 		cond FieldCondition
@@ -283,8 +283,7 @@ func TestTranslateV2Modifiers(t *testing.T) {
 		{"fieldref list is any field", fc("TargetUserName", []string{"fieldref"}, "SubjectUserName", "User"),
 			`(TargetUserName=* AND (TargetUserName=field(SubjectUserName) OR TargetUserName=field(User)))`, nil},
 
-		// BQL compares text through toFloat64OrZero, so a missing or non-numeric value
-		// would compare as 0. The guard keeps |lt 5 from matching every event without one.
+		// The guard keeps a comparison to plain decimals; ClickHouse also reads inf and nan.
 		{"gt", fc("Size", []string{"gt"}, "5"), `(Size=` + num + ` AND Size>5)`, []string{sizeRef + " > 5", "match(fields.`Size`::String"}},
 		{"gte decimal", fc("Size", []string{"gte"}, "1.5"), `(Size=` + num + ` AND Size>=1.5)`, []string{sizeRef + " >= 1.5"}},
 		{"lt negative", fc("Size", []string{"lt"}, "-1"), `(Size=` + num + ` AND Size<-1)`, []string{sizeRef + " < -1"}},
