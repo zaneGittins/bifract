@@ -40,7 +40,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bifract"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U bifract"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -65,7 +65,7 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--user", "default", "--password", "${CLICKHOUSE_PASSWORD}", "--query", "SELECT 1"]
+      test: ["CMD-SHELL", "clickhouse-client --host \"$$(hostname -i)\" --user default --password \"${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1'"]
       interval: 10s
       timeout: 5s
       retries: 5
