@@ -225,7 +225,7 @@ var bqlFunctionDocs = []FunctionDoc{
 	{
 		Name:        "case",
 		Category:    "Transformation",
-		Description: "Conditional branches evaluated in order, each written as 'condition | commands' and separated by ';' (with '*' as the default branch). Conditions accept any filter operator (=, !=, =~, =^, =$, >, <, >=, <=, regex) plus in() and cidr(). A branch may run several pipe commands: field assignments (field:=value), per-row transforms (regex, eval, lowercase, ...), and aggregations (count, sum, avg, ...) which compile to single-pass conditional (-If) aggregates. Structural commands (groupby, sort, limit, join, chain, window functions, charts) are not allowed inside a branch; place them after the case.",
+		Description: "Conditional branches evaluated in order, each written as 'condition | commands' and separated by ';' (with '*' as the default branch). Conditions accept any filter operator (=, !=, =~, =^, =$, !=~, !=^, !=$, >, <, >=, <=, regex) plus in() and cidr(). A branch may run several pipe commands: field assignments (field:=value), per-row transforms (regex, eval, lowercase, ...), and aggregations (count, sum, avg, ...) which compile to single-pass conditional (-If) aggregates. Structural commands (groupby, sort, limit, join, chain, window functions, charts) are not allowed inside a branch; place them after the case.",
 		Syntax:      "| case { condition | field:=\"value\"; condition | command(...); * | field:=\"default\"; }",
 		Parameters: []Param{
 			{Name: "branches", Type: "expression", Required: true, Description: "Semicolon-separated branches; each is 'condition | command(s)', with '*' as the default branch"},
@@ -1323,7 +1323,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Operator:    "=~",
-				Description: "Contains-any (case-insensitive substring). Matches if the field contains any of the comma-separated terms. Translated to multiSearchAnyCaseInsensitive(), which uses SIMD multi-pattern search and is accelerated by text skip indexes. Faster than equivalent regex for multi-term searches.",
+				Description: "Contains-any (case-insensitive substring). Matches if the field contains any of the comma-separated terms. Translated to multiSearchAnyCaseInsensitive(), which uses SIMD multi-pattern search and is accelerated by text skip indexes. Faster than equivalent regex for multi-term searches. Negate with !=~, which also matches rows missing the field.",
 				Examples: []string{
 					"image=~powershell,pwsh,cmd",
 					"commandline=~encodedcommand,bypass,hidden",
@@ -1332,7 +1332,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Operator:    "=^",
-				Description: "Starts-with-any (case-insensitive prefix). Matches if the field starts with any of the comma-separated terms. Translated to startsWith(lower(field), term). Accelerated by text skip indexes.",
+				Description: "Starts-with-any (case-insensitive prefix). Matches if the field starts with any of the comma-separated terms. Translated to startsWith(lower(field), term). Accelerated by text skip indexes. Negate with !=^, which also matches rows missing the field.",
 				Examples: []string{
 					"image=^mimikatz,impacket",
 					"commandline=^powershell -enc",
@@ -1341,7 +1341,7 @@ func (h *QueryHandler) HandleReference(w http.ResponseWriter, r *http.Request) {
 			},
 			{
 				Operator:    "=$",
-				Description: "Ends-with-any (case-insensitive suffix). Matches if the field ends with any of the comma-separated terms. Translated to endsWith(lower(field), term). Accelerated by text skip indexes.",
+				Description: "Ends-with-any (case-insensitive suffix). Matches if the field ends with any of the comma-separated terms. Translated to endsWith(lower(field), term). Accelerated by text skip indexes. Negate with !=$, which also matches rows missing the field.",
 				Examples: []string{
 					"image=$exe,dll,bat",
 					"commandline=$bypass",

@@ -201,7 +201,7 @@ func TranslateToSQLWithOrder(pipeline *PipelineNode, opts QueryOptions) (*Transl
 	if err != nil {
 		return nil, err
 	}
-	return finalizePlan(q.ctx, q.assignmentFields, q.deferredAssignments)
+	return q.finalize()
 }
 
 // plannedQuery is a pipeline planned up to final assembly.
@@ -209,6 +209,11 @@ type plannedQuery struct {
 	ctx                 *CommandContext
 	assignmentFields    []string
 	deferredAssignments []deferredAssignment
+}
+
+// finalize assembles the planned query into its SQL.
+func (q *plannedQuery) finalize() (*TranslationResult, error) {
+	return finalizePlan(q.ctx, q.assignmentFields, q.deferredAssignments)
 }
 
 // scanWhere is the predicate the pipeline puts on its source scan beyond the time
