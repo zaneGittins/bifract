@@ -142,6 +142,54 @@ func TestHandlerGlobalListsAreWrittenFromHome(t *testing.T) {
 	}
 }
 
+// The editor hides what the write routes would refuse, so a read says whether
+// the caller may change the list here and names the scope it belongs to.
+func TestHandlerReadsSayWhereAGlobalIsEdited(t *testing.T) {
+	w := newWorld(t)
+	h := NewHandler(w.m, nil)
+	own := mustCreate(t, w, CreateOptions{FractalID: fractalA, Name: "own", Columns: cols("k")})
+	shared := mustCreate(t, w, CreateOptions{FractalID: fractalB, Name: "shared", IsGlobal: true, Columns: cols("k")})
+
+	get := func(who principal, scope context.Context, id string) Dictionary {
+		t.Helper()
+		var d Dictionary
+		_ = json.Unmarshal(decode(t, call(t, h.HandleGetDictionary, "GET", "/", nil, who, scope, "id", id)).Data, &d)
+		return d
+	}
+	for _, c := range []struct {
+		name  string
+		who   principal
+		scope context.Context
+		id    string
+		want  bool
+	}{
+		{"own list", analyst, nil, own.ID, true},
+		{"global from another fractal", analyst, nil, shared.ID, false},
+		{"global from home", analyst, inFractal(fractalB), shared.ID, true},
+		{"global by a tenant admin", admin, nil, shared.ID, true},
+		{"global by a capped admin", admin, api.WithCeiling(inFractal(fractalA), api.AccessAnalyst), shared.ID, false},
+	} {
+		if got := get(c.who, c.scope, c.id).Editable; got != c.want {
+			t.Errorf("%s: editable %v, want %v", c.name, got, c.want)
+		}
+	}
+	if got := get(analyst, nil, shared.ID).HomeName; got != "beta" {
+		t.Errorf("home of the global: %q, want beta", got)
+	}
+
+	var list struct {
+		Data []Dictionary `json:"data"`
+	}
+	_ = json.Unmarshal(call(t, h.HandleListDictionaries, "GET", "/", nil, analyst, nil).Body.Bytes(), &list)
+	editable := map[string]bool{}
+	for _, d := range list.Data {
+		editable[d.Name] = d.Editable
+	}
+	if !editable["own"] || editable["shared"] {
+		t.Errorf("list from fractal A: %v", editable)
+	}
+}
+
 // Create and the column routes report what the manager refuses as a 400 with
 // its reason, and a failure of ours as a 500 without detail.
 func TestHandlerCreateAndColumns(t *testing.T) {

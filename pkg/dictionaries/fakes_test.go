@@ -24,6 +24,9 @@ const (
 	prismA   = "33333333-3333-3333-3333-333333333333"
 )
 
+// scopeNames stands in for the fractals and prisms tables a read joins for home_name.
+var scopeNames = map[string]string{fractalA: "alpha", fractalB: "beta", prismA: "prism-a"}
+
 // world is an in-memory Postgres (the dictionaries, dictionary_actions and
 // settings tables, plus advisory locks) and an in-memory ClickHouse (backing
 // tables, Distributed companions and dictionary objects) behind the scripted
@@ -77,7 +80,7 @@ type dictRec struct {
 }
 
 func (d *dictRec) values() []driver.Value {
-	return []driver.Value{d.id, d.name, d.desc, d.fractalID, d.prismID, d.global, d.keyCol, d.cols,
+	return []driver.Value{d.id, d.name, d.desc, d.fractalID, d.prismID, d.global, scopeNames[d.fractalID+d.prismID], d.keyCol, d.cols,
 		d.rowCount, d.ci, d.kind, d.createdBy, d.created, d.created, nilIfEmpty(d.source), nilIfEmpty(d.status)}
 }
 

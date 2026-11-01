@@ -131,11 +131,11 @@ func TestOwnedLookupExcludesGlobalsWhileReadLookupIncludesThem(t *testing.T) {
 	}
 }
 
-// scanDictionary reads 16 fields, so the column list must name 16 columns. Scan
+// scanDictionary reads 17 fields, so the column list must name 17 columns. Scan
 // is variadic, so a list one column short compiles cleanly and fails only at
 // runtime, on every call. Counting top-level commas catches it here.
 func TestDictColumnsMatchesScanArity(t *testing.T) {
-	const wantColumns = 16 // id..source_status, see scanDictionary
+	const wantColumns = 17 // id..source_status, see scanDictionary
 
 	depth, got := 0, 1
 	for _, r := range dictColumns {

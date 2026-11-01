@@ -167,17 +167,17 @@ func (f fakeRow) Scan(dest ...any) error {
 	if f.err != nil {
 		return f.err
 	}
-	if len(dest) != 16 {
+	if len(dest) != 17 {
 		return fmt.Errorf("scanned into %d destinations", len(dest))
 	}
 	*dest[0].(*string) = "8c1168bb-23b0-44e5"
 	*dest[1].(*string) = "lolrmm"
-	*dest[6].(*string) = "path"
-	*dest[7].(*[]byte) = f.cols
-	*dest[10].(*string) = KindPattern
-	*dest[12].(*time.Time) = time.Unix(0, 0)
-	*dest[14].(*[]byte) = f.source
-	*dest[15].(*[]byte) = f.status
+	*dest[7].(*string) = "path"
+	*dest[8].(*[]byte) = f.cols
+	*dest[11].(*string) = KindPattern
+	*dest[13].(*time.Time) = time.Unix(0, 0)
+	*dest[15].(*[]byte) = f.source
+	*dest[16].(*[]byte) = f.status
 	return nil
 }
 

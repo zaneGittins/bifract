@@ -35121,7 +35121,13 @@
           "description": {
             "type": "string"
           },
+          "editable": {
+            "type": "boolean"
+          },
           "fractal_id": {
+            "type": "string"
+          },
+          "home_name": {
             "type": "string"
           },
           "id": {
@@ -35169,7 +35175,9 @@
           "kind",
           "created_by",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "home_name",
+          "editable"
         ]
       },
       "dictionaries.DictionaryAction": {

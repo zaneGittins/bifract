@@ -648,6 +648,17 @@
     color: var(--text-secondary);
 }
 
+.dict-readonly-note {
+    margin: 8px 0 10px;
+    color: var(--text-secondary);
+}
+
+.dict-meta-global:has(input:disabled),
+.dict-meta-global input:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
 .dict-meta-global {
     display: flex;
     align-items: center;

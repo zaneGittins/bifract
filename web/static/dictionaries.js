@@ -147,7 +147,7 @@ const Dictionaries = {
     <td class="dict-col-meta${d.is_global ? ' dict-col-scope-global' : ''}">${this.esc(this.scopeLabel(d))}</td>
     <td class="dict-col-meta">${d.columns ? d.columns.length : 0}</td>
     <td class="dict-col-meta">${(d.row_count || 0).toLocaleString()}</td>
-    <td class="kebab-cell"><div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button><div class="kebab-menu"><button class="kebab-item danger" data-id="${d.id}" data-action="delete">Delete</button></div></div></td>
+    <td class="kebab-cell"><div class="kebab-wrapper"><button class="kebab-btn" onclick="KebabMenu.toggle(event,this)">⋮</button><div class="kebab-menu">${d.editable ? `<button class="kebab-item danger" data-id="${d.id}" data-action="delete">Delete</button>` : `<span class="kebab-item dict-kebab-note">${this.esc(this.editElsewhere(d))}</span>`}</div></div></td>
 </tr>`).join('');
 
         tbody.querySelectorAll('.dict-link').forEach(a => {
@@ -251,6 +251,11 @@ const Dictionaries = {
 
     isAdmin() {
         return !!window.Auth?.currentUser?.is_admin;
+    },
+
+    // A global list is changed only from its own fractal or prism, or by a tenant admin.
+    editElsewhere(d) {
+        return `Read only here. Edit it from ${d.home_name || 'the fractal or prism it was created in'}.`;
     },
 
     REFRESH_CHOICES: [[15, '15 minutes'], [60, 'hour'], [360, '6 hours'], [1440, 'day'], [10080, 'week']],
@@ -407,6 +412,7 @@ const Dictionaries = {
     showDetailView() {
         const d = this.currentDictionary;
         if (!d) return;
+        const ed = !!d.editable;
 
         document.getElementById('dictListing').style.display = 'none';
         const detail = document.getElementById('dictDetailView');
@@ -417,29 +423,30 @@ const Dictionaries = {
 <div class="dict-detail-header">
     <div class="dict-detail-header-left">
         <div class="dict-editable-block">
-            <div id="dictDetailName" class="dict-editable-title" contenteditable="true" spellcheck="false"></div>
-            <div id="dictDetailDesc" class="dict-editable-desc" contenteditable="true" spellcheck="false" data-placeholder="Add description..."></div>
+            <div id="dictDetailName" class="dict-editable-title" contenteditable="${ed}" spellcheck="false"></div>
+            <div id="dictDetailDesc" class="dict-editable-desc" contenteditable="${ed}" spellcheck="false" data-placeholder="${ed ? 'Add description...' : ''}"></div>
         </div>
     </div>
     <div class="dict-detail-header-right">
-        ${d.source
+        ${!ed ? '' : d.source
             ? '<button id="dictSyncBtn" class="btn-secondary" title="Fetch the source now">Refresh now</button>'
             : `<button id="dictImportBtn" class="btn-secondary">Import CSV</button>${this.isAdmin() ? '<button id="dictSourceAttachBtn" class="btn-secondary" title="Replace the rows with a file fetched from a URL, kept up to date">Fetch from URL</button>' : ''}`}
         <button id="dictExportBtn" class="btn-secondary">Export CSV</button>
-        ${d.source ? '' : '<button id="dictReloadBtn" class="btn-secondary" title="Reload ClickHouse dictionary">Reload</button>'}
-        <button id="dictDeleteBtn" class="btn-secondary" style="color:var(--error);">Delete</button>
+        ${ed && !d.source ? '<button id="dictReloadBtn" class="btn-secondary" title="Reload ClickHouse dictionary">Reload</button>' : ''}
+        ${ed ? '<button id="dictDeleteBtn" class="btn-secondary" style="color:var(--error);">Delete</button>' : ''}
     </div>
 </div>
 
 <div class="dict-meta-bar">
     <span class="dict-meta-pill" id="dictMetaRows"></span>
-    <label class="dict-meta-global"><input type="checkbox" id="dictGlobalToggle"${d.is_global ? ' checked' : ''}> Global</label>
+    <label class="dict-meta-global"><input type="checkbox" id="dictGlobalToggle"${d.is_global ? ' checked' : ''}${ed ? '' : ' disabled'}> Global</label>
     ${this.kindOf(d) === 'value'
-        ? `<label class="dict-meta-global" title="Lookups match the key whatever its casing"><input type="checkbox" id="dictCaseToggle"${d.case_insensitive_keys ? ' checked' : ''}> Ignore case</label>`
+        ? `<label class="dict-meta-global" title="Lookups match the key whatever its casing"><input type="checkbox" id="dictCaseToggle"${d.case_insensitive_keys ? ' checked' : ''}${ed ? '' : ' disabled'}> Ignore case</label>`
         : `<span class="dict-meta-pill" title="${this.esc(this.KINDS[this.kindOf(d)].hint)}">${this.esc(this.KINDS[this.kindOf(d)].label)}</span>`}
     <span class="dict-meta-syntax" id="dictMetaSyntax"></span>
 </div>
-${this.kindNote(d) ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNote(d))}</p>` : ''}
+${ed ? '' : `<p class="form-hint dict-readonly-note" id="dictReadOnlyNote">${this.esc(this.editElsewhere(d))}</p>`}
+${this.kindNote(d) && ed ? `<p class="form-hint dict-kind-note">${this.esc(this.kindNote(d))}</p>` : ''}
 ${d.source ? `<div class="dict-source-bar">${this.sourceBarHTML(d)}</div>` : ''}
 
 <div id="dictSourcePanel" class="dict-import-panel" style="display:none;">
@@ -591,7 +598,7 @@ ${d.source ? `<div class="dict-source-bar">${this.sourceBarHTML(d)}</div>` : ''}
         const cols = dict.columns || [];
         // A list filled from a URL is replaced on every refresh, so hand edits
         // are not offered. Promoting a column to a lookup key still is.
-        const readOnly = !!dict.source;
+        const readOnly = !!dict.source || !dict.editable;
 
         if (readOnly && cols.length === 0) {
             wrap.innerHTML = '<table class="dict-table dict-sheet"><tbody><tr><td class="dict-empty-cell">No rows yet.</td></tr></tbody></table>';
@@ -632,9 +639,11 @@ ${d.source ? `<div class="dict-source-bar">${this.sourceBarHTML(d)}</div>` : ''}
             let inner = `<span class="dict-col-name">${this.esc(c.name)}</span>`;
             if (isPrimary) {
                 inner += `<span class="dict-key-badge dict-key-badge-hdr" title="${this.esc(keyBadge.title)}">${this.esc(keyBadge.label)}</span>`;
+            } else if (isSecondary && !dict.editable) {
+                inner += `<span class="dict-col-key-active-btn" title="A lookup key">key</span>`;
             } else if (isSecondary) {
                 inner += `<button class="dict-col-key-active-btn" data-col="${this.esc(c.name)}" title="Remove as lookup key">key</button>`;
-            } else {
+            } else if (dict.editable) {
                 inner += `<button class="dict-col-key-btn" data-col="${this.esc(c.name)}" title="${this.esc(this.secondaryKeyHint(dict))}">key</button>`;
             }
             if (!isPrimary && !readOnly) {
@@ -1101,7 +1110,7 @@ ${d.source ? `<div class="dict-source-bar">${this.sourceBarHTML(d)}</div>` : ''}
         let shown = src.url;
         try { const u = new URL(src.url); shown = u.host + u.pathname; } catch (_) { /* shown as stored */ }
         const ago = (t) => t ? `<span title="${this.esc(Utils.formatTimestamp(t))}">${this.esc(Utils.timeAgo(t))}</span>` : 'never';
-        const admin = this.isAdmin()
+        const admin = this.isAdmin() && d.editable
             ? '<button id="dictSourceEditBtn" class="dict-source-action">Edit source</button><button id="dictSourceDetachBtn" class="dict-source-action">Detach</button>'
             : '';
         let html = `<div class="dict-source-line">
