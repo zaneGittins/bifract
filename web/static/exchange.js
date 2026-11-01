@@ -416,7 +416,7 @@ const Exchange = {
     mainHtml(it) {
         const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
         const author = esc(it.author || 'Bifract');
-        const by = /^https?:\/\//i.test(it.homepage || '')
+        const by = Utils.isHttpUrl(it.homepage)
             ? `<a href="${attr(it.homepage)}" target="_blank" rel="noopener noreferrer">${author}</a>`
             : author;
         const links = (ids) => ids.map(id => this.find(id)).filter(Boolean)

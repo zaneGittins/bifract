@@ -76,6 +76,11 @@ const Utils = {
         };
     },
 
+    // Only http(s) URLs may become links; javascript: and data: would run script.
+    isHttpUrl(url) {
+        return /^https?:\/\//i.test(url || '');
+    },
+
     // Escape HTML to prevent XSS
     escapeHtml(text) {
         if (text === null || text === undefined) return '';

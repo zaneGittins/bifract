@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"bifract/pkg/attack"
+	"bifract/pkg/egress"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/parser"
 	"bifract/pkg/sigma"
@@ -462,6 +463,9 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 	if err := validateMaxEventLag(c.MaxEventLagSeconds); err != nil {
 		return nil, err
 	}
+	if err := validateReferences(c.References); err != nil {
+		return nil, err
+	}
 
 	parsed, err := parser.ParseQuery(c.QueryString)
 	if err != nil {
@@ -493,6 +497,27 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 		}
 	}
 	return parsed, nil
+}
+
+// validateReferences refuses any reference the UI could not safely link, such as javascript: URLs.
+func validateReferences(refs []string) error {
+	for i, ref := range refs {
+		if err := egress.ValidateURL(ref); err != nil {
+			return fmt.Errorf("%w: reference %d: %v", ErrInvalidAlert, i+1, err)
+		}
+	}
+	return nil
+}
+
+// httpReferences keeps only the references validateReferences accepts.
+func httpReferences(refs []string) []string {
+	out := []string{}
+	for _, ref := range refs {
+		if egress.ValidateURL(ref) == nil {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 // CreateAlert creates a new alert scoped to either a fractal or a prism (pass one, leave other empty).
@@ -2162,6 +2187,7 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 	if err := validateSeverity(string(severity)); err != nil {
 		return nil, err
 	}
+	references = httpReferences(references)
 
 	parsedQuery, err := parser.ParseQuery(queryString)
 	if err != nil {
@@ -2239,6 +2265,7 @@ func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, descriptio
 	if err := validateSeverity(string(severity)); err != nil {
 		return err
 	}
+	references = httpReferences(references)
 
 	if (fractalID == "") == (prismID == "") {
 		return fmt.Errorf("exactly one of fractal_id or prism_id must be set")

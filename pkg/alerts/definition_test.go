@@ -45,6 +45,11 @@ func TestValidateDefinition(t *testing.T) {
 		{"scheduled without window", RevisionContent{AlertType: "scheduled", QueryString: `a=1`, ScheduleCron: strPtr("@hourly")}, "query_window_seconds", true},
 		{"scheduled with a bad cron", RevisionContent{AlertType: "scheduled", QueryString: `a=1`, ScheduleCron: strPtr("every tuesday"), QueryWindowSeconds: intPtr(60)}, "invalid cron expression", true},
 		{"scheduled rejects seconds-field cron", RevisionContent{AlertType: "scheduled", QueryString: `a=1`, ScheduleCron: strPtr("0 */5 * * * *"), QueryWindowSeconds: intPtr(60)}, "invalid cron expression", true},
+
+		{"http references", RevisionContent{QueryString: `a=1`, References: []string{"https://attack.mitre.org/techniques/T1059/", "http://example.com"}}, "", false},
+		{"javascript reference", RevisionContent{QueryString: `a=1`, References: []string{"https://ok.example", "javascript:alert(1)"}}, "reference 2", true},
+		{"data reference", RevisionContent{QueryString: `a=1`, References: []string{"data:text/html,x"}}, "only http and https", true},
+		{"schemeless reference", RevisionContent{QueryString: `a=1`, References: []string{"example.com/rule"}}, "only http and https", true},
 	}
 
 	for _, tc := range cases {
@@ -379,5 +384,18 @@ func TestUpdateLinkedAlertRefusesAnUnparseableQuery(t *testing.T) {
 	err := (&Manager{}).UpdateLinkedAlert(context.Background(), "a1", models.LinkedAlertSpec{QueryString: "a=("})
 	if err == nil || !strings.Contains(err.Error(), "generated query is invalid") {
 		t.Errorf("got %v", err)
+	}
+}
+
+// Feed rules come from repos we do not control, so a bad reference is dropped
+// rather than refusing an otherwise good rule.
+func TestHTTPReferencesDropsUnsafeSchemes(t *testing.T) {
+	got := httpReferences([]string{"https://a.example/x", "javascript:alert(1)", " JavaScript:alert(1)", "vbscript:x", "http://b.example", "notaurl"})
+	want := []string{"https://a.example/x", "http://b.example"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("httpReferences = %q, want %q", got, want)
+	}
+	if got := httpReferences(nil); got == nil || len(got) != 0 {
+		t.Fatalf("httpReferences(nil) = %#v, want an empty slice", got)
 	}
 }

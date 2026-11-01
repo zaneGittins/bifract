@@ -164,7 +164,9 @@ const AlertDetail = {
                 <div class="alert-detail-block">
                     <span class="alert-detail-label">References</span>
                     <ul class="alert-references">
-                        ${alert.references.map(ref => `<li><a href="${Utils.escapeHtml(ref)}" target="_blank" rel="noopener noreferrer" class="alert-reference-link">${Utils.escapeHtml(ref)}</a></li>`).join('')}
+                        ${alert.references.map(ref => `<li>${Utils.isHttpUrl(ref)
+                            ? `<a href="${Utils.escapeHtml(ref)}" target="_blank" rel="noopener noreferrer" class="alert-reference-link">${Utils.escapeHtml(ref)}</a>`
+                            : Utils.escapeHtml(ref)}</li>`).join('')}
                     </ul>
                 </div>
             ` : ''}
