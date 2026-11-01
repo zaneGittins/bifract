@@ -51,7 +51,7 @@ data:
         }
       }
 
-      @ingest_main path /api/v1/ingest* /_bulk /v1/logs
+      @ingest_main path /api/v1/ingest* /_bulk /v1/logs /services/collector*
       @sse path */events */stream
 
       route {
@@ -104,8 +104,8 @@ data:
         max_size 200MiB
       }
 {{.IPBlockIngest}}
-      @ingest path /api/v1/ingest* /_bulk /v1/logs
-      @not_ingest not path /api/v1/ingest* /_bulk /v1/logs
+      @ingest path /api/v1/ingest* /_bulk /v1/logs /services/collector*
+      @not_ingest not path /api/v1/ingest* /_bulk /v1/logs /services/collector*
 
       route {
 {{- if .IPBlockIngest}}

@@ -106,6 +106,7 @@ nav:
     - Sending Logs: ingestion/overview.md
     - CLI Tool: ingestion/cli-tool.md
     - CEF with Vector: ingestion/vector-cef.md
+    - Splunk HEC: ingestion/splunk-hec.md
     - Tuning: ingestion/tuning.md
   - BQL (Bifract Query Language):
     - Basics & Filtering: bql/basics.md

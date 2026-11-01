@@ -1,12 +1,10 @@
 package ingest
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,39 +106,14 @@ func (h *OTLPHandler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assign fractal from token
-	for i := range logs {
-		logs[i].FractalID = tokenData.FractalID
-	}
-
-	// Per-fractal disk quota check
-	if h.handler.quotaManager != nil {
-		var batchBytes int64
-		for i := range logs {
-			batchBytes += int64(len(logs[i].RawLog))
-		}
-		if !h.handler.quotaManager.CheckQuota(tokenData.FractalID, batchBytes) {
-			w.Header().Set("Retry-After", "30")
-			h.respondError(w, r, http.StatusTooManyRequests, "Fractal disk quota exceeded")
-			return
-		}
-	}
-
-	// Push onto the shared ingestion queue
-	if !h.handler.queue.Enqueue(logs) {
-		w.Header().Set("Retry-After", "2")
+	switch err := h.handler.submit(w, tokenData, logs); {
+	case errors.Is(err, errQuotaExceeded):
+		h.respondError(w, r, http.StatusTooManyRequests, "Fractal disk quota exceeded")
+		return
+	case err != nil:
 		h.respondError(w, r, http.StatusTooManyRequests, "Ingestion queue full")
 		return
 	}
-
-	// Update token usage stats asynchronously
-	go func(tokenID string, count int) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := h.handler.tokenStorage.UpdateUsageStats(ctx, tokenID, count); err != nil {
-			log.Printf("[Ingest] failed to update token usage: %v", err)
-		}
-	}(tokenData.TokenID, len(logs))
 
 	h.respondSuccess(w, r, len(logs))
 }

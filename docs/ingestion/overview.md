@@ -42,8 +42,9 @@ Each row has a switch to disable the token, plus **Edit token** and **Delete tok
 | `POST /api/v1/ingest` | JSON array, single JSON object, or NDJSON |
 | `POST` or `PUT /_bulk` | Elasticsearch bulk clients (Velociraptor and similar) |
 | `POST /v1/logs` | OpenTelemetry OTLP/HTTP, protobuf or JSON |
+| `POST /services/collector/event`, `/raw` | Splunk HEC senders. See [Splunk HEC](splunk-hec.md) |
 
-All three take `Authorization: Bearer <token>` (`ApiKey <token>` also works) and accept `Content-Encoding: gzip`.
+All take `Authorization: Bearer <token>` (`ApiKey <token>` and `Splunk <token>` also work) and accept `Content-Encoding: gzip`.
 
 ### NDJSON example
 

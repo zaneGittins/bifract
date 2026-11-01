@@ -30,6 +30,7 @@ Mint a key under **Settings > API Keys > New key**, with **Tenant admin** ticked
 | Test | Covers |
 |------|--------|
 | `TestIngestAndQuery` | Create a fractal, mint an ingest token, send logs, read them back |
+| `TestSplunkHEC` | Splunk HEC health, events, raw lines and the bare path with Basic auth, queried back by host and sourcetype |
 | `TestDetectionLifecycle` | Validate a query, create a rule disabled, enable it, read its executions |
 | `TestNotebookPortability` | Build a notebook, export it as YAML, import it back |
 | `TestInvestigation` | Record a finding against a log, tag it into a case, find it again |

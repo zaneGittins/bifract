@@ -248,6 +248,7 @@ func TestValidateIngestToken(t *testing.T) {
 		"BEARER " + goodToken,
 		"ApiKey " + goodToken, // go-elasticsearch (Velociraptor) sends this
 		"APIKey " + goodToken,
+		"Splunk " + goodToken, // Splunk HEC clients
 	} {
 		r := httptest.NewRequest(http.MethodPost, "/", nil)
 		r.Header.Set("Authorization", header)

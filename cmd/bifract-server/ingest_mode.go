@@ -254,6 +254,7 @@ func runIngestServer() {
 	ingestHandler.SetQuotaManager(quotaManager)
 	elasticHandler := ingest.NewElasticBulkHandler(ingestHandler)
 	otlpHandler := ingest.NewOTLPHandler(ingestHandler)
+	hecHandler := ingest.NewHECHandler(ingestHandler)
 	internalIngestHandler := ingest.NewInternalIngestHandler(ingestQueue, config.MaxBodySize, fractalManager, normalizerManager)
 
 	// The distribution-queue and DDL-queue monitors are NOT run here. They observe
@@ -273,6 +274,7 @@ func runIngestServer() {
 		internalIngestHandler: internalIngestHandler,
 		elasticHandler:        elasticHandler,
 		otlpHandler:           otlpHandler,
+		hecHandler:            hecHandler,
 	})
 
 	// Prometheus metrics (own surface; no alert engine to attach).
@@ -324,6 +326,7 @@ type ingestRouterDeps struct {
 	internalIngestHandler *ingest.InternalIngestHandler
 	elasticHandler        *ingest.ElasticBulkHandler
 	otlpHandler           *ingest.OTLPHandler
+	hecHandler            *ingest.HECHandler
 }
 
 // buildIngestRouter mounts the ingest data plane and the health probe. No
@@ -393,6 +396,7 @@ func buildIngestRouter(d ingestRouterDeps) (*chi.Mux, *api.Registry) {
 			Handler: d.otlpHandler.HandleLogs,
 		})
 	})
+	registerHECRoutes(r, d.hecHandler, d.rateLimiter)
 
 	return mux, reg
 }
