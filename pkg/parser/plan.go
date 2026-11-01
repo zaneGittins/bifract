@@ -230,6 +230,7 @@ type QueryPlan struct {
 	JoinInclude []string // fields to include from subquery (empty = all)
 	JoinOutputs []string // subquery output columns, surfaced as _join_<col>
 	JoinMaxRows int      // max rows for subquery safety limit
+	JoinCmd     int      // index of the join command
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
 	ModelLookupFields   []string // output field names added to outer SELECT
@@ -513,6 +514,16 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 			return "", fmt.Errorf("join() is applied to the aggregated rows, so the aggregation must keep the key %[1]s: group by it, or to count or aggregate only the rows the subquery matches, filter first with let &keys := <subquery>; ... | in(%[1]s, &keys)", p.JoinKey)
 		}
 		selectClause += fmt.Sprintf(", %s AS %s", p.JoinKeyExpr, joinHiddenKeyCol)
+	}
+	// An inner join keeps only rows whose key the subquery returns, so filter the
+	// scan by those keys at the join's position: a row cap after it then counts
+	// only rows the join keeps, rather than the newest rows of any key.
+	if pf := p.joinPrefilter(source, opts); pf != "" {
+		if after := source.Layer.capAfter(p.JoinCmd); after != nil {
+			*after = append(*after, pf)
+		} else {
+			source.Layer.Where = append(source.Layer.Where, pf)
+		}
 	}
 
 	// The row source this SELECT reads, plus any wrapper that must collapse rows
@@ -963,6 +974,56 @@ func (p *QueryPlan) wrapWithJoin(outerSQL string) string {
 	return sql.String()
 }
 
+// innerJoinWrap reports whether a join() INNER JOINs the outer rows.
+func (p *QueryPlan) innerJoinWrap() bool {
+	return p.IsJoin && p.JoinSubSQL != "" && p.JoinType != "left"
+}
+
+// joinPrefilter is the scan predicate that keeps only rows whose join key the
+// subquery returns, or "" when the key has no scan-level expression. GLOBAL so a
+// cluster scan of logs_distributed reads the subquery once rather than per shard.
+func (p *QueryPlan) joinPrefilter(source *QueryStage, opts QueryOptions) string {
+	if !p.innerJoinWrap() || len(p.Stages) != 1 || opts.SourceSubquery != "" || p.IsChain {
+		return ""
+	}
+	// Same resolution as renderStandard's hidden _join_k projection.
+	keyExpr := groupableCast(jsonFieldRef(p.JoinKey))
+	if p.outerHasColumn(p.JoinKey) {
+		keyExpr = p.outerKeyScanExpr(source)
+	}
+	if keyExpr == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s GLOBAL IN (SELECT %s FROM (%s))", keyExpr, p.JoinKey, p.JoinSubSQL)
+}
+
+// outerKeyScanExpr returns the per-row expression the outer SELECT names the join
+// key after. An aggregating scan qualifies only when it groups by the key, so
+// every row of a group shares it and the group is kept or dropped whole.
+func (p *QueryPlan) outerKeyScanExpr(source *QueryStage) string {
+	for _, sel := range source.Layer.Selects {
+		s := sel.String()
+		idx := strings.LastIndex(s, " AS ")
+		if idx < 0 || strings.Trim(extractFieldAlias(s), "`") != p.JoinKey {
+			continue
+		}
+		expr := strings.TrimSpace(s[:idx])
+		if strings.Contains(strings.ToUpper(expr), " OVER ") {
+			return ""
+		}
+		if len(source.Layer.GroupBy) > 0 || p.IsAggregated {
+			if !slices.ContainsFunc(source.Layer.GroupBy, func(g string) bool {
+				g = strings.Trim(strings.TrimSpace(g), "`")
+				return g == p.JoinKey || g == expr
+			}) {
+				return ""
+			}
+		}
+		return expr
+	}
+	return ""
+}
+
 // validateJoinKeysSurviveAggregation rejects a join whose keys cannot be projected
 // from an aggregating source scan. The join runs outside that scan, so each key must
 // survive the aggregation as a group expression (or an alias of one); a key that does
@@ -1093,6 +1154,9 @@ func (p *QueryPlan) modelPrefilter() string {
 // limit select if they are applied in the same SELECT: a strict join drops rows,
 // and a post-join filter is written after it.
 func (p *QueryPlan) readsThroughCap(c RowCap) bool {
+	if p.innerJoinWrap() && c.At < p.JoinCmd {
+		return true
+	}
 	if !p.hasModelLookup() || !p.ModelLookupAtScan {
 		return false
 	}

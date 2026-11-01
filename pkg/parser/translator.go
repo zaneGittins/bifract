@@ -1566,6 +1566,8 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	}
 
 	liftLimit := len(deferredOrder) > 0 || (hasJoinWrap && len(plan.DeferredWhere) > 0)
+	// Without a key prefilter the scan would cap rows the inner join then drops.
+	liftLimit = liftLimit || (plan.innerJoinWrap() && plan.joinPrefilter(source, ctx.Opts) == "")
 	if liftLimit && hasJoinWrap {
 		// The ordering must follow the filter, so it moves out with the LIMIT.
 		deferredOrder = append(deferredOrder, innerOrder...)
@@ -1573,6 +1575,17 @@ func deferOutOfScopeOrderBy(ctx *CommandContext, plan *QueryPlan, source *QueryS
 	}
 
 	source.Layer.OrderBy = innerOrder
+	if hasJoinWrap && !liftLimit {
+		// The scan already selects the rows the join keeps (see joinPrefilter), so
+		// its cap stays where the scan can stop early. A join's output order is
+		// unspecified and a key the subquery repeats multiplies rows, so the joined
+		// rows are ordered and capped again.
+		for _, ob := range innerOrder {
+			plan.DeferredOrder = append(plan.DeferredOrder, scopeOrderByExpr(ob, plan.deferredScope()))
+		}
+		plan.DeferredLimit = source.Layer.Limit
+		return
+	}
 	if liftLimit {
 		// Relocated ORDER BY expressions face the same scope limit as relocated
 		// filters: a `sort(image)` carried past the join must read the exported

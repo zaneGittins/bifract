@@ -113,6 +113,7 @@ func (h *joinHandler) Execute(cmd CommandNode, ctx *CommandContext) error {
 	ctx.Plan.JoinInclude = includeFields
 	ctx.Plan.JoinOutputs = subResult.FieldOrder
 	ctx.Plan.JoinMaxRows = maxRows
+	ctx.Plan.JoinCmd = ctx.CmdIndex
 
 	// Register the joined-in columns so a filter or sort on one is deferred to a
 	// post-join layer instead of the source scan, where it does not exist yet.
