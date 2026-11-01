@@ -257,6 +257,7 @@
 
 .exchange-facts dd {
     margin: 0;
+    overflow-wrap: anywhere;
 }
 
 .exchange-section {

@@ -415,13 +415,14 @@ const Exchange = {
 
     mainHtml(it) {
         const esc = Utils.escapeHtml, attr = Utils.escapeAttr;
-        const author = esc(it.author || 'Bifract');
-        const by = Utils.isHttpUrl(it.homepage)
-            ? `<a href="${attr(it.homepage)}" target="_blank" rel="noopener noreferrer">${author}</a>`
-            : author;
+        const by = esc(it.author || 'Bifract');
         const links = (ids) => ids.map(id => this.find(id)).filter(Boolean)
             .map(r => `<button type="button" class="exchange-link" data-action="select" data-id="${attr(r.id)}">${esc(r.name)}</button>`).join(', ');
         const facts = [];
+        if (Utils.isHttpUrl(it.homepage)) {
+            const site = it.homepage.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '');
+            facts.push(`<dt>Website</dt><dd><a href="${attr(it.homepage)}" target="_blank" rel="noopener noreferrer">${esc(site)}</a></dd>`);
+        }
         const bundles = this.bundlesOf(it).map(b => b.id);
         if (bundles.length) facts.push(`<dt>Part of</dt><dd>${links(bundles)}</dd>`);
         if (it.requires?.length) facts.push(`<dt>Requires</dt><dd>${links(it.requires)}</dd>`);
