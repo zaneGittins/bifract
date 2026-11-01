@@ -1408,7 +1408,27 @@ const (
 	LockRepartition int64 = 0x6269667261637406
 	// LockFieldPathReconcile elects the replica that repairs the field path rollup.
 	LockFieldPathReconcile int64 = 0x6269667261637407
+	// LockEndpointAnalysis serializes endpoint-analysis toggles across replicas.
+	LockEndpointAnalysis int64 = 0x6269667261637408
 )
+
+// WithAdvisoryLock runs fn holding lockID, first waiting for any other holder.
+func (c *PostgresClient) WithAdvisoryLock(ctx context.Context, lockID int64, fn func() error) error {
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, lockID); err != nil {
+		return fmt.Errorf("advisory lock %d: %w", lockID, err)
+	}
+	defer func() {
+		if err := UnlockAdvisory(conn, lockID); err != nil {
+			log.Printf("Warning: failed to release advisory lock %d: %v", lockID, err)
+		}
+	}()
+	return fn()
+}
 
 func (c *PostgresClient) TryAdvisoryLock(ctx context.Context, lockID int64) (unlock func(), acquired bool) {
 	conn, err := c.db.Conn(ctx)

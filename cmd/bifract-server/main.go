@@ -290,17 +290,13 @@ func main() {
 	// persisted toggle before ingest starts, so the heavy per-insert triggers only fire
 	// when the operator has opted in. Off by default; runs on every startup (idempotent).
 	{
-		eaEnabled := false
-		if v, _ := pg.GetSetting(context.Background(), storage.AdvancedEndpointAnalysisSetting); v == "true" {
-			eaEnabled = true
-		}
 		// Wait for schema work to finish first: in cluster mode migrations run in a
 		// background goroutine, so reconciling too early could miss (and then race with)
 		// an MV the migration is about to create attached.
 		waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		db.WaitForSchemaReady(waitCtx)
 		waitCancel()
-		if err := db.ReconcileEndpointAnalysisMVs(context.Background(), eaEnabled); err != nil {
+		if err := storage.SyncEndpointAnalysis(context.Background(), pg, db); err != nil {
 			log.Printf("Warning: failed to reconcile advanced endpoint analysis MVs: %v", err)
 		}
 	}

@@ -6,13 +6,15 @@ import "testing"
 // loses returns without doing its work and without logging. Three of them did.
 func TestAdvisoryLockIDsAreDistinct(t *testing.T) {
 	ids := map[string]int64{
-		"LockSchemaProvision":  LockSchemaProvision,
-		"LockAlertEngine":      LockAlertEngine,
-		"LockModelScorer":      LockModelScorer,
-		"LockSchemaFieldSweep": LockSchemaFieldSweep,
-		"LockQuotaRollover":    LockQuotaRollover,
-		"LockModelState":       LockModelState,
-		"LockRepartition":      LockRepartition,
+		"LockSchemaProvision":    LockSchemaProvision,
+		"LockAlertEngine":        LockAlertEngine,
+		"LockModelScorer":        LockModelScorer,
+		"LockSchemaFieldSweep":   LockSchemaFieldSweep,
+		"LockQuotaRollover":      LockQuotaRollover,
+		"LockModelState":         LockModelState,
+		"LockRepartition":        LockRepartition,
+		"LockFieldPathReconcile": LockFieldPathReconcile,
+		"LockEndpointAnalysis":   LockEndpointAnalysis,
 	}
 	seen := map[int64]string{}
 	for name, id := range ids {
