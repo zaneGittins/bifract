@@ -1,6 +1,6 @@
 # Try Bifract in Codespaces
 
-A GitHub Codespace runs Bifract in a cloud machine you reach from your browser, with [Lab 001](https://github.com/zaneGittins/bifract-labs/tree/main/labs/001), a recorded intrusion, already loaded. Nothing is installed on your computer.
+A GitHub Codespace runs Bifract in a cloud machine you reach from your browser, with [Lab 001](https://labs.bifract.io/001/), a recorded intrusion, already loaded. Nothing is installed on your computer.
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/zaneGittins/bifract?quickstart=1)
 

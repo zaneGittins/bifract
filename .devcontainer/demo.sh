@@ -12,7 +12,7 @@ BASE=https://localhost
 NOTICE=/usr/local/etc/vscode-dev-containers/first-run-notice.txt
 # Opened when the codespace opens; rewritten as the lab loads.
 WELCOME=$PWD/WELCOME.md
-LAB_STORY=https://github.com/zaneGittins/bifract-labs/tree/main/labs/001
+LAB_GUIDE=https://labs.bifract.io/001/
 DOCS=https://docs.bifract.io/getting-started/codespaces/
 # The welcome page's searches, which warm also runs.
 LABELS=("Every process launch" "Process launches per host" "Kinds of events" "Rarest programs" "Rarest DNS lookups")
@@ -114,7 +114,7 @@ $lab
 $try
 ---
 
-[The lab's story]($LAB_STORY) · [Codespaces guide]($DOCS) · [Delete this codespace](https://github.com/codespaces) when you are done
+[Lab guide]($LAB_GUIDE) · [Codespaces guide]($DOCS) · [Delete this codespace](https://github.com/codespaces) when you are done
 EOF
 }
 
