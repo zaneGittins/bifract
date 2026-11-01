@@ -187,8 +187,8 @@ type QueryPlan struct {
 	AnalyzeFieldsList      []string
 	AnalyzeFieldsScanLimit int
 
-	// rowLimitByCommand records that a command (head, limit, a viz command's
-	// limit=) bounded the row set, rather than the caller's MaxRows.
+	// rowLimitByCommand records that a command (head, limit, dedup, a
+	// limit= option) bounded the row set, rather than the caller's MaxRows.
 	rowLimitByCommand bool
 
 	// usesBindingSet records that a result-set binding was rendered. Like join(),

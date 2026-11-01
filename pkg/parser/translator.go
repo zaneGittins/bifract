@@ -180,6 +180,11 @@ type TranslationResult struct {
 	// rows whose join partner sits outside the window, so the caller must not
 	// slice the range.
 	TimeScopedSubquery bool
+	// RangeDependentRows is true when a row's presence or values depend on the
+	// other rows in range (a command's row cap or dedup, a window score such as
+	// madoutlier), so reading the range in time slices or sliding windows would
+	// compute them over each slice instead of the whole range.
+	RangeDependentRows bool
 	// RowCapped is true when an embedded subquery (join, result-set binding) is
 	// truncated at a row cap, so the rows the query selects may be incomplete.
 	RowCapped bool
@@ -878,6 +883,9 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		readThrough = readThrough || plan.readsThroughCap(source.Layer.Caps[n-1])
 	}
 	source.Layer.foldLastCap(readThrough)
+	if source.Layer.LimitBy != "" || source.Layer.ScanLimitBy != "" {
+		plan.rowLimitByCommand = true
+	}
 	if len(source.Layer.Caps) > 0 {
 		if plan.IsProcessTree || plan.IsAnalyze {
 			return nil, fmt.Errorf("head(), tail(), limit() and dedup() can only be followed by a transform here; move the filter before them")
@@ -1098,6 +1106,7 @@ func finalizePlan(ctx *CommandContext, assignmentFields []string, deferredAssign
 		DefaultTimeOrder:    defaultTimeOrder,
 		TimeScopedSubquery:  plan.IsJoin || plan.hasModelLookup() || plan.usesBindingSet,
 		RowCapped:           plan.IsJoin || plan.usesBindingSet,
+		RangeDependentRows:  plan.rowLimitByCommand || len(plan.WindowLayers) > 0,
 		Chain:               plan.Chain,
 	}, nil
 }

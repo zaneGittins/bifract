@@ -5501,6 +5501,50 @@ func TestSourceWhereComplete(t *testing.T) {
 	}
 }
 
+// RangeDependentRows tells a caller that slices the range (stream chunks, live
+// polls) that a row's presence or values depend on the other rows in range, so
+// each slice would compute them over different rows. The caller's MaxRows does
+// not count.
+func TestRangeDependentRows(t *testing.T) {
+	cases := map[string]bool{
+		`event_id="1"`:                         false,
+		`* | sort(user)`:                       false,
+		`risk := 1 | risk > 0`:                 false,
+		`* | dedup(user)`:                      true,
+		`* | dedup(user, host)`:                true,
+		`event_id="1" | dedup(user)`:           true,
+		`* | dedup(user) | event_id="1"`:       true,
+		`risk := 1 | dedup(risk)`:              true,
+		`* | dedup(user) | groupby(host)`:      true,
+		`* | limit(10)`:                        true,
+		`* | limit(10) | event_id="1"`:         true,
+		`* | head(5)`:                          true,
+		`* | table(user, limit=5)`:             true,
+		`* | modifiedzscore(bytes)`:            true,
+		`* | madoutlier(bytes)`:                true,
+		`* | outlier(bytes) | _is_outlier="1"`: true,
+	}
+	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for query, want := range cases {
+		pipeline, err := ParseQuery(query)
+		if err != nil {
+			t.Errorf("%s: parse: %v", query, err)
+			continue
+		}
+		res, err := TranslateToSQLWithOrder(pipeline, QueryOptions{
+			StartTime: start, EndTime: end, FractalID: "f1", MaxRows: 100,
+		})
+		if err != nil {
+			t.Errorf("%s: translate: %v", query, err)
+			continue
+		}
+		if res.RangeDependentRows != want {
+			t.Errorf("%s: RangeDependentRows = %v, want %v", query, res.RangeDependentRows, want)
+		}
+	}
+}
+
 // A command may write its alias into the expression rather than the Alias field,
 // so the projection list has to read both spellings and must not mangle an
 // expression that contains the separator itself.
