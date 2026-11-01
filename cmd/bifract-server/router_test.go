@@ -204,6 +204,13 @@ var ingestRouteTable = []string{
 	"GET /api/v1/health 2 public public",
 	"POST /api/v1/ingest 3 public ingest_token",
 	"POST /api/v1/internal/ingest/{fractal} 4 public internal",
+	"POST /services/collector 3 public body resp ingest_token",
+	"POST /services/collector/event 3 public body resp ingest_token",
+	"POST /services/collector/event/1.0 3 public body resp ingest_token",
+	"GET /services/collector/health 2 public resp public",
+	"GET /services/collector/health/1.0 2 public resp public",
+	"POST /services/collector/raw 3 public body resp ingest_token",
+	"POST /services/collector/raw/1.0 3 public body resp ingest_token",
 	"POST /v1/logs 3 public ingest_token",
 }
 

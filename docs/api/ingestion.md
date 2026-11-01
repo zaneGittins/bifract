@@ -1,8 +1,8 @@
 # Log Ingestion
 
-The request and response contract for the three ingestion endpoints. For getting a token and shipper setup, see [Sending Logs](../ingestion/overview.md); the endpoints also appear in [All Operations](reference.md).
+The request and response contract for the ingestion endpoints. For getting a token and shipper setup, see [Sending Logs](../ingestion/overview.md); the endpoints also appear in [All Operations](reference.md).
 
-All three authenticate with an ingest token (`Authorization: Bearer bifract_ingest_...`, or `ApiKey bifract_ingest_...` for Elasticsearch clients), are rate-limited per client IP, and accept `Content-Encoding: gzip`. Logs land in the fractal the token belongs to. Accepted logs are queued and written to ClickHouse asynchronously.
+All authenticate with an ingest token (`Authorization: Bearer bifract_ingest_...`, or `ApiKey` for Elasticsearch clients and `Splunk` for HEC clients), are rate-limited per client IP, and accept `Content-Encoding: gzip`. Logs land in the fractal the token belongs to. Accepted logs are queued and written to ClickHouse asynchronously.
 
 ## Native: `POST /api/v1/ingest`
 
@@ -38,6 +38,10 @@ Standard bulk NDJSON, compatible with Velociraptor and other Elasticsearch clien
 ## OpenTelemetry: `POST /v1/logs`
 
 An OTLP/HTTP `ExportLogsServiceRequest`, as `application/x-protobuf` or `application/json`. The reply is an `ExportLogsServiceResponse` in the request's content type, empty on full success. Field mapping is in [Sending Logs](../ingestion/overview.md#opentelemetry-collector).
+
+## Splunk HEC: `POST /services/collector/event` and `/raw`
+
+Splunk HTTP Event Collector envelopes, or raw lines. Responses are HEC shaped (`{"text":"Success","code":0}`). Statuses follow Splunk rather than the table below: an unknown token is `403`, and backpressure is `503`. Mapping and HEC codes are in [Splunk HEC](../ingestion/splunk-hec.md).
 
 ## Status codes
 

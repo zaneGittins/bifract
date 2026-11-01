@@ -129,7 +129,7 @@ func TestStringifyValueJSONNumberMatchesFloatForm(t *testing.T) {
 	}
 }
 
-// plainNumber never changes a number's value and never emits an exponent.
+// PlainNumber never changes a number's value and never emits an exponent.
 func FuzzPlainNumber(f *testing.F) {
 	for _, s := range []string{"0", "-0.0", "9007199254740993", "2.50", "1.5e3", "1E-7", "-2.5E-3", "1e400", "120e-1"} {
 		f.Add(s)
@@ -137,19 +137,19 @@ func FuzzPlainNumber(f *testing.F) {
 	f.Fuzz(func(t *testing.T, s string) {
 		var n json.Number
 		if json.Unmarshal([]byte(s), &n) != nil || n.String() != s {
-			return // only JSON number literals reach plainNumber
+			return // only JSON number literals reach PlainNumber
 		}
-		got := plainNumber(s)
+		got := PlainNumber(s)
 		if got == s {
 			return
 		}
 		if strings.ContainsAny(got, "eE") {
-			t.Fatalf("plainNumber(%q) = %q has an exponent", s, got)
+			t.Fatalf("PlainNumber(%q) = %q has an exponent", s, got)
 		}
 		want, ok1 := new(big.Rat).SetString(s)
 		have, ok2 := new(big.Rat).SetString(got)
 		if !ok1 || !ok2 || want.Cmp(have) != 0 {
-			t.Fatalf("plainNumber(%q) = %q changes the value", s, got)
+			t.Fatalf("PlainNumber(%q) = %q changes the value", s, got)
 		}
 	})
 }

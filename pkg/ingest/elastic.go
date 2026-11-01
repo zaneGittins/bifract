@@ -1,11 +1,9 @@
 package ingest
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -141,39 +139,14 @@ func (h *ElasticBulkHandler) HandleBulk(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Assign fractal from token to all logs
-	for i := range logs {
-		logs[i].FractalID = tokenData.FractalID
-	}
-
-	// Per-fractal disk quota check, as on the other ingest endpoints.
-	if q := h.handler.quotaManager; q != nil {
-		var batchBytes int64
-		for i := range logs {
-			batchBytes += int64(len(logs[i].RawLog))
-		}
-		if !q.CheckQuota(tokenData.FractalID, batchBytes) {
-			w.Header().Set("Retry-After", "30")
-			respondBulkRejected(w, startTime, items, "Fractal disk quota exceeded")
-			return
-		}
-	}
-
-	// Push onto the shared ingestion queue
-	if !h.handler.queue.Enqueue(logs) {
-		w.Header().Set("Retry-After", "2")
+	switch err := h.handler.submit(w, tokenData, logs); {
+	case errors.Is(err, errQuotaExceeded):
+		respondBulkRejected(w, startTime, items, "Fractal disk quota exceeded")
+		return
+	case err != nil:
 		respondBulkRejected(w, startTime, items, "Ingestion queue full")
 		return
 	}
-
-	// Update token usage stats asynchronously (detached context so it survives handler return)
-	go func(tokenID string, count int) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := h.handler.tokenStorage.UpdateUsageStats(ctx, tokenID, count); err != nil {
-			log.Printf("[Ingest] failed to update token usage: %v", err)
-		}
-	}(tokenData.TokenID, len(logs))
 
 	respondJSON(w, http.StatusOK, ElasticBulkResponse{
 		Took:   int(time.Since(startTime).Milliseconds()),

@@ -271,7 +271,7 @@ func stringifyValue(v interface{}) string {
 		// Ingest decodes numbers as json.Number (DecodeJSON) so 64-bit IDs keep
 		// their digits. Rendered as an exact plain decimal, the same form as the
 		// float64 case below for every number a float64 holds exactly.
-		return plainNumber(string(val))
+		return PlainNumber(string(val))
 	case float64:
 		// Callers that decode with json.Unmarshal still hand over float64. Format
 		// without exponents ('f', -1) so whole/large numbers render as plain

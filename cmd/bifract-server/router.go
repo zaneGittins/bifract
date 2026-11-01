@@ -89,6 +89,7 @@ type routerDeps struct {
 	notificationHandler   *notifications.Handler
 	oidcHandler           *oidc.Handler
 	otlpHandler           *ingest.OTLPHandler
+	hecHandler            *ingest.HECHandler
 	performanceHandler    *query.PerformanceHandler
 	prismHandler          *prisms.Handler
 	queryHandler          *query.QueryHandler
@@ -4025,6 +4026,8 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 			Handler:  d.otlpHandler.HandleLogs,
 		})
 	})
+	registerHECRoutes(r, d.hecHandler, d.rateLimiter)
+
 	// Deep links: the documented, hand-constructible entry point external tools
 	// use to drop an analyst into a specific query. Session-authenticated and
 	// resolved server-side, then redirected into the SPA.
@@ -4045,4 +4048,54 @@ func buildRouter(d routerDeps) (*chi.Mux, *api.Registry) {
 	})
 
 	return mux, reg
+}
+
+// registerHECRoutes mounts the Splunk HTTP Event Collector paths, with the
+// versioned and bare aliases Splunk clients use. Shared by the app and ingest tiers.
+func registerHECRoutes(r api.Router, h *ingest.HECHandler, rl *ingest.RateLimiter) {
+	r.Register(api.Route{
+		Method:   http.MethodGet,
+		Path:     "/services/collector/health",
+		Access:   api.AccessPublic,
+		Response: ingest.HECResponse{},
+		Summary:  "Report Splunk HEC health: 503 while ingestion is under backpressure.",
+		Handler:  h.HandleHealth,
+	})
+	r.Register(api.Route{
+		Method:   http.MethodGet,
+		Path:     "/services/collector/health/1.0",
+		Access:   api.AccessPublic,
+		Response: ingest.HECResponse{},
+		Summary:  "Report Splunk HEC health: 503 while ingestion is under backpressure.",
+		Handler:  h.HandleHealth,
+	})
+	// Defaults for the Splunk metadata an event does not carry itself.
+	metadata := []api.QueryParam{{Name: "host"}, {Name: "source"}, {Name: "sourcetype"}, {Name: "index"}}
+	r.Group(func(r api.Router) {
+		r.Use(ingest.RateLimitMiddleware(rl))
+		for _, path := range []string{"/services/collector", "/services/collector/event", "/services/collector/event/1.0"} {
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     path,
+				Consumes: "application/json",
+				Query:    metadata,
+				Access:   api.AccessIngestToken,
+				Response: ingest.HECResponse{},
+				Summary:  "Ingest Splunk HEC event envelopes.",
+				Handler:  h.HandleEvent,
+			})
+		}
+		for _, path := range []string{"/services/collector/raw", "/services/collector/raw/1.0"} {
+			r.Register(api.Route{
+				Method:   http.MethodPost,
+				Path:     path,
+				Consumes: "text/plain",
+				Query:    metadata,
+				Access:   api.AccessIngestToken,
+				Response: ingest.HECResponse{},
+				Summary:  "Ingest Splunk HEC raw events, one per line.",
+				Handler:  h.HandleRaw,
+			})
+		}
+	})
 }

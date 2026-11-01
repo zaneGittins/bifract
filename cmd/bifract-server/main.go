@@ -608,6 +608,7 @@ func main() {
 	ingestHandler.SetQuotaManager(quotaManager)
 	elasticHandler := ingest.NewElasticBulkHandler(ingestHandler)
 	otlpHandler := ingest.NewOTLPHandler(ingestHandler)
+	hecHandler := ingest.NewHECHandler(ingestHandler)
 	internalIngestHandler := ingest.NewInternalIngestHandler(ingestQueue, config.MaxBodySize, fractalManager, normalizerManager)
 
 	// Wire ingest pressure signal to the alert engine so it defers evaluation
@@ -867,6 +868,7 @@ func main() {
 		notificationHandler:   notificationHandler,
 		oidcHandler:           oidcHandler,
 		otlpHandler:           otlpHandler,
+		hecHandler:            hecHandler,
 		performanceHandler:    performanceHandler,
 		prismHandler:          prismHandler,
 		queryHandler:          queryHandler,

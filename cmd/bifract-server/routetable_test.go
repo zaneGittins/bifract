@@ -432,5 +432,12 @@ var routeTable = []string{
 	"PUT /api/v1/webhooks/{id} 8 auth body resp tenant_admin",
 	"POST /api/v1/webhooks/{id}/test 8 auth resp tenant_admin",
 	"GET /go/search 6 public public",
+	"POST /services/collector 7 public body resp ingest_token",
+	"POST /services/collector/event 7 public body resp ingest_token",
+	"POST /services/collector/event/1.0 7 public body resp ingest_token",
+	"GET /services/collector/health 6 public resp public",
+	"GET /services/collector/health/1.0 6 public resp public",
+	"POST /services/collector/raw 7 public body resp ingest_token",
+	"POST /services/collector/raw/1.0 7 public body resp ingest_token",
 	"POST /v1/logs 7 public body resp ingest_token",
 }
