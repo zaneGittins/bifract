@@ -259,12 +259,13 @@ const FractalContext = {
         const seq = ++this._switchSeq;
         if (window.QueryExecutor) QueryExecutor.setResultsHidden(true);
         try {
-            const [role, record] = await Promise.all([
-                type === 'prism' ? this.selectPrismOnServer(target.id) : this.selectFractalOnServer(target.id),
-                this._fullRecord(target, type),
-            ]);
-            if (seq !== this._switchSeq || role === null) return false;
-            this._applyScope(record, type, role);
+            const selected = await this._select(target.id, type);
+            if (seq !== this._switchSeq || selected === null) return false;
+            // Callers that only know an id and name (a link, a reload, a restored
+            // tab) take the stored record /select returned, so settings never
+            // render or save from a stub. Listing records carry created_at.
+            const record = target.created_at ? target : (selected.record || target);
+            this._applyScope(record, type, selected.role);
             this.notifyFractalChange();
             return true;
         } finally {
@@ -272,34 +273,19 @@ const FractalContext = {
         }
     },
 
-    // Callers that only know an id and name (a link, a reload, a restored tab)
-    // get the stored record, so settings never render or save from a stub.
-    // Listing records carry created_at and are used as they are.
-    async _fullRecord(target, type) {
-        if (target.created_at) return target;
-        try {
-            const resp = await fetch(`/api/v1/${type === 'prism' ? 'prisms' : 'fractals'}/${target.id}`, { credentials: 'include' });
-            const data = resp.ok ? await resp.json() : null;
-            if (data?.data?.id === target.id) return data.data;
-        } catch (e) {
-            console.error('[FractalContext] Failed to load', type, target.id, e);
-        }
-        return target;
-    },
-
     // Update the server session to the given fractal. Returns the role the server
     // resolved for this user on that fractal, or null on failure. Callers MUST
     // await this before moving any client state, otherwise the UI can advertise
     // a scope the session is not on.
     async selectFractalOnServer(fractalId) {
-        return this._selectOnServer(`/api/v1/fractals/${fractalId}/select`, 'fractal');
+        return (await this._select(fractalId, 'fractal'))?.role ?? null;
     },
 
-    async selectPrismOnServer(prismId) {
-        return this._selectOnServer(`/api/v1/prisms/${prismId}/select`, 'prism');
-    },
-
-    async _selectOnServer(url, label) {
+    // Select on the server and return { role, record }, or null on failure. The
+    // record comes from /select because it needs only viewer access; the
+    // read-one endpoints are tenant-admin only.
+    async _select(id, type) {
+        const url = `/api/v1/${type === 'prism' ? 'prisms' : 'fractals'}/${id}/select`;
         try {
             const response = await fetch(url, {
                 method: 'POST',
@@ -316,11 +302,15 @@ const FractalContext = {
             const body = await response.json().catch(() => ({}));
             // Empty string is a valid role ("no access"), so normalise to a string
             // rather than letting a missing field read as failure.
-            return (body && body.data && typeof body.data.role === 'string') ? body.data.role : '';
+            const data = body?.data || {};
+            return {
+                role: typeof data.role === 'string' ? data.role : '',
+                record: type === 'prism' ? data.prism : data.selected_fractal,
+            };
         } catch (error) {
-            console.error(`[FractalContext] Failed to select ${label} on server:`, error);
+            console.error(`[FractalContext] Failed to select ${type} on server:`, error);
             if (window.Toast) {
-                Toast.error(`Failed to select ${label}`, error.message);
+                Toast.error(`Failed to select ${type}`, error.message);
             }
             return null;
         }
