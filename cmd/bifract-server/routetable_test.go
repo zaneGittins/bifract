@@ -103,7 +103,7 @@ var routeTable = []string{
 	"POST /api/v1/auth/logout 8 auth resp authenticated",
 	"POST /api/v1/auth/mfa/confirm 8 auth body resp authenticated",
 	"POST /api/v1/auth/mfa/disable 8 auth body resp authenticated",
-	"POST /api/v1/auth/mfa/enroll 8 auth resp authenticated",
+	"POST /api/v1/auth/mfa/enroll 8 auth body resp authenticated",
 	"POST /api/v1/auth/mfa/recovery-codes 8 auth body resp authenticated",
 	"GET /api/v1/auth/mfa/status 8 auth resp authenticated",
 	"POST /api/v1/auth/mfa/verify 8 auth body resp authenticated",

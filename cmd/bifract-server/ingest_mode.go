@@ -18,6 +18,7 @@ import (
 	"bifract/pkg/metrics"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/notifications"
+	"bifract/pkg/pgnotify"
 	"bifract/pkg/settings"
 	"bifract/pkg/storage"
 
@@ -196,6 +197,15 @@ func waitForWriteTable(dbIngest *storage.ClickHouseClient) {
 	}
 }
 
+// startChangeBus shares ingest token revocations and settings saves with every
+// other API and ingest process, so none keeps serving stale ones.
+func startChangeBus(pg *storage.PostgresClient) *pgnotify.Bus {
+	bus := pgnotify.New(pg.DB())
+	settings.Watch(bus)
+	bus.Listen(pg.ConnString())
+	return bus
+}
+
 // runIngestServer runs the data-plane-only ingest tier (invoked by `bifract-server
 // ingest`). It constructs only the ingest queue, spool tee, backpressure monitors, and
 // the ingest HTTP surface -- no migrations, alerts, models, dashboards, query, or UI.
@@ -230,12 +240,14 @@ func runIngestServer() {
 	if err := settings.Init(pg); err != nil {
 		log.Printf("Warning: failed to initialize settings: %v", err)
 	}
+	changeBus := startChangeBus(pg)
 
 	fractalManager := fractals.NewManager(pg, db)
 	normalizerManager := normalizers.NewManager(pg)
 
 	ingestTokenStorage := ingesttokens.NewStorage(pg)
 	tokenCache := ingesttokens.NewTokenCache(60 * time.Second)
+	tokenCache.Watch(changeBus)
 	quotaManager := ingest.NewQuotaManager(pg, dbIngest)
 
 	ingestQueue := ingest.NewIngestQueue(dbIngest, config.IngestQueueSize, config.IngestWorkers)
