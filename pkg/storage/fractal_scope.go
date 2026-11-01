@@ -45,7 +45,8 @@ var fractalScopeTables = []string{"logs", "logs_hot", "logs_raw"}
 // Policy names carry a version: a changed expression ships under a new name so
 // IF NOT EXISTS never leaves an old definition in place.
 const (
-	fractalScopePolicy    = "bifract_fractal_scope_v1"
+	fractalScopePolicy    = "bifract_fractal_scope_v2"
+	retiredScopePolicy    = "bifract_fractal_scope_v1"
 	scopeRequiredPolicy   = "bifract_scope_required_v1"
 	fractalScopeListSQL   = "arrayPopBack(splitByChar(',', splitByString('" + fractalScopeMarker + "', initialQueryID())[2]))"
 	fractalScopeMarkedSQL = "position(initialQueryID(), '" + fractalScopeMarker + "') > 0"
@@ -53,7 +54,8 @@ const (
 
 // fractalScopeFilter applies to every user and is a no-op for a query that carries
 // no scope: ingest, merges, alerts on unscoped rules and admin tooling read as before.
-const fractalScopeFilter = "NOT " + fractalScopeMarkedSQL + " OR has(" + fractalScopeListSQL + ", fractal_id)"
+// IN builds a set once per read; has() on the LowCardinality column cost ~40ns a row.
+const fractalScopeFilter = "NOT " + fractalScopeMarkedSQL + " OR fractal_id IN (SELECT arrayJoin(" + fractalScopeListSQL + "))"
 
 type scopeKey struct{}
 type queryIDKey struct{}
@@ -159,21 +161,42 @@ func (c *ClickHouseClient) ensureFractalScopePolicies(ctx context.Context, searc
 	if searchIdentity {
 		want[scopeRequiredPolicy] = true
 	}
-	present := c.presentScopePolicies(ctx)
+	counts := c.scopePolicyCounts(ctx)
+	full := func(name string) bool { return counts[name] == uint64(len(fractalScopeTables)) }
 	for _, stmt := range c.fractalScopePolicyDDL() {
 		name := stmt.name
-		if !want[name] || present[name] {
+		if !want[name] || full(name) {
 			continue
 		}
-		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
-		err := c.conn.Exec(sctx, stmt.sql)
-		cancel()
-		if err != nil {
+		if err := c.execScopeDDL(ctx, stmt.sql); err != nil {
 			log.Printf("[ClickHouse] Row policy %s unavailable, fractal isolation relies on query predicates only: %v", name, err)
 			continue
 		}
+		counts[name] = uint64(len(fractalScopeTables))
 		log.Printf("[ClickHouse] Row policy %s ensured", name)
 	}
+	// The retired policy keeps isolating until its successor covers every table.
+	if counts[retiredScopePolicy] > 0 && full(fractalScopePolicy) {
+		drop := fmt.Sprintf("DROP ROW POLICY IF EXISTS %s ON %s%s", retiredScopePolicy, c.scopeTablesSQL(), c.OnClusterSQL())
+		if err := c.execScopeDDL(ctx, drop); err != nil {
+			log.Printf("[ClickHouse] Retired row policy %s not dropped: %v", retiredScopePolicy, err)
+		}
+	}
+}
+
+func (c *ClickHouseClient) execScopeDDL(ctx context.Context, sql string) error {
+	sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
+	defer cancel()
+	return c.conn.Exec(sctx, sql)
+}
+
+func (c *ClickHouseClient) scopeTablesSQL() string {
+	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
+	tables := make([]string, len(fractalScopeTables))
+	for i, t := range fractalScopeTables {
+		tables[i] = db + ".`" + t + "`"
+	}
+	return strings.Join(tables, ", ")
 }
 
 type scopePolicyStmt struct{ name, sql string }
@@ -181,12 +204,7 @@ type scopePolicyStmt struct{ name, sql string }
 // fractalScopePolicyDDL is restrictive on purpose: a restrictive policy narrows
 // whatever else an operator has defined, where a permissive one would widen it.
 func (c *ClickHouseClient) fractalScopePolicyDDL() []scopePolicyStmt {
-	db := "`" + EscCHIdent(c.logsDatabase()) + "`"
-	tables := make([]string, len(fractalScopeTables))
-	for i, t := range fractalScopeTables {
-		tables[i] = db + ".`" + t + "`"
-	}
-	on := strings.Join(tables, ", ")
+	on := c.scopeTablesSQL()
 	cl := c.OnClusterSQL()
 	return []scopePolicyStmt{
 		{fractalScopePolicy, fmt.Sprintf("CREATE ROW POLICY IF NOT EXISTS %s%s ON %s AS RESTRICTIVE FOR SELECT USING %s TO ALL",
@@ -198,11 +216,11 @@ func (c *ClickHouseClient) fractalScopePolicyDDL() []scopePolicyStmt {
 	}
 }
 
-// presentScopePolicies reports which policies already cover every scoped table.
+// scopePolicyCounts reports how many scoped tables each policy is defined on.
 // A read is cheaper than DDL, which on a cluster goes through the replicated queue
 // on every settings save.
-func (c *ClickHouseClient) presentScopePolicies(ctx context.Context) map[string]bool {
-	present := map[string]bool{}
+func (c *ClickHouseClient) scopePolicyCounts(ctx context.Context) map[string]uint64 {
+	counts := map[string]uint64{}
 	sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 	defer cancel()
 	quoted := make([]string, len(fractalScopeTables))
@@ -210,19 +228,19 @@ func (c *ClickHouseClient) presentScopePolicies(ctx context.Context) map[string]
 		quoted[i] = "'" + EscCHStr(t) + "'"
 	}
 	rows, err := c.conn.Query(sctx, fmt.Sprintf(
-		"SELECT short_name, count() AS n FROM system.row_policies WHERE database = '%s' AND short_name IN ('%s', '%s') AND table IN (%s) GROUP BY short_name",
-		EscCHStr(c.logsDatabase()), fractalScopePolicy, scopeRequiredPolicy, strings.Join(quoted, ", ")))
+		"SELECT short_name, count() AS n FROM system.row_policies WHERE database = '%s' AND short_name IN ('%s', '%s', '%s') AND table IN (%s) GROUP BY short_name",
+		EscCHStr(c.logsDatabase()), fractalScopePolicy, scopeRequiredPolicy, retiredScopePolicy, strings.Join(quoted, ", ")))
 	if err != nil {
-		return present
+		return counts
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var name string
 		var n uint64
 		if err := rows.Scan(&name, &n); err != nil {
-			return map[string]bool{}
+			return map[string]uint64{}
 		}
-		present[name] = n == uint64(len(fractalScopeTables))
+		counts[name] = n
 	}
-	return present
+	return counts
 }
