@@ -648,6 +648,24 @@ func TestScoringSQLBaselineSpan(t *testing.T) {
 	}
 }
 
+// first_seen is display only and reads the event-date column, while the stability terms and
+// the baseline span stay on ingest days: moving them would change every score.
+func TestScoringSQLFirstSeenUsesEventDay(t *testing.T) {
+	sql := scoringSQL(t, nil, ProvenanceBaseline{TotalHosts: 10})
+	if fe := cteBody(t, sql, "fe"); !strings.Contains(fe, "min(if(first_event_day = toDate(0), day, first_event_day)) AS first_seen") {
+		t.Errorf("fe does not read first_seen from the event day:\n%s", fe)
+	}
+	for _, cte := range []string{"outs", "ins"} {
+		if body := cteBody(t, sql, cte); strings.Contains(body, "first_event_day") || !strings.Contains(body, "first_day") {
+			t.Errorf("%s stability must stay on the ingest-day first_day:\n%s", cte, body)
+		}
+	}
+	span := cteBody(t, BuildProvenanceScoringSQL(0.7, nil, false, ProvenanceBaseline{}, reconOpts()), "span")
+	if strings.Contains(span, "first_event_day") {
+		t.Errorf("span must stay on ingest days:\n%s", span)
+	}
+}
+
 // One read of the summary yields every fleet-wide input. Shards each hold their own copy of a
 // row, so counts are distinct values. The baseline's host ceiling keeps proc_freq's 256 cap.
 func TestProvenanceSummarySQL(t *testing.T) {
