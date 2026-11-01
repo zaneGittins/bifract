@@ -191,7 +191,7 @@ func TestFirstSeenDiscoverySQL(t *testing.T) {
 	mustContain(t, q, "INTERVAL 7 DAY", "findings window")
 	mustContain(t, q, "INTERVAL 1 HOUR", "what the alert fires on")
 	mustContain(t, q, "fractal_id = 'f1'", "scoped to the fractal")
-	mustContain(t, q, "`tbl` FINAL", "reads the state, never the logs")
+	mustContain(t, q, "FROM `tbl`\n", "reads the state, never the logs")
 }
 
 func TestFillDiscovery(t *testing.T) {

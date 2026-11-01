@@ -184,7 +184,7 @@ GROUP BY first_day`, flagSQL, scored)
 // and the last hour (what the alert fires on). Seeded history carries the epoch
 // and never counts, nor does a windowed model's entity that never left.
 func firstSeenDiscoverySQL(qt, fidEsc string, since time.Time, historyDays int) string {
-	agg := firstSeenAgg(qt+" FINAL", fidScope(fidEsc), "entity_key", historyDays, true, false)
+	agg := firstSeenAgg(qt, fidScope(fidEsc), "entity_key", historyDays, true, false)
 	return fmt.Sprintf(`SELECT toString(toDate(recorded_at)) AS day, toUInt64(count()) AS n,
     toUInt64(countIf(recorded_at >= now() - INTERVAL %d DAY)) AS week,
     toUInt64(countIf(recorded_at >= now() - INTERVAL 1 HOUR)) AS hour

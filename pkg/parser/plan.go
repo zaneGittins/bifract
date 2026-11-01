@@ -232,7 +232,6 @@ type QueryPlan struct {
 	JoinMaxRows int      // max rows for subquery safety limit
 
 	// ModelLookup-specific fields (set by model_lookup() BQL command)
-	ModelLookupSQL      string   // pre-built scoring subquery SQL
 	ModelLookupFields   []string // output field names added to outer SELECT
 	ModelLookupKeyExprs []string // key expressions over the log scan: the scan-level ON's left side and the prefilter's
 	ModelLookupStrict   bool     // true (default) = INNER JOIN: keep only rows the model scored
@@ -241,8 +240,8 @@ type QueryPlan struct {
 	// strict join (and so to its scan prefilter) rather than to the joined rows. Each
 	// is a property of the key, so the join keeps exactly the rows it would have kept.
 	ModelLookupWhere []string
-	// modelKeys is the model's key set: its key columns, its topology and the set
-	// the strict scan prefilter tests.
+	// modelKeys is the model's key set: its key columns, its topology, its scoring
+	// subquery and the set the strict scan prefilter tests. nil without a lookup.
 	modelKeys *modelKeySet
 	// ModelLookupOutputs: the model's declared output column names. Set at Declare
 	// (unlike ModelLookupFields, set at Execute) so commands that run before
@@ -556,7 +555,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// the filters after the last one are this SELECT's. A scan-level model join sits
 	// among the caps at its position (see scanJoinPosition).
 	joinAt, joined := -1, false
-	if p.ModelLookupSQL != "" && p.ModelLookupAtScan {
+	if p.hasModelLookup() && p.ModelLookupAtScan {
 		joinAt = p.scanJoinPosition(&source.Layer)
 	}
 	for i, c := range source.Layer.Caps {
@@ -628,7 +627,7 @@ func (p *QueryPlan) renderStandard(opts QueryOptions) (string, error) {
 	// its rows carry the model columns. Filters on those columns go in this SELECT's
 	// WHERE; scan-only predicates stay wherever they already are (the same WHERE, or
 	// inside a dedup wrap), where ClickHouse pushes them into the scan.
-	if p.ModelLookupSQL != "" && p.ModelLookupAtScan && !joined {
+	if p.hasModelLookup() && p.ModelLookupAtScan && !joined {
 		joinedWhere := pending
 		if p.selectsRowsBelowModelJoin(source, opts) {
 			// Nothing after the join selects rows, so this SELECT returns the rows the
@@ -1070,17 +1069,20 @@ func modelJoinLayer(innerSQL, join string, fields []string) string {
 // the filters that read only its columns.
 func (p *QueryPlan) modelJoinSource() string {
 	if len(p.ModelLookupWhere) == 0 {
-		return p.ModelLookupSQL
+		return p.modelKeys.scoringSQL
 	}
-	return "SELECT * FROM (" + p.ModelLookupSQL + ") WHERE " + andJoin(p.ModelLookupWhere)
+	return "SELECT * FROM (" + p.modelKeys.scoringSQL + ") WHERE " + andJoin(p.ModelLookupWhere)
 }
+
+// hasModelLookup reports whether a model_lookup() joins the model's scores.
+func (p *QueryPlan) hasModelLookup() bool { return p.modelKeys != nil }
 
 // modelPrefilter is a strict join's semi-join pushed down into the source scan:
 // only logs whose key the model scores can survive the INNER JOIN, and the scan is
 // the one place the key sub-columns' skip indexes can prune on that set. Filters on
 // model columns narrow the set exactly as they narrow the model side.
 func (p *QueryPlan) modelPrefilter() string {
-	if p.ModelLookupSQL == "" || !p.ModelLookupStrict || p.modelKeys == nil || len(p.ModelLookupKeyExprs) == 0 {
+	if !p.hasModelLookup() || !p.ModelLookupStrict || len(p.ModelLookupKeyExprs) == 0 {
 		return ""
 	}
 	return p.modelKeys.membership(p.ModelLookupKeyExprs, p.ModelLookupWhere)
@@ -1091,7 +1093,7 @@ func (p *QueryPlan) modelPrefilter() string {
 // limit select if they are applied in the same SELECT: a strict join drops rows,
 // and a post-join filter is written after it.
 func (p *QueryPlan) readsThroughCap(c RowCap) bool {
-	if p.ModelLookupSQL == "" || !p.ModelLookupAtScan {
+	if !p.hasModelLookup() || !p.ModelLookupAtScan {
 		return false
 	}
 	if len(p.postJoinSQL(c.At, -1)) > 0 {
@@ -1217,7 +1219,7 @@ func (p *QueryPlan) sourceWhereComplete() bool {
 	if p.IsAggregated || p.HasGroupBy || p.IsAnalyze || p.IsChain || p.IsProcessTree {
 		return false
 	}
-	if p.IsJoin || p.ModelLookupSQL != "" || p.usesBindingSet || p.rowLimitByCommand {
+	if p.IsJoin || p.hasModelLookup() || p.usesBindingSet || p.rowLimitByCommand {
 		return false
 	}
 	return p.HistogramBuckets == 0 && p.ModifiedZScoreExpr == "" && len(p.ChartLayers) == 0

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -419,7 +420,7 @@ SELECT 'f1', 'h', v, 1, toDate(now(), 'UTC') - n FROM (
     SELECT 'steady' AS v, number AS n FROM numbers(14)
     UNION ALL SELECT 'returned', 10 UNION ALL SELECT 'returned', 0
     UNION ALL SELECT 'oldonly', 12)`)
-	rows := d.rows("SELECT value_val, model_count, model_total, toString(since) AS since FROM (" + buildRarityScoredSQL("`r` FINAL", "f1", 7) + ")")
+	rows := d.rows("SELECT value_val, model_count, model_total, toString(since) AS since FROM (" + buildRarityScoredSQL("`r`", "f1", 7) + ")")
 	got := map[string]map[string]interface{}{}
 	for _, r := range rows {
 		got[getString(r, "value_val")] = r
@@ -641,4 +642,170 @@ func parserLookup(db string) (string, error) {
 		DictionaryDatabase: db,
 		Dictionaries:       map[string]map[string]string{"iocs": {"ip": "d_ioc"}},
 	})
+}
+
+// modelLookupState fills the rarity, first_seen and volume_baseline models from
+// logs in several parts, with merges stopped so keys repeat across them, and
+// returns the models as the translator sees them.
+func (d *chDB) modelLookupState() map[string]parser.AnalyticsModelInfo {
+	d.t.Helper()
+	// u0-u9 log throughout; u10 and u11 only in the last 20 minutes.
+	d.exec("ALTER TABLE logs ADD COLUMN log_id String", `INSERT INTO logs (fractal_id, timestamp, ingest_timestamp, fields, log_id)
+SELECT 'f1', now64(3, 'UTC') - toIntervalMinute(number), now64(3, 'UTC'),
+    concat('{"user":"u', toString(if(number < 20, number % 12, number % 10)), '","computer_name":"h', toString(number % 3), '","image":"i', toString(number % 7), '"}'), toString(number)
+FROM numbers(200)`)
+	cuts := []struct {
+		where string
+		live  bool
+	}{
+		{"timestamp < now64(3, 'UTC') - INTERVAL 100 MINUTE", false},
+		{"timestamp >= now64(3, 'UTC') - INTERVAL 100 MINUTE AND timestamp < now64(3, 'UTC') - INTERVAL 20 MINUTE", false},
+		{"timestamp >= now64(3, 'UTC') - INTERVAL 20 MINUTE", true},
+	}
+	defs := []struct {
+		name string
+		mt   ModelType
+		def  ModelDefinition
+	}{
+		{"fs", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"user"}}},
+		{"fsw", ModelTypeFirstSeen, ModelDefinition{KeyFields: []string{"user"}, HistoryDays: 7}},
+		{"rare", ModelTypeRarity, ModelDefinition{PartitionKey: "computer_name", ValueKey: "image"}},
+		{"rarew", ModelTypeRarity, ModelDefinition{PartitionKey: "computer_name", ValueKey: "image", HistoryDays: 7}},
+	}
+	models := map[string]parser.AnalyticsModelInfo{}
+	for _, m := range defs {
+		ddl, err := GenerateDDL(m.def, m.mt, m.name)
+		if err != nil {
+			d.t.Fatal(err)
+		}
+		d.exec(ddl, "SYSTEM STOP MERGES "+m.name)
+		for _, s := range cuts {
+			build := BuildBackfillInsert
+			if s.live {
+				build = BuildStateInsert
+			}
+			ins, err := build(m.def, m.mt, m.name, "logs", s.where, "f1")
+			if err != nil {
+				d.t.Fatal(err)
+			}
+			d.exec(ins)
+		}
+		models[m.name] = parser.AnalyticsModelInfo{TableName: m.name, ModelType: string(m.mt), MinSample: 1,
+			HistoryDays: m.def.HistoryDays, FractalID: "f1"}
+	}
+	// u12 was recorded two hours ago: new only to an alert reaching back that far.
+	d.exec(`INSERT INTO logs (fractal_id, timestamp, ingest_timestamp, fields, log_id)
+SELECT 'f1', now64(3, 'UTC') - INTERVAL 30 MINUTE, now64(3, 'UTC'), '{"user":"u12","computer_name":"h0","image":"i0"}', 'u12'`)
+	for _, tbl := range []string{"fs", "fsw"} {
+		cols, vals := "", ""
+		if tbl == "fsw" {
+			cols, vals = ", _day", ", toDate(t)"
+		}
+		d.exec(fmt.Sprintf(`INSERT INTO %s (fractal_id, entity_key, first_seen, last_seen, event_count, first_recorded%s)
+SELECT 'f1', 'u12', t, t, 1, t%s FROM (SELECT now64(3, 'UTC') - INTERVAL 2 HOUR AS t)`, tbl, cols, vals))
+	}
+	volDDL, _ := GenerateDDL(ModelDefinition{KeyFields: []string{"user"}, TimeBucket: "day"}, ModelTypeVolumeBaseline, "vol")
+	d.exec(volDDL, "SYSTEM STOP MERGES vol")
+	for part := 0; part < 2; part++ {
+		d.exec(fmt.Sprintf(`INSERT INTO vol SELECT 'f1', concat('u', toString(number %% 10)), today() - intDiv(number, 10), 1 + number %% 7 + %d FROM numbers(100)`, part))
+	}
+	models["vol"] = parser.AnalyticsModelInfo{TableName: "vol", ModelType: "volume_baseline", TimeBucket: "day", MinSample: 3, FractalID: "f1"}
+	return models
+}
+
+// lookupRows runs a translated query and returns its rows, sorted, as text.
+func (d *chDB) lookupRows(q string, opts parser.QueryOptions) []string {
+	d.t.Helper()
+	p, err := parser.ParseQuery(q)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	res, err := parser.TranslateToSQLWithOrder(p, opts)
+	if err != nil {
+		d.t.Fatalf("%s: %v", q, err)
+	}
+	var out []string
+	for _, r := range d.rows(res.SQL) {
+		cols := make([]string, 0, len(res.FieldOrder))
+		for _, f := range res.FieldOrder {
+			cols = append(cols, fmt.Sprint(r[f]))
+		}
+		out = append(out, strings.Join(cols, "|"))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// A lookup reads the model's state as it lies, parts unmerged and keys repeated
+// across them, and returns exactly what it returns once every part is merged.
+// is_new="1" scores only recently recorded keys and still finds every new one.
+func TestCHModelLookupReadsUnmergedState(t *testing.T) {
+	now := time.Now().UTC()
+	if now.Add(time.Minute).Day() != now.Day() {
+		t.Skip("volume buckets are days; a run across midnight UTC compares two different days")
+	}
+	d := newCHDB(t)
+	models := d.modelLookupState()
+	opts := parser.QueryOptions{StartTime: now.Add(-4 * time.Hour), EndTime: now.Add(time.Minute), MaxRows: 1000,
+		FractalID: "f1", Models: models}
+	alert := opts
+	alert.ModelNewSince = now.Add(-3 * time.Hour)
+	type lookup struct {
+		q    string
+		opts parser.QueryOptions
+	}
+	queries := []lookup{
+		{`* | model_lookup(model="fs", key=[user]) | table(user, first_seen, event_count, is_new)`, opts},
+		{`* | model_lookup(model="fsw", key=[user]) | table(user, first_seen, event_count, is_new)`, opts},
+		{`* | model_lookup(model="rare", key=[computer_name, image]) | table(computer_name, image, model_count, model_total, coverage)`, opts},
+		{`* | model_lookup(model="rarew", key=[computer_name, image]) | table(computer_name, image, model_count, model_total, coverage)`, opts},
+		{`* | groupby(computer_name, image) | model_lookup(model="rare", key=[computer_name, image])`, opts},
+		{`* | model_lookup(model="vol", key=[user]) | table(user, latest_count, baseline_median, z_score)`, opts},
+	}
+	// Each model's new users, over the hour and over an alert's three.
+	newUsers := map[int][]string{}
+	for _, m := range []string{"fs", "fsw"} {
+		for _, c := range []struct {
+			opts parser.QueryOptions
+			want string
+		}{{opts, "u10 u11"}, {alert, "u10 u11 u12"}} {
+			q := `* | model_lookup(model="` + m + `", key=[user]) | is_new="1" | table(user, event_count)`
+			queries = append(queries, lookup{q, c.opts})
+			newUsers[len(queries)-1] = strings.Fields(c.want)
+			// require=false filters the joined rows, so it scores every key.
+			if want, got := d.lookupRows(strings.Replace(q, "key=[user])", "key=[user], require=false)", 1), c.opts), d.lookupRows(q, c.opts); !reflect.DeepEqual(want, got) {
+				t.Errorf("%s (since %v): narrowed %v, unnarrowed %v", q, c.opts.ModelNewSince, got, want)
+			}
+		}
+	}
+	before := make([][]string, len(queries))
+	for i, c := range queries {
+		before[i] = d.lookupRows(c.q, c.opts)
+		if len(before[i]) == 0 {
+			t.Errorf("%s: no rows", c.q)
+		}
+		if want, ok := newUsers[i]; ok {
+			var got []string
+			for _, r := range before[i] {
+				if u := strings.SplitN(r, "|", 2)[0]; !slices.Contains(got, u) {
+					got = append(got, u)
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s (since %v): new users %v, want %v", c.q, c.opts.ModelNewSince, got, want)
+			}
+		}
+	}
+
+	for _, tbl := range []string{"fs", "fsw", "rare", "rarew", "vol"} {
+		if n := getUint64(d.rows("SELECT count() AS n FROM system.parts WHERE active AND database = currentDatabase() AND table = '" + tbl + "'")[0], "n"); n < 2 {
+			t.Fatalf("%s has %d part, want several unmerged", tbl, n)
+		}
+		d.exec("SYSTEM START MERGES "+tbl, "OPTIMIZE TABLE "+tbl+" FINAL")
+	}
+	for i, c := range queries {
+		if after := d.lookupRows(c.q, c.opts); !reflect.DeepEqual(before[i], after) {
+			t.Errorf("%s\nunmerged: %v\nmerged:   %v", c.q, before[i], after)
+		}
+	}
 }

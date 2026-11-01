@@ -106,7 +106,7 @@ FROM (%s
 			// A windowed pair counts on the day it came back.
 			return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
 FROM (%s)`, epoch("toDateTime(min(days[1]), 'UTC')"), epoch("toDateTime(max(days[-1]), 'UTC')"), findingsSeriesSQL("since", today),
-				flaggedHere(), buildRarityScoredSQL(qt+" FINAL", fidEsc, hist))
+				flaggedHere(), buildRarityScoredSQL(qt, fidEsc, hist))
 		}
 		// A finding is a (partition, value) pair whose earliest day is that day.
 		return fmt.Sprintf(`SELECT %s AS oldest, %s AS newest, %s AS series%s
@@ -115,7 +115,7 @@ FROM (
     FROM %s WHERE %s
     GROUP BY partition_val, value_val
 )`, epoch("toDateTime(min(fd), 'UTC')"), epoch("toDateTime(max(ld), 'UTC')"), findingsSeriesSQL("fd", today),
-			flagged(buildRarityScoredSQL(qt+" FINAL", fidEsc, 0)), qt, fid)
+			flagged(buildRarityScoredSQL(qt, fidEsc, 0)), qt, fid)
 	case ModelTypeVolumeBaseline:
 		// A finding is an entity whose latest complete bucket scores above the
 		// alert's z threshold right now; there is no per-day history of scores.
