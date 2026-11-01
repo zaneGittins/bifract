@@ -308,7 +308,7 @@ const FractalContext = {
                 record: type === 'prism' ? data.prism : data.selected_fractal,
             };
         } catch (error) {
-            console.error(`[FractalContext] Failed to select ${type} on server:`, error);
+            console.error('[FractalContext] Failed to select on server:', type, error);
             if (window.Toast) {
                 Toast.error(`Failed to select ${type}`, error.message);
             }

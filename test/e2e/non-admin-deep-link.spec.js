@@ -1,5 +1,6 @@
 // A non-admin opening a fractal or prism by URL must see its name. The router
 // only knows the id from the link, and the admin-only read endpoints refuse them.
+const { randomUUID } = require('crypto');
 const { test, expect } = require('@playwright/test');
 const { login } = require('./fixtures');
 
@@ -32,7 +33,7 @@ test.describe('Scope opened by URL as a non-admin', () => {
 
   test.beforeEach(async ({ page }) => {
     await login(page);
-    username = `e2e-analyst-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    username = `e2e-analyst-${randomUUID()}`;
     const { invite_token: token } = await create(page, '/api/v1/auth/register', { username, role: 'user' });
     cleanup.push(`/api/v1/users?username=${encodeURIComponent(username)}`);
     await create(page, '/api/v1/auth/invite/accept', { token, password: PASSWORD });
