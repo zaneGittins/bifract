@@ -794,14 +794,16 @@ func joinCondGroups(groups []condGroup) string {
 }
 
 // buildConditionSQL builds the SQL for a single HavingCondition using the registry,
-// with a norm_log index hint when it filters a stored field on the logs scan.
+// with a norm_log index hint when it filters a stored field or norm_log itself on
+// the logs scan.
 func buildConditionSQL(cond HavingCondition, registry *FieldRegistry, scope *deferredScope, atScan bool) string {
 	fieldRef, isJSONField := resolveConditionField(cond, registry)
 	sql := conditionSQL(cond, registry, scope, fieldRef, isJSONField)
-	if sql == "" || !atScan || !isJSONField || !registry.normLogIndexHints {
+	onNormLog := fieldRef == normLogColumn
+	if sql == "" || !atScan || !(isJSONField || onNormLog) || !registry.normLogIndexHints {
 		return sql
 	}
-	if hint := normLogHint(cond, registry.sourceMode); hint != "" {
+	if hint := normLogHint(cond, registry.sourceMode, onNormLog); hint != "" {
 		return "(" + sql + " AND " + hint + ")"
 	}
 	return sql
