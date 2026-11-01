@@ -1245,13 +1245,15 @@ func (h *QueryHandler) prepareQuery(w http.ResponseWriter, r *http.Request, purp
 	streamable := translationResult.DefaultTimeOrder && !isAggregated && chartType == "" && !hasSubquerySource
 
 	// Chunking re-translates the query per time slice, so it is only valid when
-	// no embedded subquery carries its own copy of the range (join /
-	// model_lookup), and only for a whole-range first page.
-	chunkable := streamable && !translationResult.TimeScopedSubquery && req.Cursor == ""
+	// each row stands on its own: no embedded subquery carrying its own copy of
+	// the range (join / model_lookup), no row cap, dedup or window score computed
+	// across the range, and only for a whole-range first page.
+	rowwise := !translationResult.TimeScopedSubquery && !translationResult.RangeDependentRows
+	chunkable := streamable && rowwise && req.Cursor == ""
 
 	// A live poll re-reads a sliding arrival window, so it needs the same plain
-	// newest-first row selection, with no subquery carrying a range of its own.
-	liveSupported := purpose == purposeLive && streamable && !translationResult.TimeScopedSubquery
+	// newest-first, row-by-row selection.
+	liveSupported := purpose == purposeLive && streamable && rowwise
 
 	// Add LIMIT to queries that don't already have one
 	if purpose == purposeSearch && !sqlLimitRE.MatchString(sql) {
