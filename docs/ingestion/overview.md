@@ -21,6 +21,8 @@ curl -X POST https://bifract.example.com:8443/api/v1/ingest \
 
 Caddy serves ingestion on port **8443** and refuses every other path there. A missing or wrong token returns `401`.
 
+With the installer's default self-signed certificate, add `-k` (`--insecure`) to these curl commands and to the [CLI tool](cli-tool.md).
+
 ## Create a token for a new source
 
 Give each log source its own token so it can be parsed, normalized and revoked separately.
