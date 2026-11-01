@@ -742,7 +742,7 @@ func TestReconcileEndpointAnalysisMVsRetriesBusyAttach(t *testing.T) {
 
 	c, f = newFakeClient()
 	f.On("FROM system.detached_tables", fakedb.Strs("table", "proc_lineage_mv"))
-	f.FailExec("ATTACH", fakedb.Exception(57, "Table already exists"))
+	f.FailExec("ATTACH", fakedb.Exception(36, "Bad arguments"))
 	if err := c.ReconcileEndpointAnalysisMVs(context.Background(), true); err == nil || len(f.Executed()) != 1 {
 		t.Errorf("only the busy case is retried: err=%v executed=%q", err, f.Executed())
 	}
