@@ -24,13 +24,17 @@ import (
 
 const chTestTable = "normlog_esc_e2e"
 
+// chTestDSN returns the test server's DSN, BIFRACT_TEST_CH_DSN or the dev default.
+func chTestDSN() string {
+	if dsn := os.Getenv("BIFRACT_TEST_CH_DSN"); dsn != "" {
+		return dsn
+	}
+	return "clickhouse://default:bifract@localhost:9000/default"
+}
+
 func chTestConn(t *testing.T) clickhouse.Conn {
 	t.Helper()
-	dsn := os.Getenv("BIFRACT_TEST_CH_DSN")
-	if dsn == "" {
-		dsn = "clickhouse://default:bifract@localhost:9000/default"
-	}
-	opts, err := clickhouse.ParseDSN(dsn)
+	opts, err := clickhouse.ParseDSN(chTestDSN())
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
