@@ -163,7 +163,7 @@ items:
       a domain controller, three workstations and a network sensor. Domains and attacker
       infrastructure are fictional; do not contact any indicator in it.
     author: Bifract Labs
-    homepage: https://github.com/zaneGittins/bifract-labs/tree/main/labs/001
+    homepage: https://labs.bifract.io/001/
     tags: [windows, sysmon, zeek, training]
     dataset:
       url: https://github.com/zaneGittins/bifract-labs/releases/download/lab-001/bifract-labs-001.jsonl.zst
