@@ -48,3 +48,12 @@ test('a dataset range longer than a preview allows keeps its last 90 days', () =
     timeRange: 'dataset', previewWindow: 'custom', previewStart: '2026-08-01T14:00:00.000Z', previewEnd: '2026-10-30T14:00:00.000Z',
   });
 });
+
+test('connection fields show the bytes field for Beacon and the duration field for Long Connection', () => {
+  const M = load();
+  const network = { src_field: 's', dst_field: 'd', port_field: 'p', bytes_field: 'orig_bytes', duration_field: 'dur' };
+  expect(M._connectionFields('beacon', { network })).toEqual(['s', 'd', 'p', 'orig_bytes']);
+  expect(M._connectionFields('long_connection', { network })).toEqual(['s', 'd', 'p', 'dur']);
+  expect(M._connectionFields('beacon', {})).toEqual(['src_ip', 'dst_ip', 'dst_port', 'orig_bytes']);
+  expect(M._connectionFields('long_connection', {})).toEqual(['src_ip', 'dst_ip', 'dst_port', 'duration']);
+});

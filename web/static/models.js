@@ -1047,8 +1047,7 @@ ${Array.isArray(s.series) && s.series.length ? this._sparkHTML(s.series, s.serie
             keyLabel = '';
         } else if (mt === 'beacon' || mt === 'long_connection') {
             keyLabel = 'Connection fields';
-            const n = def.network || {};
-            keys = [n.src_field || 'src_ip', n.dst_field || 'dst_ip', n.port_field || 'dst_port', n.duration_field || 'duration'];
+            keys = this._connectionFields(mt, def);
         } else {
             keys = Array.isArray(def.key_fields) ? def.key_fields.filter(Boolean) : [];
         }
@@ -2443,6 +2442,12 @@ ${m.description ? `<div class="me-sec">
     },
 
     _isNetworkType(mt) { return mt === 'beacon' || mt === 'long_connection'; },
+
+    _connectionFields(mt, def) {
+        const n = def.network || {};
+        const measure = mt === 'beacon' ? n.bytes_field || 'orig_bytes' : n.duration_field || 'duration';
+        return [n.src_field || 'src_ip', n.dst_field || 'dst_ip', n.port_field || 'dst_port', measure];
+    },
 
     _typeLabel(mt) {
         return this.MODEL_TYPES.find(t => t.id === mt)?.label || mt;
