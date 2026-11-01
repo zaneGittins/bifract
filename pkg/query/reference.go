@@ -211,7 +211,7 @@ var bqlFunctionDocs = []FunctionDoc{
 		Syntax:      "| join(key, type=inner|left, max=N, include=[fields]) { subquery }",
 		Parameters: []Param{
 			{Name: "key", Type: "string", Required: true, Description: "Field to join on. Must be produced by the subquery, and must survive any aggregation in the outer query (i.e. be one of its group columns)"},
-			{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default, keeps only matching rows) or left (keeps all outer rows)"},
+			{Name: "type", Type: "string", Required: false, Description: "Join type: inner (default, keeps only matching rows) or left (keeps all outer rows; an unmatched row's _join_ columns are empty, so a filter on them drops it)"},
 			{Name: "max", Type: "number", Required: false, Description: "Max rows the subquery can return (default: 10000, hard max: 100000)"},
 			{Name: "include", Type: "array", Required: false, Description: "Subquery columns to bring back, named exactly as the subquery outputs them (default: all). Each arrives prefixed with _join_"},
 		},
