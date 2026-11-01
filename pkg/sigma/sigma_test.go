@@ -590,7 +590,7 @@ func TestTranslate_NullValue(t *testing.T) {
 			Selections: map[string]SelectionGroup{
 				"selection": {
 					FieldConditions: []FieldCondition{
-						{Field: "ParentImage", Values: nil},
+						{Field: "ParentImage", Null: true},
 					},
 				},
 			},

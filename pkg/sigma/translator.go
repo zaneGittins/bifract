@@ -48,7 +48,9 @@ import (
 //	     match non-ASCII substrings and keywords with a Unicode-aware regex; make
 //	     '?' in a keyword one serialized character; read an empty non-exact value
 //	     as field presence; refuse field names that are not plain identifiers.
-const TranslatorVersion = "v11"
+//	v12: read null in a value list as "or the field is absent"; fold selections
+//	     that match every event out of and/or/not; keep values' YAML source text.
+const TranslatorVersion = "v12"
 
 // sigmaCategoryAliases maps Sigma logsource categories onto Bifract's canonical
 // bifract_category vocabulary where the two names differ. Categories not listed pass
@@ -108,10 +110,16 @@ func Translate(rule *SigmaRule, fieldMapper func(string) string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("condition: %w", err)
 	}
+	if result == matchNone {
+		return "", fmt.Errorf("condition: can never match an event")
+	}
 
 	// Scope the detection to the rule's logsource category. This goes first so the
 	// low-cardinality equality prunes before the detection predicates run.
-	if cf := CategoryFilter(rule.LogSource); cf != "" && result != "" {
+	if cf := CategoryFilter(rule.LogSource); cf != "" {
+		if result == matchAll {
+			return cf, nil
+		}
 		result = cf + " AND (" + result + ")"
 	}
 
@@ -130,17 +138,9 @@ func translateSelection(sg SelectionGroup, fieldMapper func(string) string) (str
 			}
 			parts = append(parts, expr)
 		}
-		if len(parts) == 1 {
-			return parts[0], nil
-		}
-		return "(" + strings.Join(parts, " OR ") + ")", nil
+		return orExprs(parts), nil
 	}
-
-	if len(sg.FieldConditions) > 0 {
-		return translateFieldConditions(sg.FieldConditions, fieldMapper)
-	}
-
-	return "*", nil
+	return translateFieldConditions(sg.FieldConditions, fieldMapper)
 }
 
 // translateFieldConditions converts a list of field conditions into a BQL expression.
@@ -155,14 +155,7 @@ func translateFieldConditions(conditions []FieldCondition, fieldMapper func(stri
 		}
 		parts = append(parts, expr)
 	}
-
-	if len(parts) == 0 {
-		return "*", nil
-	}
-	if len(parts) == 1 {
-		return parts[0], nil
-	}
-	return "(" + strings.Join(parts, " AND ") + ")", nil
+	return andExprs(parts), nil
 }
 
 // translateFieldCondition converts a single FieldCondition into a BQL expression.
@@ -178,6 +171,31 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 	if err := checkModifiers(fc); err != nil {
 		return "", err
 	}
+	if !fc.Null {
+		return translateValues(fc, field, fieldMapper)
+	}
+	if field == "" {
+		return "", fmt.Errorf("null is not a keyword")
+	}
+	if len(fc.Modifiers) == 1 && standaloneModifiers[fc.Modifiers[0]] {
+		return "", fmt.Errorf("field '%s': '%s' does not take null", fc.Field, fc.Modifiers[0])
+	}
+	absent := "NOT " + field + "=*"
+	if len(fc.Values) == 0 {
+		return absent, nil
+	}
+	expr, err := translateValues(fc, field, fieldMapper)
+	if err != nil {
+		return "", err
+	}
+	if containsModifier(fc.Modifiers, "all") {
+		return andExprs([]string{expr, absent}), nil
+	}
+	return orExprs([]string{expr, absent}), nil
+}
+
+// translateValues translates a field condition's non-null values.
+func translateValues(fc FieldCondition, field string, fieldMapper func(string) string) (string, error) {
 	if expr, ok, err := translateStandalone(fc, field, fieldMapper); ok {
 		if err != nil {
 			return "", fmt.Errorf("field '%s': %w", fc.Field, err)
@@ -186,14 +204,6 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 	}
 	hasAll := containsModifier(fc.Modifiers, "all")
 	cased := containsModifier(fc.Modifiers, "cased")
-
-	// Handle null values (field should be empty/absent)
-	if fc.Values == nil {
-		if field == "" {
-			return "*", nil
-		}
-		return fmt.Sprintf("NOT %s=*", field), nil
-	}
 
 	// Determine the match type from modifiers
 	matchType := "exact"
@@ -211,7 +221,7 @@ func translateFieldCondition(fc FieldCondition, fieldMapper func(string) string)
 	}
 
 	if len(fc.Values) == 0 {
-		return "*", nil
+		return matchAll, nil
 	}
 
 	// re: the author's own pattern, matched case-sensitively as Sigma specifies
@@ -555,7 +565,8 @@ func soleLiteral(toks []globToken) (string, bool) {
 // validFieldName reports whether name can be written into BQL unquoted. Field names
 // come from rule files and fieldref values, so anything else could rewrite the query.
 func validFieldName(name string) bool {
-	return parser.IsPlainFieldName(name) && !isBQLKeyword(name)
+	// BQL reads a leading '-' as negation.
+	return parser.IsPlainFieldName(name) && !strings.HasPrefix(name, "-") && !isBQLKeyword(name)
 }
 
 // utf16Bytes encodes s as UTF-16 in the given byte order, with a byte-order mark if bom.
@@ -828,7 +839,7 @@ func buildKeywordExpr(values []string, cased bool) string {
 	for _, v := range values {
 		toks, _, _ := trimStars(parseSigmaValue(v))
 		if len(toks) == 0 {
-			return "*"
+			return matchAll
 		}
 		if lit, ok := soleLiteral(toks); ok && !cased && lowerFolds(lit) {
 			lits = append(lits, lit)
@@ -878,6 +889,59 @@ func serializedGlobRegex(toks []globToken) string {
 		}
 	}
 	return b.String()
+}
+
+// matchAll is BQL for every event. It is valid only as a whole query, so and/or/not
+// fold it away; matchNone is its negation, which BQL cannot write at all.
+const (
+	matchAll  = "*"
+	matchNone = "<none>"
+)
+
+// andExprs ANDs expressions, dropping those that match every event.
+func andExprs(parts []string) string {
+	var kept []string
+	for _, p := range parts {
+		switch p {
+		case matchNone:
+			return matchNone
+		case matchAll:
+		default:
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		return matchAll
+	}
+	return joinExprs(kept, " AND ")
+}
+
+// orExprs ORs expressions, dropping those that match no event.
+func orExprs(parts []string) string {
+	var kept []string
+	for _, p := range parts {
+		switch p {
+		case matchAll:
+			return matchAll
+		case matchNone:
+		default:
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		return matchNone
+	}
+	return joinExprs(kept, " OR ")
+}
+
+func notExpr(e string) string {
+	switch e {
+	case matchAll:
+		return matchNone
+	case matchNone:
+		return matchAll
+	}
+	return "NOT (" + e + ")"
 }
 
 func joinExprs(parts []string, op string) string {
@@ -1087,7 +1151,7 @@ func (p *condParser) parseOr() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		left = "(" + left + " OR " + right + ")"
+		left = orExprs([]string{left, right})
 	}
 
 	return left, nil
@@ -1106,7 +1170,7 @@ func (p *condParser) parseAnd() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		left = "(" + left + " AND " + right + ")"
+		left = andExprs([]string{left, right})
 	}
 
 	return left, nil
@@ -1123,7 +1187,7 @@ func (p *condParser) parseFactor() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return "NOT (" + inner + ")", nil
+		return notExpr(inner), nil
 	}
 
 	// Parenthesized expression
@@ -1137,6 +1201,9 @@ func (p *condParser) parseFactor() (string, error) {
 			return "", fmt.Errorf("expected ')' but got '%s'", p.peek())
 		}
 		p.advance()
+		if expr == matchAll || expr == matchNone {
+			return expr, nil
+		}
 		return "(" + expr + ")", nil
 	}
 
@@ -1200,16 +1267,8 @@ func (p *condParser) parseQuantifier() (string, error) {
 		return "", fmt.Errorf("no selections matched '%s'", target)
 	}
 
-	if len(matchedExprs) == 1 {
-		return matchedExprs[0], nil
-	}
-
-	var joiner string
 	if quantifier == "all" {
-		joiner = " AND "
-	} else {
-		joiner = " OR "
+		return andExprs(matchedExprs), nil
 	}
-
-	return "(" + strings.Join(matchedExprs, joiner) + ")", nil
+	return orExprs(matchedExprs), nil
 }
