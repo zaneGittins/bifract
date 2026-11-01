@@ -3,6 +3,8 @@ package ingest
 import (
 	"testing"
 	"time"
+
+	"bifract/pkg/normalizers"
 )
 
 func TestParseTimestampWithFormat_Epoch(t *testing.T) {
@@ -45,5 +47,22 @@ func TestParseTimestampWithFormat_Layout(t *testing.T) {
 	want := time.Date(2026, 10, 9, 21, 26, 12, 684000000, time.UTC)
 	if !got.Equal(want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestBuildLogEntryKeepsHTMLCharacters(t *testing.T) {
+	var obj map[string]interface{}
+	if err := normalizers.DecodeJSON([]byte(`{"cmd":"a<b && c>d","args":["x>y"]}`), &obj); err != nil {
+		t.Fatal(err)
+	}
+	e, err := BuildLogEntry(obj, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"args":["x>y"],"cmd":"a<b && c>d"}`; e.RawLog != want {
+		t.Errorf("raw log = %s, want %s", e.RawLog, want)
+	}
+	if want := `["x>y"]`; e.Fields["args"] != want {
+		t.Errorf("args = %q, want %q", e.Fields["args"], want)
 	}
 }

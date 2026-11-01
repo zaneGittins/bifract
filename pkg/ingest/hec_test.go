@@ -144,6 +144,18 @@ func TestHECEnvelopeEdges(t *testing.T) {
 			t.Fatalf("log id is not deterministic: %s vs %s", again[0].LogID, logs[0].LogID)
 		}
 	})
+	t.Run("html characters stay literal", func(t *testing.T) {
+		logs := queue(t, `{"event":{"cmd":"a<b && c>d"},"fields":{"t":["x>y"]}}{"event":["p<q"]}`, "")
+		if want := `{"cmd":"a<b && c>d"}`; logs[0].RawLog != want {
+			t.Errorf("object raw log = %s, want %s", logs[0].RawLog, want)
+		}
+		if want := `["x>y"]`; logs[0].Fields["t"] != want {
+			t.Errorf("fields t = %q, want %q", logs[0].Fields["t"], want)
+		}
+		if want := `["p<q"]`; logs[1].RawLog != want || logs[1].Fields["message"] != want {
+			t.Errorf("array event: raw %s message %q, want %s", logs[1].RawLog, logs[1].Fields["message"], want)
+		}
+	})
 	t.Run("exponent time", func(t *testing.T) {
 		logs := queue(t, `{"time":1.791581172686968E9,"event":"x"}`, "")
 		if !logs[0].Timestamp.Equal(time.Unix(1791581172, 686968000)) {

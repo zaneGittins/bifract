@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
 	"bifract/pkg/watermark"
@@ -297,7 +298,7 @@ func (h *OTLPHandler) buildRawLog(lr *logspb.LogRecord, resource *resourcepb.Res
 		}
 	}
 
-	b, _ := json.Marshal(raw)
+	b, _ := jsonenc.Marshal(raw)
 	return string(b)
 }
 
@@ -358,10 +359,10 @@ func anyValueToString(v *commonpb.AnyValue) string {
 	case *commonpb.AnyValue_BytesValue:
 		return hex.EncodeToString(val.BytesValue)
 	case *commonpb.AnyValue_ArrayValue:
-		b, _ := json.Marshal(anyValueArrayToInterface(val.ArrayValue))
+		b, _ := jsonenc.Marshal(anyValueArrayToInterface(val.ArrayValue))
 		return string(b)
 	case *commonpb.AnyValue_KvlistValue:
-		b, _ := json.Marshal(kvListValToInterface(val.KvlistValue))
+		b, _ := jsonenc.Marshal(kvListValToInterface(val.KvlistValue))
 		return string(b)
 	default:
 		return ""

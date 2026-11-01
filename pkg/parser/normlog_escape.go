@@ -1,10 +1,10 @@
 package parser
 
 import (
-	"bytes"
-	"encoding/json"
 	"regexp"
 	"strings"
+
+	"bifract/pkg/jsonenc"
 )
 
 // escapeLiteralForNormLog renders an analyst-typed literal the way it appears
@@ -15,21 +15,19 @@ import (
 // from the raw literal never matches. The two stores do not serialize identically:
 //
 //   - SourceHot: ClickHouse DEFAULT toString(fields). Escapes '/' as '\/'.
-//   - SourceIceberg: the archiver's encoding/json with SetEscapeHTML(false)
-//     (pkg/archive/schema.go marshalFields). Leaves '/' raw.
+//   - SourceIceberg: jsonenc.Marshal (pkg/archive/schema.go marshalFields).
+//     Leaves '/' raw.
 //
 // Verified against ClickHouse 26.6 that the two agree on every other case: '\',
 // '"', \n \t \r, backslash-u control escapes, U+2028, and raw pass-through of
 // DEL, '<' '>' '&', "'", and non-ASCII UTF-8. encoding/json therefore models both,
 // with the forward slash applied as the single mode-dependent difference.
 func escapeLiteralForNormLog(literal string, mode SourceMode) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(literal); err != nil {
+	b, err := jsonenc.Marshal(literal)
+	if err != nil {
 		return literal
 	}
-	s := string(bytes.TrimRight(buf.Bytes(), "\n"))
+	s := string(b)
 	s = strings.TrimSuffix(strings.TrimPrefix(s, `"`), `"`)
 	if mode == SourceHot {
 		// encoding/json never emits '/' as part of an escape sequence, so every

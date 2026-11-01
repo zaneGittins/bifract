@@ -52,6 +52,10 @@ func TestAnyValueToString(t *testing.T) {
 			Values: []*commonpb.KeyValue{kv("b", intVal(1)), kv("a", &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{
 				KvlistValue: &commonpb.KeyValueList{Values: []*commonpb.KeyValue{kv("deep", strVal("x"))}}}})}}}}, `{"a":{"deep":"x"},"b":1}`},
 		{"empty array", &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{}}, "null"},
+		{"array keeps html characters", &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: &commonpb.ArrayValue{
+			Values: []*commonpb.AnyValue{strVal("a<b && c>d")}}}}, `["a<b && c>d"]`},
+		{"kvlist keeps html characters", &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{KvlistValue: &commonpb.KeyValueList{
+			Values: []*commonpb.KeyValue{kv("k", strVal("x>y"))}}}}, `{"k":"x>y"}`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -351,9 +355,10 @@ func TestBuildRawLogKeepsNativeTypes(t *testing.T) {
 		kv("nilkv", &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{}}),
 		kv("unset", &commonpb.AnyValue{}),
 		kv("absent", nil),
+		kv("s", strVal("a<b&c")),
 	}}
 	raw := h.buildRawLog(lr, &resourcepb.Resource{}, &commonpb.InstrumentationScope{})
-	want := `{"attributes":{"absent":null,"b":true,"d":1.5,"i":7,"l":[1,"two"],"m":{"k":2},"nilkv":null,"unset":null,"x":"0102"}}`
+	want := `{"attributes":{"absent":null,"b":true,"d":1.5,"i":7,"l":[1,"two"],"m":{"k":2},"nilkv":null,"s":"a<b&c","unset":null,"x":"0102"}}`
 	if raw != want {
 		t.Fatalf("raw log =\n%s\nwant\n%s", raw, want)
 	}

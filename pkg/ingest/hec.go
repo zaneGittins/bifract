@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"bifract/pkg/ingesttokens"
+	"bifract/pkg/jsonenc"
 	"bifract/pkg/normalizers"
 	"bifract/pkg/storage"
 	"bifract/pkg/watermark"
@@ -256,10 +257,10 @@ func (h *HECHandler) parseEvents(body []byte, defaults hecMeta, token *ingesttok
 			}
 			entry = h.stringEntry(ev, extra, meta, defaults, ts, token)
 		case map[string]any:
-			raw, _ := json.Marshal(ev) // cannot fail: ev was decoded from JSON
+			raw, _ := jsonenc.Marshal(ev) // cannot fail: ev was decoded from JSON
 			entry = buildHECEntry(ev, string(raw), extra, meta, defaults, ts, token)
 		default:
-			raw, _ := json.Marshal(ev)
+			raw, _ := jsonenc.Marshal(ev)
 			entry = buildHECEntry(map[string]any{"message": string(raw)}, string(raw), extra, meta, defaults, ts, token)
 		}
 		logs = append(logs, entry)
@@ -324,7 +325,7 @@ func buildHECEntry(obj map[string]any, raw string, extra map[string]any, meta, d
 			key = append(key, kv[1])
 		}
 		if len(extra) > 0 {
-			b, _ := json.Marshal(extra)
+			b, _ := jsonenc.Marshal(extra)
 			key = append(key, string(b))
 		}
 		entry.LogID = storage.GenerateLogID(entry.Timestamp, strings.Join(key, "\x00"))
