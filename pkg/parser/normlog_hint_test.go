@@ -171,3 +171,73 @@ func TestNormLogHintCoversEveryLogsScan(t *testing.T) {
 		})
 	}
 }
+
+// A positive =~, =^ or =$ on norm_log itself (how Sigma keyword rules compile)
+// hints each value in the form the index answers: lowercased, serialization
+// escaped as the hot store writes it ('/' as '\/'), regex quoted.
+func TestNormLogHintOnNormLogFilters(t *testing.T) {
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{`norm_log=~"Mimikatz"`,
+			"(multiSearchAnyCaseInsensitive(norm_log, ['Mimikatz']) AND indexHint(match(lower(norm_log), 'mimikatz')))"},
+		{`norm_log=~"sekurlsa::logonpasswords","Invoke-Mimikatz"`,
+			"(multiSearchAnyCaseInsensitive(norm_log, ['sekurlsa::logonpasswords', 'Invoke-Mimikatz']) AND " +
+				"(indexHint(match(lower(norm_log), 'sekurlsa::logonpasswords')) OR indexHint(match(lower(norm_log), 'invoke-mimikatz'))))"},
+		{`norm_log=~"/tmp/x.sh"`,
+			`(multiSearchAnyCaseInsensitive(norm_log, ['\\/tmp\\/x.sh']) AND indexHint(match(lower(norm_log), '\\\\/tmp\\\\/x\\.sh')))`},
+		{`norm_log=~"C:\\Windows"`,
+			`(multiSearchAnyCaseInsensitive(norm_log, ['C:\\\\Windows']) AND indexHint(match(lower(norm_log), 'c:\\\\\\\\windows')))`},
+		{`norm_log=~"say \"hi\""`,
+			`(multiSearchAnyCaseInsensitive(norm_log, ['say \\"hi\\"']) AND indexHint(match(lower(norm_log), 'say \\\\"hi\\\\"')))`},
+		{`norm_log=^"{\"abc"`,
+			`(startsWith(lower(norm_log), '{\\"abc') AND indexHint(match(lower(norm_log), '\\{\\\\"abc')))`},
+		{`norm_log=$"xyz\"}"`,
+			`(endsWith(lower(norm_log), 'xyz\\"}') AND indexHint(match(lower(norm_log), 'xyz\\\\"\\}')))`},
+		// =^ and =$ hint the needle they search for, lowered the same way.
+		{`norm_log=^"İstanbul"`,
+			"(startsWith(lower(norm_log), 'istanbul') AND indexHint(match(lower(norm_log), 'istanbul')))"},
+		{`norm_log=~"日本語"`,
+			"(multiSearchAnyCaseInsensitive(norm_log, ['日本語']) AND indexHint(match(lower(norm_log), '日本語')))"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			res, err := TranslateToSQLWithOrder(mustParse(t, tc.query), hintOpts())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(strings.Join(res.SourceWhere, " AND "), tc.want) {
+				t.Errorf("source scan lacks %s\n%s", tc.want, res.SQL)
+			}
+		})
+	}
+}
+
+// norm_log filters the index cannot vouch for keep their exact SQL.
+func TestNormLogHintSkipsIneligibleNormLogFilters(t *testing.T) {
+	iceberg := hintOpts()
+	iceberg.SourceMode = SourceIceberg
+	cases := []struct {
+		name  string
+		query string
+		opts  QueryOptions
+	}{
+		{"iceberg archive", `norm_log=~"mimikatz"`, iceberg},
+		{"negated", `!norm_log=~"mimikatz"`, hintOpts()},
+		{"too short", `norm_log=~"ab"`, hintOpts()},
+		{"one short value", `norm_log=~"mimikatz","ab"`, hintOpts()},
+		{"letter with other cases", `norm_log=~"Café"`, hintOpts()},
+		{"equality compares the raw literal", `norm_log="a/bc"`, hintOpts()},
+		{"too many values", `norm_log=~` + quotedList(17), hintOpts()},
+		{"after a row cap", `* | head(10) | norm_log=~"mimikatz"`, hintOpts()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sql := mustTranslate(t, tc.query, tc.opts)
+			if strings.Contains(sql, "indexHint(") {
+				t.Errorf("unexpected hint:\n%s", sql)
+			}
+		})
+	}
+}

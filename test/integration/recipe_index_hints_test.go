@@ -1,9 +1,10 @@
 //go:build integration
 
-// Field filters carry a hint that lets ClickHouse skip blocks whose full-text index
-// proves the value absent; a wrongly skipped block is the only way it could lose a
-// row. Each case value lives in one field of its own rows, so such a skip shows as
-// a missing row against both the expected count and an unhinted search.
+// Field and norm_log filters carry a hint that lets ClickHouse skip blocks whose
+// full-text index proves the value absent; a wrongly skipped block is the only way
+// it could lose a row. Each case value lives in one field of its own rows, so such
+// a skip shows as a missing row against both the expected count and an unhinted
+// search.
 //
 //	go test -tags integration ./test/integration/ -run TestIndexHintsKeepEveryMatch -v
 
@@ -64,6 +65,7 @@ func TestIndexHintsKeepEveryMatch(t *testing.T) {
 		{"computer_name": "QM13Host"},
 		{"user": "QN14", "kind": "neg"},
 		{"flag": true, "user": "QO15"},
+		{"user": "日本語-QP16"},
 	})
 	// A second insert lands in a block of its own. Its rows match only through an
 	// OR branch or a negation whose hinted value is absent from that block, so a
@@ -93,6 +95,14 @@ func TestIndexHintsKeepEveryMatch(t *testing.T) {
 		{`computer_name=~"qaz1mix" OR user="svc_QL12:1"`, 3},
 		{`kind="neg" AND !(user="QN14")`, 1},
 		{`flag="true" AND user=~"qo15"`, 1},
+		// norm_log itself, as Sigma keyword rules search it.
+		{`norm_log=~"qaz1mix"`, 2},
+		{`norm_log=~"qk11a","qk11b"`, 2},
+		{`norm_log=~"\\qg7\\cmd"`, 1},
+		{`norm_log=~"/c \"a/b\""`, 1},
+		{`norm_log=~"zoë-qf6x"`, 1}, // ë has other cases, so this one goes unhinted
+		{`norm_log=~"日本語-qp16"`, 1},
+		{`norm_log=~"qaz1mix" OR norm_log=~"svc_ql12"`, 3},
 	} {
 		t.Run(tc.filter, func(t *testing.T) {
 			var hinted, plain struct {

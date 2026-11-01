@@ -892,11 +892,22 @@ func buildMatchExpr(fieldRef, pattern, literal string, mode SourceMode) string {
 		pattern = normLogLiteralPattern(literal, mode)
 	}
 	if fieldRef == normLogColumn && strings.HasPrefix(pattern, caseInsensitiveFlag) {
-		if lowered, ok := lowerRegexForLowercasedColumn(pattern[len(caseInsensitiveFlag):]); ok {
-			return fmt.Sprintf("match(lower(%s), %s)", normLogColumn, escapeRegexForClickHouse(lowered))
+		if expr, ok := indexedNormLogMatch(pattern[len(caseInsensitiveFlag):]); ok {
+			return expr
 		}
 	}
 	return fmt.Sprintf("match(%s, %s)", fieldRef, escapeRegexForClickHouse(pattern))
+}
+
+// indexedNormLogMatch renders a case-insensitive match of pattern (without its
+// (?i) flag) in the match(lower(norm_log), ...) form the n-gram index answers, or
+// ok=false when the pattern cannot be lowered safely.
+func indexedNormLogMatch(pattern string) (string, bool) {
+	lowered, ok := lowerRegexForLowercasedColumn(pattern)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("match(lower(%s), %s)", normLogColumn, escapeRegexForClickHouse(lowered)), true
 }
 
 // lowerRegexForLowercasedColumn lowercases the literal portions of an RE2 pattern
