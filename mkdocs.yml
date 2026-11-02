@@ -82,6 +82,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started:
+    - Try in Codespaces: getting-started/codespaces.md
     - Installation: getting-started/installation.md
     - Kubernetes: getting-started/kubernetes.md
     - Non-interactive Install: getting-started/non-interactive.md

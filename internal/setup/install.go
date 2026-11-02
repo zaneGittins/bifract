@@ -112,7 +112,7 @@ func RunInstall(opts InstallOptions) error {
 
 	// Pull images (docker streams its own progress, so no spinner)
 	printStepStream("Pulling Docker images (this may take a moment)...")
-	if err := docker.Pull(); err != nil {
+	if err := docker.Pull(cfg.ImageTag); err != nil {
 		return fmt.Errorf("docker compose pull: %w", err)
 	}
 	printDone("Images pulled")

@@ -21,8 +21,14 @@ func (d *DockerOps) compose(args ...string) *exec.Cmd {
 	return cmd
 }
 
-func (d *DockerOps) Pull() error {
-	cmd := d.compose("pull")
+// Pull fetches the stack's images. A dev tag names an image built from source,
+// which is on no registry, so only images missing locally are pulled.
+func (d *DockerOps) Pull(imageTag string) error {
+	args := []string{"pull"}
+	if imageTag == "dev" {
+		args = append(args, "--policy", "missing")
+	}
+	cmd := d.compose(args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

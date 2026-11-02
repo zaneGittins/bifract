@@ -81,3 +81,6 @@ test/e2e/.auth/
 # keeps one from being committed by accident, as has happened before. Already
 # tracked files, such as pkg/feeds/zz_synccpu_manual_test.go, are unaffected.
 zz*_test.go
+
+# Written by .devcontainer/demo.sh in the Try Bifract codespace
+/WELCOME.md

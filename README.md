@@ -12,6 +12,14 @@
 
 Bifract is an open source SIEM you run on your own infrastructure. Logs are stored and searched in ClickHouse and archived to your object storage as Parquet. On top of that it adds what generic log tools leave out: process provenance graphs, behavioral baselines, and collaborative investigation, all driven by a pipe-based query language built for analysts. There are no license keys or feature gates.
 
+## Try It
+
+Run Bifract in your browser with a recorded intrusion already loaded, nothing to install:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/zaneGittins/bifract?quickstart=1)
+
+See [Try Bifract in Codespaces](https://docs.bifract.io/getting-started/codespaces/) for what is loaded and what to try.
+
 ## Quick Start
 
 The setup wizard installs Bifract on a single Linux host, handling SSL, passwords, Docker Compose, and database initialization:
