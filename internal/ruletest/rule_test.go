@@ -158,16 +158,25 @@ func TestUnsupportedCommandsCatchEverySpelling(t *testing.T) {
 	}
 }
 
+// These never run in the alert engine, so a rule using one is invalid, not just untestable.
+func TestLoadRuleRefusesSearchOnlyCommands(t *testing.T) {
+	for _, q := range []string{`pgr(start="abc")`, `comment(tags=[a])`} {
+		p := writeFile(t, t.TempDir(), "r.yml", "name: x\nqueryString: '"+q+"'\n")
+		if _, err := LoadRule(p, nil); err == nil || !strings.Contains(err.Error(), "only works in a search") {
+			t.Errorf("LoadRule(%s) error = %v", q, err)
+		}
+	}
+}
+
 // Commands that read tables the scratch clone does not have. Reporting "no match"
 // for them would be a silent false negative, so the tester refuses them; lint only
 // validates, so it accepts them.
 func TestLoadTestableRuleRejectsWhatCannotRunOffline(t *testing.T) {
 	tests := map[string]string{
-		"source command": "name: x\nqueryString: 'pgr(start=\"abc\")'\n",
-		"ptg":            "name: x\nqueryString: 'ptg(start=\"abc\")'\n",
-		"model_lookup":   "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
-		"modelLookup":    "name: x\nqueryString: '* | modelLookup(model=\"m\", key=[image])'\n",
-		"tlsh":           "name: x\nqueryString: 'tlsh=* | tlsh(field=tlsh, dict=\"bad\")'\n",
+		"ptg":          "name: x\nqueryString: 'ptg(start=\"abc\")'\n",
+		"model_lookup": "name: x\nqueryString: '* | model_lookup(model=\"m\", key=[image])'\n",
+		"modelLookup":  "name: x\nqueryString: '* | modelLookup(model=\"m\", key=[image])'\n",
+		"tlsh":         "name: x\nqueryString: 'tlsh=* | tlsh(field=tlsh, dict=\"bad\")'\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

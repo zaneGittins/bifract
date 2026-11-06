@@ -10,7 +10,7 @@ const AlertDrafts = {
     _draft: null,        // the server row, once one exists
     _alertId: null,
     _timer: null,
-    _saving: false,
+    _inFlight: null,     // the autosave request, while one is running
     _dirty: false,
     _suspended: true,    // no autosave until the editor has finished loading
     _lastSavedAt: null,
@@ -82,14 +82,20 @@ const AlertDrafts = {
     },
 
     async save() {
-        if (this._suspended || this._saving || !this._dirty) return;
+        if (this._suspended || this._inFlight || !this._dirty) return;
 
         const subject = window.Alerts?.getPolicySubject?.();
         if (!subject) return;
         // Nothing worth keeping yet: an empty editor is not a draft.
         if (!subject.name && !subject.query_string && !subject.description) return;
 
-        this._saving = true;
+        this._inFlight = this.putDraft(subject);
+        await this._inFlight;
+        this._inFlight = null;
+        this.renderStatus();
+    },
+
+    async putDraft(subject) {
         try {
             const res = await fetch('/api/v1/alert-drafts', {
                 method: 'PUT',
@@ -112,9 +118,6 @@ const AlertDrafts = {
         } catch (e) {
             // Left dirty: the next edit retries. Nothing is shown for a transient
             // failure; the status reads "unsaved" until it succeeds.
-        } finally {
-            this._saving = false;
-            this.renderStatus();
         }
     },
 
@@ -134,6 +137,9 @@ const AlertDrafts = {
 
     // The work has been saved or proposed for real, so the draft is consumed.
     async finished() {
+        // An autosave landing after this would bring the draft back.
+        clearTimeout(this._timer);
+        await this._inFlight;
         const id = this._draft?.id;
         this.stop();
         if (!id) return;
@@ -244,8 +250,8 @@ const AlertDrafts = {
         if (!text || !pill) return;
 
         pill.className = 'ae-status';
-        if (this._dirty || this._saving) {
-            text.textContent = this._saving ? 'Saving draft' : 'Unsaved changes';
+        if (this._dirty || this._inFlight) {
+            text.textContent = this._inFlight ? 'Saving draft' : 'Unsaved changes';
             pill.classList.add('ae-status-dirty');
         } else if (this._lastSavedAt) {
             text.textContent = `Draft saved ${Utils.timeAgo(this._lastSavedAt)}`;

@@ -140,27 +140,12 @@ func skippedIDs(skipped []SkippedFractal) []string {
 // a message naming the fractal when it holds many.
 func (h *Resolver) Resolve(ctx context.Context, p parser.TLSHParams, scope Scope) (Result, error) {
 	fractalIDs, prismID := scope.FractalIDs, scope.PrismID
-	if h == nil || h.Models == nil {
-		return Result{}, fmt.Errorf("tlsh(): analytics models are not available in this deployment")
-	}
-	if h.DB == nil {
+	if h != nil && h.Models != nil && h.DB == nil {
 		return Result{}, fmt.Errorf("tlsh(): no log store available in this deployment")
 	}
-	if len(fractalIDs) == 0 {
-		return Result{}, fmt.Errorf("tlsh(): no fractal in scope")
-	}
-
-	indexes, filtered, err := h.Models.ListTLSHIndexes(ctx, fractalIDs, p.Field)
-	if err != nil {
-		return Result{}, fmt.Errorf("tlsh(): resolve digest index: %w", err)
-	}
-
-	needles, err := h.loadTLSHNeedles(ctx, p, fractalIDs, prismID)
+	indexes, filtered, needles, err := h.loadInputs(ctx, p, scope)
 	if err != nil {
 		return Result{}, err
-	}
-	if len(needles) == 0 {
-		return Result{}, fmt.Errorf("tlsh(): no valid digests to compare against")
 	}
 
 	candidates, skipped, err := h.probeTLSHIndex(ctx, indexes, filtered, fractalIDs)
@@ -195,6 +180,43 @@ func (h *Resolver) Resolve(ctx context.Context, p parser.TLSHParams, scope Scope
 		matches = matches[:tlshMaxMatches]
 	}
 	return Result{Matches: matches, Skipped: skipped}, nil
+}
+
+// Check refuses what Resolve refuses before it reads any logs, so a query can be
+// judged without touching ClickHouse.
+func (h *Resolver) Check(ctx context.Context, p parser.TLSHParams, scope Scope) error {
+	indexes, filtered, _, err := h.loadInputs(ctx, p, scope)
+	if err != nil {
+		return err
+	}
+	for _, fid := range scope.FractalIDs {
+		if _, indexed := indexes[fid]; indexed {
+			return nil
+		}
+	}
+	return tlshNoIndexError(p.Field, scope.FractalIDs, filtered, scope.PrismID)
+}
+
+// loadInputs reads the indexes in scope and the needles to compare against them.
+func (h *Resolver) loadInputs(ctx context.Context, p parser.TLSHParams, scope Scope) (map[string]models.TLSHIndex, map[string]string, []tlshNeedle, error) {
+	if h == nil || h.Models == nil {
+		return nil, nil, nil, fmt.Errorf("tlsh(): analytics models are not available in this deployment")
+	}
+	if len(scope.FractalIDs) == 0 {
+		return nil, nil, nil, fmt.Errorf("tlsh(): no fractal in scope")
+	}
+	indexes, filtered, err := h.Models.ListTLSHIndexes(ctx, scope.FractalIDs, p.Field)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("tlsh(): resolve digest index: %w", err)
+	}
+	needles, err := h.loadTLSHNeedles(ctx, p, scope.FractalIDs, scope.PrismID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(needles) == 0 {
+		return nil, nil, nil, fmt.Errorf("tlsh(): no valid digests to compare against")
+	}
+	return indexes, filtered, needles, nil
 }
 
 // TableSource says where ResolveForTable reads candidate digests, and separately

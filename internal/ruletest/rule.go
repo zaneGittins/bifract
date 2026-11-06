@@ -104,10 +104,6 @@ var unsupportedCommands = map[string]string{
 }
 
 func checkSupported(pipeline *parser.PipelineNode) error {
-	if cmd, ok := parser.FirstSourceCommand(pipeline); ok {
-		return fmt.Errorf("rule uses the source command %s(), which reads provenance tables "+
-			"built by materialized views on the live logs table and cannot be tested offline", cmd.Name)
-	}
 	var name, reason string
 	parser.ForEachCommand(pipeline, func(cmd parser.CommandNode) {
 		if name == "" {

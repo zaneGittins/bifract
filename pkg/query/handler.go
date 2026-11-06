@@ -1483,19 +1483,40 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	if selectedIndex == "" {
 		selectedIndex, _ = h.getSelectedIndex(r)
 	}
+	// Not knowing what exists is not the same as the query being wrong, so a failed
+	// load answers 503 and callers treat the query as unchecked.
+	unavailable := func(what string, err error) {
+		log.Printf("[QueryHandler] Validate could not load %s: %v", what, err)
+		respondJSON(w, http.StatusServiceUnavailable, ValidateResponse{Valid: false, Error: "Could not load " + what})
+	}
+
 	var prismFractalIDs []string
 	selectedPrismID, _ := r.Context().Value("selected_prism").(string)
 	isPrismContext := selectedPrismID != "" && req.FractalID == ""
 	if isPrismContext && h.prismManager != nil {
-		prismFractalIDs, _ = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID)
+		var err error
+		if prismFractalIDs, err = h.prismManager.GetMemberFractalIDs(r.Context(), selectedPrismID); err != nil {
+			unavailable("the prism", err)
+			return
+		}
+	}
+	// As in prepareQuery: nothing is in scope, so nothing can fail to resolve.
+	if isPrismContext && len(prismFractalIDs) == 0 {
+		respondJSON(w, http.StatusOK, ValidateResponse{Valid: true})
+		return
 	}
 
 	var dictScope dictionaries.Scope
 	if h.dictionaryManager != nil {
+		var err error
 		if isPrismContext {
-			dictScope, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID)
+			dictScope, err = h.dictionaryManager.ListDictionaryMappings(r.Context(), "", selectedPrismID)
 		} else if selectedIndex != "" {
-			dictScope, _ = h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, "")
+			dictScope, err = h.dictionaryManager.ListDictionaryMappings(r.Context(), selectedIndex, "")
+		}
+		if err != nil {
+			unavailable("dictionaries", err)
+			return
 		}
 	}
 
@@ -1508,9 +1529,11 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		} else if selectedIndex != "" {
 			infos, err = h.modelManager.ListModelInfos(r.Context(), selectedIndex)
 		}
-		if err == nil {
-			modelInfos = models.ParserInfos(infos)
+		if err != nil {
+			unavailable("models", err)
+			return
 		}
+		modelInfos = models.ParserInfos(infos)
 	}
 
 	// Time range affects only the generated WHERE clause, which we discard; fall
@@ -1526,10 +1549,16 @@ func (h *QueryHandler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		fractalIDForQuery = ""
 	}
 	_, _, hasComment := parser.ExtractCommentParams(pipeline)
-	// Validation must not touch ClickHouse, so tlsh() is marked present with no
-	// resolved matches: the command renders its empty-result form, and bad
-	// arguments still surface as an error here rather than at execution.
-	_, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
+	// Validation must not touch ClickHouse, so tlsh() is checked against Postgres and
+	// marked present with no resolved matches: the command renders its empty-result form.
+	tlshParams, hasTLSH, tlshErr := parser.ExtractTLSHParams(pipeline)
+	if tlshErr == nil && hasTLSH {
+		scopeFractals := prismFractalIDs
+		if !isPrismContext {
+			scopeFractals = []string{selectedIndex}
+		}
+		tlshErr = h.tlshResolver().Check(r.Context(), tlshParams, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: selectedPrismID})
+	}
 	if tlshErr != nil {
 		respondJSON(w, http.StatusOK, ValidateResponse{Valid: false, Error: tlshErr.Error()})
 		return

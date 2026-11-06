@@ -387,7 +387,9 @@ const Utils = {
             const parsed = JSON.parse(body);
             if (parsed && typeof parsed.error === 'string' && parsed.error) return parsed.error;
         } catch (_) { /* not JSON: use the raw body below */ }
-        return body.trim() || fallback || `Request failed (${response.status})`;
+        // A proxy's error page is markup, not a reason.
+        const text = body.trim();
+        return (!text.startsWith('<') && text) || fallback || `Request failed (${response.status})`;
     },
 
     // Machine-readable classification of a failed response, or '' when the

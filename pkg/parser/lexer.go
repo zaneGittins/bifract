@@ -64,6 +64,11 @@ type Lexer struct {
 	// its own tokens. Filter syntax needs them folded in (a wildcard value, a
 	// hyphenated field name); expression syntax never does.
 	exprMode bool
+	// scanComments makes the lexer skip comment lines and record their [start, end)
+	// rune spans in comments. Only StripComments sets it: everything else lexes text
+	// with comments already blanked, or a fragment that has no lines of its own.
+	scanComments bool
+	comments     [][2]int
 }
 
 func NewLexer(input string) *Lexer {
@@ -89,9 +94,33 @@ func (l *Lexer) peekChar() rune {
 }
 
 func (l *Lexer) skipWhitespace() {
-	for unicode.IsSpace(l.ch) {
-		l.readChar()
+	for {
+		for unicode.IsSpace(l.ch) {
+			l.readChar()
+		}
+		if !l.scanComments || l.ch != '/' || l.peekChar() != '/' || !l.atLineStart() {
+			return
+		}
+		start := l.pos - 1
+		for l.ch != 0 && l.ch != '\n' && l.ch != '\r' {
+			l.readChar()
+		}
+		l.comments = append(l.comments, [2]int{start, l.pos - 1})
 	}
+}
+
+// atLineStart reports whether only whitespace precedes the current rune on its line.
+func (l *Lexer) atLineStart() bool {
+	for i := l.pos - 2; i >= 0; i-- {
+		r := l.runes[i]
+		if r == '\n' || r == '\r' {
+			return true
+		}
+		if !unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *Lexer) readString(quote rune) string {

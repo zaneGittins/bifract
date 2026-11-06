@@ -1306,6 +1306,10 @@ func setConditionPosition(c *HavingCondition, cmdIndex, assignIndex int) {
 }
 
 func ParseQuery(query string) (*PipelineNode, error) {
+	query, blanked := StripComments(query)
+	if blanked > 0 && strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("the query is only comments")
+	}
 	lexer := NewLexer(query)
 	tokens, err := lexer.Tokenize()
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"bifract/pkg/parser"
 	"bifract/pkg/ruleeval"
 )
 
@@ -394,7 +395,8 @@ func subjectString(name string, s PolicySubject) string {
 	case "description":
 		return s.Content.Description
 	case "query_string":
-		return s.Content.QueryString
+		stripped, _ := parser.StripComments(s.Content.QueryString)
+		return strings.TrimSpace(stripped)
 	case "alert_type":
 		return s.Content.AlertType
 	case "severity":
