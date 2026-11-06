@@ -397,3 +397,48 @@ func TestNewResolverWithMissingDependenciesErrors(t *testing.T) {
 		t.Fatalf("no ClickHouse client: got %v, want the log-store-unavailable error", err)
 	}
 }
+
+type fakeIndexer struct {
+	indexes  map[string]models.TLSHIndex
+	filtered map[string]string
+	err      error
+}
+
+func (f fakeIndexer) ListTLSHIndexes(context.Context, []string, string) (map[string]models.TLSHIndex, map[string]string, error) {
+	return f.indexes, f.filtered, f.err
+}
+
+// Check refuses what Resolve refuses before it reads a log, with no log store at all.
+func TestCheckRefusesWithoutTheLogStore(t *testing.T) {
+	indexed := fakeIndexer{indexes: map[string]models.TLSHIndex{"f1": {Name: "idx", TableName: "m", FractalID: "f1"}}}
+	scope := Scope{FractalIDs: []string{"f1"}}
+	cases := []struct {
+		name    string
+		models  ModelIndexer
+		params  parser.TLSHParams
+		scope   Scope
+		wantErr string
+	}{
+		{"good digest", indexed, parser.TLSHParams{Field: "h", Hashes: []string{digestA}}, scope, ""},
+		{"dictionary needles", indexed, parser.TLSHParams{Field: "h", Dict: "d"}, scope, ""},
+		{"bad digest", indexed, parser.TLSHParams{Field: "h", Hashes: []string{"zz"}}, scope, "not a valid TLSH digest"},
+		{"no index", fakeIndexer{}, parser.TLSHParams{Field: "h", Hashes: []string{digestA}}, scope, "no TLSH index"},
+		{"one member indexed is enough", indexed, parser.TLSHParams{Field: "h", Hashes: []string{digestA}}, Scope{FractalIDs: []string{"f1", "f2"}}, ""},
+		{"no models", nil, parser.TLSHParams{Field: "h", Hashes: []string{digestA}}, scope, "not available"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Resolver{Models: tc.models, Dicts: &fakeDicts{}}
+			err := r.Check(context.Background(), tc.params, tc.scope)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}

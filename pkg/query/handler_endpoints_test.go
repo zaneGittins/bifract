@@ -2,15 +2,23 @@ package query
 
 import (
 	"compress/gzip"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"bifract/internal/fakedb"
 	"bifract/pkg/api"
+	"bifract/pkg/dictionaries"
+	"bifract/pkg/models"
 	"bifract/pkg/parser"
+	"bifract/pkg/prisms"
+	"bifract/pkg/storage"
+	"bifract/pkg/storage/storagetest"
 )
 
 func decodeValidate(t *testing.T, rec *httptest.ResponseRecorder) ValidateResponse {
@@ -63,6 +71,7 @@ func TestHandleValidate(t *testing.T) {
 		},
 		{name: "parse error underlines", body: `{"query":"level=error | eval(x:=)"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantErr: "Parse error: ", wantType: "parse", wantSpan: true},
 		{name: "unknown command", body: `{"query":"* | nosuchcommand()"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantErr: "Query error: unsupported command", wantType: "translate"},
+		{name: "an empty prism has nothing to resolve against", body: `{"query":"level=error | modelLookup(model=\"m\", key=[user])"}`, vals: ctxVals{"user": testViewer, "prism_role": "viewer", "selected_prism": "p1"}, wantCode: http.StatusOK, wantValid: true},
 		{name: "tlsh() arguments are checked", body: `{"query":"tlsh(field=hash)"}`, vals: viewerCtx(), wantCode: http.StatusOK, wantErr: "tlsh(): needs hash="},
 
 		// pgr() resolves its source from the database, which validation must not
@@ -348,5 +357,45 @@ func TestHandleReference(t *testing.T) {
 		if !ops[want] {
 			t.Errorf("operator %q missing from the reference", want)
 		}
+	}
+}
+
+// A failed lookup says nothing about the query, so the editor must not be told it is
+// wrong: "model not found" here would refuse a valid alert during a Postgres blip.
+func TestHandleValidateUnknownWhenReferencesFailToLoad(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		vals ctxVals
+		wire func(h *QueryHandler, pg *storage.PostgresClient)
+	}{
+		{"dictionaries", `{"query":"*","fractal_id":"f1"}`, viewerCtx(), func(h *QueryHandler, pg *storage.PostgresClient) {
+			h.dictionaryManager = dictionaries.NewManager(pg, nil)
+		}},
+		{"models", `{"query":"*","fractal_id":"f1"}`, viewerCtx(), func(h *QueryHandler, pg *storage.PostgresClient) {
+			h.SetModelManager(models.NewManager(pg, nil))
+		}},
+		{"prism members", `{"query":"*"}`, ctxVals{"user": testViewer, "prism_role": "viewer", "selected_prism": "p1"}, func(h *QueryHandler, pg *storage.PostgresClient) {
+			h.prismManager = prisms.NewManager(pg)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pg, fake := storagetest.Postgres()
+			fake.Respond(func(string, []driver.Value) (fakedb.PGResult, bool) {
+				return fakedb.PGResult{Err: errors.New("connection refused")}, true
+			})
+			h := newTestQueryHandler(1000)
+			tc.wire(h, pg)
+
+			rec := httptest.NewRecorder()
+			h.HandleValidate(rec, testRequest(http.MethodPost, tc.body, tc.vals))
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "connection refused") {
+				t.Fatalf("the cause leaked to the client: %s", rec.Body.String())
+			}
+		})
 	}
 }

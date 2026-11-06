@@ -467,9 +467,15 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 		return nil, err
 	}
 
+	if strings.TrimSpace(c.QueryString) == "" {
+		return nil, fmt.Errorf("%w: a query is required", ErrInvalidAlert)
+	}
 	parsed, err := parser.ParseQuery(c.QueryString)
 	if err != nil {
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
+	}
+	if err := validateRunsInEngine(parsed); err != nil {
+		return nil, err
 	}
 	if err := validateWindowContract(parsed); err != nil {
 		return nil, err
@@ -497,6 +503,18 @@ func validateDefinition(c RevisionContent) (*parser.PipelineNode, error) {
 		}
 	}
 	return parsed, nil
+}
+
+// validateRunsInEngine refuses commands only a search resolves: the engine translates
+// the query directly, so an alert using one would fail on every evaluation.
+func validateRunsInEngine(pipeline *parser.PipelineNode) error {
+	if _, _, found := parser.ExtractCommentParams(pipeline); found {
+		return fmt.Errorf("%w: alerts cannot use comment(); it only works in a search", ErrInvalidAlert)
+	}
+	if cmd, found := parser.FirstSourceCommand(pipeline); found {
+		return fmt.Errorf("%w: alerts cannot use %s(); it only works in a search", ErrInvalidAlert, cmd.Name)
+	}
+	return nil
 }
 
 // validateReferences refuses any reference the UI could not safely link, such as javascript: URLs.
@@ -2193,6 +2211,9 @@ func (m *Manager) CreateFeedAlert(ctx context.Context, name, description, queryS
 	if err != nil {
 		return nil, fmt.Errorf("invalid query syntax: %w", err)
 	}
+	if err := validateRunsInEngine(parsedQuery); err != nil {
+		return nil, err
+	}
 
 	if alertType == "" {
 		alertType = "event"
@@ -2271,9 +2292,12 @@ func (m *Manager) UpdateFeedAlert(ctx context.Context, alertID, name, descriptio
 		return fmt.Errorf("exactly one of fractal_id or prism_id must be set")
 	}
 
-	_, err := parser.ParseQuery(queryString)
+	parsedQuery, err := parser.ParseQuery(queryString)
 	if err != nil {
 		return fmt.Errorf("invalid query syntax: %w", err)
+	}
+	if err := validateRunsInEngine(parsedQuery); err != nil {
+		return err
 	}
 
 	if alertType == "" {

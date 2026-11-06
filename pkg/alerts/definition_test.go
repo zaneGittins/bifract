@@ -29,6 +29,14 @@ func TestValidateDefinition(t *testing.T) {
 		{"unknown severity", RevisionContent{Severity: `"onmouseover=alert()`, QueryString: `status=500`}, "unknown severity", true},
 		{"legacy info severity", RevisionContent{Severity: "info", QueryString: `status=500`}, "unknown severity", true},
 		{"unparseable query", RevisionContent{QueryString: `status=500 | groupby(`}, "invalid query syntax", false},
+		{"comment line", RevisionContent{QueryString: "// why this fires\nstatus=500\n// noisy\n| status!=404"}, "", false},
+		{"only comments", RevisionContent{QueryString: "// nothing\n  // here\n"}, "only comments", false},
+		{"blank query", RevisionContent{QueryString: "  \n "}, "query is required", true},
+		{"comment() only resolves in a search", RevisionContent{QueryString: `comment(tags=[triage])`}, "cannot use comment()", true},
+		{"comment() after a filter", RevisionContent{QueryString: `a=1 | comments(keyword="x")`}, "cannot use comment()", true},
+		{"pgr() only resolves in a search", RevisionContent{QueryString: `pgr(start="g1")`}, "cannot use pgr()", true},
+		{"compound cannot use pgr() either", RevisionContent{AlertType: "compound", QueryString: `pgr(start="g1") | groupby(a)`, WindowDuration: intPtr(300)}, "cannot use pgr()", true},
+		{"a field named comment is fine", RevisionContent{QueryString: `comment="x"`}, "", false},
 		{"bad throttle field", RevisionContent{QueryString: `a=1`, ThrottleField: "user name"}, "throttle field", true},
 		{"negative lag", RevisionContent{QueryString: `a=1`, MaxEventLagSeconds: -1}, "max event lag", true},
 		{"unbounded correlation", RevisionContent{QueryString: `* | chain(user) { a="x"; b="y" }`}, "needs a bound", true},
@@ -397,5 +405,20 @@ func TestHTTPReferencesDropsUnsafeSchemes(t *testing.T) {
 	}
 	if got := httpReferences(nil); got == nil || len(got) != 0 {
 		t.Fatalf("httpReferences(nil) = %#v, want an empty slice", got)
+	}
+}
+
+// A feed rule skips validateDefinition but runs in the same engine.
+func TestFeedAlertsRefuseSearchOnlyCommands(t *testing.T) {
+	m := &Manager{}
+	for _, q := range []string{`comment(tags=[triage])`, `pgr(start="g1")`} {
+		_, err := m.CreateFeedAlert(context.Background(), "r", "", q, "event", "medium", nil, nil, "feed", "p", "h", "f1", "", "u")
+		if !errors.Is(err, ErrInvalidAlert) {
+			t.Errorf("CreateFeedAlert(%q) error = %v", q, err)
+		}
+		err = m.UpdateFeedAlert(context.Background(), "a1", "r", "", q, "event", "medium", nil, nil, "h", "u", "f1", "")
+		if !errors.Is(err, ErrInvalidAlert) {
+			t.Errorf("UpdateFeedAlert(%q) error = %v", q, err)
+		}
 	}
 }

@@ -1622,12 +1622,17 @@
     transition: var(--transition);
 }
 
+.alert-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
 .alert-btn-primary {
     background: var(--accent-primary);
     color: white;
 }
 
-.alert-btn-primary:hover {
+.alert-btn-primary:hover:not(:disabled) {
     background: var(--accent-secondary);
     box-shadow: var(--shadow-glow);
 }

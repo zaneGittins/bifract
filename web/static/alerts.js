@@ -271,7 +271,7 @@ const Alerts = {
         // Modal backdrop click to close
         document.addEventListener('click', (e) => {
             // Check if clicked element is a modal backdrop
-            const modalIds = ['alertModal', 'importYamlModal'];
+            const modalIds = ['importYamlModal'];
 
             for (const modalId of modalIds) {
                 const modal = document.getElementById(modalId);
@@ -1876,76 +1876,6 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
         }
     },
 
-    async saveAlert() {
-        const formData = this.getAlertFormData();
-        if (!formData) return;
-
-        try {
-            const url = this.currentAlert
-                ? `/api/v1/alerts/${this.currentAlert.id}`
-                : '/api/v1/alerts';
-
-            const method = this.currentAlert ? 'PUT' : 'POST';
-
-            const response = await fetch(url, {
-                method,
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(formData)
-            });
-
-            const data = await response.json();
-            if (data.success) {
-                this.closeModal('alertModal');
-                this.loadAlerts();
-                Toast.show(`Alert ${this.currentAlert ? 'updated' : 'created'} successfully`, 'success');
-            } else {
-                this.showError(document.getElementById('alertError'), data.error || 'Failed to save alert');
-            }
-        } catch (error) {
-            console.error('Save alert error:', error);
-            this.showError(document.getElementById('alertError'), 'Network error: ' + error.message);
-        }
-    },
-
-    getAlertFormData() {
-        const name = document.getElementById('alertName')?.value.trim();
-        const description = document.getElementById('alertDescription')?.value.trim();
-        const queryString = document.getElementById('editorQueryInput')?.value.trim();
-        const labels = document.getElementById('alertLabels')?.value.split(',').map(s => s.trim()).filter(s => s);
-        const throttleTime = parseInt(document.getElementById('alertThrottleTime')?.value) || 0;
-        const throttleField = document.getElementById('alertThrottleField')?.value.trim();
-        const enabled = document.getElementById('alertEnabled')?.checked || false;
-
-        // Get selected webhooks
-        const webhookCheckboxes = document.querySelectorAll('#alertWebhooksList input[type="checkbox"]:checked');
-        const webhookActionIDs = Array.from(webhookCheckboxes).map(cb => cb.value);
-
-        // Validation
-        const errorDiv = document.getElementById('alertError');
-        if (!name) {
-            this.showError(errorDiv, 'Alert name is required');
-            return null;
-        }
-        if (!queryString) {
-            this.showError(errorDiv, 'Query string is required');
-            return null;
-        }
-
-        this.hideError(errorDiv);
-
-        return {
-            name,
-            description,
-            query_string: queryString,
-            labels,
-            throttle_time_seconds: throttleTime,
-            throttle_field: throttleField,
-            enabled,
-            webhook_action_ids: webhookActionIDs
-        };
-    },
-
     async saveWebhook() {
         const formData = this.getWebhookFormData();
         if (!formData) return;
@@ -3398,30 +3328,27 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
     },
 
     async saveAlertFromEditor() {
+        const saveBtn = document.getElementById('saveAlertBtn');
+        if (!saveBtn || saveBtn.disabled) return;
+        saveBtn.disabled = true;
+        try {
+            await this.submitAlertEditor();
+        } finally {
+            saveBtn.disabled = false;
+        }
+    },
+
+    async submitAlertEditor() {
         const formData = this.getAlertEditorFormData();
         if (!formData) return;
 
-        // Validate query syntax before saving
-        try {
-            const query = this.stripComments(formData.query_string);
-            const timeRange = this.getTimeRange();
-            const validateBody = { query, start: timeRange.start, end: timeRange.end, source: 'alert' };
-            if (window.FractalContext && window.FractalContext.currentFractal && !window.FractalContext.isPrism()) {
-                validateBody.fractal_id = window.FractalContext.currentFractal.id;
-            }
-            const validateResp = await fetch('/api/v1/query', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(validateBody)
-            });
-            const validateData = await validateResp.json();
-            if (!validateData.success) {
-                Toast.show('Invalid query syntax: ' + (validateData.error || 'unknown error'), 'error');
-                return;
-            }
-        } catch (err) {
-            Toast.show('Could not validate query: ' + err.message, 'error');
+        // Checks the query without running it: saving must not depend on how heavy the
+        // query is or how busy ClickHouse is. A null result is unknown, not invalid.
+        const context = window.FractalContext;
+        const fractalId = context && !context.isPrism() ? context.currentFractal?.id : undefined;
+        const check = await QueryValidate.run(formData.query_string, fractalId);
+        if (check && !check.valid) {
+            Toast.error('Invalid query', check.error);
             return;
         }
 
@@ -3449,13 +3376,11 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                 body: JSON.stringify(formData)
             });
 
-            // A policy block is not a failure to report and forget: the reasons go to
-            // the Checks tab and onto the fields, where they can be acted on.
-            // Neither refusal is a failure to report and forget. A policy block goes to
-            // the Checks tab and onto the fields; a gate refusal means the scope started
-            // reviewing changes since the editor opened, so switch to proposing.
+            // A policy block goes to the Checks tab and onto the fields; a gate refusal means
+            // the scope started reviewing changes since the editor opened, so switch to
+            // proposing. Anything else is the server's reason, shown as given.
             if (!response.ok) {
-                const payload = await response.json().catch(() => ({}));
+                const payload = await response.clone().json().catch(() => ({}));
                 switch (this.classifyRefusal(response, payload)) {
                     case 'policy':
                         window.AlertPolicy?.showBlocked(payload.data || []);
@@ -3467,11 +3392,8 @@ maxEventLagSeconds: ${alert.max_event_lag_seconds}` : ''}`;
                         this.openProposeComposer(formData);
                         return;
                 }
-            }
-
-            if (!response.ok) {
-                const errorData = await Utils.errorMessage(response);
-                throw new Error(`HTTP ${response.status}: ${errorData}`);
+                Toast.error('Could not save alert', await Utils.errorMessage(response));
+                return;
             }
 
             const data = await response.json();

@@ -238,3 +238,14 @@ func TestDeferredCheckIsReportedAsNeitherPassNorFail(t *testing.T) {
 		t.Error("a deferred rule is neither passing nor failing")
 	}
 }
+
+// A comment is not part of what runs, so it must neither hide a query from a rule nor
+// satisfy one.
+func TestPolicyReadsTheQueryWithoutComments(t *testing.T) {
+	if got := subjectString("query_string", subjectWith(RevisionContent{QueryString: "// note\n*\n// end"})); got != "*" {
+		t.Fatalf("query_string = %q, want the query alone", got)
+	}
+	if got := subjectString("query_string", subjectWith(RevisionContent{QueryString: `msg="// kept"`})); got != `msg="// kept"` {
+		t.Fatalf("query_string = %q", got)
+	}
+}

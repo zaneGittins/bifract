@@ -61,6 +61,8 @@ The editor sets the type from the query: an aggregation switches it to Compound.
 
 The alert engine evaluates every enabled alert on each tick (default every 60 seconds). Event alerts track a cursor on ingest time, so no logs are missed across restarts. One evaluation reads at most 10,000 rows.
 
+`comment()` and `pgr()` only work in a search, so an alert using either is refused when saved. A saved alert that already uses one must drop it before it can be edited.
+
 Re-enabling a disabled alert restarts its cursor 5 minutes before now. Logs that arrived while it was disabled are not evaluated.
 
 Execution history, including matched and suppressed counts, is under **System > Alert engine**.
