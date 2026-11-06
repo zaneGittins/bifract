@@ -358,6 +358,7 @@ func main() {
 	settings.RegisterQueryLimitsApplier(func(limits storage.WorkloadLimits) error {
 		return db.ReconcileQueryWorkloads(context.Background(), limits)
 	})
+	db.StartQueryIdentityRepair(context.Background())
 	// So the settings page reports a share the server has refused as unavailable,
 	// instead of showing the stored percentage as though it were in force.
 	settings.RegisterCapabilityReporter(db.Capabilities)

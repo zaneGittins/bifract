@@ -471,7 +471,7 @@ func TestCountLogs(t *testing.T) {
 
 // Every interactive read helper runs on the class identity its ctx names, so a
 // search's privileges and memory ceiling are the class's, not the admin's; the same
-// helpers on an untagged ctx (alerts, field stats) stay on the default connection.
+// helpers on an untagged ctx (inserts, schema work) stay on the default connection.
 func TestQueryHelpersRouteByWorkload(t *testing.T) {
 	ctx := context.Background()
 	helpers := map[string]func(c *ClickHouseClient, ctx context.Context) error{

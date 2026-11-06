@@ -53,7 +53,7 @@ const (
 )
 
 // fractalScopeFilter applies to every user and is a no-op for a query that carries
-// no scope: ingest, merges, alerts on unscoped rules and admin tooling read as before.
+// no scope: ingest, merges and admin tooling read as before.
 // IN builds a set once per read; has() on the LowCardinality column cost ~40ns a row.
 const fractalScopeFilter = "NOT " + fractalScopeMarkedSQL + " OR fractal_id IN (SELECT arrayJoin(" + fractalScopeListSQL + "))"
 
@@ -105,7 +105,7 @@ func scopedQueryID(ctx context.Context) (string, error) {
 	id, _ := ctx.Value(queryIDKey{}).(string)
 	scope, ok := contextScope(ctx)
 	if !ok {
-		if contextWorkload(ctx) == QuerySearchWorkload {
+		if QueryClassOf(ctx) == QuerySearchWorkload {
 			return "", fmt.Errorf("search query has no fractal scope")
 		}
 		return id, nil

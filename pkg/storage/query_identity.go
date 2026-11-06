@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
 
 // Each query class connects to ClickHouse as its own user so its memory share can be
@@ -27,11 +29,15 @@ import (
 // dropMemoryReservationResource removes it. max_memory_usage_for_user is the mature
 // path to the same guarantee, and it fails a query cleanly with code 241.
 //
-// Inserts, merges, mutations, materialized views and alert evaluation are outside this
-// boundary by construction: they never carry a workload marker, so they run on the
-// default connection and can never be throttled by a query class's ceiling. The
-// identities are granted read-only, so a write mistakenly issued on one fails loudly
-// instead of silently drawing on a search budget.
+// Inserts, merges, mutations and materialized views are outside this boundary by
+// construction: they never carry a workload marker, so they run on the default
+// connection and can never be throttled by a query class's ceiling. The identities are
+// granted read-only, so a write mistakenly issued on one fails loudly instead of
+// silently drawing on a search budget.
+//
+// The alert class has an identity for privilege alone. Alert evaluation, field stats
+// and exports run user-authored SQL, so they get the read-only reach of a search, but
+// no ceiling and no workload: a search class must never throttle them.
 const (
 	// SearchCHUser and RecallCHUser deliberately match their workload names: the
 	// workload schedules the class's CPU, the user accounts for its memory. ClickHouse
@@ -39,6 +45,14 @@ const (
 	// label.
 	SearchCHUser = "bifract_search"
 	RecallCHUser = "bifract_recall"
+
+	// QueryAlertClass marks reads for AlertCHUser. Unlike the two above it names no
+	// workload, so it is never scheduled and never tagged.
+	AlertCHUser     = "bifract_alert"
+	QueryAlertClass = AlertCHUser
+
+	// queryIdentityRepairInterval is how often a missing identity is retried.
+	queryIdentityRepairInterval = time.Minute
 
 	// queryIdentityDDLTimeout bounds one access-control statement. These are
 	// metadata-only, so a slow one means the node is in trouble.
@@ -60,6 +74,9 @@ type queryIdentity struct {
 	memCapBytes int64
 }
 
+// queryIdentityClasses are the classes that run on their own identity.
+var queryIdentityClasses = []string{QuerySearchWorkload, QueryRecallWorkload, QueryAlertClass}
+
 // queryIdentityUser maps a workload class to the ClickHouse user that runs it.
 func queryIdentityUser(workload string) string {
 	switch workload {
@@ -67,6 +84,8 @@ func queryIdentityUser(workload string) string {
 		return SearchCHUser
 	case QueryRecallWorkload:
 		return RecallCHUser
+	case QueryAlertClass:
+		return AlertCHUser
 	}
 	return ""
 }
@@ -92,26 +111,33 @@ func (c *ClickHouseClient) queryIdentityPassword(user string) string {
 // hex digest lacks. See queryIdentityPassword.
 const queryIdentityPasswordSuffix = "Aa1!"
 
-// reconcileQueryIdentities provisions one ClickHouse user per capped class and opens a
-// pool for it. Classes absent from memCaps are uncapped and keep using the default
-// connection, so their pool is closed.
+// reconcileQueryIdentities provisions one ClickHouse user per class and opens a pool
+// for it. Classes absent from memCaps are uncapped: they keep their identity, without a
+// memory ceiling.
 //
 // An identity whose ceiling has not changed is reused rather than rebuilt. Reconcile
 // runs on every settings save, and closing a live pool would abort whatever searches
 // were running on it.
 //
 // Never fatal. A deployment whose privileged user lacks access management cannot create
-// users at all; that class then falls back to the default connection, where the
+// users at all; that class then falls back to the default connection, where any
 // per-query ceiling from applyQuerySettings still applies. The result is the previous
 // behaviour, not a broken search.
 func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps map[string]int64) {
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	c.reconcileIdentitiesLocked(ctx, memCaps)
+}
+
+func (c *ClickHouseClient) reconcileIdentitiesLocked(ctx context.Context, memCaps map[string]int64) {
 	var current map[string]*queryIdentity
 	if m := c.queryConns.Load(); m != nil {
 		current = *m
 	}
 
 	next := map[string]*queryIdentity{}
-	for _, workload := range []string{QuerySearchWorkload, QueryRecallWorkload} {
+	var firstErr error
+	for _, workload := range queryIdentityClasses {
 		limit := memCaps[workload]
 		if limit < 0 {
 			limit = 0
@@ -127,7 +153,10 @@ func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps
 		user := queryIdentityUser(workload)
 		conn, err := c.ensureQueryIdentity(ctx, user, limit)
 		if err != nil {
-			log.Printf("[ClickHouse] Query identity %q unavailable, %s falls back to a per-query ceiling only: %v", user, workload, err)
+			log.Printf("[ClickHouse] Query identity %q unavailable, %s falls back to the default connection: %v", user, workload, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		next[workload] = &queryIdentity{conn: conn, memCapBytes: limit}
@@ -136,6 +165,11 @@ func (c *ClickHouseClient) reconcileQueryIdentities(ctx context.Context, memCaps
 		} else {
 			log.Printf("[ClickHouse] Query identity %q ensured (read-only on %s, uncapped)", user, c.logsDatabase())
 		}
+	}
+
+	// A later class succeeding must not mask an earlier class's failure.
+	if firstErr != nil {
+		c.recordCapability(CapQueryIdentity, firstErr)
 	}
 
 	// After the identities: the policy that requires a scope names the search user.
@@ -168,9 +202,8 @@ func withinCapTolerance(live, next int64) bool {
 }
 
 // ensureQueryIdentity creates or updates one class identity and returns a pool
-// connected as it. The grants are read-shaped and deliberately broad: this identity
-// exists to account for memory, not to restrict what a search may read, and a missing
-// grant would surface as a query failure for the user.
+// connected as it. The grants are read-shaped; a missing one surfaces as a query
+// failure for the user.
 func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string, memCapBytes int64) (driver.Conn, error) {
 	onCluster := c.OnClusterSQL()
 	pw := EscCHStr(c.queryIdentityPassword(user))
@@ -244,11 +277,6 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 	// defines all of them. Bundled into one statement, a single unsupported
 	// privilege would cost the whole identity and with it the class's memory
 	// ceiling, which is a far worse outcome than losing one capability.
-	//
-	// Per class, because an object-store grant is also the one outbound channel an
-	// injected query could exfiltrate through. Only recall reads archives, so only
-	// recall gets S3/AZURE. URL is granted to neither: no archive backend addresses
-	// data by URL (see objstore.Backend), so it would be reach with no use.
 	optional := queryIdentityOptionalGrants(user)
 	for _, o := range optional {
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
@@ -266,7 +294,7 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 		User:     user,
 		Password: c.queryIdentityPassword(user),
 		TLS:      c.tls,
-		Pool:     DefaultQueryPoolConfig(),
+		Pool:     c.identityPool(),
 	}
 	conn, err := openClickHouseConn(identityConn)
 	if err != nil {
@@ -283,7 +311,64 @@ func (c *ClickHouseClient) ensureQueryIdentity(ctx context.Context, user string,
 }
 
 // queryTextSystemTables expose other queries' text to whoever can read them.
-var queryTextSystemTables = []string{"query_log", "query_thread_log", "query_views_log", "processes"}
+var queryTextSystemTables = []string{"query_log", "query_thread_log", "query_views_log", "processes", "text_log", "query_cache"}
+
+// identityPool sizes a class pool like the client's own, so BIFRACT_CH_QUERY_MAX_CONNS
+// applies to it. A client wrapped around an existing conn has no sizing of its own.
+func (c *ClickHouseClient) identityPool() ClickHousePoolConfig {
+	if c.queryPool.MaxOpenConns > 0 {
+		return c.queryPool
+	}
+	return DefaultQueryPoolConfig()
+}
+
+// StartQueryIdentityRepair retries missing identities in the background. Without it a
+// class that lost its identity to a failure at boot stays on the default connection,
+// with the admin's reach, until the next settings save or restart.
+func (c *ClickHouseClient) StartQueryIdentityRepair(ctx context.Context) {
+	go c.runIdentityRepair(ctx, queryIdentityRepairInterval)
+}
+
+func (c *ClickHouseClient) runIdentityRepair(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.repairQueryIdentities(ctx)
+		}
+	}
+}
+
+// repairQueryIdentities provisions any class without an identity and leaves live ones
+// alone. A server that has permanently refused is not asked again until the next
+// settings save or restart.
+func (c *ClickHouseClient) repairQueryIdentities(ctx context.Context) {
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	if c.caps.state(CapQueryIdentity) == CapUnavailable {
+		return
+	}
+	var live map[string]*queryIdentity
+	if m := c.queryConns.Load(); m != nil {
+		live = *m
+	}
+	caps := map[string]int64{}
+	missing := false
+	for _, class := range queryIdentityClasses {
+		if id := live[class]; id != nil {
+			caps[class] = id.memCapBytes
+			continue
+		}
+		caps[class] = c.queryMemoryCap(class)
+		missing = true
+	}
+	if missing {
+		c.reconcileIdentitiesLocked(ctx, caps)
+	}
+}
 
 // applyIdentitySettings sets the class's memory ceiling and pins what an injected
 // SETTINGS clause could otherwise use to escape it. Constraints bind a query's own
@@ -308,11 +393,18 @@ func (c *ClickHouseClient) applyIdentitySettings(ctx context.Context, user strin
 		sctx, cancel := context.WithTimeout(ctx, queryIdentityDDLTimeout)
 		err = c.conn.Exec(sctx, fmt.Sprintf("ALTER USER %s%s SETTINGS %s", user, c.OnClusterSQL(), clause))
 		cancel()
-		if err == nil {
-			return nil
+		if err == nil || !isUnknownSetting(err) {
+			return err
 		}
 	}
 	return err
+}
+
+// isUnknownSetting reports ClickHouse error 115. Any other failure must not cost an
+// identity its serialize_query_plan pin.
+func isUnknownSetting(err error) bool {
+	var ex *proto.Exception
+	return errors.As(err, &ex) && ex.Code == 115
 }
 
 // revokeStaleGrants narrows an identity provisioned by an earlier, broader release.
@@ -416,9 +508,9 @@ func staleInstanceWideGrants(showGrants, user string) []string {
 // queryIdentityOptionalGrants is what a class may additionally reach. Per class,
 // because an object-store grant is also the one outbound channel an injected query
 // could exfiltrate through: only recall reads archives, so only recall gets S3/AZURE,
-// and only recall keeps REMOTE (see staleInstanceWideGrants). URL is granted to
-// neither, since no archive backend addresses data by URL (see objstore.Backend) and
-// it would be reach with no use.
+// and only recall keeps REMOTE (see staleInstanceWideGrants). URL is granted to no
+// class, since no archive backend addresses data by URL (see objstore.Backend) and it
+// would be reach with no use.
 func queryIdentityOptionalGrants(user string) []struct{ priv, covers string } {
 	optional := []struct{ priv, covers string }{
 		{"CREATE TEMPORARY TABLE", "GLOBAL IN"},
@@ -448,10 +540,10 @@ func (c *ClickHouseClient) readConn(ctx context.Context) (driver.Conn, context.C
 
 // connFor returns the connection a query on ctx must run on: the class identity when
 // ctx is marked and that identity is provisioned, otherwise the default connection.
-// Untagged work -- inserts, merges, alert evaluation, schema reconciliation -- always
-// lands on the default connection and is never subject to a class's memory ceiling.
+// Untagged work -- inserts, merges, schema reconciliation -- always lands on the
+// default connection and is never subject to a class's memory ceiling.
 func (c *ClickHouseClient) connFor(ctx context.Context) driver.Conn {
-	workload := contextWorkload(ctx)
+	workload := QueryClassOf(ctx)
 	if workload == "" {
 		return c.conn
 	}

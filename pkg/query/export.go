@@ -38,6 +38,8 @@ var (
 // HandleExport streams every log a filter query matches as JSON Lines, newest
 // first, from one unlimited low-priority ClickHouse scan.
 func (h *QueryHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
+	// Marked first: prepareQuery itself reads ClickHouse for ptg() and tlsh().
+	r = r.WithContext(storage.UncappedReadContext(r.Context()))
 	prep := h.prepareQuery(w, r, purposeExport)
 	if prep == nil {
 		return

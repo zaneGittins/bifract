@@ -16,7 +16,7 @@ import (
 // ClickHouse workload; memory is capped per query with max_memory_usage.
 //
 // Only queries explicitly tagged with a workload are scheduled: everything else
-// (inserts, merges, mutations, alert evaluation) resolves to the 'default'
+// (inserts, merges, mutations, the alert class) resolves to the 'default'
 // workload, which is deliberately never created, and ClickHouse leaves unknown
 // workloads unscheduled while throw_on_unknown_workload is false (the server
 // default).
@@ -149,6 +149,9 @@ func (c *ClickHouseClient) ReconcileQueryWorkloads(ctx context.Context, limits W
 		if err != nil {
 			c.setQueryMemoryCaps(nil)
 			c.setActiveWorkloads(nil)
+			// The identities are a privilege boundary, so an unknown budget must not cost
+			// them. Live ceilings are kept rather than resolved.
+			c.repairQueryIdentities(ctx)
 			return err
 		}
 		if limits.SearchMemoryPercent > 0 {
@@ -432,12 +435,12 @@ func (c *ClickHouseClient) queryMemoryCap(name string) int64 {
 	return (*m)[name]
 }
 
-// workloadKey marks a context as belonging to a scheduled query class.
+// workloadKey marks a context as belonging to a query class.
 type workloadKey struct{}
 
-// WorkloadContext marks ctx as belonging to the named workload. Query helpers tag
-// such queries, so limits apply to that class without touching ingestion, alerting,
-// or model queries that share the same helpers.
+// WorkloadContext marks ctx as belonging to the named class. Query helpers tag such
+// queries, so limits apply to that class without touching ingestion or model queries
+// that share the same helpers.
 func WorkloadContext(ctx context.Context, name string) context.Context {
 	return context.WithValue(ctx, workloadKey{}, name)
 }
@@ -455,8 +458,15 @@ func RecallContext(ctx context.Context) context.Context {
 	return WorkloadContext(ctx, QueryRecallWorkload)
 }
 
-// contextWorkload returns the workload ctx was marked with, or "".
-func contextWorkload(ctx context.Context) string {
+// UncappedReadContext marks ctx as a user-authored read that must not share the search
+// budget: alert evaluation, field stats and exports. It runs on the read-only alert
+// identity, with no memory ceiling and no workload.
+func UncappedReadContext(ctx context.Context) context.Context {
+	return WorkloadContext(ctx, QueryAlertClass)
+}
+
+// QueryClassOf returns the class ctx was marked with, or "".
+func QueryClassOf(ctx context.Context) string {
 	name, _ := ctx.Value(workloadKey{}).(string)
 	return name
 }
@@ -504,7 +514,7 @@ func (c *ClickHouseClient) canSkipStatistics() bool {
 // by the server per query, not by the scheduler, so it still holds for a class whose
 // CPU share is off or whose workload DDL failed.
 func (c *ClickHouseClient) applyQuerySettings(ctx context.Context, settings clickhouse.Settings) clickhouse.Settings {
-	name := contextWorkload(ctx)
+	name := QueryClassOf(ctx)
 	tag := name != "" && c.workloadActive(name)
 	var memCap int64
 	if name != "" {

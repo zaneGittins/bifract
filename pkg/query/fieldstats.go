@@ -59,6 +59,8 @@ type FieldStatsResponse struct {
 // aggregation runs at low ClickHouse priority so it yields to interactive searches
 // and ingestion.
 func (h *QueryHandler) HandleFieldStats(w http.ResponseWriter, r *http.Request) {
+	// Marked first: prepareQuery itself reads ClickHouse for ptg(), pgr() and tlsh().
+	r = r.WithContext(storage.UncappedReadContext(r.Context()))
 	prep := h.prepareQuery(w, r, purposeSearch)
 	if prep == nil {
 		return // prepareQuery already wrote the response (auth/parse/empty-prism)

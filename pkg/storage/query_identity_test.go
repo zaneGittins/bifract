@@ -10,10 +10,10 @@ import (
 // stubConn is an identity marker for routing assertions; no method is ever called.
 type stubConn struct{ driver.Conn }
 
-// Untagged work must never run on a class identity. Inserts, merges, mutations,
-// materialized views and alert evaluation all reach ClickHouse through the same
-// helpers as search, and routing any of them onto a capped user would subject
-// non-optional work to a query class's memory ceiling.
+// Untagged work must never run on a class identity. Inserts, merges, mutations and
+// materialized views all reach ClickHouse through the same helpers as search, and
+// routing any of them onto a capped user would subject non-optional work to a query
+// class's memory ceiling.
 func TestConnForRoutesOnlyTaggedWork(t *testing.T) {
 	c := &ClickHouseClient{}
 	marker := &stubConn{}
@@ -30,6 +30,39 @@ func TestConnForRoutesOnlyTaggedWork(t *testing.T) {
 	// A class with no provisioned identity falls back rather than borrowing another's.
 	if got := c.connFor(RecallContext(context.Background())); got == marker {
 		t.Error("recall must not run on the search identity")
+	}
+}
+
+// User-authored reads outside the search budget run on their own identity, and fall
+// back to the default connection like every class when it is not provisioned.
+func TestConnForRoutesUncappedReads(t *testing.T) {
+	c := &ClickHouseClient{}
+	marker, search := &stubConn{}, &stubConn{}
+	ctx := UncappedReadContext(context.Background())
+	if got := c.connFor(ctx); got != nil {
+		t.Errorf("expected the default connection, got %v", got)
+	}
+	c.queryConns.Store(&map[string]*queryIdentity{QuerySearchWorkload: {conn: search}})
+	if got := c.connFor(ctx); got == search {
+		t.Error("an uncapped read must not borrow the search identity")
+	}
+	c.queryConns.Store(&map[string]*queryIdentity{QueryAlertClass: {conn: marker}, QuerySearchWorkload: {conn: search}})
+	if got := c.connFor(ctx); got != marker {
+		t.Error("an uncapped read must run on the alert identity")
+	}
+	if got := QueryClassOf(ctx); got != QueryAlertClass {
+		t.Errorf("class = %q", got)
+	}
+}
+
+// The alert class has no workload behind it, so a query in it must not name one.
+func TestUncappedReadsCarryNoWorkloadOrCeiling(t *testing.T) {
+	c := &ClickHouseClient{}
+	c.setActiveWorkloads(map[string]bool{QuerySearchWorkload: true})
+	c.setQueryMemoryCaps(map[string]int64{QuerySearchWorkload: 100})
+	got := c.applyQuerySettings(UncappedReadContext(context.Background()), nil)
+	if len(got) != 0 {
+		t.Errorf("settings = %v, want none", got)
 	}
 }
 
@@ -104,6 +137,9 @@ func TestQueryIdentityUser(t *testing.T) {
 	}
 	if got := queryIdentityUser(QueryRecallWorkload); got != RecallCHUser {
 		t.Errorf("recall workload mapped to %q", got)
+	}
+	if got := queryIdentityUser(QueryAlertClass); got != AlertCHUser {
+		t.Errorf("alert class mapped to %q", got)
 	}
 	// An unknown class must not resolve to an identity: it runs unrestricted on the
 	// default connection instead of silently borrowing a class budget.

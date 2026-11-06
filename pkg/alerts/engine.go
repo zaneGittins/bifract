@@ -662,7 +662,7 @@ func (e *Engine) buildQueryOpts(ctx context.Context, alert *Alert, from, to time
 				scopeFractals = []string{alert.FractalID}
 			}
 			resolver := tlshresolve.NewResolver(e.modelManager, e.dictManager, e.ch)
-			res, rerr := resolver.Resolve(ctx, params, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: alert.PrismID})
+			res, rerr := resolver.Resolve(storage.UncappedReadContext(ctx), params, tlshresolve.Scope{FractalIDs: scopeFractals, PrismID: alert.PrismID})
 			if rerr != nil {
 				return opts, rerr
 			}
@@ -768,7 +768,16 @@ func missingBaseColumn(code int32, err error) string {
 // windowStart is the alert's own window start, before any lookback widening in
 // buildQueryOpts; rows completing before it were reported by an earlier window.
 func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.QueryOptions, timeoutSec int, windowStart time.Time) ([]map[string]interface{}, error) {
-	if _, err := query.ResolveProcessTree(ctx, e.ch, alert.ParsedQuery, &opts); err != nil {
+	// Every read below is built from the rule's BQL, so none may run as admin.
+	readCtx := storage.TagContext(storage.UncappedReadContext(ctx), storage.QueryTag{
+		Source:  storage.SourceAlert,
+		Fractal: alert.FractalID,
+		Label:   alert.Name,
+	})
+	if scope, ok := query.FractalScope(opts); ok {
+		readCtx = storage.ScopeContext(readCtx, scope)
+	}
+	if _, err := query.ResolveProcessTree(readCtx, e.ch, alert.ParsedQuery, &opts); err != nil {
 		return nil, err
 	}
 	translated, err := parser.TranslateToSQLWithOrder(alert.ParsedQuery, opts)
@@ -777,17 +786,8 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 	}
 	sql := translated.SQL
 
-	alertCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	alertCtx, cancel := context.WithTimeout(readCtx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
-	alertCtx = storage.TagContext(alertCtx, storage.QueryTag{
-		Source:  storage.SourceAlert,
-		Fractal: alert.FractalID,
-		Label:   alert.Name,
-	})
-	// Alerts run on the privileged connection; the scope still binds what they read.
-	if scope, ok := query.FractalScope(opts); ok {
-		alertCtx = storage.ScopeContext(alertCtx, scope)
-	}
 
 	results, err := e.ch.QueryLowPriority(alertCtx, sql)
 	if err != nil {
@@ -833,7 +833,7 @@ func (e *Engine) runAlertQuery(ctx context.Context, alert *Alert, opts parser.Qu
 
 	// Aggregated rows carry no log fields, so a triggering row would otherwise
 	// reach its actions with no evidence attached.
-	evidence.Attach(ctx, translated, results, opts, e.ch.QueryLowPriority)
+	evidence.Attach(readCtx, translated, results, opts, e.ch.QueryLowPriority)
 	return results, nil
 }
 

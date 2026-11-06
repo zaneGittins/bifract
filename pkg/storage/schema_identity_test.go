@@ -61,8 +61,11 @@ func TestOnlyRecallReachesObjectStores(t *testing.T) {
 			t.Errorf("recall needs %s to read archives: %s", store, recall)
 		}
 	}
-	// No archive backend addresses data by URL (see objstore.Backend), so neither
-	// class has a use for it and both would gain an outbound channel.
+	if alert := privs(AlertCHUser); alert != search {
+		t.Errorf("the alert class must reach exactly what search does: %q vs %q", alert, search)
+	}
+	// No archive backend addresses data by URL (see objstore.Backend), so no class has
+	// a use for it and each would gain an outbound channel.
 	for name, p := range map[string]string{"search": search, "recall": recall} {
 		if strings.Contains(p, "URL") {
 			t.Errorf("%s must not be granted URL: %s", name, p)
