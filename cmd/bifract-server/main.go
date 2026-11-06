@@ -813,7 +813,8 @@ func main() {
 	if exchangeClient.Enabled() {
 		stopDatasetWorker = datasets.NewWorker(datasetStore,
 			egress.NewClient(egress.Options{AllowPrivate: exchangeClient.AllowsPrivate()}),
-			ingestQueue, db, sseHub, config.IngestQueueSize/4, os.TempDir()).Start()
+			ingestQueue, db, datasets.Content{Models: modelManager, Alerts: alertManager, Lookups: dictionaryManager},
+			sseHub, config.IngestQueueSize/4, os.TempDir()).Start()
 	}
 
 	// Initialize feed system

@@ -27,7 +27,7 @@ var bodylessRoutes = []string{
 	"POST /api/v1/dictionaries/{id}/sync",
 	"POST /api/v1/email-actions/{id}/test",
 	"POST /api/v1/exchange/datasets/imports/{importId}/retry",
-	"POST /api/v1/exchange/datasets/{id}/import",
+	"POST /api/v1/exchange/datasets/imports/{importId}/start",
 	"POST /api/v1/feeds/{id}/alerts/disable-all",
 	"POST /api/v1/feeds/{id}/alerts/enable-all",
 	"POST /api/v1/feeds/{id}/sync",

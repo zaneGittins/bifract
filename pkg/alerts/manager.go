@@ -1182,6 +1182,24 @@ func (m *Manager) ListCoverageRows(ctx context.Context, fractalID, prismID strin
 	return out, rows.Err()
 }
 
+// ClearFractalHistory forgets what a fractal's own alerts have fired on, for when
+// its logs are dropped to be imported again, so the new logs are not held back by
+// old throttle windows. The cursor moves past the old rows, which logs_hot keeps
+// for two hours after logs lets them go. What was already sent stays sent, and a
+// prism's alerts are not the fractal's to clear.
+func (m *Manager) ClearFractalHistory(ctx context.Context, fractalID string) error {
+	for _, q := range []string{
+		`DELETE FROM alert_executions WHERE alert_id IN (SELECT id FROM alerts WHERE fractal_id = $1)`,
+		`DELETE FROM alert_throttles WHERE alert_id IN (SELECT id FROM alerts WHERE fractal_id = $1)`,
+		`UPDATE alerts SET last_triggered = NULL, last_evaluated_at = NOW() WHERE fractal_id = $1`,
+	} {
+		if _, err := m.pg.Exec(ctx, q, fractalID); err != nil {
+			return fmt.Errorf("clear alert history: %w", err)
+		}
+	}
+	return nil
+}
+
 // DeleteAlert removes an alert and its associations
 func (m *Manager) DeleteAlert(ctx context.Context, alertID string) error {
 	// Deleting a detection is the change nobody reviews and everybody regrets, so it

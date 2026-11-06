@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -498,5 +499,20 @@ func TestBatchTogglesStayInCallerScope(t *testing.T) {
 				t.Fatalf("update not limited to %q: %+v", tc.scope, calls)
 			}
 		})
+	}
+}
+
+// A dataset imported again must fire as it first did, so no execution or open
+// throttle window survives, and only this fractal's alerts are touched.
+func TestClearFractalHistory(t *testing.T) {
+	m, pg := newTestManager(t)
+	if err := m.ClearFractalHistory(context.Background(), "f1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"DELETE FROM alert_executions", "DELETE FROM alert_throttles", "last_evaluated_at = NOW()"} {
+		calls := pg.Matching(sub)
+		if len(calls) != 1 || calls[0].Args[0] != "f1" || !strings.Contains(calls[0].Query, "fractal_id = $1") {
+			t.Errorf("%s: %+v", sub, calls)
+		}
 	}
 }
